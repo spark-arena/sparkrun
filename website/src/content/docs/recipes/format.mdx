@@ -298,9 +298,13 @@ See the [benchmark command](/cli/benchmark/) for details on how benchmark config
 ## Recipe discovery
 
 sparkrun searches for recipes in this order:
-1. **Exact/relative file path** — if the argument is an existing file
-2. **Registry paths** — from configured registries
-3. **Registry stem matching** — searches by filename stem
+
+1. **`@spark-arena/` shortcut** — `@spark-arena/UUID` expands to a Spark Arena URL.
+2. **URL** — if the argument is an HTTP/HTTPS URL, the recipe is fetched directly and cached.
+3. **`@registry/recipe-name` scoped lookup** — disambiguate recipes across registries using scoped syntax.
+4. **Exact/relative file path** — if the argument is a path to an existing file.
+5. **Current working directory** — sparkrun scans `.yaml`/`.yml` files in the CWD that are valid recipes.
+6. **Registry search** — flat name lookup in configured custom registries, then recursive glob.
 
 Filenames are matched with or without `.yaml`/`.yml` extensions.
 
