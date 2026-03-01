@@ -15,6 +15,9 @@ export default defineConfig({
             logo: {
                 src: './src/assets/sparkrun-logo.svg',
             },
+            components: {
+                Footer: './src/components/overrides/Footer.astro',
+            },
             social: {
                 github: 'https://github.com/scitrera/sparkrun',
             },

@@ -3,16 +3,31 @@ title: Registries
 description: Configure custom recipe registries for sharing and discovering recipes.
 ---
 
-sparkrun searches bundled recipes first, then any custom registries you've configured. Registries are git repositories containing YAML recipe files.
+sparkrun ships with several default registries and supports adding custom ones. Registries are git repositories containing YAML recipe files.
+
+## Default registries
+
+sparkrun includes the following registries out of the box:
+
+| Registry | Description |
+|---|---|
+| `@official` | Vetted recipes from [Spark Arena](https://spark-arena.com). These have been tested and reviewed for correctness. |
+| `@eugr` | Recipes from the [eugr](https://github.com/eugr) repository. Available by default. |
+| `@sparkrun-transitional` | Recipes that were originally part of sparkrun's built-in defaults, now maintained as a separate registry. |
+| `@experimental` | Experimental recipes from Spark Arena. These may be less tested or use newer features. Hidden from default listings but usable by name. |
+
+Use `sparkrun registry list` to see all configured registries and their status.
 
 ## Spark Arena
 
-[Spark Arena](https://spark-arena.com) is the community recipe hub for DGX Spark. It is included as a default registry — recipes from Spark Arena appear automatically in `sparkrun list` and `sparkrun search`.
+[Spark Arena](https://spark-arena.com) is the community recipe hub for DGX Spark. Vetted recipes are published to the `@official` registry; experimental recipes go to `@experimental`. Both are included by default — official recipes appear in `sparkrun list` and `sparkrun search`, while experimental ones can be accessed with `sparkrun list --all` or by name.
 
-You can also run Spark Arena recipes directly using the `@spark-arena/` shortcut:
+### `@spark-arena/` shortcut
+
+The special `@spark-arena/<UUID>` shortcut pulls recipes directly from the Spark Arena leaderboard. This lets you quickly test or reproduce results for any entry on the leaderboard:
 
 ```bash
-# Run a Spark Arena recipe by its ID
+# Run a Spark Arena leaderboard recipe by its ID
 sparkrun run @spark-arena/<recipe-id>
 
 # Inspect with VRAM estimation
@@ -23,6 +38,10 @@ sparkrun show @spark-arena/<recipe-id> --save my-recipe.yaml
 ```
 
 Visit [spark-arena.com](https://spark-arena.com) to browse the full catalog, view benchmark results, and copy recipe links.
+
+:::note[Evolving integration]
+Registry structure and Spark Arena integration are still evolving. We'll be adjusting based on community feedback — if you have suggestions, open an issue or reach out on the Spark Arena community channels.
+:::
 
 ## View configured registries
 
@@ -189,9 +208,11 @@ sparkrun run @my-team/my-model-vllm -H 192.168.11.13
 
 ## Recipe discovery order
 
-1. **Exact/relative file path** — if the argument is an existing file
-2. **Bundled recipes** — shipped with sparkrun
-3. **Registry paths** — from configured registries
-4. **Registry stem matching** — searches by filename stem
+1. **`@spark-arena/` shortcut** — `@spark-arena/UUID` expands to a Spark Arena URL
+2. **URL** — if the argument is an HTTP/HTTPS URL, the recipe is fetched directly and cached
+3. **`@registry/recipe-name` scoped lookup** — disambiguate recipes across registries
+4. **Exact/relative file path** — if the argument is a path to an existing file
+5. **Current working directory** — sparkrun scans `.yaml`/`.yml` files in the CWD that are valid recipes
+6. **Registry search** — flat name lookup in configured registries, then recursive glob
 
 Filenames are matched with or without `.yaml`/`.yml` extensions.

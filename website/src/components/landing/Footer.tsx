@@ -36,7 +36,7 @@ export default function Footer() {
       <div className="footer-bottom">
         <p>Apache 2.0 License</p>
         <div className="footer-powered">
-          Powered by <a href="https://scitrera.ai">scitrera.ai</a>
+          Part of the <a href="https://spark-arena.com">Spark Arena</a> ecosystem &middot; Powered by <a href="https://scitrera.ai">scitrera.ai</a>
         </div>
       </div>
     </footer>
