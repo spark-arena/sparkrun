@@ -113,7 +113,7 @@ def _stop_all(hosts, hosts_file, cluster_name, config, dry_run):
         remove_job_metadata(solo_cid, cache_dir=str(config.cache_dir))
 
     hosts_touched = len(host_containers)
-    click.echo("Stopped %d jobs(s) across %d host(s)." % (stopped_count, hosts_touched))
+    click.echo("Stopped %d job(s) across %d host(s)." % (stopped_count, hosts_touched))
 
 
 def _stop_recipe(recipe_name, hosts, hosts_file, cluster_name, config, tp_override, dry_run):
