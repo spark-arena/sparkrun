@@ -15,6 +15,7 @@ from ._common import (
     _is_recipe_url,
     _load_recipe,
     _parse_options,
+    _resolve_cluster_cache_dir,
     _resolve_hosts_or_exit,
     _setup_logging,
     _simplify_recipe_ref,
@@ -204,7 +205,8 @@ def run(
     # when resources are already present on all hosts).
     nccl_env = None
     ib_ip_map: dict[str, str] = {}
-    effective_cache_dir = cache_dir or str(config.hf_cache_dir)
+    cluster_cache_dir = _resolve_cluster_cache_dir(cluster_name, hosts, hosts_file, cluster_mgr)
+    effective_cache_dir = cache_dir or cluster_cache_dir or str(config.hf_cache_dir)
     if not runtime.is_delegating_runtime():
         from sparkrun.orchestration.distribution import distribute_resources
         nccl_env, ib_ip_map, mgmt_ip_map = distribute_resources(
@@ -270,7 +272,7 @@ def run(
     else:
         click.echo(f"Mode:      cluster ({len(host_list)} nodes)")
 
-    _display_vram_estimate(recipe, cli_overrides=overrides, auto_detect=True)
+    _display_vram_estimate(recipe, cli_overrides=overrides, auto_detect=True, cache_dir=effective_cache_dir)
 
     click.echo()
     click.echo(f"Hosts:     {host_source}")
@@ -304,7 +306,7 @@ def run(
         overrides=overrides,
         cluster_id=cluster_id,
         env=recipe.env,
-        cache_dir=cache_dir or str(config.hf_cache_dir),
+        cache_dir=effective_cache_dir,
         config=config,
         dry_run=dry_run,
         detached=not foreground,

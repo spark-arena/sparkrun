@@ -74,10 +74,22 @@ class EugrVllmRayRuntime(VllmRayRuntime):
         """
         build_args = recipe.runtime_config.get("build_args", [])
         has_mods = bool(recipe.runtime_config.get("mods"))
-        if not build_args and not has_mods:
+
+        # Determine if we need to build the image.
+        # eugr images are locally built (not pulled from a registry), so if
+        # the image is missing we must build it even without explicit build_args.
+        image = recipe.container or "vllm-node"
+        needs_build = bool(build_args)
+        if not needs_build:
+            from sparkrun.containers.registry import image_exists_locally
+            if not image_exists_locally(image):
+                logger.info("eugr image '%s' not found locally; will build", image)
+                needs_build = True
+
+        if not needs_build and not has_mods:
             return  # nothing eugr-specific to prepare
 
-        # Ensure repo is available (for build script and mods)
+        # Ensure repo is available (for build script and/or mods)
         registry_cache_root = None
         if config is not None:
             registry_cache_root = Path(config.cache_dir) / "registries"
@@ -86,11 +98,10 @@ class EugrVllmRayRuntime(VllmRayRuntime):
         # Cache mod names for _pre_serve hook
         self._mods = recipe.runtime_config.get("mods", [])
 
-        if not build_args:
+        if not needs_build:
             return
 
         # Build image using eugr's build-and-copy.sh
-        image = recipe.container or "vllm-node"
         self._build_image(image, build_args, dry_run)
 
     def _build_image(self, image: str, build_args: list[str], dry_run: bool = False) -> None:
@@ -202,9 +213,12 @@ class EugrVllmRayRuntime(VllmRayRuntime):
                 ssh_kwargs=ssh_kwargs, timeout=30,
             )
             # rsync mod contents to remote
+            kw = ssh_kwargs or {}
             run_rsync_parallel(
-                [host], str(mod_path) + "/", remote_tmp + "/",
-                ssh_kwargs=ssh_kwargs,
+                str(mod_path) + "/", [host], remote_tmp + "/",
+                ssh_user=kw.get("ssh_user"),
+                ssh_key=kw.get("ssh_key"),
+                ssh_options=kw.get("ssh_options"),
             )
             # docker cp into container and run
             script = (

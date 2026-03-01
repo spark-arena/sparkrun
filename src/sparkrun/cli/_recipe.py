@@ -85,11 +85,12 @@ def recipe_search(ctx, registry, runtime, show_all, query, config_path=None):
 @click.option("--no-vram", is_flag=True, help="Skip VRAM estimation")
 @click.option("--tp", "--tensor-parallel", "tensor_parallel", type=int, default=None,
               help="Override tensor parallelism")
+@click.option("--cache-dir", default=None, help="HuggingFace cache directory for model lookups")
 @click.option("--save", "save_path", default=None, type=click.Path(),
               help="Save a copy of the recipe YAML to a file")
 # @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
-def recipe_show(ctx, recipe_name, no_vram, tensor_parallel, save_path=None, config_path=None):
+def recipe_show(ctx, recipe_name, no_vram, tensor_parallel, cache_dir=None, save_path=None, config_path=None):
     """Show detailed recipe information."""
     import shutil
 
@@ -102,7 +103,7 @@ def recipe_show(ctx, recipe_name, no_vram, tensor_parallel, save_path=None, conf
 
     reg_name = registry_mgr.registry_for_path(recipe_path) if registry_mgr else None
     _display_recipe_detail(recipe, show_vram=not no_vram, registry_name=reg_name,
-                           cli_overrides=cli_overrides or None)
+                           cli_overrides=cli_overrides or None, cache_dir=cache_dir)
 
     if save_path:
         from pathlib import Path
@@ -147,10 +148,11 @@ def recipe_validate(ctx, recipe_name, config_path=None):
 @click.option("--max-model-len", type=int, default=None, help="Override max sequence length")
 @click.option("--gpu-mem", type=float, default=None,
               help="Override gpu_memory_utilization (0.0-1.0)")
+@click.option("--cache-dir", default=None, help="HuggingFace cache directory for model lookups")
 @click.option("--no-auto-detect", is_flag=True, help="Skip HuggingFace model auto-detection")
 # @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
-def recipe_vram(ctx, recipe_name, tensor_parallel, max_model_len, gpu_mem, no_auto_detect, config_path=None):
+def recipe_vram(ctx, recipe_name, tensor_parallel, max_model_len, gpu_mem, cache_dir=None, no_auto_detect=False, config_path=None):
     """Estimate VRAM usage for a recipe on DGX Spark.
 
     Shows model weight size, KV cache requirements, GPU memory budget,
@@ -179,7 +181,7 @@ def recipe_vram(ctx, recipe_name, tensor_parallel, max_model_len, gpu_mem, no_au
     if gpu_mem is not None:
         cli_overrides["gpu_memory_utilization"] = gpu_mem
 
-    _display_vram_estimate(recipe, cli_overrides=cli_overrides, auto_detect=not no_auto_detect)
+    _display_vram_estimate(recipe, cli_overrides=cli_overrides, auto_detect=not no_auto_detect, cache_dir=cache_dir)
 
 
 @recipe.command("update", hidden=True)

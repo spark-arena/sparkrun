@@ -117,12 +117,14 @@ def parse_param_count(value: int | float | str) -> int | None:
 def fetch_model_config(
         model_id: str,
         revision: str | None = None,
+        cache_dir: str | None = None,
 ) -> dict[str, Any] | None:
     """Fetch model config.json from HuggingFace Hub without downloading weights.
 
     Args:
         model_id: HuggingFace model identifier.
         revision: Optional revision (branch, tag, or commit hash).
+        cache_dir: Optional HuggingFace cache directory override.
 
     Returns the config dict or None on failure.
     """
@@ -133,6 +135,8 @@ def fetch_model_config(
         kwargs: dict[str, Any] = {"repo_id": model_id, "filename": "config.json"}
         if revision:
             kwargs["revision"] = revision
+        if cache_dir:
+            kwargs["cache_dir"] = cache_dir
         config_path = hf_hub_download(**kwargs)
         with open(config_path) as f:
             return json.load(f)
@@ -144,6 +148,7 @@ def fetch_model_config(
 def fetch_safetensors_size(
         model_id: str,
         revision: str | None = None,
+        cache_dir: str | None = None,
 ) -> int | None:
     """Fetch total parameter storage size from safetensors index metadata.
 
@@ -154,6 +159,7 @@ def fetch_safetensors_size(
     Args:
         model_id: HuggingFace model identifier.
         revision: Optional revision (branch, tag, or commit hash).
+        cache_dir: Optional HuggingFace cache directory override.
 
     Returns:
         Total size in bytes, or ``None`` if unavailable.
@@ -168,6 +174,8 @@ def fetch_safetensors_size(
         }
         if revision:
             kwargs["revision"] = revision
+        if cache_dir:
+            kwargs["cache_dir"] = cache_dir
         index_path = hf_hub_download(**kwargs)
         with open(index_path) as f:
             index = json.load(f)

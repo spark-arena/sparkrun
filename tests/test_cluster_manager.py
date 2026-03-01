@@ -217,3 +217,52 @@ def test_valid_name_with_underscores_hyphens(tmp_path: Path):
 
     clusters = manager.list_clusters()
     assert len(clusters) == 4
+
+
+# ---------------------------------------------------------------------------
+# cache_dir field tests
+# ---------------------------------------------------------------------------
+
+
+def test_create_cluster_with_cache_dir(tmp_path: Path):
+    """Create a cluster with cache_dir and verify persistence."""
+    manager = ClusterManager(tmp_path)
+    manager.create("gpu-lab", ["host1", "host2"], cache_dir="/mnt/models")
+
+    cluster = manager.get("gpu-lab")
+    assert cluster.cache_dir == "/mnt/models"
+    assert cluster.hosts == ["host1", "host2"]
+
+
+def test_create_cluster_without_cache_dir(tmp_path: Path):
+    """Cluster created without cache_dir defaults to None."""
+    manager = ClusterManager(tmp_path)
+    manager.create("basic", ["host1"])
+
+    cluster = manager.get("basic")
+    assert cluster.cache_dir is None
+
+
+def test_update_cluster_cache_dir(tmp_path: Path):
+    """Update cache_dir without affecting other fields."""
+    manager = ClusterManager(tmp_path)
+    manager.create("test", ["host1"], description="My cluster", user="admin")
+
+    manager.update("test", cache_dir="/data/hf-cache")
+
+    cluster = manager.get("test")
+    assert cluster.cache_dir == "/data/hf-cache"
+    assert cluster.hosts == ["host1"]
+    assert cluster.description == "My cluster"
+    assert cluster.user == "admin"
+
+
+def test_update_cluster_clear_cache_dir(tmp_path: Path):
+    """Pass cache_dir=None explicitly to clear it."""
+    manager = ClusterManager(tmp_path)
+    manager.create("test", ["host1"], cache_dir="/mnt/models")
+
+    manager.update("test", cache_dir=None)
+
+    cluster = manager.get("test")
+    assert cluster.cache_dir is None

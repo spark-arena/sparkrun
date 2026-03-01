@@ -131,6 +131,14 @@ class BenchmarkingPlugin(Plugin):
         """Return default benchmark args when no profile is provided."""
         return dict(self.default_args)
 
+    def estimate_test_count(self, args: dict[str, Any]) -> int | None:
+        """Estimate the number of test combinations from the args.
+
+        Returns None if the count cannot be determined.  Subclasses should
+        override this when the framework's test matrix is predictable.
+        """
+        return None
+
     def __repr__(self) -> str:
         return "%s(framework_name=%r)" % (self.__class__.__name__, self.framework_name)
 

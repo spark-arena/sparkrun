@@ -34,6 +34,7 @@ class ClusterDefinition:
     hosts: list[str]
     description: str = ""
     user: str | None = None
+    cache_dir: str | None = None
 
 
 @dataclass
@@ -95,7 +96,8 @@ class ClusterManager:
         """Get path to cluster YAML file."""
         return self.clusters_dir / f"{name}.yaml"
 
-    def create(self, name: str, hosts: list[str], description: str = "", user: str | None = None) -> None:
+    def create(self, name: str, hosts: list[str], description: str = "",
+               user: str | None = None, cache_dir: str | None = None) -> None:
         """Create a new named cluster.
 
         Args:
@@ -103,6 +105,7 @@ class ClusterManager:
             hosts: List of host addresses
             description: Optional cluster description
             user: Optional SSH username for this cluster
+            cache_dir: Optional HuggingFace cache directory for this cluster
 
         Raises:
             ClusterError: If cluster already exists or name is invalid
@@ -113,7 +116,8 @@ class ClusterManager:
         if cluster_path.exists():
             raise ClusterError(f"Cluster '{name}' already exists")
 
-        cluster_def = ClusterDefinition(name=name, hosts=hosts, description=description, user=user)
+        cluster_def = ClusterDefinition(name=name, hosts=hosts, description=description,
+                                        user=user, cache_dir=cache_dir)
         self._write_cluster(cluster_def)
         logger.info("Created cluster '%s' with %d hosts", name, len(hosts))
 
@@ -141,6 +145,7 @@ class ClusterManager:
             hosts: list[str] | None = None,
             description: str | None = None,
             user: str | None = _UNSET,
+            cache_dir: str | None = _UNSET,
     ) -> None:
         """Update existing cluster definition.
 
@@ -149,6 +154,7 @@ class ClusterManager:
             hosts: New host list (if provided)
             description: New description (if provided)
             user: SSH username (if provided; pass ``None`` explicitly to clear)
+            cache_dir: HuggingFace cache directory (if provided; pass ``None`` explicitly to clear)
 
         Raises:
             ClusterError: If cluster does not exist
@@ -168,6 +174,10 @@ class ClusterManager:
         if user is not _UNSET:
             cluster_def.user = user
             logger.debug("Updated user for cluster '%s'", name)
+
+        if cache_dir is not _UNSET:
+            cluster_def.cache_dir = cache_dir
+            logger.debug("Updated cache_dir for cluster '%s'", name)
 
         # Write back
         self._write_cluster(cluster_def)
@@ -270,6 +280,8 @@ class ClusterManager:
         }
         if cluster_def.user is not None:
             data["user"] = cluster_def.user
+        if cluster_def.cache_dir is not None:
+            data["cache_dir"] = cluster_def.cache_dir
 
         with cluster_path.open("w") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
@@ -289,6 +301,7 @@ class ClusterManager:
             hosts=data.get("hosts", []),
             description=data.get("description", ""),
             user=data.get("user"),
+            cache_dir=data.get("cache_dir"),
         )
 
 

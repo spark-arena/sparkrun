@@ -772,7 +772,7 @@ class TestRecipeMetadata:
     def _mock_hf_config(self, monkeypatch):
         """Mock fetch_model_config to return a nested multimodal config."""
 
-        def _fake_fetch(model_id, revision=None):
+        def _fake_fetch(model_id, revision=None, cache_dir=None):
             return {
                 "architectures": ["SomeVLModel"],
                 "text_config": {
@@ -792,7 +792,7 @@ class TestRecipeMetadata:
         # 35B params * 2 bytes (bfloat16) = 70_000_000_000 bytes
         monkeypatch.setattr(
             "sparkrun.models.vram.fetch_safetensors_size",
-            lambda model_id, revision=None: 70_000_000_000,
+            lambda model_id, revision=None, cache_dir=None: 70_000_000_000,
         )
 
     @pytest.mark.usefixtures("_mock_hf_config", "_mock_safetensors")
@@ -822,7 +822,7 @@ class TestRecipeMetadata:
         called = []
         monkeypatch.setattr(
             "sparkrun.models.vram.fetch_safetensors_size",
-            lambda model_id, revision=None: called.append(1) or 99_999_999_999,
+            lambda model_id, revision=None, cache_dir=None: called.append(1) or 99_999_999_999,
         )
         recipe = Recipe.from_dict({
             "name": "Test",
@@ -840,7 +840,7 @@ class TestRecipeMetadata:
         called = []
         monkeypatch.setattr(
             "sparkrun.models.vram.fetch_safetensors_size",
-            lambda model_id, revision=None: called.append(1) or 99_999_999_999,
+            lambda model_id, revision=None, cache_dir=None: called.append(1) or 99_999_999_999,
         )
         recipe = Recipe.from_dict({
             "name": "Test",
@@ -857,7 +857,7 @@ class TestRecipeMetadata:
         """When safetensors index unavailable, model_params stays None."""
         monkeypatch.setattr(
             "sparkrun.models.vram.fetch_safetensors_size",
-            lambda model_id, revision=None: None,
+            lambda model_id, revision=None, cache_dir=None: None,
         )
         recipe = Recipe.from_dict({
             "name": "Test",

@@ -127,6 +127,28 @@ class LlamaBenchyFramework(BenchmarkingPlugin):
 
         return coerce_value(value)
 
+    def estimate_test_count(self, args: dict[str, Any]) -> int | None:
+        """Estimate total test combinations from benchmark args.
+
+        llama-benchy runs the cartesian product of pp x tg x depth x concurrency,
+        each repeated ``runs`` times.
+        """
+        pp = args.get("pp", [2048])
+        tg = args.get("tg", [32])
+        depth = args.get("depth", [0])
+        concurrency = args.get("concurrency", [1])
+        runs = args.get("runs", 3)
+
+        def _len(v: Any) -> int:
+            return len(v) if isinstance(v, list) else 1
+
+        # noinspection PyBroadException
+        try:
+            combos = _len(pp) * _len(tg) * _len(depth) * _len(concurrency)
+            return combos * int(runs) if combos > 0 else None
+        except:
+            return None
+
     def parse_results(self, stdout: str, stderr: str, result_file: str | None = None) -> dict[str, Any]:
         """Parse llama-benchy JSON output into structured results.
 

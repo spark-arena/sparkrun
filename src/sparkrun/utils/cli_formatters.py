@@ -112,7 +112,7 @@ def format_host_display(host: str, meta: dict[str, Any] | None) -> str:
     return host
 
 
-def display_recipe_detail(recipe, show_vram=True, registry_name=None, cli_overrides=None):
+def display_recipe_detail(recipe, show_vram=True, registry_name=None, cli_overrides=None, cache_dir=None):
     """Display recipe details (shared by show and recipe show commands)."""
     click.echo(f"Name:         {recipe.name}")
     click.echo(f"Description:  {recipe.description}")
@@ -140,15 +140,15 @@ def display_recipe_detail(recipe, show_vram=True, registry_name=None, cli_overri
         click.echo(f"\nCommand:\n  {recipe.command.strip()}")
 
     if show_vram:
-        display_vram_estimate(recipe, cli_overrides=cli_overrides)
+        display_vram_estimate(recipe, cli_overrides=cli_overrides, cache_dir=cache_dir)
 
 
-def display_vram_estimate(recipe, cli_overrides=None, auto_detect=True):
+def display_vram_estimate(recipe, cli_overrides=None, auto_detect=True, cache_dir=None):
     """Display VRAM estimation for a recipe."""
     from sparkrun.models.vram import DGX_SPARK_VRAM_GB
 
     try:
-        est = recipe.estimate_vram(cli_overrides=cli_overrides, auto_detect=auto_detect)
+        est = recipe.estimate_vram(cli_overrides=cli_overrides, auto_detect=auto_detect, cache_dir=cache_dir)
     except Exception as e:
         click.echo(f"\nVRAM estimation failed: {e}", err=True)
         return

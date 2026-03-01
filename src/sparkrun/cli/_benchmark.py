@@ -17,6 +17,7 @@ from ._common import (
     _expand_recipe_shortcut,
     _is_recipe_url,
     _load_recipe,
+    _resolve_cluster_cache_dir,
     _resolve_hosts_or_exit,
     _setup_logging,
     _simplify_recipe_ref,
@@ -244,7 +245,8 @@ def _run_benchmark(
     cluster_id = generate_cluster_id(recipe, host_list)
 
     container_image = runtime.resolve_container(recipe, overrides)
-    effective_cache_dir = cache_dir or str(config.hf_cache_dir)
+    cluster_cache_dir = _resolve_cluster_cache_dir(cluster_name, hosts, hosts_file, cluster_mgr)
+    effective_cache_dir = cache_dir or cluster_cache_dir or str(config.hf_cache_dir)
     ssh_kwargs = build_ssh_kwargs(config)
     head_host = host_list[0]
 
@@ -283,7 +285,7 @@ def _run_benchmark(
     click.echo("=" * 60)
     click.echo("")
 
-    _display_vram_estimate(recipe, cli_overrides=overrides, auto_detect=True)
+    _display_vram_estimate(recipe, cli_overrides=overrides, auto_detect=True, cache_dir=effective_cache_dir)
 
     # ---------------------------------------------------------------
     # 6. Launch inference (unless --skip-run)
@@ -434,6 +436,10 @@ def _run_benchmark(
         click.echo("")
         click.echo("Step 2/3: Running benchmark (%s)..." % fw.framework_name)
 
+        est_tests = fw.estimate_test_count(bench_args)
+        if est_tests is not None:
+            click.echo("Estimated test iterations: %d" % est_tests)
+
         bench_cmd = fw.build_benchmark_command(
             target_url=base_url,
             model=recipe.model,
@@ -450,14 +456,24 @@ def _run_benchmark(
             stdout_text = ""
             stderr_text = ""
         else:
+            import time
+            click.echo("--- benchmark output ---")
+            bench_start = time.monotonic()
             try:
                 # Stream stdout live so the user sees progress, while
                 # capturing it for result parsing afterwards.
+                # Force unbuffered output so lines appear in real-time
+                # (Python subprocesses block-buffer when stdout is a pipe).
+                import os
+                bench_env = os.environ.copy()
+                bench_env["PYTHONUNBUFFERED"] = "1"
                 proc = subprocess.Popen(
                     bench_cmd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
+                    bufsize=1,
+                    env=bench_env,
                 )
 
                 stdout_lines: list[str] = []
@@ -469,12 +485,16 @@ def _run_benchmark(
                 stdout_text = "".join(stdout_lines)
                 stderr_text = proc.stderr.read()
 
+                elapsed = time.monotonic() - bench_start
+                click.echo("--- end benchmark output ---")
+                click.echo("")
+
                 if proc.returncode != 0:
-                    click.echo("Warning: benchmark exited with code %d" % proc.returncode, err=True)
+                    click.echo("Warning: benchmark exited with code %d (%.0fs elapsed)" % (proc.returncode, elapsed), err=True)
                     if stderr_text:
                         click.echo("stderr: %s" % stderr_text[:500], err=True)
                 else:
-                    click.echo("Benchmark completed successfully.")
+                    click.echo("Benchmark completed successfully (%.0fs elapsed)." % elapsed)
             except subprocess.TimeoutExpired:
                 proc.kill()
                 click.echo("Error: benchmark timed out after %d seconds" % effective_timeout, err=True)

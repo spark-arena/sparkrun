@@ -402,6 +402,7 @@ class Recipe:
             self,
             cli_overrides: dict[str, Any] | None = None,
             auto_detect: bool = True,
+            cache_dir: str | None = None,
     ) -> VRAMEstimate:
         """Estimate VRAM usage for this recipe.
 
@@ -411,6 +412,7 @@ class Recipe:
         Args:
             cli_overrides: CLI override values (e.g. tensor_parallel, max_model_len).
             auto_detect: Whether to query HuggingFace Hub for model config.
+            cache_dir: Optional HuggingFace cache directory for model lookups.
 
         Returns:
             VRAMEstimate dataclass with estimation results.
@@ -446,7 +448,7 @@ class Recipe:
                                       and (not num_layers or not num_kv_heads or not head_dim)
                               )
             if needs_detection:
-                hf_config = fetch_model_config(self.model, revision=self.model_revision)
+                hf_config = fetch_model_config(self.model, revision=self.model_revision, cache_dir=cache_dir)
                 if hf_config:
                     hf_info = extract_model_info(hf_config)
                     # Fill in missing fields (metadata takes precedence)
@@ -468,7 +470,7 @@ class Recipe:
         if model_params is None and model_vram is None and auto_detect and self.model and model_dtype:
             bpe = bytes_per_element(str(model_dtype))
             if bpe is not None and bpe > 0:
-                total_size = fetch_safetensors_size(self.model, revision=self.model_revision)
+                total_size = fetch_safetensors_size(self.model, revision=self.model_revision, cache_dir=cache_dir)
                 if total_size is not None:
                     model_params = int(total_size / bpe)
 

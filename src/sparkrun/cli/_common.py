@@ -227,6 +227,34 @@ def _resolve_cluster_user(
     return None
 
 
+def _resolve_cluster_cache_dir(
+        cluster_name: str | None,
+        hosts: str | None,
+        hosts_file: str | None,
+        cluster_mgr,
+) -> str | None:
+    """Resolve cache_dir from a cluster definition, if applicable.
+
+    Returns the cluster's configured cache_dir, or None if no cluster is
+    resolved or the cluster has no cache_dir set.
+
+    Mirrors the priority chain of core.hosts.resolve_hosts(): if hosts or
+    hosts_file is provided, the cluster is not used, so neither should cache_dir.
+    """
+    if hosts or hosts_file:
+        return None
+    resolved = cluster_name
+    if not resolved:
+        resolved = cluster_mgr.get_default() if cluster_mgr else None
+    if resolved:
+        try:
+            cluster_def = cluster_mgr.get(resolved)
+            return cluster_def.cache_dir
+        except Exception:
+            logger.debug("Failed to resolve cluster '%s'", resolved, exc_info=True)
+    return None
+
+
 def _get_cluster_manager(v=None):
     """Create a ClusterManager using the SAF config root."""
     from sparkrun.core.cluster_manager import ClusterManager
@@ -348,16 +376,17 @@ def _resolve_setup_context(hosts, hosts_file, cluster_name, config, user=None):
     return host_list, user, ssh_kwargs
 
 
-def _display_recipe_detail(recipe, show_vram=True, registry_name=None, cli_overrides=None):
+def _display_recipe_detail(recipe, show_vram=True, registry_name=None, cli_overrides=None, cache_dir=None):
     """Display recipe details (delegates to cli_formatters)."""
     from sparkrun.utils.cli_formatters import display_recipe_detail
-    display_recipe_detail(recipe, show_vram=show_vram, registry_name=registry_name, cli_overrides=cli_overrides)
+    display_recipe_detail(recipe, show_vram=show_vram, registry_name=registry_name,
+                          cli_overrides=cli_overrides, cache_dir=cache_dir)
 
 
-def _display_vram_estimate(recipe, cli_overrides=None, auto_detect=True):
+def _display_vram_estimate(recipe, cli_overrides=None, auto_detect=True, cache_dir=None):
     """Display VRAM estimation (delegates to cli_formatters)."""
     from sparkrun.utils.cli_formatters import display_vram_estimate
-    display_vram_estimate(recipe, cli_overrides=cli_overrides, auto_detect=auto_detect)
+    display_vram_estimate(recipe, cli_overrides=cli_overrides, auto_detect=auto_detect, cache_dir=cache_dir)
 
 
 def _shell_rc_file(shell):

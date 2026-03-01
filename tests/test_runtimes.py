@@ -683,16 +683,35 @@ class TestEugrPrepare:
                 assert "my-image" in cmd
                 assert "--some-flag" in cmd
 
-    def test_prepare_without_build_args_or_mods(self, eugr_runtime):
-        """prepare() is a no-op when no build_args or mods."""
+    def test_prepare_without_build_args_or_mods_image_exists(self, eugr_runtime):
+        """prepare() is a no-op when no build_args/mods and image exists locally."""
         runtime, repo_dir = eugr_runtime
         recipe = Recipe.from_dict({
             "name": "test", "model": "some-model", "runtime": "eugr-vllm",
         })
-        with mock.patch.object(runtime, "ensure_repo") as mock_ensure:
-            runtime.prepare(recipe, ["10.0.0.1"])
-            # ensure_repo should not be called when nothing to prepare
-            mock_ensure.assert_not_called()
+        with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=True):
+            with mock.patch.object(runtime, "ensure_repo") as mock_ensure:
+                runtime.prepare(recipe, ["10.0.0.1"])
+                # ensure_repo should not be called when nothing to prepare
+                mock_ensure.assert_not_called()
+
+    def test_prepare_builds_when_image_missing(self, eugr_runtime):
+        """prepare() triggers a build when no build_args/mods but image is missing."""
+        runtime, repo_dir = eugr_runtime
+        recipe = Recipe.from_dict({
+            "name": "test", "model": "some-model", "runtime": "eugr-vllm",
+            "container": "my-image",
+        })
+        with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
+            with mock.patch.object(runtime, "ensure_repo", return_value=repo_dir):
+                with mock.patch("subprocess.run") as mock_run:
+                    mock_run.return_value = mock.Mock(returncode=0)
+                    runtime.prepare(recipe, ["10.0.0.1"])
+                    mock_run.assert_called_once()
+                    cmd = mock_run.call_args[0][0]
+                    assert str(repo_dir / "build-and-copy.sh") in cmd[0]
+                    assert "-t" in cmd
+                    assert "my-image" in cmd
 
     def test_prepare_dry_run(self, eugr_runtime):
         """prepare() in dry-run does not execute the build."""
@@ -714,10 +733,11 @@ class TestEugrPrepare:
             "name": "test", "model": "some-model", "runtime": "eugr-vllm",
             "runtime_config": {"mods": ["mods/flash-attn"]},
         })
-        with mock.patch.object(runtime, "ensure_repo", return_value=repo_dir):
-            runtime.prepare(recipe, ["10.0.0.1"])
-            assert runtime._mods == ["mods/flash-attn"]
-            assert runtime._repo_dir == repo_dir
+        with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=True):
+            with mock.patch.object(runtime, "ensure_repo", return_value=repo_dir):
+                runtime.prepare(recipe, ["10.0.0.1"])
+                assert runtime._mods == ["mods/flash-attn"]
+                assert runtime._repo_dir == repo_dir
 
     def test_prepare_build_failure_raises(self, eugr_runtime):
         """prepare() raises RuntimeError on build failure."""

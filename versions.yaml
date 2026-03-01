@@ -2,5 +2,5 @@
 # Run: python scripts/update-versions.py to sync all files
 # Run: python scripts/update-versions.py --check to verify (CI-friendly)
 
-sparkrun: 0.1.0
+sparkrun: 0.1.1
 sparkrun-cc-plugin: 0.0.3
