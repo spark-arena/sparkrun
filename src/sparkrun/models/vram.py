@@ -130,6 +130,7 @@ def fetch_model_config(
     """
     try:
         from huggingface_hub import hf_hub_download
+        from huggingface_hub.utils import disable_progress_bars, enable_progress_bars
         import json
 
         kwargs: dict[str, Any] = {"repo_id": model_id, "filename": "config.json"}
@@ -137,7 +138,11 @@ def fetch_model_config(
             kwargs["revision"] = revision
         if cache_dir:
             kwargs["cache_dir"] = cache_dir
-        config_path = hf_hub_download(**kwargs)
+        try:
+            disable_progress_bars()
+            config_path = hf_hub_download(**kwargs)
+        finally:
+            enable_progress_bars()
         with open(config_path) as f:
             return json.load(f)
     except Exception as e:
@@ -166,6 +171,7 @@ def fetch_safetensors_size(
     """
     try:
         from huggingface_hub import hf_hub_download
+        from huggingface_hub.utils import disable_progress_bars, enable_progress_bars
         import json
 
         kwargs: dict[str, Any] = {
@@ -176,7 +182,11 @@ def fetch_safetensors_size(
             kwargs["revision"] = revision
         if cache_dir:
             kwargs["cache_dir"] = cache_dir
-        index_path = hf_hub_download(**kwargs)
+        disable_progress_bars()
+        try:
+            index_path = hf_hub_download(**kwargs)
+        finally:
+            enable_progress_bars()
         with open(index_path) as f:
             index = json.load(f)
         total_size = index.get("metadata", {}).get("total_size")
