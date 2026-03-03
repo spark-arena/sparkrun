@@ -15,16 +15,16 @@ logger = logging.getLogger(__name__)
 
 
 def _distribute_from_head(
-    head: str,
-    hosts: list[str],
-    ensure_script: str,
-    distribute_script: str,
-    resource_label: str,
-    ssh_user: str | None = None,
-    ssh_key: str | None = None,
-    ssh_options: list[str] | None = None,
-    timeout: int | None = None,
-    dry_run: bool = False,
+        head: str,
+        hosts: list[str],
+        ensure_script: str,
+        distribute_script: str,
+        resource_label: str,
+        ssh_user: str | None = None,
+        ssh_key: str | None = None,
+        ssh_options: list[str] | None = None,
+        timeout: int | None = None,
+        dry_run: bool = False,
 ) -> list[str]:
     """Shared head-to-workers distribution pattern.
 
@@ -114,7 +114,7 @@ def distribute_resources(
         ``None`` when IB detection was skipped or not applicable.
     """
     from sparkrun.orchestration.primitives import build_ssh_kwargs
-    from sparkrun.orchestration.infiniband import detect_ib_for_hosts
+    from sparkrun.orchestration.infiniband import detect_ib_for_hosts, validate_ib_connectivity
     from sparkrun.containers.distribute import distribute_image_from_local
     from sparkrun.containers.registry import ensure_image
     from sparkrun.models.distribute import distribute_model_from_local
@@ -157,9 +157,16 @@ def distribute_resources(
         host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run,
     )
     nccl_env = ib_result.nccl_env
-    ib_ip_map = ib_result.ib_ip_map
     mgmt_ip_map = ib_result.mgmt_ip_map
-    if ib_result.ib_ip_map:
+
+    # Validate that the control machine can actually reach IB IPs
+    # before using them for transfers.  Detection runs on the remote
+    # hosts, but the control machine may not be on the IB network.
+    ib_ip_map = validate_ib_connectivity(
+        ib_result.ib_ip_map, ssh_kwargs=ssh_kwargs, dry_run=dry_run,
+    )
+
+    if ib_ip_map:
         transfer_hosts = [
             ib_result.ib_ip_map.get(h, h) for h in host_list
         ]

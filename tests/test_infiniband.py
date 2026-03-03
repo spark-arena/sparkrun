@@ -1,11 +1,15 @@
 """Unit tests for sparkrun.orchestration.infiniband module."""
 
+from unittest.mock import patch
+
 import pytest
 from sparkrun.orchestration.infiniband import (
     generate_ib_detect_script,
     parse_ib_detect_output,
     generate_nccl_env,
+    validate_ib_connectivity,
 )
+from sparkrun.orchestration.ssh import RemoteResult
 
 
 def test_generate_ib_detect_script_is_bash():
@@ -153,3 +157,66 @@ DETECTED_HCA_LIST=mlx5_0
     assert result["IB_DETECTED"] == "1"
     assert result["DETECTED_GID_INDEX"] == "0"
     assert result["DETECTED_HCA_LIST"] == "mlx5_0"
+
+
+# ---------------------------------------------------------------------------
+# validate_ib_connectivity tests
+# ---------------------------------------------------------------------------
+
+class TestValidateIbConnectivity:
+    """Tests for validate_ib_connectivity."""
+
+    def test_empty_map_returns_empty(self):
+        """Empty ib_ip_map returns empty dict without any SSH calls."""
+        result = validate_ib_connectivity({})
+        assert result == {}
+
+    def test_dry_run_returns_map_unchanged(self):
+        """Dry-run mode skips the connectivity check."""
+        ib_map = {"spark1": "10.0.0.1", "spark2": "10.0.0.2"}
+        result = validate_ib_connectivity(ib_map, dry_run=True)
+        assert result == ib_map
+
+    @patch("sparkrun.orchestration.ssh.run_remote_command")
+    def test_reachable_returns_original_map(self, mock_cmd):
+        """When IB IP is reachable, returns the original map."""
+        mock_cmd.return_value = RemoteResult(
+            host="10.0.0.1", returncode=0, stdout="", stderr="",
+        )
+        ib_map = {"spark1": "10.0.0.1", "spark2": "10.0.0.2"}
+        result = validate_ib_connectivity(ib_map, ssh_kwargs={"ssh_user": "user"})
+
+        assert result == ib_map
+        mock_cmd.assert_called_once_with(
+            "10.0.0.1", "true",
+            connect_timeout=5, timeout=10,
+            ssh_user="user",
+        )
+
+    @patch("sparkrun.orchestration.ssh.run_remote_command")
+    def test_unreachable_returns_empty(self, mock_cmd):
+        """When IB IP is unreachable, returns empty dict (fallback)."""
+        mock_cmd.return_value = RemoteResult(
+            host="10.0.0.1", returncode=255,
+            stdout="", stderr="Connection timed out",
+        )
+        ib_map = {"spark1": "10.0.0.1", "spark2": "10.0.0.2"}
+        result = validate_ib_connectivity(ib_map)
+
+        assert result == {}
+
+    @patch("sparkrun.orchestration.ssh.run_remote_command")
+    def test_ssh_kwargs_passed_through(self, mock_cmd):
+        """SSH kwargs are forwarded to the connectivity check."""
+        mock_cmd.return_value = RemoteResult(
+            host="10.0.0.1", returncode=0, stdout="", stderr="",
+        )
+        ssh_kw = {"ssh_user": "drew", "ssh_key": "/path/to/key", "ssh_options": ["-o", "Foo=bar"]}
+        ib_map = {"spark1": "10.0.0.1"}
+        validate_ib_connectivity(ib_map, ssh_kwargs=ssh_kw)
+
+        mock_cmd.assert_called_once_with(
+            "10.0.0.1", "true",
+            connect_timeout=5, timeout=10,
+            ssh_user="drew", ssh_key="/path/to/key", ssh_options=["-o", "Foo=bar"],
+        )

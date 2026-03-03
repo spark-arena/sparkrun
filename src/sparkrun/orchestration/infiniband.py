@@ -129,6 +129,58 @@ def extract_ib_ips(ib_info: dict[str, str]) -> list[str]:
     return [ip.strip() for ip in raw.split(",") if ip.strip()]
 
 
+def validate_ib_connectivity(
+        ib_ip_map: dict[str, str],
+        ssh_kwargs: dict | None = None,
+        dry_run: bool = False,
+) -> dict[str, str]:
+    """Validate that the control machine can reach detected IB IPs.
+
+    Tests SSH connectivity from the control machine to a sample IB IP.
+    If the control machine is not on the InfiniBand network, the IB IPs
+    are unreachable and transfers must fall back to management IPs.
+
+    Only one IB IP is tested since all are on the same subnet — if one
+    is reachable, the rest should be too.
+
+    Args:
+        ib_ip_map: Mapping of management host → IB IP (from detection).
+        ssh_kwargs: SSH connection parameters (user, key, options).
+        dry_run: Skip the check and return the map unchanged.
+
+    Returns:
+        The original *ib_ip_map* if connectivity is confirmed, or an
+        empty dict if the IB network is unreachable from the control
+        machine (signalling fallback to management network).
+    """
+    if not ib_ip_map or dry_run:
+        return ib_ip_map
+
+    from sparkrun.orchestration.ssh import run_remote_command
+
+    # Test connectivity to the first IB IP
+    test_host, test_ip = next(iter(ib_ip_map.items()))
+    kw = ssh_kwargs or {}
+
+    logger.info("Verifying IB network reachability from control machine (testing %s)...", test_ip)
+    result = run_remote_command(
+        test_ip, "true",
+        connect_timeout=5, timeout=10,
+        **kw,
+    )
+
+    if result.success:
+        logger.info("  IB network reachable — will use IB IPs for transfers")
+        return ib_ip_map
+
+    logger.warning(
+        "  Control machine cannot reach IB network (tested %s for host %s) "
+        "— falling back to management network for transfers",
+        test_ip, test_host,
+    )
+    return {}
+
+
 def detect_ib_for_hosts(
         hosts: list[str],
         ssh_kwargs: dict | None = None,
