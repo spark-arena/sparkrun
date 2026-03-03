@@ -12,7 +12,7 @@ import click
 from ._common import (
     PROFILE_NAME,
     RECIPE_NAME,
-    _apply_tp_trimming,
+    _apply_node_trimming,
     _display_vram_estimate,
     _expand_recipe_shortcut,
     _is_recipe_url,
@@ -36,6 +36,8 @@ DEFAULT_BENCHMARK_TIMEOUT: int = 14400  # 4 hours
 @click.option("--solo", is_flag=True, help="Force single-node mode")
 @click.option("--tp", "--tensor-parallel", "tensor_parallel", type=int, default=None,
               help="Override tensor parallelism")
+@click.option("--pp", "--pipeline-parallel", "pipeline_parallel", type=int, default=None,
+              help="Override pipeline parallelism")
 @click.option("--port", type=int, default=None, help="Override serve port")
 @click.option("--image", default=None, help="Override container image")
 @click.option("--cache-dir", default=None, help="HuggingFace cache directory")
@@ -55,7 +57,8 @@ DEFAULT_BENCHMARK_TIMEOUT: int = 14400  # 4 hours
 @dry_run_option
 @click.pass_context
 def benchmark(ctx, recipe_name, hosts, hosts_file, cluster_name, solo,
-              tensor_parallel, port, image, cache_dir, profile, framework,
+              tensor_parallel, pipeline_parallel, port, image, cache_dir,
+              profile, framework,
               output_file, options, exit_on_first_fail, no_stop, skip_run,
               sync_tuning, bench_timeout, dry_run):
     """Benchmark an inference recipe.
@@ -81,7 +84,8 @@ def benchmark(ctx, recipe_name, hosts, hosts_file, cluster_name, solo,
     """
     _run_benchmark(
         ctx, recipe_name, hosts, hosts_file, cluster_name, solo,
-        tensor_parallel, port, image, cache_dir, profile, framework,
+        tensor_parallel, pipeline_parallel, port, image, cache_dir,
+        profile, framework,
         output_file, options, exit_on_first_fail, no_stop, skip_run,
         sync_tuning, bench_timeout, dry_run,
     )
@@ -89,7 +93,8 @@ def benchmark(ctx, recipe_name, hosts, hosts_file, cluster_name, solo,
 
 def _run_benchmark(
         ctx, recipe_name, hosts, hosts_file, cluster_name, solo,
-        tensor_parallel, port, image, cache_dir, profile, framework_name,
+        tensor_parallel, pipeline_parallel, port, image, cache_dir,
+        profile, framework_name,
         output_file, options, exit_on_first_fail, no_stop, skip_run,
         sync_tuning, bench_timeout, dry_run,
 ):
@@ -196,6 +201,8 @@ def _run_benchmark(
         overrides["port"] = port
     if tensor_parallel is not None:
         overrides["tensor_parallel"] = tensor_parallel
+    if pipeline_parallel is not None:
+        overrides["pipeline_parallel"] = pipeline_parallel
     if image:
         recipe.container = image
 
@@ -211,25 +218,25 @@ def _run_benchmark(
 
     host_list, cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v)
 
-    # TP validation / trimming
+    # Node count validation / trimming (accounts for TP * PP, etc.)
     if len(host_list) > 1 and not solo:
-        config_chain = recipe.build_config_chain(overrides)
-        tp_val = config_chain.get("tensor_parallel")
-        if tp_val is not None:
-            effective_tp = int(tp_val)
-            if effective_tp > len(host_list):
+        required = runtime.compute_required_nodes(recipe, overrides)
+        if required is not None:
+            if required > len(host_list):
                 click.echo(
-                    "Error: tensor_parallel=%d requires %d hosts, but only %d provided"
-                    % (effective_tp, effective_tp, len(host_list)),
+                    "Error: runtime requires %d nodes, but only %d hosts provided"
+                    % (required, len(host_list)),
                     err=True,
                 )
                 sys.exit(1)
-            elif effective_tp < len(host_list):
+            elif required < len(host_list):
                 original_count = len(host_list)
-                host_list = _apply_tp_trimming(host_list, recipe, overrides)
+                host_list = _apply_node_trimming(
+                    host_list, recipe, overrides, runtime=runtime,
+                )
                 click.echo(
-                    "Note: tensor_parallel=%d, using %d of %d hosts"
-                    % (effective_tp, effective_tp, original_count)
+                    "Note: %d nodes required, using %d of %d hosts"
+                    % (required, required, original_count)
                 )
 
     if recipe.max_nodes is not None and len(host_list) > recipe.max_nodes:
@@ -337,6 +344,23 @@ def _run_benchmark(
                     click.echo("Synced %d tuning config(s) from registries." % synced)
             except Exception:
                 logger.debug("Failed to sync tuning configs", exc_info=True)
+
+        # Distribute tuning configs to remote hosts
+        if not runtime.is_delegating_runtime():
+            from sparkrun.tuning.distribute import distribute_tuning_to_hosts
+            try:
+                tuning_failed = distribute_tuning_to_hosts(
+                    recipe.runtime, host_list,
+                    dry_run=dry_run,
+                    **ssh_kwargs,
+                )
+                if tuning_failed:
+                    click.echo(
+                        "Warning: Tuning config distribution failed on: %s"
+                        % ", ".join(tuning_failed), err=True,
+                    )
+            except Exception:
+                logger.debug("Failed to distribute tuning configs", exc_info=True)
 
         # Resolve GGUF models
         from sparkrun.models.download import is_gguf_model, resolve_gguf_container_path
@@ -535,10 +559,13 @@ def _run_benchmark(
             # Export results
             if not output_file:
                 profile_slug = profile.replace("/", "_").replace("@", "") if profile else "default"
-                output_file = "benchmark_%s_%s_tp%d.yaml" % (
+                effective_pp = int(config_chain.get("pipeline_parallel") or 1)
+                pp_suffix = "_pp%d" % effective_pp if effective_pp > 1 else ""
+                output_file = "benchmark_%s_%s_tp%d%s.yaml" % (
                     recipe.name.replace("/", "_"),
                     profile_slug,
                     effective_tp,
+                    pp_suffix,
                 )
 
             export_results(

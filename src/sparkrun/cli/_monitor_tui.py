@@ -96,12 +96,18 @@ def _render_detail(host: str, state: HostMonitorState | None, cache_dir: str | N
 
     lines: list[str] = [
         f"[bold]{host}[/bold]",
+    ]
+
+    if state.error:
+        lines.append(f"  [yellow]{state.error}[/yellow]")
+
+    lines.extend([
         "",
         f"  CPU  [cyan]{_bar(cpu)}[/cyan] {cpu:5.1f}%",
         f"  RAM  [green]{_bar(ram)}[/green] {ram:5.1f}%",
         f"  GPU  [yellow]{_bar(gpu)}[/yellow] {gpu:5.1f}%",
         "",
-    ]
+    ])
 
     # Hardware details
     extras: list[str] = []
@@ -286,7 +292,18 @@ class ClusterMonitorApp(App):
         table = self.query_one("#host-table", DataTable)
         for host in self._monitor.hosts:
             state = self._monitor.states.get(host)
-            if state is None or state.latest is None:
+            if state is None:
+                continue
+
+            # Show connection status alongside the hostname.
+            if state.error and state.latest is None:
+                table.update_cell(host, "host", "%s (error)" % host)
+            elif state.error:
+                table.update_cell(host, "host", "%s (!)" % host)
+            else:
+                table.update_cell(host, "host", host)
+
+            if state.latest is None:
                 continue
             s = state.latest
             for key, _label, cell_fn in _TABLE_COLS:

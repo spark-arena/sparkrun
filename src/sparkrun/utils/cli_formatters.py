@@ -234,6 +234,8 @@ def format_monitor_table(
             continue
 
         s = state.latest
+        # Flag hosts with stale/reconnecting data.
+        host_label = "%s (!)" % host if state.error else host
         jobs = s.sparkrun_jobs if s.sparkrun_jobs else "-"
         cpu_pct = s.cpu_usage_pct if s.cpu_usage_pct else "-"
         ram_pct = "%s%%" % s.mem_used_pct if s.mem_used_pct else "-"
@@ -243,7 +245,7 @@ def format_monitor_table(
         gpu_power = "%s W" % s.gpu_power_w if s.gpu_power_w else "-"
 
         lines.append(
-            f"{host:<{host_w}}"
+            f"{host_label:<{host_w}}"
             f"{jobs:>6}"
             f"{cpu_pct:>8}"
             f"{ram_pct:>8}"

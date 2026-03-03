@@ -17,6 +17,7 @@ _SGLANG_FLAG_MAP = {
     "port": "--port",
     "host": "--host",
     "tensor_parallel": "--tp-size",
+    "pipeline_parallel": "--pp-size",
     "gpu_memory_utilization": "--mem-fraction-static",
     "max_model_len": "--context-length",
     "max_num_seqs": "--max-running-requests",
@@ -196,6 +197,25 @@ class SglangRuntime(RuntimePlugin):
                 )
 
         return issues
+
+    def compute_required_nodes(self, recipe, overrides=None):
+        """Compute required nodes as ``tp * pp``.
+
+        SGLang supports pipeline parallelism via ``--pp-size``.  On
+        DGX Spark (1 GPU per node), the total node count is the product
+        of tensor and pipeline parallelism.
+
+        Returns ``None`` when neither dimension is configured (meaning
+        "use all provided hosts, no trimming").
+        """
+        config = recipe.build_config_chain(overrides or {})
+        tp_val = config.get("tensor_parallel")
+        pp_val = config.get("pipeline_parallel")
+        if tp_val is None and pp_val is None:
+            return None
+        tp = int(tp_val) if tp_val is not None else 1
+        pp = int(pp_val) if pp_val is not None else 1
+        return tp * pp
 
     # --- Tuning config auto-mount ---
 

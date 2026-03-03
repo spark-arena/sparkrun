@@ -8,7 +8,7 @@ import click
 
 from ._common import (
     RECIPE_NAME,
-    _apply_tp_trimming,
+    _apply_node_trimming,
     _load_recipe,
     _resolve_hosts_or_exit,
     _setup_logging,
@@ -119,12 +119,23 @@ def _stop_all(hosts, hosts_file, cluster_name, config, dry_run):
 
 def _stop_recipe(recipe_name, hosts, hosts_file, cluster_name, config, tp_override, dry_run):
     """Stop containers for a specific recipe (original behaviour)."""
+    from sparkrun.core.bootstrap import init_sparkrun, get_runtime
+
     recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name)
 
     host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config)
 
-    # Apply TP-based host trimming to match what 'run' used for cluster_id
-    host_list = _apply_tp_trimming(host_list, recipe, tp_override=tp_override)
+    # Resolve runtime for accurate node trimming (accounts for PP, etc.)
+    v = init_sparkrun()
+    try:
+        runtime = get_runtime(recipe.runtime, v)
+    except ValueError:
+        runtime = None
+
+    # Apply runtime-aware host trimming to match what 'run' used for cluster_id
+    host_list = _apply_node_trimming(
+        host_list, recipe, tp_override=tp_override, runtime=runtime,
+    )
 
     from sparkrun.orchestration.primitives import build_ssh_kwargs, cleanup_containers, cleanup_containers_local
     from sparkrun.orchestration.docker import enumerate_cluster_containers
@@ -178,17 +189,19 @@ def logs_cmd(ctx, recipe_name, hosts, hosts_file, cluster_name, tp_override, tai
     # Resolve hosts
     host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v)
 
-    # Apply TP-based host trimming to match what 'run' used for cluster_id
-    host_list = _apply_tp_trimming(host_list, recipe, tp_override=tp_override)
-
-    cluster_id = generate_cluster_id(recipe, host_list)
-
     # Resolve runtime so we call the correct follow_logs implementation
     try:
         runtime = get_runtime(recipe.runtime, v)
     except ValueError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
+
+    # Apply runtime-aware host trimming to match what 'run' used for cluster_id
+    host_list = _apply_node_trimming(
+        host_list, recipe, tp_override=tp_override, runtime=runtime,
+    )
+
+    cluster_id = generate_cluster_id(recipe, host_list)
 
     runtime.follow_logs(
         hosts=host_list,

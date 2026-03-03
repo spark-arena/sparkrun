@@ -161,6 +161,62 @@ def _get_config_and_registry(config_path=None):
     return config, registry_mgr
 
 
+def _apply_node_trimming(
+        host_list: list[str],
+        recipe,
+        overrides: dict | None = None,
+        runtime=None,
+        tp_override: int | None = None,
+) -> list[str]:
+    """Trim host list to match the runtime's required node count.
+
+    When *runtime* is provided, delegates to
+    ``runtime.compute_required_nodes()`` which accounts for all
+    parallelism dimensions (TP, PP, etc.).  Falls back to TP-only
+    logic when no runtime is available (legacy path).
+
+    Used by run, stop, and logs to ensure they all derive the same
+    effective host list (and therefore the same cluster_id).
+
+    Args:
+        host_list: Resolved hosts.
+        recipe: Loaded recipe (used for defaults).
+        overrides: Optional CLI overrides (from --option).
+        runtime: Optional runtime plugin instance.
+        tp_override: Explicit --tp value (takes precedence).
+
+    Returns:
+        Possibly trimmed host list.
+    """
+    if len(host_list) <= 1:
+        return host_list
+
+    effective_overrides = dict(overrides or {})
+    if tp_override is not None:
+        effective_overrides["tensor_parallel"] = tp_override
+
+    if runtime is not None:
+        required = runtime.compute_required_nodes(recipe, effective_overrides)
+    else:
+        # Legacy fallback: TP-only
+        if tp_override is not None:
+            required = tp_override
+        else:
+            config_chain = recipe.build_config_chain(effective_overrides)
+            tp_val = config_chain.get("tensor_parallel")
+            required = int(tp_val) if tp_val is not None else None
+
+    if required is None or required >= len(host_list):
+        return host_list
+
+    trimmed = host_list[:required]
+    logger.info(
+        "Required nodes=%d < %d hosts; using first %d: %s",
+        required, len(host_list), required, ", ".join(trimmed),
+    )
+    return trimmed
+
+
 def _apply_tp_trimming(
         host_list: list[str],
         recipe,
@@ -169,8 +225,8 @@ def _apply_tp_trimming(
 ) -> list[str]:
     """Trim host list to match tensor_parallel if TP < host count.
 
-    Used by run, stop, and log to ensure they all derive the same
-    effective host list (and therefore the same cluster_id).
+    Backward-compatible alias for :func:`_apply_node_trimming` without
+    a runtime (TP-only legacy path).
 
     Args:
         host_list: Resolved hosts.
@@ -181,27 +237,9 @@ def _apply_tp_trimming(
     Returns:
         Possibly trimmed host list.
     """
-    if len(host_list) <= 1:
-        return host_list
-
-    if tp_override is not None:
-        effective_tp = tp_override
-    else:
-        config_chain = recipe.build_config_chain(overrides or {})
-        tp_val = config_chain.get("tensor_parallel")
-        if tp_val is None:
-            return host_list
-        effective_tp = int(tp_val)
-
-    if effective_tp >= len(host_list):
-        return host_list
-
-    trimmed = host_list[:effective_tp]
-    logger.info(
-        "tensor_parallel=%d < %d hosts; using first %d: %s",
-        effective_tp, len(host_list), effective_tp, ", ".join(trimmed),
+    return _apply_node_trimming(
+        host_list, recipe, overrides=overrides, tp_override=tp_override,
     )
-    return trimmed
 
 
 def _resolve_cluster_user(

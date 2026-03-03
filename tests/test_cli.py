@@ -762,8 +762,8 @@ class TestTensorParallelValidation:
         ])
 
         assert result.exit_code != 0
-        assert "tensor_parallel=4" in result.output
-        assert "only 3 provided" in result.output
+        assert "requires 4 nodes" in result.output
+        assert "only 3 hosts provided" in result.output
 
     def test_tp_less_than_hosts_trims(self, runner, reset_bootstrap):
         """tensor_parallel < number of hosts should trim host list."""
@@ -776,7 +776,7 @@ class TestTensorParallelValidation:
             ])
 
             assert result.exit_code == 0
-            assert "tensor_parallel=2" in result.output
+            assert "2 nodes required" in result.output
             assert "using 2 of 4 hosts" in result.output
             # Should have called with only 2 hosts
             mock_run.assert_called_once()
@@ -813,7 +813,7 @@ class TestTensorParallelValidation:
             ])
 
             assert result.exit_code == 0
-            assert "tensor_parallel=1" in result.output
+            assert "1 nodes required" in result.output
             assert "using 1 of 2 hosts" in result.output
             assert "solo" in result.output.lower()
             mock_run.assert_called_once()
@@ -831,7 +831,7 @@ class TestTensorParallelValidation:
 
             assert result.exit_code == 0
             # No trimming or error messages
-            assert "tensor_parallel=" not in result.output
+            assert "nodes required" not in result.output
             mock_run.assert_called_once()
 
     def test_solo_flag_truncates_multiple_hosts(self, runner, reset_bootstrap):
@@ -852,6 +852,71 @@ class TestTensorParallelValidation:
             # Must receive only 1 host despite 2 being provided
             assert len(call_kwargs["hosts"]) == 1
             assert call_kwargs["hosts"] == ["10.0.0.1"]
+
+
+class TestApplyNodeTrimming:
+    """Test _apply_node_trimming helper function."""
+
+    def _make_recipe(self, defaults=None):
+        from sparkrun.core.recipe import Recipe
+        data = {
+            "name": "test", "runtime": "sglang",
+            "model": "meta-llama/Llama-2-7b-hf",
+        }
+        if defaults:
+            data["defaults"] = defaults
+        return Recipe.from_dict(data)
+
+    def test_with_runtime_trims_to_tp_times_pp(self):
+        """Runtime-aware trimming: tp=2, pp=2 → 4 nodes."""
+        from sparkrun.cli._common import _apply_node_trimming
+        recipe = self._make_recipe(defaults={
+            "tensor_parallel": 2, "pipeline_parallel": 2,
+        })
+        runtime = SglangRuntime()
+        hosts = ["h1", "h2", "h3", "h4", "h5", "h6"]
+        result = _apply_node_trimming(hosts, recipe, runtime=runtime)
+        assert result == ["h1", "h2", "h3", "h4"]
+
+    def test_without_runtime_trims_to_tp(self):
+        """Legacy path (no runtime): trims to TP only."""
+        from sparkrun.cli._common import _apply_node_trimming
+        recipe = self._make_recipe(defaults={
+            "tensor_parallel": 2, "pipeline_parallel": 2,
+        })
+        hosts = ["h1", "h2", "h3", "h4"]
+        # Without runtime, only TP is considered
+        result = _apply_node_trimming(hosts, recipe)
+        assert result == ["h1", "h2"]
+
+    def test_tp_override_combined_with_runtime_pp(self):
+        """tp_override is injected into overrides for runtime computation."""
+        from sparkrun.cli._common import _apply_node_trimming
+        recipe = self._make_recipe(defaults={"pipeline_parallel": 2})
+        runtime = SglangRuntime()
+        hosts = ["h1", "h2", "h3", "h4", "h5", "h6"]
+        # tp_override=3, pp=2 → 6 nodes
+        result = _apply_node_trimming(
+            hosts, recipe, runtime=runtime, tp_override=3,
+        )
+        assert result == hosts  # 6 == 6, no trimming
+
+    def test_single_host_no_trimming(self):
+        """Single host is never trimmed."""
+        from sparkrun.cli._common import _apply_node_trimming
+        recipe = self._make_recipe(defaults={"tensor_parallel": 4})
+        runtime = SglangRuntime()
+        hosts = ["h1"]
+        result = _apply_node_trimming(hosts, recipe, runtime=runtime)
+        assert result == ["h1"]
+
+    def test_backward_compat_alias(self):
+        """_apply_tp_trimming still works as backward-compat alias."""
+        from sparkrun.cli._common import _apply_tp_trimming
+        recipe = self._make_recipe(defaults={"tensor_parallel": 2})
+        hosts = ["h1", "h2", "h3", "h4"]
+        result = _apply_tp_trimming(hosts, recipe)
+        assert result == ["h1", "h2"]
 
 
 class TestOptionOverrides:

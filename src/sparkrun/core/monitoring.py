@@ -83,6 +83,7 @@ class HostMonitorState:
     latest: MonitorSample | None = None
     error: str | None = None
     process: subprocess.Popen | None = field(default=None, repr=False)
+    last_updated: float | None = field(default=None, repr=False)
 
 
 def parse_monitor_line(line: str) -> MonitorSample | None:
@@ -118,6 +119,7 @@ class ClusterMonitor:
         self.interval = interval
         self.states: dict[str, HostMonitorState] = {h: HostMonitorState() for h in hosts}
         self._started = False
+        self._script: str = ""
 
     def start(self) -> None:
         """Launch SSH subprocesses and reader threads for every host."""
@@ -125,41 +127,50 @@ class ClusterMonitor:
             return
 
         from sparkrun.scripts import read_script
-        from sparkrun.orchestration.ssh import build_ssh_cmd
 
-        script = read_script("host_monitor.sh")
+        self._script = read_script("host_monitor.sh")
 
         for host in self.hosts:
-            cmd = build_ssh_cmd(
-                host,
-                ssh_user=self.ssh_kwargs.get("ssh_user"),
-                ssh_key=self.ssh_kwargs.get("ssh_key"),
-                ssh_options=self.ssh_kwargs.get("ssh_options"),
-            )
-            cmd.extend(["bash", "-s", "--", str(self.interval)])
-
-            try:
-                proc = subprocess.Popen(
-                    cmd,
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                )
-                proc.stdin.write(script)
-                proc.stdin.close()
-
-                self.states[host].process = proc
-
-                thread = threading.Thread(
-                    target=self._reader, args=(host, proc), daemon=True,
-                )
-                thread.start()
-            except OSError as e:
-                self.states[host].error = "Failed to start SSH: %s" % e
-                logger.warning("Failed to start monitor on %s: %s", host, e)
+            self._start_host(host)
 
         self._started = True
+
+        # Background watchdog detects stale connections and reconnects.
+        watchdog = threading.Thread(target=self._watchdog, daemon=True)
+        watchdog.start()
+
+    def _start_host(self, host: str) -> None:
+        """Launch an SSH subprocess and reader thread for a single *host*."""
+        from sparkrun.orchestration.ssh import build_ssh_cmd
+
+        cmd = build_ssh_cmd(
+            host,
+            ssh_user=self.ssh_kwargs.get("ssh_user"),
+            ssh_key=self.ssh_kwargs.get("ssh_key"),
+            ssh_options=self.ssh_kwargs.get("ssh_options"),
+        )
+        cmd.extend(["bash", "-s", "--", str(self.interval)])
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            proc.stdin.write(self._script)
+            proc.stdin.close()
+
+            self.states[host].process = proc
+
+            thread = threading.Thread(
+                target=self._reader, args=(host, proc), daemon=True,
+            )
+            thread.start()
+        except OSError as e:
+            self.states[host].error = "Failed to start SSH: %s" % e
+            logger.warning("Failed to start monitor on %s: %s", host, e)
 
     def stop(self) -> None:
         """Terminate all SSH subprocesses."""
@@ -189,6 +200,7 @@ class ClusterMonitor:
                 sample = parse_monitor_line(line)
                 if sample is not None:
                     self.states[host].latest = sample
+                    self.states[host].last_updated = time.monotonic()
                     self.states[host].error = None
         except Exception as e:
             logger.debug("Reader thread for %s exited: %s", host, e)
@@ -202,6 +214,53 @@ class ClusterMonitor:
                     pass
                 if self.states[host].latest is None:
                     self.states[host].error = stderr_text or "SSH connection failed (rc=%d)" % rc
+
+    # -- staleness detection --------------------------------------------------
+
+    def _watchdog(self) -> None:
+        """Periodically check for stale host data and reconnect."""
+        stale_threshold = self.interval * 5
+        while self._started:
+            time.sleep(self.interval)
+            if not self._started:
+                break
+            now = time.monotonic()
+            for host in self.hosts:
+                state = self.states[host]
+                if state.last_updated is None:
+                    continue  # still connecting or already in error
+                age = now - state.last_updated
+                if age > stale_threshold:
+                    logger.warning(
+                        "Host %s data is %.1fs stale (threshold %.1fs), reconnecting",
+                        host, age, stale_threshold,
+                    )
+                    self._reconnect_host(host)
+
+    def _reconnect_host(self, host: str) -> None:
+        """Kill the stale SSH process for *host* and start a fresh one."""
+        state = self.states[host]
+
+        # Terminate the old process so its reader thread exits.
+        if state.process is not None:
+            try:
+                state.process.terminate()
+            except OSError:
+                pass
+            try:
+                state.process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                state.process.kill()
+                try:
+                    state.process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    pass
+
+        state.error = "stale data — reconnecting"
+        # Reset timestamp so the watchdog doesn't re-trigger immediately.
+        state.last_updated = time.monotonic()
+
+        self._start_host(host)
 
 
 def stream_cluster_monitor(

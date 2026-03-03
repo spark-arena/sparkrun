@@ -224,6 +224,27 @@ class RuntimePlugin(Plugin):
             issues.append("[%s] model is required" % self.runtime_name)
         return issues
 
+    def compute_required_nodes(self, recipe: Recipe, overrides: dict[str, Any] | None = None) -> int | None:
+        """Compute the number of nodes required to run this recipe.
+
+        The base implementation reads ``tensor_parallel`` from the
+        recipe config chain.  Subclasses override to account for
+        additional parallelism dimensions (e.g. pipeline parallelism).
+
+        Args:
+            recipe: The loaded recipe.
+            overrides: CLI override values (merged into config chain).
+
+        Returns:
+            Required node count, or ``None`` if no parallelism config
+            is set (meaning "use all provided hosts, no trimming").
+        """
+        config = recipe.build_config_chain(overrides or {})
+        tp_val = config.get("tensor_parallel")
+        if tp_val is None:
+            return None
+        return int(tp_val)
+
     @staticmethod
     def build_flags_from_map(
             config,
