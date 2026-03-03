@@ -62,6 +62,11 @@ class LlamaCppRuntime(RuntimePlugin):
     **Cluster mode** (experimental): Multi-node tensor-parallel inference
     via llama.cpp RPC.  Worker nodes run ``rpc-server`` and the head node
     runs ``llama-server --rpc worker1:port,worker2:port,...``.
+
+    **Parallelism mapping**: In llama.cpp ``--split-mode`` selects the
+    strategy.  ``--tp`` (tensor parallel) maps to ``--split-mode row``
+    and ``--pp`` (pipeline parallel) maps to ``--split-mode layer``.
+    They cannot be used simultaneously.
     """
 
     runtime_name = "llama-cpp"
@@ -70,6 +75,72 @@ class LlamaCppRuntime(RuntimePlugin):
     def cluster_strategy(self) -> str:
         """llama.cpp uses native RPC-based distribution, not Ray."""
         return "native"
+
+    # --- Parallelism helpers ---
+
+    @staticmethod
+    def _resolve_split_mode(config) -> str | None:
+        """Derive ``--split-mode`` from tensor/pipeline parallelism settings.
+
+        In llama.cpp ``--split-mode row`` ≈ tensor parallelism and
+        ``--split-mode layer`` ≈ pipeline parallelism.  They are
+        mutually exclusive.
+
+        Returns:
+            ``"row"`` when tensor_parallel is set, ``"layer"`` when
+            pipeline_parallel is set, or ``None`` to fall through to
+            recipe defaults.
+
+        Raises:
+            ValueError: If both tensor_parallel and pipeline_parallel
+                are present in the config.
+        """
+        tp = config.get("tensor_parallel")
+        pp = config.get("pipeline_parallel")
+        if tp is not None and pp is not None:
+            raise ValueError(
+                "llama.cpp does not support tensor_parallel and pipeline_parallel "
+                "simultaneously; use --tp for row splitting or --pp for layer "
+                "splitting, not both"
+            )
+        if tp is not None:
+            return "row"
+        if pp is not None:
+            return "layer"
+        return None
+
+    def compute_required_nodes(self, recipe, overrides=None):
+        """Compute required nodes from TP or PP (mutually exclusive).
+
+        In llama.cpp, ``--split-mode row`` (TP) and ``--split-mode layer``
+        (PP) both distribute across N nodes but cannot be combined.
+
+        Returns ``None`` when neither is configured.
+
+        Raises:
+            ValueError: If both tensor_parallel and pipeline_parallel
+                are set.
+        """
+        config = recipe.build_config_chain(overrides or {})
+        # _resolve_split_mode validates mutual exclusivity
+        self._resolve_split_mode(config)
+
+        tp = config.get("tensor_parallel")
+        pp = config.get("pipeline_parallel")
+        if tp is not None:
+            return int(tp)
+        if pp is not None:
+            return int(pp)
+        return None
+
+    @staticmethod
+    def _inject_split_mode_in_command(command: str, split_mode: str) -> str:
+        """Strip existing ``--split-mode`` from *command* and append the correct one."""
+        import re
+        command = re.sub(r"--split-mode\s+\S+", "", command).strip()
+        return "%s --split-mode %s" % (command, split_mode)
+
+    # --- Command generation ---
 
     def generate_command(self, recipe: Recipe, overrides: dict[str, Any],
                          is_cluster: bool, num_nodes: int = 1,
@@ -83,8 +154,12 @@ class LlamaCppRuntime(RuntimePlugin):
         still rendered normally (``{model}`` resolves to the cache path),
         but ``-hf`` is switched to ``-m`` since the model is now a local
         file rather than a HuggingFace download spec.
+
+        TP/PP parallelism settings are resolved into ``--split-mode``
+        automatically (row for TP, layer for PP).
         """
         config = recipe.build_config_chain(overrides)
+        split_mode = self._resolve_split_mode(config)
         gguf_path = config.get("_gguf_model_path")
 
         # If recipe has an explicit command template, render it
@@ -95,6 +170,9 @@ class LlamaCppRuntime(RuntimePlugin):
                 # but -hf expects a HF repo spec, not a local file.
                 # Switch to -m (model file path) instead.
                 rendered = rendered.replace("-hf ", "-m ", 1)
+            # Override --split-mode when TP/PP forces a specific strategy
+            if split_mode is not None:
+                rendered = self._inject_split_mode_in_command(rendered, split_mode)
             if skip_keys:
                 all_flags = {**_LLAMA_CPP_FLAG_MAP, **_LLAMA_CPP_BOOL_FLAGS}
                 rendered = self.strip_flags_from_command(
@@ -104,15 +182,18 @@ class LlamaCppRuntime(RuntimePlugin):
             return rendered
 
         # Otherwise, build command from structured defaults
-        return self._build_command(recipe, config, skip_keys=skip_keys)
+        return self._build_command(recipe, config, skip_keys=skip_keys,
+                                   split_mode_override=split_mode)
 
     def _build_command(self, recipe: Recipe, config,
-                       skip_keys: set[str] | frozenset[str] = frozenset()) -> str:
+                       skip_keys: set[str] | frozenset[str] = frozenset(),
+                       split_mode_override: str | None = None) -> str:
         """Build the llama-server command from structured config."""
         from vpd.legacy.yaml_dict import vpd_chain
 
-        # Layer runtime defaults at lowest priority so recipe/CLI can override
-        config = vpd_chain(config, _LLAMA_CPP_DEFAULTS)
+        # TP/PP → split_mode takes highest priority, then config, then defaults
+        parallelism_layer = {"split_mode": split_mode_override} if split_mode_override else {}
+        config = vpd_chain(parallelism_layer, config, _LLAMA_CPP_DEFAULTS)
 
         model = recipe.model
 
@@ -157,7 +238,14 @@ class LlamaCppRuntime(RuntimePlugin):
 
     def validate_recipe(self, recipe: Recipe) -> list[str]:
         """Validate llama.cpp-specific recipe fields."""
-        return super().validate_recipe(recipe)
+        issues = super().validate_recipe(recipe)
+        defaults = recipe.defaults or {}
+        if defaults.get("tensor_parallel") and defaults.get("pipeline_parallel"):
+            issues.append(
+                "[llama-cpp] tensor_parallel and pipeline_parallel are mutually "
+                "exclusive; use one for --split-mode row (TP) or layer (PP), not both"
+            )
+        return issues
 
     # --- Log following hooks ---
 

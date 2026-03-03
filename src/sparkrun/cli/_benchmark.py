@@ -220,7 +220,11 @@ def _run_benchmark(
 
     # Node count validation / trimming (accounts for TP * PP, etc.)
     if len(host_list) > 1 and not solo:
-        required = runtime.compute_required_nodes(recipe, overrides)
+        try:
+            required = runtime.compute_required_nodes(recipe, overrides)
+        except ValueError as e:
+            click.echo("Error: %s" % e, err=True)
+            sys.exit(1)
         if required is not None:
             if required > len(host_list):
                 click.echo(

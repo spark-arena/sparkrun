@@ -1545,3 +1545,192 @@ def test_sglang_pp_size_override_in_command():
     cmd = runtime.generate_command(recipe, {"pipeline_parallel": 3}, is_cluster=False)
     assert "--pp-size 3" in cmd
     assert "--tp-size 2" in cmd
+
+
+# --- llama.cpp TP/PP split-mode tests ---
+
+class TestLlamaCppComputeRequiredNodes:
+    """Test LlamaCppRuntime.compute_required_nodes() — TP/PP are mutually exclusive."""
+
+    def _make_recipe(self, defaults=None):
+        data = {
+            "name": "test", "runtime": "llama-cpp",
+            "model": "Qwen/Qwen3-1.7B-GGUF:Q4_K_M",
+        }
+        if defaults:
+            data["defaults"] = defaults
+        return Recipe.from_dict(data)
+
+    def test_tp_returns_tp(self):
+        """TP=4 → 4 nodes (split_mode=row)."""
+        recipe = self._make_recipe(defaults={"tensor_parallel": 4})
+        runtime = LlamaCppRuntime()
+        assert runtime.compute_required_nodes(recipe) == 4
+
+    def test_pp_returns_pp(self):
+        """PP=3 → 3 nodes (split_mode=layer)."""
+        recipe = self._make_recipe(defaults={"pipeline_parallel": 3})
+        runtime = LlamaCppRuntime()
+        assert runtime.compute_required_nodes(recipe) == 3
+
+    def test_neither_returns_none(self):
+        """No TP/PP → None."""
+        recipe = self._make_recipe()
+        runtime = LlamaCppRuntime()
+        assert runtime.compute_required_nodes(recipe) is None
+
+    def test_both_raises_value_error(self):
+        """TP + PP simultaneously → ValueError."""
+        recipe = self._make_recipe(defaults={
+            "tensor_parallel": 2, "pipeline_parallel": 2,
+        })
+        runtime = LlamaCppRuntime()
+        with pytest.raises(ValueError, match="simultaneously"):
+            runtime.compute_required_nodes(recipe)
+
+    def test_overrides_tp(self):
+        """CLI --tp override."""
+        recipe = self._make_recipe()
+        runtime = LlamaCppRuntime()
+        assert runtime.compute_required_nodes(recipe, {"tensor_parallel": 2}) == 2
+
+    def test_overrides_pp(self):
+        """CLI --pp override."""
+        recipe = self._make_recipe()
+        runtime = LlamaCppRuntime()
+        assert runtime.compute_required_nodes(recipe, {"pipeline_parallel": 4}) == 4
+
+    def test_override_conflicts_with_default_raises(self):
+        """Recipe has TP, CLI passes PP → conflict → ValueError."""
+        recipe = self._make_recipe(defaults={"tensor_parallel": 2})
+        runtime = LlamaCppRuntime()
+        with pytest.raises(ValueError, match="simultaneously"):
+            runtime.compute_required_nodes(recipe, {"pipeline_parallel": 2})
+
+
+class TestLlamaCppSplitModeCommand:
+    """Test that TP/PP correctly inject --split-mode in llama-server commands."""
+
+    def _make_recipe(self, defaults=None, command=None):
+        data = {
+            "name": "test", "runtime": "llama-cpp",
+            "model": "Qwen/Qwen3-1.7B-GGUF:Q4_K_M",
+        }
+        if defaults:
+            data["defaults"] = defaults
+        if command:
+            data["command"] = command
+        return Recipe.from_dict(data)
+
+    def test_tp_generates_split_mode_row(self):
+        """--tp → --split-mode row in generated command."""
+        recipe = self._make_recipe(defaults={"tensor_parallel": 2, "port": 8080})
+        runtime = LlamaCppRuntime()
+        cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+        assert "--split-mode row" in cmd
+        assert "--split-mode layer" not in cmd
+
+    def test_pp_generates_split_mode_layer(self):
+        """--pp → --split-mode layer in generated command."""
+        recipe = self._make_recipe(defaults={"pipeline_parallel": 4, "port": 8080})
+        runtime = LlamaCppRuntime()
+        cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+        assert "--split-mode layer" in cmd
+        assert "--split-mode row" not in cmd
+
+    def test_neither_uses_default_layer(self):
+        """No TP/PP → default split_mode=layer from _LLAMA_CPP_DEFAULTS."""
+        recipe = self._make_recipe(defaults={"port": 8080})
+        runtime = LlamaCppRuntime()
+        cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+        assert "--split-mode layer" in cmd
+
+    def test_tp_override_generates_row(self):
+        """CLI override tensor_parallel → --split-mode row."""
+        recipe = self._make_recipe(defaults={"port": 8080})
+        runtime = LlamaCppRuntime()
+        cmd = runtime.generate_command(recipe, {"tensor_parallel": 2}, is_cluster=False)
+        assert "--split-mode row" in cmd
+
+    def test_pp_override_generates_layer(self):
+        """CLI override pipeline_parallel → --split-mode layer."""
+        recipe = self._make_recipe(defaults={"port": 8080})
+        runtime = LlamaCppRuntime()
+        cmd = runtime.generate_command(recipe, {"pipeline_parallel": 2}, is_cluster=False)
+        assert "--split-mode layer" in cmd
+
+    def test_tp_overrides_recipe_split_mode(self):
+        """TP takes precedence over recipe split_mode=layer."""
+        recipe = self._make_recipe(defaults={
+            "tensor_parallel": 2, "split_mode": "layer",
+        })
+        runtime = LlamaCppRuntime()
+        cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+        assert "--split-mode row" in cmd
+        assert "--split-mode layer" not in cmd
+
+    def test_both_tp_pp_raises_in_generate(self):
+        """Both TP and PP raises ValueError in generate_command too."""
+        recipe = self._make_recipe(defaults={
+            "tensor_parallel": 2, "pipeline_parallel": 2,
+        })
+        runtime = LlamaCppRuntime()
+        with pytest.raises(ValueError, match="simultaneously"):
+            runtime.generate_command(recipe, {}, is_cluster=False)
+
+    def test_template_split_mode_overridden_by_tp(self):
+        """Command template with --split-mode layer is overridden by TP → row."""
+        recipe = self._make_recipe(
+            defaults={"tensor_parallel": 2},
+            command="llama-server -hf {model} --split-mode layer --port 8080",
+        )
+        runtime = LlamaCppRuntime()
+        cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+        assert "--split-mode row" in cmd
+        assert "--split-mode layer" not in cmd
+
+    def test_template_split_mode_overridden_by_pp(self):
+        """Command template with --split-mode row is overridden by PP → layer."""
+        recipe = self._make_recipe(
+            defaults={"pipeline_parallel": 4},
+            command="llama-server -hf {model} --split-mode row --port 8080",
+        )
+        runtime = LlamaCppRuntime()
+        cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+        assert "--split-mode layer" in cmd
+        assert "--split-mode row" not in cmd
+
+    def test_template_no_tp_pp_preserves_existing_split_mode(self):
+        """Template with --split-mode is preserved when no TP/PP set."""
+        recipe = self._make_recipe(
+            command="llama-server -hf {model} --split-mode row --port 8080",
+        )
+        runtime = LlamaCppRuntime()
+        cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+        assert "--split-mode row" in cmd
+
+
+class TestLlamaCppValidateRecipe:
+    """Test validate_recipe catches TP+PP conflict in recipe defaults."""
+
+    def test_both_tp_pp_in_defaults_warns(self):
+        recipe_data = {
+            "name": "test", "runtime": "llama-cpp",
+            "model": "Qwen/Qwen3-1.7B-GGUF:Q4_K_M",
+            "defaults": {"tensor_parallel": 2, "pipeline_parallel": 2},
+        }
+        recipe = Recipe.from_dict(recipe_data)
+        runtime = LlamaCppRuntime()
+        issues = runtime.validate_recipe(recipe)
+        assert any("mutually exclusive" in i for i in issues)
+
+    def test_tp_only_no_warning(self):
+        recipe_data = {
+            "name": "test", "runtime": "llama-cpp",
+            "model": "Qwen/Qwen3-1.7B-GGUF:Q4_K_M",
+            "defaults": {"tensor_parallel": 2},
+        }
+        recipe = Recipe.from_dict(recipe_data)
+        runtime = LlamaCppRuntime()
+        issues = runtime.validate_recipe(recipe)
+        assert not any("mutually exclusive" in i for i in issues)

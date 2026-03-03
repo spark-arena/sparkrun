@@ -133,9 +133,13 @@ def _stop_recipe(recipe_name, hosts, hosts_file, cluster_name, config, tp_overri
         runtime = None
 
     # Apply runtime-aware host trimming to match what 'run' used for cluster_id
-    host_list = _apply_node_trimming(
-        host_list, recipe, tp_override=tp_override, runtime=runtime,
-    )
+    try:
+        host_list = _apply_node_trimming(
+            host_list, recipe, tp_override=tp_override, runtime=runtime,
+        )
+    except ValueError as e:
+        click.echo("Error: %s" % e, err=True)
+        sys.exit(1)
 
     from sparkrun.orchestration.primitives import build_ssh_kwargs, cleanup_containers, cleanup_containers_local
     from sparkrun.orchestration.docker import enumerate_cluster_containers
@@ -197,9 +201,13 @@ def logs_cmd(ctx, recipe_name, hosts, hosts_file, cluster_name, tp_override, tai
         sys.exit(1)
 
     # Apply runtime-aware host trimming to match what 'run' used for cluster_id
-    host_list = _apply_node_trimming(
-        host_list, recipe, tp_override=tp_override, runtime=runtime,
-    )
+    try:
+        host_list = _apply_node_trimming(
+            host_list, recipe, tp_override=tp_override, runtime=runtime,
+        )
+    except ValueError as e:
+        click.echo("Error: %s" % e, err=True)
+        sys.exit(1)
 
     cluster_id = generate_cluster_id(recipe, host_list)
 
