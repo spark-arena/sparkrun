@@ -685,8 +685,9 @@ def run_rsync(
     """Rsync a local path to a remote host.
 
     Runs ``rsync {rsync_options} -e "ssh {opts}" source user@host:dest``.
-    Default *rsync_options* are ``["-az", "--partial", "--links"]`` which
-    preserve symlinks (important for HuggingFace cache layout).
+    Default *rsync_options* are ``["-az", "--mkpath", "--partial", "--links"]``
+    which create the destination path and preserve symlinks (important for
+    HuggingFace cache layout).
 
     Args:
         source_path: Local source directory (trailing ``/`` is appended if missing).
@@ -696,7 +697,7 @@ def run_rsync(
         ssh_key: Optional path to SSH private key.
         ssh_options: Additional SSH options.
         connect_timeout: SSH connection timeout in seconds.
-        rsync_options: Override rsync flags (default ``["-az", "--partial", "--links"]``).
+        rsync_options: Override rsync flags (default ``["-az", "--mkpath", "--partial", "--links"]``).
         timeout: Overall execution timeout in seconds.
         dry_run: If True, log the command but don't execute.
 
@@ -704,7 +705,7 @@ def run_rsync(
         RemoteResult with returncode, stdout, stderr.
     """
     if rsync_options is None:
-        rsync_options = ["-az", "--partial", "--links"]
+        rsync_options = ["-az", "--mkpath", "--partial", "--links"]
 
     ssh_opts = build_ssh_opts_string(
         ssh_user=ssh_user, ssh_key=ssh_key,

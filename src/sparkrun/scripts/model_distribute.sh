@@ -19,7 +19,7 @@ for TARGET in $TARGETS; do
         DEST="$TARGET:$MODEL_PATH/"
     fi
     echo "  Syncing $MODEL_PATH -> $TARGET ..."
-    if rsync -az --partial --links -e "ssh $SSH_OPTS" "$MODEL_PATH/" "$DEST"; then
+    if rsync -az --mkpath --partial --links -e "ssh $SSH_OPTS" "$MODEL_PATH/" "$DEST"; then
         echo "  OK: $TARGET"
     else
         echo "  FAILED: $TARGET" >&2
