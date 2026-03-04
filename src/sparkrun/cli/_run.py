@@ -17,6 +17,7 @@ from ._common import (
     _parse_options,
     _resolve_cluster_cache_dir,
     _resolve_hosts_or_exit,
+    _resolve_transfer_mode,
     _setup_logging,
     _simplify_recipe_ref,
     dry_run_option,
@@ -47,6 +48,9 @@ logger = logging.getLogger(__name__)
 @click.option("--foreground", is_flag=True, help="Run in foreground (don't detach)")
 @click.option("--no-follow", is_flag=True, help="Don't follow container logs after launch")
 @click.option("--no-sync-tuning", is_flag=True, help="Skip syncing tuning configs from registries")
+@click.option("--transfer-mode", default=None,
+              type=click.Choice(["auto", "local", "push", "delegated"], case_sensitive=False),
+              help="Resource transfer mode (overrides cluster setting)")
 # @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.option("--option", "-o", "options", multiple=True, help="Override any recipe default: -o key=value (repeatable)")
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
@@ -55,7 +59,8 @@ def run(
         ctx, recipe_name, hosts, hosts_file, cluster_name, solo, port, tensor_parallel,
         pipeline_parallel, gpu_mem, served_model_name, max_model_len, image, cache_dir,
         ray_port, init_port, dashboard, dashboard_port,
-        dry_run, foreground, no_follow, no_sync_tuning, options, extra_args, config_path=None, setup=True,
+        dry_run, foreground, no_follow, no_sync_tuning, transfer_mode,
+        options, extra_args, config_path=None, setup=True,
 ):
     """Run an inference recipe.
 
@@ -217,6 +222,9 @@ def run(
     ib_ip_map: dict[str, str] = {}
     cluster_cache_dir = _resolve_cluster_cache_dir(cluster_name, hosts, hosts_file, cluster_mgr)
     effective_cache_dir = cache_dir or cluster_cache_dir or str(config.hf_cache_dir)
+    # Resolve transfer mode: CLI --transfer-mode > cluster setting > "auto"
+    cluster_transfer_mode = _resolve_transfer_mode(cluster_name, hosts, hosts_file, cluster_mgr)
+    effective_transfer_mode = transfer_mode or cluster_transfer_mode or "auto"
     if not runtime.is_delegating_runtime():
         from sparkrun.orchestration.distribution import distribute_resources
         nccl_env, ib_ip_map, mgmt_ip_map = distribute_resources(
@@ -225,6 +233,7 @@ def run(
             config, dry_run,
             model_revision=recipe.model_revision,
             recipe_name=recipe.name,
+            transfer_mode=effective_transfer_mode,
         )
         # Re-save job metadata with IP maps from IB detection
         if not dry_run and (ib_ip_map or mgmt_ip_map):
@@ -258,6 +267,7 @@ def run(
                 tuning_failed = distribute_tuning_to_hosts(
                     recipe.runtime, host_list,
                     dry_run=dry_run,
+                    transfer_mode=effective_transfer_mode,
                     **build_ssh_kwargs(config),
                 )
                 if tuning_failed:
@@ -300,6 +310,8 @@ def run(
         click.echo("Mode:      solo")
     else:
         click.echo(f"Mode:      cluster ({len(host_list)} nodes)")
+    if effective_transfer_mode not in ("auto", "local"):
+        click.echo(f"Transfer:  {effective_transfer_mode}")
 
     _display_vram_estimate(recipe, cli_overrides=overrides, auto_detect=True, cache_dir=effective_cache_dir)
 

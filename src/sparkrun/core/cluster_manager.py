@@ -15,6 +15,9 @@ logger = logging.getLogger(__name__)
 # Name validation pattern: start with alphanumeric, contain alphanumeric/underscore/hyphen
 CLUSTER_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$")
 
+# Valid transfer modes for resource distribution
+VALID_TRANSFER_MODES = ("auto", "local", "push", "delegated")
+
 
 class ClusterError(Exception):
     """Raised when cluster operations fail."""
@@ -35,6 +38,7 @@ class ClusterDefinition:
     description: str = ""
     user: str | None = None
     cache_dir: str | None = None
+    transfer_mode: str | None = None
 
 
 @dataclass
@@ -97,7 +101,8 @@ class ClusterManager:
         return self.clusters_dir / f"{name}.yaml"
 
     def create(self, name: str, hosts: list[str], description: str = "",
-               user: str | None = None, cache_dir: str | None = None) -> None:
+               user: str | None = None, cache_dir: str | None = None,
+               transfer_mode: str | None = None) -> None:
         """Create a new named cluster.
 
         Args:
@@ -106,18 +111,26 @@ class ClusterManager:
             description: Optional cluster description
             user: Optional SSH username for this cluster
             cache_dir: Optional HuggingFace cache directory for this cluster
+            transfer_mode: Optional transfer mode (local, push, delegated)
 
         Raises:
             ClusterError: If cluster already exists or name is invalid
         """
         self._validate_name(name)
 
+        if transfer_mode is not None and transfer_mode not in VALID_TRANSFER_MODES:
+            raise ClusterError(
+                "Invalid transfer_mode '%s': must be one of %s"
+                % (transfer_mode, ", ".join(VALID_TRANSFER_MODES))
+            )
+
         cluster_path = self._cluster_path(name)
         if cluster_path.exists():
             raise ClusterError(f"Cluster '{name}' already exists")
 
         cluster_def = ClusterDefinition(name=name, hosts=hosts, description=description,
-                                        user=user, cache_dir=cache_dir)
+                                        user=user, cache_dir=cache_dir,
+                                        transfer_mode=transfer_mode)
         self._write_cluster(cluster_def)
         logger.info("Created cluster '%s' with %d hosts", name, len(hosts))
 
@@ -146,6 +159,7 @@ class ClusterManager:
             description: str | None = None,
             user: str | None = _UNSET,
             cache_dir: str | None = _UNSET,
+            transfer_mode: str | None = _UNSET,
     ) -> None:
         """Update existing cluster definition.
 
@@ -155,6 +169,7 @@ class ClusterManager:
             description: New description (if provided)
             user: SSH username (if provided; pass ``None`` explicitly to clear)
             cache_dir: HuggingFace cache directory (if provided; pass ``None`` explicitly to clear)
+            transfer_mode: Transfer mode (if provided; pass ``None`` explicitly to clear)
 
         Raises:
             ClusterError: If cluster does not exist
@@ -178,6 +193,15 @@ class ClusterManager:
         if cache_dir is not _UNSET:
             cluster_def.cache_dir = cache_dir
             logger.debug("Updated cache_dir for cluster '%s'", name)
+
+        if transfer_mode is not _UNSET:
+            if transfer_mode is not None and transfer_mode not in VALID_TRANSFER_MODES:
+                raise ClusterError(
+                    "Invalid transfer_mode '%s': must be one of %s"
+                    % (transfer_mode, ", ".join(VALID_TRANSFER_MODES))
+                )
+            cluster_def.transfer_mode = transfer_mode
+            logger.debug("Updated transfer_mode for cluster '%s'", name)
 
         # Write back
         self._write_cluster(cluster_def)
@@ -282,6 +306,8 @@ class ClusterManager:
             data["user"] = cluster_def.user
         if cluster_def.cache_dir is not None:
             data["cache_dir"] = cluster_def.cache_dir
+        if cluster_def.transfer_mode is not None:
+            data["transfer_mode"] = cluster_def.transfer_mode
 
         with cluster_path.open("w") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
@@ -302,6 +328,7 @@ class ClusterManager:
             description=data.get("description", ""),
             user=data.get("user"),
             cache_dir=data.get("cache_dir"),
+            transfer_mode=data.get("transfer_mode"),
         )
 
 

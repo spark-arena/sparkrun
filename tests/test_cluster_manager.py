@@ -269,6 +269,107 @@ def test_update_cluster_clear_cache_dir(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
+# transfer_mode field tests
+# ---------------------------------------------------------------------------
+
+
+def test_create_cluster_with_transfer_mode(tmp_path: Path):
+    """Create a cluster with transfer_mode and verify persistence."""
+    manager = ClusterManager(tmp_path)
+    manager.create("remote-lab", ["host1", "host2"], transfer_mode="push")
+
+    cluster = manager.get("remote-lab")
+    assert cluster.transfer_mode == "push"
+    assert cluster.hosts == ["host1", "host2"]
+
+
+def test_create_cluster_with_delegated_mode(tmp_path: Path):
+    """Create a cluster with delegated transfer_mode."""
+    manager = ClusterManager(tmp_path)
+    manager.create("delegated-lab", ["host1"], transfer_mode="delegated")
+
+    cluster = manager.get("delegated-lab")
+    assert cluster.transfer_mode == "delegated"
+
+
+def test_create_cluster_without_transfer_mode(tmp_path: Path):
+    """Cluster created without transfer_mode defaults to None."""
+    manager = ClusterManager(tmp_path)
+    manager.create("basic", ["host1"])
+
+    cluster = manager.get("basic")
+    assert cluster.transfer_mode is None
+
+
+def test_create_cluster_invalid_transfer_mode(tmp_path: Path):
+    """Invalid transfer_mode raises ClusterError."""
+    manager = ClusterManager(tmp_path)
+
+    with pytest.raises(ClusterError):
+        manager.create("bad", ["host1"], transfer_mode="invalid")
+
+
+def test_update_cluster_transfer_mode(tmp_path: Path):
+    """Update transfer_mode without affecting other fields."""
+    manager = ClusterManager(tmp_path)
+    manager.create("test", ["host1"], description="My cluster", user="admin")
+
+    manager.update("test", transfer_mode="push")
+
+    cluster = manager.get("test")
+    assert cluster.transfer_mode == "push"
+    assert cluster.hosts == ["host1"]
+    assert cluster.description == "My cluster"
+    assert cluster.user == "admin"
+
+
+def test_update_cluster_clear_transfer_mode(tmp_path: Path):
+    """Pass transfer_mode=None explicitly to clear it."""
+    manager = ClusterManager(tmp_path)
+    manager.create("test", ["host1"], transfer_mode="push")
+
+    manager.update("test", transfer_mode=None)
+
+    cluster = manager.get("test")
+    assert cluster.transfer_mode is None
+
+
+def test_update_cluster_invalid_transfer_mode(tmp_path: Path):
+    """Updating with invalid transfer_mode raises ClusterError."""
+    manager = ClusterManager(tmp_path)
+    manager.create("test", ["host1"])
+
+    with pytest.raises(ClusterError):
+        manager.update("test", transfer_mode="bogus")
+
+
+def test_create_cluster_with_all_fields(tmp_path: Path):
+    """Create a cluster with all optional fields including transfer_mode."""
+    manager = ClusterManager(tmp_path)
+    manager.create(
+        "full", ["host1", "host2"],
+        description="Full cluster",
+        user="admin",
+        cache_dir="/mnt/models",
+        transfer_mode="delegated",
+    )
+
+    cluster = manager.get("full")
+    assert cluster.name == "full"
+    assert cluster.hosts == ["host1", "host2"]
+    assert cluster.description == "Full cluster"
+    assert cluster.user == "admin"
+    assert cluster.cache_dir == "/mnt/models"
+    assert cluster.transfer_mode == "delegated"
+
+
+def test_valid_transfer_modes_constant():
+    """VALID_TRANSFER_MODES contains the expected values."""
+    from sparkrun.core.cluster_manager import VALID_TRANSFER_MODES
+    assert VALID_TRANSFER_MODES == ("auto", "local", "push", "delegated")
+
+
+# ---------------------------------------------------------------------------
 # Monitoring parse tests
 # ---------------------------------------------------------------------------
 

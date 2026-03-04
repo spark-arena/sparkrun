@@ -265,6 +265,35 @@ def _resolve_cluster_user(
     return None
 
 
+def _resolve_transfer_mode(
+        cluster_name: str | None,
+        hosts: str | None,
+        hosts_file: str | None,
+        cluster_mgr,
+) -> str | None:
+    """Resolve transfer_mode from a cluster definition, if applicable.
+
+    Returns the cluster's configured transfer_mode, or None if no cluster is
+    resolved or the cluster has no transfer_mode set.
+
+    Mirrors the priority chain of core.hosts.resolve_hosts(): if hosts or
+    hosts_file is provided, the cluster is not used, so neither should
+    transfer_mode.
+    """
+    if hosts or hosts_file:
+        return None
+    resolved = cluster_name
+    if not resolved:
+        resolved = cluster_mgr.get_default() if cluster_mgr else None
+    if resolved:
+        try:
+            cluster_def = cluster_mgr.get(resolved)
+            return cluster_def.transfer_mode
+        except Exception:
+            logger.debug("Failed to resolve cluster '%s'", resolved, exc_info=True)
+    return None
+
+
 def _resolve_cluster_cache_dir(
         cluster_name: str | None,
         hosts: str | None,

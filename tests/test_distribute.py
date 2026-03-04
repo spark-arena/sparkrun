@@ -14,8 +14,6 @@ from __future__ import annotations
 
 from unittest import mock
 
-import pytest
-
 from sparkrun.orchestration.ssh import (
     RemoteResult,
     build_ssh_opts_string,
@@ -909,3 +907,310 @@ class TestDetectIbForHosts:
         # unless h2's result is used as fallback
         assert "h1" not in result.ib_ip_map
         assert result.ib_ip_map.get("h2") == "10.0.0.2"
+
+
+# ---------------------------------------------------------------------------
+# Push-mode distribution helpers
+# ---------------------------------------------------------------------------
+
+class TestDistributeImagePush:
+    """Test _distribute_image_push helper."""
+
+    @mock.patch("sparkrun.containers.distribute.distribute_image_from_head")
+    @mock.patch("sparkrun.containers.distribute.distribute_image_from_local")
+    def test_single_host_push(self, mock_local, mock_head):
+        """Single host: push to head only, no head-to-worker distribution."""
+        mock_local.return_value = []
+        from sparkrun.orchestration.distribution import _distribute_image_push
+        failed = _distribute_image_push(
+            "img:latest", ["head"],
+            worker_transfer_hosts=None,
+            ssh_kwargs={}, dry_run=False,
+        )
+        assert failed == []
+        mock_local.assert_called_once()
+        mock_head.assert_not_called()
+
+    @mock.patch("sparkrun.containers.distribute.distribute_image_from_head")
+    @mock.patch("sparkrun.containers.distribute.distribute_image_from_local")
+    def test_multi_host_push(self, mock_local, mock_head):
+        """Multi host: push to head, then head distributes to workers."""
+        mock_local.return_value = []
+        mock_head.return_value = []
+        from sparkrun.orchestration.distribution import _distribute_image_push
+        failed = _distribute_image_push(
+            "img:latest", ["head", "w1", "w2"],
+            worker_transfer_hosts=["10.0.0.1", "10.0.0.2"],
+            ssh_kwargs={}, dry_run=False,
+        )
+        assert failed == []
+        # Local push should target only the head
+        local_hosts = mock_local.call_args[0][1]
+        assert local_hosts == ["head"]
+        # Head distribution should use worker_transfer_hosts
+        mock_head.assert_called_once()
+        head_kwargs = mock_head.call_args[1]
+        assert head_kwargs["worker_transfer_hosts"] == ["10.0.0.1", "10.0.0.2"]
+
+    @mock.patch("sparkrun.containers.distribute.distribute_image_from_head")
+    @mock.patch("sparkrun.containers.distribute.distribute_image_from_local")
+    def test_head_push_fails(self, mock_local, mock_head):
+        """If push to head fails, all hosts are returned as failed."""
+        mock_local.return_value = ["head"]
+        from sparkrun.orchestration.distribution import _distribute_image_push
+        failed = _distribute_image_push(
+            "img:latest", ["head", "w1"],
+            worker_transfer_hosts=None,
+            ssh_kwargs={}, dry_run=False,
+        )
+        assert failed == ["head", "w1"]
+        mock_head.assert_not_called()
+
+
+class TestDistributeModelPush:
+    """Test _distribute_model_push helper."""
+
+    @mock.patch("sparkrun.models.distribute.distribute_model_from_head")
+    @mock.patch("sparkrun.models.distribute.distribute_model_from_local")
+    def test_single_host_push(self, mock_local, mock_head):
+        """Single host: push to head only."""
+        mock_local.return_value = []
+        from sparkrun.orchestration.distribution import _distribute_model_push
+        failed = _distribute_model_push(
+            "org/model", ["head"],
+            cache_dir="/cache",
+            worker_transfer_hosts=None,
+            ssh_kwargs={}, dry_run=False,
+        )
+        assert failed == []
+        mock_local.assert_called_once()
+        mock_head.assert_not_called()
+
+    @mock.patch("sparkrun.models.distribute.distribute_model_from_head")
+    @mock.patch("sparkrun.models.distribute.distribute_model_from_local")
+    def test_multi_host_push(self, mock_local, mock_head):
+        """Multi host: push to head, then head distributes to workers."""
+        mock_local.return_value = []
+        mock_head.return_value = []
+        from sparkrun.orchestration.distribution import _distribute_model_push
+        failed = _distribute_model_push(
+            "org/model", ["head", "w1", "w2"],
+            cache_dir="/cache",
+            worker_transfer_hosts=["10.0.0.1", "10.0.0.2"],
+            ssh_kwargs={}, dry_run=False,
+        )
+        assert failed == []
+        local_hosts = mock_local.call_args[0][1]
+        assert local_hosts == ["head"]
+        mock_head.assert_called_once()
+
+    @mock.patch("sparkrun.models.distribute.distribute_model_from_head")
+    @mock.patch("sparkrun.models.distribute.distribute_model_from_local")
+    def test_head_push_fails(self, mock_local, mock_head):
+        """If push to head fails, all hosts are returned as failed."""
+        mock_local.return_value = ["head"]
+        from sparkrun.orchestration.distribution import _distribute_model_push
+        failed = _distribute_model_push(
+            "org/model", ["head", "w1"],
+            cache_dir="/cache",
+            worker_transfer_hosts=None,
+            ssh_kwargs={}, dry_run=False,
+        )
+        assert failed == ["head", "w1"]
+        mock_head.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# distribute_resources transfer_mode routing
+# ---------------------------------------------------------------------------
+
+class TestDistributeResourcesTransferMode:
+    """Test that distribute_resources routes to the correct distribution
+    functions based on transfer_mode."""
+
+    def _make_config(self):
+        """Create a minimal mock SparkrunConfig."""
+        cfg = mock.MagicMock()
+        cfg.cache_dir = "/tmp/cache"
+        cfg.ssh_user = None
+        cfg.ssh_key = None
+        cfg.ssh_options = None
+        return cfg
+
+    @mock.patch("sparkrun.containers.distribute.distribute_image_from_local")
+    @mock.patch("sparkrun.orchestration.infiniband.validate_ib_connectivity", return_value={})
+    @mock.patch("sparkrun.orchestration.infiniband.detect_ib_for_hosts")
+    @mock.patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={})
+    def test_local_mode_uses_from_local(self, mock_ssh, mock_ib, mock_validate, mock_img):
+        """Local mode calls distribute_image_from_local."""
+        mock_ib.return_value = mock.MagicMock(nccl_env={}, ib_ip_map={}, mgmt_ip_map={})
+        mock_img.return_value = []
+        from sparkrun.orchestration.distribution import distribute_resources
+        distribute_resources(
+            "img:latest", "", ["h1", "h2"], "/cache",
+            self._make_config(), dry_run=True,
+            transfer_mode="local",
+        )
+        mock_img.assert_called_once()
+        mock_validate.assert_called_once()
+
+    @mock.patch("sparkrun.orchestration.distribution._distribute_image_push")
+    @mock.patch("sparkrun.orchestration.infiniband.detect_ib_for_hosts")
+    @mock.patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={})
+    def test_push_mode_uses_push_helper(self, mock_ssh, mock_ib, mock_push):
+        """Push mode calls _distribute_image_push."""
+        mock_ib.return_value = mock.MagicMock(nccl_env={}, ib_ip_map={}, mgmt_ip_map={})
+        mock_push.return_value = []
+        from sparkrun.orchestration.distribution import distribute_resources
+        distribute_resources(
+            "img:latest", "", ["h1", "h2"], "/cache",
+            self._make_config(), dry_run=True,
+            transfer_mode="push",
+        )
+        mock_push.assert_called_once()
+
+    @mock.patch("sparkrun.containers.distribute.distribute_image_from_head")
+    @mock.patch("sparkrun.orchestration.infiniband.detect_ib_for_hosts")
+    @mock.patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={})
+    def test_delegated_mode_uses_from_head(self, mock_ssh, mock_ib, mock_head):
+        """Delegated mode calls distribute_image_from_head."""
+        mock_ib.return_value = mock.MagicMock(nccl_env={}, ib_ip_map={}, mgmt_ip_map={})
+        mock_head.return_value = []
+        from sparkrun.orchestration.distribution import distribute_resources
+        distribute_resources(
+            "img:latest", "", ["h1", "h2"], "/cache",
+            self._make_config(), dry_run=True,
+            transfer_mode="delegated",
+        )
+        mock_head.assert_called_once()
+
+    @mock.patch("sparkrun.orchestration.distribution._distribute_image_push", return_value=[])
+    @mock.patch("sparkrun.orchestration.infiniband.validate_ib_connectivity", return_value={})
+    @mock.patch("sparkrun.orchestration.infiniband.detect_ib_for_hosts")
+    @mock.patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={})
+    def test_push_mode_skips_ib_validation(self, mock_ssh, mock_ib, mock_validate, mock_push):
+        """Push mode does not call validate_ib_connectivity."""
+        mock_ib.return_value = mock.MagicMock(nccl_env={}, ib_ip_map={}, mgmt_ip_map={})
+        from sparkrun.orchestration.distribution import distribute_resources
+        distribute_resources(
+            "img:latest", "", ["h1", "h2"], "/cache",
+            self._make_config(), dry_run=True,
+            transfer_mode="push",
+        )
+        mock_validate.assert_not_called()
+
+    @mock.patch("sparkrun.orchestration.distribution._distribute_model_push")
+    @mock.patch("sparkrun.orchestration.distribution._distribute_image_push")
+    @mock.patch("sparkrun.orchestration.infiniband.detect_ib_for_hosts")
+    @mock.patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={})
+    def test_push_mode_with_model(self, mock_ssh, mock_ib, mock_img_push, mock_mdl_push):
+        """Push mode routes both image and model through push helpers."""
+        mock_ib.return_value = mock.MagicMock(nccl_env={}, ib_ip_map={}, mgmt_ip_map={})
+        mock_img_push.return_value = []
+        mock_mdl_push.return_value = []
+        from sparkrun.orchestration.distribution import distribute_resources
+        distribute_resources(
+            "img:latest", "org/model", ["h1", "h2"], "/cache",
+            self._make_config(), dry_run=True,
+            transfer_mode="push",
+        )
+        mock_img_push.assert_called_once()
+        mock_mdl_push.assert_called_once()
+
+    @mock.patch("sparkrun.models.distribute.distribute_model_from_head")
+    @mock.patch("sparkrun.containers.distribute.distribute_image_from_head")
+    @mock.patch("sparkrun.orchestration.infiniband.detect_ib_for_hosts")
+    @mock.patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={})
+    def test_delegated_mode_with_model(self, mock_ssh, mock_ib, mock_img_head, mock_mdl_head):
+        """Delegated mode routes both image and model through from_head."""
+        mock_ib.return_value = mock.MagicMock(nccl_env={}, ib_ip_map={}, mgmt_ip_map={})
+        mock_img_head.return_value = []
+        mock_mdl_head.return_value = []
+        from sparkrun.orchestration.distribution import distribute_resources
+        distribute_resources(
+            "img:latest", "org/model", ["h1", "h2"], "/cache",
+            self._make_config(), dry_run=True,
+            transfer_mode="delegated",
+        )
+        mock_img_head.assert_called_once()
+        mock_mdl_head.assert_called_once()
+
+    @mock.patch("sparkrun.orchestration.distribution._distribute_image_push", return_value=[])
+    @mock.patch("sparkrun.orchestration.infiniband.detect_ib_for_hosts")
+    @mock.patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={})
+    def test_push_mode_computes_worker_transfer_hosts(self, mock_ssh, mock_ib, mock_push):
+        """Push mode builds worker_transfer_hosts from IB IPs for workers."""
+        mock_ib.return_value = mock.MagicMock(
+            nccl_env={}, mgmt_ip_map={},
+            ib_ip_map={"h1": "10.0.0.1", "h2": "10.0.0.2", "h3": "10.0.0.3"},
+        )
+        from sparkrun.orchestration.distribution import distribute_resources
+        distribute_resources(
+            "img:latest", "", ["h1", "h2", "h3"], "/cache",
+            self._make_config(), dry_run=True,
+            transfer_mode="push",
+        )
+        call_kwargs = mock_push.call_args[1]
+        assert call_kwargs["worker_transfer_hosts"] == ["10.0.0.2", "10.0.0.3"]
+
+    @mock.patch("sparkrun.containers.distribute.distribute_image_from_local")
+    @mock.patch("sparkrun.orchestration.infiniband.validate_ib_connectivity")
+    @mock.patch("sparkrun.orchestration.infiniband.detect_ib_for_hosts")
+    @mock.patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={})
+    def test_auto_resolves_to_local_with_ib(self, mock_ssh, mock_ib, mock_validate, mock_img):
+        """Auto mode resolves to local when IB is reachable from control node."""
+        mock_ib.return_value = mock.MagicMock(
+            nccl_env={}, mgmt_ip_map={},
+            ib_ip_map={"h1": "10.0.0.1", "h2": "10.0.0.2"},
+        )
+        mock_validate.return_value = {"h1": "10.0.0.1", "h2": "10.0.0.2"}
+        mock_img.return_value = []
+        from sparkrun.orchestration.distribution import distribute_resources
+        distribute_resources(
+            "img:latest", "", ["h1", "h2"], "/cache",
+            self._make_config(), dry_run=True,
+            transfer_mode="auto",
+        )
+        mock_validate.assert_called_once()
+        mock_img.assert_called_once()
+
+    @mock.patch("sparkrun.orchestration.distribution._distribute_image_push")
+    @mock.patch("sparkrun.orchestration.infiniband.validate_ib_connectivity")
+    @mock.patch("sparkrun.orchestration.infiniband.detect_ib_for_hosts")
+    @mock.patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={})
+    def test_auto_resolves_to_push_without_ib(self, mock_ssh, mock_ib, mock_validate, mock_push):
+        """Auto mode resolves to push when IB is not reachable from control node."""
+        mock_ib.return_value = mock.MagicMock(
+            nccl_env={}, mgmt_ip_map={},
+            ib_ip_map={"h1": "10.0.0.1", "h2": "10.0.0.2"},
+        )
+        mock_validate.return_value = {}
+        mock_push.return_value = []
+        from sparkrun.orchestration.distribution import distribute_resources
+        distribute_resources(
+            "img:latest", "", ["h1", "h2"], "/cache",
+            self._make_config(), dry_run=True,
+            transfer_mode="auto",
+        )
+        mock_validate.assert_called_once()
+        mock_push.assert_called_once()
+
+    @mock.patch("sparkrun.orchestration.distribution._distribute_image_push")
+    @mock.patch("sparkrun.orchestration.infiniband.validate_ib_connectivity")
+    @mock.patch("sparkrun.orchestration.infiniband.detect_ib_for_hosts")
+    @mock.patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={})
+    def test_auto_resolves_to_push_no_ib_hardware(self, mock_ssh, mock_ib, mock_validate, mock_push):
+        """Auto mode resolves to push when no IB hardware detected."""
+        mock_ib.return_value = mock.MagicMock(
+            nccl_env={}, mgmt_ip_map={}, ib_ip_map={},
+        )
+        mock_validate.return_value = {}
+        mock_push.return_value = []
+        from sparkrun.orchestration.distribution import distribute_resources
+        distribute_resources(
+            "img:latest", "", ["h1", "h2"], "/cache",
+            self._make_config(), dry_run=True,
+            transfer_mode="auto",
+        )
+        mock_validate.assert_called_once()
+        mock_push.assert_called_once()
