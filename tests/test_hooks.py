@@ -497,3 +497,84 @@ class TestRunPostCommands:
         # Only the string command runs
         assert mock_subproc.call_count == 1
         assert mock_subproc.call_args[0][0] == "echo valid"
+
+
+# ---------------------------------------------------------------------------
+# _run_copy_command — delegated source_host support
+# ---------------------------------------------------------------------------
+
+class TestRunCopyCommandDelegated:
+    """Tests for _run_copy_command with source_host (delegated mode)."""
+
+    def _make_success(self, host="spark-01"):
+        return RemoteResult(host=host, returncode=0, stdout="ok", stderr="")
+
+    def _make_failure(self, host="spark-01"):
+        return RemoteResult(host=host, returncode=1, stdout="", stderr="copy failed")
+
+    @mock.patch("sparkrun.orchestration.primitives.run_script_on_host")
+    def test_copy_source_host_same_as_target(self, mock_run):
+        """When source_host == target host, docker cp runs directly (no rsync)."""
+        from sparkrun.orchestration.hooks import _run_copy_command
+        mock_run.return_value = self._make_success()
+        cmd = {"copy": "/home/user/mods/patch", "dest": "/workspace/mods/patch", "source_host": "spark-01"}
+        _run_copy_command("spark-01", "container1", cmd, ssh_kwargs={})
+        mock_run.assert_called_once()
+        script = mock_run.call_args[0][1]
+        assert "docker cp" in script
+        # No rsync needed when files are already on the target host
+        assert "rsync" not in script
+
+    @mock.patch("sparkrun.orchestration.primitives.run_script_on_host")
+    def test_copy_source_host_different_from_target(self, mock_run):
+        """When source_host != target host, rsync from source then docker cp."""
+        from sparkrun.orchestration.hooks import _run_copy_command
+        mock_run.return_value = self._make_success()
+        cmd = {"copy": "/home/user/mods/patch", "dest": "/workspace/mods/patch", "source_host": "head-node"}
+        _run_copy_command("worker-node", "container1", cmd, ssh_kwargs={"ssh_user": "user"})
+        mock_run.assert_called_once()
+        script = mock_run.call_args[0][1]
+        assert "rsync" in script
+        assert "head-node" in script
+        assert "docker cp" in script
+
+    @mock.patch("sparkrun.orchestration.primitives.run_script_on_host")
+    def test_copy_source_host_with_ssh_key(self, mock_run):
+        """rsync ssh options include the SSH key when provided."""
+        from sparkrun.orchestration.hooks import _run_copy_command
+        mock_run.return_value = self._make_success()
+        cmd = {"copy": "/mods/patch", "dest": "/workspace/mods/patch", "source_host": "head"}
+        _run_copy_command("worker", "container1", cmd, ssh_kwargs={"ssh_user": "u", "ssh_key": "/path/key"})
+        script = mock_run.call_args[0][1]
+        assert "-i /path/key" in script
+
+    @mock.patch("sparkrun.orchestration.primitives.run_script_on_host")
+    def test_copy_source_host_failure_raises(self, mock_run):
+        """RuntimeError raised when delegated copy fails."""
+        from sparkrun.orchestration.hooks import _run_copy_command
+        mock_run.return_value = self._make_failure()
+        cmd = {"copy": "/mods/patch", "dest": "/workspace/mods/patch", "source_host": "head"}
+        with pytest.raises(RuntimeError, match="copy failed"):
+            _run_copy_command("head", "container1", cmd, ssh_kwargs={})
+
+    def test_copy_source_host_dry_run(self):
+        """In dry_run mode, no SSH calls are made for delegated copy."""
+        from sparkrun.orchestration.hooks import _run_copy_command
+        cmd = {"copy": "/mods/patch", "dest": "/workspace/mods/patch", "source_host": "head"}
+        with mock.patch("sparkrun.orchestration.primitives.run_script_on_host") as mock_run:
+            _run_copy_command("head", "container1", cmd, ssh_kwargs={}, dry_run=True)
+        mock_run.assert_not_called()
+
+    @mock.patch("sparkrun.orchestration.primitives.run_script_on_host")
+    def test_copy_no_source_host_still_works(self, mock_run):
+        """Without source_host, original behavior is preserved (rsync from local)."""
+        from sparkrun.orchestration.hooks import _run_copy_command
+
+        mock_run.return_value = self._make_success()
+        cmd = {"copy": "/local/mods/patch", "dest": "/workspace/mods/patch"}
+
+        with mock.patch("sparkrun.orchestration.ssh.run_rsync_parallel"):
+            _run_copy_command("remote-host", "container1", cmd, ssh_kwargs={"ssh_user": "u"})
+
+        # run_script_on_host called for mkdir + docker cp
+        assert mock_run.call_count >= 1

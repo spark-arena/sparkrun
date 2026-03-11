@@ -235,6 +235,37 @@ class TestEugrPrepareImage:
         # The exec string must reference run.sh
         assert "run.sh" in exec_entry
 
+        # The copy source must NOT double the 'mods/' prefix
+        assert "mods/mods/" not in copy_entry["copy"]
+        assert copy_entry["copy"].endswith("/mods/flash-attn")
+
+    def test_eugr_mod_bare_name_same_as_prefixed(self, eugr_builder_with_repo):
+        """Mod specified as 'flash-attn' (bare) produces same paths as 'mods/flash-attn'."""
+        builder, repo_dir = eugr_builder_with_repo
+
+        # Build recipe with bare mod name (no 'mods/' prefix)
+        recipe_bare = Recipe.from_dict({
+            "name": "test", "model": "some/model", "runtime": "eugr-vllm",
+            "runtime_config": {"mods": ["flash-attn"]},
+        })
+        with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=True):
+            with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
+                builder.prepare_image("vllm-node", recipe_bare, ["10.0.0.1"])
+
+        # Build recipe with prefixed mod name
+        recipe_prefixed = Recipe.from_dict({
+            "name": "test", "model": "some/model", "runtime": "eugr-vllm",
+            "runtime_config": {"mods": ["mods/flash-attn"]},
+        })
+        with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=True):
+            with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
+                builder.prepare_image("vllm-node", recipe_prefixed, ["10.0.0.1"])
+
+        # Both should produce identical pre_exec entries
+        assert recipe_bare.pre_exec[0]["copy"] == recipe_prefixed.pre_exec[0]["copy"]
+        assert recipe_bare.pre_exec[0]["dest"] == recipe_prefixed.pre_exec[0]["dest"]
+        assert recipe_bare.pre_exec[1] == recipe_prefixed.pre_exec[1]
+
 
 # ---------------------------------------------------------------------------
 # Bootstrap integration — get_builder / list_builders
@@ -329,3 +360,186 @@ class TestRecipeBuilderField:
         exported = recipe._build_export_dict()
         assert "builder" not in exported
         assert "builder_config" not in exported
+
+
+# ---------------------------------------------------------------------------
+# EugrBuilder — delegated transfer mode
+# ---------------------------------------------------------------------------
+
+class TestEugrDelegatedMode:
+    """Tests for EugrBuilder in delegated transfer mode."""
+
+    def test_eugr_prepare_delegated_checks_image_on_head(self, eugr_builder_with_repo):
+        """In delegated mode, image existence is checked on the head node."""
+        builder, repo_dir = eugr_builder_with_repo
+        recipe = Recipe.from_dict({
+            "name": "test", "model": "some/model", "runtime": "eugr-vllm",
+        })
+        with mock.patch.object(builder, "_image_exists_on_host", return_value=True) as mock_check:
+            with mock.patch.object(builder, "_ensure_repo_remote"):
+                result = builder.prepare_image(
+                    "vllm-node", recipe, ["head-host", "worker-host"],
+                    transfer_mode="delegated", ssh_kwargs={"ssh_user": "user"},
+                )
+        mock_check.assert_called_once_with("vllm-node", "head-host", {"ssh_user": "user"})
+        # No mods or build_args, image exists => no-op
+        assert result == "vllm-node"
+
+    def test_eugr_prepare_delegated_builds_remotely(self, eugr_builder_with_repo):
+        """In delegated mode, build is dispatched to head via _build_image_remote."""
+        builder, repo_dir = eugr_builder_with_repo
+        recipe = Recipe.from_dict({
+            "name": "test", "model": "some/model", "runtime": "eugr-vllm",
+            "container": "my-image",
+            "runtime_config": {"build_args": ["--flag"]},
+        })
+        with mock.patch.object(builder, "_ensure_repo_remote", return_value="/remote/repo"):
+            with mock.patch.object(builder, "_build_image_remote") as mock_remote_build:
+                result = builder.prepare_image(
+                    "my-image", recipe, ["head-host"],
+                    transfer_mode="delegated", ssh_kwargs={"ssh_user": "u"},
+                )
+        mock_remote_build.assert_called_once_with(
+            "my-image", ["--flag"], "head-host", {"ssh_user": "u"}, False,
+        )
+        assert result == "my-image"
+
+    def test_eugr_prepare_delegated_clones_repo_remotely(self, eugr_builder_with_repo):
+        """In delegated mode, _ensure_repo_remote is called instead of local ensure_repo."""
+        builder, repo_dir = eugr_builder_with_repo
+        recipe = Recipe.from_dict({
+            "name": "test", "model": "some/model", "runtime": "eugr-vllm",
+            "runtime_config": {"mods": ["flash-attn"]},
+        })
+        with mock.patch.object(builder, "_image_exists_on_host", return_value=True):
+            with mock.patch.object(builder, "_ensure_repo_remote", return_value="/remote/repo") as mock_remote_repo:
+                with mock.patch.object(builder, "ensure_repo") as mock_local_repo:
+                    builder.prepare_image(
+                        "vllm-node", recipe, ["head-host"],
+                        transfer_mode="delegated", ssh_kwargs={},
+                    )
+        mock_remote_repo.assert_called_once()
+        mock_local_repo.assert_not_called()
+
+    def test_eugr_mod_pre_exec_delegated_sets_source_host(self, eugr_builder_with_repo):
+        """In delegated mode, copy entries include a source_host key."""
+        builder, repo_dir = eugr_builder_with_repo
+        recipe = Recipe.from_dict({
+            "name": "test", "model": "some/model", "runtime": "eugr-vllm",
+            "runtime_config": {"mods": ["flash-attn"]},
+        })
+        with mock.patch.object(builder, "_image_exists_on_host", return_value=True):
+            with mock.patch.object(builder, "_ensure_repo_remote", return_value=str(repo_dir)):
+                builder.prepare_image(
+                    "vllm-node", recipe, ["head-host"],
+                    transfer_mode="delegated", ssh_kwargs={},
+                )
+
+        assert len(recipe.pre_exec) == 2
+        copy_entry = recipe.pre_exec[0]
+        assert isinstance(copy_entry, dict)
+        assert copy_entry["source_host"] == "head-host"
+
+    def test_eugr_prepare_local_no_source_host(self, eugr_builder_with_repo):
+        """In local mode, copy entries do NOT include a source_host key."""
+        builder, repo_dir = eugr_builder_with_repo
+        recipe = Recipe.from_dict({
+            "name": "test", "model": "some/model", "runtime": "eugr-vllm",
+            "runtime_config": {"mods": ["flash-attn"]},
+        })
+        with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=True):
+            with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
+                builder.prepare_image(
+                    "vllm-node", recipe, ["10.0.0.1"],
+                    transfer_mode="local",
+                )
+
+        assert len(recipe.pre_exec) == 2
+        copy_entry = recipe.pre_exec[0]
+        assert isinstance(copy_entry, dict)
+        assert "source_host" not in copy_entry
+
+    @mock.patch("sparkrun.orchestration.primitives.run_script_on_host")
+    def test_image_exists_on_host_true(self, mock_run):
+        """_image_exists_on_host returns True when docker inspect succeeds."""
+        from sparkrun.builders.eugr import EugrBuilder
+        from sparkrun.orchestration.ssh import RemoteResult
+        mock_run.return_value = RemoteResult(host="h1", returncode=0, stdout="", stderr="")
+        result = EugrBuilder._image_exists_on_host("my-image", "h1", ssh_kwargs={})
+        assert result is True
+        mock_run.assert_called_once()
+        assert "docker image inspect" in mock_run.call_args[0][1]
+
+    @mock.patch("sparkrun.orchestration.primitives.run_script_on_host")
+    def test_image_exists_on_host_false(self, mock_run):
+        """_image_exists_on_host returns False when docker inspect fails."""
+        from sparkrun.builders.eugr import EugrBuilder
+        from sparkrun.orchestration.ssh import RemoteResult
+        mock_run.return_value = RemoteResult(host="h1", returncode=1, stdout="", stderr="not found")
+        result = EugrBuilder._image_exists_on_host("my-image", "h1", ssh_kwargs={})
+        assert result is False
+
+    @mock.patch("sparkrun.orchestration.primitives.run_script_on_host")
+    def test_ensure_repo_remote_calls_ssh(self, mock_run):
+        """_ensure_repo_remote pipes a clone/pull script to the head node."""
+        from sparkrun.builders.eugr import EugrBuilder
+        from sparkrun.orchestration.ssh import RemoteResult
+        mock_run.return_value = RemoteResult(host="head", returncode=0, stdout="/path\n", stderr="")
+        builder = EugrBuilder()
+        result = builder._ensure_repo_remote("head", ssh_kwargs={"ssh_user": "user"})
+        assert result == "~/.cache/sparkrun/eugr-spark-vllm-docker"
+        mock_run.assert_called_once()
+        script = mock_run.call_args[0][1]
+        assert "git clone" in script
+        assert "git" in script
+
+    @mock.patch("sparkrun.orchestration.primitives.run_script_on_host")
+    def test_ensure_repo_remote_failure_raises(self, mock_run):
+        """_ensure_repo_remote raises RuntimeError on SSH failure."""
+        from sparkrun.builders.eugr import EugrBuilder
+        from sparkrun.orchestration.ssh import RemoteResult
+        mock_run.return_value = RemoteResult(host="head", returncode=1, stdout="", stderr="network error")
+        builder = EugrBuilder()
+        with pytest.raises(RuntimeError, match="Failed to ensure eugr repo"):
+            builder._ensure_repo_remote("head", ssh_kwargs={})
+
+    @mock.patch("sparkrun.orchestration.primitives.run_script_on_host")
+    def test_build_image_remote_calls_ssh(self, mock_run):
+        """_build_image_remote pipes a build script to the head node."""
+        from sparkrun.builders.eugr import EugrBuilder
+        from sparkrun.orchestration.ssh import RemoteResult
+        mock_run.return_value = RemoteResult(host="head", returncode=0, stdout="ok", stderr="")
+        builder = EugrBuilder()
+        builder._build_image_remote("my-image", ["--flag"], "head", ssh_kwargs={})
+        mock_run.assert_called_once()
+        script = mock_run.call_args[0][1]
+        assert "build-and-copy.sh" in script
+        assert "-t my-image" in script
+        assert "--flag" in script
+
+    @mock.patch("sparkrun.orchestration.primitives.run_script_on_host")
+    def test_build_image_remote_failure_raises(self, mock_run):
+        """_build_image_remote raises RuntimeError on SSH failure."""
+        from sparkrun.builders.eugr import EugrBuilder
+        from sparkrun.orchestration.ssh import RemoteResult
+        mock_run.return_value = RemoteResult(host="head", returncode=1, stdout="", stderr="build error")
+        builder = EugrBuilder()
+        with pytest.raises(RuntimeError, match="eugr remote container build failed"):
+            builder._build_image_remote("my-image", [], "head", ssh_kwargs={})
+
+    @mock.patch("sparkrun.orchestration.primitives.run_script_on_host")
+    def test_build_image_remote_dry_run(self, mock_run):
+        """_build_image_remote in dry_run mode does not call SSH."""
+        from sparkrun.builders.eugr import EugrBuilder
+        builder = EugrBuilder()
+        builder._build_image_remote("my-image", ["--flag"], "head", ssh_kwargs={}, dry_run=True)
+        mock_run.assert_not_called()
+
+    def test_ensure_repo_remote_dry_run(self):
+        """_ensure_repo_remote in dry_run returns path without SSH calls."""
+        from sparkrun.builders.eugr import EugrBuilder
+        builder = EugrBuilder()
+        with mock.patch("sparkrun.orchestration.primitives.run_script_on_host") as mock_run:
+            result = builder._ensure_repo_remote("head", ssh_kwargs={}, dry_run=True)
+        mock_run.assert_not_called()
+        assert result == "~/.cache/sparkrun/eugr-spark-vllm-docker"

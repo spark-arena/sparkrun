@@ -327,10 +327,20 @@ def _run_copy_command(
     An optional ``dest`` key specifies the container destination
     (defaults to ``/workspace/mods/<basename>``).
 
+    When ``source_host`` is present in *cmd*, the source files live
+    on that remote host (delegated mode) rather than the control
+    machine:
+
+    - If *host* == *source_host*: files are already local on that
+      host; run ``docker cp`` directly via SSH.
+    - If *host* != *source_host*: rsync FROM source_host to a temp
+      dir on *host*, then ``docker cp`` into the container.
+
     Args:
-        host: Target host.
+        host: Target host where the container is running.
         container_name: Container name.
-        cmd: Dict with ``copy`` and optional ``dest`` keys.
+        cmd: Dict with ``copy``, optional ``dest``, and optional
+            ``source_host`` keys.
         ssh_kwargs: SSH connection kwargs.
         dry_run: Show what would be done without executing.
         label: Human-readable label for log messages.
@@ -345,13 +355,20 @@ def _run_copy_command(
     source_path = Path(source)
     basename = source_path.name
     dest = cmd.get("dest", "/workspace/mods/%s" % basename)
+    source_host = cmd.get("source_host")
 
     logger.info("  %s copy %s -> %s:%s on %s", label, source, container_name, dest, host)
 
     if dry_run:
         return
 
-    if is_local_host(host):
+    if source_host is not None:
+        # Delegated mode: source files live on source_host, not locally.
+        result = _run_delegated_copy(
+            host, container_name, source, dest, source_host,
+            ssh_kwargs=ssh_kwargs, label=label,
+        )
+    elif is_local_host(host):
         # Local: docker cp directly
         script = (
             "docker exec %(c)s mkdir -p %(dest)s\n"
@@ -385,3 +402,69 @@ def _run_copy_command(
             "%s copy failed on %s/%s: %s"
             % (label, host, container_name, result.stderr[:500] if result.stderr else "(no output)")
         )
+
+
+def _run_delegated_copy(
+        host: str,
+        container_name: str,
+        source: str,
+        dest: str,
+        source_host: str,
+        ssh_kwargs: dict | None = None,
+        label: str = "hook",
+):
+    """Copy files from *source_host* into a container on *host*.
+
+    When the target host IS the source host, the files are already
+    local — run ``docker cp`` directly.  Otherwise rsync from the
+    source host to a temp dir on the target, then ``docker cp``.
+
+    Returns:
+        The :class:`~sparkrun.orchestration.ssh.RemoteResult` of the
+        final ``docker cp`` script.
+    """
+    from sparkrun.orchestration.primitives import run_script_on_host
+
+    basename = Path(source).name
+    kw = ssh_kwargs or {}
+
+    if host == source_host:
+        # Files already on this host — docker cp directly
+        script = (
+            "docker exec %(c)s mkdir -p %(dest)s\n"
+            "docker cp %(src)s/. %(c)s:%(dest)s/\n"
+        ) % {"c": container_name, "src": source, "dest": dest}
+        logger.info("  %s delegated copy (local to %s): %s -> %s:%s", label, host, source, container_name, dest)
+        return run_script_on_host(host, script, ssh_kwargs=ssh_kwargs, timeout=120)
+    else:
+        # rsync FROM source_host to target host, then docker cp
+        remote_tmp = "/tmp/sparkrun_hook_%s" % basename
+        ssh_user = kw.get("ssh_user", "")
+        ssh_user_prefix = "%s@" % ssh_user if ssh_user else ""
+
+        # Build SSH options for rsync between cluster nodes
+        ssh_opts_parts = []
+        if kw.get("ssh_key"):
+            ssh_opts_parts.append("-i %s" % kw["ssh_key"])
+        if kw.get("ssh_options"):
+            ssh_opts_parts.extend(kw["ssh_options"])
+        ssh_opts_str = " ".join(ssh_opts_parts) if ssh_opts_parts else ""
+        rsync_ssh = "-e 'ssh %s'" % ssh_opts_str if ssh_opts_str else ""
+
+        script = (
+            "set -e\n"
+            "mkdir -p %(tmp)s\n"
+            "rsync -a %(rsync_ssh)s %(user)s%(src_host)s:%(src)s/ %(tmp)s/\n"
+            "docker exec %(c)s mkdir -p %(dest)s\n"
+            "docker cp %(tmp)s/. %(c)s:%(dest)s/\n"
+            "rm -rf %(tmp)s\n"
+        ) % {
+            "c": container_name, "dest": dest, "tmp": remote_tmp,
+            "src": source, "src_host": source_host,
+            "user": ssh_user_prefix, "rsync_ssh": rsync_ssh,
+        }
+        logger.info(
+            "  %s delegated copy (rsync %s -> %s): %s -> %s:%s",
+            label, source_host, host, source, container_name, dest,
+        )
+        return run_script_on_host(host, script, ssh_kwargs=ssh_kwargs, timeout=300)

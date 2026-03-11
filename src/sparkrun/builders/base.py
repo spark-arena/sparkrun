@@ -52,12 +52,25 @@ class BuilderPlugin(Plugin):
             hosts: list[str],
             config: SparkrunConfig | None = None,
             dry_run: bool = False,
+            transfer_mode: str = "local",
+            ssh_kwargs: dict | None = None,
     ) -> str:
-        """Ensure image is available locally. Returns final image name.
+        """Ensure image is available. Returns final image name.
 
         Called before the distribution phase. After this returns,
-        the image should exist locally so distribution can sync
+        the image should exist locally (or on the head node when
+        *transfer_mode* is ``"delegated"``) so distribution can sync
         it to remote hosts.
+
+        Args:
+            image: Target image name.
+            recipe: The loaded recipe.
+            hosts: Target host list (first element is head).
+            config: SparkrunConfig for cache dir resolution.
+            dry_run: Show what would be done without executing.
+            transfer_mode: ``"local"`` (build locally) or
+                ``"delegated"`` (build on head node via SSH).
+            ssh_kwargs: SSH connection kwargs (needed for delegated mode).
         """
         return image
 

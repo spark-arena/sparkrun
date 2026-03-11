@@ -149,12 +149,20 @@ class RuntimePlugin(Plugin):
             hosts: list[str],
             config: SparkrunConfig | None = None,
             dry_run: bool = False,
+            transfer_mode: str = "local",
     ) -> None:
         """Pre-launch preparation (e.g., building container images).
 
         Called by the CLI before resource distribution.  Override in
         subclasses that need to build or transform images before they
         can be distributed to hosts.
+
+        Args:
+            recipe: The loaded recipe.
+            hosts: Target host list.
+            config: SparkrunConfig instance.
+            dry_run: Show what would be done without executing.
+            transfer_mode: ``"local"`` or ``"delegated"``.
         """
         pass
 

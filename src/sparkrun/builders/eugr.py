@@ -47,6 +47,8 @@ class EugrBuilder(BuilderPlugin):
             hosts: list[str],
             config: SparkrunConfig | None = None,
             dry_run: bool = False,
+            transfer_mode: str = "local",
+            ssh_kwargs: dict | None = None,
     ) -> str:
         """Build container image and inject mod pre_exec commands.
 
@@ -55,16 +57,24 @@ class EugrBuilder(BuilderPlugin):
         has ``mods``, converts them to ``pre_exec`` entries that the
         hook system will execute at container launch time.
 
+        In delegated mode (``transfer_mode="delegated"``), the build
+        and repo clone happen on the **head node** via SSH rather than
+        on the local control machine.
+
         Args:
             image: Target image name.
             recipe: The loaded recipe.
-            hosts: Target host list (unused by builder).
+            hosts: Target host list (first element is head).
             config: SparkrunConfig for cache dir resolution.
             dry_run: Show what would be done without executing.
+            transfer_mode: ``"local"`` or ``"delegated"``.
+            ssh_kwargs: SSH connection kwargs (needed for delegated mode).
 
         Returns:
             Final image name (may be unchanged).
         """
+        delegated = transfer_mode == "delegated"
+        head = hosts[0] if hosts else "localhost"
         build_args = recipe.runtime_config.get("build_args", [])
         mods = recipe.runtime_config.get("mods", [])
         has_mods = bool(mods)
@@ -72,27 +82,40 @@ class EugrBuilder(BuilderPlugin):
         # Determine if we need to build the image.
         needs_build = bool(build_args)
         if not needs_build:
-            from sparkrun.containers.registry import image_exists_locally
-            if not image_exists_locally(image):
-                logger.info("eugr image '%s' not found locally; will build", image)
-                needs_build = True
+            if delegated:
+                if not self._image_exists_on_host(image, head, ssh_kwargs):
+                    logger.info("eugr image '%s' not found on head '%s'; will build remotely", image, head)
+                    needs_build = True
+            else:
+                from sparkrun.containers.registry import image_exists_locally
+                if not image_exists_locally(image):
+                    logger.info("eugr image '%s' not found locally; will build", image)
+                    needs_build = True
 
         if not needs_build and not has_mods:
             return image  # nothing eugr-specific to prepare
 
         # Ensure repo is available (for build script and/or mods)
-        registry_cache_root = None
-        if config is not None:
-            registry_cache_root = Path(config.cache_dir) / "registries"
-        self._repo_dir = self.ensure_repo(registry_cache_root=registry_cache_root)
+        if delegated:
+            remote_repo = self._ensure_repo_remote(head, ssh_kwargs, dry_run=dry_run)
+            self._repo_dir = Path(remote_repo)
+        else:
+            registry_cache_root = None
+            if config is not None:
+                registry_cache_root = Path(config.cache_dir) / "registries"
+            self._repo_dir = self.ensure_repo(registry_cache_root=registry_cache_root)
 
         # Build image if needed
         if needs_build:
-            self._build_image(image, build_args, dry_run)
+            if delegated:
+                self._build_image_remote(image, build_args, head, ssh_kwargs, dry_run)
+            else:
+                self._build_image(image, build_args, dry_run)
 
         # Convert mods to pre_exec entries
         if has_mods:
-            self._inject_mod_pre_exec(recipe, mods)
+            source_host = head if delegated else None
+            self._inject_mod_pre_exec(recipe, mods, source_host=source_host)
 
         return image
 
@@ -105,7 +128,12 @@ class EugrBuilder(BuilderPlugin):
 
     # --- Mod -> pre_exec conversion ---
 
-    def _inject_mod_pre_exec(self, recipe: Recipe, mods: list[str]) -> None:
+    def _inject_mod_pre_exec(
+            self,
+            recipe: Recipe,
+            mods: list[str],
+            source_host: str | None = None,
+    ) -> None:
         """Convert mod entries to pre_exec commands on the recipe.
 
         Each mod is a directory containing a ``run.sh`` script.  The
@@ -116,21 +144,31 @@ class EugrBuilder(BuilderPlugin):
         Args:
             recipe: Recipe instance (pre_exec list is mutated).
             mods: List of mod directory names relative to repo root.
+            source_host: When set (delegated mode), the ``copy`` entry
+                gets a ``source_host`` key so the hooks system knows
+                where the source files live.
         """
         if not self._repo_dir:
             logger.warning("Cannot inject mods without a repo dir")
             return
 
         for mod_name in mods:
-            mod_path = self._repo_dir / 'mods' / mod_name
-            mod_basename = Path(mod_name).name
+            # Strip leading 'mods/' if present — recipes may specify either
+            # "fix-something" or "mods/fix-something"; normalise to avoid
+            # doubling the path component.
+            clean_name = mod_name.removeprefix('mods/')
+            mod_path = self._repo_dir / 'mods' / clean_name
+            mod_basename = Path(clean_name).name
             dest = "/workspace/mods/%s" % mod_basename
 
             # Add copy entry (docker cp source into container)
-            recipe.pre_exec.append({
+            copy_entry: dict[str, str] = {
                 "copy": str(mod_path),
                 "dest": dest,
-            })
+            }
+            if source_host is not None:
+                copy_entry["source_host"] = source_host
+            recipe.pre_exec.append(copy_entry)
             # Add exec entry (run the mod script with WORKSPACE_DIR set)
             recipe.pre_exec.append(
                 "export WORKSPACE_DIR=$PWD && cd %s && chmod +x run.sh && ./run.sh" % dest
@@ -161,6 +199,99 @@ class EugrBuilder(BuilderPlugin):
         result = subprocess.run(cmd, cwd=str(self._repo_dir))
         if result.returncode != 0:
             raise RuntimeError("eugr container build failed (exit %d)" % result.returncode)
+
+    # --- Remote / delegated helpers ---
+
+    @staticmethod
+    def _image_exists_on_host(image: str, host: str, ssh_kwargs: dict | None = None) -> bool:
+        """Check whether *image* exists on a remote host.
+
+        Runs ``docker image inspect <image>`` via SSH and returns
+        ``True`` when the exit code is 0.
+        """
+        from sparkrun.orchestration.primitives import run_script_on_host
+        script = "docker image inspect %s >/dev/null 2>&1" % image
+        result = run_script_on_host(host, script, ssh_kwargs=ssh_kwargs, timeout=30)
+        return result.success
+
+    def _ensure_repo_remote(
+            self,
+            head: str,
+            ssh_kwargs: dict | None = None,
+            dry_run: bool = False,
+    ) -> str:
+        """Clone or update the eugr repo on the head node.
+
+        Returns the remote path where the repo lives.
+        """
+        from sparkrun.orchestration.primitives import run_script_on_host
+
+        remote_path = "~/.cache/sparkrun/eugr-spark-vllm-docker"
+        script = (
+                     "set -e\n"
+                     "REPO_DIR=%(path)s\n"
+                     "if [ -d \"$REPO_DIR/.git\" ]; then\n"
+                     "  git -C \"$REPO_DIR\" pull --ff-only || true\n"
+                     "else\n"
+                     "  mkdir -p \"$(dirname \"$REPO_DIR\")\"\n"
+                     "  git clone %(url)s \"$REPO_DIR\"\n"
+                     "fi\n"
+                     "echo \"$REPO_DIR\"\n"
+                 ) % {"path": remote_path, "url": EUGR_REPO_URL}
+
+        logger.info("Ensuring eugr repo on head node %s...", head)
+
+        if dry_run:
+            return remote_path
+
+        result = run_script_on_host(head, script, ssh_kwargs=ssh_kwargs, timeout=120)
+        if not result.success:
+            raise RuntimeError(
+                "Failed to ensure eugr repo on %s: %s"
+                % (head, result.stderr.strip() if result.stderr else "(no output)")
+            )
+
+        return remote_path
+
+    def _build_image_remote(
+            self,
+            image: str,
+            build_args: list[str],
+            head: str,
+            ssh_kwargs: dict | None = None,
+            dry_run: bool = False,
+    ) -> None:
+        """Build container image on the head node via SSH.
+
+        Args:
+            image: Target image name (passed as ``-t``).
+            build_args: Additional build arguments forwarded to the script.
+            head: Head node hostname.
+            ssh_kwargs: SSH connection kwargs.
+            dry_run: Show what would be done without executing.
+        """
+        from sparkrun.orchestration.primitives import run_script_on_host
+
+        remote_path = "~/.cache/sparkrun/eugr-spark-vllm-docker"
+        args_str = " ".join(build_args) if build_args else ""
+        script = (
+                     "set -e\n"
+                     "cd %(path)s\n"
+                     "chmod +x build-and-copy.sh\n"
+                     "./build-and-copy.sh -t %(image)s %(args)s\n"
+                 ) % {"path": remote_path, "image": image, "args": args_str}
+
+        logger.info("Building eugr container on %s: %s -t %s %s", head, remote_path, image, args_str)
+
+        if dry_run:
+            return
+
+        result = run_script_on_host(head, script, ssh_kwargs=ssh_kwargs, timeout=1800)
+        if not result.success:
+            raise RuntimeError(
+                "eugr remote container build failed on %s (exit %d)"
+                % (head, result.returncode)
+            )
 
     # --- Repo management ---
 

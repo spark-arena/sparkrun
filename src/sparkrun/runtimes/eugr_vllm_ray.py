@@ -63,6 +63,7 @@ class EugrVllmRayRuntime(VllmRayRuntime):
             hosts: list[str],
             config: SparkrunConfig | None = None,
             dry_run: bool = False,
+            transfer_mode: str = "local",
     ) -> None:
         """Delegate to EugrBuilder for image building and mod injection.
 
@@ -75,6 +76,7 @@ class EugrVllmRayRuntime(VllmRayRuntime):
             stacklevel=2,
         )
         from sparkrun.core.bootstrap import get_builder
+        from sparkrun.orchestration.primitives import build_ssh_kwargs
         try:
             builder = get_builder("eugr", v=self._v)
         except ValueError:
@@ -82,4 +84,8 @@ class EugrVllmRayRuntime(VllmRayRuntime):
             return
 
         image = self.resolve_container(recipe)
-        builder.prepare_image(image, recipe, hosts, config=config, dry_run=dry_run)
+        builder.prepare_image(
+            image, recipe, hosts, config=config, dry_run=dry_run,
+            transfer_mode=transfer_mode,
+            ssh_kwargs=build_ssh_kwargs(config),
+        )
