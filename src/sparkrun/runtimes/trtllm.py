@@ -32,7 +32,7 @@ _TRTLLM_FLAG_MAP = {
     "expert_parallel": "--ep_size",
     "max_num_tokens": "--max_num_tokens",
     "max_batch_size": "--max_batch_size",
-    "max_seq_len": "--max_seq_len",
+    "max_model_len": "--max_seq_len",
     "backend": "--backend",
     "tokenizer": "--tokenizer",
     "kv_cache_free_gpu_memory_fraction": "--kv_cache_free_gpu_memory_fraction",
@@ -44,10 +44,16 @@ _TRTLLM_BOOL_FLAGS = {"trust_remote_code"}
 # Extra docker options required by TRT-LLM for large memory allocations
 _TRTLLM_EXTRA_DOCKER_OPTS = ["--ulimit", "memlock=-1", "--ulimit", "stack=67108864"]
 
+# Fixed container-internal path for the extra LLM API config YAML
+_EXTRA_CONFIG_PATH = "/tmp/extra-llm-api-config.yml"
+_EXTRA_CONFIG_FLAG = "--extra_llm_api_options"
+
 # Keys in recipe defaults that map to extra-llm-api-config.yml
 _EXTRA_CONFIG_KEYS = {
-    "free_gpu_memory_fraction", "kv_cache_dtype",
-    "cuda_graph_padding", "print_iter_log",
+    "free_gpu_memory_fraction", "kv_cache_dtype", "kv_cache_enable_block_reuse",
+    "cuda_graph_padding", "cuda_graph_max_batch_size",
+    "moe_backend",
+    "print_iter_log",
 }
 
 
@@ -69,6 +75,21 @@ class TrtllmRuntime(RuntimePlugin):
         """TRT-LLM uses native clustering with MPI orchestration."""
         return "native"
 
+    def _augment_extra_config_flag(self, command: str, recipe: Recipe,
+                                    overrides: dict[str, Any] | None = None) -> str:
+        """Append ``--extra_llm_api_options`` if extra config keys are present.
+
+        When ``_build_extra_config`` produces YAML content but the flag
+        is not already in the command string, append it so the config
+        file written by ``_pre_serve`` (solo) or ``_run_cluster`` is
+        actually consumed by ``trtllm-serve``.
+        """
+        if _EXTRA_CONFIG_FLAG in command:
+            return command
+        if self._build_extra_config(recipe, overrides) is None:
+            return command
+        return "%s %s %s" % (command.rstrip(), _EXTRA_CONFIG_FLAG, _EXTRA_CONFIG_PATH)
+
     def generate_command(self, recipe: Recipe, overrides: dict[str, Any],
                          is_cluster: bool, num_nodes: int = 1,
                          head_ip: str | None = None,
@@ -84,13 +105,15 @@ class TrtllmRuntime(RuntimePlugin):
         # If recipe has an explicit command template, render it
         rendered = recipe.render_command(config)
         if rendered:
+            rendered = self._augment_extra_config_flag(rendered, recipe, overrides)
             if skip_keys:
                 rendered = self.strip_flags_from_command(
                     rendered, skip_keys, _TRTLLM_FLAG_MAP, _TRTLLM_BOOL_FLAGS,
                 )
             return rendered
 
-        return self._build_command(recipe, config, skip_keys=skip_keys)
+        cmd = self._build_command(recipe, config, skip_keys=skip_keys)
+        return self._augment_extra_config_flag(cmd, recipe, overrides)
 
     def _build_command(self, recipe: Recipe, config,
                        skip_keys: set[str] | frozenset[str] = frozenset()) -> str:
@@ -216,6 +239,9 @@ class TrtllmRuntime(RuntimePlugin):
         kv_dtype = config.get("kv_cache_dtype")
         if kv_dtype is not None:
             kv_cache["dtype"] = str(kv_dtype)
+        block_reuse = config.get("kv_cache_enable_block_reuse")
+        if block_reuse is not None:
+            kv_cache["enable_block_reuse"] = bool(block_reuse)
         if kv_cache:
             extra["kv_cache_config"] = kv_cache
 
@@ -224,8 +250,19 @@ class TrtllmRuntime(RuntimePlugin):
         padding = config.get("cuda_graph_padding")
         if padding is not None:
             cuda_graph["enable_padding"] = bool(padding)
+        cg_max_batch = config.get("cuda_graph_max_batch_size")
+        if cg_max_batch is not None:
+            cuda_graph["max_batch_size"] = int(cg_max_batch)
         if cuda_graph:
             extra["cuda_graph_config"] = cuda_graph
+
+        # moe_config
+        moe: dict[str, Any] = {}
+        moe_backend = config.get("moe_backend")
+        if moe_backend is not None:
+            moe["backend"] = str(moe_backend)
+        if moe:
+            extra["moe_config"] = moe
 
         if not extra:
             return None
@@ -251,6 +288,51 @@ class TrtllmRuntime(RuntimePlugin):
         if ssh_dir.is_dir():
             return {str(ssh_dir): "/tmp/.ssh:ro"}
         return {}
+
+    def _pre_serve(
+            self,
+            hosts_containers: list[tuple[str, str]],
+            ssh_kwargs: dict,
+            dry_run: bool,
+            recipe: Recipe | None = None,
+            config_chain=None,
+    ) -> None:
+        """Write extra-llm-api-config.yml into containers before serve.
+
+        Extends the base ``_pre_serve`` to inject the extra LLM API config
+        YAML (kv_cache_config, cuda_graph_config, moe_config, etc.) into
+        every container.  This is the solo-mode counterpart of the config
+        injection that ``_run_cluster`` performs in step 6.
+        """
+        super()._pre_serve(hosts_containers, ssh_kwargs, dry_run, recipe=recipe, config_chain=config_chain)
+
+        if recipe is None:
+            return
+        extra_yaml = self._build_extra_config(recipe)
+        if extra_yaml is None:
+            return
+
+        from sparkrun.orchestration.ssh import run_remote_command
+        from sparkrun.orchestration.docker import docker_exec_cmd
+
+        write_cmd = (
+            "cat > %s << 'SPARKRUN_EOF'\n"
+            "%s"
+            "SPARKRUN_EOF"
+        ) % (_EXTRA_CONFIG_PATH, extra_yaml)
+
+        for host, container_name in hosts_containers:
+            exec_cmd = docker_exec_cmd(container_name, write_cmd)
+            result = run_remote_command(
+                host, exec_cmd, timeout=30, dry_run=dry_run, **ssh_kwargs,
+            )
+            if not result.success and not dry_run:
+                logger.warning(
+                    "Failed to write extra-llm-api-config.yml on %s: %s",
+                    host, result.stderr[:100],
+                )
+            else:
+                logger.info("Wrote extra-llm-api-config.yml into %s on %s", container_name, host)
 
     def validate_recipe(self, recipe: Recipe) -> list[str]:
         """Validate TRT-LLM-specific recipe fields."""
@@ -467,15 +549,14 @@ class TrtllmRuntime(RuntimePlugin):
             return 1
 
         # Write extra-llm-api-config.yml if needed
-        extra_config_flag = ""
         if recipe is not None:
             extra_config_yaml = self._build_extra_config(recipe, overrides)
             if extra_config_yaml:
                 write_config_cmd = (
-                    "cat > /tmp/extra-llm-api-config.yml << 'SPARKRUN_EOF'\n"
+                    "cat > %s << 'SPARKRUN_EOF'\n"
                     "%s"
                     "SPARKRUN_EOF"
-                ) % extra_config_yaml
+                ) % (_EXTRA_CONFIG_PATH, extra_config_yaml)
                 exec_config = docker_exec_cmd(head_container, write_config_cmd)
                 result = run_remote_command(
                     head_host, exec_config, timeout=30, dry_run=dry_run, **ssh_kwargs,
@@ -483,8 +564,7 @@ class TrtllmRuntime(RuntimePlugin):
                 if not result.success and not dry_run:
                     logger.error("Failed to write extra config: %s", result.stderr[:200])
                     return 1
-                extra_config_flag = " --extra_llm_api_options /tmp/extra-llm-api-config.yml"
-                logger.info("  Extra LLM API config written to /tmp/extra-llm-api-config.yml")
+                logger.info("  Extra LLM API config written to %s", _EXTRA_CONFIG_PATH)
 
         logger.info("Step 6/7: Rsh wrapper written (%.1fs)", time.monotonic() - t0)
 
@@ -492,7 +572,8 @@ class TrtllmRuntime(RuntimePlugin):
         t0 = time.monotonic()
         logger.info("Step 7/7: Executing mpirun on head container...")
 
-        # Build the trtllm-serve command
+        # Build the trtllm-serve command (generate_command auto-appends
+        # --extra_llm_api_options when extra config keys are present)
         if serve_command:
             trtllm_cmd = serve_command
         elif recipe is not None:
@@ -504,10 +585,6 @@ class TrtllmRuntime(RuntimePlugin):
         else:
             logger.error("No serve command or recipe provided")
             return 1
-
-        # Append extra config flag if generated
-        if extra_config_flag:
-            trtllm_cmd += extra_config_flag
 
         # Build mpirun command
         mpirun_cmd = self._build_mpirun_command(

@@ -144,6 +144,63 @@ def test_generate_command_skip_keys():
     assert "--tp_size 2" in cmd
 
 
+# --- extra config flag auto-augmentation ---
+
+def test_generate_command_appends_extra_config_flag_structured():
+    """Structured command auto-appends --extra_llm_api_options when extra config keys present."""
+    recipe = Recipe.from_dict({
+        "name": "test",
+        "model": "nvidia/model",
+        "runtime": "trtllm",
+        "defaults": {"moe_backend": "CUTLASS"},
+    })
+    runtime = TrtllmRuntime()
+    cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+    assert "--extra_llm_api_options /tmp/extra-llm-api-config.yml" in cmd
+
+
+def test_generate_command_appends_extra_config_flag_template():
+    """Template command auto-appends --extra_llm_api_options when extra config keys present."""
+    recipe = Recipe.from_dict({
+        "name": "test",
+        "model": "nvidia/model",
+        "runtime": "trtllm",
+        "defaults": {"cuda_graph_padding": True},
+        "command": "trtllm-serve {model} --port 8000",
+    })
+    runtime = TrtllmRuntime()
+    cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+    assert "--extra_llm_api_options /tmp/extra-llm-api-config.yml" in cmd
+
+
+def test_generate_command_no_duplicate_extra_config_flag():
+    """Template already has --extra_llm_api_options → no duplicate."""
+    recipe = Recipe.from_dict({
+        "name": "test",
+        "model": "nvidia/model",
+        "runtime": "trtllm",
+        "defaults": {"moe_backend": "CUTLASS"},
+        "command": "trtllm-serve {model} --extra_llm_api_options /custom/path.yml",
+    })
+    runtime = TrtllmRuntime()
+    cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+    assert cmd.count("--extra_llm_api_options") == 1
+    assert "/custom/path.yml" in cmd
+
+
+def test_generate_command_no_extra_config_flag_when_no_keys():
+    """No extra config keys → no --extra_llm_api_options appended."""
+    recipe = Recipe.from_dict({
+        "name": "test",
+        "model": "nvidia/model",
+        "runtime": "trtllm",
+        "defaults": {"port": 8000},
+    })
+    runtime = TrtllmRuntime()
+    cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+    assert "--extra_llm_api_options" not in cmd
+
+
 # --- mpirun command ---
 
 def test_build_mpirun_command():
@@ -268,6 +325,119 @@ def test_build_extra_config_partial():
     assert parsed["kv_cache_config"]["free_gpu_memory_fraction"] == 0.85
     assert "cuda_graph_config" not in parsed
     assert "print_iter_log" not in parsed
+
+
+def test_build_extra_config_kv_cache_block_reuse():
+    """kv_cache_enable_block_reuse maps to kv_cache_config.enable_block_reuse."""
+    recipe = Recipe.from_dict({
+        "name": "test",
+        "model": "nvidia/model",
+        "runtime": "trtllm",
+        "defaults": {"kv_cache_enable_block_reuse": False},
+    })
+    runtime = TrtllmRuntime()
+    config_yaml = runtime._build_extra_config(recipe)
+
+    assert config_yaml is not None
+    parsed = yaml.safe_load(config_yaml)
+    assert parsed["kv_cache_config"]["enable_block_reuse"] is False
+
+
+def test_build_extra_config_cuda_graph_max_batch_size():
+    """cuda_graph_max_batch_size maps to cuda_graph_config.max_batch_size."""
+    recipe = Recipe.from_dict({
+        "name": "test",
+        "model": "nvidia/model",
+        "runtime": "trtllm",
+        "defaults": {"cuda_graph_max_batch_size": 32},
+    })
+    runtime = TrtllmRuntime()
+    config_yaml = runtime._build_extra_config(recipe)
+
+    assert config_yaml is not None
+    parsed = yaml.safe_load(config_yaml)
+    assert parsed["cuda_graph_config"]["max_batch_size"] == 32
+
+
+def test_build_extra_config_moe_backend():
+    """moe_backend maps to moe_config.backend."""
+    recipe = Recipe.from_dict({
+        "name": "test",
+        "model": "nvidia/model",
+        "runtime": "trtllm",
+        "defaults": {"moe_backend": "CUTLASS"},
+    })
+    runtime = TrtllmRuntime()
+    config_yaml = runtime._build_extra_config(recipe)
+
+    assert config_yaml is not None
+    parsed = yaml.safe_load(config_yaml)
+    assert parsed["moe_config"]["backend"] == "CUTLASS"
+
+
+def test_build_extra_config_all_new_keys():
+    """All new extra config keys together produce correct YAML."""
+    recipe = Recipe.from_dict({
+        "name": "test",
+        "model": "nvidia/model",
+        "runtime": "trtllm",
+        "defaults": {
+            "kv_cache_enable_block_reuse": False,
+            "cuda_graph_max_batch_size": 32,
+            "cuda_graph_padding": True,
+            "moe_backend": "CUTLASS",
+        },
+    })
+    runtime = TrtllmRuntime()
+    config_yaml = runtime._build_extra_config(recipe)
+
+    assert config_yaml is not None
+    parsed = yaml.safe_load(config_yaml)
+    assert parsed["kv_cache_config"]["enable_block_reuse"] is False
+    assert parsed["cuda_graph_config"]["max_batch_size"] == 32
+    assert parsed["cuda_graph_config"]["enable_padding"] is True
+    assert parsed["moe_config"]["backend"] == "CUTLASS"
+
+
+def test_pre_serve_writes_extra_config():
+    """_pre_serve writes extra-llm-api-config.yml into containers."""
+    from unittest import mock
+    recipe = Recipe.from_dict({
+        "name": "test",
+        "model": "nvidia/model",
+        "runtime": "trtllm",
+        "defaults": {"moe_backend": "CUTLASS"},
+    })
+    runtime = TrtllmRuntime()
+    hosts_containers = [("10.0.0.1", "sparkrun_node_0")]
+
+    with mock.patch("sparkrun.orchestration.ssh.run_remote_command") as mock_cmd, \
+         mock.patch("sparkrun.orchestration.docker.docker_exec_cmd", side_effect=lambda c, cmd: cmd):
+        mock_cmd.return_value = mock.Mock(success=True)
+        runtime._pre_serve(hosts_containers, {}, dry_run=False, recipe=recipe)
+        mock_cmd.assert_called_once()
+        call_args = mock_cmd.call_args
+        assert call_args[0][0] == "10.0.0.1"
+        # The command should contain our config content
+        assert "extra-llm-api-config.yml" in call_args[0][1]
+        assert "CUTLASS" in call_args[0][1]
+
+
+def test_pre_serve_skips_when_no_extra_config():
+    """_pre_serve does not write config when no extra keys are present."""
+    from unittest import mock
+    recipe = Recipe.from_dict({
+        "name": "test",
+        "model": "nvidia/model",
+        "runtime": "trtllm",
+        "defaults": {"port": 8000},
+    })
+    runtime = TrtllmRuntime()
+    hosts_containers = [("10.0.0.1", "sparkrun_node_0")]
+
+    with mock.patch("sparkrun.orchestration.ssh.run_remote_command") as mock_cmd:
+        runtime._pre_serve(hosts_containers, {}, dry_run=False, recipe=recipe)
+        mock_cmd.assert_not_called()
 
 
 # --- Environment and Docker opts ---
