@@ -88,15 +88,12 @@ def start(port, bind_host, master_key, cluster_name, hosts, hosts_file,
             click.echo("Found %d endpoint(s) but none are healthy." % len(endpoints))
         else:
             click.echo("No inference endpoints found.")
-        click.echo("Start inference workloads first: sparkrun run <recipe>")
-        if not dry_run:
-            sys.exit(1)
-        return
-
-    click.echo("Discovered %d healthy endpoint(s):" % len(healthy))
-    for ep in healthy:
-        models_str = ", ".join(ep.actual_models) if ep.actual_models else ep.model
-        click.echo("  %s:%d — %s (%s)" % (ep.host, ep.port, models_str, ep.runtime))
+        click.echo("Load models with: sparkrun proxy load <recipe>")
+    else:
+        click.echo("Discovered %d healthy endpoint(s):" % len(healthy))
+        for ep in healthy:
+            models_str = ", ".join(ep.actual_models) if ep.actual_models else ep.model
+            click.echo("  %s:%d — %s (%s)" % (ep.host, ep.port, models_str, ep.runtime))
 
     # Generate config
     config_dict = build_litellm_config(healthy, effective_key)
@@ -131,6 +128,12 @@ def start(port, bind_host, master_key, cluster_name, hosts, hosts_file,
             "host_list": live_hosts,
             "ssh_kwargs": ssh_kwargs,
         }
+
+    # Check if already running
+    if engine.is_running():
+        click.echo("Proxy is already running (PID %s) on port %d." % (engine._read_pid(), engine.port))
+        click.echo("Use 'sparkrun proxy stop' first, or 'sparkrun proxy load <recipe>' to add models.")
+        return
 
     click.echo("Starting proxy on %s:%d..." % (effective_host, effective_port))
     rc = engine.start(
