@@ -10,11 +10,11 @@ import click
 from ._common import (
     RECIPE_NAME,
     _apply_node_trimming,
+    _apply_recipe_overrides,
     _display_vram_estimate,
     _expand_recipe_shortcut,
     _is_recipe_url,
     _load_recipe,
-    _parse_options,
     _resolve_cluster_cache_dir,
     _resolve_hosts_or_exit,
     _resolve_transfer_mode,
@@ -22,6 +22,7 @@ from ._common import (
     _simplify_recipe_ref,
     dry_run_option,
     host_options,
+    recipe_override_options,
 )
 
 logger = logging.getLogger(__name__)
@@ -30,14 +31,10 @@ logger = logging.getLogger(__name__)
 @click.command()
 @click.argument("recipe_name", type=RECIPE_NAME)
 @host_options
+@recipe_override_options
 @click.option("--solo", is_flag=True, help="Force single-node mode")
 @click.option("--port", type=int, default=None, help="Override serve port")
-@click.option("--tp", "--tensor-parallel", "tensor_parallel", type=int, default=None, help="Override tensor parallelism")
-@click.option("--pp", "--pipeline-parallel", "pipeline_parallel", type=int, default=None, help="Override pipeline parallelism")
-@click.option("--gpu-mem", type=float, default=None, help="Override GPU memory utilization")
 @click.option("--served-model-name", default=None, help="Override served model name")
-@click.option("--max-model-len", type=int, default=None, help="Override maximum model context length")
-@click.option("--image", default=None, help="Override container image")
 @click.option("--cache-dir", default=None, help="HuggingFace cache directory")
 @click.option("--ray-port", type=int, default=46379, help="Ray GCS port (vllm-ray)")
 @click.option("--init-port", type=int, default=25000, help="vllm/SGLang distributed init port")
@@ -52,7 +49,6 @@ logger = logging.getLogger(__name__)
               type=click.Choice(["auto", "local", "push", "delegated"], case_sensitive=False),
               help="Resource transfer mode (overrides cluster setting)")
 # @click.option("--config", "config_path", default=None, help="Path to config file")
-@click.option("--option", "-o", "options", multiple=True, help="Override any recipe default: -o key=value (repeatable)")
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def run(
@@ -99,23 +95,15 @@ def run(
         for issue in issues:
             click.echo(f"Warning: {issue}", err=True)
 
-    # Build overrides from --option flags first (lowest priority)
-    overrides = _parse_options(options)
-    # Dedicated CLI params override --option values
+    # Build overrides from recipe_override_options + dedicated CLI params
+    overrides = _apply_recipe_overrides(
+        options, tensor_parallel=tensor_parallel, pipeline_parallel=pipeline_parallel,
+        gpu_mem=gpu_mem, max_model_len=max_model_len, image=image, recipe=recipe,
+    )
     if port is not None:
         overrides["port"] = port
-    if tensor_parallel is not None:
-        overrides["tensor_parallel"] = tensor_parallel
-    if pipeline_parallel is not None:
-        overrides["pipeline_parallel"] = pipeline_parallel
-    if gpu_mem is not None:
-        overrides["gpu_memory_utilization"] = gpu_mem
     if served_model_name is not None:
         overrides["served_model_name"] = served_model_name
-    if max_model_len is not None:
-        overrides["max_model_len"] = max_model_len
-    if image:
-        recipe.container = image
 
     # Resolve runtime
     try:

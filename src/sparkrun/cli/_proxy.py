@@ -7,9 +7,10 @@ import sys
 import click
 
 from ._common import (
-    CLUSTER_NAME,
+    _apply_recipe_overrides,
     dry_run_option,
     host_options,
+    recipe_override_options,
 )
 
 
@@ -30,10 +31,7 @@ def proxy():
 @click.option("--port", type=int, default=None, help="Proxy listen port (default: 4000)")
 @click.option("--host", "bind_host", default=None, help="Bind address (default: 0.0.0.0)")
 @click.option("--master-key", default=None, help="LiteLLM master_key (default: sk-sparkrun)")
-@click.option("--cluster", "cluster_name", default=None, type=CLUSTER_NAME,
-              help="Discover endpoints from this cluster's hosts")
-@click.option("--hosts", "-H", default=None, help="Discover endpoints on these specific hosts")
-@click.option("--hosts-file", default=None, help="Discover endpoints from hosts file")
+@host_options
 @click.option("--foreground", is_flag=True, help="Run in foreground (default: daemonize)")
 @click.option("--no-auto-discover", is_flag=True, help="Disable periodic endpoint re-scanning")
 @click.option("--discover-interval", type=int, default=None,
@@ -192,12 +190,9 @@ def status():
 # ---------------------------------------------------------------------------
 
 @proxy.command()
-@click.option("--cluster", "cluster_name", default=None, type=CLUSTER_NAME,
-              help="Discover endpoints from this cluster's hosts")
-@click.option("--hosts", "-H", default=None, help="Discover endpoints on these specific hosts")
-@click.option("--hosts-file", default=None, help="Discover endpoints from hosts file")
+@host_options
 @click.option("--no-health-check", is_flag=True, help="Skip health checks")
-def discover(cluster_name, hosts, hosts_file, no_health_check):
+def discover(hosts, hosts_file, cluster_name, no_health_check):
     """One-shot endpoint discovery (debug/inspection).
 
     Scans job metadata and optionally health-checks each endpoint.
@@ -267,12 +262,16 @@ def models(refresh):
         click.echo("Re-discovering endpoints...")
         endpoints = discover_endpoints()
         healthy = [ep for ep in endpoints if ep.healthy]
-        added = 0
-        for ep in healthy:
-            if engine.add_model_via_api(ep):
-                added += 1
-        if added:
-            click.echo("Added %d model(s) to proxy." % added)
+        added, removed = engine.sync_models(healthy)
+        if added or removed:
+            parts = []
+            if added:
+                parts.append("added %d" % added)
+            if removed:
+                parts.append("removed %d stale" % removed)
+            click.echo("Synced proxy models: %s." % ", ".join(parts))
+        else:
+            click.echo("Proxy models already in sync.")
 
     model_list = engine.list_models_via_api()
     if not model_list:
@@ -390,11 +389,12 @@ def alias_list():
 @proxy.command("load")
 @click.argument("recipe_name")
 @host_options
+@recipe_override_options
 @click.option("--port", type=int, default=None, help="Override serve port")
-@click.option("-o", "--option", "options", multiple=True,
-              help="Override recipe default: -o key=value (repeatable)")
 @dry_run_option
-def load_cmd(recipe_name, hosts, hosts_file, cluster_name, port, options, dry_run):
+def load_cmd(recipe_name, hosts, hosts_file, cluster_name,
+             tensor_parallel, pipeline_parallel, gpu_mem, max_model_len,
+             options, image, port, dry_run):
     """Load a model via sparkrun run and register with proxy.
 
     Launches inference using ``sparkrun run --no-follow`` and registers
@@ -406,14 +406,35 @@ def load_cmd(recipe_name, hosts, hosts_file, cluster_name, port, options, dry_ru
     """
     from sparkrun.proxy.loader import load_model
 
-    overrides = _parse_load_options(options)
+    overrides = _apply_recipe_overrides(
+        options, tensor_parallel=tensor_parallel, pipeline_parallel=pipeline_parallel,
+        gpu_mem=gpu_mem, max_model_len=max_model_len, image=image,
+    )
+
+    # Auto-assign a port to avoid conflicts when the user didn't
+    # explicitly choose one.  This is the key difference between
+    # ``proxy load`` and plain ``sparkrun run``: we resolve an
+    # available port using the same ``nc -z`` SSH check that
+    # ``sparkrun benchmark`` uses, so multiple models can be
+    # loaded without port collisions.
+    effective_port = port
+    if effective_port is None:
+        try:
+            effective_port = _resolve_available_port(
+                recipe_name, cluster_name, hosts, hosts_file, overrides, dry_run,
+            )
+        except SystemExit:
+            raise
+        except Exception as e:
+            click.echo("Error resolving available port: %s" % e, err=True)
+            sys.exit(1)
 
     ok = load_model(
         recipe_name=recipe_name,
         cluster=cluster_name,
         hosts=hosts,
         hosts_file=hosts_file,
-        port=port,
+        port=effective_port,
         overrides=overrides if overrides else None,
         dry_run=dry_run,
     )
@@ -470,6 +491,19 @@ def unload_cmd(recipe_name, hosts, hosts_file, cluster_name, dry_run):
 
     click.echo("Model unloaded: %s" % recipe_name)
 
+    if not dry_run:
+        # Sync proxy to remove the now-stale model entry
+        from sparkrun.proxy.engine import ProxyEngine
+        engine = ProxyEngine()
+        if engine.is_running():
+            click.echo("Syncing proxy models...")
+            from sparkrun.proxy.discovery import discover_endpoints
+            endpoints = discover_endpoints()
+            healthy = [ep for ep in endpoints if ep.healthy]
+            _added, removed = engine.sync_models(healthy)
+            if removed:
+                click.echo("Removed %d stale model(s) from proxy." % removed)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -514,15 +548,49 @@ def _resolve_host_filter(
     return None
 
 
-def _parse_load_options(options: tuple[str, ...]) -> dict:
-    """Parse -o key=value options for the load command."""
-    from sparkrun.utils import coerce_value
 
-    result = {}
-    for opt in options:
-        if "=" not in opt:
-            click.echo("Error: --option must be key=value, got: %s" % opt, err=True)
-            sys.exit(1)
-        key, _, value = opt.partition("=")
-        result[key.strip()] = coerce_value(value.strip())
-    return result
+def _resolve_available_port(
+        recipe_name: str,
+        cluster_name: str | None,
+        hosts: str | None,
+        hosts_file: str | None,
+        overrides: dict,
+        dry_run: bool,
+) -> int:
+    """Resolve an available port for proxy load.
+
+    Loads the recipe to determine the desired port, resolves hosts,
+    and uses ``find_available_port`` from orchestration primitives
+    (the same ``nc -z`` SSH check that ``sparkrun benchmark`` uses)
+    to find the first free port on the head host.
+
+    Raises on failure so the caller can report the error.
+    """
+    from sparkrun.core.bootstrap import init_sparkrun
+    from sparkrun.core.config import SparkrunConfig
+    from sparkrun.orchestration.primitives import build_ssh_kwargs, find_available_port
+
+    v = init_sparkrun()
+    config = SparkrunConfig()
+
+    # Load recipe to get desired port from defaults
+    from ._common import _load_recipe
+    recipe, _path, _reg = _load_recipe(config, recipe_name)
+    config_chain = recipe.build_config_chain(overrides)
+    desired_port = int(config_chain.get("port") or 8000)
+
+    # Resolve hosts to find the head host for the port check
+    from ._common import _resolve_hosts_or_exit
+    host_list, _cluster_mgr = _resolve_hosts_or_exit(
+        hosts, hosts_file, cluster_name, config, v,
+    )
+    head_host = host_list[0]
+    ssh_kwargs = build_ssh_kwargs(config)
+
+    serve_port = find_available_port(
+        head_host, desired_port, ssh_kwargs=ssh_kwargs, dry_run=dry_run,
+    )
+    if serve_port != desired_port:
+        click.echo("Note: port %d in use on %s, using %d instead"
+                   % (desired_port, head_host, serve_port))
+    return serve_port

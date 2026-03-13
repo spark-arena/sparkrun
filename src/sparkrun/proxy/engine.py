@@ -315,6 +315,25 @@ class ProxyEngine:
 
         return success
 
+    def remove_model_via_api(self, model_id: str) -> bool:
+        """Remove a model from the running proxy via POST /model/delete.
+
+        Args:
+            model_id: The model ID from ``list_models_via_api()``.
+
+        Returns:
+            True if the model was removed successfully.
+        """
+        try:
+            self._api_request("POST", "/model/delete", {"id": model_id})
+            return True
+        except Exception:
+            logger.debug(
+                "Failed to remove model %s via management API",
+                model_id, exc_info=True,
+            )
+            return False
+
     def list_models_via_api(self) -> list[dict[str, Any]]:
         """Query registered models via GET /model/info.
 
@@ -327,6 +346,63 @@ class ProxyEngine:
         except Exception:
             logger.debug("Failed to list models via management API", exc_info=True)
             return []
+
+    def sync_models(self, endpoints: list[DiscoveredEndpoint]) -> tuple[int, int]:
+        """Synchronize proxy models with discovered endpoints.
+
+        Adds models from healthy endpoints that aren't registered yet,
+        and removes registered models whose backends are no longer
+        present in the discovered endpoints.
+
+        Args:
+            endpoints: Healthy discovered endpoints.
+
+        Returns:
+            Tuple of (added_count, removed_count).
+        """
+        # Build set of expected api_base URLs from healthy endpoints
+        healthy_bases: set[str] = set()
+        for ep in endpoints:
+            healthy_bases.add("http://%s:%d/v1" % (ep.host, ep.port))
+
+        # Query currently registered models
+        registered = self.list_models_via_api()
+
+        # Remove stale models (backend no longer healthy)
+        removed = 0
+        for m in registered:
+            model_id = m.get("model_info", {}).get("id")
+            api_base = m.get("litellm_params", {}).get("api_base", "")
+            if api_base and api_base not in healthy_bases and model_id:
+                model_name = m.get("model_name", model_id)
+                if self.remove_model_via_api(model_id):
+                    logger.info("Removed stale model: %s (%s)", model_name, api_base)
+                    removed += 1
+
+        # Add new models from healthy endpoints
+        # Re-query after removals to get current state
+        if removed:
+            registered = self.list_models_via_api()
+
+        registered_keys: set[str] = set()
+        for m in registered:
+            name = m.get("model_name", "")
+            api_base = m.get("litellm_params", {}).get("api_base", "")
+            if name and api_base:
+                registered_keys.add("%s@%s" % (name, api_base))
+
+        added = 0
+        for ep in endpoints:
+            model_names = ep.actual_models if ep.actual_models else [ep.model]
+            api_base = "http://%s:%d/v1" % (ep.host, ep.port)
+            for model_name in model_names:
+                key = "%s@%s" % (model_name, api_base)
+                if key not in registered_keys:
+                    if self.add_model_via_api(ep):
+                        added += 1
+                    break  # add_model_via_api handles all models for the endpoint
+
+        return added, removed
 
     def _api_request(self, method: str, path: str, payload: dict | None = None) -> dict:
         """Make an HTTP request to the litellm management API."""

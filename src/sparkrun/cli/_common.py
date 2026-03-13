@@ -777,6 +777,43 @@ def host_options(f):
     return f
 
 
+def recipe_override_options(f):
+    """Common recipe override options: --tp, --pp, --gpu-mem, --max-model-len, --option/-o, --image."""
+    f = click.option("--option", "-o", "options", multiple=True,
+                     help="Override any recipe default: -o key=value (repeatable)")(f)
+    f = click.option("--image", default=None, help="Override container image")(f)
+    f = click.option("--max-model-len", type=int, default=None,
+                     help="Override maximum model context length")(f)
+    f = click.option("--gpu-mem", type=float, default=None,
+                     help="Override GPU memory utilization")(f)
+    f = click.option("--pp", "--pipeline-parallel", "pipeline_parallel", type=int, default=None,
+                     help="Override pipeline parallelism")(f)
+    f = click.option("--tp", "--tensor-parallel", "tensor_parallel", type=int, default=None,
+                     help="Override tensor parallelism")(f)
+    return f
+
+
+def _apply_recipe_overrides(options, tensor_parallel=None, pipeline_parallel=None,
+                            gpu_mem=None, max_model_len=None, image=None, recipe=None):
+    """Build overrides dict from recipe_override_options parameters.
+
+    Returns the merged overrides dict.  When *recipe* is provided and
+    *image* is set, ``recipe.container`` is updated in-place.
+    """
+    overrides = _parse_options(options)
+    if tensor_parallel is not None:
+        overrides["tensor_parallel"] = tensor_parallel
+    if pipeline_parallel is not None:
+        overrides["pipeline_parallel"] = pipeline_parallel
+    if gpu_mem is not None:
+        overrides["gpu_memory_utilization"] = gpu_mem
+    if max_model_len is not None:
+        overrides["max_model_len"] = max_model_len
+    if image and recipe is not None:
+        recipe.container = image
+    return overrides
+
+
 def dry_run_option(f):
     """Common --dry-run flag."""
     return click.option("--dry-run", "-n", is_flag=True,

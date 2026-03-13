@@ -13,6 +13,7 @@ from ._common import (
     PROFILE_NAME,
     RECIPE_NAME,
     _apply_node_trimming,
+    _apply_recipe_overrides,
     _display_vram_estimate,
     _expand_recipe_shortcut,
     _is_recipe_url,
@@ -23,6 +24,7 @@ from ._common import (
     _simplify_recipe_ref,
     dry_run_option,
     host_options,
+    recipe_override_options,
 )
 
 logger = logging.getLogger(__name__)
@@ -33,20 +35,16 @@ DEFAULT_BENCHMARK_TIMEOUT: int = 14400  # 4 hours
 @click.command()
 @click.argument("recipe_name", type=RECIPE_NAME)
 @host_options
+@recipe_override_options
 @click.option("--solo", is_flag=True, help="Force single-node mode")
-@click.option("--tp", "--tensor-parallel", "tensor_parallel", type=int, default=None,
-              help="Override tensor parallelism")
-@click.option("--pp", "--pipeline-parallel", "pipeline_parallel", type=int, default=None,
-              help="Override pipeline parallelism")
 @click.option("--port", type=int, default=None, help="Override serve port")
-@click.option("--image", default=None, help="Override container image")
 @click.option("--cache-dir", default=None, help="HuggingFace cache directory")
 @click.option("--profile", default=None, type=PROFILE_NAME, help="Benchmark profile name or file path")
 @click.option("--framework", default=None, help="Override benchmarking framework (default: llama-benchy)")
 @click.option("--out", "--output", "output_file", default=None, type=click.Path(),
               help="Output file for results YAML")
-@click.option("-o", "--option", "options", multiple=True,
-              help="Override benchmark arg: -o key=value (repeatable)")
+@click.option("-b", "--bench-option", "bench_options", multiple=True,
+              help="Override benchmark arg: -b key=value (repeatable)")
 @click.option("--exit-on-first-fail/--no-exit-on-first-fail", "exit_on_first_fail", default=True,
               help="Abort benchmark on first failure and skip saving results (default: enabled)")
 @click.option("--no-stop", is_flag=True, help="Don't stop inference after benchmarking")
@@ -56,10 +54,11 @@ DEFAULT_BENCHMARK_TIMEOUT: int = 14400  # 4 hours
               help="Benchmark timeout in seconds (default: %d, or from profile)" % DEFAULT_BENCHMARK_TIMEOUT)
 @dry_run_option
 @click.pass_context
-def benchmark(ctx, recipe_name, hosts, hosts_file, cluster_name, solo,
-              tensor_parallel, pipeline_parallel, port, image, cache_dir,
+def benchmark(ctx, recipe_name, hosts, hosts_file, cluster_name,
+              tensor_parallel, pipeline_parallel, gpu_mem, max_model_len,
+              options, image, solo, port, cache_dir,
               profile, framework,
-              output_file, options, exit_on_first_fail, no_stop, skip_run,
+              output_file, bench_options, exit_on_first_fail, no_stop, skip_run,
               sync_tuning, bench_timeout, dry_run):
     """Benchmark an inference recipe.
 
@@ -78,24 +77,26 @@ def benchmark(ctx, recipe_name, hosts, hosts_file, cluster_name, solo,
 
       sparkrun benchmark qwen3-1.7b-sglang --tp 2 --profile spark-arena-v1
 
-      sparkrun benchmark qwen3-1.7b-sglang -o depth=0,2048,4096 -o tg=32,128
+      sparkrun benchmark qwen3-1.7b-sglang -b depth=0,2048,4096 -b tg=32,128
 
       sparkrun benchmark qwen3-1.7b-sglang --skip-run --solo
     """
     _run_benchmark(
-        ctx, recipe_name, hosts, hosts_file, cluster_name, solo,
-        tensor_parallel, pipeline_parallel, port, image, cache_dir,
+        ctx, recipe_name, hosts, hosts_file, cluster_name,
+        tensor_parallel, pipeline_parallel, gpu_mem, max_model_len,
+        options, image, solo, port, cache_dir,
         profile, framework,
-        output_file, options, exit_on_first_fail, no_stop, skip_run,
+        output_file, bench_options, exit_on_first_fail, no_stop, skip_run,
         sync_tuning, bench_timeout, dry_run,
     )
 
 
 def _run_benchmark(
-        ctx, recipe_name, hosts, hosts_file, cluster_name, solo,
-        tensor_parallel, pipeline_parallel, port, image, cache_dir,
+        ctx, recipe_name, hosts, hosts_file, cluster_name,
+        tensor_parallel, pipeline_parallel, gpu_mem, max_model_len,
+        options, image, solo, port, cache_dir,
         profile, framework_name,
-        output_file, options, exit_on_first_fail, no_stop, skip_run,
+        output_file, bench_options, exit_on_first_fail, no_stop, skip_run,
         sync_tuning, bench_timeout, dry_run,
 ):
     """Execute the full benchmark flow: launch inference -> benchmark -> stop."""
@@ -182,10 +183,10 @@ def _run_benchmark(
     # Merge layers: defaults < passthrough < profile/recipe bench args
     bench_args = {**fw.get_default_args(), **passthrough_layer, **bench_args}
 
-    # Apply -o overrides on top
-    for opt_str in options:
+    # Apply -b overrides on top
+    for opt_str in bench_options:
         if "=" not in opt_str:
-            click.echo("Error: benchmark option must be key=value, got: %s" % opt_str, err=True)
+            click.echo("Error: --bench-option must be key=value, got: %s" % opt_str, err=True)
             sys.exit(1)
         key, _, val = opt_str.partition("=")
         bench_args[key.strip()] = fw.interpret_arg(key.strip(), val.strip())
@@ -209,15 +210,12 @@ def _run_benchmark(
     # ---------------------------------------------------------------
     # 4. Build overrides and resolve runtime/hosts
     # ---------------------------------------------------------------
-    overrides: dict = {}
+    overrides = _apply_recipe_overrides(
+        options, tensor_parallel=tensor_parallel, pipeline_parallel=pipeline_parallel,
+        gpu_mem=gpu_mem, max_model_len=max_model_len, image=image, recipe=recipe,
+    )
     if port is not None:
         overrides["port"] = port
-    if tensor_parallel is not None:
-        overrides["tensor_parallel"] = tensor_parallel
-    if pipeline_parallel is not None:
-        overrides["pipeline_parallel"] = pipeline_parallel
-    if image:
-        recipe.container = image
 
     try:
         runtime = get_runtime(recipe.runtime, v)

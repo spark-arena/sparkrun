@@ -787,6 +787,124 @@ class TestEngineManagementAPI:
 
         assert models == []
 
+    def test_remove_model_via_api(self, state_dir: Path):
+        """remove_model_via_api sends POST /model/delete."""
+        from sparkrun.proxy.engine import ProxyEngine
+
+        engine = ProxyEngine(state_dir=state_dir)
+
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'{"status": "ok"}'
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_response) as mock_urlopen:
+            result = engine.remove_model_via_api("model-id-123")
+
+        assert result is True
+        req = mock_urlopen.call_args[0][0]
+        assert req.method == "POST"
+        assert "/model/delete" in req.full_url
+        payload = json.loads(req.data)
+        assert payload["id"] == "model-id-123"
+
+    def test_remove_model_api_failure(self, state_dir: Path):
+        """remove_model_via_api returns False on failure."""
+        from sparkrun.proxy.engine import ProxyEngine
+
+        engine = ProxyEngine(state_dir=state_dir)
+
+        with patch("urllib.request.urlopen", side_effect=Exception("connection refused")):
+            result = engine.remove_model_via_api("model-id-123")
+
+        assert result is False
+
+    def test_sync_models_adds_new(self, state_dir: Path):
+        """sync_models adds models not yet registered."""
+        from sparkrun.proxy.discovery import DiscoveredEndpoint
+        from sparkrun.proxy.engine import ProxyEngine
+
+        engine = ProxyEngine(state_dir=state_dir)
+
+        ep = DiscoveredEndpoint(
+            cluster_id="sparkrun_abc",
+            model="test/model",
+            served_model_name=None,
+            runtime="vllm",
+            host="10.0.0.1",
+            port=8000,
+            healthy=True,
+            actual_models=["test/model"],
+        )
+
+        # No models registered yet
+        with patch.object(engine, "list_models_via_api", return_value=[]), \
+             patch.object(engine, "add_model_via_api", return_value=True) as mock_add:
+            added, removed = engine.sync_models([ep])
+
+        assert added == 1
+        assert removed == 0
+        mock_add.assert_called_once_with(ep)
+
+    def test_sync_models_removes_stale(self, state_dir: Path):
+        """sync_models removes models whose backends are gone."""
+        from sparkrun.proxy.engine import ProxyEngine
+
+        engine = ProxyEngine(state_dir=state_dir)
+
+        registered = [
+            {
+                "model_name": "old/model",
+                "model_info": {"id": "old-id-123"},
+                "litellm_params": {"api_base": "http://10.0.0.99:8000/v1"},
+            },
+        ]
+
+        # No healthy endpoints — the old model should be removed
+        with patch.object(engine, "list_models_via_api", return_value=registered), \
+             patch.object(engine, "remove_model_via_api", return_value=True) as mock_rm:
+            added, removed = engine.sync_models([])
+
+        assert added == 0
+        assert removed == 1
+        mock_rm.assert_called_once_with("old-id-123")
+
+    def test_sync_models_skips_healthy(self, state_dir: Path):
+        """sync_models does not remove models with healthy backends."""
+        from sparkrun.proxy.discovery import DiscoveredEndpoint
+        from sparkrun.proxy.engine import ProxyEngine
+
+        engine = ProxyEngine(state_dir=state_dir)
+
+        ep = DiscoveredEndpoint(
+            cluster_id="sparkrun_abc",
+            model="test/model",
+            served_model_name=None,
+            runtime="vllm",
+            host="10.0.0.1",
+            port=8000,
+            healthy=True,
+            actual_models=["test/model"],
+        )
+
+        registered = [
+            {
+                "model_name": "test/model",
+                "model_info": {"id": "good-id"},
+                "litellm_params": {"api_base": "http://10.0.0.1:8000/v1"},
+            },
+        ]
+
+        with patch.object(engine, "list_models_via_api", return_value=registered), \
+             patch.object(engine, "remove_model_via_api") as mock_rm, \
+             patch.object(engine, "add_model_via_api") as mock_add:
+            added, removed = engine.sync_models([ep])
+
+        assert added == 0
+        assert removed == 0
+        mock_rm.assert_not_called()
+        mock_add.assert_not_called()
+
 
 # =====================================================================
 # Tests: Loader
@@ -880,6 +998,89 @@ class TestLoader:
 
         cmd = mock_run.call_args[0][0]
         assert "--dry-run" in cmd
+
+
+# =====================================================================
+# Tests: _resolve_available_port (proxy load port conflict avoidance)
+# =====================================================================
+
+class TestResolveAvailablePort:
+    """Test proxy load port auto-resolution via orchestration primitives."""
+
+    def _patch_resolve(self, mock_recipe, fap_return=8000):
+        """Helper to set up patches for _resolve_available_port tests."""
+        return (
+            patch("sparkrun.core.bootstrap.init_sparkrun"),
+            patch("sparkrun.core.config.SparkrunConfig"),
+            patch("sparkrun.cli._common._load_recipe", return_value=(mock_recipe, None, None)),
+            patch("sparkrun.cli._common._resolve_hosts_or_exit",
+                  return_value=(["10.0.0.1"], None)),
+            patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={}),
+            patch("sparkrun.orchestration.primitives.find_available_port",
+                  return_value=fap_return),
+        )
+
+    def test_uses_find_available_port(self):
+        """Calls orchestration find_available_port with recipe's desired port."""
+        from sparkrun.cli._proxy import _resolve_available_port
+
+        mock_recipe = MagicMock()
+        mock_recipe.build_config_chain.return_value = {"port": 8000}
+
+        p1, p2, p3, p4, p5, p6 = self._patch_resolve(mock_recipe, 8000)
+        with p1, p2, p3, p4, p5, p6 as mock_fap:
+            port = _resolve_available_port("test-recipe", None, None, None, {}, False)
+
+        assert port == 8000
+        mock_fap.assert_called_once_with("10.0.0.1", 8000, ssh_kwargs={}, dry_run=False)
+
+    def test_increments_when_occupied(self):
+        """Returns incremented port when desired port is in use."""
+        from sparkrun.cli._proxy import _resolve_available_port
+
+        mock_recipe = MagicMock()
+        mock_recipe.build_config_chain.return_value = {"port": 8000}
+
+        p1, p2, p3, p4, p5, p6 = self._patch_resolve(mock_recipe, 8002)
+        with p1, p2, p3, p4, p5, p6:
+            port = _resolve_available_port("test-recipe", None, None, None, {}, False)
+
+        assert port == 8002
+
+    def test_uses_recipe_default_port(self):
+        """Reads desired port from recipe config chain."""
+        from sparkrun.cli._proxy import _resolve_available_port
+
+        mock_recipe = MagicMock()
+        mock_recipe.build_config_chain.return_value = {"port": 9000}
+
+        p1, p2, p3, p4, p5, p6 = self._patch_resolve(mock_recipe, 9000)
+        with p1, p2, p3, p4, p5, p6 as mock_fap:
+            port = _resolve_available_port("test-recipe", None, None, None, {}, False)
+
+        assert port == 9000
+        mock_fap.assert_called_once_with("10.0.0.1", 9000, ssh_kwargs={}, dry_run=False)
+
+    def test_raises_on_error(self):
+        """Raises when recipe loading or host resolution fails."""
+        from sparkrun.cli._proxy import _resolve_available_port
+
+        with patch("sparkrun.core.bootstrap.init_sparkrun", side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError, match="boom"):
+                _resolve_available_port("bad-recipe", None, None, None, {}, False)
+
+    def test_dry_run_passes_through(self):
+        """dry_run flag is forwarded to find_available_port."""
+        from sparkrun.cli._proxy import _resolve_available_port
+
+        mock_recipe = MagicMock()
+        mock_recipe.build_config_chain.return_value = {"port": 8000}
+
+        p1, p2, p3, p4, p5, p6 = self._patch_resolve(mock_recipe, 8000)
+        with p1, p2, p3, p4, p5, p6 as mock_fap:
+            _resolve_available_port("test-recipe", None, None, None, {}, True)
+
+        mock_fap.assert_called_once_with("10.0.0.1", 8000, ssh_kwargs={}, dry_run=True)
 
 
 # =====================================================================
