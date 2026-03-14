@@ -382,7 +382,7 @@ def _run_benchmark(
             click.echo("Waiting for inference server on %s:%d..." % (head_host, serve_port))
             ready = wait_for_port(
                 head_host, serve_port,
-                max_retries=120, retry_interval=5,
+                max_retries=180, retry_interval=5,  # TODO: maybe make this dynamic with model size somewhat??
                 ssh_kwargs=ssh_kwargs, dry_run=dry_run,
                 container_name=head_container,
             )
