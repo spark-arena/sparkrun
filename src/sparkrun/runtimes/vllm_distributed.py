@@ -206,6 +206,8 @@ class VllmDistributedRuntime(RuntimePlugin):
             nccl_env: dict[str, str] | None = None,
             init_port: int = 25000,
             skip_keys: set[str] | frozenset[str] = frozenset(),
+            auto_remove: bool = True,
+            restart_policy: str | None = None,
             **kwargs,
     ) -> int:
         """Orchestrate a multi-node vLLM cluster using native distribution.
@@ -307,6 +309,7 @@ class VllmDistributedRuntime(RuntimePlugin):
             image=image, container_name=head_container,
             serve_command=head_command, label="vllm node",
             env=all_env, volumes=volumes, nccl_env=nccl_env,
+            auto_remove=auto_remove, restart_policy=restart_policy,
         )
         head_result = run_remote_script(
             head_host, head_script, timeout=120, dry_run=dry_run, **ssh_kwargs,
@@ -372,6 +375,7 @@ class VllmDistributedRuntime(RuntimePlugin):
                         image=image, container_name=worker_container,
                         serve_command=worker_command, label="vllm node",
                         env=all_env, volumes=volumes, nccl_env=nccl_env,
+                        auto_remove=auto_remove, restart_policy=restart_policy,
                     )
                     future = executor.submit(
                         run_remote_script, host, worker_script,

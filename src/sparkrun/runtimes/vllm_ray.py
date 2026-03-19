@@ -173,6 +173,8 @@ class VllmRayRuntime(RuntimePlugin):
             ray_port: int = 46379,
             dashboard_port: int = 8265,
             dashboard: bool = False,
+            auto_remove: bool = True,
+            restart_policy: str | None = None,
             **kwargs,
     ) -> int:
         """Orchestrate a multi-node Ray cluster for vLLM.
@@ -254,6 +256,8 @@ class VllmRayRuntime(RuntimePlugin):
             env=all_env,
             volumes=volumes,
             nccl_env=nccl_env,
+            auto_remove=auto_remove,
+            restart_policy=restart_policy,
         )
         head_result = run_remote_script(
             head_host, head_script, timeout=120, dry_run=dry_run, **ssh_kwargs,
@@ -303,6 +307,8 @@ class VllmRayRuntime(RuntimePlugin):
                 env=all_env,
                 volumes=volumes,
                 nccl_env=nccl_env,
+                auto_remove=auto_remove,
+                restart_policy=restart_policy,
             )
             worker_results = run_remote_scripts_parallel(
                 worker_hosts, worker_script, timeout=120, dry_run=dry_run, **ssh_kwargs,

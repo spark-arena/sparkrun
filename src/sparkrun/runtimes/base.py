@@ -521,6 +521,8 @@ class RuntimePlugin(Plugin):
             nccl_env: dict[str, str] | None = None,
             ib_ip_map: dict[str, str] | None = None,
             skip_keys: set[str] | frozenset[str] = frozenset(),
+            auto_remove: bool = True,
+            restart_policy: str | None = None,
             **kwargs,
     ) -> int:
         """Launch a workload -- delegates to solo or cluster implementation.
@@ -569,6 +571,8 @@ class RuntimePlugin(Plugin):
                 nccl_env=nccl_env,
                 recipe=recipe,
                 overrides=overrides,
+                auto_remove=auto_remove,
+                restart_policy=restart_policy,
             )
         return self._run_cluster(
             hosts=hosts,
@@ -585,6 +589,8 @@ class RuntimePlugin(Plugin):
             nccl_env=nccl_env,
             ib_ip_map=ib_ip_map,
             skip_keys=skip_keys,
+            auto_remove=auto_remove,
+            restart_policy=restart_policy,
             **kwargs,
         )
 
@@ -670,6 +676,8 @@ class RuntimePlugin(Plugin):
             nccl_env: dict[str, str] | None = None,
             recipe: Recipe | None = None,
             overrides: dict[str, Any] | None = None,
+            auto_remove: bool = True,
+            restart_policy: str | None = None,
     ) -> int:
         """Launch a single-node inference workload.
 
@@ -728,6 +736,8 @@ class RuntimePlugin(Plugin):
             volumes=volumes,
             nccl_env=nccl_env,
             extra_docker_opts=self.get_extra_docker_opts() or None,
+            auto_remove=auto_remove,
+            restart_policy=restart_policy,
         )
         result = run_script_on_host(
             host, launch_script, ssh_kwargs=ssh_kwargs, timeout=120, dry_run=dry_run,
@@ -809,6 +819,8 @@ class RuntimePlugin(Plugin):
             volumes: dict[str, str] | None = None,
             nccl_env: dict[str, str] | None = None,
             extra_docker_opts: list[str] | None = None,
+            auto_remove: bool = True,
+            restart_policy: str | None = None,
     ) -> str:
         """Generate a script that launches a container with a direct entrypoint command.
 
@@ -842,6 +854,8 @@ class RuntimePlugin(Plugin):
             env=all_env,
             volumes=volumes,
             extra_opts=extra_docker_opts,
+            auto_remove=auto_remove,
+            restart_policy=restart_policy,
         )
 
         return (

@@ -38,6 +38,8 @@ def generate_container_launch_script(
     nccl_env: dict[str, str] | None = None,
     detach: bool = True,
     extra_docker_opts: list[str] | None = None,
+    auto_remove: bool = True,
+    restart_policy: str | None = None,
 ) -> str:
     """Generate a script that launches a Docker container.
 
@@ -68,6 +70,8 @@ def generate_container_launch_script(
         env=all_env,
         volumes=volumes,
         extra_opts=extra_docker_opts,
+        auto_remove=auto_remove,
+        restart_policy=restart_policy,
     )
 
     template = read_script("container_launch.sh")
@@ -88,6 +92,8 @@ def generate_ray_head_script(
     env: dict[str, str] | None = None,
     volumes: dict[str, str] | None = None,
     nccl_env: dict[str, str] | None = None,
+    auto_remove: bool = True,
+    restart_policy: str | None = None,
 ) -> str:
     """Generate a script that starts a Ray head node in a container.
 
@@ -135,6 +141,8 @@ def generate_ray_head_script(
         detach=True,
         env=all_env,
         volumes=volumes,
+        auto_remove=auto_remove,
+        restart_policy=restart_policy,
     )
 
     template = read_script("ray_head.sh")
@@ -152,6 +160,8 @@ def generate_ray_worker_script(
     env: dict[str, str] | None = None,
     volumes: dict[str, str] | None = None,
     nccl_env: dict[str, str] | None = None,
+    auto_remove: bool = True,
+    restart_policy: str | None = None,
 ) -> str:
     """Generate a script that starts a Ray worker node.
 
@@ -185,6 +195,8 @@ def generate_ray_worker_script(
         detach=True,
         env=all_env,
         volumes=volumes,
+        auto_remove=auto_remove,
+        restart_policy=restart_policy,
     )
 
     template = read_script("ray_worker.sh")

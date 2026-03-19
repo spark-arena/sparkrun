@@ -65,6 +65,9 @@ def launch_inference(
         dashboard_port: int | None = None,
         dashboard: bool = False,
         init_port: int | None = None,
+        # Container lifecycle options
+        auto_remove: bool = True,
+        restart_policy: str | None = None,
 ) -> LaunchResult:
     """Launch an inference workload.
 
@@ -285,6 +288,8 @@ def launch_inference(
         nccl_env=nccl_env,
         ib_ip_map=ib_ip_map,
         skip_keys=skip_keys,
+        auto_remove=auto_remove,
+        restart_policy=restart_policy,
         **run_kwargs,
     )
 

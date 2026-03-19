@@ -353,6 +353,8 @@ class LlamaCppRuntime(RuntimePlugin):
             ib_ip_map: dict[str, str] | None = None,
             rpc_port: int = _DEFAULT_RPC_PORT,
             skip_keys: set[str] | frozenset[str] = frozenset(),
+            auto_remove: bool = True,
+            restart_policy: str | None = None,
             **kwargs,
     ) -> int:
         """Orchestrate a multi-node llama.cpp cluster using RPC.
@@ -454,6 +456,7 @@ class LlamaCppRuntime(RuntimePlugin):
                         image=image, container_name=worker_container_name,
                         serve_command=rpc_worker_command, label="llama.cpp node",
                         env=all_env, volumes=volumes, nccl_env=nccl_env,
+                        auto_remove=auto_remove, restart_policy=restart_policy,
                     )
                     future = executor.submit(
                         run_remote_script, host, script,
@@ -512,6 +515,7 @@ class LlamaCppRuntime(RuntimePlugin):
             image=image, container_name=head_container,
             serve_command=head_command, label="llama.cpp node",
             env=all_env, volumes=volumes, nccl_env=nccl_env,
+            auto_remove=auto_remove, restart_policy=restart_policy,
         )
         head_result = run_remote_script(
             head_host, head_script, timeout=120, dry_run=dry_run, **ssh_kwargs,

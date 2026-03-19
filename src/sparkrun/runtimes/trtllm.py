@@ -388,6 +388,8 @@ class TrtllmRuntime(RuntimePlugin):
             detached: bool = True,
             nccl_env: dict[str, str] | None = None,
             skip_keys: set[str] | frozenset[str] = frozenset(),
+            auto_remove: bool = True,
+            restart_policy: str | None = None,
             **kwargs,
     ) -> int:
         """Orchestrate a multi-node TRT-LLM cluster using MPI.
@@ -484,6 +486,8 @@ class TrtllmRuntime(RuntimePlugin):
                     volumes=volumes,
                     nccl_env=nccl_env,
                     extra_docker_opts=extra_docker_opts or None,
+                    auto_remove=auto_remove,
+                    restart_policy=restart_policy,
                 )
                 future = executor.submit(
                     run_remote_script, host, launch_script,

@@ -15,7 +15,6 @@ logger = logging.getLogger(__name__)
 _DEFAULT_DOCKER_OPTS = [
     "--privileged",
     "--gpus all",
-    "--rm",
     "--ipc=host",
     "--shm-size=10.24gb",
     "--network host",
@@ -30,6 +29,8 @@ def docker_run_cmd(
     env: dict[str, str] | None = None,
     volumes: dict[str, str] | None = None,
     extra_opts: list[str] | None = None,
+    auto_remove: bool = True,
+    restart_policy: str | None = None,
 ) -> str:
     """Generate a ``docker run`` command string.
 
@@ -41,16 +42,30 @@ def docker_run_cmd(
         env: Environment variables to set (``-e KEY=VALUE``).
         volumes: Volume mounts (``-v host:container``).
         extra_opts: Additional docker run options.
+        auto_remove: Add ``--rm`` flag (default True). Forced to False
+            when *restart_policy* is set (Docker does not allow both).
+        restart_policy: Docker restart policy (e.g. ``always``,
+            ``unless-stopped``, ``on-failure:3``).
 
     Returns:
         Complete ``docker run`` command string.
     """
+    # Docker does not allow --rm with --restart
+    if restart_policy:
+        auto_remove = False
+
     parts = ["docker", "run"]
 
     if detach:
         parts.append("-d")
 
     parts.extend(_DEFAULT_DOCKER_OPTS)
+
+    if auto_remove:
+        parts.append("--rm")
+
+    if restart_policy:
+        parts.extend(["--restart", restart_policy])
 
     if container_name:
         parts.extend(["--name", container_name])

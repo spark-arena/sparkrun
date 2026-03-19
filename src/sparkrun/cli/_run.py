@@ -43,6 +43,9 @@ logger = logging.getLogger(__name__)
 @click.option("--foreground", is_flag=True, help="Run in foreground (don't detach)")
 @click.option("--no-follow", is_flag=True, help="Don't follow container logs after launch")
 @click.option("--no-sync-tuning", is_flag=True, help="Skip syncing tuning configs from registries")
+@click.option("--no-rm", is_flag=True, help="Don't auto-remove containers on exit (keeps containers after stop)")
+@click.option("--restart", "restart_policy", default=None,
+              help="Docker restart policy (no, always, unless-stopped, on-failure[:N])")
 @click.option("--transfer-mode", default=None,
               type=click.Choice(["auto", "local", "push", "delegated"], case_sensitive=False),
               help="Resource transfer mode (overrides cluster setting)")
@@ -52,7 +55,7 @@ def run(
         ctx, recipe_name, hosts, hosts_file, cluster_name, solo, port, tensor_parallel,
         pipeline_parallel, gpu_mem, served_model_name, max_model_len, image, cache_dir,
         ray_port, init_port, dashboard, dashboard_port,
-        dry_run, foreground, no_follow, no_sync_tuning, transfer_mode,
+        dry_run, foreground, no_follow, no_sync_tuning, no_rm, restart_policy, transfer_mode,
         options, extra_args, config_path=None, setup=True,
 ):
     """Run an inference recipe.
@@ -222,6 +225,11 @@ def run(
             click.echo("  Workers: %s" % ", ".join(host_list[1:]))
     click.echo()
 
+    # Resolve container lifecycle options
+    auto_remove = not no_rm
+    if restart_policy:
+        auto_remove = False
+
     # Launch via shared pipeline
     result = launch_inference(
         recipe=recipe,
@@ -242,6 +250,8 @@ def run(
         dashboard_port=dashboard_port,
         dashboard=dashboard,
         init_port=init_port,
+        auto_remove=auto_remove,
+        restart_policy=restart_policy,
     )
 
     click.echo("Cluster:   %s" % result.cluster_id)
