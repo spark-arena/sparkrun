@@ -234,8 +234,8 @@ class TestContainerReuse:
         # Should NOT have called runtime.run()
         mock_runtime.run.assert_not_called()
 
-    def test_launch_no_reuse_existing_container(self):
-        """When reuse=False and a matching container exists, return rc=1."""
+    def test_launch_no_reuse_skips_container_check(self):
+        """When reuse=False, container check is skipped and auto-increment proceeds normally."""
         from sparkrun.core.launcher import launch_inference
 
         mock_recipe = MagicMock()
@@ -243,21 +243,33 @@ class TestContainerReuse:
         mock_recipe.runtime = "vllm"
         mock_recipe.model = "test-model"
         mock_recipe.defaults = {}
+        mock_recipe.builder = None
+        mock_recipe.env = {}
         mock_recipe.build_config_chain.return_value = {"port": 52001}
+        mock_recipe.mode = "solo"
+        mock_recipe.model_revision = None
+        mock_recipe.source_registry = None
 
         mock_runtime = MagicMock()
         mock_runtime.resolve_container.return_value = "test-image:latest"
+        mock_runtime.is_delegating_runtime.return_value = True
+        mock_runtime.run.return_value = 0
+        mock_runtime.generate_command.return_value = "serve cmd"
 
         mock_config = MagicMock()
         mock_config.hf_cache_dir = "/tmp/cache"
+        mock_config.cache_dir = "/tmp/cache"
         mock_config.ssh_user = None
         mock_config.ssh_key = None
         mock_config.ssh_options = None
 
-        with patch("sparkrun.orchestration.primitives.check_sparkrun_container",
-                    return_value="sparkrun_abc123_solo"), \
+        with patch("sparkrun.orchestration.primitives.check_sparkrun_container") as mock_check, \
+             patch("sparkrun.orchestration.primitives.find_available_port",
+                    return_value=52001), \
              patch("sparkrun.orchestration.job_metadata.generate_cluster_id",
-                    return_value="sparkrun_abc123"):
+                    return_value="sparkrun_abc123"), \
+             patch("sparkrun.orchestration.job_metadata.save_job_metadata"), \
+             patch("sparkrun.models.download.is_gguf_model", return_value=False):
             result = launch_inference(
                 recipe=mock_recipe,
                 runtime=mock_runtime,
@@ -268,9 +280,11 @@ class TestContainerReuse:
                 reuse=False,
             )
 
-        assert result.rc == 1
+        # Container check should NOT have been called
+        mock_check.assert_not_called()
+        assert result.rc == 0
         assert result.reused is False
-        mock_runtime.run.assert_not_called()
+        mock_runtime.run.assert_called_once()
 
     def test_launch_no_existing_container_proceeds(self):
         """When no matching container exists, proceed with normal launch."""

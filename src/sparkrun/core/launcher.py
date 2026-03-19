@@ -126,20 +126,14 @@ def launch_inference(
     if auto_port:
         from sparkrun.orchestration.primitives import check_sparkrun_container, find_available_port
 
-        # Compute cluster_id for the desired port *before* auto-increment
-        pre_overrides = {**overrides, "port": desired_port}
-        expected_cluster_id = generate_cluster_id(recipe, host_list, overrides=pre_overrides)
-
-        # Check if a container with that cluster_id is already running
-        if not dry_run:
+        # When reuse is requested, check if the same recipe is already running
+        if reuse and not dry_run:
+            pre_overrides = {**overrides, "port": desired_port}
+            expected_cluster_id = generate_cluster_id(recipe, host_list, overrides=pre_overrides)
             existing_container = check_sparkrun_container(
                 head_host, expected_cluster_id, ssh_kwargs=ssh_kwargs,
             )
-        else:
-            existing_container = None
-
-        if existing_container:
-            if reuse:
+            if existing_container:
                 logger.info(
                     "Reusing existing container %s on %s (port %d)",
                     existing_container, head_host, desired_port,
@@ -161,29 +155,8 @@ def launch_inference(
                     recipe_ref=recipe_ref,
                     reused=True,
                 )
-            else:
-                import click
-                click.echo(
-                    "Recipe '%s' is already running on port %d (container: %s). "
-                    "Use 'sparkrun stop' first." % (recipe.name, desired_port, existing_container),
-                    err=True,
-                )
-                return LaunchResult(
-                    rc=1,
-                    cluster_id=expected_cluster_id,
-                    host_list=host_list,
-                    is_solo=is_solo or len(host_list) <= 1,
-                    runtime=runtime,
-                    recipe=recipe,
-                    overrides=overrides,
-                    container_image=runtime.resolve_container(recipe, overrides),
-                    effective_cache_dir=effective_cache_dir,
-                    serve_port=desired_port,
-                    config=config,
-                    recipe_ref=recipe_ref,
-                )
 
-        # No matching container — find a free port (may auto-increment)
+        # No reuse (or no matching container) — find a free port
         serve_port = find_available_port(
             head_host, desired_port, ssh_kwargs=ssh_kwargs, dry_run=dry_run,
         )
