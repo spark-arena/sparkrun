@@ -225,10 +225,12 @@ def run(
             click.echo("  Workers: %s" % ", ".join(host_list[1:]))
     click.echo()
 
-    # Resolve container lifecycle options
-    auto_remove = not no_rm
+    # Build executor config from CLI flags
+    cli_executor_opts = {}
+    if no_rm:
+        cli_executor_opts["auto_remove"] = False
     if restart_policy:
-        auto_remove = False
+        cli_executor_opts["restart_policy"] = restart_policy
 
     # Launch via shared pipeline
     result = launch_inference(
@@ -250,8 +252,7 @@ def run(
         dashboard_port=dashboard_port,
         dashboard=dashboard,
         init_port=init_port,
-        auto_remove=auto_remove,
-        restart_policy=restart_policy,
+        executor_config=cli_executor_opts,
     )
 
     click.echo("Cluster:   %s" % result.cluster_id)

@@ -7,8 +7,9 @@ import sys
 import click
 
 from ._common import (
-    RECIPE_NAME,
+    TARGET,
     _apply_node_trimming,
+    _is_cluster_id,
     _load_recipe,
     _resolve_hosts_or_exit,
     _setup_logging,
@@ -18,20 +19,24 @@ from ._common import (
 
 
 @click.command()
-@click.argument("recipe_name", type=RECIPE_NAME, required=False, default=None)
+@click.argument("target", type=TARGET, required=False, default=None)
 @host_options
 @click.option("--all", "-a", "stop_all", is_flag=True, default=False,
               help="Stop all sparkrun containers (discovers via docker ps)")
 @click.option("--tp", "--tensor-parallel", "tp_override", type=int, default=None,
               help="Tensor parallel (to match host trimming from run)")
+@click.option("--port", type=int, default=None,
+              help="Override port (to match run-time override)")
+@click.option("--served-model-name", default=None,
+              help="Override served model name (to match run-time override)")
 @dry_run_option
 # @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
-def stop(ctx, recipe_name, hosts, hosts_file, cluster_name, stop_all, tp_override, dry_run, config_path=None):
+def stop(ctx, target, hosts, hosts_file, cluster_name, stop_all, tp_override, port, served_model_name, dry_run, config_path=None):
     """Stop a running workload.
 
-    RECIPE_NAME identifies the recipe so the correct containers can be found.
-    Use --all to discover and stop all sparkrun containers without specifying a recipe.
+    TARGET can be a recipe name or a cluster ID (from sparkrun status output).
+    Use --all to discover and stop all sparkrun containers without specifying a target.
 
     Examples:
 
@@ -39,16 +44,18 @@ def stop(ctx, recipe_name, hosts, hosts_file, cluster_name, stop_all, tp_overrid
 
       sparkrun stop glm-4.7-flash-awq --cluster mylab
 
+      sparkrun stop e5f6a7b8
+
       sparkrun stop --all --cluster mylab
 
       sparkrun stop --all --hosts 192.168.11.13,192.168.11.14
     """
-    if stop_all and recipe_name:
-        click.echo("Error: --all and RECIPE_NAME are mutually exclusive.", err=True)
+    if stop_all and target:
+        click.echo("Error: --all and TARGET are mutually exclusive.", err=True)
         sys.exit(1)
 
-    if not stop_all and not recipe_name:
-        click.echo("Error: Must specify RECIPE_NAME or --all.", err=True)
+    if not stop_all and not target:
+        click.echo("Error: Must specify TARGET or --all.", err=True)
         sys.exit(1)
 
     from sparkrun.core.config import SparkrunConfig
@@ -56,8 +63,10 @@ def stop(ctx, recipe_name, hosts, hosts_file, cluster_name, stop_all, tp_overrid
 
     if stop_all:
         _stop_all(hosts, hosts_file, cluster_name, config, dry_run)
+    elif _is_cluster_id(target) is not None:
+        _stop_by_cluster_id(target, hosts, hosts_file, cluster_name, config, dry_run)
     else:
-        _stop_recipe(recipe_name, hosts, hosts_file, cluster_name, config, tp_override, dry_run)
+        _stop_recipe(target, hosts, hosts_file, cluster_name, config, tp_override, dry_run, port=port, served_model_name=served_model_name)
 
 
 def _stop_all(hosts, hosts_file, cluster_name, config, dry_run):
@@ -117,7 +126,44 @@ def _stop_all(hosts, hosts_file, cluster_name, config, dry_run):
     click.echo("Stopped %d job(s) across %d host(s)." % (stopped_count, hosts_touched))
 
 
-def _stop_recipe(recipe_name, hosts, hosts_file, cluster_name, config, tp_override, dry_run):
+def _stop_by_cluster_id(target, hosts, hosts_file, cluster_name, config, dry_run):
+    """Stop containers identified by cluster ID."""
+    from sparkrun.orchestration.docker import enumerate_cluster_containers
+    from sparkrun.orchestration.job_metadata import load_job_metadata, remove_job_metadata
+    from sparkrun.orchestration.primitives import build_ssh_kwargs, cleanup_containers, cleanup_containers_local
+
+    cluster_id = _is_cluster_id(target)
+    meta = load_job_metadata(cluster_id, cache_dir=str(config.cache_dir))
+    if meta is None:
+        click.echo("Error: Unknown job ID '%s' — run `sparkrun status` to list running jobs." % target, err=True)
+        sys.exit(1)
+
+    # CLI hosts override metadata hosts if provided
+    if hosts or hosts_file or cluster_name:
+        host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config)
+    else:
+        host_list = meta.get("hosts", [])
+        if not host_list:
+            click.echo("Error: No hosts in job metadata and none specified via --hosts.", err=True)
+            sys.exit(1)
+
+    ssh_kwargs = build_ssh_kwargs(config)
+    container_names = enumerate_cluster_containers(cluster_id, len(host_list))
+
+    from sparkrun.core.hosts import is_local_host
+    is_local = len(host_list) == 1 and is_local_host(host_list[0])
+    if is_local:
+        cleanup_containers_local(container_names, dry_run=dry_run)
+    else:
+        cleanup_containers(host_list, container_names, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
+
+    if not dry_run:
+        remove_job_metadata(cluster_id, cache_dir=str(config.cache_dir))
+
+    click.echo("Workload stopped on %d host(s)." % len(host_list))
+
+
+def _stop_recipe(recipe_name, hosts, hosts_file, cluster_name, config, tp_override, dry_run, port=None, served_model_name=None):
     """Stop containers for a specific recipe (original behaviour)."""
     from sparkrun.core.bootstrap import init_sparkrun, get_runtime
 
@@ -145,7 +191,14 @@ def _stop_recipe(recipe_name, hosts, hosts_file, cluster_name, config, tp_overri
     from sparkrun.orchestration.docker import enumerate_cluster_containers
     from sparkrun.orchestration.job_metadata import generate_cluster_id
 
-    cluster_id = generate_cluster_id(recipe, host_list)
+    # Build overrides from --port and --served-model-name so cluster_id matches the run
+    overrides = {}
+    if port is not None:
+        overrides["port"] = port
+    if served_model_name is not None:
+        overrides["served_model_name"] = served_model_name
+
+    cluster_id = generate_cluster_id(recipe, host_list, overrides=overrides if overrides else None)
     ssh_kwargs = build_ssh_kwargs(config)
 
     container_names = enumerate_cluster_containers(cluster_id, len(host_list))
@@ -161,22 +214,26 @@ def _stop_recipe(recipe_name, hosts, hosts_file, cluster_name, config, tp_overri
 
 
 @click.command("logs")
-@click.argument("recipe_name", type=RECIPE_NAME)
+@click.argument("target", type=TARGET)
 @host_options
 @click.option("--tp", "--tensor-parallel", "tp_override", type=int, default=None, help="Tensor parallel (to match host trimming from run)")
+@click.option("--port", type=int, default=None, help="Override port (to match run-time override)")
+@click.option("--served-model-name", default=None, help="Override served model name (to match run-time override)")
 @click.option("--tail", type=int, default=100, help="Number of log lines before following")
 # @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
-def logs_cmd(ctx, recipe_name, hosts, hosts_file, cluster_name, tp_override, tail, config_path=None):
+def logs_cmd(ctx, target, hosts, hosts_file, cluster_name, tp_override, port, served_model_name, tail, config_path=None):
     """Re-attach to logs of a running workload.
 
-    RECIPE_NAME identifies the recipe so the correct containers can be found.
+    TARGET can be a recipe name or a cluster ID (from sparkrun status output).
 
     Examples:
 
       sparkrun logs glm-4.7-flash-awq --hosts 192.168.11.13
 
       sparkrun logs glm-4.7-flash-awq --cluster mylab --tail 200
+
+      sparkrun logs e5f6a7b8
     """
     from sparkrun.core.bootstrap import init_sparkrun, get_runtime
     from sparkrun.core.config import SparkrunConfig
@@ -185,6 +242,45 @@ def logs_cmd(ctx, recipe_name, hosts, hosts_file, cluster_name, tp_override, tai
     v = init_sparkrun()
     _setup_logging(ctx.obj["verbose"])
     config = SparkrunConfig(config_path) if config_path else SparkrunConfig()
+
+    # Branch: cluster ID target
+    if _is_cluster_id(target) is not None:
+        cluster_id = _is_cluster_id(target)
+        from sparkrun.orchestration.job_metadata import load_job_metadata
+        meta = load_job_metadata(cluster_id, cache_dir=str(config.cache_dir))
+        if meta is None:
+            click.echo("Error: Unknown job ID '%s' — run `sparkrun status` to list running jobs." % target, err=True)
+            sys.exit(1)
+
+        runtime_name = meta.get("runtime")
+        if not runtime_name:
+            click.echo("Error: Job metadata missing runtime info.", err=True)
+            sys.exit(1)
+
+        try:
+            runtime = get_runtime(runtime_name, v)
+        except ValueError as e:
+            click.echo("Error: %s" % e, err=True)
+            sys.exit(1)
+
+        if hosts or hosts_file or cluster_name:
+            host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v)
+        else:
+            host_list = meta.get("hosts", [])
+            if not host_list:
+                click.echo("Error: No hosts in job metadata and none specified via --hosts.", err=True)
+                sys.exit(1)
+
+        runtime.follow_logs(
+            hosts=host_list,
+            cluster_id=cluster_id,
+            config=config,
+            tail=tail,
+        )
+        return
+
+    # Branch: recipe name target (original path)
+    recipe_name = target
 
     # Load recipe
     recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name)
@@ -208,7 +304,14 @@ def logs_cmd(ctx, recipe_name, hosts, hosts_file, cluster_name, tp_override, tai
         click.echo("Error: %s" % e, err=True)
         sys.exit(1)
 
-    cluster_id = generate_cluster_id(recipe, host_list)
+    # Build overrides from --port and --served-model-name so cluster_id matches the run
+    overrides = {}
+    if port is not None:
+        overrides["port"] = port
+    if served_model_name is not None:
+        overrides["served_model_name"] = served_model_name
+
+    cluster_id = generate_cluster_id(recipe, host_list, overrides=overrides if overrides else None)
 
     runtime.follow_logs(
         hosts=host_list,

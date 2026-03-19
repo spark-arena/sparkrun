@@ -78,25 +78,39 @@ def format_recipe_table(
 
 def format_job_label(meta: dict[str, Any], cluster_id: str) -> str:
     """Format a display label from job metadata."""
+    short_id = cluster_id.removeprefix("sparkrun_")[:8]
     label = meta.get("recipe", cluster_id)
     tp = meta.get("tensor_parallel")
     if tp:
         label += f"  (tp={tp})"
+    label += f"  [{short_id}]"
     return label
 
 
-def format_job_commands(meta: dict[str, Any]) -> tuple[str | None, str | None]:
-    """Return (logs_cmd, stop_cmd) strings from cached metadata."""
-    # Prefer recipe_ref (@spark-arena/UUID or URL) over bare recipe name
+def format_job_commands(meta: dict[str, Any], cluster_id: str | None = None) -> tuple[str | None, str | None]:
+    """Return (logs_cmd, stop_cmd) strings.
+
+    When *cluster_id* is provided, emits short cluster-ID-based commands
+    that are always unambiguous.  Falls back to recipe-name-based commands
+    (with host/tp/port flags) when no cluster_id is available.
+    """
+    if cluster_id:
+        short_id = cluster_id.removeprefix("sparkrun_")
+        return f"sparkrun logs {short_id}", f"sparkrun stop {short_id}"
+    # Fallback: recipe-based (for jobs without metadata)
     recipe_name = meta.get("recipe_ref") or meta.get("recipe")
     if not recipe_name:
         return None, None
     job_hosts = meta.get("hosts", [])
     tp = meta.get("tensor_parallel")
+    port = meta.get("port")
+    served_name = meta.get("served_model_name")
     host_flag = f" --hosts {','.join(job_hosts)}" if job_hosts else ""
     tp_flag = f" --tp {tp}" if tp else ""
-    logs_cmd = f"sparkrun logs {recipe_name}{host_flag}{tp_flag}"
-    stop_cmd = f"sparkrun stop {recipe_name}{host_flag}{tp_flag}"
+    port_flag = f" --port {port}" if port else ""
+    name_flag = f" --served-model-name {served_name}" if served_name else ""
+    logs_cmd = f"sparkrun logs {recipe_name}{host_flag}{tp_flag}{port_flag}{name_flag}"
+    stop_cmd = f"sparkrun stop {recipe_name}{host_flag}{tp_flag}{port_flag}{name_flag}"
     return logs_cmd, stop_cmd
 
 

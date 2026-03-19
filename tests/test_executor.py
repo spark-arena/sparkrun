@@ -1,0 +1,429 @@
+"""Unit tests for the Executor abstraction.
+
+Verifies that ``DockerExecutor`` produces identical output to the
+existing ``docker.py`` functions, and that ``ExecutorConfig`` layering
+works correctly.
+"""
+
+from __future__ import annotations
+
+from sparkrun.orchestration.executor import (
+    EXECUTOR_DEFAULTS,
+    Executor,
+    ExecutorConfig,
+)
+from sparkrun.orchestration.executor_docker import DockerExecutor
+from sparkrun.orchestration.docker import (
+    docker_run_cmd,
+    docker_exec_cmd,
+    docker_stop_cmd,
+    docker_inspect_exists_cmd,
+    docker_pull_cmd,
+    docker_logs_cmd,
+    generate_container_name,
+    generate_node_container_name,
+    enumerate_cluster_containers,
+)
+
+
+# ---------------------------------------------------------------------------
+# ExecutorConfig tests
+# ---------------------------------------------------------------------------
+
+
+class TestExecutorConfig:
+    """Tests for ExecutorConfig dataclass and from_chain."""
+
+    def test_defaults(self):
+        cfg = ExecutorConfig()
+        assert cfg.auto_remove is True
+        assert cfg.restart_policy is None
+        assert cfg.privileged is True
+        assert cfg.gpus == "all"
+        assert cfg.ipc == "host"
+        assert cfg.shm_size == "10.24gb"
+        assert cfg.network == "host"
+
+    def test_restart_forces_no_auto_remove(self):
+        cfg = ExecutorConfig(restart_policy="always")
+        assert cfg.auto_remove is False
+        assert cfg.restart_policy == "always"
+
+    def test_restart_overrides_explicit_auto_remove(self):
+        cfg = ExecutorConfig(auto_remove=True, restart_policy="unless-stopped")
+        assert cfg.auto_remove is False
+
+    def test_from_chain_plain_dict(self):
+        chain = {"auto_remove": False, "gpus": "0", "shm_size": "1gb"}
+        cfg = ExecutorConfig.from_chain(chain)
+        assert cfg.auto_remove is False
+        assert cfg.gpus == "0"
+        assert cfg.shm_size == "1gb"
+        assert cfg.privileged is True  # default
+
+    def test_from_chain_with_restart(self):
+        chain = {"restart_policy": "on-failure:3", "auto_remove": True}
+        cfg = ExecutorConfig.from_chain(chain)
+        assert cfg.restart_policy == "on-failure:3"
+        assert cfg.auto_remove is False  # forced by __post_init__
+
+    def test_from_chain_string_bools(self):
+        chain = {"auto_remove": "false", "privileged": "true"}
+        cfg = ExecutorConfig.from_chain(chain)
+        assert cfg.auto_remove is False
+        assert cfg.privileged is True
+
+    def test_from_chain_empty_restart_is_none(self):
+        chain = {"restart_policy": ""}
+        cfg = ExecutorConfig.from_chain(chain)
+        assert cfg.restart_policy is None
+
+    def test_vpd_chain_layering(self):
+        """Verify VPD chain resolution: CLI > recipe > defaults."""
+        from vpd.legacy.yaml_dict import vpd_chain
+
+        cli_opts = {"auto_remove": False}
+        recipe_opts = {"restart_policy": "always", "shm_size": "20gb"}
+        chain = vpd_chain(cli_opts, recipe_opts, EXECUTOR_DEFAULTS)
+        cfg = ExecutorConfig.from_chain(chain)
+
+        assert cfg.auto_remove is False  # CLI wins
+        assert cfg.restart_policy == "always"  # recipe
+        assert cfg.shm_size == "20gb"  # recipe
+        assert cfg.gpus == "all"  # default
+
+
+# ---------------------------------------------------------------------------
+# DockerExecutor command parity tests
+# ---------------------------------------------------------------------------
+
+
+class TestDockerExecutorParity:
+    """Verify DockerExecutor produces identical output to docker.py functions."""
+
+    def setup_method(self):
+        self.executor = DockerExecutor()
+
+    def test_run_cmd_basic(self):
+        """Basic docker run matches docker_run_cmd."""
+        expected = docker_run_cmd("nvcr.io/nvidia/vllm:latest")
+        actual = self.executor.run_cmd("nvcr.io/nvidia/vllm:latest")
+        assert actual == expected
+
+    def test_run_cmd_no_detach(self):
+        expected = docker_run_cmd("img:latest", detach=False)
+        actual = self.executor.run_cmd("img:latest", detach=False)
+        assert actual == expected
+
+    def test_run_cmd_with_name(self):
+        expected = docker_run_cmd("img:latest", container_name="test")
+        actual = self.executor.run_cmd("img:latest", container_name="test")
+        assert actual == expected
+
+    def test_run_cmd_with_env(self):
+        env = {"ZZZ": "last", "AAA": "first"}
+        expected = docker_run_cmd("img:latest", env=env)
+        actual = self.executor.run_cmd("img:latest", env=env)
+        assert actual == expected
+
+    def test_run_cmd_with_volumes(self):
+        volumes = {"/a": "/b", "/c": "/d"}
+        expected = docker_run_cmd("img:latest", volumes=volumes)
+        actual = self.executor.run_cmd("img:latest", volumes=volumes)
+        assert actual == expected
+
+    def test_run_cmd_with_command(self):
+        expected = docker_run_cmd("img:latest", command="sleep infinity")
+        actual = self.executor.run_cmd("img:latest", command="sleep infinity")
+        assert actual == expected
+
+    def test_run_cmd_with_extra_opts(self):
+        extra = ["--ulimit", "memlock=-1"]
+        expected = docker_run_cmd("img:latest", extra_opts=extra)
+        actual = self.executor.run_cmd("img:latest", extra_opts=extra)
+        assert actual == expected
+
+    def test_run_cmd_full(self):
+        """Full docker run with all options."""
+        kwargs = dict(
+            image="nvcr.io/nvidia/vllm:latest",
+            command="vllm serve model",
+            container_name="sparkrun0_solo",
+            detach=True,
+            env={"KEY": "val"},
+            volumes={"/host": "/container"},
+            extra_opts=["--ulimit", "nofile=65536"],
+        )
+        expected = docker_run_cmd(**kwargs)
+        actual = self.executor.run_cmd(**kwargs)
+        assert actual == expected
+
+    def test_exec_cmd_basic(self):
+        expected = docker_exec_cmd("ctr", "echo hello")
+        actual = self.executor.exec_cmd("ctr", "echo hello")
+        assert actual == expected
+
+    def test_exec_cmd_detach(self):
+        expected = docker_exec_cmd("ctr", "echo hello", detach=True)
+        actual = self.executor.exec_cmd("ctr", "echo hello", detach=True)
+        assert actual == expected
+
+    def test_exec_cmd_with_env(self):
+        env = {"HOME": "/root", "PATH": "/bin"}
+        expected = docker_exec_cmd("ctr", "echo hello", env=env)
+        actual = self.executor.exec_cmd("ctr", "echo hello", env=env)
+        assert actual == expected
+
+    def test_stop_cmd_force(self):
+        expected = docker_stop_cmd("ctr", force=True)
+        actual = self.executor.stop_cmd("ctr", force=True)
+        assert actual == expected
+
+    def test_stop_cmd_graceful(self):
+        expected = docker_stop_cmd("ctr", force=False)
+        actual = self.executor.stop_cmd("ctr", force=False)
+        assert actual == expected
+
+    def test_inspect_exists_cmd(self):
+        expected = docker_inspect_exists_cmd("img:latest")
+        actual = self.executor.inspect_exists_cmd("img:latest")
+        assert actual == expected
+
+    def test_pull_cmd(self):
+        expected = docker_pull_cmd("img:latest")
+        actual = self.executor.pull_cmd("img:latest")
+        assert actual == expected
+
+    def test_logs_cmd_basic(self):
+        expected = docker_logs_cmd("ctr")
+        actual = self.executor.logs_cmd("ctr")
+        assert actual == expected
+
+    def test_logs_cmd_follow_tail(self):
+        expected = docker_logs_cmd("ctr", follow=True, tail=100)
+        actual = self.executor.logs_cmd("ctr", follow=True, tail=100)
+        assert actual == expected
+
+
+# ---------------------------------------------------------------------------
+# Naming helper tests
+# ---------------------------------------------------------------------------
+
+
+class TestNamingHelpers:
+    """Verify Executor naming helpers match docker.py functions."""
+
+    def test_container_name(self):
+        assert Executor.container_name("sparkrun0", "head") == generate_container_name("sparkrun0", "head")
+        assert Executor.container_name("sparkrun0", "worker") == generate_container_name("sparkrun0", "worker")
+        assert Executor.container_name("sparkrun0", "solo") == generate_container_name("sparkrun0", "solo")
+
+    def test_node_container_name(self):
+        for rank in range(5):
+            assert Executor.node_container_name("sparkrun0", rank) == generate_node_container_name("sparkrun0", rank)
+
+    def test_enumerate_containers(self):
+        expected = enumerate_cluster_containers("sparkrun0", 3)
+        actual = Executor.enumerate_containers("sparkrun0", 3)
+        assert actual == expected
+
+
+# ---------------------------------------------------------------------------
+# ExecutorConfig with restart/auto_remove interaction
+# ---------------------------------------------------------------------------
+
+
+class TestDockerExecutorConfig:
+    """Verify that ExecutorConfig settings propagate to docker commands."""
+
+    def test_no_rm_flag(self):
+        cfg = ExecutorConfig(auto_remove=False)
+        executor = DockerExecutor(cfg)
+        cmd = executor.run_cmd("img:latest")
+        assert "--rm" not in cmd
+
+    def test_rm_flag_default(self):
+        executor = DockerExecutor()
+        cmd = executor.run_cmd("img:latest")
+        assert "--rm" in cmd
+
+    def test_restart_policy(self):
+        cfg = ExecutorConfig(restart_policy="always")
+        executor = DockerExecutor(cfg)
+        cmd = executor.run_cmd("img:latest")
+        assert "--restart always" in cmd
+        assert "--rm" not in cmd
+
+    def test_restart_on_failure(self):
+        cfg = ExecutorConfig(restart_policy="on-failure:3")
+        executor = DockerExecutor(cfg)
+        cmd = executor.run_cmd("img:latest")
+        assert "--restart on-failure:3" in cmd
+        assert "--rm" not in cmd
+
+    def test_custom_shm_size(self):
+        cfg = ExecutorConfig(shm_size="20gb")
+        executor = DockerExecutor(cfg)
+        cmd = executor.run_cmd("img:latest")
+        assert "--shm-size=20gb" in cmd
+
+    def test_custom_network(self):
+        cfg = ExecutorConfig(network="bridge")
+        executor = DockerExecutor(cfg)
+        cmd = executor.run_cmd("img:latest")
+        assert "--network bridge" in cmd
+
+    def test_no_privileged(self):
+        cfg = ExecutorConfig(privileged=False)
+        executor = DockerExecutor(cfg)
+        cmd = executor.run_cmd("img:latest")
+        assert "--privileged" not in cmd
+
+
+# ---------------------------------------------------------------------------
+# High-level script generator tests
+# ---------------------------------------------------------------------------
+
+
+class TestScriptGenerators:
+    """Verify high-level script generators produce valid scripts."""
+
+    def setup_method(self):
+        self.executor = DockerExecutor()
+
+    def test_generate_launch_script(self):
+        script = self.executor.generate_launch_script(
+            image="img:latest",
+            container_name="sparkrun0_solo",
+            command="sleep infinity",
+        )
+        assert "docker rm -f sparkrun0_solo" in script
+        assert "docker run" in script
+        assert "sleep infinity" in script
+        assert "img:latest" in script
+
+    def test_generate_launch_script_with_env(self):
+        script = self.executor.generate_launch_script(
+            image="img:latest",
+            container_name="test",
+            command="sleep infinity",
+            env={"KEY": "val"},
+        )
+        assert "KEY=val" in script
+
+    def test_generate_exec_serve_script(self):
+        script = self.executor.generate_exec_serve_script(
+            container_name="sparkrun0_solo",
+            serve_command="vllm serve model",
+        )
+        assert "sparkrun0_solo" in script
+        assert "vllm serve model" in script
+
+    def test_generate_ray_head_script(self):
+        script = self.executor.generate_ray_head_script(
+            image="img:latest",
+            container_name="sparkrun0_head",
+            ray_port=46379,
+        )
+        assert "docker rm -f sparkrun0_head" in script
+        assert "ray start --block --head" in script
+        assert "--port 46379" in script
+
+    def test_generate_ray_worker_script(self):
+        script = self.executor.generate_ray_worker_script(
+            image="img:latest",
+            container_name="sparkrun0_worker",
+            head_ip="10.0.0.1",
+            ray_port=46379,
+        )
+        assert "docker rm -f sparkrun0_worker" in script
+        assert "ray start --block" in script
+        assert "--address=10.0.0.1:46379" in script
+
+    def test_generate_node_script(self):
+        script = self.executor.generate_node_script(
+            image="img:latest",
+            container_name="sparkrun0_node_0",
+            serve_command="vllm serve model",
+            label="vllm node",
+        )
+        assert "docker rm -f sparkrun0_node_0" in script
+        assert "docker run" in script
+        assert "vllm serve model" in script
+        assert "Launching vllm node" in script
+
+    def test_generate_node_script_with_restart(self):
+        cfg = ExecutorConfig(restart_policy="always")
+        executor = DockerExecutor(cfg)
+        script = executor.generate_node_script(
+            image="img:latest",
+            container_name="sparkrun0_node_0",
+            serve_command="vllm serve model",
+        )
+        assert "--restart always" in script
+        assert "--rm" not in script
+
+    def test_launch_script_parity_with_scripts_module(self):
+        """Verify generate_launch_script matches scripts.generate_container_launch_script."""
+        from sparkrun.orchestration.scripts import generate_container_launch_script
+
+        kwargs = dict(
+            image="nvcr.io/nvidia/vllm:latest",
+            container_name="sparkrun0_solo",
+            command="sleep infinity",
+            env={"KEY": "val"},
+            volumes={"/host": "/container"},
+            nccl_env={"NCCL_SOCKET_IFNAME": "eth0"},
+        )
+        expected = generate_container_launch_script(**kwargs)
+        actual = self.executor.generate_launch_script(**kwargs)
+        assert actual == expected
+
+    def test_exec_serve_parity_with_scripts_module(self):
+        """Verify generate_exec_serve_script matches scripts.generate_exec_serve_script."""
+        from sparkrun.orchestration.scripts import generate_exec_serve_script
+
+        kwargs = dict(
+            container_name="sparkrun0_solo",
+            serve_command="vllm serve model --port 8000",
+            env={"KEY": "val"},
+            detached=True,
+        )
+        expected = generate_exec_serve_script(**kwargs)
+        actual = self.executor.generate_exec_serve_script(**kwargs)
+        assert actual == expected
+
+    def test_ray_head_parity_with_scripts_module(self):
+        """Verify generate_ray_head_script matches scripts.generate_ray_head_script."""
+        from sparkrun.orchestration.scripts import generate_ray_head_script
+
+        kwargs = dict(
+            image="nvcr.io/nvidia/vllm:latest",
+            container_name="sparkrun0_head",
+            ray_port=46379,
+            dashboard_port=8265,
+            dashboard=True,
+            env={"KEY": "val"},
+            volumes={"/host": "/container"},
+            nccl_env={"NCCL_SOCKET_IFNAME": "eth0"},
+        )
+        expected = generate_ray_head_script(**kwargs)
+        actual = self.executor.generate_ray_head_script(**kwargs)
+        assert actual == expected
+
+    def test_ray_worker_parity_with_scripts_module(self):
+        """Verify generate_ray_worker_script matches scripts.generate_ray_worker_script."""
+        from sparkrun.orchestration.scripts import generate_ray_worker_script
+
+        kwargs = dict(
+            image="nvcr.io/nvidia/vllm:latest",
+            container_name="sparkrun0_worker",
+            head_ip="10.0.0.1",
+            ray_port=46379,
+            env={"KEY": "val"},
+            volumes={"/host": "/container"},
+            nccl_env={"NCCL_SOCKET_IFNAME": "eth0"},
+        )
+        expected = generate_ray_worker_script(**kwargs)
+        actual = self.executor.generate_ray_worker_script(**kwargs)
+        assert actual == expected

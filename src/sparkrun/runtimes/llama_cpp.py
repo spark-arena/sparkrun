@@ -306,14 +306,13 @@ class LlamaCppRuntime(RuntimePlugin):
         """Stop a llama.cpp RPC cluster."""
         from sparkrun.orchestration.primitives import build_ssh_kwargs
         from sparkrun.orchestration.ssh import run_remote_command
-        from sparkrun.orchestration.docker import docker_stop_cmd
 
         ssh_kwargs = build_ssh_kwargs(config)
 
         # Stop head
         head_container = self._container_name(cluster_id, "head")
         run_remote_command(
-            hosts[0], docker_stop_cmd(head_container),
+            hosts[0], self.executor.stop_cmd(head_container),
             timeout=30, dry_run=dry_run, **ssh_kwargs,
         )
 
@@ -321,7 +320,7 @@ class LlamaCppRuntime(RuntimePlugin):
         for host in hosts[1:]:
             worker_container = self._container_name(cluster_id, "worker")
             run_remote_command(
-                host, docker_stop_cmd(worker_container),
+                host, self.executor.stop_cmd(worker_container),
                 timeout=30, dry_run=dry_run, **ssh_kwargs,
             )
 
@@ -353,8 +352,6 @@ class LlamaCppRuntime(RuntimePlugin):
             ib_ip_map: dict[str, str] | None = None,
             rpc_port: int = _DEFAULT_RPC_PORT,
             skip_keys: set[str] | frozenset[str] = frozenset(),
-            auto_remove: bool = True,
-            restart_policy: str | None = None,
             **kwargs,
     ) -> int:
         """Orchestrate a multi-node llama.cpp cluster using RPC.
@@ -378,7 +375,6 @@ class LlamaCppRuntime(RuntimePlugin):
         )
         from sparkrun.orchestration.infiniband import detect_ib_for_hosts
         from sparkrun.orchestration.ssh import run_remote_script, run_remote_command
-        from sparkrun.orchestration.docker import docker_stop_cmd
 
         logger.warning(
             "llama.cpp RPC clustering is EXPERIMENTAL. "
@@ -402,12 +398,12 @@ class LlamaCppRuntime(RuntimePlugin):
         t0 = time.monotonic()
         logger.info("Step 1/5: Cleaning up existing containers for cluster '%s'...", cluster_id)
         run_remote_command(
-            head_host, docker_stop_cmd(head_container),
+            head_host, self.executor.stop_cmd(head_container),
             timeout=30, dry_run=dry_run, **ssh_kwargs,
         )
         for host in worker_hosts:
             run_remote_command(
-                host, docker_stop_cmd(worker_container_name),
+                host, self.executor.stop_cmd(worker_container_name),
                 timeout=30, dry_run=dry_run, **ssh_kwargs,
             )
         logger.info("Step 1/5: Cleanup done (%.1fs)", time.monotonic() - t0)
@@ -456,7 +452,6 @@ class LlamaCppRuntime(RuntimePlugin):
                         image=image, container_name=worker_container_name,
                         serve_command=rpc_worker_command, label="llama.cpp node",
                         env=all_env, volumes=volumes, nccl_env=nccl_env,
-                        auto_remove=auto_remove, restart_policy=restart_policy,
                     )
                     future = executor.submit(
                         run_remote_script, host, script,
@@ -515,7 +510,6 @@ class LlamaCppRuntime(RuntimePlugin):
             image=image, container_name=head_container,
             serve_command=head_command, label="llama.cpp node",
             env=all_env, volumes=volumes, nccl_env=nccl_env,
-            auto_remove=auto_remove, restart_policy=restart_policy,
         )
         head_result = run_remote_script(
             head_host, head_script, timeout=120, dry_run=dry_run, **ssh_kwargs,

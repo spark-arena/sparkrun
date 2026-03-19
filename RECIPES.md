@@ -1,8 +1,6 @@
-# Recipe File Format
+# sparkrun Recipe Reference
 
-A sparkrun recipe is a YAML file that describes everything needed to launch an inference workload: the model, the
-container image, the runtime engine, default parameters, and the serve command. Recipes are the central abstraction
-in sparkrun — they let you capture a known-good configuration once and replay it with a single command.
+A recipe is a YAML file defining an inference workload: model, container, runtime, configuration, and lifecycle hooks.
 
 ```bash
 sparkrun run my-recipe --solo          # use defaults
@@ -12,439 +10,361 @@ sparkrun run my-recipe -o port=9000    # override any default
 
 ## Minimal Recipe
 
-The smallest useful recipe needs only `model`, `runtime`, `container`, and `command`:
-
 ```yaml
 model: Qwen/Qwen3-1.7B
 runtime: vllm
-container: scitrera/dgx-spark-vllm:0.16.0-t5
-
+container: scitrera/dgx-spark-vllm:latest
 defaults:
   port: 8000
-  host: 0.0.0.0
-
-command: |
-  vllm serve {model} --host {host} --port {port}
-```
-
-## Full Recipe Example
-
-```yaml
-model: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4
-model_revision: abc123def          # optional: pin to a specific HF revision
-runtime: vllm
-min_nodes: 1
-container: scitrera/dgx-spark-vllm:0.16.0-t5
-
-metadata:
-  description: NVIDIA Nemotron 3 Nano 30B (upstream NVFP4) -- cluster or solo
-  maintainer: scitrera.ai <open-source-team@scitrera.com>
-  model_params: 30B
-  model_dtype: nvfp4
-
-defaults:
-  port: 8000
-  host: 0.0.0.0
   tensor_parallel: 1
-  gpu_memory_utilization: 0.8
-  max_model_len: 200000
-  served_model_name: nemotron3-30b-a3b
-  tool_call_parser: qwen3_coder
-
-env:
-  VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
-
-command: |
-  vllm serve \
-      {model} \
-      --served-model-name {served_model_name} \
-      --max-model-len {max_model_len} \
-      --gpu-memory-utilization {gpu_memory_utilization} \
-      -tp {tensor_parallel} \
-      --host {host} \
-      --port {port} \
-      --enable-auto-tool-choice \
-      --tool-call-parser {tool_call_parser} \
-      --trust-remote-code
 ```
+
+Everything else is optional. When `command` is omitted, the runtime generates it from `defaults`.
+
+---
 
 ## Field Reference
 
-### Core Fields
+### Core
 
-#### `model` (required)
+| Field             | Type   | Required    | Default         | Description                                                       |
+|-------------------|--------|-------------|-----------------|-------------------------------------------------------------------|
+| `model`           | string | **yes**     | —               | HuggingFace model ID or GGUF spec (`Qwen/Qwen3-1.7B-GGUF:Q4_K_M`) |
+| `model_revision`  | string | no          | `null`          | Pin to a specific HF revision (branch, tag, or commit hash)       |
+| `runtime`         | string | no          | auto-detected   | Runtime identifier. See [Runtime Resolution](#runtime-resolution) |
+| `runtime_version` | string | no          | `""`            | Informational version tag                                         |
+| `container`       | string | recommended | runtime default | Container image reference                                         |
 
-The HuggingFace model identifier. This is the model that will be served.
+GGUF models use colon syntax (`repo:quant`) to download only the matching quantization files. When pre-synced, sparkrun
+rewrites `-hf` to `-m` with the resolved container cache path.
 
-```yaml
-# Standard HuggingFace model
-model: Qwen/Qwen3-1.7B
+`model_revision` affects download, cache checking, VRAM auto-detection, and model sync. Pin to a commit hash for
+reproducible deployments.
 
-# GGUF model with quantization variant (llama-cpp runtime)
-model: Qwen/Qwen3-1.7B-GGUF:Q8_0
-```
+### Topology
 
-For GGUF models, the colon syntax (`repo:quant`) selects a specific quantization variant. sparkrun uses this to
-download only the matching quant files rather than the entire repository.
+| Field          | Type                                | Default  | Description                                               |
+|----------------|-------------------------------------|----------|-----------------------------------------------------------|
+| `mode`         | `"auto"` \| `"solo"` \| `"cluster"` | `"auto"` | Deployment mode. `auto` = decided by host count           |
+| `min_nodes`    | int                                 | `1`      | Minimum hosts. `> 1` forces `mode: cluster`               |
+| `max_nodes`    | int                                 | `null`   | Maximum hosts. `null` = no limit. `1` forces `mode: solo` |
+| `solo_only`    | bool                                | `false`  | Shorthand: `max_nodes: 1, mode: solo`                     |
+| `cluster_only` | bool                                | `false`  | Shorthand: `min_nodes: 2, mode: cluster`                  |
 
-The model value is injected into the command template as `{model}` and is also used for model pre-sync (downloading
-and distributing weights to target hosts before launch). (Models are downloaded to the local machine and then
-transferred to the cluster via `rsync` so you don't need to repeatedly download them from the Internet on a cluster.)
+Note: `mode`, `solo_only`, and `cluster_only` are deprecated. Developers are encouraged to use  `min_nodes` and
+`max_nodes` instead.
 
-#### `model_revision`
+On DGX Spark (1 GPU per node), `tensor_parallel: N` = N hosts.
 
-Pin the model to a specific HuggingFace revision (branch, tag, or commit hash). When omitted, HuggingFace
-defaults to the `main` branch.
+### Configuration
 
-```yaml
-# Pin to a specific commit
-model: QuantTrio/MiniMax-M2.5-AWQ
-model_revision: bbe738792c
+| Field            | Type   | Default | Description                                                                                    |
+|------------------|--------|---------|------------------------------------------------------------------------------------------------|
+| `defaults`       | map    | `{}`    | Default values for serve flags. CLI overrides take priority                                    |
+| `env`            | map    | `{}`    | Container environment variables. Supports `$VAR` / `${VAR}` expansion from control machine env |
+| `command`        | string | `null`  | Command template. `{key}` placeholders resolved from config chain                              |
+| `runtime_config` | map    | `{}`    | Runtime-specific config. Unknown top-level keys are auto-swept here                            |
 
-# Pin to a release tag
-model: Qwen/Qwen3-1.7B
-model_revision: v1.0
+### Metadata
 
-# Pin a GGUF model to a specific revision
-model: Qwen/Qwen3-1.7B-GGUF:Q4_K_M
-model_revision: v1.0
-```
-
-This affects:
-- **Model download**: `snapshot_download` fetches the pinned revision instead of `main`.
-- **Cache checking**: sparkrun verifies that the *specific revision* is cached, not just any version of the model.
-- **VRAM estimation**: `config.json` is fetched from the pinned revision for auto-detection of model parameters.
-- **Model sync**: the `--revision` flag is passed to `huggingface-cli download` on remote hosts.
-
-Use `model_revision` when you need reproducible deployments — without it, a model's `main` branch may change
-between downloads. Pinning to a commit hash guarantees byte-identical weights across all nodes.
-
-#### `runtime`
-
-Which inference engine to use. Determines how sparkrun launches and manages the workload.
-
-| Value | Engine | Clustering | Notes |
-|-------|--------|------------|-------|
-| `vllm` | vLLM | varies | Virtual alias — resolves to `vllm-distributed` (default) or `vllm-ray`. |
-| `vllm-distributed` | vLLM | Native | Default vLLM variant. Uses vLLM's built-in distributed backend. |
-| `vllm-ray` | vLLM | Ray | vLLM with Ray head/worker orchestration. |
-| `sglang` | SGLang | Native | First-class. Solo and multi-node via SGLang's built-in distribution. |
-| `llama-cpp` | llama.cpp | RPC (experimental) | Solo mode by default. Multi-node support via llama.cpp RPC (experimental). |
-| `eugr-vllm` | vLLM (eugr) | Ray | Extends vLLM with eugr container builds and mod support. |
-
-Explicitly setting `runtime` is **recommended** for clarity and forward-compatibility. However, this field is
-technically optional — when omitted, sparkrun uses [automatic runtime detection](#automatic-runtime-detection)
-to infer the runtime from the `command` field. If neither `runtime` nor a recognizable command is present, the
-recipe defaults to `vllm` behavior. Recipes with `recipe_version: "1"` or eugr-specific fields (`build_args`,
-`mods`) are automatically detected as `eugr-vllm`.
-
-#### `container` (required)
-
-The Docker/OCI container image to run. This should be a fully qualified image reference. Since we're using docker, 
-docker.io is assumed by default (that's part of docker). You can also use a local image or private registry, but you're
-responsible for making sure it's configured on your local system. The image will be pushed out to the cluster from the
-local machine to avoid repeated downloads from the Internet.
+Informational fields for VRAM estimation, display, and search. Not passed to runtime.
 
 ```yaml
-container: scitrera/dgx-spark-vllm:0.16.0-t5
-container: scitrera/dgx-spark-sglang:0.5.8-t5
-container: scitrera/dgx-spark-llama-cpp:b8076-cu131
+metadata:
+  description: "Qwen3 8B — general purpose"
+  maintainer: "you <you@example.com>"
+  category: agent
+  model_params: 8B           # or 8000000000
+  model_dtype: bfloat16      # float32, float16, bfloat16, int8, fp8, int4, awq4, gptq, nvfp4, q4_k_m, q8_0, ...
+  kv_dtype: fp8_e5m2         # KV cache dtype (default: bfloat16)
+  num_layers: 32
+  num_kv_heads: 8
+  head_dim: 128
+  model_vram: 16.5           # GB override — skips param-based calculation
+  kv_vram_per_token: 0.0001  # GB/token override — skips architecture-based calculation
 ```
 
-If not specified, the runtime will attempt to construct a default from its `default_image_prefix`, but it is
-strongly recommended to pin a specific image and tag.
+sparkrun auto-detects `model_params`, `model_dtype`, `num_layers`, `num_kv_heads`, and `head_dim` from HuggingFace Hub
+config when not provided. Metadata values always take precedence.
 
-#### `command` (recommended)
+### Benchmark
 
-The shell command to execute inside the container. Uses `{placeholder}` syntax for template substitution — any key
-from `defaults` (or CLI overrides) can be referenced.
+```yaml
+benchmark:
+  framework: llama-benchy     # default framework
+  timeout: 3600
+  args: # or put args at top level (auto-swept)
+    pp: [ 2048 ]
+    tg: [ 32, 128 ]
+    concurrency: [ 1, 2, 5 ]
+```
+
+Used by `sparkrun benchmark <recipe>`. CLI `-o` overrides apply on top.
+
+### Version
+
+| Field            | Type           | Default | Description                                                     |
+|------------------|----------------|---------|-----------------------------------------------------------------|
+| `recipe_version` | `"2"` \| `"1"` | `"2"`   | v1 = legacy eugr format, auto-detected from `build_args`/`mods` |
+
+---
+
+## Config Chain (VPD)
+
+Resolution order (highest priority first):
+
+```
+CLI overrides  →  recipe defaults  →  runtime defaults
+```
+
+```bash
+sparkrun run my-recipe -o max_model_len=8192 --port 9000
+```
+
+1. CLI: `{port: 9000, max_model_len: 8192}`
+2. Recipe defaults: `{port: 8000, tensor_parallel: 2, gpu_memory_utilization: 0.9}`
+3. Result: `{port: 9000, max_model_len: 8192, tensor_parallel: 2, gpu_memory_utilization: 0.9}`
+
+`{model}` is always injected from the top-level `model` field. Substitution is iterative (handles nested references like
+`base_url: "http://localhost:{port}"`).
+
+---
+
+## Command Templates
+
+When `command` is set, sparkrun renders `{key}` placeholders from the config chain. When omitted, the runtime builds the
+command from structured `defaults`.
 
 ```yaml
 command: |
   vllm serve \
       {model} \
-      --served-model-name {served_model_name} \
-      --gpu-memory-utilization {gpu_memory_utilization} \
+      --port {port} \
       -tp {tensor_parallel} \
-      --host {host} \
-      --port {port}
+      --gpu-memory-utilization {gpu_memory_utilization}
 ```
 
-Substitution is iterative: if a placeholder resolves to a string containing another `{placeholder}`, it will be
-expanded in a second pass. This continues until no more substitutions are possible.
+- Unresolved placeholders are left as-is
+- Trailing spaces after backslash continuations (`\ \n`) are auto-fixed
+- The runtime may auto-append flags (e.g. `--served-model-name`) if the template omits them
 
-If `command` is omitted, the runtime's `generate_command()` method builds a command from structured defaults.
-Providing an explicit command template is preferred because it gives recipe authors full control over flag ordering,
-runtime-specific flags, and optional features.
+**When to use templates:** full control over flags, ordering, runtime-specific features not in the flag map. **When to
+omit:** standard configs where the runtime's `generate_command()` is sufficient.
 
-### Topology Fields
+---
 
-These fields control how many nodes the recipe can run on and how sparkrun decides between solo and cluster mode.
+## Runtime Resolution
 
-> **Preferred approach:** Use `min_nodes` and `max_nodes` to set appropriate limits for your recipe. The `solo_only`, `cluster_only`, and `mode` fields exist for convenience and backward compatibility, but explicit node limits are clearer and more flexible.
+When `runtime` is empty or `"vllm"`:
 
-#### `mode`
+| Condition                                                             | Resolved Runtime   |
+|-----------------------------------------------------------------------|--------------------|
+| `recipe_version: "1"` or `build_args`/`mods` present                  | `eugr-vllm`        |
+| `distributed_executor_backend: ray` in defaults or command            | `vllm-ray`         |
+| Bare `vllm` or empty                                                  | `vllm-distributed` |
+| Command starts with `sglang serve` / `python -m sglang.launch_server` | `sglang`           |
+| Command starts with `llama-server`                                    | `llama-cpp`        |
+| Command starts with `trtllm-serve` / `mpirun...trtllm`                | `trtllm`           |
 
-Explicit topology mode. Usually not needed — sparkrun infers it from `min_nodes` and `max_nodes`.
+Explicit `runtime` always wins. Command-hint detection only fires when `runtime` is omitted.
 
-| Value | Meaning |
-|-------|---------|
-| `auto` | (default) sparkrun decides based on node counts and CLI flags |
-| `solo` | Forces single-node. Sets `min_nodes = max_nodes = 1`. |
-| `cluster` | Forces multi-node. Requires 2+ hosts. |
+### Available Runtimes
 
-Automatic inference rules:
-- If `min_nodes > 1`, mode becomes `cluster` regardless of the `mode` field.
-- If `max_nodes == 1`, mode becomes `solo`.
-- Otherwise, `auto` means the recipe can run either way depending on how many hosts the user provides.
+| Runtime            | Clustering                                          | Strategy                                       |
+|--------------------|-----------------------------------------------------|------------------------------------------------|
+| `vllm-distributed` | Native (`--nnodes`, `--node-rank`, `--master-addr`) | Each node runs `vllm serve`                    |
+| `vllm-ray`         | Ray head/worker                                     | Ray cluster, exec serve on head                |
+| `sglang`           | Native (`--dist-init-addr`, `--node-rank`)          | Each node runs `sglang.launch_server`          |
+| `llama-cpp`        | RPC (experimental)                                  | Workers run `rpc-server`, head uses `--rpc`    |
+| `trtllm`           | MPI (`mpirun` + rsh wrapper)                        | `sleep infinity` containers + `mpirun` on head |
+| `eugr-vllm`        | Ray (inherits vllm-ray)                             | eugr container builds + Ray cluster            |
 
-#### `min_nodes`
+### Common Defaults Keys
 
-Minimum number of nodes required. Defaults to `1`.
+| Key                      | vLLM                       | SGLang                  | llama.cpp            | TRT-LLM               | Description                       |
+|--------------------------|----------------------------|-------------------------|----------------------|-----------------------|-----------------------------------|
+| `port`                   | `--port`                   | `--port`                | `--port`             | `--port`              | Serve port                        |
+| `host`                   | `--host`                   | `--host`                | `--host`             | `--host`              | Bind address                      |
+| `tensor_parallel`        | `-tp`                      | `--tp-size`             | `--split-mode row`   | `--tp_size`           | TP degree (= node count on Spark) |
+| `pipeline_parallel`      | `-pp`                      | `--pp-size`             | `--split-mode layer` | `--pp_size`           | PP degree                         |
+| `gpu_memory_utilization` | `--gpu-memory-utilization` | `--mem-fraction-static` | —                    | —                     | GPU memory fraction               |
+| `max_model_len`          | `--max-model-len`          | `--context-length`      | `--ctx-size`         | `--max_seq_len`       | Max sequence length               |
+| `served_model_name`      | `--served-model-name`      | `--served-model-name`   | `--alias`            | —                     | Model name in API                 |
+| `dtype`                  | `--dtype`                  | `--dtype`               | —                    | —                     | Model dtype                       |
+| `quantization`           | `--quantization`           | `--quantization`        | —                    | —                     | Quantization method               |
+| `trust_remote_code`      | `--trust-remote-code`      | `--trust-remote-code`   | —                    | `--trust_remote_code` | Allow remote code                 |
+| `kv_cache_dtype`         | `--kv-cache-dtype`         | `--kv-cache-dtype`      | —                    | via extra config      | KV cache dtype                    |
+
+Any key can appear in `defaults` — there is no fixed schema. Runtime-specific keys (e.g. `tool_call_parser`, `ctx_size`,
+`n_gpu_layers`, `reasoning_parser`) are passed through to command template substitution.
+
+---
+
+## Executor Config
+
+Controls container engine behavior. Layered via vpd: **CLI flags → recipe `executor_config` → built-in defaults**.
 
 ```yaml
-min_nodes: 1   # can run solo or cluster
-min_nodes: 2   # requires at least 2 nodes (implies cluster mode)
-min_nodes: 4   # requires at least 4 nodes
+executor_config:
+  auto_remove: false
+  restart_policy: unless-stopped
+  shm_size: 20gb
 ```
 
-On DGX Spark, each node has one GPU, so `min_nodes` is effectively the minimum GPU count. A recipe with
-`min_nodes: 2` and `tensor_parallel: 2` means the model needs 2 GPUs to fit.
+| Key              | Type   | Default     | Docker flag    | Description                                                                                                         |
+|------------------|--------|-------------|----------------|---------------------------------------------------------------------------------------------------------------------|
+| `auto_remove`    | bool   | `true`      | `--rm`         | Remove container on exit                                                                                            |
+| `restart_policy` | string | `null`      | `--restart`    | `always`, `unless-stopped`, `on-failure:N`. **Mutually exclusive with `auto_remove`** — forces `auto_remove: false` |
+| `privileged`     | bool   | `true`      | `--privileged` | Privileged mode                                                                                                     |
+| `gpus`           | string | `"all"`     | `--gpus`       | GPU device spec                                                                                                     |
+| `ipc`            | string | `"host"`    | `--ipc`        | IPC namespace                                                                                                       |
+| `shm_size`       | string | `"10.24gb"` | `--shm-size`   | Shared memory size                                                                                                  |
+| `network`        | string | `"host"`    | `--network`    | Network mode                                                                                                        |
 
-#### `max_nodes`
+**CLI override:** `sparkrun run --no-rm --restart always my-recipe`
 
-Maximum number of nodes supported. Defaults to `None` (unlimited).
+All runtimes automatically inherit executor settings — no per-runtime changes needed.
+
+---
+
+## Lifecycle Hooks
+
+### Execution Order
+
+```
+1. builder.prepare_image()          — build/pull container image
+2. Distribution                     — sync container image + model to hosts
+3. Container launch                 — docker run
+4. pre_exec                         — inside ALL containers, before serve
+5. Serve command                    — exec inside container (solo) or direct entrypoint (native cluster)
+6. [wait for healthy]               — port check + HTTP /v1/models (only when post hooks defined)
+7. post_exec                        — inside HEAD container only
+8. post_commands                    — on CONTROL MACHINE
+9. [stop_after_post]                — optional auto-stop
+```
+
+### pre_exec
+
+Runs inside **every container** before the serve command. Sequential, fail-fast.
 
 ```yaml
-max_nodes: 1   # solo only (e.g. GGUF models that don't support distribution)
-max_nodes: 4   # up to 4-node tensor parallel
+pre_exec:
+  # Shell command: docker exec <container> bash -c '<cmd>'
+  - "pip install flash-attn --no-build-isolation"
+  - "sed -i 's/old/new/' /workspace/config.json"
+
+  # File injection: docker cp from control machine into container
+  - copy: /local/path/to/mods
+    dest: /workspace/mods          # default: /workspace/mods/<basename>
+
+  # File injection from a remote host (delegated)
+  - copy: /path/on/remote/host
+    dest: /workspace/patches
+    source_host: 10.0.0.5          # rsync from source_host → target, then docker cp
 ```
 
-Set `max_nodes: 1` for models or runtimes that do not support multi-node inference (e.g. llama-cpp in solo mode).
+`{key}` placeholders in string commands are resolved from the config chain.
 
-#### `solo_only` / `cluster_only`
+### post_exec
 
-Boolean shorthand flags. These are an alternative to setting `mode` directly.
+Runs inside the **head container only**, after the server passes health checks (`/v1/models` returns 200). Sequential,
+fail-fast.
 
 ```yaml
-solo_only: true     # equivalent to max_nodes: 1, mode: solo
-cluster_only: true  # equivalent to min_nodes: 2, mode: cluster
+post_exec:
+  - "curl -s http://localhost:{port}/v1/models | python3 -m json.tool"
+  - "echo 'Server ready: {model}'"
 ```
 
-### Configuration Fields
+### post_commands
 
-#### `defaults`
-
-A flat dictionary of default parameter values. These are the knobs that control the inference server and can be
-overridden at launch time via CLI flags or `-o key=value`.
+Runs on the **control machine** (where sparkrun runs) via `subprocess.run(shell=True)`. Sequential, fail-fast.
 
 ```yaml
-defaults:
-  port: 8000
-  host: 0.0.0.0
-  tensor_parallel: 1
-  gpu_memory_utilization: 0.8
-  max_model_len: 200000
-  served_model_name: nemotron3-30b-a3b
+post_commands:
+  - "curl -s http://{head_ip}:{port}/v1/models"
+  - "python3 scripts/warmup.py --url {base_url}"
 ```
 
-Every key in `defaults` is available as a `{placeholder}` in the command template. sparkrun also recognizes certain
-well-known keys and maps them to dedicated CLI flags:
+### stop_after_post
 
-| Default key | CLI flag | Description |
-|-------------|----------|-------------|
-| `port` | `--port` | Serve port |
-| `tensor_parallel` | `--tp` | Tensor parallelism degree |
-| `gpu_memory_utilization` | `--gpu-mem` | GPU memory fraction (0.0–1.0) |
-| `max_model_len` | `-o max_model_len=N` | Maximum sequence length |
-| `served_model_name` | `-o served_model_name=X` | Model name exposed by the API |
-| `host` | `-o host=X` | Bind address |
-
-Any key can appear in defaults — there is no fixed schema. Runtime-specific parameters (like `attention_backend`,
-`tool_call_parser`, `ctx_size`, `n_gpu_layers`) are passed through as-is and substituted into the command template.
-
-**Config chain precedence** (highest wins):
-1. CLI overrides (`--port 9000`, `-o key=value`)
-2. User config (future: per-user config file)
-3. Recipe defaults
-
-#### `env`
-
-Environment variables injected into the container at launch time.
+Stop the workload after post hooks complete. Useful for batch/one-shot workflows:
 
 ```yaml
-env:
-  VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
-  HF_TOKEN: "${HF_TOKEN}"
+post_commands:
+  - "python3 benchmark.py --url {base_url} --output results.json"
+stop_after_post: true
 ```
 
-Values must be strings. These are passed to `docker run` via `-e` flags and are also set inside `docker exec` when
-the serve command runs.
+### Hook Template Variables
 
-Shell-style variable references (`${VAR}` or `$VAR`) are expanded from the **control machine's** environment
-when the recipe is loaded. If a variable is not set, the reference is left as-is. This lets you forward
-secrets like `HF_TOKEN` without hardcoding them in the recipe file.
+| Variable            | Available In                             | Source                                |
+|---------------------|------------------------------------------|---------------------------------------|
+| All `defaults` keys | `pre_exec`, `post_exec`, `post_commands` | Config chain                          |
+| `{model}`           | All                                      | Recipe field                          |
+| `{head_host}`       | `post_exec`, `post_commands`             | Detected at runtime                   |
+| `{head_ip}`         | `post_exec`, `post_commands`             | Detected at runtime                   |
+| `{port}`            | All                                      | Config chain                          |
+| `{cluster_id}`      | `post_exec`, `post_commands`             | Generated                             |
+| `{container_name}`  | `post_exec`, `post_commands`             | Generated                             |
+| `{cache_dir}`       | `post_exec`, `post_commands`             | Resolved                              |
+| `{base_url}`        | `post_exec`, `post_commands`             | Derived: `http://{head_ip}:{port}/v1` |
 
-Use `env` for runtime knobs that are controlled via environment variables rather than CLI flags (e.g.
-`VLLM_ALLOW_LONG_MAX_MODEL_LEN`, NCCL tuning variables).
+---
 
-### Metadata Fields
+## Builders
 
-#### `metadata`
+Builders prepare the container image **before** distribution. Most recipes don't need one — sparkrun pulls images
+automatically.
 
-A dictionary of descriptive and VRAM-estimation fields. Metadata does not affect how the workload runs — it provides
-information for `sparkrun show`, `sparkrun recipe vram`, and recipe search/listing.
+| Builder       | Description                                                       |
+|---------------|-------------------------------------------------------------------|
+| `docker-pull` | Default fallback. Relies on distribution phase for pulling        |
+| `eugr`        | Builds eugr-style containers with `build_args` and `mods` patches |
 
 ```yaml
-metadata:
-  description: NVIDIA Nemotron 3 Nano 30B (upstream NVFP4) -- cluster or solo
-  maintainer: scitrera.ai <open-source-team@scitrera.com>
-  model_params: 30B
-  model_dtype: nvfp4
+builder: eugr
+builder_config:
+  repo_url: https://github.com/eugr/spark-vllm-docker.git
+  branch: main
 ```
 
-##### Descriptive fields
+`builder_config` is passed directly to the builder plugin's `prepare_image()`. Contents are builder-specific.
 
-| Field | Purpose |
-|-------|---------|
-| `description` | Human-readable summary shown in `sparkrun list` and `sparkrun show`. Also accepted as a top-level key (takes precedence over `metadata.description`). |
-| `maintainer` | Contact info for the recipe author. |
-| `name` | Reserved for future use. Recipe display name currently always uses the filename stem. |
+### eugr Builder (v1 Compatibility)
 
-##### VRAM estimation fields
-
-These fields feed sparkrun's VRAM estimator, which tells you whether a model fits on DGX Spark before you launch.
-sparkrun auto-detects most of these from HuggingFace model configs, but metadata values take precedence when
-provided — useful for quantized models or architectures that HF auto-detection doesn't cover well.
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `model_params` | string | Parameter count. Accepts shorthand: `"1.7B"`, `"30B"`, `"397B"`. |
-| `model_dtype` | string | Weight dtype: `bf16`, `fp16`, `fp8`, `nvfp4`, `int8`, `int4`, `q4_k_m`, `q8_0`, etc. |
-| `kv_dtype` | string | KV cache dtype (defaults to `bfloat16` if not specified). |
-| `num_layers` | int | Number of transformer layers. |
-| `num_kv_heads` | int | Number of key-value attention heads. |
-| `head_dim` | int | Dimension per attention head. |
-| `model_vram` | float | Override: total model weight VRAM in GB (skips param-based calculation). |
-| `kv_vram_per_token` | float | Override: KV cache bytes per token (skips layer-based calculation). |
-
-The estimator combines these with `tensor_parallel`, `max_model_len`, and `gpu_memory_utilization` from defaults
-to produce a per-GPU VRAM breakdown:
-
-```
-VRAM Estimation:
-  Model weights:    19.56 GB
-  KV cache:         9.92 GB (max_model_len=200,000)
-  Tensor parallel:  1
-  Per-GPU total:    29.48 GB
-  DGX Spark fit:    YES
-```
-
-### Runtime-Specific Fields
-
-#### `runtime_config`
-
-A dictionary for runtime-specific configuration that doesn't belong in `defaults`. Used primarily by the `eugr-vllm`
-runtime.
-
-```yaml
-runtime_config:
-  mods: [my-custom-mod]
-  build_args: [--some-flag]
-```
-
-Any top-level key in the YAML that isn't part of the known recipe schema is automatically swept into
-`runtime_config`. This means you can write:
-
-```yaml
-mods: [my-custom-mod]
-build_args: [--some-flag]
-```
-
-...instead of nesting them under `runtime_config`, and sparkrun will handle it the same way. The explicit
-`runtime_config` key is preferred for clarity.
-
-### Benchmark Configuration
-
-#### `benchmark`
-
-An optional block that configures automated benchmarking for the recipe. Used by `sparkrun benchmark <recipe>` to run benchmarks with predefined settings.
-
-```yaml
-# Nested format (explicit args dict)
-benchmark:
-  framework: llama-benchy
-  timeout: 3600
-  args:
-    pp: [2048]
-    tg: [32, 128]
-    depth: [0, 4096, 16384]
-    concurrency: [1, 2, 5]
-    prefix_caching: true
-
-# Flat format (unknown keys swept into args automatically)
-benchmark:
-  framework: llama-benchy
-  pp: [2048]
-  depth: [0]
-  prefix_caching: true
-```
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `framework` | string | Benchmarking framework to use (default: `llama-benchy`) |
-| `timeout` | int | Benchmark timeout in seconds |
-| `args` | dict | Framework-specific benchmark arguments (nested format) |
-
-In the flat format, any key that isn't `framework`, `args`, `metadata`, or `timeout` is automatically swept into the args dict. Both formats produce identical behavior.
-
-When `sparkrun benchmark <recipe>` is run without `--profile`, the recipe's `benchmark:` block provides the default benchmark configuration. CLI `-o key=value` overrides are applied on top.
-
-### Version Fields [NOT FINALIZED]
-
-#### `recipe_version`
-
-Declares the recipe format version. The current format is version `2` (the default).
-
-Current format (v2):
-
-```yaml
-recipe_version: "2"
-```
-
-Legacy eugr format (v1) — automatically resolves runtime to `eugr-vllm`:
+v1 recipes with `build_args`/`mods` auto-route to `eugr-vllm` runtime and the eugr builder:
 
 ```yaml
 recipe_version: "1"
+model: Qwen/Qwen3.5-0.8B
+runtime: vllm
+container: vllm-node-tf5
+
+build_args:
+  - "--tf5"
+
+mods:
+  - mods/fix-qwen3.5-chat-template
+
+defaults:
+  port: 52001
+  tensor_parallel: 1
+  gpu_memory_utilization: 0.175
 ```
 
-Version `1` recipes are automatically migrated: the runtime is set to `eugr-vllm` and eugr-specific fields are
-preserved in `runtime_config`.
+The eugr builder clones the repo, runs docker build with build_args, appends mods to pre-exec lifecycle hooks, and
+returns the built image name.
 
-#### `runtime_version`
-
-Runtime-specific version identifier (optional). Used to track version differences within a specific runtime implementation.
-
-```yaml
-runtime_version: "0.5.8"
-```
+---
 
 ## GGUF Recipes (llama.cpp)
-
-GGUF recipes target the `llama-cpp` runtime and use colon syntax in the model field to select a quantization
-variant:
 
 ```yaml
 model: Qwen/Qwen3-1.7B-GGUF:Q8_0
 runtime: llama-cpp
 max_nodes: 1
 container: scitrera/dgx-spark-llama-cpp:b8076-cu131
-
-metadata:
-  description: Qwen3 1.7B (Q8_0 GGUF) -- small test model via llama.cpp
-  maintainer: scitrera.ai <open-source-team@scitrera.com>
-  model_params: 1.7B
-  model_dtype: q8_0
 
 defaults:
   port: 8000
@@ -455,147 +375,78 @@ defaults:
 command: |
   llama-server \
       -hf {model} \
-      --host {host} \
-      --port {port} \
+      --host {host} --port {port} \
       --n-gpu-layers {n_gpu_layers} \
       --ctx-size {ctx_size} \
-      --flash-attn on \
-      --jinja \
-      --no-webui
+      --flash-attn on --jinja --no-webui
 ```
 
-Key differences from vLLM/SGLang recipes:
+- Colon syntax (`repo:quant`) downloads only matching quant files
+- `max_model_len` is auto-mapped to `ctx_size` for cross-runtime CLI compatibility
+- `tensor_parallel` → `--split-mode row`, `pipeline_parallel` → `--split-mode layer` (mutually exclusive)
+- Pre-synced GGUF: `-hf` auto-rewritten to `-m` with container cache path
 
-- **Model field** uses `repo:quant` syntax (e.g. `Qwen/Qwen3-1.7B-GGUF:Q8_0`). sparkrun parses this to download
-  only the matching quantization files.
-- **`max_nodes: 1`** — llama-cpp solo mode does not support multi-node distribution.
-- **`ctx_size`** replaces `max_model_len` — the context window size in tokens.
-- **Model pre-sync** downloads only the matching GGUF quant files locally, distributes them to target hosts via
-  rsync, and rewrites `-hf` to `-m` with the resolved container cache path so the container serves from the local
-  copy.
+---
 
-## Command Template Substitution
+## Recipe Discovery
 
-The `command` field supports `{placeholder}` substitution. Any key available in the config chain (defaults + CLI
-overrides) can be referenced:
+Search order:
+
+1. **`@registry/recipe-name`** — scoped lookup in specific registry
+2. **URL** — HTTP/HTTPS fetched and cached
+3. **File path** — exact or with `.yaml`/`.yml` extension
+4. **CWD scan** — `.yaml`/`.yml` files that are valid recipes (must have `model`, `container`, resolvable `runtime`)
+5. **Registry search** — flat + recursive lookup across all enabled registries
+
+Ambiguous names (same recipe in multiple registries) raise an error — use `@registry/name` to disambiguate.
+
+---
+
+## Complete Example
 
 ```yaml
-defaults:
-  port: 8000
-  served_model_name: my-model
+recipe_version: "2"
+model: Qwen/Qwen3-8B
+runtime: vllm
+container: scitrera/dgx-spark-vllm:latest
+min_nodes: 1
+max_nodes: 4
 
-command: |
-  vllm serve {model} --port {port} --served-model-name {served_model_name}
-```
-
-With `sparkrun run recipe -o port=9000`, this renders as:
-
-```
-vllm serve Qwen/Qwen3-1.7B --port 9000 --served-model-name my-model
-```
-
-The special placeholder `{model}` is always available — it is injected from the top-level `model` field into the
-config chain automatically.
-
-Substitution is iterative, so nested references work:
-
-```yaml
-defaults:
-  base_url: "http://localhost:{port}"
-  port: 8000
-```
-
-## Automatic Runtime Detection
-
-While explicitly setting `runtime` is recommended, sparkrun can infer the runtime from the `command` field when
-it is omitted. This is useful for quick experimentation or when adapting command snippets from documentation
-without worrying about which runtime value to set.
-
-### Command-hint rules
-
-| Command prefix | Detected runtime |
-|----------------|------------------|
-| `vllm serve ...` | `vllm` (then resolved to `vllm-distributed` or `vllm-ray` via the usual heuristics) |
-| `sglang serve ...` | `sglang` |
-| `python -m sglang.launch_server ...` | `sglang` |
-| `python3 -m sglang.launch_server ...` | `sglang` |
-| `llama-server ...` | `llama-cpp` |
-
-If the command doesn't match any of these patterns (or there is no `command` field), the recipe falls through to
-`vllm` behavior by default.
-
-### Precedence
-
-An explicit `runtime` field **always wins** — command-hint detection only fires when `runtime` is omitted. This
-means existing recipes that set `runtime: vllm` (or any other value) continue to work identically.
-
-The full resolver chain is:
-
-1. **Command-hint detection** — infer runtime from `command` prefix (only when `runtime` is omitted).
-2. **v1 migration** — recipes with `recipe_version: "1"` are set to `eugr-vllm`.
-3. **eugr signal detection** — recipes with `build_args`, `mods`, or other eugr-specific fields are set to `eugr-vllm`.
-4. **vLLM variant resolution** — `runtime: vllm` is resolved to `vllm-distributed` (default) or `vllm-ray` (when Ray hints are present).
-
-### Example: minimal recipe without `runtime`
-
-```yaml
-model: Qwen/Qwen3-1.7B
-container: scitrera/dgx-spark-sglang:0.5.8-t5
+metadata:
+  description: "Qwen3 8B — general purpose"
+  maintainer: you
+  model_dtype: bfloat16
 
 defaults:
   port: 8000
   host: 0.0.0.0
+  tensor_parallel: 2
+  gpu_memory_utilization: 0.9
+  max_model_len: 32768
+  served_model_name: qwen3-8b
+  trust_remote_code: true
+  enable_prefix_caching: true
+
+env:
+  NCCL_CUMEM_ENABLE: "0"
+
+executor_config:
+  restart_policy: unless-stopped
+
+pre_exec:
+  - "pip install flash-attn==2.7.3 --no-build-isolation"
 
 command: |
-  sglang serve {model} --host {host} --port {port}
+  vllm serve \
+      {model} \
+      --served-model-name {served_model_name} \
+      --port {port} --host {host} \
+      -tp {tensor_parallel} \
+      --gpu-memory-utilization {gpu_memory_utilization} \
+      --max-model-len {max_model_len} \
+      --trust-remote-code \
+      --enable-prefix-caching
+
+post_commands:
+  - "curl -s http://{head_ip}:{port}/v1/models | python3 -m json.tool"
 ```
-
-sparkrun detects `sglang serve` and automatically sets the runtime to `sglang` — no `runtime` field needed.
-
-## Recipe Discovery
-
-sparkrun searches for recipes in this order:
-
-1. **`@spark-arena/` shortcut** — `@spark-arena/UUID` expands to a Spark Arena URL.
-2. **URL** — if the argument is an HTTP/HTTPS URL, the recipe is fetched directly and cached.
-3. **`@registry/recipe-name` scoped lookup** — disambiguate recipes across registries using scoped syntax.
-4. **Exact/relative file path** — if the argument is a path to an existing file.
-5. **Current working directory** — sparkrun scans `.yaml`/`.yml` files in the CWD that are valid recipes (must have `model`, `container`, and a resolvable `runtime`).
-6. **Registry search** — flat name lookup in configured custom registries, then recursive glob.
-
-Filenames are matched with or without `.yaml`/`.yml` extensions, so `sparkrun run my-recipe` finds
-`my-recipe.yaml`.
-
-## Validation
-
-Run `sparkrun recipe validate <recipe>` to check a recipe for issues:
-
-- Missing required fields (`name`, `model`, `runtime`)
-- Invalid `mode` values
-- `min_nodes` / `max_nodes` consistency
-- `metadata.model_params` is a valid parameter count
-- `metadata.model_dtype` and `metadata.kv_dtype` are recognized dtypes
-- Runtime-specific validation (provided by each runtime plugin)
-
-## Writing Your Own Recipes
-
-1. **Start from an existing recipe** that uses the same runtime. Copy it and modify.
-2. **Set `model`** to the HuggingFace model ID you want to serve.
-3. **Set `container`** to a known-good image for your runtime.
-4. **Set `runtime`** to the engine you're targeting (`vllm`, `sglang`, `llama-cpp`, etc.). While sparkrun can
-   [auto-detect the runtime](#automatic-runtime-detection) from the command prefix, explicitly setting it is
-   preferred for clarity and to avoid surprises if the heuristics evolve.
-5. **Tune `defaults`** — start conservative with `gpu_memory_utilization: 0.5` and `max_model_len` low, then
-   increase after confirming the model loads.
-6. **Add `metadata`** with `model_params` and `model_dtype` so VRAM estimation works.
-7. **Validate**: `sparkrun recipe validate your-recipe.yaml`
-8. **Test**: `sparkrun run your-recipe.yaml --solo --dry-run` to see what would be executed.
-
-### Tips
-
-- Use `--dry-run` liberally. It shows the exact Docker commands without executing anything.
-- The `sparkrun show <recipe>` command displays rendered defaults plus VRAM estimation — use it to sanity-check
-  before launching.
-- For models that barely fit in VRAM, lower `max_model_len` first. KV cache scales with sequence length.
-- `tensor_parallel` on DGX Spark maps 1:1 to node count. `--tp 2` means 2 hosts, each contributing 1 GPU.
-- GGUF recipes should set `max_nodes: 1` unless using the experimental RPC multi-node backend.

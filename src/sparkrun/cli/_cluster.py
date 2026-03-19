@@ -356,7 +356,7 @@ def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, config_path=No
             for host, role, status, image in group.members:
                 hdisp = format_host_display(host, group.meta)
                 click.echo(f"  {role:<10s} {hdisp:<40s} {status:<25s} {image}")
-            logs_cmd, stop_cmd = format_job_commands(group.meta)
+            logs_cmd, stop_cmd = format_job_commands(group.meta, cluster_id=cid)
             if logs_cmd:
                 click.echo(f"  logs: {logs_cmd}")
                 click.echo(f"  stop: {stop_cmd}")
@@ -370,7 +370,7 @@ def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, config_path=No
             meta = load_job_metadata(cid, cache_dir=str(config.cache_dir)) or {}
             hdisp = format_host_display(host, meta)
             click.echo(f"  {format_job_label(meta, cid):<40s} {hdisp:<40s} {status:<25s} {image}")
-            logs_cmd, stop_cmd = format_job_commands(meta)
+            logs_cmd, stop_cmd = format_job_commands(meta, cluster_id=cid)
             if logs_cmd:
                 click.echo(f"    logs: {logs_cmd}")
                 click.echo(f"    stop: {stop_cmd}")

@@ -142,10 +142,9 @@ class VllmRayRuntime(RuntimePlugin):
     ) -> int:
         """Stop a vLLM Ray cluster."""
         from sparkrun.orchestration.primitives import build_ssh_kwargs, cleanup_containers
-        from sparkrun.orchestration.docker import generate_container_name
 
-        head_container = generate_container_name(cluster_id, "head")
-        worker_container = generate_container_name(cluster_id, "worker")
+        head_container = self.executor.container_name(cluster_id, "head")
+        worker_container = self.executor.container_name(cluster_id, "worker")
         ssh_kwargs = build_ssh_kwargs(config)
 
         cleanup_containers(
@@ -173,8 +172,6 @@ class VllmRayRuntime(RuntimePlugin):
             ray_port: int = 46379,
             dashboard_port: int = 8265,
             dashboard: bool = False,
-            auto_remove: bool = True,
-            restart_policy: str | None = None,
             **kwargs,
     ) -> int:
         """Orchestrate a multi-node Ray cluster for vLLM.
@@ -196,17 +193,11 @@ class VllmRayRuntime(RuntimePlugin):
             resolve_nccl_env,
         )
         from sparkrun.orchestration.ssh import run_remote_script, run_remote_scripts_parallel
-        from sparkrun.orchestration.docker import generate_container_name
-        from sparkrun.orchestration.scripts import (
-            generate_ray_head_script,
-            generate_ray_worker_script,
-            generate_exec_serve_script,
-        )
 
         head_host = hosts[0]
         worker_hosts = hosts[1:]
-        head_container = generate_container_name(cluster_id, "head")
-        worker_container = generate_container_name(cluster_id, "worker")
+        head_container = self.executor.container_name(cluster_id, "head")
+        worker_container = self.executor.container_name(cluster_id, "worker")
         ssh_kwargs = build_ssh_kwargs(config)
         volumes = build_volumes(cache_dir, extra=self.get_extra_volumes())
         runtime_env = self.get_cluster_env(head_ip="<pending>", num_nodes=len(hosts))
@@ -247,7 +238,7 @@ class VllmRayRuntime(RuntimePlugin):
         # Step 3: Launch Ray head
         t0 = time.monotonic()
         logger.info("Step 3/5: Launching Ray head on %s...", head_host)
-        head_script = generate_ray_head_script(
+        head_script = self.executor.generate_ray_head_script(
             image=image,
             container_name=head_container,
             ray_port=ray_port,
@@ -256,8 +247,6 @@ class VllmRayRuntime(RuntimePlugin):
             env=all_env,
             volumes=volumes,
             nccl_env=nccl_env,
-            auto_remove=auto_remove,
-            restart_policy=restart_policy,
         )
         head_result = run_remote_script(
             head_host, head_script, timeout=120, dry_run=dry_run, **ssh_kwargs,
@@ -299,7 +288,7 @@ class VllmRayRuntime(RuntimePlugin):
                 "Step 4/5: Launching %d Ray worker(s) on %s...",
                 len(worker_hosts), ", ".join(worker_hosts),
             )
-            worker_script = generate_ray_worker_script(
+            worker_script = self.executor.generate_ray_worker_script(
                 image=image,
                 container_name=worker_container,
                 head_ip=head_ip,
@@ -307,8 +296,6 @@ class VllmRayRuntime(RuntimePlugin):
                 env=all_env,
                 volumes=volumes,
                 nccl_env=nccl_env,
-                auto_remove=auto_remove,
-                restart_policy=restart_policy,
             )
             worker_results = run_remote_scripts_parallel(
                 worker_hosts, worker_script, timeout=120, dry_run=dry_run, **ssh_kwargs,
@@ -341,7 +328,7 @@ class VllmRayRuntime(RuntimePlugin):
             "Step 5/5: Executing serve command on head node %s (container: %s)...",
             head_host, head_container,
         )
-        exec_script = generate_exec_serve_script(
+        exec_script = self.executor.generate_exec_serve_script(
             container_name=head_container,
             serve_command=serve_command,
             env=all_env,

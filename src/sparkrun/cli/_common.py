@@ -632,6 +632,38 @@ class RecipeNameType(click.ParamType):
 RECIPE_NAME = RecipeNameType()
 
 
+def _is_cluster_id(value: str) -> str | None:
+    """Return normalized cluster_id if value looks like one, else None.
+
+    Recognizes full ``sparkrun_<hex>`` IDs and short 8-12 char hex strings.
+    """
+    import re
+
+    if value.startswith("sparkrun_"):
+        return value
+    if re.fullmatch(r"[0-9a-f]{8,12}", value):
+        return "sparkrun_%s" % value
+    return None
+
+
+class TargetType(RecipeNameType):
+    """Click parameter type that accepts either a recipe name or a cluster ID.
+
+    Tab completion delegates to RecipeNameType (only completes recipe names).
+    Cluster IDs (hex strings or sparkrun_ prefixed) pass through as-is.
+    """
+
+    name = "target"
+
+    def convert(self, value, param, ctx):
+        if _is_cluster_id(value) is not None:
+            return value
+        return super().convert(value, param, ctx)
+
+
+TARGET = TargetType()
+
+
 class ProfileNameType(click.ParamType):
     """Click parameter type with shell completion for benchmark profile names."""
 

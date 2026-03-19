@@ -12,6 +12,7 @@ from scitrera_app_framework import Plugin, Variables, ext_parse_bool
 if TYPE_CHECKING:
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.core.recipe import Recipe
+    from sparkrun.orchestration.executor import Executor
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,21 @@ class RuntimePlugin(Plugin):
     # --- Subclass must define ---
     runtime_name: str = ""
     default_image_prefix: str = ""
+
+    # --- Executor ---
+    _executor: Executor | None = None
+
+    @property
+    def executor(self) -> Executor:
+        """Return the executor, lazily defaulting to DockerExecutor."""
+        if self._executor is None:
+            from sparkrun.orchestration.executor_docker import DockerExecutor
+            self._executor = DockerExecutor()
+        return self._executor
+
+    @executor.setter
+    def executor(self, value: Executor) -> None:
+        self._executor = value
 
     # --- SAF Plugin interface ---
 
@@ -419,11 +435,10 @@ class RuntimePlugin(Plugin):
         """
         if len(hosts) <= 1:
             from sparkrun.orchestration.primitives import build_ssh_kwargs
-            from sparkrun.orchestration.docker import generate_container_name
             from sparkrun.orchestration.ssh import stream_container_file_logs
 
             host = hosts[0] if hosts else "localhost"
-            container_name = generate_container_name(cluster_id, "solo")
+            container_name = self.executor.container_name(cluster_id, "solo")
             ssh_kwargs = build_ssh_kwargs(config)
             stream_container_file_logs(
                 host, container_name, tail=tail, dry_run=dry_run, **ssh_kwargs,
@@ -471,9 +486,8 @@ class RuntimePlugin(Plugin):
         override when they use non-standard naming (e.g.
         ``{cluster_id}_node_0`` for SGLang and vLLM distributed).
         """
-        from sparkrun.orchestration.docker import generate_container_name
         if is_solo:
-            return generate_container_name(cluster_id, "solo")
+            return self.executor.container_name(cluster_id, "solo")
         return self._head_container_name(cluster_id)
 
     def _head_container_name(self, cluster_id: str) -> str:
@@ -482,8 +496,7 @@ class RuntimePlugin(Plugin):
         Override in subclasses that use non-standard naming.
         The default returns ``{cluster_id}_head``.
         """
-        from sparkrun.orchestration.docker import generate_container_name
-        return generate_container_name(cluster_id, "head")
+        return self.executor.container_name(cluster_id, "head")
 
     def _cluster_log_mode(self) -> str:
         """Return the log tailing mode for cluster containers.
@@ -521,8 +534,7 @@ class RuntimePlugin(Plugin):
             nccl_env: dict[str, str] | None = None,
             ib_ip_map: dict[str, str] | None = None,
             skip_keys: set[str] | frozenset[str] = frozenset(),
-            auto_remove: bool = True,
-            restart_policy: str | None = None,
+            executor: Executor | None = None,
             **kwargs,
     ) -> int:
         """Launch a workload -- delegates to solo or cluster implementation.
@@ -551,12 +563,16 @@ class RuntimePlugin(Plugin):
                 serve commands internally (e.g. native-cluster runtimes
                 that call ``generate_node_command()`` instead of using
                 the pre-built *serve_command*).
+            executor: Container executor (defaults to DockerExecutor).
             **kwargs: Runtime-specific keyword arguments (e.g. ray_port,
                 dashboard_port, init_port, rpc_port).
 
         Returns:
             Exit code (0 = success).
         """
+        if executor is not None:
+            self._executor = executor
+
         if len(hosts) <= 1:
             return self._run_solo(
                 host=hosts[0] if hosts else "localhost",
@@ -571,8 +587,6 @@ class RuntimePlugin(Plugin):
                 nccl_env=nccl_env,
                 recipe=recipe,
                 overrides=overrides,
-                auto_remove=auto_remove,
-                restart_policy=restart_policy,
             )
         return self._run_cluster(
             hosts=hosts,
@@ -589,8 +603,6 @@ class RuntimePlugin(Plugin):
             nccl_env=nccl_env,
             ib_ip_map=ib_ip_map,
             skip_keys=skip_keys,
-            auto_remove=auto_remove,
-            restart_policy=restart_policy,
             **kwargs,
         )
 
@@ -676,8 +688,6 @@ class RuntimePlugin(Plugin):
             nccl_env: dict[str, str] | None = None,
             recipe: Recipe | None = None,
             overrides: dict[str, Any] | None = None,
-            auto_remove: bool = True,
-            restart_policy: str | None = None,
     ) -> int:
         """Launch a single-node inference workload.
 
@@ -695,15 +705,10 @@ class RuntimePlugin(Plugin):
             detect_infiniband_local,
             run_script_on_host,
         )
-        from sparkrun.orchestration.docker import generate_container_name
-        from sparkrun.orchestration.scripts import (
-            generate_container_launch_script,
-            generate_exec_serve_script,
-        )
         from sparkrun.core.hosts import is_local_host
 
         is_local = is_local_host(host)
-        container_name = generate_container_name(cluster_id, "solo")
+        container_name = self.executor.container_name(cluster_id, "solo")
         ssh_kwargs = build_ssh_kwargs(config)
         volumes = build_volumes(cache_dir, extra=self.get_extra_volumes())
         all_env = merge_env(env, self.get_extra_env())
@@ -728,7 +733,7 @@ class RuntimePlugin(Plugin):
             "Step 2/3: Launching container %s on %s (image: %s)...",
             container_name, host, image,
         )
-        launch_script = generate_container_launch_script(
+        launch_script = self.executor.generate_launch_script(
             image=image,
             container_name=container_name,
             command="sleep infinity",
@@ -736,8 +741,6 @@ class RuntimePlugin(Plugin):
             volumes=volumes,
             nccl_env=nccl_env,
             extra_docker_opts=self.get_extra_docker_opts() or None,
-            auto_remove=auto_remove,
-            restart_policy=restart_policy,
         )
         result = run_script_on_host(
             host, launch_script, ssh_kwargs=ssh_kwargs, timeout=120, dry_run=dry_run,
@@ -755,7 +758,7 @@ class RuntimePlugin(Plugin):
         t0 = time.monotonic()
         logger.info("Step 3/3: Executing serve command in %s...", container_name)
         logger.debug("Serve command: %s", serve_command)
-        exec_script = generate_exec_serve_script(
+        exec_script = self.executor.generate_exec_serve_script(
             container_name=container_name,
             serve_command=serve_command,
             env=all_env,
@@ -794,10 +797,9 @@ class RuntimePlugin(Plugin):
             cleanup_containers,
             cleanup_containers_local,
         )
-        from sparkrun.orchestration.docker import generate_container_name
         from sparkrun.core.hosts import is_local_host
 
-        container_name = generate_container_name(cluster_id, "solo")
+        container_name = self.executor.container_name(cluster_id, "solo")
         is_local = is_local_host(host)
 
         if is_local:
@@ -809,8 +811,8 @@ class RuntimePlugin(Plugin):
         logger.info("Solo workload '%s' stopped on %s", cluster_id, host)
         return 0
 
-    @staticmethod
     def _generate_node_script(
+            self,
             image: str,
             container_name: str,
             serve_command: str,
@@ -819,8 +821,6 @@ class RuntimePlugin(Plugin):
             volumes: dict[str, str] | None = None,
             nccl_env: dict[str, str] | None = None,
             extra_docker_opts: list[str] | None = None,
-            auto_remove: bool = True,
-            restart_policy: str | None = None,
     ) -> str:
         """Generate a script that launches a container with a direct entrypoint command.
 
@@ -841,43 +841,16 @@ class RuntimePlugin(Plugin):
         Returns:
             Complete bash script as a string.
         """
-        from sparkrun.orchestration.docker import docker_run_cmd, docker_stop_cmd
-        from sparkrun.orchestration.primitives import merge_env
-
-        all_env = merge_env(nccl_env, env)
-        cleanup = docker_stop_cmd(container_name)
-        run_cmd = docker_run_cmd(
+        return self.executor.generate_node_script(
             image=image,
-            command=serve_command,
             container_name=container_name,
-            detach=True,
-            env=all_env,
+            serve_command=serve_command,
+            label=label,
+            env=env,
             volumes=volumes,
-            extra_opts=extra_docker_opts,
-            auto_remove=auto_remove,
-            restart_policy=restart_policy,
+            nccl_env=nccl_env,
+            extra_docker_opts=extra_docker_opts,
         )
-
-        return (
-            "#!/bin/bash\n"
-            "set -uo pipefail\n"
-            "\n"
-            "echo 'Cleaning up existing container: %(name)s'\n"
-            "%(cleanup)s\n"
-            "\n"
-            "echo 'Launching %(label)s: %(name)s'\n"
-            "%(run_cmd)s\n"
-            "\n"
-            "# Verify container started\n"
-            "sleep 1\n"
-            "if docker ps --format '{{.Names}}' | grep -q '^%(name)s$'; then\n"
-            "    echo 'Container %(name)s launched successfully'\n"
-            "else\n"
-            "    echo 'ERROR: Container %(name)s failed to start' >&2\n"
-            "    docker logs %(name)s 2>&1 | tail -20 || true\n"
-            "    exit 1\n"
-            "fi\n"
-        ) % {"name": container_name, "cleanup": cleanup, "run_cmd": run_cmd, "label": label}
 
     # --- Banner / connection info ---
 
@@ -932,13 +905,12 @@ class RuntimePlugin(Plugin):
         """
         from sparkrun.orchestration.primitives import build_ssh_kwargs
         from sparkrun.orchestration.ssh import run_remote_command
-        from sparkrun.orchestration.docker import docker_stop_cmd, generate_node_container_name
 
         ssh_kwargs = build_ssh_kwargs(config)
         for rank, host in enumerate(hosts):
-            container_name = generate_node_container_name(cluster_id, rank)
+            container_name = self.executor.node_container_name(cluster_id, rank)
             run_remote_command(
-                host, docker_stop_cmd(container_name),
+                host, self.executor.stop_cmd(container_name),
                 timeout=30, dry_run=dry_run, **ssh_kwargs,
             )
 
@@ -960,12 +932,11 @@ class RuntimePlugin(Plugin):
         logger.info("To view logs:    sparkrun logs <recipe> --hosts %s", ",".join(hosts))
         logger.info("To stop cluster: sparkrun stop <recipe> --hosts %s", ",".join(hosts))
         if per_node_logs:
-            from sparkrun.orchestration.docker import generate_node_container_name
             logger.info("")
             for rank, host in enumerate(hosts):
                 logger.info(
                     "  Node %d: ssh %s 'docker logs %s'",
-                    rank, host, generate_node_container_name(cluster_id, rank),
+                    rank, host, self.executor.node_container_name(cluster_id, rank),
                 )
         logger.info("=" * 60)
 
