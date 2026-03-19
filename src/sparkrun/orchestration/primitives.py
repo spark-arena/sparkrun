@@ -441,6 +441,30 @@ def is_container_running(
 
 
 # ---------------------------------------------------------------------------
+# Sparkrun container detection
+# ---------------------------------------------------------------------------
+
+def check_sparkrun_container(
+        host: str,
+        cluster_id: str,
+        ssh_kwargs: dict | None = None,
+) -> str | None:
+    """Check if a sparkrun container with *cluster_id* is running on *host*.
+
+    Queries ``docker ps`` for containers whose name starts with the
+    cluster_id prefix.
+
+    Returns:
+        The container name if found, ``None`` otherwise.
+    """
+    cmd = "docker ps --filter 'name=%s' --format '{{.Names}}' | head -1" % cluster_id
+    result = run_command_on_host(host, cmd, ssh_kwargs=ssh_kwargs, timeout=10)
+    if result.success and result.stdout.strip():
+        return result.stdout.strip().splitlines()[0]
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Port availability detection
 # ---------------------------------------------------------------------------
 

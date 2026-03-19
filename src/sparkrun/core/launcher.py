@@ -40,6 +40,7 @@ class LaunchResult:
     nccl_env: dict[str, str] | None = None
     ib_ip_map: dict[str, str] = field(default_factory=dict)
     serve_command: str = ""
+    reused: bool = False
 
 
 def launch_inference(
@@ -56,6 +57,7 @@ def launch_inference(
         recipe_ref: str | None = None,
         registry_mgr: RegistryManager | None = None,
         auto_port: bool = False,
+        reuse: bool = False,
         sync_tuning: bool = True,
         skip_keys: set[str] | frozenset[str] = frozenset(),
         dry_run: bool = False,
@@ -94,6 +96,9 @@ def launch_inference(
         recipe_ref: Simplified recipe reference for display (e.g. @spark-arena/UUID).
         registry_mgr: Registry manager for tuning config sync.
         auto_port: If True, auto-increment port when the desired port is in use.
+        reuse: If True and a sparkrun container with the same cluster_id is
+            already running on the desired port, return early with the
+            existing cluster_id instead of launching a new container.
         sync_tuning: Whether to sync tuning configs from registries.
         skip_keys: Keys to suppress in serve command generation.
         dry_run: Show what would be done without executing.
@@ -112,14 +117,73 @@ def launch_inference(
     effective_cache_dir = cache_dir or str(config.hf_cache_dir)
     effective_transfer_mode = transfer_mode or "auto"
     ssh_kwargs = build_ssh_kwargs(config)
+    head_host = host_list[0]
 
-    # -- Port resolution --
+    # -- Port resolution with optional reuse detection --
+    config_chain = recipe.build_config_chain(overrides)
+    desired_port = int(config_chain.get("port") or 8000)
+
     if auto_port:
-        from sparkrun.orchestration.primitives import find_available_port
+        from sparkrun.orchestration.primitives import check_sparkrun_container, find_available_port
 
-        config_chain = recipe.build_config_chain(overrides)
-        desired_port = int(config_chain.get("port") or 8000)
-        head_host = host_list[0]
+        # Compute cluster_id for the desired port *before* auto-increment
+        pre_overrides = {**overrides, "port": desired_port}
+        expected_cluster_id = generate_cluster_id(recipe, host_list, overrides=pre_overrides)
+
+        # Check if a container with that cluster_id is already running
+        if not dry_run:
+            existing_container = check_sparkrun_container(
+                head_host, expected_cluster_id, ssh_kwargs=ssh_kwargs,
+            )
+        else:
+            existing_container = None
+
+        if existing_container:
+            if reuse:
+                logger.info(
+                    "Reusing existing container %s on %s (port %d)",
+                    existing_container, head_host, desired_port,
+                )
+                overrides["port"] = desired_port
+                container_image = runtime.resolve_container(recipe, overrides)
+                return LaunchResult(
+                    rc=0,
+                    cluster_id=expected_cluster_id,
+                    host_list=host_list,
+                    is_solo=is_solo or len(host_list) <= 1,
+                    runtime=runtime,
+                    recipe=recipe,
+                    overrides=overrides,
+                    container_image=container_image,
+                    effective_cache_dir=effective_cache_dir,
+                    serve_port=desired_port,
+                    config=config,
+                    recipe_ref=recipe_ref,
+                    reused=True,
+                )
+            else:
+                import click
+                click.echo(
+                    "Recipe '%s' is already running on port %d (container: %s). "
+                    "Use 'sparkrun stop' first." % (recipe.name, desired_port, existing_container),
+                    err=True,
+                )
+                return LaunchResult(
+                    rc=1,
+                    cluster_id=expected_cluster_id,
+                    host_list=host_list,
+                    is_solo=is_solo or len(host_list) <= 1,
+                    runtime=runtime,
+                    recipe=recipe,
+                    overrides=overrides,
+                    container_image=runtime.resolve_container(recipe, overrides),
+                    effective_cache_dir=effective_cache_dir,
+                    serve_port=desired_port,
+                    config=config,
+                    recipe_ref=recipe_ref,
+                )
+
+        # No matching container — find a free port (may auto-increment)
         serve_port = find_available_port(
             head_host, desired_port, ssh_kwargs=ssh_kwargs, dry_run=dry_run,
         )
@@ -130,8 +194,7 @@ def launch_inference(
             )
         overrides["port"] = serve_port
     else:
-        config_chain = recipe.build_config_chain(overrides)
-        serve_port = int(config_chain.get("port") or 8000)
+        serve_port = desired_port
 
     # Derive deterministic cluster_id from recipe + (trimmed) hosts
     cluster_id = generate_cluster_id(recipe, host_list, overrides=overrides)
@@ -292,7 +355,7 @@ def launch_inference(
         rc=rc,
         cluster_id=cluster_id,
         host_list=host_list,
-        is_solo=is_solo,
+        is_solo=is_solo or len(host_list) <= 1,
         runtime=runtime,
         recipe=recipe,
         overrides=overrides,

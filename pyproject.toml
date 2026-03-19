@@ -30,9 +30,11 @@ dependencies = [
     "pyyaml>=6.0",
     "huggingface_hub>=0.20",
     "textual>=1.0.0",
+    "smolagents[openai]>=1.0",
 ]
 
 [project.optional-dependencies]
+agent-web = ["smolagents>=1.0", "gradio>=4.0"]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
