@@ -127,24 +127,35 @@ def _stop_all(hosts, hosts_file, cluster_name, config, dry_run):
 
 
 def _stop_by_cluster_id(target, hosts, hosts_file, cluster_name, config, dry_run):
-    """Stop containers identified by cluster ID."""
+    """Stop containers identified by cluster ID.
+
+    First tries to load job metadata for host info.  When metadata is
+    unavailable (e.g. on a worker node that didn't launch the job),
+    falls back to resolving hosts from CLI flags or the default cluster
+    and stops containers by enumerating the known cluster_id patterns.
+    """
     from sparkrun.orchestration.docker import enumerate_cluster_containers
     from sparkrun.orchestration.job_metadata import load_job_metadata, remove_job_metadata
     from sparkrun.orchestration.primitives import build_ssh_kwargs, cleanup_containers, cleanup_containers_local
 
     cluster_id = _is_cluster_id(target)
     meta = load_job_metadata(cluster_id, cache_dir=str(config.cache_dir))
-    if meta is None:
-        click.echo("Error: Unknown job ID '%s' — run `sparkrun status` to list running jobs." % target, err=True)
-        sys.exit(1)
 
-    # CLI hosts override metadata hosts if provided
+    # Resolve hosts: CLI flags > metadata > default cluster
     if hosts or hosts_file or cluster_name:
         host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config)
+    elif meta and meta.get("hosts"):
+        host_list = meta["hosts"]
     else:
-        host_list = meta.get("hosts", [])
-        if not host_list:
-            click.echo("Error: No hosts in job metadata and none specified via --hosts.", err=True)
+        # No metadata — try default cluster / config hosts
+        try:
+            host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config)
+        except SystemExit:
+            click.echo(
+                "Error: No job metadata for '%s' and no hosts specified.\n"
+                "  Specify hosts with --hosts or --cluster, or run from the machine that launched the job."
+                % target, err=True,
+            )
             sys.exit(1)
 
     ssh_kwargs = build_ssh_kwargs(config)
@@ -248,35 +259,49 @@ def logs_cmd(ctx, target, hosts, hosts_file, cluster_name, tp_override, port, se
         cluster_id = _is_cluster_id(target)
         from sparkrun.orchestration.job_metadata import load_job_metadata
         meta = load_job_metadata(cluster_id, cache_dir=str(config.cache_dir))
-        if meta is None:
-            click.echo("Error: Unknown job ID '%s' — run `sparkrun status` to list running jobs." % target, err=True)
-            sys.exit(1)
 
-        runtime_name = meta.get("runtime")
-        if not runtime_name:
-            click.echo("Error: Job metadata missing runtime info.", err=True)
-            sys.exit(1)
+        # Resolve runtime — from metadata if available, otherwise need hosts
+        # to discover the container and fall back to generic docker logs
+        runtime_name = meta.get("runtime") if meta else None
+        if runtime_name:
+            try:
+                runtime = get_runtime(runtime_name, v)
+            except ValueError as e:
+                click.echo("Error: %s" % e, err=True)
+                sys.exit(1)
+        else:
+            runtime = None
 
-        try:
-            runtime = get_runtime(runtime_name, v)
-        except ValueError as e:
-            click.echo("Error: %s" % e, err=True)
-            sys.exit(1)
-
+        # Resolve hosts: CLI flags > metadata > default cluster
         if hosts or hosts_file or cluster_name:
             host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v)
+        elif meta and meta.get("hosts"):
+            host_list = meta["hosts"]
         else:
-            host_list = meta.get("hosts", [])
-            if not host_list:
-                click.echo("Error: No hosts in job metadata and none specified via --hosts.", err=True)
+            try:
+                host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v)
+            except SystemExit:
+                click.echo(
+                    "Error: No job metadata for '%s' and no hosts specified.\n"
+                    "  Specify hosts with --hosts or --cluster, or run from the machine that launched the job."
+                    % target, err=True,
+                )
                 sys.exit(1)
 
-        runtime.follow_logs(
-            hosts=host_list,
-            cluster_id=cluster_id,
-            config=config,
-            tail=tail,
-        )
+        if runtime is not None:
+            runtime.follow_logs(
+                hosts=host_list,
+                cluster_id=cluster_id,
+                config=config,
+                tail=tail,
+            )
+        else:
+            # No metadata / unknown runtime — fall back to generic docker logs
+            from sparkrun.orchestration.primitives import build_ssh_kwargs
+            from sparkrun.orchestration.ssh import stream_remote_logs
+            ssh_kwargs = build_ssh_kwargs(config)
+            container_name = cluster_id + "_head" if len(host_list) > 1 else cluster_id + "_solo"
+            stream_remote_logs(host_list[0], container_name, tail=tail, **ssh_kwargs)
         return
 
     # Branch: recipe name target (original path)
