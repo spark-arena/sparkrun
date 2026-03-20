@@ -172,8 +172,7 @@ class VllmDistributedRuntime(RuntimePlugin):
 
     def _head_container_name(self, cluster_id: str) -> str:
         """vLLM distributed names the head container ``{cluster_id}_node_0``."""
-        from sparkrun.orchestration.docker import generate_node_container_name
-        return generate_node_container_name(cluster_id, 0)
+        return self.executor.node_container_name(cluster_id, 0)
 
     # --- Cluster stop ---
 
@@ -232,9 +231,6 @@ class VllmDistributedRuntime(RuntimePlugin):
             run_remote_script, run_remote_command,
             start_log_capture, stop_log_capture,
         )
-        from sparkrun.orchestration.docker import (
-            docker_stop_cmd, generate_node_container_name,
-        )
 
         num_nodes = len(hosts)
         head_host = hosts[0]
@@ -254,9 +250,9 @@ class VllmDistributedRuntime(RuntimePlugin):
         t0 = time.monotonic()
         logger.info("Step 1/6: Cleaning up existing containers for cluster '%s'...", cluster_id)
         for rank, host in enumerate(hosts):
-            container_name = generate_node_container_name(cluster_id, rank)
+            container_name = self.executor.node_container_name(cluster_id, rank)
             run_remote_command(
-                host, docker_stop_cmd(container_name),
+                host, self.executor.stop_cmd(container_name),
                 timeout=30, dry_run=dry_run, **ssh_kwargs,
             )
         logger.info("Step 1/6: Cleanup done (%.1fs)", time.monotonic() - t0)
@@ -298,7 +294,7 @@ class VllmDistributedRuntime(RuntimePlugin):
 
         # Step 4: Launch head node (rank 0)
         t0 = time.monotonic()
-        head_container = generate_node_container_name(cluster_id, 0)
+        head_container = self.executor.node_container_name(cluster_id, 0)
         logger.info(
             "Step 4/6: Launching head node (rank 0) on %s as %s...",
             head_host, head_container,
@@ -367,7 +363,7 @@ class VllmDistributedRuntime(RuntimePlugin):
                         node_rank=rank, init_port=init_port,
                         skip_keys=skip_keys,
                     )
-                    worker_container = generate_node_container_name(cluster_id, rank)
+                    worker_container = self.executor.node_container_name(cluster_id, rank)
                     worker_script = self._generate_node_script(
                         image=image, container_name=worker_container,
                         serve_command=worker_command, label="vllm node",

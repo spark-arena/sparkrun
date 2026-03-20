@@ -306,14 +306,13 @@ class LlamaCppRuntime(RuntimePlugin):
         """Stop a llama.cpp RPC cluster."""
         from sparkrun.orchestration.primitives import build_ssh_kwargs
         from sparkrun.orchestration.ssh import run_remote_command
-        from sparkrun.orchestration.docker import docker_stop_cmd
 
         ssh_kwargs = build_ssh_kwargs(config)
 
         # Stop head
         head_container = self._container_name(cluster_id, "head")
         run_remote_command(
-            hosts[0], docker_stop_cmd(head_container),
+            hosts[0], self.executor.stop_cmd(head_container),
             timeout=30, dry_run=dry_run, **ssh_kwargs,
         )
 
@@ -321,7 +320,7 @@ class LlamaCppRuntime(RuntimePlugin):
         for host in hosts[1:]:
             worker_container = self._container_name(cluster_id, "worker")
             run_remote_command(
-                host, docker_stop_cmd(worker_container),
+                host, self.executor.stop_cmd(worker_container),
                 timeout=30, dry_run=dry_run, **ssh_kwargs,
             )
 
@@ -376,7 +375,6 @@ class LlamaCppRuntime(RuntimePlugin):
         )
         from sparkrun.orchestration.infiniband import detect_ib_for_hosts
         from sparkrun.orchestration.ssh import run_remote_script, run_remote_command
-        from sparkrun.orchestration.docker import docker_stop_cmd
 
         logger.warning(
             "llama.cpp RPC clustering is EXPERIMENTAL. "
@@ -400,12 +398,12 @@ class LlamaCppRuntime(RuntimePlugin):
         t0 = time.monotonic()
         logger.info("Step 1/5: Cleaning up existing containers for cluster '%s'...", cluster_id)
         run_remote_command(
-            head_host, docker_stop_cmd(head_container),
+            head_host, self.executor.stop_cmd(head_container),
             timeout=30, dry_run=dry_run, **ssh_kwargs,
         )
         for host in worker_hosts:
             run_remote_command(
-                host, docker_stop_cmd(worker_container_name),
+                host, self.executor.stop_cmd(worker_container_name),
                 timeout=30, dry_run=dry_run, **ssh_kwargs,
             )
         logger.info("Step 1/5: Cleanup done (%.1fs)", time.monotonic() - t0)

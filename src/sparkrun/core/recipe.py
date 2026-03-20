@@ -41,6 +41,7 @@ _KNOWN_KEYS = {
     "benchmark", "metadata",
     "pre_exec", "post_exec", "post_commands", "stop_after_post",
     "builder", "builder_config",
+    "executor_config",
 }
 
 
@@ -320,6 +321,10 @@ class Recipe:
         # Builder plugin
         self.builder: str = data.get("builder", "")
         self.builder_config: dict[str, Any] = dict(data.get("builder_config", {}))
+
+        # Executor config (container engine settings: auto_remove, restart_policy, etc.)
+        raw_exec = data.get("executor_config", {})
+        self.executor_config: dict[str, Any] = dict(raw_exec) if isinstance(raw_exec, dict) else {}
 
         # Post-init resolver chain — all runtime/migration logic lives here
         for resolver in _RECIPE_RESOLVERS:

@@ -219,13 +219,20 @@ def setup_update(ctx, no_update_registries):
 @click.option("--include-self/--no-include-self", default=True, show_default=True,
               help="Include this machine's hostname in the mesh")
 @click.option("--user", "-u", default=None, help="SSH username (default: current user)")
+@click.option("--discover-ips/--no-discover-ips", default=True, show_default=True,
+              help="After meshing, discover IB/CX7 IPs and distribute host keys")
 @dry_run_option
 @click.pass_context
-def setup_ssh(ctx, hosts, hosts_file, cluster_name, extra_hosts, include_self, user, dry_run):
+def setup_ssh(ctx, hosts, hosts_file, cluster_name, extra_hosts, include_self, user, discover_ips, dry_run):
     """Set up passwordless SSH mesh across cluster hosts.
 
     Ensures every host can SSH to every other host without password prompts.
     Creates ed25519 keys if missing and distributes public keys.
+
+    After the mesh is established, sparkrun automatically discovers
+    additional network IPs (InfiniBand, CX7) on cluster hosts and
+    distributes their host keys so inter-node SSH works over all
+    networks. Use --no-discover-ips to skip this phase.
 
     By default, the machine running sparkrun is included in the mesh
     (--include-self). Use --no-include-self to exclude it.
@@ -239,12 +246,15 @@ def setup_ssh(ctx, hosts, hosts_file, cluster_name, extra_hosts, include_self, u
       sparkrun setup ssh --cluster mylab --user ubuntu
 
       sparkrun setup ssh --cluster mylab --extra-hosts 10.0.0.1
+
+      sparkrun setup ssh --hosts 10.0.0.1,10.0.0.2 --no-discover-ips
     """
     import os
     import subprocess
 
     from sparkrun.core.hosts import resolve_hosts
     from sparkrun.core.config import SparkrunConfig
+    from sparkrun.orchestration.primitives import local_ip_for
 
     config = SparkrunConfig()
 
@@ -260,6 +270,26 @@ def setup_ssh(ctx, hosts, hosts_file, cluster_name, extra_hosts, include_self, u
 
     # Determine the cluster's configured user (if hosts came from a cluster)
     cluster_user = _resolve_cluster_user(cluster_name, hosts, hosts_file, cluster_mgr)
+
+    # Resolve 127.0.0.1 to a routable IP so other nodes can SSH back
+    _resolved_loopback = False
+    for i, h in enumerate(host_list):
+        if h == "127.0.0.1":
+            # Find first non-loopback host to determine routing
+            other = next((x for x in host_list if x != "127.0.0.1"), None)
+            if other:
+                resolved = local_ip_for(other)
+                if resolved and resolved != "127.0.0.1":
+                    click.echo("Resolved 127.0.0.1 -> %s (routable IP)" % resolved)
+                    host_list[i] = resolved
+                    _resolved_loopback = True
+                else:
+                    click.echo("Warning: Could not resolve 127.0.0.1 to a routable IP, dropping it.", err=True)
+                    host_list[i] = ""  # mark for removal
+            else:
+                click.echo("Warning: All hosts are 127.0.0.1, cannot resolve.", err=True)
+                host_list[i] = ""
+    host_list = [h for h in host_list if h]
 
     # Track original cluster hosts before extras/self are appended
     cluster_hosts = list(host_list)
@@ -278,7 +308,6 @@ def setup_ssh(ctx, hosts, hosts_file, cluster_name, extra_hosts, include_self, u
     # remote hosts may not be able to resolve this machine's hostname.
     self_host: str | None = None
     if include_self and host_list:
-        from sparkrun.orchestration.primitives import local_ip_for
         self_host = local_ip_for(host_list[0])
         if self_host and self_host not in seen:
             host_list.append(self_host)
@@ -300,7 +329,7 @@ def setup_ssh(ctx, hosts, hosts_file, cluster_name, extra_hosts, include_self, u
     if user is None:
         user = cluster_user or config.ssh_user or os.environ.get("USER", "root")
 
-    # Locate the bundled script
+    # === Phase 1: Mesh SSH keys ===
     from sparkrun.scripts import get_script_path
     with get_script_path("mesh_ssh_keys.sh") as script_path:
         cmd = ["bash", str(script_path), user] + host_list
@@ -308,6 +337,9 @@ def setup_ssh(ctx, hosts, hosts_file, cluster_name, extra_hosts, include_self, u
         if dry_run:
             click.echo("Would run:")
             click.echo("  " + " ".join(cmd))
+            if discover_ips:
+                click.echo()
+                click.echo("Phase 2 (discover IPs + distribute host keys) would run after mesh completes.")
             return
 
         click.echo("Setting up SSH mesh for user '%s' across %d hosts..." % (user, len(host_list)))
@@ -318,7 +350,67 @@ def setup_ssh(ctx, hosts, hosts_file, cluster_name, extra_hosts, include_self, u
 
         # Run interactively — the script prompts for passwords
         result = subprocess.run(cmd)
-        sys.exit(result.returncode)
+        if result.returncode != 0:
+            sys.exit(result.returncode)
+
+    # === Phase 2: Discover additional IPs and distribute host keys ===
+    if not discover_ips:
+        sys.exit(0)
+
+    if len(cluster_hosts) < 2:
+        sys.exit(0)
+
+    click.echo()
+    click.echo("Discovering additional network IPs on cluster hosts...")
+
+    ssh_kwargs = {"ssh_user": user}
+    if config.ssh_key:
+        ssh_kwargs["ssh_key"] = config.ssh_key
+
+    from sparkrun.orchestration.networking import discover_host_network_ips, distribute_host_keys
+    from sparkrun.orchestration.primitives import check_tcp_reachability
+
+    discovered = discover_host_network_ips(cluster_hosts, ssh_kwargs=ssh_kwargs)
+
+    if not discovered:
+        click.echo("  No additional network IPs found.")
+        sys.exit(0)
+
+    # Collect all unique discovered IPs
+    all_discovered_ips: list[str] = []
+    seen_ips: set[str] = set()
+    for host, ips in sorted(discovered.items()):
+        click.echo("  %s: %s" % (host, ", ".join(ips)))
+        for ip in ips:
+            if ip not in seen_ips:
+                all_discovered_ips.append(ip)
+                seen_ips.add(ip)
+
+    # Informational reachability check from control machine
+    click.echo()
+    click.echo("Checking reachability from control machine...")
+    reachability = check_tcp_reachability(all_discovered_ips)
+    reachable = [ip for ip, ok in reachability.items() if ok]
+    unreachable = [ip for ip, ok in reachability.items() if not ok]
+    if reachable:
+        click.echo("  Reachable: %s" % ", ".join(reachable))
+    if unreachable:
+        click.echo("  Not reachable from control (normal for IB): %s" % ", ".join(unreachable))
+
+    # Distribute host keys for ALL discovered IPs — cluster nodes can
+    # reach each other's IB IPs even when the control machine can't.
+    click.echo()
+    click.echo("Distributing host keys for %d discovered IP(s)..." % len(all_discovered_ips))
+    ks_results = distribute_host_keys(
+        all_discovered_ips, cluster_hosts, ssh_kwargs=ssh_kwargs,
+    )
+    ks_ok = sum(1 for r in ks_results if r.success)
+    ks_fail = sum(1 for r in ks_results if not r.success)
+    if ks_fail:
+        click.echo("  Warning: keyscan failed on %d host(s)." % ks_fail, err=True)
+    click.echo("  Host keys for %d IP(s) distributed to %d host(s) + local." % (len(all_discovered_ips), ks_ok))
+
+    sys.exit(0)
 
 
 @setup.command("cx7")

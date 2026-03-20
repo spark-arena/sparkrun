@@ -351,8 +351,7 @@ class TrtllmRuntime(RuntimePlugin):
 
     def _head_container_name(self, cluster_id: str) -> str:
         """TRT-LLM names the head container ``{cluster_id}_node_0``."""
-        from sparkrun.orchestration.docker import generate_node_container_name
-        return generate_node_container_name(cluster_id, 0)
+        return self.executor.node_container_name(cluster_id, 0)
 
     def _cluster_log_mode(self) -> str:
         """TRT-LLM cluster uses docker logs (mpirun output goes to stdout)."""
@@ -414,11 +413,7 @@ class TrtllmRuntime(RuntimePlugin):
         from sparkrun.orchestration.ssh import (
             run_remote_script, run_remote_command,
         )
-        from sparkrun.orchestration.docker import (
-            docker_stop_cmd, docker_exec_cmd,
-            generate_node_container_name,
-        )
-        from sparkrun.orchestration.scripts import generate_container_launch_script
+        from sparkrun.orchestration.docker import docker_exec_cmd
 
         num_nodes = len(hosts)
         ssh_kwargs = build_ssh_kwargs(config)
@@ -436,9 +431,9 @@ class TrtllmRuntime(RuntimePlugin):
         t0 = time.monotonic()
         logger.info("Step 1/7: Cleaning up existing containers for cluster '%s'...", cluster_id)
         for rank, host in enumerate(hosts):
-            container_name = generate_node_container_name(cluster_id, rank)
+            container_name = self.executor.node_container_name(cluster_id, rank)
             run_remote_command(
-                host, docker_stop_cmd(container_name),
+                host, self.executor.stop_cmd(container_name),
                 timeout=30, dry_run=dry_run, **ssh_kwargs,
             )
         logger.info("Step 1/7: Cleanup done (%.1fs)", time.monotonic() - t0)
@@ -463,7 +458,7 @@ class TrtllmRuntime(RuntimePlugin):
             except RuntimeError as e:
                 logger.error("%s", e)
                 return 1
-            container_name = generate_node_container_name(cluster_id, rank)
+            container_name = self.executor.node_container_name(cluster_id, rank)
             host_ip_map[ip] = container_name
             host_ips.append(ip)
             logger.info("  Rank %d: %s -> %s (IP: %s)", rank, host, container_name, ip)
@@ -475,8 +470,8 @@ class TrtllmRuntime(RuntimePlugin):
         with ThreadPoolExecutor(max_workers=num_nodes) as executor:
             futures = {}
             for rank, host in enumerate(hosts):
-                container_name = generate_node_container_name(cluster_id, rank)
-                launch_script = generate_container_launch_script(
+                container_name = self.executor.node_container_name(cluster_id, rank)
+                launch_script = self.executor.generate_launch_script(
                     image=image,
                     container_name=container_name,
                     command="sleep infinity",
@@ -507,7 +502,7 @@ class TrtllmRuntime(RuntimePlugin):
         logger.info("Step 5/7: Verifying containers are running...")
         if not dry_run:
             for rank, host in enumerate(hosts):
-                container_name = generate_node_container_name(cluster_id, rank)
+                container_name = self.executor.node_container_name(cluster_id, rank)
                 if not is_container_running(host, container_name, ssh_kwargs=ssh_kwargs):
                     logger.error(
                         "Container %s not running on %s (rank %d)",
@@ -521,7 +516,7 @@ class TrtllmRuntime(RuntimePlugin):
         # Step 6: Write rsh wrapper + extra config into head container
         t0 = time.monotonic()
         head_host = hosts[0]
-        head_container = generate_node_container_name(cluster_id, 0)
+        head_container = self.executor.node_container_name(cluster_id, 0)
         logger.info("Step 6/7: Writing rsh wrapper into head container %s...", head_container)
 
         # Determine SSH key path inside container

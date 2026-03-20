@@ -1,9 +1,59 @@
 """Unit tests for sparkrun.orchestration.primitives module."""
 
-from unittest.mock import patch, call
+from unittest.mock import patch, MagicMock
 
 from sparkrun.orchestration.ssh import RemoteResult
-from sparkrun.orchestration.primitives import find_available_port
+from sparkrun.orchestration.primitives import check_tcp_reachability, find_available_port
+
+
+# ---------------------------------------------------------------------------
+# check_tcp_reachability tests
+# ---------------------------------------------------------------------------
+
+
+def test_check_tcp_reachability_all_reachable():
+    """All IPs reachable returns all True."""
+    def mock_connect(addr):
+        pass  # success
+
+    with patch("socket.socket") as mock_sock_cls:
+        mock_sock = MagicMock()
+        mock_sock.__enter__ = lambda s: mock_sock
+        mock_sock.__exit__ = lambda s, *a: None
+        mock_sock.connect = mock_connect
+        mock_sock_cls.return_value = mock_sock
+
+        result = check_tcp_reachability(["10.0.0.1", "10.0.0.2"])
+
+    assert result == {"10.0.0.1": True, "10.0.0.2": True}
+
+
+def test_check_tcp_reachability_some_unreachable():
+    """Mixed results: some reachable, some not."""
+    call_count = {"n": 0}
+
+    def mock_connect(addr):
+        call_count["n"] += 1
+        if addr[0] == "10.0.0.2":
+            raise OSError("Connection refused")
+
+    with patch("socket.socket") as mock_sock_cls:
+        mock_sock = MagicMock()
+        mock_sock.__enter__ = lambda s: mock_sock
+        mock_sock.__exit__ = lambda s, *a: None
+        mock_sock.connect = mock_connect
+        mock_sock_cls.return_value = mock_sock
+
+        result = check_tcp_reachability(["10.0.0.1", "10.0.0.2"])
+
+    assert result["10.0.0.1"] is True
+    assert result["10.0.0.2"] is False
+
+
+def test_check_tcp_reachability_empty():
+    """Empty input returns empty dict."""
+    result = check_tcp_reachability([])
+    assert result == {}
 
 
 def _make_result(success: bool) -> RemoteResult:

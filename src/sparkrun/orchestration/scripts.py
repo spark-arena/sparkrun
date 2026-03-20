@@ -8,11 +8,6 @@ from __future__ import annotations
 
 import logging
 
-from sparkrun.orchestration.docker import (
-    docker_run_cmd,
-    docker_stop_cmd,
-)
-from sparkrun.orchestration.primitives import merge_env
 from sparkrun.scripts import read_script
 
 logger = logging.getLogger(__name__)
@@ -44,6 +39,9 @@ def generate_container_launch_script(
     Combines cleanup of any existing container with the same name
     followed by ``docker run``.
 
+    .. note:: This is a backward-compatibility shim.  New code should
+       use :meth:`DockerExecutor.generate_launch_script` instead.
+
     Args:
         image: Container image reference.
         container_name: Name for the container.
@@ -57,25 +55,17 @@ def generate_container_launch_script(
     Returns:
         Complete bash script as a string.
     """
-    all_env = merge_env(nccl_env, env)
+    from sparkrun.orchestration.executor_docker import DockerExecutor
 
-    cleanup = docker_stop_cmd(container_name)
-    run_cmd = docker_run_cmd(
+    return DockerExecutor().generate_launch_script(
         image=image,
+        container_name=container_name,
         command=command,
-        container_name=container_name,
-        detach=detach,
-        env=all_env,
+        env=env,
         volumes=volumes,
-        extra_opts=extra_docker_opts,
-    )
-
-    template = read_script("container_launch.sh")
-    return template.format(
-        container_name=container_name,
-        image=image,
-        cleanup_cmd=cleanup,
-        run_cmd=run_cmd,
+        nccl_env=nccl_env,
+        detach=detach,
+        extra_docker_opts=extra_docker_opts,
     )
 
 
@@ -91,56 +81,20 @@ def generate_ray_head_script(
 ) -> str:
     """Generate a script that starts a Ray head node in a container.
 
-    The script:
-
-    1. Detects the node IP.
-    2. Cleans up any existing container with the same name.
-    3. Launches the Ray head container.
-    4. Outputs the node IP as the last line of stdout.
-
-    Args:
-        image: Container image reference.
-        container_name: Name for the head container.
-        ray_port: Ray GCS port.
-        dashboard_port: Ray dashboard port.
-        dashboard: Enable the Ray dashboard.
-        env: Additional environment variables.
-        volumes: Volume mounts.
-        nccl_env: NCCL-specific environment variables.
-
-    Returns:
-        Complete bash script as a string.
+    .. note:: Backward-compatibility shim.  New code should use
+       :meth:`DockerExecutor.generate_ray_head_script`.
     """
-    all_env = merge_env({"RAY_memory_monitor_refresh_ms": "0"}, nccl_env, env)
+    from sparkrun.orchestration.executor_docker import DockerExecutor
 
-    dashboard_flags = ""
-    if dashboard:
-        dashboard_flags = (
-            f"--include-dashboard=True "
-            f"--dashboard-host 0.0.0.0 "
-            f"--dashboard-port {dashboard_port} "
-        )
-
-    cleanup = docker_stop_cmd(container_name)
-    run_cmd = docker_run_cmd(
+    return DockerExecutor().generate_ray_head_script(
         image=image,
-        command=(
-            f"ray start --block --head "
-            f"--port {ray_port} "
-            f"--node-ip-address $NODE_IP "
-            f"{dashboard_flags}"
-            f"--disable-usage-stats"
-        ),
         container_name=container_name,
-        detach=True,
-        env=all_env,
+        ray_port=ray_port,
+        dashboard_port=dashboard_port,
+        dashboard=dashboard,
+        env=env,
         volumes=volumes,
-    )
-
-    template = read_script("ray_head.sh")
-    return template.format(
-        cleanup_cmd=cleanup,
-        run_cmd=run_cmd,
+        nccl_env=nccl_env,
     )
 
 
@@ -155,44 +109,19 @@ def generate_ray_worker_script(
 ) -> str:
     """Generate a script that starts a Ray worker node.
 
-    The script detects the local node IP, cleans up any existing
-    worker container, and launches a Ray worker that connects to
-    the head node at *head_ip*.
-
-    Args:
-        image: Container image reference.
-        container_name: Name for the worker container.
-        head_ip: IP address of the Ray head node.
-        ray_port: Ray GCS port on the head node.
-        env: Additional environment variables.
-        volumes: Volume mounts.
-        nccl_env: NCCL-specific environment variables.
-
-    Returns:
-        Complete bash script as a string.
+    .. note:: Backward-compatibility shim.  New code should use
+       :meth:`DockerExecutor.generate_ray_worker_script`.
     """
-    all_env = merge_env({"RAY_memory_monitor_refresh_ms": "0"}, nccl_env, env)
+    from sparkrun.orchestration.executor_docker import DockerExecutor
 
-    cleanup = docker_stop_cmd(container_name)
-    run_cmd = docker_run_cmd(
+    return DockerExecutor().generate_ray_worker_script(
         image=image,
-        command=(
-            f"ray start --block "
-            f"--address={head_ip}:{ray_port} "
-            f"--node-ip-address $NODE_IP"
-        ),
         container_name=container_name,
-        detach=True,
-        env=all_env,
-        volumes=volumes,
-    )
-
-    template = read_script("ray_worker.sh")
-    return template.format(
-        cleanup_cmd=cleanup,
-        run_cmd=run_cmd,
         head_ip=head_ip,
         ray_port=ray_port,
+        env=env,
+        volumes=volumes,
+        nccl_env=nccl_env,
     )
 
 
@@ -204,29 +133,14 @@ def generate_exec_serve_script(
 ) -> str:
     """Generate a script that executes the serve command inside a running container.
 
-    If *detached* is True, uses ``nohup`` to survive SSH disconnects and
-    tails the log file for initial output.
-
-    Args:
-        container_name: Name of the running container.
-        serve_command: The inference serve command to run.
-        env: Additional environment variables to export inside the container.
-        detached: If True, run in background (survives SSH disconnect).
-
-    Returns:
-        Complete bash script as a string.
+    .. note:: Backward-compatibility shim.  New code should use
+       :meth:`DockerExecutor.generate_exec_serve_script`.
     """
-    env_exports = ""
-    if env:
-        for key, value in sorted(env.items()):
-            env_exports += f"export {key}='{value}'; "
+    from sparkrun.orchestration.executor_docker import DockerExecutor
 
-    escaped_cmd = serve_command.replace("'", "'\\''")
-    full_cmd = f"{env_exports}{escaped_cmd}"
-
-    script_name = "exec_serve_detached.sh" if detached else "exec_serve_foreground.sh"
-    template = read_script(script_name)
-    return template.format(
+    return DockerExecutor().generate_exec_serve_script(
         container_name=container_name,
-        full_cmd=full_cmd,
+        serve_command=serve_command,
+        env=env,
+        detached=detached,
     )

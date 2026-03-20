@@ -668,7 +668,8 @@ def test_generate_node_script_extra_docker_opts():
     """_generate_node_script passes extra_docker_opts to docker_run_cmd."""
     from sparkrun.runtimes.base import RuntimePlugin
 
-    script = RuntimePlugin._generate_node_script(
+    runtime = RuntimePlugin()
+    script = runtime._generate_node_script(
         image="test:latest",
         container_name="test_node_0",
         serve_command="echo hello",
@@ -682,7 +683,8 @@ def test_generate_node_script_no_extra_opts():
     """_generate_node_script works without extra_docker_opts."""
     from sparkrun.runtimes.base import RuntimePlugin
 
-    script = RuntimePlugin._generate_node_script(
+    runtime = RuntimePlugin()
+    script = runtime._generate_node_script(
         image="test:latest",
         container_name="test_node_0",
         serve_command="echo hello",

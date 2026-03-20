@@ -450,6 +450,101 @@ class TestSetupCX7CLI:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# discover_host_network_ips
+# ---------------------------------------------------------------------------
+
+
+class TestDiscoverHostNetworkIps:
+    def test_finds_ib_ips(self):
+        """Mock IB detection, verify IPs collected."""
+        from sparkrun.orchestration.ssh import RemoteResult
+
+        ib_output = (
+            "IB_DETECTED=1\n"
+            "DETECTED_IB_IPS=192.168.11.1,192.168.12.1\n"
+        )
+        mock_results = [
+            RemoteResult(host="10.0.0.1", returncode=0, stdout=ib_output, stderr=""),
+        ]
+
+        with mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel", return_value=mock_results):
+            from sparkrun.orchestration.networking import discover_host_network_ips
+            result = discover_host_network_ips(["10.0.0.1"])
+
+        assert "10.0.0.1" in result
+        assert "192.168.11.1" in result["10.0.0.1"]
+        assert "192.168.12.1" in result["10.0.0.1"]
+
+    def test_filters_loopback(self):
+        """127.0.0.1 is excluded from discovered IPs."""
+        from sparkrun.orchestration.ssh import RemoteResult
+
+        ib_output = (
+            "IB_DETECTED=1\n"
+            "DETECTED_IB_IPS=127.0.0.1,192.168.11.1\n"
+        )
+        mock_results = [
+            RemoteResult(host="10.0.0.1", returncode=0, stdout=ib_output, stderr=""),
+        ]
+
+        with mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel", return_value=mock_results):
+            from sparkrun.orchestration.networking import discover_host_network_ips
+            result = discover_host_network_ips(["10.0.0.1"])
+
+        assert "10.0.0.1" in result
+        assert "127.0.0.1" not in result["10.0.0.1"]
+        assert "192.168.11.1" in result["10.0.0.1"]
+
+    def test_filters_mgmt_ips(self):
+        """Management IPs already in host list are excluded."""
+        from sparkrun.orchestration.ssh import RemoteResult
+
+        ib_output = (
+            "IB_DETECTED=1\n"
+            "DETECTED_IB_IPS=10.0.0.1,192.168.11.1\n"
+        )
+        mock_results = [
+            RemoteResult(host="10.0.0.1", returncode=0, stdout=ib_output, stderr=""),
+        ]
+
+        with mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel", return_value=mock_results):
+            from sparkrun.orchestration.networking import discover_host_network_ips
+            result = discover_host_network_ips(["10.0.0.1"])
+
+        assert "10.0.0.1" in result
+        assert result["10.0.0.1"] == ["192.168.11.1"]
+
+    def test_empty_on_failure(self):
+        """Detection failure returns empty."""
+        from sparkrun.orchestration.ssh import RemoteResult
+
+        mock_results = [
+            RemoteResult(host="10.0.0.1", returncode=1, stdout="", stderr="connection refused"),
+        ]
+
+        with mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel", return_value=mock_results):
+            from sparkrun.orchestration.networking import discover_host_network_ips
+            result = discover_host_network_ips(["10.0.0.1"])
+
+        assert result == {}
+
+    def test_empty_hosts(self):
+        from sparkrun.orchestration.networking import discover_host_network_ips
+        assert discover_host_network_ips([]) == {}
+
+
+class TestDistributeHostKeysAlias:
+    def test_alias(self):
+        from sparkrun.orchestration.networking import distribute_cx7_host_keys, distribute_host_keys
+        assert distribute_cx7_host_keys is distribute_host_keys
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
 def _make_detection(
     host: str,
     mgmt_ip: str,

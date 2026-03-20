@@ -292,6 +292,44 @@ def try_clear_page_cache(
 # Container cleanup
 # ---------------------------------------------------------------------------
 
+def check_tcp_reachability(
+        ips: list[str],
+        port: int = 22,
+        timeout: float = 3.0,
+) -> dict[str, bool]:
+    """Test TCP port reachability from the control machine to each IP.
+
+    Uses raw TCP socket connect (no SSH, no auth needed). Runs in parallel.
+
+    Args:
+        ips: IP addresses to check.
+        port: TCP port to test (default 22 for SSH).
+        timeout: Connection timeout in seconds.
+
+    Returns:
+        Dict mapping IP -> bool (reachable).
+    """
+    import socket
+    from concurrent.futures import ThreadPoolExecutor
+
+    if not ips:
+        return {}
+
+    def _check(ip: str) -> tuple[str, bool]:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(timeout)
+                s.connect((ip, port))
+                return ip, True
+        except (OSError, socket.timeout):
+            return ip, False
+
+    with ThreadPoolExecutor(max_workers=min(len(ips), 20)) as pool:
+        results = dict(pool.map(_check, ips))
+
+    return results
+
+
 def cleanup_containers(
         hosts: list[str],
         container_names: list[str],

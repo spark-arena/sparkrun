@@ -643,21 +643,75 @@ def verify_cx7_config(
 # ---------------------------------------------------------------------------
 
 
-def distribute_cx7_host_keys(
-    cx7_ips: list[str],
+def discover_host_network_ips(
+    hosts: list[str],
+    ssh_kwargs: dict | None = None,
+    dry_run: bool = False,
+) -> dict[str, list[str]]:
+    """Discover additional network IPs (IB/CX7) for a set of hosts.
+
+    Runs IB detection on each host and collects all IB IPs that differ
+    from the management host identifiers.  Filters out 127.0.0.1.
+
+    Args:
+        hosts: Management hostnames/IPs.
+        ssh_kwargs: SSH connection parameters.
+        dry_run: Log without executing.
+
+    Returns:
+        Dict mapping management host -> list of additional IPs.
+    """
+    from sparkrun.orchestration.infiniband import (
+        extract_ib_ips,
+        generate_ib_detect_script,
+        parse_ib_detect_output,
+    )
+    from sparkrun.orchestration.ssh import run_remote_scripts_parallel
+
+    if not hosts:
+        return {}
+
+    host_set = set(hosts)
+    kw = ssh_kwargs or {}
+
+    logger.info("Discovering additional network IPs on %d host(s)...", len(hosts))
+    ib_script = generate_ib_detect_script()
+    ib_results = run_remote_scripts_parallel(
+        hosts, ib_script, timeout=30, dry_run=dry_run, **kw,
+    )
+
+    discovered: dict[str, list[str]] = {}
+    for result in ib_results:
+        if not result.success:
+            continue
+        ib_info = parse_ib_detect_output(result.stdout)
+        ib_ips = extract_ib_ips(ib_info)
+        # Filter out management IPs already in host list and loopback
+        extra = [
+            ip for ip in ib_ips
+            if ip not in host_set and ip != "127.0.0.1"
+        ]
+        if extra:
+            discovered[result.host] = extra
+
+    return discovered
+
+
+def distribute_host_keys(
+    ips: list[str],
     hosts: list[str],
     ssh_kwargs: dict | None = None,
     dry_run: bool = False,
 ) -> list:
-    """Scan CX7 IPs and add to ``known_hosts`` on control machine and all hosts.
+    """Scan IPs and add to ``known_hosts`` on control machine and all hosts.
 
-    After CX7 configuration the new IPs are unknown SSH endpoints.
-    This runs ``ssh-keyscan`` to register their host keys so that
-    transfers and inter-node SSH over the CX7 network succeed without
-    host-key-verification prompts.
+    After network configuration (CX7, IB) the new IPs are unknown SSH
+    endpoints.  This runs ``ssh-keyscan`` to register their host keys so
+    that transfers and inter-node SSH over additional networks succeed
+    without host-key-verification prompts.
 
     Args:
-        cx7_ips: All CX7 IPs across the cluster.
+        ips: All additional IPs across the cluster.
         hosts: Management-IP host list (used to reach each host via SSH).
         ssh_kwargs: SSH connection parameters.
         dry_run: Log without executing.
@@ -669,10 +723,10 @@ def distribute_cx7_host_keys(
 
     from sparkrun.orchestration.ssh import run_remote_scripts_parallel
 
-    if not cx7_ips:
+    if not ips:
         return []
 
-    ip_list = " ".join(cx7_ips)
+    ip_list = " ".join(ips)
     script = (
         "#!/bin/bash\n"
         "set -uo pipefail\n"
@@ -697,11 +751,11 @@ def distribute_cx7_host_keys(
                 ["bash", "-c", script],
                 timeout=30, capture_output=True, text=True,
             )
-            logger.info("  local: CX7 host keys added to known_hosts")
+            logger.info("  local: host keys added to known_hosts")
         except Exception as e:
             logger.warning("  local: keyscan failed: %s", e)
     else:
-        logger.info("[dry-run] Would scan %d CX7 IPs locally", len(cx7_ips))
+        logger.info("[dry-run] Would scan %d IPs locally", len(ips))
 
     # Remote keyscan on all hosts (via management IPs)
     kw = ssh_kwargs or {}
@@ -709,8 +763,12 @@ def distribute_cx7_host_keys(
 
     for r in results:
         if r.success:
-            logger.info("  %s: CX7 host keys added to known_hosts", r.host)
+            logger.info("  %s: host keys added to known_hosts", r.host)
         else:
             logger.warning("  %s: keyscan failed: %s", r.host, r.stderr.strip()[:100])
 
     return results
+
+
+# Backward-compatible alias (used by setup_cx7 command)
+distribute_cx7_host_keys = distribute_host_keys

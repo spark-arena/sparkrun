@@ -65,6 +65,8 @@ def launch_inference(
         dashboard_port: int | None = None,
         dashboard: bool = False,
         init_port: int | None = None,
+        # Executor config (dict for VPD chain layering)
+        executor_config: dict | None = None,
 ) -> LaunchResult:
     """Launch an inference workload.
 
@@ -269,6 +271,23 @@ def launch_inference(
     if init_port is not None:
         run_kwargs["init_port"] = init_port
 
+    # Build executor from layered config: CLI → recipe → defaults
+    from vpd.legacy.yaml_dict import vpd_chain as _vpd_chain
+    from sparkrun.orchestration.executor import EXECUTOR_DEFAULTS, ExecutorConfig
+    from sparkrun.orchestration.executor_docker import DockerExecutor
+
+    recipe_executor_config = getattr(recipe, "executor_config", None)
+    if not isinstance(recipe_executor_config, dict):
+        recipe_executor_config = {}
+    cli_exec_opts = executor_config if isinstance(executor_config, dict) else {}
+    exec_chain = _vpd_chain(
+        cli_exec_opts,                  # CLI flags (highest priority)
+        recipe_executor_config,         # recipe YAML
+        EXECUTOR_DEFAULTS,              # hardcoded defaults
+    )
+    exec_cfg = ExecutorConfig.from_chain(exec_chain)
+    executor = DockerExecutor(exec_cfg)
+
     # Launch
     rc = runtime.run(
         hosts=host_list,
@@ -285,6 +304,7 @@ def launch_inference(
         nccl_env=nccl_env,
         ib_ip_map=ib_ip_map,
         skip_keys=skip_keys,
+        executor=executor,
         **run_kwargs,
     )
 

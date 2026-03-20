@@ -1339,6 +1339,7 @@ class TestSetupSshCommand:
                 "--hosts", "10.0.0.1,10.0.0.2",
                 "--user", "testuser",
                 "--no-include-self",
+                "--no-discover-ips",
             ])
 
             assert result.exit_code == 0
@@ -1475,6 +1476,120 @@ class TestSetupSshCommand:
         # 10.0.0.1 should appear only once
         assert cmd_line.count("10.0.0.1") == 1
         assert "10.0.0.3" in result.output
+
+    def test_setup_ssh_resolves_loopback(self, runner, tmp_path, monkeypatch):
+        """Test that 127.0.0.1 in host list gets resolved to routable IP."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+
+        with mock.patch("sparkrun.orchestration.primitives.local_ip_for", return_value="192.168.1.100"):
+            result = runner.invoke(main, [
+                "setup", "ssh",
+                "--hosts", "127.0.0.1,10.0.0.2",
+                "--user", "testuser",
+                "--no-include-self",
+                "--dry-run",
+            ])
+        assert result.exit_code == 0
+        assert "Resolved 127.0.0.1 -> 192.168.1.100" in result.output
+        assert "192.168.1.100" in result.output
+        # 127.0.0.1 should NOT appear in the command
+        cmd_line = result.output.split("Would run:\n")[-1].strip()
+        assert "127.0.0.1" not in cmd_line
+
+    def test_setup_ssh_discover_ips_flag_in_help(self, runner):
+        """Test that --discover-ips appears in help."""
+        result = runner.invoke(main, ["setup", "ssh", "--help"])
+        assert result.exit_code == 0
+        assert "--discover-ips" in result.output
+
+    def test_setup_ssh_no_discover_ips(self, runner, tmp_path, monkeypatch):
+        """Test that Phase 2 is skipped with --no-discover-ips."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+
+        with mock.patch("subprocess.run", return_value=mock.Mock(returncode=0)):
+            result = runner.invoke(main, [
+                "setup", "ssh",
+                "--hosts", "10.0.0.1,10.0.0.2",
+                "--user", "testuser",
+                "--no-include-self",
+                "--no-discover-ips",
+            ])
+        assert result.exit_code == 0
+        assert "Discovering additional" not in result.output
+
+    def test_setup_ssh_dry_run_skips_discovery(self, runner, tmp_path, monkeypatch):
+        """Test that dry-run notes Phase 2 would run but doesn't execute it."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+
+        result = runner.invoke(main, [
+            "setup", "ssh",
+            "--hosts", "10.0.0.1,10.0.0.2",
+            "--user", "testuser",
+            "--no-include-self",
+            "--dry-run",
+        ])
+        assert result.exit_code == 0
+        assert "Phase 2" in result.output
+        assert "Discovering additional" not in result.output
+
+    def test_setup_ssh_phase2_discovers_and_distributes(self, runner, tmp_path, monkeypatch):
+        """Test full Phase 2 flow: mesh success -> discover -> distribute."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+
+        from sparkrun.orchestration.ssh import RemoteResult
+
+        mock_ks_results = [
+            RemoteResult(host="10.0.0.1", returncode=0, stdout="KEYSCAN_ADDED=2", stderr=""),
+            RemoteResult(host="10.0.0.2", returncode=0, stdout="KEYSCAN_ADDED=2", stderr=""),
+        ]
+
+        with (
+            mock.patch("subprocess.run", return_value=mock.Mock(returncode=0)),
+            mock.patch(
+                "sparkrun.orchestration.networking.discover_host_network_ips",
+                return_value={"10.0.0.1": ["192.168.11.1"], "10.0.0.2": ["192.168.11.2"]},
+            ),
+            mock.patch(
+                "sparkrun.orchestration.primitives.check_tcp_reachability",
+                return_value={"192.168.11.1": True, "192.168.11.2": False},
+            ),
+            mock.patch(
+                "sparkrun.orchestration.networking.distribute_host_keys",
+                return_value=mock_ks_results,
+            ) as mock_dist,
+        ):
+            result = runner.invoke(main, [
+                "setup", "ssh",
+                "--hosts", "10.0.0.1,10.0.0.2",
+                "--user", "testuser",
+                "--no-include-self",
+                "--discover-ips",
+            ])
+
+        assert result.exit_code == 0
+        assert "Discovering additional" in result.output
+        assert "192.168.11.1" in result.output
+        assert "192.168.11.2" in result.output
+        assert "Reachable" in result.output
+        assert "Not reachable" in result.output
+        assert "Distributing host keys" in result.output
+        # distribute_host_keys should have been called with all discovered IPs
+        mock_dist.assert_called_once()
+        call_ips = mock_dist.call_args[0][0]
+        assert "192.168.11.1" in call_ips
+        assert "192.168.11.2" in call_ips
 
 
 class TestSetupFixPermissions:
@@ -2024,7 +2139,7 @@ class TestLogCommand:
         assert result.exit_code == 0
         assert "--tail" in result.output
         assert "--hosts" in result.output
-        assert "RECIPE_NAME" in result.output
+        assert "TARGET" in result.output
 
     def test_log_calls_follow_logs(self, runner, reset_bootstrap):
         """sparkrun logs calls runtime.follow_logs with correct args."""
@@ -2911,3 +3026,160 @@ class TestSetupEarlyoom:
         assert "dockerd" in avoid_regex
         assert "dbus-daemon" in avoid_regex
         assert "NetworkManager" in avoid_regex
+
+
+class TestStopLogsClusterIdAndOverrides:
+    """Test stop/logs with cluster ID targeting and --port/--served-model-name overrides."""
+
+    @pytest.fixture
+    def config_setup(self, tmp_path, monkeypatch):
+        """Set up config and cache dirs for stop/logs tests."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        cache_root = tmp_path / "cache"
+        cache_root.mkdir()
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CACHE_DIR", cache_root)
+        # Create a cluster so --hosts isn't required for recipe-path tests
+        from sparkrun.core.cluster_manager import ClusterManager
+        mgr = ClusterManager(config_root)
+        mgr.create("test-cluster", ["10.0.0.1", "10.0.0.2"])
+        return {"config_root": config_root, "cache_root": cache_root}
+
+    def test_stop_with_port_override(self, runner, config_setup, reset_bootstrap):
+        """Verify --port is passed through to generate_cluster_id."""
+        with mock.patch("sparkrun.orchestration.primitives.cleanup_containers"), \
+             mock.patch("sparkrun.orchestration.job_metadata.generate_cluster_id", return_value="sparkrun_aabbccdd1122") as mock_gen:
+            result = runner.invoke(main, [
+                "stop", _TEST_RECIPE_NAME,
+                "--cluster", "test-cluster",
+                "--port", "8001",
+            ])
+            assert result.exit_code == 0
+            # generate_cluster_id should have been called with overrides containing port
+            call_kwargs = mock_gen.call_args
+            overrides = call_kwargs.kwargs.get("overrides") or (call_kwargs[1].get("overrides") if len(call_kwargs) > 1 else None)
+            assert overrides is not None
+            assert overrides.get("port") == 8001
+
+    def test_stop_with_served_model_name(self, runner, config_setup, reset_bootstrap):
+        """Verify --served-model-name is passed through to generate_cluster_id."""
+        with mock.patch("sparkrun.orchestration.primitives.cleanup_containers"), \
+             mock.patch("sparkrun.orchestration.job_metadata.generate_cluster_id", return_value="sparkrun_aabbccdd1122") as mock_gen:
+            result = runner.invoke(main, [
+                "stop", _TEST_RECIPE_NAME,
+                "--cluster", "test-cluster",
+                "--served-model-name", "my-model",
+            ])
+            assert result.exit_code == 0
+            call_kwargs = mock_gen.call_args
+            overrides = call_kwargs.kwargs.get("overrides") or (call_kwargs[1].get("overrides") if len(call_kwargs) > 1 else None)
+            assert overrides is not None
+            assert overrides.get("served_model_name") == "my-model"
+
+    def test_stop_by_cluster_id(self, runner, config_setup):
+        """Stop by cluster ID loads metadata and targets correct containers."""
+        cache_root = config_setup["cache_root"]
+        # Write fake job metadata
+        jobs_dir = cache_root / "jobs"
+        jobs_dir.mkdir(parents=True, exist_ok=True)
+        meta = {
+            "cluster_id": "sparkrun_aabbccdd1122",
+            "recipe": "test-recipe",
+            "model": "test/model",
+            "runtime": "sglang",
+            "hosts": ["10.0.0.1"],
+        }
+        (jobs_dir / "aabbccdd1122.yaml").write_text(yaml.safe_dump(meta))
+
+        with mock.patch("sparkrun.orchestration.primitives.cleanup_containers") as mock_cleanup:
+            result = runner.invoke(main, ["stop", "aabbccdd1122"])
+            assert result.exit_code == 0
+            assert "stopped" in result.output.lower()
+            mock_cleanup.assert_called_once()
+
+    def test_stop_by_cluster_id_not_found(self, runner, config_setup):
+        """Stop by unknown cluster ID shows helpful error."""
+        result = runner.invoke(main, ["stop", "deadbeef1234"])
+        assert result.exit_code != 0
+        assert "Unknown job ID" in result.output
+
+    def test_logs_with_port_override(self, runner, config_setup, reset_bootstrap):
+        """Verify --port is passed through to generate_cluster_id in logs."""
+        mock_runtime = mock.Mock()
+        mock_runtime.follow_logs = mock.Mock()
+        mock_runtime.compute_required_nodes = mock.Mock(return_value=2)
+        with mock.patch("sparkrun.core.bootstrap.get_runtime", return_value=mock_runtime), \
+             mock.patch("sparkrun.orchestration.job_metadata.generate_cluster_id", return_value="sparkrun_aabbccdd1122") as mock_gen:
+            result = runner.invoke(main, [
+                "logs", _TEST_RECIPE_NAME,
+                "--cluster", "test-cluster",
+                "--port", "8001",
+            ])
+            assert result.exit_code == 0
+            call_kwargs = mock_gen.call_args
+            overrides = call_kwargs.kwargs.get("overrides") or (call_kwargs[1].get("overrides") if len(call_kwargs) > 1 else None)
+            assert overrides is not None
+            assert overrides.get("port") == 8001
+
+    def test_logs_by_cluster_id(self, runner, config_setup, reset_bootstrap):
+        """Logs by cluster ID loads metadata and calls runtime.follow_logs."""
+        cache_root = config_setup["cache_root"]
+        jobs_dir = cache_root / "jobs"
+        jobs_dir.mkdir(parents=True, exist_ok=True)
+        meta = {
+            "cluster_id": "sparkrun_aabbccdd1122",
+            "recipe": "test-recipe",
+            "model": "test/model",
+            "runtime": "sglang",
+            "hosts": ["10.0.0.1"],
+        }
+        (jobs_dir / "aabbccdd1122.yaml").write_text(yaml.safe_dump(meta))
+
+        mock_runtime = mock.Mock()
+        mock_runtime.follow_logs = mock.Mock()
+        with mock.patch("sparkrun.core.bootstrap.get_runtime", return_value=mock_runtime):
+            result = runner.invoke(main, ["logs", "aabbccdd1122"])
+            assert result.exit_code == 0
+            mock_runtime.follow_logs.assert_called_once()
+            call_kwargs = mock_runtime.follow_logs.call_args
+            assert call_kwargs.kwargs["cluster_id"] == "sparkrun_aabbccdd1122"
+            assert call_kwargs.kwargs["hosts"] == ["10.0.0.1"]
+
+
+class TestFormatJobCommandsAndLabel:
+    """Test format_job_commands and format_job_label with cluster ID support."""
+
+    def test_format_job_commands_with_cluster_id(self):
+        """Cluster ID produces short ID-based commands."""
+        from sparkrun.utils.cli_formatters import format_job_commands
+        meta = {"recipe": "test-recipe", "hosts": ["10.0.0.1"]}
+        logs_cmd, stop_cmd = format_job_commands(meta, cluster_id="sparkrun_aabbccdd1122")
+        assert logs_cmd == "sparkrun logs aabbccdd1122"
+        assert stop_cmd == "sparkrun stop aabbccdd1122"
+
+    def test_format_job_commands_fallback_includes_port(self):
+        """Recipe-based fallback includes port and served_model_name flags."""
+        from sparkrun.utils.cli_formatters import format_job_commands
+        meta = {
+            "recipe": "test-recipe",
+            "hosts": ["10.0.0.1"],
+            "tensor_parallel": 2,
+            "port": 8001,
+            "served_model_name": "my-model",
+        }
+        logs_cmd, stop_cmd = format_job_commands(meta)
+        assert "--port 8001" in logs_cmd
+        assert "--served-model-name my-model" in logs_cmd
+        assert "--port 8001" in stop_cmd
+        assert "--served-model-name my-model" in stop_cmd
+
+    def test_format_job_label_shows_short_id(self):
+        """Label includes short cluster ID in brackets."""
+        from sparkrun.utils.cli_formatters import format_job_label
+        meta = {"recipe": "test-recipe", "tensor_parallel": 2}
+        label = format_job_label(meta, "sparkrun_aabbccdd1122")
+        assert "[aabbccdd]" in label
+        assert "test-recipe" in label
+        assert "tp=2" in label
