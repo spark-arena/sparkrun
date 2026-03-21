@@ -290,7 +290,8 @@ def launch_inference(
         exec_adjustments["security_opt"] = ["no-new-privileges"]
         exec_adjustments["cap_add"] = []
         exec_adjustments['ulimit'] = [
-            'memlock=-1:-1',  # TODO: stack size
+            'memlock=-1:-1',
+            'stack=67108864',
         ]
         # TODO: confirm existence and/or adjust? (for future heterogeneous support??)
         exec_adjustments["devices"] = [
