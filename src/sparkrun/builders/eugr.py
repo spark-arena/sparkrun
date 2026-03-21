@@ -20,6 +20,18 @@ logger = logging.getLogger(__name__)
 
 EUGR_REPO_URL = "https://github.com/eugr/spark-vllm-docker.git"
 
+# Fully qualified image prefixes that indicate a pullable registry image
+# (no build needed even if the image isn't present locally).
+PULLABLE_REGISTRY_PREFIXES = (
+    "docker.io/",
+    "ghcr.io/",
+    "nvcr.io/",
+    "quay.io/",
+    "registry.hub.docker.com/",
+    "public.ecr.aws/",
+    "gcr.io/",
+)
+
 
 class EugrBuilder(BuilderPlugin):
     """Builder for eugr-style container images with mod support.
@@ -80,17 +92,23 @@ class EugrBuilder(BuilderPlugin):
         has_mods = bool(mods)
 
         # Determine if we need to build the image.
-        needs_build = bool(build_args)
-        if not needs_build:
-            if delegated:
-                if not self._image_exists_on_host(image, head, ssh_kwargs):
-                    logger.info("eugr image '%s' not found on head '%s'; will build remotely", image, head)
-                    needs_build = True
-            else:
-                from sparkrun.containers.registry import image_exists_locally
-                if not image_exists_locally(image):
-                    logger.info("eugr image '%s' not found locally; will build", image)
-                    needs_build = True
+        # If the image references a known public registry, it's pullable — never build it.
+        is_pullable = any(image.startswith(prefix) for prefix in PULLABLE_REGISTRY_PREFIXES)
+        if is_pullable:
+            logger.info("eugr image '%s' is from a known registry; skipping build (will be pulled at runtime)", image)
+            needs_build = False
+        else:
+            needs_build = bool(build_args)
+            if not needs_build:
+                if delegated:
+                    if not self._image_exists_on_host(image, head, ssh_kwargs):
+                        logger.info("eugr image '%s' not found on head '%s'; will build remotely", image, head)
+                        needs_build = True
+                else:
+                    from sparkrun.containers.registry import image_exists_locally
+                    if not image_exists_locally(image):
+                        logger.info("eugr image '%s' not found locally; will build", image)
+                        needs_build = True
 
         if not needs_build and not has_mods:
             return image  # nothing eugr-specific to prepare
