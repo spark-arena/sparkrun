@@ -24,8 +24,8 @@ from sparkrun.tuning._common import (
 # ---------------------------------------------------------------------------
 
 TUNING_CACHE_SUBDIR = "tuning/sglang"
-TUNING_CONTAINER_PATH = "/root/sglang_tuning_configs/configs"
-TUNING_ENV_PATH = "/root/sglang_tuning_configs"
+TUNING_CONTAINER_PATH = "/tuning/sglang/configs"
+TUNING_ENV_PATH = "/tuning/sglang"
 TUNING_CONTAINER_OUTPUT_PATH = "/tuning_output"
 
 TUNE_CONTAINER_NAME = "sparkrun_tune"

@@ -1296,7 +1296,7 @@ def test_llama_cpp_generate_command_gguf_presync_template():
     recipe = Recipe.from_dict(recipe_data)
     runtime = LlamaCppRuntime()
 
-    gguf_path = "/root/.cache/huggingface/hub/models--Qwen--Qwen3-1.7B-GGUF/snapshots/abc123/q4_k_m.gguf"
+    gguf_path = "/cache/huggingface/hub/models--Qwen--Qwen3-1.7B-GGUF/snapshots/abc123/q4_k_m.gguf"
     cmd = runtime.generate_command(
         recipe,
         {"_gguf_model_path": gguf_path, "model": gguf_path},
@@ -1326,7 +1326,7 @@ def test_llama_cpp_generate_command_gguf_presync_structured():
     recipe = Recipe.from_dict(recipe_data)
     runtime = LlamaCppRuntime()
 
-    gguf_path = "/root/.cache/huggingface/hub/models--Qwen--Qwen3-1.7B-GGUF/snapshots/abc123/q4_k_m.gguf"
+    gguf_path = "/cache/huggingface/hub/models--Qwen--Qwen3-1.7B-GGUF/snapshots/abc123/q4_k_m.gguf"
     cmd = runtime.generate_command(
         recipe,
         {"_gguf_model_path": gguf_path, "model": gguf_path},

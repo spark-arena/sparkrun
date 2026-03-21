@@ -18,7 +18,7 @@ from sparkrun.core.config import resolve_cache_dir
 logger = logging.getLogger(__name__)
 
 # Container-side mount point for the HuggingFace cache (set by build_volumes)
-CONTAINER_HF_CACHE = "/root/.cache/huggingface"
+CONTAINER_HF_CACHE = "/cache/huggingface"
 
 
 def _hub_cache(cache_dir: str | None = None) -> str:
@@ -36,7 +36,7 @@ def _hub_cache(cache_dir: str | None = None) -> str:
     > ``HF_HOME/hub`` > ``~/.cache/huggingface/hub``).
 
     Our volume mount maps the HF cache root (``HF_HOME``) to
-    ``/root/.cache/huggingface`` inside containers, so the ``hub/``
+    ``/cache/huggingface`` inside containers, so the ``hub/``
     subdirectory is preserved on both sides.
     """
     if cache_dir:

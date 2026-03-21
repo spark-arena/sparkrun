@@ -238,7 +238,9 @@ class SglangRuntime(RuntimePlugin):
     def get_extra_env(self) -> dict[str, str]:
         """Set SGLANG_MOE_CONFIG_DIR if tuning configs exist."""
         from sparkrun.tuning.sglang import get_sglang_tuning_env
-        return get_sglang_tuning_env() or {}
+        env = super().get_extra_env()
+        env.update(get_sglang_tuning_env() or {})
+        return env
 
     # --- Log following hooks ---
 

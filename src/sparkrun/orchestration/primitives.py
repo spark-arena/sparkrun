@@ -64,7 +64,7 @@ def build_volumes(
         Merged volume dict.
     """
     hf_cache = resolve_cache_dir(cache_dir)
-    volumes: dict[str, str] = {hf_cache: "/root/.cache/huggingface"}
+    volumes: dict[str, str] = {hf_cache: "/cache/huggingface"}
     if extra:
         volumes.update(extra)
     return volumes

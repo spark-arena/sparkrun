@@ -24,7 +24,7 @@ from sparkrun.tuning._common import (
 # ---------------------------------------------------------------------------
 
 VLLM_TUNING_CACHE_SUBDIR = "tuning/vllm"
-VLLM_TUNING_CONTAINER_PATH = "/root/vllm_tuning_configs"
+VLLM_TUNING_CONTAINER_PATH = "/tuning/vllm"
 VLLM_TUNING_CONTAINER_OUTPUT_PATH = "/tuning_output"
 
 TUNE_VLLM_CONTAINER_NAME = "sparkrun_tune_vllm"

@@ -112,7 +112,9 @@ class VllmRayRuntime(RuntimePlugin):
     def get_extra_env(self) -> dict[str, str]:
         """Set VLLM_TUNED_CONFIG_FOLDER if tuning configs exist."""
         from sparkrun.tuning.vllm import get_vllm_tuning_env
-        return get_vllm_tuning_env() or {}
+        env = super().get_extra_env()
+        env.update(get_vllm_tuning_env() or {})
+        return env
 
     def version_commands(self) -> dict[str, str]:
         cmds = super().version_commands()

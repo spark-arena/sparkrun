@@ -77,10 +77,10 @@ class TestBuildHookContext:
         ctx = build_hook_context(
             {},
             container_name="sparkrun_abc_solo",
-            cache_dir="/root/.cache/huggingface",
+            cache_dir="/cache/huggingface",
         )
         assert ctx["container_name"] == "sparkrun_abc_solo"
-        assert ctx["cache_dir"] == "/root/.cache/huggingface"
+        assert ctx["cache_dir"] == "/cache/huggingface"
 
     def test_build_hook_context_port_coerced_to_str(self):
         """Port value (int) is coerced to string."""

@@ -227,10 +227,14 @@ class RuntimePlugin(Plugin):
         (e.g. tuning config path env vars).  Called by ``_run_solo``
         and cluster launch methods.
 
+        The base implementation sets ``HF_HOME`` so HuggingFace
+        libraries find the cache at the rootless-compatible mount
+        point (``/cache/huggingface``).
+
         Returns:
-            Dict of env var name -> value (empty by default).
+            Dict of env var name -> value.
         """
-        return {}
+        return {"HF_HOME": "/cache/huggingface"}
 
     def get_extra_docker_opts(self) -> list[str]:
         """Return additional ``docker run`` options for this runtime.
