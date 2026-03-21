@@ -120,7 +120,7 @@ class RuntimePlugin(Plugin):
 
         Returns:
             ``"ray"`` — use Ray cluster orchestration (start Ray head/workers,
-            then exec serve command on head). This is the default.
+            then exec serve command on head). This was the original default.
 
             ``"native"`` — the runtime handles its own distribution. Each node
             runs the serve command directly with node-rank arguments appended.
@@ -939,6 +939,77 @@ class RuntimePlugin(Plugin):
                     rank, host, self.executor.node_container_name(cluster_id, rank),
                 )
         logger.info("=" * 60)
+
+    # --- Runtime version detection ---
+
+    def version_commands(self) -> dict[str, str]:
+        """Return label→shell command pairs for version detection.
+
+        Base implementation provides common GPU stack versions.
+        Subclasses should call super() and add runtime-specific entries.
+        """
+        return {
+            "cuda": "nvcc --version 2>/dev/null | grep 'release' | sed 's/.*release //' | sed 's/,.*//' || nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 || echo unknown",
+            "python": "python3 --version 2>/dev/null | awk '{print $2}' || echo unknown",
+            "torch": "python3 -c 'import torch; print(torch.__version__)' 2>/dev/null || echo unknown",
+            "nccl": "python3 -c 'import torch; print(torch.cuda.nccl.version())' 2>/dev/null || echo unknown",
+        }
+
+    def _collect_runtime_info(
+            self,
+            host: str,
+            container_name: str,
+            ssh_kwargs: dict,
+            dry_run: bool = False,
+    ) -> dict[str, str]:
+        """Run version commands inside a container, return {label: version}.
+
+        Builds a single bash script from :meth:`version_commands`, executes
+        it inside the container via ``docker exec``, and parses the output.
+        All exceptions are caught — version capture never blocks a launch.
+        """
+        if dry_run:
+            return {}
+        cmds = self.version_commands()
+        if not cmds:
+            return {}
+
+        # Build an inner script that runs inside the container.
+        # Each command outputs a SPARKRUN_VER_KEY=<value> line.
+        inner_lines = ["#!/bin/bash"]
+        for key, cmd in sorted(cmds.items()):
+            inner_lines.append('echo "SPARKRUN_VER_%s=$(%s)"' % (key.upper(), cmd))
+        inner_script = "\n".join(inner_lines)
+
+        # Pipe the inner script into `docker exec <container> bash -s`
+        # via a here-document.  This avoids quoting issues that arise
+        # when embedding complex shell commands in bash -c '...'.
+        outer_script = (
+            "docker exec -i %s bash -s <<'SPARKRUN_VER_EOF'\n"
+            "%s\n"
+            "SPARKRUN_VER_EOF"
+        ) % (container_name, inner_script)
+
+        try:
+            from sparkrun.orchestration.primitives import run_script_on_host
+            result = run_script_on_host(host, outer_script, ssh_kwargs=ssh_kwargs, timeout=30, dry_run=False)
+            if result.returncode != 0:
+                logger.debug("Version collection failed (rc=%d): %s", result.returncode, result.stderr)
+                return {}
+            info = {}
+            for line in result.stdout.splitlines():
+                if line.startswith("SPARKRUN_VER_"):
+                    key_val = line.removeprefix("SPARKRUN_VER_")
+                    if "=" in key_val:
+                        k, v = key_val.split("=", 1)
+                        v = v.strip()
+                        if v and v != "unknown":
+                            info[k.lower()] = v
+            logger.debug("Collected runtime info: %s", info)
+            return info
+        except Exception:
+            logger.debug("Version collection error", exc_info=True)
+            return {}
 
     def __repr__(self) -> str:
         return "%s(runtime_name=%r)" % (self.__class__.__name__, self.runtime_name)

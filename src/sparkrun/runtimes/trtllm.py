@@ -269,6 +269,11 @@ class TrtllmRuntime(RuntimePlugin):
 
         return yaml.safe_dump(extra, default_flow_style=False)
 
+    def version_commands(self) -> dict[str, str]:
+        cmds = super().version_commands()
+        cmds["trtllm"] = "python3 -c 'import tensorrt_llm; print(tensorrt_llm.__version__)' 2>/dev/null || echo unknown"
+        return cmds
+
     def get_cluster_env(self, head_ip: str, num_nodes: int) -> dict[str, str]:
         """Return TRT-LLM cluster environment variables."""
         return {

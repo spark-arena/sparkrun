@@ -20,6 +20,8 @@ if TYPE_CHECKING:
     from sparkrun.models.vram import VRAMEstimate
 
 
+# region yaml details -- move to util?
+
 class _LiteralBlockDumper(yaml.SafeDumper):
     """YAML dumper that uses literal block style (|) for multiline strings."""
     pass
@@ -31,7 +33,10 @@ def _literal_str_representer(dumper: yaml.Dumper, data: str) -> yaml.ScalarNode:
     return dumper.represent_scalar("tag:yaml.org,2002:str", data)
 
 
+# noinspection PyTypeChecker
 _LiteralBlockDumper.add_representer(str, _literal_str_representer)
+
+# endregion
 
 logger = logging.getLogger(__name__)
 

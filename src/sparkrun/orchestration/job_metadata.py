@@ -60,6 +60,7 @@ def save_job_metadata(
     ib_ip_map: dict[str, str] | None = None,
     mgmt_ip_map: dict[str, str] | None = None,
     recipe_ref: str | None = None,
+    runtime_info: dict[str, str] | None = None,
 ) -> None:
     """Persist job metadata so ``cluster status`` can display recipe info.
 
@@ -113,6 +114,8 @@ def save_job_metadata(
         meta["ib_ip_map"] = ib_ip_map
     if mgmt_ip_map:
         meta["mgmt_ip_map"] = mgmt_ip_map
+    if runtime_info:
+        meta["runtime_info"] = runtime_info
 
     meta_path = jobs_dir / f"{digest}.yaml"
     with open(meta_path, "w") as f:

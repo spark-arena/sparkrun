@@ -40,6 +40,7 @@ class LaunchResult:
     nccl_env: dict[str, str] | None = None
     ib_ip_map: dict[str, str] = field(default_factory=dict)
     serve_command: str = ""
+    runtime_info: dict[str, str] = field(default_factory=dict)
 
 
 def launch_inference(
@@ -67,6 +68,8 @@ def launch_inference(
         init_port: int | None = None,
         # Executor config (dict for VPD chain layering)
         executor_config: dict | None = None,
+        rootless: bool = False,
+        auto_user: bool = False,
 ) -> LaunchResult:
     """Launch an inference workload.
 
@@ -105,6 +108,9 @@ def launch_inference(
         dashboard: Enable Ray dashboard (forwarded to runtime.run).
         init_port: Distributed init port (forwarded to runtime.run).
         executor_config: Executor config
+        rootless: Run containers in rootless mode (applies defaults to executor_config)
+        auto_user: Automatically set user and group IDs to match host. (applies defaults to executor_config)
+
 
     Returns:
         LaunchResult with the outcome and all resolved context.
@@ -277,14 +283,30 @@ def launch_inference(
     from sparkrun.orchestration.executor import EXECUTOR_DEFAULTS, ExecutorConfig
     from sparkrun.orchestration.executor_docker import DockerExecutor
 
+    exec_adjustments = {}
+    if rootless:
+        exec_adjustments["privileged"] = False
+        exec_adjustments["security_opt"] = ["no-new-privileges"]
+        exec_adjustments["cap_add"] = []
+        exec_adjustments['ulimit'] = [
+            'memlock=-1:-1',  # TODO: stack size
+        ]
+        # TODO: confirm existence and/or adjust? (for future heterogeneous support??)
+        exec_adjustments["devices"] = [
+            '/dev/infiniband',
+        ]
+    if auto_user:
+        exec_adjustments['user'] = '$SHELL_USER'  # auto hint to use ssh user+group
+
     recipe_executor_config = getattr(recipe, "executor_config", None)
     if not isinstance(recipe_executor_config, dict):
         recipe_executor_config = {}
     cli_exec_opts = executor_config if isinstance(executor_config, dict) else {}
     exec_chain = _vpd_chain(
-        cli_exec_opts,                  # CLI flags (highest priority)
-        recipe_executor_config,         # recipe YAML
-        EXECUTOR_DEFAULTS,              # hardcoded defaults
+        cli_exec_opts,  # CLI flags (highest priority)
+        recipe_executor_config,  # recipe YAML
+        exec_adjustments,  # executor adjustments
+        EXECUTOR_DEFAULTS,  # hardcoded defaults
     )
     exec_cfg = ExecutorConfig.from_chain(exec_chain)
     executor = DockerExecutor(exec_cfg)
@@ -309,6 +331,28 @@ def launch_inference(
         **run_kwargs,
     )
 
+    # Collect runtime version info from the head container (non-blocking)
+    runtime_info: dict[str, str] = {}
+    if rc == 0 and not dry_run:
+        try:
+            head_host = host_list[0] if host_list else "localhost"
+            head_container = runtime.get_head_container_name(cluster_id, is_solo=is_solo)
+            runtime_info = runtime._collect_runtime_info(
+                head_host, head_container, ssh_kwargs, dry_run=False,
+            )
+            if runtime_info:
+                try:
+                    save_job_metadata(
+                        cluster_id, recipe, host_list,
+                        overrides=overrides, cache_dir=str(config.cache_dir),
+                        recipe_ref=recipe_ref,
+                        runtime_info=runtime_info,
+                    )
+                except Exception:
+                    logger.debug("Failed to save runtime_info to job metadata", exc_info=True)
+        except Exception:
+            logger.debug("Runtime info collection failed", exc_info=True)
+
     return LaunchResult(
         rc=rc,
         cluster_id=cluster_id,
@@ -325,4 +369,5 @@ def launch_inference(
         nccl_env=nccl_env,
         ib_ip_map=ib_ip_map,
         serve_command=serve_command,
+        runtime_info=runtime_info,
     )

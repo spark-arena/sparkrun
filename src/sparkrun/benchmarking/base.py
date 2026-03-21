@@ -155,6 +155,7 @@ def export_results(
         args: dict[str, Any],
         results: dict[str, Any],
         output_path: str | Path,
+        runtime_info: dict[str, str] | None = None,
 ) -> Path:
     """Export benchmark results to a YAML file.
 
@@ -213,6 +214,7 @@ def export_results(
             "cluster": {
                 "tp": tp,
                 "cluster_id": cluster_id,
+                "runtime_info": runtime_info or {},
             },
             "benchmark": {
                 "framework": framework_name,

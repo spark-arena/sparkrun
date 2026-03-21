@@ -520,6 +520,7 @@ def _run_benchmark(
                 args=bench_args,
                 results=results,
                 output_path=output_file,
+                runtime_info=launch_result.runtime_info if launch_result else None,
             )
             click.echo("Results saved to: %s" % output_file)
 

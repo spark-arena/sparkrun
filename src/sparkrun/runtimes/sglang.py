@@ -170,6 +170,11 @@ class SglangRuntime(RuntimePlugin):
 
         return base
 
+    def version_commands(self) -> dict[str, str]:
+        cmds = super().version_commands()
+        cmds["sglang"] = "python3 -c 'import sglang; print(sglang.__version__)' 2>/dev/null || echo unknown"
+        return cmds
+
     def get_cluster_env(self, head_ip: str, num_nodes: int) -> dict[str, str]:
         """Return SGLang-specific cluster environment variables."""
         return {

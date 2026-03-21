@@ -234,9 +234,7 @@ def run(
 
     # TODO: rootless should shift into being part of launch_inference to enable common usage without repeat
     # Build executor config from CLI flags
-    cli_executor_opts: dict[str, Any] = {
-        'user': '$SHELL_USER',  # we're going to switch to non-root user inside containers always regardless of privileges configuration
-    }
+    cli_executor_opts: dict[str, Any] = {}
     if rootless:
         cli_executor_opts["privileged"] = False
         cli_executor_opts["security_opt"] = ["no-new-privileges"]
@@ -249,7 +247,7 @@ def run(
             # "NET_ADMIN", # InfiniBand / network device access
             # "DAC_OVERRIDE", # file access across uid boundaries (NCCL shm)
         ]
-        cli_executor_opts["ulimit"] = ["memlock=-1:-1"]
+        cli_executor_opts["ulimit"] = ["memlock=-1:-1"]  # TODO: stack size
         cli_executor_opts["devices"] = [
             "/dev/infiniband",  # RDMA/IB verbs for NCCL inter-node communication
         ]
@@ -279,6 +277,8 @@ def run(
         dashboard=dashboard,
         init_port=init_port,
         executor_config=cli_executor_opts,
+        rootless=rootless,
+        auto_user=True,  # TODO: configurable (disable if we add --rootful later)
     )
 
     click.echo("Cluster:   %s" % result.cluster_id)
@@ -287,6 +287,12 @@ def run(
     for line in result.serve_command.strip().splitlines():
         click.echo("  %s" % line)
     click.echo()
+
+    if result.runtime_info:
+        click.echo("Runtime versions:")
+        for k, v in sorted(result.runtime_info.items()):
+            click.echo("  %-10s %s" % (k + ":", v))
+        click.echo()
 
     # Post-serve lifecycle: run post_exec and post_commands if recipe defines them
     has_post_hooks = bool(recipe.post_exec or recipe.post_commands)

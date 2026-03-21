@@ -151,6 +151,11 @@ class VllmDistributedRuntime(RuntimePlugin):
         from sparkrun.tuning.vllm import get_vllm_tuning_env
         return get_vllm_tuning_env() or {}
 
+    def version_commands(self) -> dict[str, str]:
+        cmds = super().version_commands()
+        cmds["vllm"] = "python3 -c 'import vllm; print(vllm.__version__)' 2>/dev/null || echo unknown"
+        return cmds
+
     def get_cluster_env(self, head_ip: str, num_nodes: int) -> dict[str, str]:
         """Return vLLM distributed-specific cluster environment variables.
 

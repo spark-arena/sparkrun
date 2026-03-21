@@ -275,6 +275,11 @@ class LlamaCppRuntime(RuntimePlugin):
         """Build the rpc-server command for a worker node."""
         return "rpc-server --host 0.0.0.0 --port %d" % rpc_port
 
+    def version_commands(self) -> dict[str, str]:
+        cmds = super().version_commands()
+        cmds["llama_cpp"] = "llama-server --version 2>/dev/null | head -1 || echo unknown"
+        return cmds
+
     def validate_recipe(self, recipe: Recipe) -> list[str]:
         """Validate llama.cpp-specific recipe fields."""
         issues = super().validate_recipe(recipe)
