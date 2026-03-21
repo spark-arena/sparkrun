@@ -32,6 +32,14 @@ class DockerExecutor(Executor):
             opts.append("--shm-size=%s" % cfg.shm_size)
         if cfg.network:
             opts.append("--network %s" % cfg.network)
+        if cfg.user:
+            if cfg.user == "$SHELL_USER":
+                opts.extend(["--user", "$(id -u):$(id -g)"])
+            else:
+                opts.extend(["--user", cfg.user])
+        if cfg.security_opt:
+            for opt in cfg.security_opt:
+                opts.extend(["--security-opt", opt])
 
         return opts
 

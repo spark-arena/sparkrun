@@ -13,6 +13,8 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from scitrera_app_framework.util import ext_parse_bool
+
 logger = logging.getLogger(__name__)
 
 # Default executor settings for DGX Spark GPU workloads.
@@ -25,6 +27,8 @@ EXECUTOR_DEFAULTS = {
     "ipc": "host",
     "shm_size": "10.24gb",
     "network": "host",
+    "user": None,
+    "security_opt": None,
 }
 
 
@@ -43,33 +47,31 @@ class ExecutorConfig:
     ipc: str = "host"
     shm_size: str = "10.24gb"
     network: str = "host"
+    user: str | None = None
+    security_opt: list[str] | None = None
 
     @classmethod
     def from_chain(cls, chain) -> ExecutorConfig:
         """Build from a VPD chain or plain dict."""
+        raw_sec = chain.get("security_opt")
+        if isinstance(raw_sec, str):
+            raw_sec = [raw_sec]
         return cls(
-            auto_remove=_resolve_bool(chain.get("auto_remove", True)),
+            auto_remove=ext_parse_bool(chain.get("auto_remove", True)),
             restart_policy=chain.get("restart_policy") or None,
-            privileged=_resolve_bool(chain.get("privileged", True)),
+            privileged=ext_parse_bool(chain.get("privileged", True)),
             gpus=str(chain.get("gpus", "all")),
             ipc=str(chain.get("ipc", "host")),
             shm_size=str(chain.get("shm_size", "10.24gb")),
             network=str(chain.get("network", "host")),
+            user=chain.get("user") or None,
+            security_opt=raw_sec or None,
         )
 
     def __post_init__(self):
         # Docker does not allow --rm with --restart
         if self.restart_policy:
             self.auto_remove = False
-
-
-def _resolve_bool(value) -> bool:
-    """Coerce a value to bool (handles string 'false'/'true')."""
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.lower() not in ("false", "0", "no", "")
-    return bool(value)
 
 
 class Executor(ABC):
@@ -87,25 +89,25 @@ class Executor(ABC):
 
     @abstractmethod
     def run_cmd(
-        self,
-        image: str,
-        command: str = "",
-        container_name: str | None = None,
-        detach: bool = True,
-        env: dict[str, str] | None = None,
-        volumes: dict[str, str] | None = None,
-        extra_opts: list[str] | None = None,
+            self,
+            image: str,
+            command: str = "",
+            container_name: str | None = None,
+            detach: bool = True,
+            env: dict[str, str] | None = None,
+            volumes: dict[str, str] | None = None,
+            extra_opts: list[str] | None = None,
     ) -> str:
         """Generate a container run command string."""
         ...
 
     @abstractmethod
     def exec_cmd(
-        self,
-        container_name: str,
-        command: str,
-        detach: bool = False,
-        env: dict[str, str] | None = None,
+            self,
+            container_name: str,
+            command: str,
+            detach: bool = False,
+            env: dict[str, str] | None = None,
     ) -> str:
         """Generate a container exec command string."""
         ...
@@ -117,10 +119,10 @@ class Executor(ABC):
 
     @abstractmethod
     def logs_cmd(
-        self,
-        container_name: str,
-        follow: bool = False,
-        tail: int | None = None,
+            self,
+            container_name: str,
+            follow: bool = False,
+            tail: int | None = None,
     ) -> str:
         """Generate a container logs command string."""
         ...
@@ -165,15 +167,15 @@ class Executor(ABC):
     # --- High-level script generators (concrete) ---
 
     def generate_launch_script(
-        self,
-        image: str,
-        container_name: str,
-        command: str,
-        env: dict[str, str] | None = None,
-        volumes: dict[str, str] | None = None,
-        nccl_env: dict[str, str] | None = None,
-        detach: bool = True,
-        extra_docker_opts: list[str] | None = None,
+            self,
+            image: str,
+            container_name: str,
+            command: str,
+            env: dict[str, str] | None = None,
+            volumes: dict[str, str] | None = None,
+            nccl_env: dict[str, str] | None = None,
+            detach: bool = True,
+            extra_docker_opts: list[str] | None = None,
     ) -> str:
         """Generate a script that cleans up then launches a container.
 
@@ -203,11 +205,11 @@ class Executor(ABC):
         )
 
     def generate_exec_serve_script(
-        self,
-        container_name: str,
-        serve_command: str,
-        env: dict[str, str] | None = None,
-        detached: bool = True,
+            self,
+            container_name: str,
+            serve_command: str,
+            env: dict[str, str] | None = None,
+            detached: bool = True,
     ) -> str:
         """Generate a script that executes the serve command inside a running container.
 
@@ -231,15 +233,15 @@ class Executor(ABC):
         )
 
     def generate_ray_head_script(
-        self,
-        image: str,
-        container_name: str,
-        ray_port: int = 46379,
-        dashboard_port: int = 8265,
-        dashboard: bool = False,
-        env: dict[str, str] | None = None,
-        volumes: dict[str, str] | None = None,
-        nccl_env: dict[str, str] | None = None,
+            self,
+            image: str,
+            container_name: str,
+            ray_port: int = 46379,
+            dashboard_port: int = 8265,
+            dashboard: bool = False,
+            env: dict[str, str] | None = None,
+            volumes: dict[str, str] | None = None,
+            nccl_env: dict[str, str] | None = None,
     ) -> str:
         """Generate a script that starts a Ray head node in a container.
 
@@ -253,20 +255,20 @@ class Executor(ABC):
         dashboard_flags = ""
         if dashboard:
             dashboard_flags = (
-                "--include-dashboard=True "
-                "--dashboard-host 0.0.0.0 "
-                "--dashboard-port %d " % dashboard_port
+                    "--include-dashboard=True "
+                    "--dashboard-host 0.0.0.0 "
+                    "--dashboard-port %d " % dashboard_port
             )
 
         cleanup = self.stop_cmd(container_name)
         run = self.run_cmd(
             image=image,
             command=(
-                "ray start --block --head "
-                "--port %d "
-                "--node-ip-address $NODE_IP "
-                "%s"
-                "--disable-usage-stats" % (ray_port, dashboard_flags)
+                    "ray start --block --head "
+                    "--port %d "
+                    "--node-ip-address $NODE_IP "
+                    "%s"
+                    "--disable-usage-stats" % (ray_port, dashboard_flags)
             ),
             container_name=container_name,
             detach=True,
@@ -281,14 +283,14 @@ class Executor(ABC):
         )
 
     def generate_ray_worker_script(
-        self,
-        image: str,
-        container_name: str,
-        head_ip: str,
-        ray_port: int = 46379,
-        env: dict[str, str] | None = None,
-        volumes: dict[str, str] | None = None,
-        nccl_env: dict[str, str] | None = None,
+            self,
+            image: str,
+            container_name: str,
+            head_ip: str,
+            ray_port: int = 46379,
+            env: dict[str, str] | None = None,
+            volumes: dict[str, str] | None = None,
+            nccl_env: dict[str, str] | None = None,
     ) -> str:
         """Generate a script that starts a Ray worker node.
 
@@ -303,9 +305,9 @@ class Executor(ABC):
         run = self.run_cmd(
             image=image,
             command=(
-                "ray start --block "
-                "--address=%s:%d "
-                "--node-ip-address $NODE_IP" % (head_ip, ray_port)
+                    "ray start --block "
+                    "--address=%s:%d "
+                    "--node-ip-address $NODE_IP" % (head_ip, ray_port)
             ),
             container_name=container_name,
             detach=True,
@@ -322,15 +324,15 @@ class Executor(ABC):
         )
 
     def generate_node_script(
-        self,
-        image: str,
-        container_name: str,
-        serve_command: str,
-        label: str = "node",
-        env: dict[str, str] | None = None,
-        volumes: dict[str, str] | None = None,
-        nccl_env: dict[str, str] | None = None,
-        extra_docker_opts: list[str] | None = None,
+            self,
+            image: str,
+            container_name: str,
+            serve_command: str,
+            label: str = "node",
+            env: dict[str, str] | None = None,
+            volumes: dict[str, str] | None = None,
+            nccl_env: dict[str, str] | None = None,
+            extra_docker_opts: list[str] | None = None,
     ) -> str:
         """Generate a script that launches a container with a direct entrypoint command.
 

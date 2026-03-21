@@ -78,6 +78,39 @@ class TestExecutorConfig:
         cfg = ExecutorConfig.from_chain(chain)
         assert cfg.restart_policy is None
 
+    def test_user_field(self):
+        cfg = ExecutorConfig(user="1000:1000")
+        assert cfg.user == "1000:1000"
+
+    def test_user_shell_user(self):
+        cfg = ExecutorConfig(user="$SHELL_USER")
+        assert cfg.user == "$SHELL_USER"
+
+    def test_security_opt_field(self):
+        cfg = ExecutorConfig(security_opt=["no-new-privileges"])
+        assert cfg.security_opt == ["no-new-privileges"]
+
+    def test_user_default_none(self):
+        cfg = ExecutorConfig()
+        assert cfg.user is None
+        assert cfg.security_opt is None
+
+    def test_from_chain_user_and_security_opt(self):
+        chain = {"user": "$SHELL_USER", "security_opt": ["no-new-privileges"]}
+        cfg = ExecutorConfig.from_chain(chain)
+        assert cfg.user == "$SHELL_USER"
+        assert cfg.security_opt == ["no-new-privileges"]
+
+    def test_from_chain_security_opt_string(self):
+        chain = {"security_opt": "no-new-privileges"}
+        cfg = ExecutorConfig.from_chain(chain)
+        assert cfg.security_opt == ["no-new-privileges"]
+
+    def test_from_chain_empty_user_is_none(self):
+        chain = {"user": ""}
+        cfg = ExecutorConfig.from_chain(chain)
+        assert cfg.user is None
+
     def test_vpd_chain_layering(self):
         """Verify VPD chain resolution: CLI > recipe > defaults."""
         from vpd.legacy.yaml_dict import vpd_chain
@@ -278,6 +311,46 @@ class TestDockerExecutorConfig:
         executor = DockerExecutor(cfg)
         cmd = executor.run_cmd("img:latest")
         assert "--privileged" not in cmd
+
+    def test_user_explicit(self):
+        cfg = ExecutorConfig(user="1000:1000")
+        executor = DockerExecutor(cfg)
+        cmd = executor.run_cmd("img:latest")
+        assert "--user 1000:1000" in cmd
+
+    def test_user_shell_user_resolves(self):
+        cfg = ExecutorConfig(user="$SHELL_USER")
+        executor = DockerExecutor(cfg)
+        cmd = executor.run_cmd("img:latest")
+        assert "--user $(id -u):$(id -g)" in cmd
+
+    def test_security_opt(self):
+        cfg = ExecutorConfig(security_opt=["no-new-privileges"])
+        executor = DockerExecutor(cfg)
+        cmd = executor.run_cmd("img:latest")
+        assert "--security-opt no-new-privileges" in cmd
+
+    def test_security_opt_multiple(self):
+        cfg = ExecutorConfig(security_opt=["no-new-privileges", "seccomp=unconfined"])
+        executor = DockerExecutor(cfg)
+        cmd = executor.run_cmd("img:latest")
+        assert "--security-opt no-new-privileges" in cmd
+        assert "--security-opt seccomp=unconfined" in cmd
+
+    def test_rootless_config(self):
+        """Verify the combination of settings that --rootless would produce."""
+        cfg = ExecutorConfig(privileged=False, user="$SHELL_USER", security_opt=["no-new-privileges"])
+        executor = DockerExecutor(cfg)
+        cmd = executor.run_cmd("img:latest")
+        assert "--privileged" not in cmd
+        assert "--user $(id -u):$(id -g)" in cmd
+        assert "--security-opt no-new-privileges" in cmd
+
+    def test_no_user_by_default(self):
+        executor = DockerExecutor()
+        cmd = executor.run_cmd("img:latest")
+        assert "--user" not in cmd
+        assert "--security-opt" not in cmd
 
 
 # ---------------------------------------------------------------------------
