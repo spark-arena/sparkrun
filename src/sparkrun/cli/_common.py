@@ -822,6 +822,7 @@ def recipe_override_options(f):
                      help="Override pipeline parallelism")(f)
     f = click.option("--tp", "--tensor-parallel", "tensor_parallel", type=int, default=None,
                      help="Override tensor parallelism")(f)
+    # TODO: add options for expert parallel and data parallel and context parallel ??? and runtime arg validation
     return f
 
 

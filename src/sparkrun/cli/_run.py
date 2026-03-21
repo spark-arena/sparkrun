@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 @click.option("--no-follow", is_flag=True, help="Don't follow container logs after launch")
 @click.option("--no-sync-tuning", is_flag=True, help="Skip syncing tuning configs from registries")
 @click.option("--no-rm", is_flag=True, help="Don't auto-remove containers on exit (keeps containers after stop)")
+@click.option("--rootless", is_flag=True, help="Run without --privileged, as non-root user inside container", hidden=True)
 @click.option("--restart", "restart_policy", default=None,
               help="Docker restart policy (no, always, unless-stopped, on-failure[:N])")
 @click.option("--transfer-mode", default=None,
@@ -54,9 +55,9 @@ logger = logging.getLogger(__name__)
 def run(
         ctx, recipe_name, hosts, hosts_file, cluster_name, solo, port, tensor_parallel,
         pipeline_parallel, gpu_mem, served_model_name, max_model_len, image, cache_dir,
-        ray_port, init_port, dashboard, dashboard_port,
-        dry_run, foreground, no_follow, no_sync_tuning, no_rm, restart_policy, transfer_mode,
-        options, extra_args, config_path=None, setup=True,
+        ray_port, init_port, dashboard, dashboard_port, dry_run, foreground, no_follow,
+        no_sync_tuning, no_rm, restart_policy, transfer_mode, options,
+        extra_args, config_path=None, setup=True, rootless=False,
 ):
     """Run an inference recipe.
 
@@ -83,6 +84,8 @@ def run(
     # SAF's init_framework_desktop reconfigures the root logger — re-apply ours
     _setup_logging(ctx.obj["verbose"])
     config = SparkrunConfig(config_path) if config_path else SparkrunConfig()
+
+    # TODO: warn that --solo flag is not recommended if solo==True at this point
 
     # Find and load recipe
     recipe, _recipe_path, registry_mgr = _load_recipe(config, recipe_name)
@@ -227,6 +230,10 @@ def run(
 
     # Build executor config from CLI flags
     cli_executor_opts = {}
+    if rootless:
+        cli_executor_opts["privileged"] = False
+        cli_executor_opts["user"] = "$SHELL_USER"
+        cli_executor_opts["security_opt"] = ["no-new-privileges"]
     if no_rm:
         cli_executor_opts["auto_remove"] = False
     if restart_policy:
