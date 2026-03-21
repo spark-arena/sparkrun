@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from json import dumps as json_dumps
 from os import path as osp
 from pathlib import Path
 from typing import Any, TYPE_CHECKING, Optional
@@ -17,6 +18,20 @@ from vpd.legacy.arguments import arg_substitute
 if TYPE_CHECKING:
     from sparkrun.core.registry import RegistryManager
     from sparkrun.models.vram import VRAMEstimate
+
+
+class _LiteralBlockDumper(yaml.SafeDumper):
+    """YAML dumper that uses literal block style (|) for multiline strings."""
+    pass
+
+
+def _literal_str_representer(dumper: yaml.Dumper, data: str) -> yaml.ScalarNode:
+    if "\n" in data:
+        return dumper.represent_scalar("tag:yaml.org,2002:str", data, style="|")
+    return dumper.represent_scalar("tag:yaml.org,2002:str", data)
+
+
+_LiteralBlockDumper.add_representer(str, _literal_str_representer)
 
 logger = logging.getLogger(__name__)
 
@@ -631,7 +646,7 @@ class Recipe:
             d["cluster_only"] = True
 
         # -- Metadata (absorb promoted keys) --
-        meta = dict(self.metadata)
+        d['metadata'] = meta = dict(self.metadata)
         if self.description:
             meta["description"] = self.description
         if self.maintainer:
@@ -675,7 +690,7 @@ class Recipe:
 
         return d
 
-    def export(self, path: Optional[str | Path]) -> Optional[str]:
+    def export(self, path: Optional[str | Path] = None, json: bool = False) -> Optional[str | Path]:
         """Export the recipe as canonical YAML.
 
         Builds a clean dict from resolved attributes (not raw input),
@@ -683,11 +698,16 @@ class Recipe:
         """
         export_dict = self._build_export_dict()
         ordered = _sort_dict_by_patterns(export_dict, self.EXPORT_KEY_ORDER)
-        recipe_text = yaml.safe_dump(ordered, indent=2, sort_keys=False)
+
+        text = json_dumps(ordered, sort_keys=False) if json else \
+            yaml.dump(ordered, Dumper=_LiteralBlockDumper, indent=2, sort_keys=False, default_flow_style=False)
+
         if path is None:
-            return recipe_text
-        Path(path).write_text(recipe_text, encoding="utf-8")
-        return None
+            return text
+
+        dest = Path(path)
+        dest.write_text(text, encoding="utf-8")
+        return dest
 
 
 def find_recipe(name: str, search_paths: list[Path] | None = None,

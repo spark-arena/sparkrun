@@ -189,38 +189,52 @@ class TestShowCommand:
         assert result.exit_code != 0
         assert "Error" in result.output
 
-    def test_show_save_copies_recipe(self, runner, tmp_path):
-        """Test that --save copies the recipe YAML to the given path."""
+    def test_show_no_save_option(self, runner):
+        """Test that sparkrun show --help does not show --save (moved to export)."""
+        result = runner.invoke(main, ["show", "--help"])
+        assert result.exit_code == 0
+        assert "--save" not in result.output
+
+
+class TestExportCommand:
+    """Test the recipe export command."""
+
+    def test_export_yaml_to_stdout(self, runner):
+        """Test that recipe export outputs normalized YAML to stdout."""
+        result = runner.invoke(main, [
+            "recipe", "export", _TEST_RECIPE_NAME,
+        ])
+        assert result.exit_code == 0
+        import yaml
+        data = yaml.safe_load(result.output)
+        assert "model" in data
+        assert "runtime" in data
+
+    def test_export_save_to_file(self, runner, tmp_path):
+        """Test that recipe export --save writes normalized YAML to a file."""
         dest = tmp_path / "saved-recipe.yaml"
         result = runner.invoke(main, [
-            "show", _TEST_RECIPE_NAME,
+            "recipe", "export", _TEST_RECIPE_NAME,
             "--save", str(dest),
         ])
         assert result.exit_code == 0
         assert "Recipe saved to" in result.output
         assert dest.exists()
-        # Verify it's valid YAML with expected fields
         import yaml
         data = yaml.safe_load(dest.read_text())
         assert "model" in data
         assert "runtime" in data
 
-    def test_show_save_via_recipe_subcommand(self, runner, tmp_path):
-        """Test that recipe show --save also works."""
-        dest = tmp_path / "saved.yaml"
+    def test_export_json_to_stdout(self, runner):
+        """Test that recipe export --json outputs valid JSON to stdout."""
+        import json
         result = runner.invoke(main, [
-            "recipe", "show", _TEST_RECIPE_NAME,
-            "--save", str(dest),
+            "recipe", "export", _TEST_RECIPE_NAME, "--json",
         ])
         assert result.exit_code == 0
-        assert "Recipe saved to" in result.output
-        assert dest.exists()
-
-    def test_show_help_includes_save(self, runner):
-        """Test that sparkrun show --help shows --save option."""
-        result = runner.invoke(main, ["show", "--help"])
-        assert result.exit_code == 0
-        assert "--save" in result.output
+        data = json.loads(result.output)
+        assert "model" in data
+        assert "runtime" in data
 
 
 class TestVramCommand:

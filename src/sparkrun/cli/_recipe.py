@@ -88,13 +88,10 @@ def recipe_search(ctx, registry, runtime, show_all, query, config_path=None):
 @click.option("--gpu-mem", type=float, default=None,
               help="Override GPU memory utilization (0.0-1.0)")
 @click.option("--cache-dir", default=None, help="HuggingFace cache directory for model lookups")
-@click.option("--save", "save_path", default=None, type=click.Path(),
-              help="Save a copy of the recipe YAML to a file")
 # @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
-def recipe_show(ctx, recipe_name, no_vram, tensor_parallel, gpu_mem=None, cache_dir=None, save_path=None, config_path=None):
+def recipe_show(ctx, recipe_name, no_vram, tensor_parallel, gpu_mem=None, cache_dir=None, config_path=None):
     """Show detailed recipe information."""
-    import shutil
 
     config, _ = _get_config_and_registry(config_path)
     recipe, recipe_path, registry_mgr = _load_recipe(config, recipe_name)
@@ -109,11 +106,27 @@ def recipe_show(ctx, recipe_name, no_vram, tensor_parallel, gpu_mem=None, cache_
     _display_recipe_detail(recipe, show_vram=not no_vram, registry_name=reg_name,
                            cli_overrides=cli_overrides or None, cache_dir=cache_dir)
 
-    if save_path:
-        from pathlib import Path
-        dest = Path(save_path)
-        shutil.copy2(recipe_path, dest)
-        click.echo("\nRecipe saved to %s" % dest)
+    return
+
+
+@recipe.command("export")
+@click.argument("recipe_name", type=RECIPE_NAME)
+@click.option("--json", "output_json", is_flag=True, help="Output normalized recipe as JSON to stdout")
+@click.option("--save", "save_path", type=click.Path(), help="Save a copy of the recipe to a file")
+# @click.option("--config", "config_path", default=None, help="Path to config file")
+@click.pass_context
+def recipe_export(ctx, recipe_name, output_json=False, save_path=None, config_path=None):
+    """Export normalized recipe to stdout """
+
+    config, _ = _get_config_and_registry(config_path)
+    recipe, recipe_path, registry_mgr = _load_recipe(config, recipe_name)
+
+    if save_path is None:
+        click.echo(recipe.export(json=output_json))
+        return
+
+    click.echo("Recipe saved to %s" % recipe.export(path=save_path, json=output_json))
+    return
 
 
 @recipe.command("validate")

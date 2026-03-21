@@ -69,13 +69,11 @@ def list_cmd(ctx, registry, runtime, query):
               help="Override tensor parallelism")
 @click.option("--gpu-mem", type=float, default=None,
               help="Override GPU memory utilization (0.0-1.0)")
-@click.option("--save", "save_path", default=None, type=click.Path(),
-              help="Save a copy of the recipe YAML to a file")
 @click.pass_context
-def show(ctx, recipe_name, no_vram, tensor_parallel, gpu_mem, save_path):
+def show(ctx, recipe_name, no_vram, tensor_parallel, gpu_mem):
     """Show detailed recipe information (alias for 'recipe show')."""
     ctx.invoke(recipe_show, recipe_name=recipe_name, no_vram=no_vram,
-               tensor_parallel=tensor_parallel, gpu_mem=gpu_mem, save_path=save_path)
+               tensor_parallel=tensor_parallel, gpu_mem=gpu_mem)
 
 
 @main.command("search")
