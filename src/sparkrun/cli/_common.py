@@ -330,12 +330,19 @@ def _get_cluster_manager(v=None):
     return ClusterManager(get_config_root(v))
 
 
-def _load_recipe(config, recipe_name):
+def _load_recipe(config, recipe_name, resolve=True):
     """Find, load, and return a recipe.
 
     Handles disambiguation when a recipe name matches multiple registries.
     Supports remote URLs and @spark-arena/ shortcuts.
     Exits with an error message on failure.
+
+    Args:
+        config: SparkrunConfig instance.
+        recipe_name: Recipe name, path, or URL.
+        resolve: Run the resolver chain immediately (default True).
+            Pass ``False`` when CLI overrides need to influence runtime
+            resolution — call ``recipe.resolve(overrides)`` later.
 
     Returns:
         Tuple of (recipe, recipe_path, registry_mgr).
@@ -350,7 +357,7 @@ def _load_recipe(config, recipe_name):
         logger.debug("Loading recipe from URL: %s", recipe_name)
         cached_path = _fetch_and_cache_recipe(recipe_name)
         try:
-            recipe = Recipe.load(cached_path)
+            recipe = Recipe.load(cached_path, resolve=resolve)
         except RecipeError as e:
             click.echo("Error: %s" % e, err=True)
             sys.exit(1)
@@ -366,7 +373,7 @@ def _load_recipe(config, recipe_name):
         registry_mgr.ensure_initialized()
         recipe_path = find_recipe(recipe_name, registry_manager=registry_mgr,
                                   local_files=discover_cwd_recipes())
-        recipe = Recipe.load(recipe_path)
+        recipe = Recipe.load(recipe_path, resolve=resolve)
     except RecipeAmbiguousError as e:
         # Interactive disambiguation
         if sys.stdin.isatty():
@@ -380,7 +387,7 @@ def _load_recipe(config, recipe_name):
                 default=1,
             )
             _reg_name, recipe_path = e.matches[choice - 1]
-            recipe = Recipe.load(recipe_path)
+            recipe = Recipe.load(recipe_path, resolve=resolve)
         else:
             raise click.ClickException(str(e))
     except RecipeError as e:
@@ -828,10 +835,15 @@ def recipe_override_options(f):
 
 def _apply_recipe_overrides(options, tensor_parallel=None, pipeline_parallel=None,
                             gpu_mem=None, max_model_len=None, image=None, recipe=None, **kwargs):
-    """Build overrides dict from recipe_override_options parameters.
+    """Build overrides dict, apply to recipe, and resolve runtime.
 
-    Returns the merged overrides dict.  When *recipe* is provided and
-    *image* is set, ``recipe.container`` is updated in-place.
+    Returns ``(recipe, overrides)`` — recipe is returned to make the
+    mutation explicit (runtime may change based on overrides).
+
+    When *recipe* is provided, ``recipe.resolve(overrides)`` is called
+    so that overrides can influence runtime resolution (e.g.
+    ``distributed_executor_backend=ray`` switches vllm-distributed to
+    vllm-ray).
     """
     overrides = _parse_options(options)
     if tensor_parallel is not None:
@@ -849,7 +861,11 @@ def _apply_recipe_overrides(options, tensor_parallel=None, pipeline_parallel=Non
         if v is not None:
             overrides[k] = v
 
-    return overrides
+    # Resolve runtime with overrides visible to resolvers
+    if recipe is not None:
+        recipe.resolve(overrides)
+
+    return recipe, overrides
 
 
 def dry_run_option(f):

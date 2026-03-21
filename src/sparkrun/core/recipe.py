@@ -142,7 +142,8 @@ def _resolve_vllm_variant(recipe: Recipe) -> None:
     """Bare 'vllm' (or empty) -> 'vllm-distributed' (default) or 'vllm-ray' (Ray hints)."""
     if recipe.runtime not in ("vllm", ""):
         return
-    if str(recipe.defaults.get("distributed_executor_backend", "")).lower() == "ray":
+    # noinspection PyProtectedMember
+    if str(recipe._effective_default("distributed_executor_backend", "")).lower() == "ray":
         recipe.runtime = "vllm-ray"
         return
     if recipe.command and _RAY_BACKEND_RE.search(recipe.command):
@@ -159,11 +160,16 @@ _RECIPE_RESOLVERS = [
 ]
 
 
-def resolve_runtime(data: dict[str, Any]) -> str:
+def resolve_runtime(data: dict[str, Any], overrides: dict[str, Any] | None = None) -> str:
     """Lightweight runtime resolution from raw data (for listing/display).
 
     Mirrors the runtime-affecting resolvers in :data:`_RECIPE_RESOLVERS`
     without constructing a full Recipe.
+
+    Args:
+        data: Raw recipe dict.
+        overrides: Optional CLI overrides (checked before defaults for
+            the vllm-variant decision).
     """
     runtime = data.get("runtime") or ""
 
@@ -197,11 +203,14 @@ def resolve_runtime(data: dict[str, Any]) -> str:
     ):
         return "eugr-vllm"
     if runtime in ("vllm", ""):
+        effective = dict(overrides or {})
         defaults = data.get("defaults")
         if defaults is not None and not isinstance(defaults, dict):
             raise RecipeError("Recipe 'defaults' field must be a mapping, got %s" % type(defaults).__name__)
         defaults = defaults or {}
-        if str(defaults.get("distributed_executor_backend", "")).lower() == "ray":
+        # Overrides take precedence over defaults
+        deb = effective.get("distributed_executor_backend") or defaults.get("distributed_executor_backend", "")
+        if str(deb).lower() == "ray":
             return "vllm-ray"
         if _RAY_BACKEND_RE.search(cmd):
             return "vllm-ray"
@@ -348,9 +357,40 @@ class Recipe:
         raw_exec = data.get("executor_config", {})
         self.executor_config: dict[str, Any] = dict(raw_exec) if isinstance(raw_exec, dict) else {}
 
-        # Post-init resolver chain — all runtime/migration logic lives here
+        # Applied overrides (populated by resolve())
+        self._applied_overrides: dict[str, Any] = {}
+
+    # ------------------------------------------------------------------
+    # Runtime resolution (separated from __init__ for override support)
+    # ------------------------------------------------------------------
+
+    def _effective_default(self, key: str, fallback: Any = None) -> Any:
+        """Get effective value: applied overrides -> recipe defaults -> fallback.
+
+        Used by resolvers so they naturally see CLI overrides without
+        per-resolver maintenance.
+        """
+        v = self._applied_overrides.get(key)
+        if v is not None:
+            return v
+        return self.defaults.get(key, fallback)
+
+    def resolve(self, overrides: dict[str, Any] | None = None) -> Recipe:
+        """Run the resolver chain, optionally with CLI overrides.
+
+        Overrides are visible to resolvers via ``_effective_default()`` so
+        they can influence runtime resolution (e.g.
+        ``distributed_executor_backend=ray`` switches vllm-distributed to
+        vllm-ray).
+
+        Can be called multiple times safely — resets runtime to its raw
+        YAML value before re-running the chain.
+        """
+        self._applied_overrides = dict(overrides) if overrides else {}
+        self.runtime = self._raw.get("runtime", "")
         for resolver in _RECIPE_RESOLVERS:
             resolver(self)
+        return self
 
     @property
     def qualified_name(self) -> str:
@@ -447,20 +487,35 @@ class Recipe:
         return issues
 
     @classmethod
-    def load(cls, path: str | Path) -> Recipe:
-        """Load a recipe from a YAML file path."""
+    def load(cls, path: str | Path, resolve: bool = True) -> Recipe:
+        """Load a recipe from a YAML file path.
+
+        Args:
+            path: Path to the recipe YAML file.
+            resolve: Run the resolver chain immediately (default True).
+                Pass ``False`` when CLI overrides need to influence
+                resolution — call ``recipe.resolve(overrides)`` later.
+        """
         path = Path(path)
         if not path.exists():
             raise RecipeError("Recipe file not found: %s" % path)
         data = read_yaml(str(path))
         if not isinstance(data, dict):
             raise RecipeError("Recipe file must contain a YAML mapping: %s" % path)
-        return cls(data, source_path=str(path))
+        recipe = cls(data, source_path=str(path))
+        if resolve:
+            recipe.resolve()
+        return recipe
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> Recipe:
-        """Create a recipe from a dict (useful for testing)."""
-        return cls(data)
+    def from_dict(cls, data: dict[str, Any], overrides: dict[str, Any] | None = None) -> Recipe:
+        """Create a recipe from a dict (useful for testing).
+
+        Always resolves immediately for backward compatibility.
+        """
+        recipe = cls(data)
+        recipe.resolve(overrides)
+        return recipe
 
     def estimate_vram(
             self,

@@ -467,18 +467,18 @@ def load_cmd(recipe_name, hosts, hosts_file, cluster_name,
     v = init_sparkrun()
     config = SparkrunConfig()
 
-    # Load recipe
-    recipe, _recipe_path, registry_mgr = _load_recipe(config, recipe_name)
+    # Load recipe (defer resolution until overrides are built)
+    recipe, _recipe_path, registry_mgr = _load_recipe(config, recipe_name, resolve=False)
+
+    # Build overrides and resolve runtime (overrides may influence resolution)
+    recipe, overrides = _apply_recipe_overrides(
+        options, tensor_parallel=tensor_parallel, pipeline_parallel=pipeline_parallel,
+        gpu_mem=gpu_mem, max_model_len=max_model_len, image=image, recipe=recipe,
+    )
 
     issues = recipe.validate()
     for issue in issues:
         click.echo("Warning: %s" % issue, err=True)
-
-    # Build overrides
-    overrides = _apply_recipe_overrides(
-        options, tensor_parallel=tensor_parallel, pipeline_parallel=pipeline_parallel,
-        gpu_mem=gpu_mem, max_model_len=max_model_len, image=image, recipe=recipe,
-    )
     if port is not None:
         overrides["port"] = port
 

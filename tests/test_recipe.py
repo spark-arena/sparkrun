@@ -1660,3 +1660,135 @@ class TestBuilderFields:
         export = recipe._build_export_dict()
         assert "builder" not in export
         assert "builder_config" not in export
+
+
+class TestResolveWithOverrides:
+    """Tests for Recipe.resolve() with CLI overrides influencing runtime."""
+
+    def test_resolve_distributed_executor_override_ray(self):
+        """Override distributed_executor_backend=ray switches vllm-distributed to vllm-ray."""
+        recipe = Recipe.from_dict({
+            "model": "test-model",
+            "container": "img:latest",
+        })
+        # Default: vllm-distributed
+        assert recipe.runtime == "vllm-distributed"
+
+        # Re-resolve with override
+        recipe.resolve({"distributed_executor_backend": "ray"})
+        assert recipe.runtime == "vllm-ray"
+
+    def test_resolve_override_ray_to_distributed(self):
+        """Override distributed_executor_backend=mp overrides recipe default of ray."""
+        recipe = Recipe.from_dict({
+            "model": "test-model",
+            "container": "img:latest",
+            "defaults": {"distributed_executor_backend": "ray"},
+        })
+        assert recipe.runtime == "vllm-ray"
+
+        # Override to mp → should resolve to vllm-distributed
+        recipe.resolve({"distributed_executor_backend": "mp"})
+        assert recipe.runtime == "vllm-distributed"
+
+    def test_resolve_non_affecting_overrides(self):
+        """Overrides without runtime-affecting keys don't change runtime."""
+        recipe = Recipe.from_dict({
+            "model": "test-model",
+            "runtime": "sglang",
+            "container": "img:latest",
+        })
+        assert recipe.runtime == "sglang"
+
+        recipe.resolve({"tensor_parallel": 4, "max_model_len": 8192})
+        assert recipe.runtime == "sglang"
+
+    def test_resolve_idempotent(self):
+        """Calling resolve() twice with same overrides produces same result."""
+        recipe = Recipe.from_dict({
+            "model": "test-model",
+            "container": "img:latest",
+        })
+        recipe.resolve({"distributed_executor_backend": "ray"})
+        assert recipe.runtime == "vllm-ray"
+
+        recipe.resolve({"distributed_executor_backend": "ray"})
+        assert recipe.runtime == "vllm-ray"
+
+    def test_resolve_resets_before_rerunning(self):
+        """resolve() resets runtime to raw YAML value before re-running chain."""
+        recipe = Recipe.from_dict({
+            "model": "test-model",
+            "container": "img:latest",
+        })
+        recipe.resolve({"distributed_executor_backend": "ray"})
+        assert recipe.runtime == "vllm-ray"
+
+        # Re-resolve without override — should go back to default
+        recipe.resolve()
+        assert recipe.runtime == "vllm-distributed"
+
+    def test_from_dict_backward_compat(self):
+        """from_dict() auto-resolves (existing tests rely on this)."""
+        recipe = Recipe.from_dict({
+            "model": "test-model",
+            "container": "img:latest",
+            "defaults": {"distributed_executor_backend": "ray"},
+        })
+        assert recipe.runtime == "vllm-ray"
+
+    def test_from_dict_with_overrides(self):
+        """from_dict(overrides=...) passes overrides to resolve."""
+        recipe = Recipe.from_dict(
+            {"model": "test-model", "container": "img:latest"},
+            overrides={"distributed_executor_backend": "ray"},
+        )
+        assert recipe.runtime == "vllm-ray"
+
+    def test_load_resolve_false(self, tmp_recipe_dir: Path):
+        """Recipe.load(path, resolve=False) leaves runtime unresolved."""
+        recipe_path = tmp_recipe_dir / "test-vllm.yaml"
+        recipe = Recipe.load(recipe_path, resolve=False)
+        # Runtime should be the raw value from YAML (resolvers haven't run)
+        assert recipe.runtime == "vllm"
+
+        # After explicit resolve, runtime is fully resolved
+        recipe.resolve()
+        assert recipe.runtime == "vllm-distributed"
+
+        # Re-resolve with override
+        recipe.resolve({"distributed_executor_backend": "ray"})
+        assert recipe.runtime == "vllm-ray"
+
+    def test_effective_default_override_wins(self):
+        """_effective_default returns override value over recipe default."""
+        recipe = Recipe.from_dict({
+            "model": "test-model",
+            "container": "img:latest",
+            "defaults": {"tensor_parallel": 2},
+        })
+        recipe._applied_overrides = {"tensor_parallel": 4}
+        assert recipe._effective_default("tensor_parallel") == 4
+
+    def test_effective_default_falls_back_to_defaults(self):
+        """_effective_default returns recipe default when no override."""
+        recipe = Recipe.from_dict({
+            "model": "test-model",
+            "container": "img:latest",
+            "defaults": {"tensor_parallel": 2},
+        })
+        assert recipe._effective_default("tensor_parallel") == 2
+
+    def test_effective_default_fallback(self):
+        """_effective_default returns fallback when key absent everywhere."""
+        recipe = Recipe.from_dict({
+            "model": "test-model",
+            "container": "img:latest",
+        })
+        assert recipe._effective_default("nonexistent", "default_val") == "default_val"
+
+    def test_resolve_runtime_standalone_with_overrides(self):
+        """resolve_runtime() standalone function respects overrides."""
+        data = {"model": "test-model", "container": "img:latest"}
+        assert resolve_runtime(data) == "vllm-distributed"
+        assert resolve_runtime(data, overrides={"distributed_executor_backend": "ray"}) == "vllm-ray"

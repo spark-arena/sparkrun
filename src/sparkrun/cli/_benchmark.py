@@ -120,14 +120,10 @@ def _run_benchmark(
     # ---------------------------------------------------------------
     # 1. Load recipe
     # ---------------------------------------------------------------
-    recipe, _recipe_path, registry_mgr = _load_recipe(config, recipe_name)
+    recipe, _recipe_path, registry_mgr = _load_recipe(config, recipe_name, resolve=False)
 
     _resolved_name = _expand_recipe_shortcut(recipe_name)
     recipe_ref = _simplify_recipe_ref(_resolved_name) if _is_recipe_url(_resolved_name) else None
-
-    issues = recipe.validate()
-    for issue in issues:
-        click.echo("Warning: %s" % issue, err=True)
 
     # ---------------------------------------------------------------
     # 2. Resolve benchmark configuration
@@ -199,12 +195,16 @@ def _run_benchmark(
     # ---------------------------------------------------------------
     # 4. Build overrides and resolve runtime/hosts
     # ---------------------------------------------------------------
-    overrides = _apply_recipe_overrides(
+    recipe, overrides = _apply_recipe_overrides(
         options, tensor_parallel=tensor_parallel, pipeline_parallel=pipeline_parallel,
         gpu_mem=gpu_mem, max_model_len=max_model_len, image=image, recipe=recipe,
+        # custom
+        port=port,
     )
-    if port is not None:
-        overrides["port"] = port
+
+    issues = recipe.validate()
+    for issue in issues:
+        click.echo("Warning: %s" % issue, err=True)
 
     try:
         runtime = get_runtime(recipe.runtime, v)

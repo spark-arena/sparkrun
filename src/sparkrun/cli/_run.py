@@ -96,28 +96,28 @@ def run(
     # Determine hosts
     host_list, cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v)
 
-    # Find and load recipe
-    recipe, _recipe_path, registry_mgr = _load_recipe(config, recipe_name)
+    # Find and load recipe (defer resolution until overrides are built)
+    recipe, _recipe_path, registry_mgr = _load_recipe(config, recipe_name, resolve=False)
 
     # If recipe was loaded from a URL, simplify for display
     _resolved_name = _expand_recipe_shortcut(recipe_name)
     recipe_ref = _simplify_recipe_ref(_resolved_name) if _is_recipe_url(_resolved_name) else None
 
-    # Validate recipe
-    issues = recipe.validate()
-    if issues:
-        for issue in issues:
-            click.echo("Warning: %s" % issue, err=True)
-
-    # Build overrides
-    overrides = _apply_recipe_overrides(
+    # Build overrides and resolve runtime (overrides may influence resolution)
+    recipe, overrides = _apply_recipe_overrides(
         options, tensor_parallel=tensor_parallel, pipeline_parallel=pipeline_parallel,
         gpu_mem=gpu_mem, max_model_len=max_model_len, image=image, recipe=recipe,
         # custom overrides
         port=port, served_model_name=served_model_name,
     )
 
-    # Resolve runtime
+    # Validate recipe (after resolve so runtime is populated)
+    issues = recipe.validate()
+    if issues:
+        for issue in issues:
+            click.echo("Warning: %s" % issue, err=True)
+
+    # Get assigned runtime
     try:
         runtime = get_runtime(recipe.runtime, v)
     except ValueError as e:
