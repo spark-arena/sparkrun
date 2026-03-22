@@ -114,7 +114,7 @@ def _resolve_eugr_signals(recipe: Recipe) -> None:
     if recipe.runtime not in ("vllm", ""):
         return
     rc = recipe.runtime_config
-    if rc.get("build_args") or rc.get("mods"):
+    if rc.get("build_args") or rc.get("mods") or recipe.container.strip().startswith('ghcr.io/spark-arena/dgx-vllm-eugr-nightly'):
         if not recipe.builder:
             recipe.builder = "eugr"
 

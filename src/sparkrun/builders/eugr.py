@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from scitrera_app_framework import Variables, get_working_path
 
-from sparkrun.builders.base import BuilderPlugin
+from sparkrun.builders.base import BuilderPlugin, _flatten_dict
 
 if TYPE_CHECKING:
     from sparkrun.core.config import SparkrunConfig
@@ -90,15 +90,28 @@ class EugrBuilder(BuilderPlugin):
         build_args = recipe.runtime_config.get("build_args", [])
         mods = recipe.runtime_config.get("mods", [])
         has_mods = bool(mods)
+        needs_build = False  # assume False at first
+
+        # ~~ SPECIAL CASES: map pullable eugr nightly images to use direct build ~~~
+        if image.strip() == "ghcr.io/spark-arena/dgx-vllm-eugr-nightly-tf5:latest" and (build_args == ["--tf5"] or not build_args):
+            image = "vllm-node-tf5"  # TODO: metadata based naming and smarter build detection
+            build_args = ['--tf5']
+            needs_build = True
+            logger.info("Mapped eugr nightly tf5 image to use direct build via container name '%s' (build_args cleared)", image)
+        elif image.strip() == "ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest" and not build_args:
+            image = "vllm-node"  # TODO: metadata based naming and smarter build detection
+            needs_build = True
+            logger.info("Mapped eugr nightly image to container name '%s'", image)
+        # NOTE: if not :latest, then we do want to use the given container image
 
         # Determine if we need to build the image.
         # If the image references a known public registry, it's pullable — never build it.
         is_pullable = any(image.startswith(prefix) for prefix in PULLABLE_REGISTRY_PREFIXES)
-        if is_pullable:
+        if is_pullable and not needs_build:
             logger.info("eugr image '%s' is from a known registry; skipping build (will be pulled at runtime)", image)
             needs_build = False
         else:
-            needs_build = bool(build_args)
+            needs_build = needs_build or bool(build_args)
             if not needs_build:
                 if delegated:
                     if not self._image_exists_on_host(image, head, ssh_kwargs):
@@ -143,6 +156,26 @@ class EugrBuilder(BuilderPlugin):
         if not recipe.command:
             issues.append("[eugr] command template is recommended for eugr recipes")
         return issues
+
+    def version_info_commands(self) -> dict[str, str]:
+        return {
+            "build_metadata": "cat /workspace/build-metadata.yaml 2>/dev/null || true",
+        }
+
+    def process_version_info(self, raw: dict[str, str]) -> dict[str, str]:
+        """Parse build-metadata.yaml and flatten with 'build_' prefix."""
+        content = raw.get("build_metadata", "").strip()
+        if not content:
+            return {}
+        try:
+            import yaml
+            data = yaml.safe_load(content)
+            if not isinstance(data, dict):
+                return {}
+            return _flatten_dict(data, prefix="build")
+        except Exception:
+            logger.debug("Failed to parse build-metadata.yaml", exc_info=True)
+            return {}
 
     # --- Mod -> pre_exec conversion ---
 
@@ -244,6 +277,7 @@ class EugrBuilder(BuilderPlugin):
         """
         from sparkrun.orchestration.primitives import run_script_on_host
 
+        # TODO: hard-coded inline script
         remote_path = "~/.cache/sparkrun/eugr-spark-vllm-docker"
         script = (
                      "set -e\n"
@@ -290,6 +324,7 @@ class EugrBuilder(BuilderPlugin):
         """
         from sparkrun.orchestration.primitives import run_script_on_host
 
+        # TODO: hard-coded inline script
         remote_path = "~/.cache/sparkrun/eugr-spark-vllm-docker"
         args_str = " ".join(build_args) if build_args else ""
         script = (

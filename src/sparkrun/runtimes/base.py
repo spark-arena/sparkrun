@@ -1192,17 +1192,22 @@ class RuntimePlugin(Plugin):
             container_name: str,
             ssh_kwargs: dict,
             dry_run: bool = False,
+            builder=None,
     ) -> dict[str, str]:
         """Run version commands inside a container, return {label: version}.
 
         Builds a single bash script from :meth:`version_commands`, executes
         it inside the container via ``docker exec``, and parses the output.
+        When a *builder* is provided, its :meth:`version_info_commands` are
+        appended to the same script using delimited blocks, and the raw
+        output is post-processed via :meth:`builder.process_version_info`.
         All exceptions are caught — version capture never blocks a launch.
         """
         if dry_run:
             return {}
         cmds = self.version_commands()
-        if not cmds:
+        builder_cmds = builder.version_info_commands() if builder else {}
+        if not cmds and not builder_cmds:
             return {}
 
         # Build an inner script that runs inside the container.
@@ -1210,6 +1215,13 @@ class RuntimePlugin(Plugin):
         inner_lines = ["#!/bin/bash"]
         for key, cmd in sorted(cmds.items()):
             inner_lines.append('echo "SPARKRUN_VER_%s=$(%s)"' % (key.upper(), cmd))
+
+        # Builder commands use delimited blocks for multi-line output.
+        for label, cmd in sorted(builder_cmds.items()):
+            inner_lines.append('echo "SPARKRUN_BUILDER_START_%s"' % label)
+            inner_lines.append(cmd)
+            inner_lines.append('echo "SPARKRUN_BUILDER_END_%s"' % label)
+
         inner_script = "\n".join(inner_lines)
 
         # Pipe the inner script into `docker exec <container> bash -s`
@@ -1229,6 +1241,7 @@ class RuntimePlugin(Plugin):
                 logger.debug("Version collection failed (rc=%d): %s", result.returncode, result.stderr)
                 return {}
             info = {}
+            # Parse runtime SPARKRUN_VER_ lines
             for line in result.stdout.splitlines():
                 if line.startswith("SPARKRUN_VER_"):
                     key_val = line.removeprefix("SPARKRUN_VER_")
@@ -1237,6 +1250,34 @@ class RuntimePlugin(Plugin):
                         v = v.strip()
                         if v and v != "unknown":
                             info[k.lower()] = v
+
+            # Extract builder delimited blocks and post-process
+            if builder and builder_cmds:
+                raw_builder: dict[str, str] = {}
+                stdout = result.stdout
+                for label in builder_cmds:
+                    start_marker = "SPARKRUN_BUILDER_START_%s" % label
+                    end_marker = "SPARKRUN_BUILDER_END_%s" % label
+                    start_idx = stdout.find(start_marker)
+                    end_idx = stdout.find(end_marker)
+                    if start_idx >= 0 and end_idx > start_idx:
+                        block = stdout[start_idx + len(start_marker):end_idx]
+                        # Strip the leading newline from the marker line
+                        if block.startswith("\n"):
+                            block = block[1:]
+                        # Strip trailing newline before end marker
+                        if block.endswith("\n"):
+                            block = block[:-1]
+                        raw_builder[label] = block
+                try:
+                    builder_info = builder.process_version_info(raw_builder)
+                    # Merge builder results (don't overwrite runtime keys)
+                    for k, v in builder_info.items():
+                        if k not in info:
+                            info[k] = v
+                except Exception:
+                    logger.debug("Builder version info processing failed", exc_info=True)
+
             logger.debug("Collected runtime info: %s", info)
             return info
         except Exception:

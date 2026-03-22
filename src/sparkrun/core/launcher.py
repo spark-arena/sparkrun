@@ -345,9 +345,31 @@ def launch_inference(
         try:
             head_host = host_list[0] if host_list else "localhost"
             head_container = runtime.get_head_container_name(cluster_id, is_solo=is_solo)
+            # Resolve builder for version info collection
+            ver_builder = None
+            if recipe.builder:
+                from sparkrun.core.bootstrap import get_builder
+                try:
+                    ver_builder = get_builder(recipe.builder, v)
+                except ValueError:
+                    pass
+            # noinspection PyProtectedMember
             runtime_info = runtime._collect_runtime_info(
                 head_host, head_container, ssh_kwargs, dry_run=False,
+                builder=ver_builder,
             )
+            # Collect container image labels (separate docker inspect call)
+            if ver_builder:
+                try:
+                    label_info = ver_builder.collect_container_labels(
+                        head_container, head_host, ssh_kwargs,
+                    )
+                    # Merge without overwriting existing keys
+                    for k, lv in label_info.items():
+                        if k not in runtime_info:
+                            runtime_info[k] = lv
+                except Exception:
+                    logger.debug("Container label collection failed", exc_info=True)
             if runtime_info:
                 try:
                     save_job_metadata(
