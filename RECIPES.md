@@ -109,7 +109,7 @@ Used by `sparkrun benchmark <recipe>`. CLI `-o` overrides apply on top.
 
 ---
 
-## Config Chain (VPD)
+## Config Chain
 
 Resolution order (highest priority first):
 
@@ -202,7 +202,7 @@ Any key can appear in `defaults` — there is no fixed schema. Runtime-specific 
 
 ## Executor Config
 
-Controls container engine behavior. Layered via vpd: **CLI flags → recipe `executor_config` → built-in defaults**.
+Controls container engine behavior. Layered: **CLI flags → recipe `executor_config` → built-in defaults**.
 
 ```yaml
 executor_config:

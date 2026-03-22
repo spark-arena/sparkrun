@@ -76,7 +76,7 @@ Core domain logic extracted from the top-level package. All imports use `sparkru
 | `bootstrap.py`          | SAF plugin initialization, runtime and benchmarking framework discovery              |
 | `config.py`             | `SparkrunConfig` — reads `~/.config/sparkrun/config.yaml`, cache dir resolution      |
 | `registry.py`           | `RegistryManager` — git-based recipe registry system (see Registry System below)     |
-| `recipe.py`             | `Recipe` loading, validation, v1→v2 migration, config chain via VPD                  |
+| `recipe.py`             | `Recipe` loading, validation, v1→v2 migration, config chain via SAF Variables         |
 | `cluster_manager.py`    | `ClusterManager` — named cluster CRUD (YAML files in `~/.config/sparkrun/clusters/`) |
 | `hosts.py`              | Host resolution priority chain (CLI → file → cluster → default)                      |
 | `pending_ops.py`        | PID-based lock files for in-progress operations                                      |
@@ -146,7 +146,7 @@ All remote operations use **SSH stdin piping** — scripts are generated as Pyth
 ### Recipe System
 
 Recipes are YAML files with fields: `model`, `runtime`, `container`, `command`, `defaults`, `env`, `metadata`,
-`min_nodes`, `max_nodes`. The `Recipe` class (`core/recipe.py`) uses VPD (`vpd` library) for config chain resolution —
+`min_nodes`, `max_nodes`. The `Recipe` class (`core/recipe.py`) uses SAF `Variables` for config chain resolution —
 CLI overrides → recipe defaults → runtime defaults.
 
 Recipe resolution: CLI → `find_recipe()` (module-level function in `core/recipe.py`) → searches bundled recipes, local
@@ -252,7 +252,7 @@ embedded scripts, SSH execution, kernel tuning, and VRAM estimation.
 ## Key Dependencies
 
 - **`scitrera-app-framework`** (SAF) — Plugin system, lifecycle, variables/config management
-- **`vpd`** — Virtual Path Dict for YAML reading and config chain resolution (`vpd_chain`, `arg_substitute`)
+- **`vpd`** — YAML reading (`read_yaml`) and command template placeholder substitution (`arg_substitute`)
 - **`click`** — CLI framework
 - **`huggingface_hub`** — Model downloading (`snapshot_download`)
 - **`pyyaml`** — YAML parsing for recipes, clusters, registries
