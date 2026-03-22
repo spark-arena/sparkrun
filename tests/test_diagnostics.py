@@ -9,8 +9,11 @@ from unittest import mock
 from sparkrun.diagnostics.ndjson_writer import NDJSONWriter
 from sparkrun.diagnostics.spark_collector import (
     _extract_keys,
+    _extract_firmware_devices,
+    _extract_firmware_history,
     _extract_network,
     collect_spark_diagnostics,
+    collect_sudo_diagnostics,
 )
 from sparkrun.diagnostics.run_collector import RunDiagnosticsCollector
 from sparkrun.orchestration.ssh import RemoteResult
@@ -140,6 +143,37 @@ class TestSparkCollectorHelpers:
         assert result["interfaces"] == []
         assert result["default_iface"] == ""
 
+    def test_extract_firmware_devices(self):
+        kv = {
+            "DIAG_FWUPD_DEV_COUNT": "2",
+            "DIAG_FWUPD_DEV_0": "NVIDIA GPU|570.86|abc-123",
+            "DIAG_FWUPD_DEV_1": "System Firmware|1.0|def-456,ghi-789",
+        }
+        devices = _extract_firmware_devices(kv)
+        assert len(devices) == 2
+        assert devices[0]["name"] == "NVIDIA GPU"
+        assert devices[0]["version"] == "570.86"
+        assert devices[0]["guid"] == "abc-123"
+        assert devices[1]["guid"] == "def-456,ghi-789"
+
+    def test_extract_firmware_devices_empty(self):
+        assert _extract_firmware_devices({}) == []
+        assert _extract_firmware_devices({"DIAG_FWUPD_DEV_COUNT": "0"}) == []
+
+    def test_extract_firmware_history(self):
+        kv = {
+            "DIAG_FWUPD_HIST_COUNT": "1",
+            "DIAG_FWUPD_HIST_0": "System Firmware|2.0|2025-01-15",
+        }
+        history = _extract_firmware_history(kv)
+        assert len(history) == 1
+        assert history[0]["name"] == "System Firmware"
+        assert history[0]["version"] == "2.0"
+        assert history[0]["date"] == "2025-01-15"
+
+    def test_extract_firmware_history_empty(self):
+        assert _extract_firmware_history({}) == []
+
 
 # ---------------------------------------------------------------------------
 # collect_spark_diagnostics
@@ -148,6 +182,8 @@ class TestSparkCollectorHelpers:
 def _make_diag_stdout(host: str = "10.0.0.1") -> str:
     """Build realistic spark_diagnose.sh stdout."""
     lines = [
+        "DIAG_HOSTNAME=dgx-spark-01",
+        "DIAG_HOSTNAME_FQDN=dgx-spark-01.local",
         "DIAG_OS_NAME=Ubuntu",
         "DIAG_OS_VERSION=22.04",
         "DIAG_OS_PRETTY=Ubuntu 22.04.5 LTS",
@@ -190,8 +226,35 @@ def _make_diag_stdout(host: str = "10.0.0.1") -> str:
         "DIAG_DOCKER_NVIDIA_RUNTIME=true",
         "DIAG_DOCKER_RUNNING=2",
         "DIAG_DOCKER_SPARKRUN=1",
+        "DIAG_FWUPD_DEV_COUNT=1",
+        "DIAG_FWUPD_DEV_0=System Firmware|1.0|abc-123",
+        "DIAG_FWUPD_HIST_COUNT=1",
+        "DIAG_FWUPD_HIST_0=System Firmware|2.0|2025-01-15",
         "DIAG_SSH_USER=user",
         "DIAG_COMPLETE=1",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _make_sudo_diag_stdout() -> str:
+    """Build realistic spark_diagnose_sudo.sh stdout."""
+    lines = [
+        "DIAG_DMI_BIOS_VENDOR=NVIDIA",
+        "DIAG_DMI_BIOS_VERSION=1.2.3",
+        "DIAG_DMI_BIOS_DATE=01/15/2025",
+        "DIAG_DMI_SYS_MANUFACTURER=NVIDIA",
+        "DIAG_DMI_SYS_PRODUCT=DGX Spark",
+        "DIAG_DMI_SYS_VERSION=1.0",
+        "DIAG_DMI_SYS_SERIAL=SN12345",
+        "DIAG_DMI_SYS_UUID=uuid-abcdef",
+        "DIAG_DMI_BOARD_MANUFACTURER=NVIDIA",
+        "DIAG_DMI_BOARD_PRODUCT=DGX Spark Board",
+        "DIAG_DMI_BOARD_VERSION=A01",
+        "DIAG_DMI_BOARD_SERIAL=BSN67890",
+        "DIAG_DMI_MEM_SLOTS=4",
+        "DIAG_DMI_MEM_POPULATED=4",
+        "DIAG_DMI_MEM_MAX=128 GB",
+        "DIAG_SUDO_COMPLETE=1",
     ]
     return "\n".join(lines) + "\n"
 
@@ -305,6 +368,95 @@ class TestCollectSparkDiagnostics:
         summary = next(r for r in records if r["_type"] == "diag_summary")
         assert summary["successful"] == 1
         assert summary["failed"] == 1
+
+    @mock.patch("sparkrun.diagnostics.spark_collector.run_remote_scripts_parallel")
+    @mock.patch("sparkrun.diagnostics.spark_collector.read_script", return_value="#!/bin/bash\necho test")
+    def test_firmware_updates_emitted(self, mock_script, mock_parallel, tmp_path: Path):
+        mock_parallel.return_value = [
+            RemoteResult(host="10.0.0.1", returncode=0, stdout=_make_diag_stdout(), stderr=""),
+        ]
+
+        path = tmp_path / "diag.ndjson"
+        with NDJSONWriter(path) as writer:
+            collect_spark_diagnostics(hosts=["10.0.0.1"], ssh_kwargs={}, writer=writer)
+
+        lines = path.read_text().strip().splitlines()
+        records = [json.loads(ln) for ln in lines]
+        fw_rec = next((r for r in records if r["_type"] == "host_firmware_updates"), None)
+        assert fw_rec is not None
+        assert len(fw_rec["devices"]) == 1
+        assert fw_rec["devices"][0]["name"] == "System Firmware"
+        assert len(fw_rec["history"]) == 1
+
+    @mock.patch("sparkrun.diagnostics.spark_collector.run_remote_scripts_parallel")
+    @mock.patch("sparkrun.diagnostics.spark_collector.read_script", return_value="#!/bin/bash\necho test")
+    def test_hostname_in_firmware(self, mock_script, mock_parallel, tmp_path: Path):
+        mock_parallel.return_value = [
+            RemoteResult(host="10.0.0.1", returncode=0, stdout=_make_diag_stdout(), stderr=""),
+        ]
+
+        path = tmp_path / "diag.ndjson"
+        with NDJSONWriter(path) as writer:
+            collect_spark_diagnostics(hosts=["10.0.0.1"], ssh_kwargs={}, writer=writer)
+
+        lines = path.read_text().strip().splitlines()
+        records = [json.loads(ln) for ln in lines]
+        fw_rec = next(r for r in records if r["_type"] == "host_firmware")
+        assert fw_rec["hostname"] == "dgx-spark-01"
+        assert fw_rec["hostname_fqdn"] == "dgx-spark-01.local"
+
+
+# ---------------------------------------------------------------------------
+# collect_sudo_diagnostics
+# ---------------------------------------------------------------------------
+
+class TestCollectSudoDiagnostics:
+    @mock.patch("sparkrun.orchestration.sudo.run_sudo_script_on_host")
+    @mock.patch("sparkrun.diagnostics.spark_collector.read_script", return_value="#!/bin/bash\necho test")
+    def test_sudo_collection(self, mock_script, mock_sudo, tmp_path: Path):
+        mock_sudo.return_value = RemoteResult(
+            host="10.0.0.1", returncode=0, stdout=_make_sudo_diag_stdout(), stderr="",
+        )
+
+        path = tmp_path / "sudo.ndjson"
+        with NDJSONWriter(path) as writer:
+            result = collect_sudo_diagnostics(
+                hosts=["10.0.0.1"],
+                ssh_kwargs={},
+                sudo_password="test",
+                writer=writer,
+            )
+
+        assert result["10.0.0.1"]["DIAG_SUDO_COMPLETE"] == "1"
+
+        lines = path.read_text().strip().splitlines()
+        records = [json.loads(ln) for ln in lines]
+        dmi = next(r for r in records if r["_type"] == "host_dmi")
+        assert dmi["dmi_bios_vendor"] == "NVIDIA"
+        assert dmi["dmi_sys_product"] == "DGX Spark"
+        assert dmi["dmi_board_serial"] == "BSN67890"
+        assert dmi["dmi_mem_max"] == "128 GB"
+
+    @mock.patch("sparkrun.orchestration.sudo.run_sudo_script_on_host")
+    @mock.patch("sparkrun.diagnostics.spark_collector.read_script", return_value="#!/bin/bash\necho test")
+    def test_sudo_failure(self, mock_script, mock_sudo, tmp_path: Path):
+        mock_sudo.return_value = RemoteResult(
+            host="10.0.0.1", returncode=1, stdout="", stderr="auth failed",
+        )
+
+        path = tmp_path / "sudo.ndjson"
+        with NDJSONWriter(path) as writer:
+            result = collect_sudo_diagnostics(
+                hosts=["10.0.0.1"],
+                ssh_kwargs={},
+                sudo_password="wrong",
+                writer=writer,
+            )
+
+        assert result["10.0.0.1"] == {}
+        lines = path.read_text().strip().splitlines()
+        records = [json.loads(ln) for ln in lines]
+        assert any(r["_type"] == "host_error" for r in records)
 
 
 # ---------------------------------------------------------------------------

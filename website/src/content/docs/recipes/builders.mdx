@@ -1,0 +1,83 @@
+---
+title: Builders
+description: Container image builders for sparkrun recipes.
+---
+
+Builders prepare container images before they are distributed to target hosts. Most recipes don't need an explicit builder -- sparkrun pulls images automatically during the distribution phase.
+
+## How it works
+
+Builders run in step 1 of the launch lifecycle, before distribution. The builder's `prepare_image()` method ensures the image exists locally (or on the head node in delegated transfer mode) so the distribution phase can sync it to all target hosts.
+
+```
+1. Builder: prepare_image()    <-- ensures image is available
+2. Distribution: sync to hosts  <-- rsync / docker save+load
+3. Launch: start containers     <-- run the inference workload
+```
+
+## Built-in builders
+
+| Builder | Description | When used |
+|---|---|---|
+| `docker-pull` | Default no-op builder. Does nothing -- relies on the distribution phase to pull images. | All recipes without an explicit `builder` field |
+| `eugr` | Legacy builder for eugr-style containers. Clones the [eugr/spark-vllm-docker](https://github.com/eugr/spark-vllm-docker) repo and runs `build-and-copy.sh`. Also converts recipe `mods` into `pre_exec` entries. | Recipes with `builder: eugr`, or v1 recipes with `build_args`/`mods` |
+
+## Recipe fields
+
+```yaml
+builder: docker-pull     # optional, "docker-pull" is the default
+builder_config:          # builder-specific options (passed to prepare_image)
+  key: value
+```
+
+Most recipes omit both fields entirely, which uses the default `docker-pull` builder.
+
+## The `docker-pull` builder
+
+This is the default builder. It performs no action during the build phase -- the distribution layer handles pulling the container image from its registry and syncing it to target hosts via `docker save | ssh docker load`.
+
+You never need to specify `builder: docker-pull` explicitly; it is used automatically when no builder is set.
+
+## The `eugr` builder
+
+The `eugr` builder supports the legacy [eugr/spark-vllm-docker](https://github.com/eugr/spark-vllm-docker) container build system. It handles two concerns:
+
+1. **Image building** -- If the recipe has `build_args` in its runtime config, the builder clones the eugr repo and runs `build-and-copy.sh` to build the image locally (or remotely in delegated mode).
+2. **Mod injection** -- If the recipe has `mods`, each mod directory's `run.sh` script is converted into `pre_exec` entries that execute at container launch time.
+
+:::note
+The `eugr` builder is primarily used with `eugr-vllm` runtime recipes. For new recipes, prefer using pre-built container images with the default `docker-pull` builder.
+:::
+
+### Build behavior
+
+The eugr builder determines whether a build is needed by checking:
+
+1. If `build_args` are specified, a build is always triggered
+2. If the image references a known public registry (Docker Hub, GHCR, NGC, etc.), no build is needed -- the image will be pulled at runtime
+3. If the image is not found locally (or on the head node in delegated mode), a build is triggered
+
+### Transfer mode
+
+The `transfer_mode` setting affects where the builder runs:
+
+- **`local`** (default) -- The image is built on the control machine, then distributed to target hosts
+- **`delegated`** -- The eugr repo is cloned on the head node, and the image is built there directly. This avoids transferring large images from the control machine.
+
+## Builder plugin interface
+
+:::caution
+The builder plugin API is internal and may change between versions. This section is for advanced users building custom builders.
+:::
+
+Builders extend `BuilderPlugin` (from `sparkrun.builders.base`), which is an SAF Plugin registered under the `sparkrun.builder` extension point. Key methods:
+
+| Method | Purpose |
+|---|---|
+| `prepare_image()` | Ensure the container image is available. Returns the final image name. |
+| `validate_recipe()` | Validate builder-specific recipe fields. Returns a list of issue strings. |
+| `version_info_commands()` | Return shell commands to capture version info from inside the container. |
+| `process_version_info()` | Process raw command output into flat key-value pairs for runtime info. |
+| `collect_container_labels()` | Inspect container OCI labels via `docker inspect`. |
+
+Custom builders are discovered via Python entry points defined in `pyproject.toml`, following the same SAF plugin pattern used by runtimes.

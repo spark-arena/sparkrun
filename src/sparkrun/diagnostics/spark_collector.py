@@ -28,10 +28,20 @@ _HARDWARE_KEYS = (
 )
 
 _FIRMWARE_KEYS = (
+    "DIAG_HOSTNAME", "DIAG_HOSTNAME_FQDN",
     "DIAG_OS_NAME", "DIAG_OS_VERSION", "DIAG_OS_PRETTY",
     "DIAG_KERNEL", "DIAG_ARCH",
     "DIAG_BIOS_VERSION", "DIAG_BOARD_NAME", "DIAG_PRODUCT_NAME",
     "DIAG_JETPACK_VERSION", "DIAG_CUDA_VERSION",
+)
+
+_DMI_KEYS = (
+    "DIAG_DMI_BIOS_VENDOR", "DIAG_DMI_BIOS_VERSION", "DIAG_DMI_BIOS_DATE",
+    "DIAG_DMI_SYS_MANUFACTURER", "DIAG_DMI_SYS_PRODUCT", "DIAG_DMI_SYS_VERSION",
+    "DIAG_DMI_SYS_SERIAL", "DIAG_DMI_SYS_UUID",
+    "DIAG_DMI_BOARD_MANUFACTURER", "DIAG_DMI_BOARD_PRODUCT",
+    "DIAG_DMI_BOARD_VERSION", "DIAG_DMI_BOARD_SERIAL",
+    "DIAG_DMI_MEM_SLOTS", "DIAG_DMI_MEM_POPULATED", "DIAG_DMI_MEM_MAX",
 )
 
 _DOCKER_KEYS = (
@@ -69,6 +79,98 @@ def _extract_network(kv: dict[str, str]) -> dict:
         "default_iface": kv.get("DIAG_DEFAULT_IFACE", ""),
         "mgmt_ip": kv.get("DIAG_MGMT_IP", ""),
     }
+
+
+def _extract_indexed(kv: dict[str, str], prefix: str, count_key: str) -> list[str]:
+    """Extract indexed values like DIAG_FWUPD_DEV_0, DIAG_FWUPD_DEV_1, ..."""
+    count = int(kv.get(count_key, "0"))
+    items = []
+    for i in range(count):
+        key = "%s%d" % (prefix, i)
+        if key in kv:
+            items.append(kv[key])
+    return items
+
+
+def _extract_firmware_devices(kv: dict[str, str]) -> list[dict[str, str]]:
+    """Parse fwupdmgr device entries from indexed kv output."""
+    raw = _extract_indexed(kv, "DIAG_FWUPD_DEV_", "DIAG_FWUPD_DEV_COUNT")
+    devices = []
+    for entry in raw:
+        parts = entry.split("|")
+        devices.append({
+            "name": parts[0].strip() if len(parts) > 0 else "",
+            "version": parts[1].strip() if len(parts) > 1 else "",
+            "guid": parts[2].strip() if len(parts) > 2 else "",
+        })
+    return devices
+
+
+def _extract_firmware_history(kv: dict[str, str]) -> list[dict[str, str]]:
+    """Parse fwupdmgr history entries from indexed kv output."""
+    raw = _extract_indexed(kv, "DIAG_FWUPD_HIST_", "DIAG_FWUPD_HIST_COUNT")
+    history = []
+    for entry in raw:
+        parts = entry.split("|")
+        history.append({
+            "name": parts[0].strip() if len(parts) > 0 else "",
+            "version": parts[1].strip() if len(parts) > 1 else "",
+            "date": parts[2].strip() if len(parts) > 2 else "",
+        })
+    return history
+
+
+def collect_sudo_diagnostics(
+        hosts: list[str],
+        ssh_kwargs: dict,
+        sudo_password: str,
+        writer: NDJSONWriter | None = None,
+        dry_run: bool = False,
+) -> dict[str, dict]:
+    """Collect sudo-only diagnostics (dmidecode) from hosts.
+
+    Uses password-based sudo via ``run_sudo_script_on_host`` for each host.
+
+    Args:
+        hosts: Target hostnames or IPs.
+        ssh_kwargs: SSH connection parameters.
+        sudo_password: Sudo password for privilege escalation.
+        writer: Optional NDJSONWriter for NDJSON output.
+        dry_run: If True, don't actually execute.
+
+    Returns:
+        ``{host: parsed_kv_dict}`` for programmatic use.
+    """
+    from sparkrun.orchestration.sudo import run_sudo_script_on_host
+
+    script = read_script("spark_diagnose_sudo.sh")
+    host_data: dict[str, dict] = {}
+
+    for host in hosts:
+        result = run_sudo_script_on_host(
+            host, script, sudo_password,
+            ssh_kwargs=ssh_kwargs, timeout=60, dry_run=dry_run,
+        )
+        if not result.success:
+            host_data[host] = {}
+            if writer:
+                writer.emit("host_error", {
+                    "host": host,
+                    "error": "Sudo diagnostics failed with rc=%d" % result.returncode,
+                    "stderr": result.stderr.strip()[:500],
+                })
+            logger.warning("Sudo diagnostics failed on %s: rc=%d", host, result.returncode)
+            continue
+
+        kv = parse_kv_output(result.stdout)
+        host_data[host] = kv
+
+        if writer and kv.get("DIAG_SUDO_COMPLETE") == "1":
+            dmi = _extract_keys(kv, _DMI_KEYS)
+            dmi["host"] = host
+            writer.emit("host_dmi", dmi)
+
+    return host_data
 
 
 def collect_spark_diagnostics(
@@ -151,6 +253,15 @@ def collect_spark_diagnostics(
             docker = _extract_keys(kv, _DOCKER_KEYS)
             docker["host"] = result.host
             writer.emit("host_docker", docker)
+
+            fw_devices = _extract_firmware_devices(kv)
+            fw_history = _extract_firmware_history(kv)
+            if fw_devices or fw_history:
+                writer.emit("host_firmware_updates", {
+                    "host": result.host,
+                    "devices": fw_devices,
+                    "history": fw_history,
+                })
 
     duration = time.monotonic() - t0
 

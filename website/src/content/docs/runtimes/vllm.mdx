@@ -30,9 +30,8 @@ Both `vllm-distributed` and `vllm-ray` use the same container images. sparkrun w
 
 When a recipe specifies `runtime: vllm` (or omits `runtime` entirely), sparkrun resolves it to a concrete runtime in this order:
 
-1. If the recipe has eugr signals (`build_args`, `mods`, or `recipe_version: "1"`) → **`eugr-vllm`** (see [eugr-vllm](/runtimes/eugr-vllm/))
-2. If the recipe hints at Ray usage (`distributed_executor_backend: ray` in defaults, or `--distributed-executor-backend ray` in the command template) → **`vllm-ray`**
-3. Otherwise → **`vllm-distributed`** (the default)
+1. If the recipe hints at Ray usage (`distributed_executor_backend: ray` in defaults, or `--distributed-executor-backend ray` in the command template) → **`vllm-ray`**
+2. Otherwise → **`vllm-distributed`** (the default)
 
 You can also set `runtime: vllm-distributed` or `runtime: vllm-ray` explicitly to bypass this resolution.
 
@@ -108,7 +107,7 @@ defaults:
 
 ### Ray-specific options
 
-These options apply only to `vllm-ray` (and `eugr-vllm`, which extends it):
+These options apply only to `vllm-ray`:
 
 | Option | Default | Description |
 |---|---|---|
@@ -121,6 +120,6 @@ These options apply only to `vllm-ray` (and `eugr-vllm`, which extends it):
 Both variants support the same models and vLLM flags. The difference is in multi-node orchestration:
 
 - **`vllm-distributed`** is simpler — no Ray dependency, each node runs independently with vLLM's built-in coordination. This is the default.
-- **`vllm-ray`** provides Ray's cluster management, dashboard, and monitoring. Use it when you need Ray-specific features or when running `eugr-vllm` (which extends `vllm-ray`).
+- **`vllm-ray`** provides Ray's cluster management, dashboard, and monitoring. Use it when you need Ray-specific features.
 
 For single-node (solo) workloads, both variants behave identically.

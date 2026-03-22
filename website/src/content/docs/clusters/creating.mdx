@@ -5,6 +5,10 @@ description: Create and configure named clusters for DGX Spark hosts.
 
 Clusters are named groups of DGX Spark hosts. Save your hosts once and reference them by name in every command.
 
+:::tip
+New to sparkrun? Run `sparkrun setup wizard` for a guided walkthrough that creates your cluster, sets up SSH, configures networking, and more — all in one step.
+:::
+
 ## Create a cluster
 
 ```bash
@@ -42,6 +46,26 @@ sparkrun cluster create mylab \
 
 Or override per-command with `--user`.
 
+## Transfer mode
+
+```bash
+sparkrun cluster create mylab \
+  --hosts 192.168.11.13,192.168.11.14 \
+  --transfer-mode delegated
+```
+
+Controls how container images and models are distributed to cluster hosts. Options: `auto` (default), `local`, `push`, `delegated`. See [Networking](/getting-started/networking/#resource-transfer-modes) for details on each mode.
+
+## Cache directory
+
+```bash
+sparkrun cluster create mylab \
+  --hosts 192.168.11.13,192.168.11.14 \
+  --cache-dir /data/hf-cache
+```
+
+Override the HuggingFace cache directory for this cluster. By default, sparkrun uses the standard HuggingFace cache resolution (see [Troubleshooting](/getting-started/troubleshooting/#huggingface-cache-owned-by-root) for the full resolution order).
+
 ## Update a cluster
 
 Modify hosts, description, or SSH user of an existing cluster:
@@ -50,6 +74,10 @@ Modify hosts, description, or SSH user of an existing cluster:
 sparkrun cluster update mylab --hosts 192.168.11.13,192.168.11.14,192.168.11.15
 sparkrun cluster update mylab --user newuser
 sparkrun cluster update mylab -d "Updated description"
+
+# Add or remove individual hosts
+sparkrun cluster update mylab --add-host 192.168.11.16
+sparkrun cluster update mylab --remove-host 192.168.11.14
 ```
 
 ## Set as default

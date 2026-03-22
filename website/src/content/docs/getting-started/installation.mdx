@@ -3,19 +3,40 @@ title: Installation
 description: Install sparkrun on your system using uv or pip.
 ---
 
-## Recommended: Install via uvx
+## Recommended: One-command setup
 
-The easiest way to install sparkrun is with [uv](https://docs.astral.sh/uv/), the fast Python package manager:
+The fastest way to get started is with [uv](https://docs.astral.sh/uv/), the fast Python package manager:
 
 ```bash
 # Install uv if you don't have it
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Install sparkrun (manages venv + shell alias + tab completion)
+# Install sparkrun and set up your cluster in one step
+uvx sparkrun setup
+```
+
+This runs the **setup wizard**, which walks you through everything interactively:
+
+1. **Installs sparkrun** as a managed uv tool with shell alias and tab completion
+2. **Creates a cluster** — detects CX7 peers automatically when running on a DGX Spark, or prompts for host IPs
+3. **Sets up SSH mesh** — establishes passwordless SSH between all hosts and your control machine
+4. **Configures CX7 networking** — assigns static IPs with jumbo frames on high-speed ConnectX-7 interfaces
+5. **Installs sudoers entries** — scoped rules for cache permissions and page cache clearing (no broad sudo)
+6. **Installs earlyoom** — OOM protection that keeps your nodes responsive under memory pressure
+
+Each phase is optional — you can skip any step and come back to it later with the individual `sparkrun setup <command>` subcommands.
+
+See the [Setup Commands](/cli/setup-commands/) reference for the full wizard options.
+
+## Alternative: Install only
+
+If you just want to install sparkrun without running the full wizard:
+
+```bash
 uvx sparkrun setup install
 ```
 
-This creates a managed virtual environment, installs sparkrun, creates a shell-ready command, and sets up tab completion — all in one.
+This creates a managed virtual environment, installs sparkrun, creates a shell-ready command, and sets up tab completion — all in one. You can run the wizard later with `sparkrun setup wizard`.
 
 ## Alternative: pip install
 

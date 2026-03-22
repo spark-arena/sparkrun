@@ -1,0 +1,197 @@
+---
+title: Proxy Gateway
+description: Serve multiple models through a single OpenAI-compatible API endpoint.
+---
+
+This tutorial shows how to use sparkrun's proxy gateway to serve multiple inference models through a single unified API endpoint, powered by [LiteLLM](https://docs.litellm.ai/).
+
+## Overview
+
+The sparkrun proxy sits in front of your running inference workloads and provides:
+
+- A single OpenAI-compatible API endpoint (default: `http://localhost:4000/v1`)
+- Automatic discovery of running sparkrun inference endpoints
+- Model aliases so clients can use familiar names (e.g., `gpt-4` routed to a local model)
+- Dynamic loading and unloading of models without restarting the proxy
+
+## 1. Launch some models
+
+Start by running a couple of inference workloads:
+
+```bash
+sparkrun run qwen3-1.7b-vllm
+sparkrun run qwen3.5-0.8b-bf16-sglang
+```
+
+:::note
+Press Ctrl+C after each launch to detach from logs — the models keep serving in the background.
+:::
+
+## 2. Start the proxy
+
+Launch the proxy gateway. It automatically discovers your running endpoints:
+
+```bash
+sparkrun proxy start
+```
+
+You'll see output like:
+
+```
+Discovering inference endpoints...
+Discovered 2 healthy endpoint(s):
+  10.24.11.13:8000 — Qwen/Qwen3-1.7B (vllm)
+  10.24.11.13:8001 — Qwen/Qwen3.5-0.8B (sglang)
+
+Starting proxy on 0.0.0.0:4000...
+Proxy started. API: http://localhost:4000/v1
+Auto-discover enabled (every 30s)
+```
+
+If you're using a cluster, pass it to the proxy so it can discover endpoints via SSH:
+
+```bash
+sparkrun proxy start --cluster mylab
+```
+
+## 3. Check available models
+
+List the models registered with the proxy:
+
+```bash
+sparkrun proxy models
+```
+
+Or query the API directly:
+
+```bash
+curl http://localhost:4000/v1/models
+```
+
+## 4. Call the API
+
+Send requests to the proxy just like any OpenAI-compatible API. Select which model to use with the `model` field:
+
+```bash
+curl http://localhost:4000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Qwen/Qwen3-1.7B",
+    "messages": [{"role": "user", "content": "What is a DGX Spark?"}],
+    "max_tokens": 100
+  }'
+```
+
+To use a different model, change the `model` field:
+
+```bash
+curl http://localhost:4000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Qwen/Qwen3.5-0.8B",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "max_tokens": 50
+  }'
+```
+
+:::tip
+The proxy works with any OpenAI-compatible client library. Point your client at `http://localhost:4000/v1` and select models by name.
+:::
+
+## 5. Add model aliases
+
+Create friendly names so clients can reference models without knowing the exact HuggingFace ID:
+
+```bash
+sparkrun proxy alias add my-assistant "Qwen/Qwen3-1.7B"
+```
+
+Now clients can use `my-assistant` as the model name:
+
+```bash
+curl http://localhost:4000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "my-assistant",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "max_tokens": 50
+  }'
+```
+
+Aliases are applied immediately — no proxy restart needed. List all aliases with:
+
+```bash
+sparkrun proxy alias list
+```
+
+Remove an alias:
+
+```bash
+sparkrun proxy alias remove my-assistant
+```
+
+## 6. Dynamic loading
+
+Load a new model and register it with the proxy in one command:
+
+```bash
+sparkrun proxy load qwen3-30b-a3b-vllm
+```
+
+This launches the inference workload (with automatic port conflict avoidance) and registers it with the running proxy. The proxy automatically picks an available port if the default is in use.
+
+## 7. Unload a model
+
+Stop a model and remove it from the proxy:
+
+```bash
+sparkrun proxy unload qwen3-30b-a3b-vllm
+```
+
+This stops the inference containers and syncs the proxy to remove the stale model entry.
+
+## 8. Check proxy status
+
+See the proxy process status and registered models:
+
+```bash
+sparkrun proxy status
+```
+
+This shows the proxy PID, bind address, auto-discover status, and lists all registered models with their backend endpoints.
+
+## 9. Stop the proxy
+
+When you're done, stop the proxy:
+
+```bash
+sparkrun proxy stop
+```
+
+:::note
+Stopping the proxy only stops the gateway process — it does not stop the underlying inference workloads. Your models keep serving on their original ports. Use `sparkrun stop <recipe>` to stop individual models, or `sparkrun stop --all` to stop everything.
+:::
+
+## Auto-discovery
+
+By default, the proxy runs a background auto-discover process that periodically scans for new or removed inference endpoints (every 30 seconds). When you launch or stop models with `sparkrun run` or `sparkrun stop`, the proxy picks up the changes automatically.
+
+To adjust the scan interval:
+
+```bash
+sparkrun proxy start --discover-interval 60
+```
+
+To disable auto-discovery:
+
+```bash
+sparkrun proxy start --no-auto-discover
+```
+
+With auto-discovery disabled, use `sparkrun proxy models --refresh` to manually trigger a re-scan.
+
+## Next steps
+
+- **Full reference**: See the [proxy CLI reference](/cli/proxy/) for all options and configuration details
+- **First model**: If you haven't launched a model yet, start with [Your First Model](/tutorials/first-model/)
+- **Scale up**: Run larger models across multiple Sparks with [Multi-Node Tensor Parallelism](/tutorials/multi-node/)

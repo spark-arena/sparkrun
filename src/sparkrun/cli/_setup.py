@@ -1207,15 +1207,24 @@ def setup_earlyoom(ctx, hosts, hosts_file, cluster_name, user, extra_prefer, ext
 @click.option("-o", "--output", "output_file", default=None, type=click.Path(),
               help="Output NDJSON file path (default: spark_diag_<timestamp>.ndjson)")
 @click.option("--json", "json_stdout", is_flag=True, help="Also print summary to stdout as JSON")
+@click.option("--sudo", "use_sudo", is_flag=True, default=False,
+              help="Also collect sudo-only diagnostics (dmidecode)")
 @click.pass_context
-def setup_diagnose(ctx, hosts, hosts_file, cluster_name, dry_run, output_file, json_stdout):
-    """Collect hardware, firmware, network, and Docker diagnostics from hosts."""
+def setup_diagnose(ctx, hosts, hosts_file, cluster_name, dry_run, output_file, json_stdout, use_sudo):
+    """Collect hardware, firmware, network, and Docker diagnostics from hosts.
+
+    Collects OS, kernel, CPU, memory, disk, GPU, network, Docker, and
+    firmware device information without requiring elevated privileges.
+
+    Use --sudo to also collect dmidecode data (BIOS, system, baseboard,
+    memory details) which requires a sudo password.
+    """
     import json as _json
     from datetime import datetime, timezone
 
     from sparkrun.core.bootstrap import init_sparkrun
     from sparkrun.core.config import SparkrunConfig
-    from sparkrun.diagnostics import NDJSONWriter, collect_spark_diagnostics
+    from sparkrun.diagnostics import NDJSONWriter, collect_spark_diagnostics, collect_sudo_diagnostics
 
     from ._common import _resolve_setup_context, _setup_logging
 
@@ -1228,6 +1237,11 @@ def setup_diagnose(ctx, hosts, hosts_file, cluster_name, dry_run, output_file, j
     if not output_file:
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         output_file = "spark_diag_%s.ndjson" % ts
+
+    # Prompt for sudo password upfront if --sudo
+    sudo_password = None
+    if use_sudo and not dry_run:
+        sudo_password = click.prompt("[sudo] password for %s" % user, hide_input=True)
 
     click.echo("Collecting diagnostics from %d host(s)..." % len(host_list))
     click.echo("Output: %s" % output_file)
@@ -1243,6 +1257,7 @@ def setup_diagnose(ctx, hosts, hosts_file, cluster_name, dry_run, output_file, j
             "sparkrun_version": __version__,
             "hosts": host_list,
             "command": "sparkrun setup diagnose",
+            "sudo": use_sudo,
         })
 
         host_data = collect_spark_diagnostics(
@@ -1251,6 +1266,17 @@ def setup_diagnose(ctx, hosts, hosts_file, cluster_name, dry_run, output_file, j
             writer=writer,
             dry_run=dry_run,
         )
+
+        # Sudo pass: dmidecode
+        if use_sudo and sudo_password:
+            click.echo("Collecting sudo diagnostics (dmidecode)...")
+            collect_sudo_diagnostics(
+                hosts=host_list,
+                ssh_kwargs=ssh_kwargs,
+                sudo_password=sudo_password,
+                writer=writer,
+                dry_run=dry_run,
+            )
 
     # Display summary
     ok = sum(1 for v in host_data.values() if v.get("DIAG_COMPLETE") == "1")

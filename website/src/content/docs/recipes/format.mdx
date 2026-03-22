@@ -109,7 +109,7 @@ Which inference engine to use:
 | `vllm-ray` | vLLM | Ray | vLLM with Ray head/worker orchestration. |
 | `sglang` | SGLang | Native | First-class. Solo and multi-node. |
 | `llama-cpp` | llama.cpp | N/A | Solo mode. GGUF models. |
-| `eugr-vllm` | vLLM (eugr) | Ray | Extends `vllm-ray` with eugr builds and mods. |
+| `trtllm` | TensorRT-LLM | MPI | NVIDIA TensorRT-LLM with MPI-based multi-node orchestration. |
 
 Explicitly setting `runtime` is **recommended** for clarity and forward-compatibility. However, this field is technically optional — when omitted, sparkrun uses [automatic runtime detection](#automatic-runtime-detection) to infer the runtime from the `command` field. If neither `runtime` nor a recognizable command is present, the recipe defaults to `vllm` behavior.
 
@@ -255,7 +255,7 @@ sparkrun auto-detects most of these from HuggingFace, but metadata values take p
 
 ### `runtime_config`
 
-A dictionary for runtime-specific configuration, primarily used by the `eugr-vllm` runtime:
+A dictionary for runtime-specific configuration:
 
 ```yaml
 runtime_config:

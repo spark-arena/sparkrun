@@ -9,6 +9,10 @@ set -uo pipefail
 
 echo "Running spark diagnostics..." >&2
 
+# --- Hostname ---
+echo "DIAG_HOSTNAME=$(hostname 2>/dev/null || echo unknown)"
+echo "DIAG_HOSTNAME_FQDN=$(hostname -f 2>/dev/null || echo unknown)"
+
 # --- OS / Kernel ---
 if [ -f /etc/os-release ]; then
     DIAG_OS_NAME=$(. /etc/os-release && echo "${NAME:-unknown}")
@@ -170,6 +174,43 @@ echo "DIAG_DOCKER_ROOT=$DIAG_DOCKER_ROOT"
 echo "DIAG_DOCKER_NVIDIA_RUNTIME=$DIAG_DOCKER_NVIDIA_RUNTIME"
 echo "DIAG_DOCKER_RUNNING=$DIAG_DOCKER_RUNNING"
 echo "DIAG_DOCKER_SPARKRUN=$DIAG_DOCKER_SPARKRUN"
+
+# --- Firmware updates (fwupdmgr) ---
+# get-devices and get-history work without sudo on most systems
+if command -v fwupdmgr &>/dev/null; then
+    echo "  Collecting firmware device inventory..." >&2
+    # Compact single-line per device: Name | Version | GUID
+    FW_DEV_IDX=0
+    while IFS= read -r line; do
+        echo "DIAG_FWUPD_DEV_${FW_DEV_IDX}=$line"
+        FW_DEV_IDX=$((FW_DEV_IDX + 1))
+    done < <(fwupdmgr get-devices --no-unreported-check 2>/dev/null \
+        | awk '
+            /^[^ ]/ { if (name != "") print name "|" ver "|" guid; name=$0; ver=""; guid="" }
+            /Version:/ { sub(/.*Version: */, ""); ver=$0 }
+            /Guid:/ { sub(/.*Guid: */, ""); if (guid != "") guid=guid","; guid=guid $0 }
+            END { if (name != "") print name "|" ver "|" guid }
+        ' || true)
+    echo "DIAG_FWUPD_DEV_COUNT=$FW_DEV_IDX"
+
+    # Firmware update history (recent updates)
+    FW_HIST_IDX=0
+    while IFS= read -r line; do
+        echo "DIAG_FWUPD_HIST_${FW_HIST_IDX}=$line"
+        FW_HIST_IDX=$((FW_HIST_IDX + 1))
+    done < <(fwupdmgr get-history --no-unreported-check 2>/dev/null \
+        | awk '
+            /^[^ ]/ { if (name != "") print name "|" ver "|" date; name=$0; ver=""; date="" }
+            /Version:/ { sub(/.*Version: */, ""); ver=$0 }
+            /Updated:/ { sub(/.*Updated: */, ""); date=$0 }
+            END { if (name != "") print name "|" ver "|" date }
+        ' || true)
+    echo "DIAG_FWUPD_HIST_COUNT=$FW_HIST_IDX"
+else
+    echo "DIAG_FWUPD_DEV_COUNT=0"
+    echo "DIAG_FWUPD_HIST_COUNT=0"
+    echo "  fwupdmgr not found" >&2
+fi
 
 # --- SSH user ---
 echo "DIAG_SSH_USER=$(whoami)"

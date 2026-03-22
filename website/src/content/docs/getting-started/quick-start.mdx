@@ -22,60 +22,43 @@ sparkrun launches jobs in the background (detached containers) and follows logs.
 
 ## Multi-node cluster setup
 
-Multi-node inference (tensor parallelism across Sparks) requires three one-time setup steps:
-
-### 1. Register your cluster
-
-Save your DGX Spark hosts using their **management network IPs** (the built-in 10 Gbps Ethernet). This makes subsequent commands shorter — they reference the cluster by name instead of repeating host lists:
+Multi-node inference (tensor parallelism across Sparks) requires a one-time setup. The **setup wizard** handles everything interactively:
 
 ```bash
-sparkrun cluster create mylab \
-  --hosts 10.24.11.13,10.24.11.14 \
-  --user dgxuser \
-  -d "My DGX Spark lab"
+sparkrun setup
+```
 
+The wizard walks through each step:
+
+1. **Cluster creation** — saves your DGX Spark hosts by name so you don't repeat host lists
+2. **SSH mesh** — establishes passwordless SSH between all hosts and your control machine
+3. **CX7 networking** — configures high-speed ConnectX-7 interfaces with static IPs and jumbo frames
+4. **Sudoers entries** — scoped rules for cache permissions and page cache clearing
+5. **earlyoom** — OOM protection that keeps nodes responsive under memory pressure
+
+Each step is optional — skip any and come back later. When running on a DGX Spark, the wizard auto-detects CX7 peers on your network.
+
+:::tip
+Running `sparkrun setup` with no subcommand auto-launches the wizard when no default cluster is configured. You can also invoke it explicitly with `sparkrun setup wizard`.
+:::
+
+<details>
+<summary>Manual setup (step-by-step)</summary>
+
+If you prefer to configure each step individually:
+
+1. **Create a cluster**: `sparkrun cluster create mylab --hosts 10.24.11.13,10.24.11.14 --user dgxuser` — see [Cluster Commands](/cli/cluster-commands/)
+2. **SSH mesh**: `sparkrun setup ssh` — see [SSH Setup](/getting-started/ssh-setup/)
+3. **CX7 networking**: `sparkrun setup cx7` — see [Networking Best Practices](/getting-started/networking/)
+4. **earlyoom**: `sparkrun setup earlyoom` — see [Setup Commands](/cli/setup-commands/#install-earlyoom-oom-killer)
+
+Set your cluster as default so you don't need `--cluster` on every command:
+
+```bash
 sparkrun cluster set-default mylab
 ```
 
-The first host becomes the **head node** for multi-node jobs. Order remaining hosts however you like — they become workers.
-
-:::tip
-If the machine you're running sparkrun from is also a cluster member, use `127.0.0.1` for it in the host list (e.g., `--hosts 127.0.0.1,10.24.11.14`). This avoids SSH-to-self issues and is slightly more efficient for local operations.
-:::
-
-### 2. Set up SSH Mesh
-
-sparkrun orchestrates over SSH. Establish passwordless SSH from your control machine to each Spark:
-
-```bash
-sparkrun setup ssh
-```
-
-This is interactive — you'll be prompted for passwords. See [SSH Setup](/getting-started/ssh-setup/) for details.
-
-### 3. Configure CX-7 networking
-
-Configure the high-speed ConnectX-7 interfaces on each Spark. This assigns static IPs, sets up jumbo frames (MTU 9000), and applies netplan — all automated over SSH:
-
-```bash
-sparkrun setup cx7
-```
-
-This detects CX-7 interfaces, picks two conflict-free subnets, and configures everything. Use `--dry-run` to preview first. See [Networking Best Practices](/getting-started/networking/) for the full guide.
-
-\(If your CX7 interfaces are already set up, you can skip this step -- but also, if they're already setup, then this will make no changes and just check your setup!)
-
-sparkrun automatically discovers the CX-7 interfaces on each host and uses them for high-bandwidth operations (model sync, container distribution, NCCL).
-
-### 4. Install earlyoom (recommended)
-
-Install the [earlyoom](https://github.com/rfjakob/earlyoom) OOM killer on your Sparks. Large inference models can exhaust DGX Spark's unified memory, causing the system to hang. earlyoom proactively terminates inference processes before the kernel OOM killer triggers, keeping your nodes responsive:
-
-```bash
-sparkrun setup earlyoom
-```
-
-sparkrun configures earlyoom with inference-aware defaults — it prefers killing vllm, sglang, and llama-server processes first, while protecting system services like sshd and dockerd. Requires sudo — you'll be prompted for a password if passwordless sudo isn't configured.
+</details>
 
 ## Run an inference job
 
@@ -153,3 +136,10 @@ sparkrun search qwen3
 ```
 
 See [Registries](/recipes/registries/) for more details.
+
+## Next steps
+
+- [Tutorials](/tutorials/first-inference/) — step-by-step walkthroughs for common workflows
+- [Recipe Format](/recipes/format/) — write your own recipes
+- [Setup Commands](/cli/setup-commands/) — full reference for all setup subcommands
+- [Networking Best Practices](/getting-started/networking/) — CX7 configuration details and verification

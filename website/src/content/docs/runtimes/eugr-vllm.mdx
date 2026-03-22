@@ -3,6 +3,10 @@ title: eugr-vllm
 description: The gold standard for community-driven use of vLLM on DGX Spark.
 ---
 
+:::caution[Legacy Runtime]
+The `eugr-vllm` runtime is maintained for backward compatibility but is no longer actively promoted. For new deployments, use `vllm-distributed` (default) or `vllm-ray`. See [Runtimes Overview](/runtimes/overview/) for current recommendations.
+:::
+
 The `eugr-vllm` runtime extends sparkrun's [`vllm-ray`](/runtimes/vllm/) variant with support for [eugr/spark-vllm-docker](https://github.com/eugr/spark-vllm-docker) container builds and mods. Eugr's repo is the gold standard for community-driven use of vLLM on the NVIDIA DGX Spark — frequently updated with patches and details to support the latest models. It provides a container build system to facilitate building the latest from the main branch of vLLM and a system of maintained mods to resolve issues related to running models on the Spark.
 
 Since `eugr-vllm` extends `vllm-ray`, it inherits all Ray-based orchestration: multi-node clustering via Ray head/worker nodes, container distribution, InfiniBand detection, log following, and cluster stop all work identically to the `vllm-ray` runtime. The eugr-specific additions are:

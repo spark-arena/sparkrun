@@ -159,7 +159,7 @@ When `runtime` is empty or `"vllm"`:
 
 | Condition                                                             | Resolved Runtime   |
 |-----------------------------------------------------------------------|--------------------|
-| `recipe_version: "1"` or `build_args`/`mods` present                  | `eugr-vllm`        |
+| `recipe_version: "1"` or `build_args`/`mods` present (deprecated)      | `eugr-vllm`        |
 | `distributed_executor_backend: ray` in defaults or command            | `vllm-ray`         |
 | Bare `vllm` or empty                                                  | `vllm-distributed` |
 | Command starts with `sglang serve` / `python -m sglang.launch_server` | `sglang`           |
@@ -331,7 +331,7 @@ builder_config:
 
 `builder_config` is passed directly to the builder plugin's `prepare_image()`. Contents are builder-specific.
 
-### eugr Builder (v1 Compatibility)
+### eugr Builder (v1 Compatibility, Legacy)
 
 v1 recipes with `build_args`/`mods` auto-route to `eugr-vllm` runtime and the eugr builder:
 

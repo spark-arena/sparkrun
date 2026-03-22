@@ -19,7 +19,7 @@ export default defineConfig({
                 Footer: './src/components/overrides/Footer.astro',
             },
             social: {
-                github: 'https://github.com/scitrera/sparkrun',
+                github: 'https://github.com/spark-arena/sparkrun',
             },
             customCss: [
                 '@fontsource/inter/400.css',
@@ -40,6 +40,16 @@ export default defineConfig({
                         {label: 'Networking', slug: 'getting-started/networking'},
                         {label: 'SSH Setup', slug: 'getting-started/ssh-setup'},
                         {label: 'Tips & Troubleshooting', slug: 'getting-started/troubleshooting'},
+                        {label: 'Diagnostics', slug: 'getting-started/diagnostics'},
+                    ],
+                },
+                {
+                    label: 'Tutorials',
+                    items: [
+                        {label: 'Your First Model', slug: 'tutorials/first-model'},
+                        {label: 'Multi-Node Tensor Parallelism', slug: 'tutorials/multi-node'},
+                        {label: 'Benchmarking Models', slug: 'tutorials/benchmarking'},
+                        {label: 'Proxy Gateway', slug: 'tutorials/proxy-gateway'},
                     ],
                 },
                 {
@@ -65,6 +75,7 @@ export default defineConfig({
                         {label: 'Writing Recipes', slug: 'recipes/writing-recipes'},
                         {label: 'GGUF Recipes', slug: 'recipes/gguf-recipes'},
                         {label: 'Registries', slug: 'recipes/registries'},
+                        {label: 'Builders', slug: 'recipes/builders'},
                     ],
                 },
                 {
@@ -74,7 +85,8 @@ export default defineConfig({
                         {label: 'vLLM', slug: 'runtimes/vllm'},
                         {label: 'SGLang', slug: 'runtimes/sglang'},
                         {label: 'llama.cpp', slug: 'runtimes/llama-cpp'},
-                        {label: 'eugr-vllm', slug: 'runtimes/eugr-vllm'},
+                        {label: 'TensorRT-LLM', slug: 'runtimes/trtllm'},
+                        {label: 'eugr-vllm (Legacy)', slug: 'runtimes/eugr-vllm'},
                     ],
                 },
                 {

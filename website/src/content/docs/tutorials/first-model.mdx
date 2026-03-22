@@ -1,0 +1,153 @@
+---
+title: Your First Model
+description: Launch your first LLM inference workload on a DGX Spark.
+---
+
+This tutorial walks you through launching your first LLM on a DGX Spark using sparkrun — from browsing available recipes to testing the API endpoint and stopping the workload.
+
+## Prerequisites
+
+- sparkrun installed ([Installation guide](/getting-started/installation/))
+- SSH access to a DGX Spark (password or key-based)
+- Docker running on the target Spark
+
+If you haven't set up SSH yet, see [SSH Setup](/getting-started/ssh-setup/).
+
+## 1. Browse available recipes
+
+Start by seeing what models are available:
+
+```bash
+sparkrun list
+```
+
+This searches all configured registries and displays available recipes. Each recipe name follows a pattern: `<model>-<runtime>` (e.g., `qwen3-1.7b-vllm` runs the Qwen3 1.7B model on the vLLM runtime).
+
+You can filter results with `sparkrun search`:
+
+```bash
+sparkrun search qwen3
+```
+
+## 2. Inspect a recipe
+
+Before launching, inspect a recipe to understand what it will do and whether it fits in memory:
+
+```bash
+sparkrun show qwen3-1.7b-vllm
+```
+
+The output includes:
+
+- **Model** — the HuggingFace model ID (e.g., `Qwen/Qwen3-1.7B`)
+- **Runtime** — the inference engine (e.g., `vllm`)
+- **Container** — the Docker image that will be pulled
+- **VRAM estimate** — whether the model fits DGX Spark's 128 GB unified memory at the current tensor parallelism
+
+:::tip
+The VRAM estimate helps you decide whether a model needs multiple nodes. If the estimate exceeds 128 GB at TP=1, you'll need multi-node tensor parallelism. See the [Multi-Node tutorial](/tutorials/multi-node/) for details.
+:::
+
+## 3. Launch the model
+
+Run the recipe, pointing at your DGX Spark:
+
+```bash
+sparkrun run qwen3-1.7b-vllm --hosts <your-spark-ip>
+```
+
+If you've already created a default cluster, you can omit `--hosts`:
+
+```bash
+sparkrun run qwen3-1.7b-vllm
+```
+
+sparkrun will:
+
+1. **Pull the container image** to the target host (skipped if already present)
+2. **Download and sync the model** from HuggingFace (skipped if already cached)
+3. **Launch the inference container** in detached mode
+4. **Stream container logs** so you can watch the server start up
+
+You'll see log output from the inference engine as it loads the model and starts serving.
+
+## 4. Ctrl+C is safe
+
+Once you see the server is ready (look for a message like `Uvicorn running on ...`), you can press **Ctrl+C** at any time.
+
+:::caution
+Ctrl+C only detaches you from the log stream — it **never** kills the inference job. Your model keeps serving in the background.
+:::
+
+## 5. Test the endpoint
+
+The model is now serving an OpenAI-compatible API. Test it with curl:
+
+```bash
+# List available models
+curl http://<your-spark-ip>:8000/v1/models
+```
+
+Send a completion request:
+
+```bash
+curl http://<your-spark-ip>:8000/v1/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Qwen/Qwen3-1.7B",
+    "prompt": "The DGX Spark is",
+    "max_tokens": 50
+  }'
+```
+
+Or use the chat completions endpoint:
+
+```bash
+curl http://<your-spark-ip>:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Qwen/Qwen3-1.7B",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "max_tokens": 50
+  }'
+```
+
+:::note
+The model name in API requests matches the HuggingFace model ID by default (e.g., `Qwen/Qwen3-1.7B`). You can override this with `--served-model-name` when launching.
+:::
+
+## 6. Re-attach to logs
+
+If you detached with Ctrl+C and want to see logs again:
+
+```bash
+sparkrun logs qwen3-1.7b-vllm
+```
+
+Pass `--hosts` or `--cluster` if you used them during launch.
+
+## 7. Check status
+
+See all running sparkrun workloads:
+
+```bash
+sparkrun status
+```
+
+This shows running containers grouped by job, with their host, role, status, and ready-to-use `stop` and `logs` commands.
+
+## 8. Stop the workload
+
+When you're done, stop the inference server:
+
+```bash
+sparkrun stop qwen3-1.7b-vllm
+```
+
+Pass `--hosts` or `--cluster` if you used them during launch. sparkrun stops the containers on all target hosts and cleans up.
+
+## Next steps
+
+- **Scale up**: Run larger models across multiple Sparks with [Multi-Node Tensor Parallelism](/tutorials/multi-node/)
+- **Measure performance**: Benchmark your model with [Benchmarking Models](/tutorials/benchmarking/)
+- **Serve multiple models**: Use the [Proxy Gateway](/tutorials/proxy-gateway/) to expose multiple models through a single API

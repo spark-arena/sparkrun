@@ -11,11 +11,12 @@ Public API:
 from __future__ import annotations
 
 from sparkrun.diagnostics.ndjson_writer import NDJSONWriter
-from sparkrun.diagnostics.spark_collector import collect_spark_diagnostics
+from sparkrun.diagnostics.spark_collector import collect_spark_diagnostics, collect_sudo_diagnostics
 from sparkrun.diagnostics.run_collector import RunDiagnosticsCollector
 
 __all__ = [
     "NDJSONWriter",
     "RunDiagnosticsCollector",
     "collect_spark_diagnostics",
+    "collect_sudo_diagnostics",
 ]
