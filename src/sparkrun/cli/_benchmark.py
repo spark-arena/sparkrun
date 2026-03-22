@@ -18,13 +18,13 @@ from ._common import (
     _expand_recipe_shortcut,
     _is_recipe_url,
     _load_recipe,
-    _resolve_cluster_cache_dir,
     _resolve_hosts_or_exit,
     _setup_logging,
     _simplify_recipe_ref,
     dry_run_option,
     host_options,
     recipe_override_options,
+    resolve_cluster_config,
 )
 
 logger = logging.getLogger(__name__)
@@ -271,9 +271,11 @@ def _run_benchmark(
         click.echo("Note: solo mode enabled, using 1 of %d hosts" % len(host_list))
         host_list = host_list[:1]
 
-    # Resolve cache dir
-    cluster_cache_dir = _resolve_cluster_cache_dir(cluster_name, hosts, hosts_file, cluster_mgr)
-    effective_cache_dir = cache_dir or cluster_cache_dir or str(config.hf_cache_dir)
+    # Resolve cache dir, transfer mode, and transfer interface from cluster config
+    cluster_cfg = resolve_cluster_config(cluster_name, hosts, hosts_file, cluster_mgr)
+    effective_cache_dir = cache_dir or cluster_cfg.cache_dir or str(config.hf_cache_dir)
+    effective_transfer_mode = cluster_cfg.transfer_mode or "auto"
+    effective_transfer_interface = cluster_cfg.transfer_interface
 
     # For --skip-run, resolve port without auto-increment (server already listening)
     if skip_run:
@@ -331,6 +333,8 @@ def _run_benchmark(
             v=v,
             is_solo=is_solo,
             cache_dir=effective_cache_dir,
+            transfer_mode=effective_transfer_mode,
+            transfer_interface=effective_transfer_interface,
             recipe_ref=recipe_ref,
             registry_mgr=registry_mgr,
             auto_port=True,
