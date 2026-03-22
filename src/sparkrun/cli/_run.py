@@ -42,6 +42,8 @@ logger = logging.getLogger(__name__)
 @click.option("--dashboard-port", type=int, default=8265, help="Ray dashboard port", hidden=True)
 @dry_run_option
 @click.option("--foreground", is_flag=True, help="Run in foreground (don't detach)")
+@click.option("--ensure", is_flag=True, default=False,
+              help="Only launch if not already running; exit 0 if already up")
 @click.option("--no-follow", is_flag=True, help="Don't follow container logs after launch")
 @click.option("--no-sync-tuning", is_flag=True, help="Skip syncing tuning configs from registries")
 @click.option("--no-rm", is_flag=True, help="Don't auto-remove containers on exit (keeps containers after stop)")
@@ -56,7 +58,7 @@ logger = logging.getLogger(__name__)
 def run(
         ctx, recipe_name, hosts, hosts_file, cluster_name, solo, port, tensor_parallel,
         pipeline_parallel, gpu_mem, served_model_name, max_model_len, image, cache_dir,
-        ray_port, init_port, dashboard, dashboard_port, dry_run, foreground, no_follow,
+        ray_port, init_port, dashboard, dashboard_port, dry_run, ensure, foreground, no_follow,
         no_sync_tuning, no_rm, rootful, restart_policy, transfer_mode, options,
         extra_args, config_path=None, setup=True,
 ):
@@ -200,6 +202,22 @@ def run(
     if is_solo and len(host_list) > 1:
         click.echo("Note: solo mode enabled, using 1 of %d hosts" % len(host_list))
         host_list = host_list[:1]
+
+    # --ensure: check if job is already running, exit 0 if so
+    if ensure:
+        from sparkrun.orchestration.job_metadata import check_job_running as _check_job, generate_cluster_id
+        from sparkrun.orchestration.primitives import build_ssh_kwargs
+
+        _cid = generate_cluster_id(recipe, host_list, overrides=overrides or None)
+        _ssh_kw = build_ssh_kwargs(config)
+        _status = _check_job(cluster_id=_cid, hosts=host_list,
+                             ssh_kwargs=_ssh_kw, cache_dir=str(config.cache_dir))
+        if _status.running:
+            click.echo("Job already running (cluster_id: %s)" % _cid)
+            if _status.metadata:
+                click.echo("  Recipe: %s" % _status.metadata.get("recipe", "unknown"))
+                click.echo("  Hosts:  %s" % ", ".join(_status.hosts))
+            sys.exit(0)
 
     # Resolve cache dir and transfer mode
     cluster_cache_dir = _resolve_cluster_cache_dir(cluster_name, hosts, hosts_file, cluster_mgr)

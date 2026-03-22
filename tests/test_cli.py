@@ -3197,3 +3197,182 @@ class TestFormatJobCommandsAndLabel:
         assert "[aabbccdd]" in label
         assert "test-recipe" in label
         assert "tp=2" in label
+
+
+class TestCheckJobCommand:
+    """Test cluster check-job subcommand."""
+
+    def test_cluster_check_job_running(self, runner, tmp_path, monkeypatch):
+        """check-job with running container exits 0."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+
+        from sparkrun.orchestration.job_metadata import JobStatus
+        status = JobStatus(
+            running=True, cluster_id="sparkrun_aabbccdd0011",
+            metadata={"recipe": "test-recipe"}, hosts=["10.0.0.1"],
+        )
+        with mock.patch(
+            "sparkrun.orchestration.job_metadata.check_job_running", return_value=status,
+        ), mock.patch(
+            "sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={},
+        ):
+            result = runner.invoke(main, [
+                "cluster", "check-job", "sparkrun_aabbccdd0011",
+                "--hosts", "10.0.0.1",
+            ])
+        assert result.exit_code == 0
+        assert "Job running" in result.output
+
+    def test_cluster_check_job_not_running(self, runner, tmp_path, monkeypatch):
+        """check-job with no running container exits 1."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+
+        from sparkrun.orchestration.job_metadata import JobStatus
+        status = JobStatus(
+            running=False, cluster_id="sparkrun_aabbccdd0011",
+            metadata=None, hosts=["10.0.0.1"],
+        )
+        with mock.patch(
+            "sparkrun.orchestration.job_metadata.check_job_running", return_value=status,
+        ), mock.patch(
+            "sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={},
+        ):
+            result = runner.invoke(main, [
+                "cluster", "check-job", "sparkrun_aabbccdd0011",
+                "--hosts", "10.0.0.1",
+            ])
+        assert result.exit_code == 1
+        assert "not running" in result.output
+
+    def test_cluster_check_job_json(self, runner, tmp_path, monkeypatch):
+        """check-job --json outputs valid JSON with expected keys."""
+        import json
+
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+
+        from sparkrun.orchestration.job_metadata import JobStatus
+        status = JobStatus(
+            running=True, cluster_id="sparkrun_aabbccdd0011",
+            metadata={"recipe": "my-recipe"}, hosts=["10.0.0.1"],
+        )
+        with mock.patch(
+            "sparkrun.orchestration.job_metadata.check_job_running", return_value=status,
+        ), mock.patch(
+            "sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={},
+        ):
+            result = runner.invoke(main, [
+                "cluster", "check-job", "sparkrun_aabbccdd0011",
+                "--hosts", "10.0.0.1", "--json",
+            ])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["running"] is True
+        assert data["cluster_id"] == "sparkrun_aabbccdd0011"
+        assert data["recipe"] == "my-recipe"
+        assert data["healthy"] is None
+
+    def test_cluster_check_job_health_check(self, runner, tmp_path, monkeypatch):
+        """check-job --check-health shows health status when healthy."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+
+        from sparkrun.orchestration.job_metadata import JobStatus
+        status = JobStatus(
+            running=True, cluster_id="sparkrun_aabbccdd0011",
+            healthy=True, metadata={"recipe": "test"}, hosts=["10.0.0.1"],
+        )
+        with mock.patch(
+            "sparkrun.orchestration.job_metadata.check_job_running", return_value=status,
+        ), mock.patch(
+            "sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={},
+        ):
+            result = runner.invoke(main, [
+                "cluster", "check-job", "sparkrun_aabbccdd0011",
+                "--hosts", "10.0.0.1", "--check-health",
+            ])
+        assert result.exit_code == 0
+        assert "Healthy: yes" in result.output
+
+    def test_cluster_check_job_unhealthy_exit_1(self, runner, tmp_path, monkeypatch):
+        """check-job --check-health exits 1 when running but unhealthy."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.core.config
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+
+        from sparkrun.orchestration.job_metadata import JobStatus
+        status = JobStatus(
+            running=True, cluster_id="sparkrun_aabbccdd0011",
+            healthy=False, metadata={"recipe": "test"}, hosts=["10.0.0.1"],
+        )
+        with mock.patch(
+            "sparkrun.orchestration.job_metadata.check_job_running", return_value=status,
+        ), mock.patch(
+            "sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={},
+        ):
+            result = runner.invoke(main, [
+                "cluster", "check-job", "sparkrun_aabbccdd0011",
+                "--hosts", "10.0.0.1", "--check-health",
+            ])
+        assert result.exit_code == 1
+        assert "Healthy: no" in result.output
+
+
+class TestRunEnsureFlag:
+    """Test the --ensure flag on the run command."""
+
+    def test_run_ensure_already_running(self, runner, reset_bootstrap):
+        """--ensure with running job exits 0 without launching."""
+        from sparkrun.orchestration.job_metadata import JobStatus
+
+        status = JobStatus(
+            running=True, cluster_id="sparkrun_aabbccdd0011",
+            metadata={"recipe": _TEST_RECIPE_NAME}, hosts=["localhost"],
+        )
+        with mock.patch(
+            "sparkrun.orchestration.job_metadata.check_job_running", return_value=status,
+        ) as mock_check, mock.patch(
+            "sparkrun.core.launcher.launch_inference",
+        ) as mock_launch:
+            result = runner.invoke(main, [
+                "run", _TEST_RECIPE_NAME,
+                "--hosts", "localhost",
+                "--ensure",
+                "--solo",
+            ])
+        assert result.exit_code == 0
+        assert "already running" in result.output
+        mock_launch.assert_not_called()
+
+    def test_run_ensure_not_running(self, runner, reset_bootstrap):
+        """--ensure with no running job proceeds to launch."""
+        from sparkrun.orchestration.job_metadata import JobStatus
+
+        status = JobStatus(
+            running=False, cluster_id="sparkrun_aabbccdd0011",
+            metadata=None, hosts=["localhost"],
+        )
+        with mock.patch(
+            "sparkrun.orchestration.job_metadata.check_job_running", return_value=status,
+        ), mock.patch.object(SglangRuntime, "run", return_value=0):
+            result = runner.invoke(main, [
+                "run", _TEST_RECIPE_NAME,
+                "--hosts", "localhost",
+                "--ensure",
+                "--solo",
+                "--dry-run",
+            ])
+        assert result.exit_code == 0
+        # Should proceed to launch — shows runtime info
+        assert "Runtime:" in result.output

@@ -8,7 +8,9 @@ import click
 
 from ._common import (
     CLUSTER_NAME,
+    TARGET,
     _get_cluster_manager,
+    _is_cluster_id,
     _resolve_hosts_or_exit,
     dry_run_option,
     host_options,
@@ -426,3 +428,131 @@ def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, config_path=No
         click.echo("No sparkrun containers running yet (pending operations above).")
     else:
         click.echo(f"Total: {result.total_containers} container(s) across {result.host_count} host(s)")
+
+
+@cluster.command("check-job")
+@click.argument("target", type=TARGET)
+@host_options
+@click.option("--tp", "--tensor-parallel", "tp_override", type=int, default=None,
+              help="Tensor parallelism override (used for cluster_id generation)")
+@click.option("--port", type=int, default=None, help="Port override (used for cluster_id generation and health check)")
+@click.option("--served-model-name", default=None, help="Served model name override (used for cluster_id generation)")
+@click.option("--check-health", is_flag=True, default=False,
+              help="Also verify the inference server responds to health checks")
+@click.option("--json", "output_json", is_flag=True, default=False,
+              help="Output result as JSON")
+@click.pass_context
+def cluster_check_job(ctx, target, hosts, hosts_file, cluster_name,
+                      tp_override, port, served_model_name,
+                      check_health, output_json):
+    """Check if a sparkrun job is running.
+
+    TARGET can be a cluster ID (sparkrun_<hex>) or a recipe name.
+
+    Exit code 0 = running (and healthy if --check-health), 1 = not running or unhealthy.
+
+    Examples:
+
+      sparkrun cluster check-job sparkrun_abc123def456
+
+      sparkrun cluster check-job my-recipe --hosts 10.0.0.1,10.0.0.2
+
+      sparkrun cluster check-job my-recipe --cluster mylab --check-health
+
+      sparkrun cluster check-job my-recipe --cluster mylab --json
+    """
+    import json as json_mod
+
+    from sparkrun.core.config import SparkrunConfig
+    from sparkrun.orchestration.job_metadata import check_job_running
+    from sparkrun.orchestration.primitives import build_ssh_kwargs
+
+    config = SparkrunConfig()
+    ssh_kwargs = build_ssh_kwargs(config)
+
+    if _is_cluster_id(target) is not None:
+        # --- Cluster ID path ---
+        cid = _is_cluster_id(target)
+        from sparkrun.orchestration.job_metadata import load_job_metadata
+        meta = load_job_metadata(cid, cache_dir=str(config.cache_dir))
+
+        # Resolve hosts: CLI flags > metadata > default cluster
+        host_list = None
+        if hosts or hosts_file or cluster_name:
+            host_list, _ = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config)
+        elif meta and meta.get("hosts"):
+            host_list = meta["hosts"]
+
+        status = check_job_running(
+            cluster_id=cid, hosts=host_list,
+            ssh_kwargs=ssh_kwargs, cache_dir=str(config.cache_dir),
+            check_health=check_health, port=port,
+        )
+    else:
+        # --- Recipe path ---
+        from sparkrun.cli._common import _apply_node_trimming, _load_recipe
+        from sparkrun.core.bootstrap import get_runtime, init_sparkrun
+        from sparkrun.orchestration.job_metadata import generate_cluster_id
+
+        v = init_sparkrun()
+        recipe, _recipe_path, _registry_mgr = _load_recipe(config, target)
+        host_list, _ = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v)
+
+        # Resolve runtime for node trimming
+        try:
+            runtime = get_runtime(recipe.runtime, v)
+        except ValueError:
+            runtime = None
+
+        try:
+            host_list = _apply_node_trimming(
+                host_list, recipe, tp_override=tp_override, runtime=runtime,
+            )
+        except ValueError as e:
+            click.echo("Error: %s" % e, err=True)
+            sys.exit(1)
+
+        # Build overrides for cluster_id generation
+        overrides = {}
+        if port is not None:
+            overrides["port"] = port
+        if served_model_name is not None:
+            overrides["served_model_name"] = served_model_name
+        if tp_override is not None:
+            overrides["tensor_parallel"] = tp_override
+
+        cid = generate_cluster_id(recipe, host_list, overrides=overrides or None)
+        status = check_job_running(
+            cluster_id=cid, hosts=host_list,
+            ssh_kwargs=ssh_kwargs, cache_dir=str(config.cache_dir),
+            check_health=check_health, port=port,
+        )
+
+    # --- Output ---
+    if output_json:
+        result = {
+            "running": status.running,
+            "cluster_id": status.cluster_id,
+            "hosts": status.hosts,
+            "healthy": status.healthy,
+        }
+        if status.metadata:
+            result["recipe"] = status.metadata.get("recipe")
+        click.echo(json_mod.dumps(result))
+    else:
+        recipe_name = status.metadata.get("recipe", "unknown") if status.metadata else "unknown"
+        if status.running:
+            click.echo("Job running (cluster_id: %s)" % status.cluster_id)
+        else:
+            click.echo("Job not running (cluster_id: %s)" % status.cluster_id)
+        click.echo("  Recipe: %s" % recipe_name)
+        if status.hosts:
+            click.echo("  Hosts:  %s" % ", ".join(status.hosts))
+        if check_health and status.healthy is not None:
+            click.echo("  Healthy: %s" % ("yes" if status.healthy else "no"))
+
+    # Exit code: 0 = running (and healthy if checked), 1 = not running or unhealthy
+    if not status.running:
+        sys.exit(1)
+    if check_health and status.healthy is False:
+        sys.exit(1)

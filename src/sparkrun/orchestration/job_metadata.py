@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -18,6 +19,105 @@ if TYPE_CHECKING:
     from sparkrun.core.recipe import Recipe
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class JobStatus:
+    """Result of checking whether a sparkrun job is running."""
+
+    running: bool
+    cluster_id: str
+    healthy: bool | None = None  # None = not checked
+    metadata: dict | None = None
+    container_statuses: dict[str, bool] = field(default_factory=dict)
+    hosts: list[str] = field(default_factory=list)
+
+
+def check_job_running(
+    *,
+    cluster_id: str | None = None,
+    recipe: "Recipe | None" = None,
+    hosts: list[str] | None = None,
+    overrides: dict | None = None,
+    ssh_kwargs: dict | None = None,
+    cache_dir: str | None = None,
+    check_health: bool = False,
+    port: int | None = None,
+) -> JobStatus:
+    """Check whether a sparkrun job is currently running.
+
+    Resolves the cluster_id (from params or recipe+hosts), checks head-node
+    containers for liveness, and optionally performs an HTTP health check.
+
+    Args:
+        cluster_id: Explicit cluster ID.  If not given, generated from
+            *recipe*, *hosts*, and *overrides*.
+        recipe: Recipe object (used to generate cluster_id if not given).
+        hosts: Host list.  Falls back to job metadata if not provided.
+        overrides: Recipe overrides (port, served_model_name, etc.).
+        ssh_kwargs: SSH connection parameters.
+        cache_dir: Cache directory for job metadata lookup.
+        check_health: When True and container is running, probe the
+            ``/v1/models`` endpoint.
+        port: Explicit port for health checks.  Falls back to metadata
+            then default 8000.
+
+    Returns:
+        :class:`JobStatus` with liveness and optional health info.
+    """
+    from sparkrun.orchestration.primitives import is_container_running
+
+    # Resolve cluster_id
+    if cluster_id is None:
+        if recipe is None or hosts is None:
+            raise ValueError("Either cluster_id or both recipe and hosts must be provided")
+        cluster_id = generate_cluster_id(recipe, hosts, overrides=overrides)
+
+    # Load metadata
+    meta = load_job_metadata(cluster_id, cache_dir=cache_dir)
+
+    # Resolve hosts
+    if hosts is None:
+        if meta and meta.get("hosts"):
+            hosts = meta["hosts"]
+        else:
+            return JobStatus(running=False, cluster_id=cluster_id, metadata=meta, hosts=[])
+
+    head_host = hosts[0]
+    is_solo = len(hosts) == 1
+
+    # Determine candidate container names on the head host
+    candidates: list[str] = []
+    if is_solo:
+        candidates.append("%s_solo" % cluster_id)
+    else:
+        # Native distributed: node_0; Ray: head
+        candidates.append("%s_node_0" % cluster_id)
+        candidates.append("%s_head" % cluster_id)
+
+    # Check each candidate
+    container_statuses: dict[str, bool] = {}
+    for name in candidates:
+        container_statuses[name] = is_container_running(head_host, name, ssh_kwargs=ssh_kwargs)
+
+    running = any(container_statuses.values())
+
+    # Optional health check
+    healthy: bool | None = None
+    if check_health and running:
+        from sparkrun.orchestration.primitives import wait_for_healthy
+        effective_port = port or (meta.get("port") if meta else None) or 8000
+        url = "http://%s:%d/v1/models" % (head_host, effective_port)
+        healthy = wait_for_healthy(url, max_retries=1, retry_interval=0, max_consecutive_refused=2)
+
+    return JobStatus(
+        running=running,
+        cluster_id=cluster_id,
+        healthy=healthy,
+        metadata=meta,
+        container_statuses=container_statuses,
+        hosts=hosts,
+    )
 
 
 def generate_cluster_id(recipe: "Recipe", hosts: list[str], overrides: dict | None = None) -> str:
