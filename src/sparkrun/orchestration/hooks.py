@@ -299,7 +299,7 @@ def _run_exec_command(
 
     # Escape single quotes in command for bash -c
     escaped = cmd.replace("'", "'\\''")
-    script = "docker exec %s bash -c '%s'" % (container_name, escaped)
+    script = "docker exec --user root %s bash -c '%s'" % (container_name, escaped)
 
     logger.info("  %s on %s/%s: %s", label, host, container_name, cmd)
 
@@ -371,7 +371,8 @@ def _run_copy_command(
     elif is_local_host(host):
         # Local: docker cp directly
         script = (
-            "docker exec %(c)s mkdir -p %(dest)s\n"
+            "set -e\n"
+            "docker exec --user root %(c)s mkdir -p %(dest)s\n"
             "docker cp %(src)s/. %(c)s:%(dest)s/\n"
         ) % {"c": container_name, "src": source, "dest": dest}
         result = run_script_on_host(host, script, ssh_kwargs=ssh_kwargs, timeout=120)
@@ -391,7 +392,8 @@ def _run_copy_command(
         )
 
         script = (
-            "docker exec %(c)s mkdir -p %(dest)s\n"
+            "set -e\n"
+            "docker exec --user root %(c)s mkdir -p %(dest)s\n"
             "docker cp %(tmp)s/. %(c)s:%(dest)s/\n"
             "rm -rf %(tmp)s\n"
         ) % {"c": container_name, "dest": dest, "tmp": remote_tmp}
@@ -431,7 +433,8 @@ def _run_delegated_copy(
     if host == source_host:
         # Files already on this host — docker cp directly
         script = (
-            "docker exec %(c)s mkdir -p %(dest)s\n"
+            "set -e\n"
+            "docker exec --user root %(c)s mkdir -p %(dest)s\n"
             "docker cp %(src)s/. %(c)s:%(dest)s/\n"
         ) % {"c": container_name, "src": source, "dest": dest}
         logger.info("  %s delegated copy (local to %s): %s -> %s:%s", label, host, source, container_name, dest)
@@ -455,7 +458,7 @@ def _run_delegated_copy(
             "set -e\n"
             "mkdir -p %(tmp)s\n"
             "rsync -a %(rsync_ssh)s %(user)s%(src_host)s:%(src)s/ %(tmp)s/\n"
-            "docker exec %(c)s mkdir -p %(dest)s\n"
+            "docker exec --user root %(c)s mkdir -p %(dest)s\n"
             "docker cp %(tmp)s/. %(c)s:%(dest)s/\n"
             "rm -rf %(tmp)s\n"
         ) % {
