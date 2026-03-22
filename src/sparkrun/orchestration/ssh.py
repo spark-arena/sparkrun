@@ -44,6 +44,7 @@ def _run_subprocess(
         timeout: int | None = None,
         input_data: str | None = None,
         shell: bool = False,
+        quiet: bool = False,
 ) -> RemoteResult:
     """Run a subprocess and return a RemoteResult with standard error handling.
 
@@ -57,6 +58,8 @@ def _run_subprocess(
         timeout: Execution timeout in seconds.
         input_data: Optional stdin data.
         shell: Whether to use shell=True.
+        quiet: If True, downgrade failure logging from WARNING to DEBUG.
+            Used for expected-failure probes (e.g. NOPASSWD sudo checks).
 
     Returns:
         RemoteResult with returncode, stdout, stderr.
@@ -81,7 +84,8 @@ def _run_subprocess(
         if result.success:
             logger.debug("  %s <- %s OK (%.1fs)", label, host, elapsed)
         else:
-            logger.warning(
+            log_fn = logger.debug if quiet else logger.warning
+            log_fn(
                 "  %s <- %s FAILED rc=%d (%.1fs): %s",
                 label, host, proc.returncode, elapsed,
                 proc.stderr.strip()[:200],
@@ -135,6 +139,7 @@ def run_remote_script(
         connect_timeout: int = 10,
         timeout: int | None = None,
         dry_run: bool = False,
+        quiet: bool = False,
 ) -> RemoteResult:
     """Execute a script on a remote host via stdin piping.
 
@@ -150,6 +155,7 @@ def run_remote_script(
         connect_timeout: SSH connection timeout in seconds.
         timeout: Overall execution timeout in seconds.
         dry_run: If True, log the script but don't execute.
+        quiet: If True, downgrade failure logging from WARNING to DEBUG.
 
     Returns:
         RemoteResult with returncode, stdout, stderr.
@@ -169,7 +175,7 @@ def run_remote_script(
     logger.debug("SSH command: %s", " ".join(cmd))
     logger.debug("Script: %d lines, %d bytes", script_lines, len(script))
 
-    result = _run_subprocess(cmd, host, "SSH script", timeout=timeout, input_data=script)
+    result = _run_subprocess(cmd, host, "SSH script", timeout=timeout, input_data=script, quiet=quiet)
     if result.success:
         if result.stdout.strip():
             logger.debug("Remote script stdout on %s:\n%s", host, result.stdout.strip())
@@ -416,6 +422,7 @@ def run_remote_scripts_parallel(
         ssh_options: list[str] | None = None,
         timeout: int | None = None,
         dry_run: bool = False,
+        quiet: bool = False,
 ) -> list[RemoteResult]:
     """Execute the same script on multiple hosts in parallel using threads.
 
@@ -427,6 +434,7 @@ def run_remote_scripts_parallel(
         ssh_options: Additional SSH options.
         timeout: Per-host execution timeout in seconds.
         dry_run: If True, log the script but don't execute.
+        quiet: If True, downgrade failure logging from WARNING to DEBUG.
 
     Returns:
         List of RemoteResult, one per host (order not guaranteed).
@@ -449,6 +457,7 @@ def run_remote_scripts_parallel(
                 ssh_options=ssh_options,
                 timeout=timeout,
                 dry_run=dry_run,
+                quiet=quiet,
             ): host
             for host in hosts
         }

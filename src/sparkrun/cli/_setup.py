@@ -784,7 +784,6 @@ def setup_fix_permissions(ctx, hosts, hosts_file, cluster_name, user, cache_dir,
     # If hosts failed without a password, prompt and retry
     if still_failed and not dry_run:
         if sudo_password is None:
-            click.echo("Sudo password required for %d host(s)." % len(still_failed))
             sudo_password = click.prompt("[sudo] password for %s" % user, hide_input=True)
             # Re-run fallback with the password for failed hosts
             result_map, still_failed = run_with_sudo_fallback(
@@ -940,7 +939,6 @@ def setup_clear_cache(ctx, hosts, hosts_file, cluster_name, user, save_sudo, dry
     # If hosts failed without a password, prompt and retry
     if still_failed and not dry_run:
         if sudo_password is None:
-            click.echo("Sudo password required for %d host(s)." % len(still_failed))
             sudo_password = click.prompt("[sudo] password for %s" % user, hide_input=True)
             result_map, still_failed = run_with_sudo_fallback(
                 still_failed,
@@ -1130,7 +1128,6 @@ def setup_earlyoom(ctx, hosts, hosts_file, cluster_name, user, extra_prefer, ext
 
     # If hosts failed without a password, prompt and retry
     if still_failed and not dry_run:
-        click.echo("Sudo password required for %d host(s)." % len(still_failed))
         sudo_password = click.prompt("[sudo] password for %s" % user, hide_input=True)
 
         # Run fallback with progress — report each host as it completes

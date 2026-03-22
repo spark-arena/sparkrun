@@ -153,16 +153,22 @@ def run_with_sudo_fallback(
         else:
             failed_hosts.append(h)
 
-    # Step 1b: Try non-interactive sudo on remote hosts in parallel
+    # Step 1b: Try non-interactive sudo on remote hosts in parallel.
+    # Use quiet=True to suppress scary "FAILED" warnings — these are
+    # expected when hosts don't have NOPASSWD and will be retried with
+    # a password in Step 2.
     if remote_hosts:
         parallel_results = _ssh.run_remote_scripts_parallel(
-            remote_hosts, script, timeout=timeout, dry_run=dry_run, **ssh_kwargs,
+            remote_hosts, script, timeout=timeout, dry_run=dry_run, quiet=True, **ssh_kwargs,
         )
         for r in parallel_results:
             if r.success:
                 result_map[r.host] = r
             else:
                 failed_hosts.append(r.host)
+
+    if failed_hosts and not dry_run:
+        logger.info("Sudo password required on %d host(s).", len(failed_hosts))
 
     # Step 2: For failed hosts, fall back to password-based sudo
     if failed_hosts and not dry_run and sudo_password is not None:
