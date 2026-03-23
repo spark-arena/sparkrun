@@ -29,6 +29,7 @@ Provides complete reference for managing sparkrun recipe registries, browsing an
 # List configured registries (enabled only by default)
 sparkrun registry list
 sparkrun registry list --show-disabled
+sparkrun registry list --only-show-visible
 
 # Add registries from a git repo's .sparkrun/registry.yaml manifest
 sparkrun registry add <git_url>
@@ -47,6 +48,9 @@ sparkrun registry update
 
 # Update a specific registry
 sparkrun registry update <name>
+
+# Update sparkrun + registries in one command
+sparkrun update
 ```
 
 ## Browsing Recipes
@@ -59,6 +63,7 @@ sparkrun list
 sparkrun list --all                         # include hidden registry recipes
 sparkrun list --registry <name>             # filter by registry
 sparkrun list --runtime vllm                # filter by runtime (vllm, sglang, llama-cpp)
+sparkrun list <query>                       # filter by name
 
 # Search for recipes by name, model, runtime, or description (contains-match)
 sparkrun recipe search <query>
@@ -66,9 +71,16 @@ sparkrun recipe search <query> --registry <name> --runtime sglang
 
 # Inspect a specific known recipe (by exact name or file path)
 sparkrun recipe show <recipe> [--tp N]
+
+# Export a normalized recipe
+sparkrun recipe export <recipe>
+sparkrun recipe export <recipe> --json
+sparkrun recipe export <recipe> --save out.yaml
 ```
 
 Use `sparkrun recipe search` as the first attempt when looking for a particular recipe. Use `sparkrun recipe show` when given a specific recipe name or file -- it may not appear in search results.
+
+Recipe names support `@registry/name` syntax for explicit registry selection (e.g. `@spark-arena/qwen3-1.7b-vllm`).
 
 ## Benchmark Profiles
 
@@ -109,11 +121,13 @@ metadata:
   maintainer: name <email>
   model_params: 7B
   model_dtype: fp16
+  category: general                    # Recipe category
 
 defaults:
   port: 8000
   host: 0.0.0.0
   tensor_parallel: 2
+  pipeline_parallel: 1
   gpu_memory_utilization: 0.9
   max_model_len: 32768
   served_model_name: my-model
@@ -129,6 +143,13 @@ command: |
 # Optional: environment variables passed to the container
 env:
   NCCL_DEBUG: INFO
+
+# Optional: post-launch hooks
+post_exec:                             # Commands to run inside the head container
+  - "echo 'Model loaded'"
+post_commands:                         # Commands to run on the control machine
+  - "curl http://{head_ip}:{port}/v1/models"
+stop_after_post: false                 # Stop workload after post hooks (default: false)
 ```
 
 **Key fields:**
@@ -137,6 +158,8 @@ env:
 - `tokenizer_path` is required for GGUF models on SGLang (points to base non-GGUF model)
 - `min_nodes` / `max_nodes` control cluster size validation
 - Shell variable references like `${HF_TOKEN}` in `env:` are expanded from the control machine's environment
+- `post_exec` and `post_commands` run after the server is healthy (port listening + /v1/models check)
+- `pipeline_parallel` enables pipeline parallelism (total nodes = TP * PP)
 
 </Steps>
 
@@ -145,7 +168,7 @@ All sparkrun commands are executed via the Bash tool. No MCP tools are required.
 </Tool_Usage>
 
 <Important_Notes>
-- Run `sparkrun registry update` periodically to get the latest community recipes
+- Run `sparkrun registry update` or `sparkrun update` periodically to get the latest community recipes
 - Use `sparkrun recipe validate` before publishing custom recipes
 - Use `sparkrun recipe vram` to check if a model fits on DGX Spark before trying to run it
 - When creating GGUF + SGLang recipes, always set `tokenizer_path` in defaults
@@ -153,6 +176,8 @@ All sparkrun commands are executed via the Bash tool. No MCP tools are required.
 - Registries are cached at `~/.cache/sparkrun/registries/` and updated with `sparkrun registry update`
 - sparkrun ships with built-in recipes; additional registries point to any git repo containing `.yaml` recipe files
 - Use `sparkrun registry list-benchmark-profiles` to discover available benchmark profiles from registries
+- Recipe names support `@registry/name` syntax for explicit registry selection
+- Use `sparkrun recipe export` to get a normalized view of a recipe (useful for debugging)
 </Important_Notes>
 
 Task: {{ARGUMENTS}}

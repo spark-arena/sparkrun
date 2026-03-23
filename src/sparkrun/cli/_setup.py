@@ -671,6 +671,7 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
 # Docker group membership script (inline — too short for a separate .sh file)
 # ---------------------------------------------------------------------------
 
+# TODO: inline script
 _DOCKER_GROUP_SCRIPT = """\
 #!/bin/bash
 set -uo pipefail
@@ -688,6 +689,7 @@ else
 fi
 """
 
+# TODO: inline script
 _DOCKER_GROUP_FALLBACK_SCRIPT = """\
 #!/bin/bash
 set -uo pipefail

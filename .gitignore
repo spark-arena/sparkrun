@@ -14,3 +14,5 @@ reference_materials/
 /website/.astro/
 /website/dist/
 /website/package-lock.json
+/MagicMock/
+/benchmarks/

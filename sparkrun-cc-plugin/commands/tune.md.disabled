@@ -1,0 +1,56 @@
+# /sparkrun:tune
+
+Tune Triton fused MoE kernels for optimal inference performance.
+
+## Usage
+
+```
+/sparkrun:tune <runtime> <recipe> [options]
+```
+
+## Examples
+
+```
+/sparkrun:tune sglang qwen3.5-35b-bf16-sglang -H 192.168.11.13
+/sparkrun:tune vllm qwen3-moe-vllm --cluster mylab --tp 4
+/sparkrun:tune sglang my-recipe -H myhost --tp 1 --tp 2 --tp 4
+/sparkrun:tune vllm my-recipe -H myhost --parallel 2
+```
+
+## Behavior
+
+When this command is invoked:
+
+1. Determine the runtime (sglang or vllm) and recipe.
+2. Run kernel tuning:
+
+```bash
+# SGLang tuning
+sparkrun tune sglang <recipe> --hosts <ip> [--tp 1 --tp 2 --tp 4]
+
+# vLLM tuning
+sparkrun tune vllm <recipe> --hosts <ip> [--tp 1 --tp 2 --tp 4]
+```
+
+3. Tuning runs on a single host inside the recipe's container. It generates optimal Triton tile configs (BLOCK_M/N/K, warps, stages) for each TP size.
+4. Results are saved to the sparkrun cache and automatically mounted in future inference runs.
+
+## Common Options
+
+| Option | Description |
+|--------|-------------|
+| `--hosts, -H` | Target host (uses first host only) |
+| `--cluster` | Use a saved cluster (uses first host) |
+| `--tp N` | TP size(s) to tune (repeatable; default: 1,2,4,8) |
+| `--image` | Override container image |
+| `--output-dir` | Override tuning config output directory |
+| `--parallel N` | Run N tuning jobs concurrently (default: 1) |
+| `--skip-clone` | Skip cloning runtime repo (scripts already in image) |
+| `--dry-run` | Show what would be done |
+
+## Notes
+
+- Tuning only runs on a single host — multi-host clusters use the first host
+- Results are cached and auto-mounted in future `sparkrun run` commands for the same model
+- Use `--parallel` to speed up tuning by running multiple TP sizes concurrently
+- Tuning configs can also be synced from registries (sparkrun does this automatically during `run`)
