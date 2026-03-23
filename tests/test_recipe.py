@@ -698,6 +698,22 @@ class TestRecipeMetadata:
         assert recipe.metadata["model_vram"] == 5.2
         assert recipe.metadata["kv_vram_per_token"] == 0.00004
 
+    def test_spark_arena_uuid_roundtrip(self):
+        """Test that spark_arena_uuid is preserved in recipe metadata."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "metadata": {
+                "spark_arena_uuid": "076136cd-260a-4e77-b6e2-309d8f64619b",
+            },
+        })
+        assert recipe.metadata["spark_arena_uuid"] == "076136cd-260a-4e77-b6e2-309d8f64619b"
+
+    def test_spark_arena_uuid_absent(self):
+        """Test that spark_arena_uuid is absent when not provided."""
+        recipe = Recipe.from_dict({"name": "Test", "model": "test-model"})
+        assert recipe.metadata.get("spark_arena_uuid") is None
+
     def test_estimate_vram_with_metadata(self):
         """Test estimate_vram() with full metadata (no HF detection)."""
         recipe = Recipe.from_dict({

@@ -389,9 +389,9 @@ class Recipe:
         self.container: str = data.get("container", "")
 
         # Configuration
-        self.defaults: dict[str, Any] = dict(data.get("defaults", {}))
+        self.defaults: dict[str, Any] = dict(data.get("defaults") or {})
         self.env: dict[str, str] = {
-            str(k): osp.expandvars(str(v)) for k, v in data.get("env", {}).items()
+            str(k): osp.expandvars(str(v)) for k, v in (data.get("env") or {}).items()
         }
         self.command: str | None = data.get("command")
 

@@ -111,13 +111,49 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
 
         # Check for existing clusters
         existing = cluster_mgr.list_clusters()
+        default_name = cluster_mgr.get_default() if existing else None
         if existing and not cluster_name and not hosts:
-            click.echo("Existing clusters found:")
-            for i, c in enumerate(existing, 1):
-                default_marker = " (default)" if cluster_mgr.get_default() == c.name else ""
-                click.echo("  %d. %s (%d hosts)%s" % (i, c.name, len(c.hosts), default_marker))
-            click.echo()
-            if not yes:
+            if default_name and not yes:
+                # Default cluster exists — offer to continue with it (low friction)
+                default_def = cluster_mgr.get(default_name)
+                click.echo("Default cluster: %s (%d hosts: %s)" % (
+                    default_name, len(default_def.hosts), ", ".join(default_def.hosts),
+                ))
+                use_default = click.confirm("Continue with this cluster?", default=True)
+                if use_default:
+                    host_list = list(default_def.hosts)
+                    cluster_name = default_name
+                    results["cluster"] = "%s (%d hosts, default)" % (cluster_name, len(host_list))
+                    click.echo()
+                # If declined, fall through to show all clusters
+                elif len(existing) > 1:
+                    click.echo()
+                    click.echo("Available clusters:")
+                    for i, c in enumerate(existing, 1):
+                        marker = " (default)" if c.name == default_name else ""
+                        click.echo("  %d. %s (%d hosts)%s" % (i, c.name, len(c.hosts), marker))
+                    click.echo()
+                    use_other = click.confirm("Use one of these?", default=False)
+                    if use_other:
+                        choice = click.prompt(
+                            "Select cluster",
+                            type=click.IntRange(1, len(existing)),
+                            default=1,
+                        )
+                        chosen = existing[choice - 1]
+                        host_list = list(chosen.hosts)
+                        cluster_name = chosen.name
+                        if default_name != cluster_name:
+                            cluster_mgr.set_default(cluster_name)
+                        results["cluster"] = "%s (%d hosts, set as default)" % (cluster_name, len(host_list))
+                        click.echo("Using cluster '%s': %s" % (cluster_name, ", ".join(host_list)))
+                        click.echo()
+            elif not default_name and not yes:
+                # No default, but clusters exist — show list
+                click.echo("Existing clusters:")
+                for i, c in enumerate(existing, 1):
+                    click.echo("  %d. %s (%d hosts)" % (i, c.name, len(c.hosts)))
+                click.echo()
                 use_existing = click.confirm("Use an existing cluster?", default=False)
                 if use_existing:
                     choice = click.prompt(
@@ -128,11 +164,16 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                     chosen = existing[choice - 1]
                     host_list = list(chosen.hosts)
                     cluster_name = chosen.name
-                    if cluster_mgr.get_default() != cluster_name:
-                        cluster_mgr.set_default(cluster_name)
+                    cluster_mgr.set_default(cluster_name)
                     results["cluster"] = "%s (%d hosts, set as default)" % (cluster_name, len(host_list))
                     click.echo("Using cluster '%s': %s" % (cluster_name, ", ".join(host_list)))
                     click.echo()
+            elif yes and default_name:
+                # --yes with a default cluster: use it automatically
+                default_def = cluster_mgr.get(default_name)
+                host_list = list(default_def.hosts)
+                cluster_name = default_name
+                results["cluster"] = "%s (%d hosts, default)" % (cluster_name, len(host_list))
 
         if not host_list:
             # Step 1a: Local CX7 detection
@@ -280,6 +321,18 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
 
         click.echo()
 
+        # Detect CX7 on cluster hosts if not already known (e.g. reusing
+        # an existing cluster skips the host-discovery path above).
+        if host_list and not cx7_detected_any and len(host_list) >= 2 and not dry_run:
+            ssh_kwargs_probe = build_ssh_kwargs(config)
+            if user:
+                ssh_kwargs_probe["ssh_user"] = user
+            try:
+                probe = detect_cx7_for_hosts(host_list, ssh_kwargs=ssh_kwargs_probe)
+                cx7_detected_any = any(d.detected for d in probe.values())
+            except Exception as e:
+                logger.debug("CX7 probe on existing cluster failed: %s", e)
+
         # ── Phase 2: SSH Mesh ────────────────────────────────────────
         if host_list:
             click.echo("Phase 2: SSH Mesh")
@@ -339,6 +392,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                 test_results = run_remote_scripts_parallel(
                     host_list,
                     "sudo -n true",
+                    quiet=True,
                     timeout=10,
                     **ssh_kwargs,
                 )
@@ -409,9 +463,68 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                 results["cx7"] = "skipped"
             click.echo()
 
-        # ── Phase 4: Sudoers Entries ─────────────────────────────────
+        # ── Phase 4: Docker Group ────────────────────────────────────
         if host_list:
-            click.echo("Phase 4: Sudoers Entries")
+            click.echo("Phase 4: Docker Group Membership")
+            click.echo("-" * 30)
+            click.echo("Ensures user can run Docker commands without sudo.")
+
+            run_docker = yes or click.confirm(
+                "Add '%s' to the docker group on all hosts?" % user, default=True,
+            )
+
+            if run_docker:
+                try:
+                    from ._setup import (
+                        _DOCKER_GROUP_SCRIPT,
+                        _DOCKER_GROUP_FALLBACK_SCRIPT,
+                        _docker_group_summary,
+                    )
+
+                    dg_script = _DOCKER_GROUP_SCRIPT.format(user=user)
+                    dg_fallback = _DOCKER_GROUP_FALLBACK_SCRIPT.format(user=user)
+
+                    if dry_run:
+                        click.echo(
+                            "  [dry-run] Would ensure docker group on %d host(s)." % len(host_list)
+                        )
+                        results["docker"] = "dry-run"
+                    else:
+                        dg_result_map, dg_still_failed = run_with_sudo_fallback(
+                            host_list, dg_script, dg_fallback, ssh_kwargs, dry_run=dry_run,
+                        )
+
+                        if dg_still_failed:
+                            pw = _ensure_sudo_password()
+                            if pw:
+                                for h in dg_still_failed:
+                                    r = run_sudo_script_on_host(
+                                        h, dg_fallback, pw,
+                                        ssh_kwargs=ssh_kwargs, timeout=30,
+                                    )
+                                    dg_result_map[h] = r
+
+                        dg_ok = sum(
+                            1 for h in host_list
+                            if dg_result_map.get(h) and dg_result_map[h].success
+                        )
+                        results["docker"] = "OK (%d/%d)" % (dg_ok, len(host_list)) if dg_ok else "failed"
+                        for h in host_list:
+                            r = dg_result_map.get(h)
+                            if r and r.success:
+                                click.echo("  %s: %s" % (h, _docker_group_summary(r.stdout)))
+                except Exception as e:
+                    results["docker"] = "failed"
+                    click.echo("Docker group error: %s" % e, err=True)
+                    if not yes and not click.confirm("Continue?", default=True):
+                        return
+            else:
+                results["docker"] = "skipped"
+            click.echo()
+
+        # ── Phase 5: Sudoers Entries ─────────────────────────────────
+        if host_list:
+            click.echo("Phase 5: Sudoers Entries")
             click.echo("-" * 30)
             click.echo("Scoped sudoers for fix-permissions + clear-cache (no broad sudo).")
 
@@ -448,11 +561,10 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                             )
                         results["sudoers"] = "dry-run"
                     else:
-                        ok_count = 0
-                        total = 0
+                        failed_any = False
                         for label, script in sudoers_scripts:
+                            label_ok = 0
                             for h in host_list:
-                                total += 1
                                 r = run_sudo_script_on_host(
                                     h,
                                     script,
@@ -461,7 +573,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                                     timeout=300,
                                 )
                                 if r.success:
-                                    ok_count += 1
+                                    label_ok += 1
                                 else:
                                     logger.debug(
                                         "Sudoers %s failed on %s: %s",
@@ -469,8 +581,12 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                                         h,
                                         r.stderr[:100],
                                     )
-                        results["sudoers"] = "installed (fix-permissions, clear-cache)" if ok_count > 0 else "failed"
-                        click.echo("  Installed on %d/%d host entries." % (ok_count, total))
+                            if label_ok < len(host_list):
+                                failed_any = True
+                            click.echo("  %s: %d/%d host(s)" % (label, label_ok, len(host_list)))
+                        results["sudoers"] = (
+                            "installed (fix-permissions, clear-cache)" if not failed_any else "partial"
+                        )
                 except Exception as e:
                     results["sudoers"] = "failed"
                     click.echo("Sudoers error: %s" % e, err=True)
@@ -480,9 +596,9 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                 results["sudoers"] = "skipped"
             click.echo()
 
-        # ── Phase 5: earlyoom ────────────────────────────────────────
+        # ── Phase 6: earlyoom ────────────────────────────────────────
         if host_list:
-            click.echo("Phase 5: earlyoom OOM Protection")
+            click.echo("Phase 6: earlyoom OOM Protection")
             click.echo("-" * 30)
             click.echo("Prevents system hangs by proactively managing memory pressure.")
 
@@ -554,7 +670,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
         click.echo()
         return
 
-    # ── Phase 6: Summary ─────────────────────────────────────────
+    # ── Phase 7: Summary ─────────────────────────────────────────
     click.echo()
     click.echo("Setup Complete!")
     click.echo("=" * 48)
@@ -565,6 +681,8 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
         click.echo("  SSH mesh:   %s" % results["ssh"])
     if results.get("cx7"):
         click.echo("  CX7:        %s" % results["cx7"])
+    if results.get("docker"):
+        click.echo("  Docker:     %s" % results["docker"])
     if results.get("sudoers"):
         click.echo("  Sudoers:    %s" % results["sudoers"])
     if results.get("earlyoom"):

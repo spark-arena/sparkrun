@@ -2992,6 +2992,85 @@ class TestUrlRecipe:
         url = _expand_recipe_shortcut(shortcut)
         assert _simplify_recipe_ref(url) == shortcut
 
+    def test_build_raw_url_flat(self):
+        """_build_raw_url works for a recipe at the top of the subpath."""
+        from sparkrun.cli._registry import _build_raw_url
+
+        url = _build_raw_url("https://github.com/org/repo.git", "recipes", "model-vllm.yaml")
+        assert url == "https://raw.githubusercontent.com/org/repo/main/recipes/model-vllm.yaml"
+
+    def test_build_raw_url_nested(self):
+        """_build_raw_url preserves nested subdirectory paths from rglob."""
+        from sparkrun.cli._registry import _build_raw_url
+
+        url = _build_raw_url("https://github.com/org/repo", "recipes", "vllm/qwen3.yaml")
+        assert url == "https://raw.githubusercontent.com/org/repo/main/recipes/vllm/qwen3.yaml"
+
+    def test_build_raw_url_non_github(self):
+        """_build_raw_url returns empty string for non-GitHub URLs."""
+        from sparkrun.cli._registry import _build_raw_url
+
+        assert _build_raw_url("https://gitlab.com/org/repo", "recipes", "model.yaml") == ""
+
+    def test_display_recipe_detail_spark_arena_uuid(self):
+        """display_recipe_detail shows Spark Arena URL when spark_arena_uuid is present."""
+        from unittest.mock import MagicMock
+        from sparkrun.utils.cli_formatters import display_recipe_detail
+
+        recipe = MagicMock()
+        recipe.qualified_name = "test-recipe"
+        recipe.description = "A test"
+        recipe.maintainer = "tester"
+        recipe.metadata = {"spark_arena_uuid": "076136cd-260a-4e77-b6e2-309d8f64619b"}
+        recipe.runtime = "vllm"
+        recipe.model = "test-model"
+        recipe.container = "test:latest"
+        recipe.min_nodes = 1
+        recipe.max_nodes = 2
+        recipe.defaults = {}
+        recipe.env = {}
+        recipe.command = None
+
+        from click.testing import CliRunner
+        import click
+
+        @click.command()
+        def _show():
+            display_recipe_detail(recipe, show_vram=False)
+
+        result = CliRunner().invoke(_show)
+        assert "https://spark-arena.com/benchmarks/076136cd-260a-4e77-b6e2-309d8f64619b" in result.output
+        assert "Spark Arena:" in result.output
+
+    def test_display_recipe_detail_no_spark_arena_uuid(self):
+        """display_recipe_detail omits Spark Arena line when uuid is absent."""
+        from unittest.mock import MagicMock
+        from sparkrun.utils.cli_formatters import display_recipe_detail
+
+        recipe = MagicMock()
+        recipe.qualified_name = "test-recipe"
+        recipe.description = "A test"
+        recipe.maintainer = None
+        recipe.metadata = {}
+        recipe.runtime = "vllm"
+        recipe.model = "test-model"
+        recipe.container = "test:latest"
+        recipe.min_nodes = 1
+        recipe.max_nodes = None
+        recipe.defaults = {}
+        recipe.env = {}
+        recipe.command = None
+
+        from click.testing import CliRunner
+        import click
+
+        @click.command()
+        def _show():
+            display_recipe_detail(recipe, show_vram=False)
+
+        result = CliRunner().invoke(_show)
+        assert "Spark Arena:" not in result.output
+
     def test_format_job_commands_uses_recipe_ref(self):
         """format_job_commands prefers recipe_ref over recipe name."""
         from sparkrun.utils.cli_formatters import format_job_commands

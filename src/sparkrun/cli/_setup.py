@@ -34,7 +34,7 @@ def setup(ctx):
         click.echo(ctx.get_help())
 
 
-@setup.command("completion")
+@setup.command("completion", hidden=True)
 @click.option("--shell", type=click.Choice(["bash", "zsh", "fish"]), default=None, help="Shell type (auto-detected if not specified)")
 @click.pass_context
 def setup_completion(ctx, shell):
@@ -664,6 +664,129 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
         click.echo("  Host keys for %d CX7 IPs distributed to %d host(s) + local." % (len(all_cx7_ips), ks_ok))
 
     if failed:
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Docker group membership script (inline — too short for a separate .sh file)
+# ---------------------------------------------------------------------------
+
+_DOCKER_GROUP_SCRIPT = """\
+#!/bin/bash
+set -uo pipefail
+TARGET_USER="{user}"
+if id -nG "$TARGET_USER" 2>/dev/null | grep -qw docker; then
+    echo "DOCKER_GROUP=already_member"
+else
+    sudo -n usermod -aG docker "$TARGET_USER" 2>/dev/null
+    if [ $? -eq 0 ]; then
+        echo "DOCKER_GROUP=added"
+    else
+        echo "DOCKER_GROUP=needs_sudo"
+        exit 1
+    fi
+fi
+"""
+
+_DOCKER_GROUP_FALLBACK_SCRIPT = """\
+#!/bin/bash
+set -uo pipefail
+TARGET_USER="{user}"
+usermod -aG docker "$TARGET_USER"
+echo "DOCKER_GROUP=added"
+"""
+
+
+def _docker_group_summary(stdout: str) -> str:
+    """Extract status from docker-group script output."""
+    for line in stdout.strip().splitlines():
+        if line.startswith("DOCKER_GROUP="):
+            val = line.split("=", 1)[1]
+            if val == "already_member":
+                return "already a member"
+            elif val == "added":
+                return "added to docker group"
+    return stdout.strip()[:80]
+
+
+@setup.command("docker-group")
+@host_options
+@click.option("--user", "-u", default=None, help="Target user (default: SSH user)")
+@dry_run_option
+@click.pass_context
+def setup_docker_group(ctx, hosts, hosts_file, cluster_name, user, dry_run):
+    """Ensure user is a member of the docker group on cluster hosts.
+
+    Runs ``usermod -aG docker <user>`` on each host so that Docker
+    commands work without sudo.  Requires sudo on target hosts.
+
+    A re-login (or ``newgrp docker``) is needed on hosts where the
+    user was newly added.
+
+    Examples:
+
+      sparkrun setup docker-group --hosts 10.24.11.13,10.24.11.14
+
+      sparkrun setup docker-group --cluster mylab
+
+      sparkrun setup docker-group --cluster mylab --user ubuntu
+    """
+    from sparkrun.core.config import SparkrunConfig
+    from sparkrun.orchestration.sudo import run_with_sudo_fallback, run_sudo_script_on_host
+
+    config = SparkrunConfig()
+    host_list, user, ssh_kwargs = _resolve_setup_context(hosts, hosts_file, cluster_name, config, user)
+
+    click.echo("Ensuring user '%s' is in the docker group on %d host(s)..." % (user, len(host_list)))
+    click.echo()
+
+    script = _DOCKER_GROUP_SCRIPT.format(user=user)
+    fallback = _DOCKER_GROUP_FALLBACK_SCRIPT.format(user=user)
+
+    result_map, still_failed = run_with_sudo_fallback(
+        host_list, script, fallback, ssh_kwargs, dry_run=dry_run,
+    )
+
+    # Report immediate successes
+    for h in host_list:
+        r = result_map.get(h)
+        if r and r.success:
+            click.echo("  [OK]   %s: %s" % (h, _docker_group_summary(r.stdout)))
+
+    # Prompt and retry if needed
+    if still_failed and not dry_run:
+        sudo_password = click.prompt("[sudo] password for %s" % user, hide_input=True)
+        for h in still_failed:
+            r = run_sudo_script_on_host(
+                h, fallback, sudo_password, ssh_kwargs=ssh_kwargs, timeout=30, dry_run=dry_run,
+            )
+            result_map[h] = r
+
+    # Final summary
+    ok_count = sum(1 for h in host_list if result_map.get(h) and result_map[h].success)
+    fail_count = sum(1 for h in host_list if result_map.get(h) and not result_map[h].success)
+
+    for h in host_list:
+        r = result_map.get(h)
+        if r and not r.success:
+            click.echo("  [FAIL] %s: %s" % (h, r.stderr.strip()[:200]), err=True)
+        elif r and r.success and h in (still_failed or []):
+            click.echo("  [OK]   %s: %s" % (h, _docker_group_summary(r.stdout)))
+
+    click.echo()
+    parts = []
+    if ok_count:
+        parts.append("%d OK" % ok_count)
+    if fail_count:
+        parts.append("%d failed" % fail_count)
+    click.echo("Results: %s." % ", ".join(parts) if parts else "No hosts processed.")
+
+    if ok_count and any("added" in (result_map.get(h).stdout if result_map.get(h) else "") for h in host_list):
+        click.echo()
+        click.echo("Note: Users newly added to the docker group must re-login")
+        click.echo("(or run 'newgrp docker') for the change to take effect.")
+
+    if fail_count:
         sys.exit(1)
 
 

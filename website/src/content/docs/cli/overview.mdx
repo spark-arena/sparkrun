@@ -23,6 +23,7 @@ sparkrun provides a unified CLI for managing LLM inference workloads on DGX Spar
 | `sparkrun stop <recipe>` | Stop a running workload |
 | `sparkrun logs <recipe>` | Re-attach to workload logs |
 | `sparkrun benchmark <recipe>` | Benchmark an inference recipe (auto: run → benchmark → stop) |
+| `sparkrun update` | Update sparkrun + registries (`--no-update-registries` to skip) |
 
 ### Recipe commands
 
@@ -102,7 +103,7 @@ See [proxy](/cli/proxy/) for details.
 |---|---|
 | `sparkrun setup install` | Install sparkrun as a uv tool + tab-completion + registry sync |
 | `sparkrun setup completion` | Install shell tab-completion (bash/zsh/fish) |
-| `sparkrun setup update` | Update sparkrun + registries (`--no-update-registries` to skip) |
+| `sparkrun setup update` | Update sparkrun + registries (alias: `sparkrun update`) |
 | `sparkrun setup ssh` | Set up passwordless SSH mesh across hosts |
 | `sparkrun setup cx7` | Detect and configure ConnectX-7 NICs across hosts |
 | `sparkrun setup fix-permissions` | Fix root-owned HF cache files on cluster hosts |

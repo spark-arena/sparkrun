@@ -137,6 +137,9 @@ def display_recipe_detail(recipe, show_vram=True, registry_name=None, cli_overri
     click.echo(f"Description:  {recipe.description}")
     if recipe.maintainer:
         click.echo(f"Maintainer:   {recipe.maintainer}")
+    spark_arena_uuid = recipe.metadata.get("spark_arena_uuid")
+    if spark_arena_uuid:
+        click.echo(f"Spark Arena:  https://spark-arena.com/benchmarks/{spark_arena_uuid}")
     click.echo(f"Runtime:      {recipe.runtime}")
     click.echo(f"Model:        {recipe.model}")
     click.echo(f"Container:    {recipe.container}")
