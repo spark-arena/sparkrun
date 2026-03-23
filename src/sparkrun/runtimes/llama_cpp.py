@@ -48,6 +48,12 @@ _LLAMA_CPP_FLAG_ALIASES: dict[str, list[str]] = {
 # Default RPC port for llama.cpp distributed inference
 _DEFAULT_RPC_PORT = 50052
 
+# first party images for special handling -- TODO: ensure specific tag for image available as label for spark-arena snapshot
+_FIRST_PARTY_IMAGES = (
+    "scitrera/dgx-spark-llama-cpp:latest",
+    'ghcr.io/spark-arena/dgx-llama-cpp:latest',
+)
+
 
 class LlamaCppRuntime(RuntimePlugin):
     """llama.cpp runtime using llama-server for GGUF model inference.
@@ -70,7 +76,7 @@ class LlamaCppRuntime(RuntimePlugin):
     """
 
     runtime_name = "llama-cpp"
-    default_image_prefix = "scitrera/dgx-spark-llama-cpp"
+    default_image_prefix = "scitrera/dgx-spark-llama-cpp:latest"
 
     def cluster_strategy(self) -> str:
         """llama.cpp uses native RPC-based distribution, not Ray."""
