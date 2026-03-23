@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 @click.option("--no-rm", is_flag=True, help="Don't auto-remove containers on exit (keeps containers after stop)")
 @click.option("--rootful", is_flag=True, help="Run with --privileged as root inside container (legacy behavior)")
 @click.option("--restart", "restart_policy", default=None,
-              help="Docker restart policy (no, always, unless-stopped, on-failure[:N])")
+              help="Docker restart policy (no, always, unless-stopped, on-failure[:N])", hidden=True)
 @click.option("--transfer-mode", default=None,
               type=click.Choice(["auto", "local", "push", "delegated"], case_sensitive=False),
               help="Resource transfer mode (overrides cluster setting)")

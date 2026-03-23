@@ -64,6 +64,7 @@ export default defineConfig({
                         {label: 'Recipe Commands', slug: 'cli/recipe-commands'},
                         {label: 'Cluster Commands', slug: 'cli/cluster-commands'},
                         {label: 'Setup Commands', slug: 'cli/setup-commands'},
+                        {label: 'export', slug: 'cli/export'},
                         {label: 'tune', slug: 'cli/tune'},
                         {label: 'proxy', slug: 'cli/proxy'},
                     ],

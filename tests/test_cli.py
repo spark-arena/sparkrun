@@ -269,7 +269,7 @@ class TestExportCommand:
             lambda cid, cache_dir=None: meta if cid == cluster_id else None,
         )
 
-        result = runner.invoke(main, ["export", "running", "aabbccddee11"])
+        result = runner.invoke(main, ["export", "running-recipe", "aabbccddee11"])
         assert result.exit_code == 0
         data = yaml.safe_load(result.output)
         assert data["container"] == "custom/image:v2"
@@ -302,7 +302,7 @@ class TestExportCommand:
             lambda cid, cache_dir=None: meta if cid == cluster_id else None,
         )
 
-        result = runner.invoke(main, ["export", "running", "aabbccddee22", "--json"])
+        result = runner.invoke(main, ["export", "running-recipe", "aabbccddee22", "--json"])
         assert result.exit_code == 0
         data = json_mod.loads(result.output)
         assert "model" in data
@@ -333,7 +333,7 @@ class TestExportCommand:
         )
 
         dest = tmp_path / "exported.yaml"
-        result = runner.invoke(main, ["export", "running", "aabbccddee33", "--save", str(dest)])
+        result = runner.invoke(main, ["export", "running-recipe", "aabbccddee33", "--save", str(dest)])
         assert result.exit_code == 0
         assert "Recipe saved to" in result.output
         assert dest.exists()
@@ -358,7 +358,7 @@ class TestExportCommand:
             lambda cid, cache_dir=None: meta if cid == cluster_id else None,
         )
 
-        result = runner.invoke(main, ["export", "running", "aabbccddee44"])
+        result = runner.invoke(main, ["export", "running-recipe", "aabbccddee44"])
         assert result.exit_code == 0
         data = yaml.safe_load(result.output)
         assert data["defaults"]["port"] == 7777
@@ -382,7 +382,7 @@ class TestExportCommand:
             lambda cid, cache_dir=None: meta if cid == cluster_id else None,
         )
 
-        result = runner.invoke(main, ["export", "running", "aabbccddee55"])
+        result = runner.invoke(main, ["export", "running-recipe", "aabbccddee55"])
         assert result.exit_code == 0
         data = yaml.safe_load(result.output)
         assert data["defaults"]["tensor_parallel"] == 2
@@ -395,9 +395,268 @@ class TestExportCommand:
             lambda cid, cache_dir=None: None,
         )
 
-        result = runner.invoke(main, ["export", "running", "aabbccddee66"])
+        result = runner.invoke(main, ["export", "running-recipe", "aabbccddee66"])
         assert result.exit_code != 0
         assert "No job metadata" in result.output
+
+
+class TestExportSystemdCommand:
+    """Test the export systemd command."""
+
+    def test_export_systemd_help(self, runner):
+        """Test that sparkrun export systemd --help shows expected options."""
+        result = runner.invoke(main, ["export", "systemd", "--help"])
+        assert result.exit_code == 0
+        assert "--install" in result.output
+        assert "--uninstall" in result.output
+        assert "--start" in result.output
+        assert "--service-name" in result.output
+        assert "--cluster" in result.output
+
+    def test_export_systemd_install_and_uninstall_mutually_exclusive(self, runner, monkeypatch):
+        """Test that --install and --uninstall cannot be used together."""
+        result = runner.invoke(
+            main,
+            ["export", "systemd", _TEST_RECIPE_NAME,
+             "--hosts", "10.0.0.1",
+             "--install", "--uninstall"],
+        )
+        assert result.exit_code != 0
+        assert "mutually exclusive" in result.output
+
+    def test_render_systemd_unit(self):
+        """Test that _render_systemd_unit produces correct unit file content."""
+        from sparkrun.cli._export import _render_systemd_unit
+        from sparkrun.core.recipe import Recipe
+
+        recipe_file_data = yaml.safe_dump(_TEST_RECIPE_DATA)
+        import os
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(recipe_file_data)
+            f.flush()
+            recipe = Recipe.load(f.name)
+        os.unlink(f.name)
+
+        unit = _render_systemd_unit(
+            slug="test-sglang-cluster",
+            recipe=recipe,
+            cluster_name="test-sglang-cluster-systemd",
+            ssh_user="testuser",
+            sparkrun_path="/usr/local/bin/sparkrun",
+            user_home="/home/testuser",
+        )
+
+        assert "[Unit]" in unit
+        assert "[Service]" in unit
+        assert "[Install]" in unit
+        assert "User=testuser" in unit
+        assert "Group=testuser" in unit
+        assert "/usr/local/bin/sparkrun run" in unit
+        assert "--cluster test-sglang-cluster-systemd" in unit
+        assert "--foreground --no-follow" in unit
+        assert "SyslogIdentifier=sparkrun-test-sglang-cluster" in unit
+        assert "Restart=on-failure" in unit
+        assert "RestartSec=30" in unit
+        assert "TimeoutStartSec=600" in unit
+        assert "WantedBy=multi-user.target" in unit
+
+    def test_render_install_script(self):
+        """Test that _render_install_script embeds recipe and cluster YAML."""
+        from sparkrun.cli._export import _render_install_script
+
+        recipe_yaml = "model: test\nruntime: sglang\n"
+        cluster_yaml = "name: test-systemd\nhosts:\n- 10.0.0.1\n"
+
+        script = _render_install_script(
+            slug="test-recipe",
+            recipe_yaml=recipe_yaml,
+            cluster_yaml=cluster_yaml,
+            cluster_name="test-recipe-systemd",
+            user_home="/home/testuser",
+        )
+
+        assert "mkdir -p" in script
+        assert "/home/testuser/.config/sparkrun/services/test-recipe" in script
+        assert "recipe.yaml" in script
+        assert "cluster.yaml" in script
+        assert "test-recipe-systemd" in script
+
+    def test_render_uninstall_script(self):
+        """Test that _render_uninstall_script stops, disables, and removes."""
+        from sparkrun.cli._export import _render_uninstall_script
+
+        script = _render_uninstall_script(
+            slug="test-recipe",
+            cluster_name="test-recipe-systemd",
+            user_home="/home/testuser",
+        )
+
+        assert "systemctl stop" in script
+        assert "systemctl disable" in script
+        assert "rm -f" in script
+        assert "daemon-reload" in script
+        assert "sparkrun-test-recipe" in script
+        assert "/home/testuser/.config/sparkrun/services/test-recipe" in script
+
+    def test_render_sudo_install_script(self):
+        """Test that _render_sudo_install_script writes unit and enables service."""
+        from sparkrun.cli._export import _render_sudo_install_script
+
+        unit_contents = "[Unit]\nDescription=test\n[Service]\nType=simple\n"
+        script = _render_sudo_install_script(slug="test-recipe", unit_contents=unit_contents)
+
+        assert "/etc/systemd/system/sparkrun-test-recipe.service" in script
+        assert "daemon-reload" in script
+        assert "systemctl enable" in script
+        assert "sparkrun-test-recipe" in script
+
+    def test_slug_sanitization(self):
+        """Test that recipe slug produces valid systemd service names."""
+        from sparkrun.core.recipe import Recipe
+
+        recipe_data = dict(_TEST_RECIPE_DATA)
+        recipe_data["name"] = "My Fancy Model (v2.0)!"
+        recipe_file_data = yaml.safe_dump(recipe_data)
+        import os
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(recipe_file_data)
+            f.flush()
+            recipe = Recipe.load(f.name)
+        os.unlink(f.name)
+
+        slug = recipe.slug
+        # Should only contain lowercase alphanumeric and hyphens
+        import re
+        assert re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", slug), "slug '%s' is not valid" % slug
+
+    def test_service_name_override(self, runner, monkeypatch):
+        """Test that --service-name overrides the slug in generated output."""
+        # Mock _detect_remote_sparkrun to avoid SSH
+        monkeypatch.setattr(
+            "sparkrun.cli._export._detect_remote_sparkrun",
+            lambda host, ssh_kwargs, dry_run=False: ("/usr/local/bin/sparkrun", "/home/user"),
+        )
+
+        result = runner.invoke(
+            main,
+            ["export", "systemd", _TEST_RECIPE_NAME,
+             "--hosts", "10.0.0.1",
+             "--service-name", "my-custom-name"],
+        )
+        assert result.exit_code == 0
+        assert "sparkrun-my-custom-name" in result.output
+
+    def test_export_systemd_dry_run(self, runner, monkeypatch):
+        """Test dry-run mode prints unit file and scripts."""
+        monkeypatch.setattr(
+            "sparkrun.cli._export._detect_remote_sparkrun",
+            lambda host, ssh_kwargs, dry_run=False: ("/usr/local/bin/sparkrun", "/home/user"),
+        )
+
+        result = runner.invoke(
+            main,
+            ["export", "systemd", _TEST_RECIPE_NAME,
+             "--hosts", "10.0.0.1,10.0.0.2"],
+        )
+        assert result.exit_code == 0
+        assert "Unit file" in result.output
+        assert "[Unit]" in result.output
+        assert "[Service]" in result.output
+        assert "Baked recipe" in result.output
+        assert "Cluster definition" in result.output
+        assert "Install script" in result.output
+        assert "Uninstall script" in result.output
+        assert "To deploy, re-run with --install" in result.output
+
+    def test_export_systemd_from_running_job(self, runner, tmp_path, monkeypatch):
+        """Test systemd export reconstructs from cluster_id via job metadata."""
+        from sparkrun.core.recipe import Recipe
+
+        recipe_file = tmp_path / "test-export.yaml"
+        recipe_file.write_text(yaml.safe_dump(_TEST_RECIPE_DATA))
+        recipe = Recipe.load(recipe_file)
+        state = recipe.__getstate__()
+
+        cluster_id = "sparkrun_aabb001122"
+        meta = {
+            "cluster_id": cluster_id,
+            "recipe": _TEST_RECIPE_NAME,
+            "model": _TEST_RECIPE_DATA["model"],
+            "runtime": "sglang",
+            "hosts": ["10.0.0.1"],
+            "recipe_state": state,
+            "overrides": {"port": 9999},
+        }
+
+        monkeypatch.setattr(
+            "sparkrun.orchestration.job_metadata.load_job_metadata",
+            lambda cid, cache_dir=None: meta if cid == cluster_id else None,
+        )
+        monkeypatch.setattr(
+            "sparkrun.cli._export._detect_remote_sparkrun",
+            lambda host, ssh_kwargs, dry_run=False: ("/usr/local/bin/sparkrun", "/home/user"),
+        )
+
+        result = runner.invoke(main, ["export", "systemd", "aabb001122"])
+        assert result.exit_code == 0
+        assert "[Unit]" in result.output
+        assert "sparkrun" in result.output
+
+    def test_export_systemd_install_mocked(self, runner, monkeypatch):
+        """Test --install mode calls correct SSH scripts."""
+        from sparkrun.orchestration.ssh import RemoteResult
+
+        monkeypatch.setattr(
+            "sparkrun.cli._export._detect_remote_sparkrun",
+            lambda host, ssh_kwargs, dry_run=False: ("/usr/local/bin/sparkrun", "/home/user"),
+        )
+
+        ssh_calls = []
+
+        def mock_run_remote_script(host, script, **kwargs):
+            ssh_calls.append(("user", host, script))
+            return RemoteResult(host=host, returncode=0, stdout="OK", stderr="")
+
+        def mock_run_sudo(host, script, password, **kwargs):
+            ssh_calls.append(("sudo", host, script))
+            return RemoteResult(host=host, returncode=0, stdout="OK", stderr="")
+
+        monkeypatch.setattr("sparkrun.orchestration.ssh.run_remote_script", mock_run_remote_script)
+        monkeypatch.setattr("sparkrun.orchestration.sudo.run_sudo_script_on_host", mock_run_sudo)
+
+        result = runner.invoke(
+            main,
+            ["export", "systemd", _TEST_RECIPE_NAME,
+             "--hosts", "10.0.0.1",
+             "--install"],
+            input="testpassword\n",
+        )
+        assert result.exit_code == 0
+        assert len(ssh_calls) == 2  # user-level install + sudo install
+        assert ssh_calls[0][0] == "user"
+        assert ssh_calls[1][0] == "sudo"
+
+    def test_export_systemd_sparkrun_not_found(self, runner, monkeypatch):
+        """Test error when head node lacks sparkrun."""
+        from sparkrun.orchestration.ssh import RemoteResult
+
+        monkeypatch.setattr(
+            "sparkrun.orchestration.ssh.run_remote_script",
+            lambda host, script, **kwargs: RemoteResult(
+                host=host, returncode=1, stdout="",
+                stderr="ERROR: sparkrun not found on PATH",
+            ),
+        )
+
+        result = runner.invoke(
+            main,
+            ["export", "systemd", _TEST_RECIPE_NAME,
+             "--hosts", "10.0.0.1"],
+        )
+        assert result.exit_code != 0
+        assert "sparkrun not found" in result.output
 
 
 class TestVramCommand:

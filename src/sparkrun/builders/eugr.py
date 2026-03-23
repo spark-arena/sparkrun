@@ -94,12 +94,14 @@ class EugrBuilder(BuilderPlugin):
 
         # ~~ SPECIAL CASES: map pullable eugr nightly images to use direct build ~~~
         if image.strip() == "ghcr.io/spark-arena/dgx-vllm-eugr-nightly-tf5:latest" and (build_args == ["--tf5"] or not build_args):
-            image = "vllm-node-tf5"  # TODO: metadata based naming and smarter build detection
+            # use sparkrun prefixed names to avoid collisions with other user images
+            image = "sparkrun-eugr-vllm-tf5"
             build_args = ['--tf5']
             needs_build = True
             logger.info("Mapped eugr nightly tf5 image to use direct build via container name '%s' (build_args cleared)", image)
         elif image.strip() == "ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest" and not build_args:
-            image = "vllm-node"  # TODO: metadata based naming and smarter build detection
+            # use sparkrun prefixed names to avoid collisions with other user images
+            image = "sparkrun-eugr-vllm"
             needs_build = True
             logger.info("Mapped eugr nightly image to container name '%s'", image)
         # NOTE: if not :latest, then we do want to use the given container image
@@ -123,8 +125,9 @@ class EugrBuilder(BuilderPlugin):
                         logger.info("eugr image '%s' not found locally; will build", image)
                         needs_build = True
 
+        # nothing eugr-specific to prepare -- no build, no mods
         if not needs_build and not has_mods:
-            return image  # nothing eugr-specific to prepare
+            return image
 
         # Ensure repo is available (for build script and/or mods)
         if delegated:
@@ -148,6 +151,7 @@ class EugrBuilder(BuilderPlugin):
             source_host = head if delegated else None
             self._inject_mod_pre_exec(recipe, mods, source_host=source_host)
 
+        # TODO: potentially inject metadata flags as needed into recipe?
         return image
 
     def validate_recipe(self, recipe: Recipe) -> list[str]:

@@ -1,0 +1,196 @@
+---
+title: sparkrun export
+description: Export recipes, running workload configurations, and systemd services.
+---
+
+The `export` command group provides tools for exporting recipes in various formats and generating systemd services for persistent inference workloads.
+
+## export recipe
+
+```bash
+sparkrun export recipe <recipe> [options]
+```
+
+Export a normalized recipe to stdout or a file.
+
+### Options
+
+| Option | Description |
+|---|---|
+| `--json` | Output as JSON instead of YAML |
+| `--save <path>` | Save to a file instead of printing to stdout |
+
+### Examples
+
+```bash
+# Print normalized YAML to stdout
+sparkrun export recipe qwen3-1.7b-vllm
+
+# Save to a file
+sparkrun export recipe qwen3-1.7b-vllm --save my-recipe.yaml
+
+# Export as JSON
+sparkrun export recipe qwen3-1.7b-vllm --json
+```
+
+## export running-recipe
+
+```bash
+sparkrun export running-recipe <target> [options]
+```
+
+Export the effective recipe from a running workload, including all applied overrides baked into defaults. This is useful for capturing the exact configuration of a running inference workload.
+
+`TARGET` can be a recipe name or a cluster ID (the short hex string from `sparkrun status` output).
+
+### Options
+
+| Option | Description |
+|---|---|
+| `--hosts` / `-H` | Comma-separated host list (needed when target is a recipe name) |
+| `--hosts-file` | File with hosts |
+| `--cluster` | Use a saved cluster by name |
+| `--json` | Output as JSON instead of YAML |
+| `--save <path>` | Save to a file instead of printing to stdout |
+
+### Examples
+
+```bash
+# Export by cluster ID (from sparkrun status)
+sparkrun export running-recipe e5f6a7b8
+
+# Export by recipe name (requires host/cluster info)
+sparkrun export running-recipe glm-4.7-flash-awq --cluster mylab
+
+# Save to a file
+sparkrun export running-recipe e5f6a7b8 --save effective-recipe.yaml
+
+# Export as JSON
+sparkrun export running-recipe e5f6a7b8 --json
+```
+
+:::tip
+The exported recipe includes all overrides (port, tensor parallelism, served model name, etc.) baked into the defaults, so it's fully self-contained and can be used directly with `sparkrun run`.
+:::
+
+## export systemd
+
+```bash
+sparkrun export systemd <target> --cluster <name> [options]
+```
+
+Generate a systemd service for running a sparkrun inference workload persistently on the head node of a cluster. The service wraps `sparkrun run` with `--foreground`, giving you journald log integration, `systemctl` status monitoring, and automatic restart on failure.
+
+`TARGET` can be a recipe name (with optional overrides) or a cluster ID (from a running workload).
+
+### Options
+
+| Option | Description |
+|---|---|
+| `--hosts` / `-H` | Comma-separated host list |
+| `--hosts-file` | File with hosts |
+| `--cluster` | Use a saved cluster by name |
+| `--tp` / `--tensor-parallel` | Override tensor parallelism |
+| `--pp` / `--pipeline-parallel` | Override pipeline parallelism |
+| `--gpu-mem` | Override GPU memory utilization |
+| `--max-model-len` | Override maximum model context length |
+| `--option` / `-o` | Override any recipe default (repeatable) |
+| `--image` | Override container image |
+| `--port` | Override service port |
+| `--served-model-name` | Override served model name |
+| `--install` | Deploy service to the head node |
+| `--uninstall` | Remove service from the head node |
+| `--start` | Start service after install (implies `--install`) |
+| `--service-name` | Override service name (default: `sparkrun-<slug>`) |
+| `--dry-run` / `-n` | Show what would be done |
+
+### Modes
+
+**Preview (default)** — prints all generated artifacts for review:
+
+```bash
+sparkrun export systemd qwen3-1.7b-vllm --cluster mylab
+```
+
+This displays the systemd unit file, baked recipe, cluster definition, install script, and uninstall script without making any changes.
+
+**Install** — deploys the service to the head node:
+
+```bash
+sparkrun export systemd qwen3-1.7b-vllm --cluster mylab --install
+```
+
+This SSHes to the head node and:
+1. Creates the service directory (`~/.config/sparkrun/services/<slug>/`)
+2. Writes the baked recipe and cluster definition
+3. Installs the systemd unit file (requires sudo)
+4. Enables the service with `systemctl enable`
+
+**Install and start** — deploys and immediately starts the service:
+
+```bash
+sparkrun export systemd qwen3-1.7b-vllm --cluster mylab --install --start
+```
+
+**Uninstall** — removes the service from the head node:
+
+```bash
+sparkrun export systemd qwen3-1.7b-vllm --cluster mylab --uninstall
+```
+
+This stops the service, disables it, removes the unit file, and cleans up service files.
+
+### From a running workload
+
+You can generate a systemd service from an already-running workload using its cluster ID:
+
+```bash
+sparkrun export systemd e5f6a7b8 --install --start
+```
+
+### File layout on head node
+
+After `--install`, the following files are created:
+
+```
+~/.config/sparkrun/
+  services/<slug>/
+    recipe.yaml          # Baked recipe with all overrides
+    cluster.yaml         # Cluster definition reference
+  clusters/
+    <slug>-systemd.yaml  # Cluster definition used by the service
+
+/etc/systemd/system/
+  sparkrun-<slug>.service  # systemd unit file (requires sudo)
+```
+
+### Managing the service
+
+Once installed, use standard systemd commands on the head node:
+
+```bash
+# Check status
+systemctl status sparkrun-<slug>
+
+# View logs
+journalctl -u sparkrun-<slug> -f
+
+# Start / stop / restart
+sudo systemctl start sparkrun-<slug>
+sudo systemctl stop sparkrun-<slug>
+sudo systemctl restart sparkrun-<slug>
+```
+
+### systemd unit details
+
+The generated unit uses:
+
+- `Type=simple` — sparkrun runs in foreground mode, so systemd tracks the process directly
+- `Restart=on-failure` with `RestartSec=30` — automatic recovery from crashes
+- `TimeoutStartSec=600` — allows time for large model loading
+- `TimeoutStopSec=120` — allows time for graceful Docker container shutdown
+- `StandardOutput=journal` / `StandardError=journal` — all logs go to journald
+
+:::note[Prerequisites]
+`sparkrun` must be installed on the head node (not just the control machine). The `--install` command will check for this and error if sparkrun is not found.
+:::
