@@ -108,26 +108,6 @@ def recipe_show(ctx, recipe_name, no_vram, tensor_parallel, gpu_mem=None, config
     return
 
 
-@recipe.command("export")
-@click.argument("recipe_name", type=RECIPE_NAME)
-@click.option("--json", "output_json", is_flag=True, help="Output normalized recipe as JSON to stdout")
-@click.option("--save", "save_path", type=click.Path(), help="Save a copy of the recipe to a file")
-# @click.option("--config", "config_path", default=None, help="Path to config file")
-@click.pass_context
-def recipe_export(ctx, recipe_name, output_json=False, save_path=None, config_path=None):
-    """Export normalized recipe to stdout """
-
-    config, _ = _get_config_and_registry(config_path)
-    recipe, recipe_path, registry_mgr = _load_recipe(config, recipe_name)
-
-    if save_path is None:
-        click.echo(recipe.export(json=output_json))
-        return
-
-    click.echo("Recipe saved to %s" % recipe.export(path=save_path, json=output_json))
-    return
-
-
 @recipe.command("validate")
 @click.argument("recipe_name", type=RECIPE_NAME)
 # @click.option("--config", "config_path", default=None, help="Path to config file")

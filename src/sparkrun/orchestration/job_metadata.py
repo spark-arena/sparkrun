@@ -11,7 +11,7 @@ import hashlib
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 import yaml
 
@@ -161,6 +161,7 @@ def save_job_metadata(
         mgmt_ip_map: dict[str, str] | None = None,
         recipe_ref: str | None = None,
         runtime_info: dict[str, str] | None = None,
+        container_image: Optional[str] = None,
 ) -> None:
     """Persist job metadata so ``cluster status`` can display recipe info.
 
@@ -181,7 +182,7 @@ def save_job_metadata(
     if tp is None and recipe.defaults:
         tp = recipe.defaults.get("tensor_parallel")
 
-    meta = {
+    meta: dict = {
         "cluster_id": cluster_id,
         "recipe": recipe.qualified_name,
         "model": recipe.model,
@@ -216,6 +217,18 @@ def save_job_metadata(
         meta["mgmt_ip_map"] = mgmt_ip_map
     if runtime_info:
         meta["runtime_info"] = runtime_info
+    if container_image:
+        meta["effective_container_image"] = container_image
+
+    # Full overrides dict for export reconstruction
+    if overrides:
+        meta["overrides"] = dict(overrides)
+
+    # Serialize full recipe state for faithful export reconstruction.
+    try:
+        meta["recipe_state"] = recipe.__getstate__()
+    except Exception:
+        logger.debug("Failed to serialize recipe state for %s", cluster_id, exc_info=True)
 
     meta_path = jobs_dir / f"{digest}.yaml"
     with open(meta_path, "w") as f:

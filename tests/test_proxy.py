@@ -81,14 +81,15 @@ def state_dir(tmp_path: Path) -> Path:
 
 
 def _make_recipe(name="test", model="Qwen/Qwen3-1.7B", runtime="vllm", defaults=None):
-    """Create a mock Recipe object for testing."""
-    recipe = MagicMock()
-    recipe.name = name
-    recipe.qualified_name = name
-    recipe.model = model
-    recipe.runtime = runtime
-    recipe.defaults = defaults or {}
-    return recipe
+    """Create a real Recipe object for testing."""
+    from sparkrun.core.recipe import Recipe
+    return Recipe.from_dict({
+        "name": name,
+        "model": model,
+        "runtime": runtime,
+        "container": "test-image:latest",
+        "defaults": defaults or {},
+    })
 
 
 # =====================================================================

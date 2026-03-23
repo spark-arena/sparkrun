@@ -60,7 +60,7 @@ def run(
         pipeline_parallel, gpu_mem, served_model_name, max_model_len, image,
         ray_port, init_port, dashboard, dashboard_port, dry_run, ensure, foreground, no_follow,
         no_sync_tuning, no_rm, rootful, restart_policy, transfer_mode, diagnostics_path,
-        options, extra_args, config_path=None, setup=True,
+        options, extra_args, config_path=None,
 ):
     """Run an inference recipe.
 

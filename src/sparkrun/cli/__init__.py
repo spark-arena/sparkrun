@@ -15,6 +15,7 @@ from ._common import (
 )
 from ._benchmark import benchmark
 from ._cluster import cluster, cluster_status
+from ._export import export
 from ._proxy import proxy
 from ._recipe import recipe, recipe_list, recipe_search, recipe_show
 from ._registry import registry, registry_update
@@ -45,6 +46,7 @@ main.add_command(cluster)
 main.add_command(recipe)
 main.add_command(registry)
 main.add_command(benchmark)
+main.add_command(export)
 main.add_command(proxy)
 
 

@@ -717,6 +717,113 @@ class Recipe:
 
         return result
 
+    # ------------------------------------------------------------------
+    # Internal serialization (full round-trip state, not canonical export)
+    # ------------------------------------------------------------------
+
+    _SERIALIZATION_VERSION = 1
+
+    def __getstate__(self) -> dict[str, Any]:
+        """Serialize the full effective Recipe state into a plain dict.
+
+        Unlike ``export()`` (which produces a clean canonical recipe),
+        this captures *all* resolved fields so the object can be
+        faithfully restored without re-running the resolver chain.
+        """
+        return {
+            "_serialization_version": self._SERIALIZATION_VERSION,
+            "name": self.name,
+            "source_path": self.source_path,
+            "source_registry": self.source_registry,
+            "source_registry_url": self.source_registry_url,
+            "_qualified_name_override": self._qualified_name_override,
+            "recipe_version": self.recipe_version,
+            "description": self.description,
+            "model": self.model,
+            "model_revision": self.model_revision,
+            "runtime": self.runtime,
+            "runtime_version": self.runtime_version,
+            "mode": self.mode,
+            "min_nodes": self.min_nodes,
+            "max_nodes": self.max_nodes,
+            "container": self.container,
+            "defaults": dict(self.defaults),
+            "env": dict(self.env),
+            "command": self.command,
+            "metadata": dict(self.metadata),
+            "maintainer": self.maintainer,
+            "runtime_config": dict(self.runtime_config),
+            "pre_exec": list(self.pre_exec),
+            "post_exec": list(self.post_exec),
+            "post_commands": list(self.post_commands),
+            "stop_after_post": self.stop_after_post,
+            "builder": self.builder,
+            "builder_config": dict(self.builder_config),
+            "executor_config": dict(self.executor_config),
+            "_applied_overrides": dict(self._applied_overrides),
+            "_raw": dict(self._raw),
+        }
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Restore Recipe fields from a state dict produced by ``__getstate__``."""
+        self._raw = state.get("_raw", {})
+        self.source_path = state.get("source_path")
+        self.source_registry = state.get("source_registry")
+        self.source_registry_url = state.get("source_registry_url")
+        self._qualified_name_override = state.get("_qualified_name_override")
+        self.recipe_version = state.get("recipe_version", "2")
+        self.name = state.get("name", "unnamed")
+        self.description = state.get("description", "")
+        self.model = state.get("model", "")
+        self.model_revision = state.get("model_revision")
+        self.runtime = state.get("runtime", "")
+        self.runtime_version = state.get("runtime_version", "")
+        self.mode = state.get("mode", "auto")
+        self.min_nodes = state.get("min_nodes", 1)
+        self.max_nodes = state.get("max_nodes")
+        self.container = state.get("container", "")
+        self.defaults = dict(state.get("defaults") or {})
+        self.env = dict(state.get("env") or {})
+        self.command = state.get("command")
+        self.metadata = dict(state.get("metadata") or {})
+        self.maintainer = state.get("maintainer", "")
+        self.runtime_config = dict(state.get("runtime_config") or {})
+        self.pre_exec = list(state.get("pre_exec") or [])
+        self.post_exec = list(state.get("post_exec") or [])
+        self.post_commands = list(state.get("post_commands") or [])
+        self.stop_after_post = bool(state.get("stop_after_post", False))
+        self.builder = state.get("builder", "")
+        self.builder_config = dict(state.get("builder_config") or {})
+        self.executor_config = dict(state.get("executor_config") or {})
+        self._applied_overrides = dict(state.get("_applied_overrides") or {})
+
+    @classmethod
+    def _deserialize(cls, data: dict[str, Any]) -> Recipe:
+        """Construct a Recipe from a serialized state dict (no resolution)."""
+        instance = cls.__new__(cls)
+        instance.__setstate__(data)
+        return instance
+
+    def _serialize_yaml(self) -> str:
+        """Serialize full Recipe state to a YAML string."""
+        from sparkrun.utils.yaml_helpers import LiteralBlockDumper
+
+        return yaml.dump(
+            self.__getstate__(),
+            Dumper=LiteralBlockDumper,
+            indent=2,
+            sort_keys=False,
+            default_flow_style=False,
+        )
+
+    @classmethod
+    def _deserialize_yaml(cls, text: str) -> Recipe:
+        """Restore a Recipe from a YAML string produced by ``_serialize_yaml``."""
+        data = yaml.safe_load(text)
+        if not isinstance(data, dict):
+            raise RecipeError("Expected a YAML mapping for Recipe deserialization")
+        return cls._deserialize(data)
+
     def __repr__(self) -> str:
         return "Recipe(name=%r, runtime=%r, model=%r)" % (self.name, self.runtime, self.model)
 
@@ -827,15 +934,40 @@ class Recipe:
 
         return d
 
-    def export(self, path: Optional[str | Path] = None, json: bool = False) -> Optional[str | Path]:
+    def export(
+            self,
+            path: Optional[str | Path] = None,
+            json: bool = False,
+            overrides: Optional[dict] = None,
+            container_image: Optional[str] = None,
+    ) -> Optional[str | Path]:
         """Export the recipe as canonical YAML.
 
         Builds a clean dict from resolved attributes (not raw input),
         applies preferred key ordering, and writes YAML.
+
+        Args:
+            path: Write to file instead of returning text.
+            json: Output JSON instead of YAML.
+            overrides: When provided, merge into the exported ``defaults``
+                dict so the export captures the effective configuration.
+            container_image: When provided, override the ``container`` field
+                (accounts for builder mutations).
         """
         from sparkrun.utils.yaml_helpers import LiteralBlockDumper
 
         export_dict = self._build_export_dict()
+
+        # Bake overrides into defaults so the export is self-contained
+        if overrides:
+            defaults = dict(export_dict.get("defaults") or {})
+            defaults.update(overrides)
+            export_dict["defaults"] = defaults
+
+        # Override container with effective image (post-builder)
+        if container_image:
+            export_dict["container"] = container_image
+
         ordered = _sort_dict_by_patterns(export_dict, self.EXPORT_KEY_ORDER)
 
         text = json_dumps(ordered, sort_keys=False) if json else \

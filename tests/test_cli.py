@@ -198,17 +198,13 @@ class TestShowCommand:
 
 
 class TestExportCommand:
-    """Test the recipe export command."""
+    """Test the export command group."""
 
     def test_export_yaml_to_stdout(self, runner):
-        """Test that recipe export outputs normalized YAML to stdout."""
+        """Test that export recipe outputs normalized YAML to stdout."""
         result = runner.invoke(
             main,
-            [
-                "recipe",
-                "export",
-                _TEST_RECIPE_NAME,
-            ],
+            ["export", "recipe", _TEST_RECIPE_NAME],
         )
         assert result.exit_code == 0
         import yaml
@@ -218,17 +214,11 @@ class TestExportCommand:
         assert "runtime" in data
 
     def test_export_save_to_file(self, runner, tmp_path):
-        """Test that recipe export --save writes normalized YAML to a file."""
+        """Test that export recipe --save writes normalized YAML to a file."""
         dest = tmp_path / "saved-recipe.yaml"
         result = runner.invoke(
             main,
-            [
-                "recipe",
-                "export",
-                _TEST_RECIPE_NAME,
-                "--save",
-                str(dest),
-            ],
+            ["export", "recipe", _TEST_RECIPE_NAME, "--save", str(dest)],
         )
         assert result.exit_code == 0
         assert "Recipe saved to" in result.output
@@ -240,22 +230,174 @@ class TestExportCommand:
         assert "runtime" in data
 
     def test_export_json_to_stdout(self, runner):
-        """Test that recipe export --json outputs valid JSON to stdout."""
+        """Test that export recipe --json outputs valid JSON to stdout."""
         import json
 
         result = runner.invoke(
             main,
-            [
-                "recipe",
-                "export",
-                _TEST_RECIPE_NAME,
-                "--json",
-            ],
+            ["export", "recipe", _TEST_RECIPE_NAME, "--json"],
         )
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert "model" in data
         assert "runtime" in data
+
+    def test_export_running_with_recipe_state(self, runner, tmp_path, monkeypatch):
+        """Test export running reconstructs from recipe_state in metadata."""
+        from sparkrun.core.recipe import Recipe
+
+        # Create a recipe and serialize its state
+        recipe_file = tmp_path / "test-export.yaml"
+        recipe_file.write_text(yaml.safe_dump(_TEST_RECIPE_DATA))
+        recipe = Recipe.load(recipe_file)
+        state = recipe.__getstate__()
+
+        cluster_id = "sparkrun_aabbccddee11"
+        meta = {
+            "cluster_id": cluster_id,
+            "recipe": _TEST_RECIPE_NAME,
+            "model": _TEST_RECIPE_DATA["model"],
+            "runtime": "sglang",
+            "hosts": ["10.0.0.1"],
+            "recipe_state": state,
+            "overrides": {"port": 9999, "tensor_parallel": 4},
+            "effective_container_image": "custom/image:v2",
+        }
+
+        monkeypatch.setattr(
+            "sparkrun.orchestration.job_metadata.load_job_metadata",
+            lambda cid, cache_dir=None: meta if cid == cluster_id else None,
+        )
+
+        result = runner.invoke(main, ["export", "running", "aabbccddee11"])
+        assert result.exit_code == 0
+        data = yaml.safe_load(result.output)
+        assert data["container"] == "custom/image:v2"
+        assert data["defaults"]["port"] == 9999
+        assert data["defaults"]["tensor_parallel"] == 4
+
+    def test_export_running_json(self, runner, tmp_path, monkeypatch):
+        """Test export running --json outputs valid JSON."""
+        import json as json_mod
+
+        from sparkrun.core.recipe import Recipe
+
+        recipe_file = tmp_path / "test-export.yaml"
+        recipe_file.write_text(yaml.safe_dump(_TEST_RECIPE_DATA))
+        recipe = Recipe.load(recipe_file)
+        state = recipe.__getstate__()
+
+        cluster_id = "sparkrun_aabbccddee22"
+        meta = {
+            "cluster_id": cluster_id,
+            "recipe": _TEST_RECIPE_NAME,
+            "model": _TEST_RECIPE_DATA["model"],
+            "runtime": "sglang",
+            "hosts": ["10.0.0.1"],
+            "recipe_state": state,
+        }
+
+        monkeypatch.setattr(
+            "sparkrun.orchestration.job_metadata.load_job_metadata",
+            lambda cid, cache_dir=None: meta if cid == cluster_id else None,
+        )
+
+        result = runner.invoke(main, ["export", "running", "aabbccddee22", "--json"])
+        assert result.exit_code == 0
+        data = json_mod.loads(result.output)
+        assert "model" in data
+        assert "runtime" in data
+
+    def test_export_running_save_to_file(self, runner, tmp_path, monkeypatch):
+        """Test export running --save writes to a file."""
+        from sparkrun.core.recipe import Recipe
+
+        recipe_file = tmp_path / "test-export.yaml"
+        recipe_file.write_text(yaml.safe_dump(_TEST_RECIPE_DATA))
+        recipe = Recipe.load(recipe_file)
+        state = recipe.__getstate__()
+
+        cluster_id = "sparkrun_aabbccddee33"
+        meta = {
+            "cluster_id": cluster_id,
+            "recipe": _TEST_RECIPE_NAME,
+            "model": _TEST_RECIPE_DATA["model"],
+            "runtime": "sglang",
+            "hosts": ["10.0.0.1"],
+            "recipe_state": state,
+        }
+
+        monkeypatch.setattr(
+            "sparkrun.orchestration.job_metadata.load_job_metadata",
+            lambda cid, cache_dir=None: meta if cid == cluster_id else None,
+        )
+
+        dest = tmp_path / "exported.yaml"
+        result = runner.invoke(main, ["export", "running", "aabbccddee33", "--save", str(dest)])
+        assert result.exit_code == 0
+        assert "Recipe saved to" in result.output
+        assert dest.exists()
+        data = yaml.safe_load(dest.read_text())
+        assert "model" in data
+
+    def test_export_running_fallback_overrides(self, runner, monkeypatch):
+        """Test export running falls back to recipe name + overrides when no recipe_state."""
+        cluster_id = "sparkrun_aabbccddee44"
+        meta = {
+            "cluster_id": cluster_id,
+            "recipe": _TEST_RECIPE_NAME,
+            "model": _TEST_RECIPE_DATA["model"],
+            "runtime": "sglang",
+            "hosts": ["10.0.0.1"],
+            "overrides": {"port": 7777},
+            "effective_container_image": "override/image:v3",
+        }
+
+        monkeypatch.setattr(
+            "sparkrun.orchestration.job_metadata.load_job_metadata",
+            lambda cid, cache_dir=None: meta if cid == cluster_id else None,
+        )
+
+        result = runner.invoke(main, ["export", "running", "aabbccddee44"])
+        assert result.exit_code == 0
+        data = yaml.safe_load(result.output)
+        assert data["defaults"]["port"] == 7777
+        assert data["container"] == "override/image:v3"
+
+    def test_export_running_legacy_fallback(self, runner, monkeypatch):
+        """Test export running legacy fallback with individual metadata fields."""
+        cluster_id = "sparkrun_aabbccddee55"
+        meta = {
+            "cluster_id": cluster_id,
+            "recipe": _TEST_RECIPE_NAME,
+            "model": _TEST_RECIPE_DATA["model"],
+            "runtime": "sglang",
+            "hosts": ["10.0.0.1"],
+            "tensor_parallel": 2,
+            "port": 5555,
+        }
+
+        monkeypatch.setattr(
+            "sparkrun.orchestration.job_metadata.load_job_metadata",
+            lambda cid, cache_dir=None: meta if cid == cluster_id else None,
+        )
+
+        result = runner.invoke(main, ["export", "running", "aabbccddee55"])
+        assert result.exit_code == 0
+        data = yaml.safe_load(result.output)
+        assert data["defaults"]["tensor_parallel"] == 2
+        assert data["defaults"]["port"] == 5555
+
+    def test_export_running_no_metadata(self, runner, monkeypatch):
+        """Test export running with no metadata exits with error."""
+        monkeypatch.setattr(
+            "sparkrun.orchestration.job_metadata.load_job_metadata",
+            lambda cid, cache_dir=None: None,
+        )
+
+        result = runner.invoke(main, ["export", "running", "aabbccddee66"])
+        assert result.exit_code != 0
+        assert "No job metadata" in result.output
 
 
 class TestVramCommand:

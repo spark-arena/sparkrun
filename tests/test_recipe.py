@@ -1684,6 +1684,53 @@ class TestBuilderFields:
         assert "builder_config" not in export
 
 
+class TestExportWithOverrides:
+    """Tests for Recipe.export() with overrides and container_image params."""
+
+    def test_export_bakes_overrides_into_defaults(self):
+        """Overrides are merged into the exported defaults dict."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "runtime": "vllm",
+            "container": "img:latest",
+            "defaults": {"port": 8000, "host": "0.0.0.0"},
+        })
+        text = recipe.export(overrides={"port": 9999, "tensor_parallel": 4})
+        import yaml
+        data = yaml.safe_load(text)
+        assert data["defaults"]["port"] == 9999
+        assert data["defaults"]["tensor_parallel"] == 4
+        assert data["defaults"]["host"] == "0.0.0.0"
+
+    def test_export_container_image_override(self):
+        """container_image param overrides container in export."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "runtime": "vllm",
+            "container": "original:latest",
+        })
+        text = recipe.export(container_image="custom/image:v2")
+        import yaml
+        data = yaml.safe_load(text)
+        assert data["container"] == "custom/image:v2"
+
+    def test_export_no_overrides_unchanged(self):
+        """Without overrides, export matches base behavior."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "runtime": "vllm",
+            "container": "img:latest",
+            "defaults": {"port": 8000},
+        })
+        text_base = recipe.export()
+        text_override = recipe.export(overrides=None, container_image=None)
+        import yaml
+        assert yaml.safe_load(text_base) == yaml.safe_load(text_override)
+
+
 class TestResolveWithOverrides:
     """Tests for Recipe.resolve() with CLI overrides influencing runtime."""
 
@@ -1888,3 +1935,141 @@ class TestResolveBuilder:
     def test_explicit_builder_takes_priority(self):
         """Explicit builder takes priority over v1 signals."""
         assert resolve_builder({"recipe_version": "1", "builder": "custom"}) == "custom"
+
+
+class TestRecipeSerialization:
+    """Tests for Recipe.__getstate__/__setstate__ and YAML round-trip."""
+
+    def test_getstate_has_serialization_version(self, sample_v2_recipe_data: dict):
+        """__getstate__ includes _serialization_version marker."""
+        recipe = Recipe.from_dict(sample_v2_recipe_data)
+        state = recipe.__getstate__()
+        assert state["_serialization_version"] == 1
+
+    def test_round_trip_v2_recipe(self, sample_v2_recipe_data: dict):
+        """Round-trip a v2 recipe through __getstate__/__setstate__."""
+        original = Recipe.from_dict(sample_v2_recipe_data)
+        state = original.__getstate__()
+        restored = Recipe._deserialize(state)
+
+        assert restored.name == original.name
+        assert restored.model == original.model
+        assert restored.runtime == original.runtime
+        assert restored.mode == original.mode
+        assert restored.container == original.container
+        assert restored.defaults == original.defaults
+        assert restored.env == original.env
+        assert restored.command == original.command
+        assert restored.min_nodes == original.min_nodes
+        assert restored.max_nodes == original.max_nodes
+        assert restored.metadata == original.metadata
+        assert restored.recipe_version == original.recipe_version
+        assert restored.description == original.description
+        assert restored._raw == original._raw
+
+    def test_round_trip_yaml(self, sample_v2_recipe_data: dict):
+        """Round-trip through _serialize_yaml / _deserialize_yaml."""
+        original = Recipe.from_dict(sample_v2_recipe_data)
+        yaml_text = original._serialize_yaml()
+        restored = Recipe._deserialize_yaml(yaml_text)
+
+        assert restored.name == original.name
+        assert restored.model == original.model
+        assert restored.runtime == original.runtime
+        assert restored.defaults == original.defaults
+        assert restored.env == original.env
+        assert restored.command == original.command
+        assert restored._applied_overrides == original._applied_overrides
+
+    def test_round_trip_with_overrides(self, sample_v2_recipe_data: dict):
+        """Overrides survive serialization round-trip."""
+        original = Recipe.from_dict(
+            sample_v2_recipe_data,
+            overrides={"distributed_executor_backend": "ray"},
+        )
+        assert original.runtime == "vllm-ray"
+
+        yaml_text = original._serialize_yaml()
+        restored = Recipe._deserialize_yaml(yaml_text)
+
+        assert restored.runtime == "vllm-ray"
+        assert restored._applied_overrides == {"distributed_executor_backend": "ray"}
+
+    def test_round_trip_with_registry_info(self, sample_v2_recipe_data: dict):
+        """Registry metadata survives round-trip."""
+        original = Recipe.from_dict(sample_v2_recipe_data)
+        original.source_registry = "my-registry"
+        original.source_registry_url = "https://github.com/example/recipes.git"
+        original.source_path = "/some/path/recipe.yaml"
+
+        restored = Recipe._deserialize(original.__getstate__())
+
+        assert restored.source_registry == "my-registry"
+        assert restored.source_registry_url == "https://github.com/example/recipes.git"
+        assert restored.source_path == "/some/path/recipe.yaml"
+        assert restored.qualified_name == "@my-registry/%s" % original.name
+
+    def test_round_trip_lifecycle_hooks(self):
+        """Lifecycle hooks (pre_exec, post_exec, etc.) survive round-trip."""
+        recipe = Recipe.from_dict({
+            "model": "test-model",
+            "runtime": "sglang",
+            "container": "img:latest",
+            "pre_exec": ["echo pre"],
+            "post_exec": ["echo post"],
+            "post_commands": ["curl localhost"],
+            "stop_after_post": True,
+        })
+        restored = Recipe._deserialize(recipe.__getstate__())
+
+        assert restored.pre_exec == ["echo pre"]
+        assert restored.post_exec == ["echo post"]
+        assert restored.post_commands == ["curl localhost"]
+        assert restored.stop_after_post is True
+
+    def test_round_trip_builder_fields(self):
+        """Builder and builder_config survive round-trip."""
+        recipe = Recipe.from_dict({
+            "model": "test-model",
+            "runtime": "vllm",
+            "container": "img:latest",
+            "builder": "eugr",
+            "builder_config": {"repo": "https://example.com"},
+        })
+        restored = Recipe._deserialize(recipe.__getstate__())
+
+        assert restored.builder == "eugr"
+        assert restored.builder_config == {"repo": "https://example.com"}
+
+    def test_round_trip_executor_config(self):
+        """executor_config survives round-trip."""
+        recipe = Recipe.from_dict({
+            "model": "test-model",
+            "runtime": "sglang",
+            "container": "img:latest",
+            "executor_config": {"auto_remove": True},
+        })
+        restored = Recipe._deserialize(recipe.__getstate__())
+        assert restored.executor_config == {"auto_remove": True}
+
+    def test_round_trip_qualified_name_override(self, sample_v2_recipe_data: dict):
+        """_qualified_name_override survives round-trip."""
+        original = Recipe.from_dict(sample_v2_recipe_data)
+        original._qualified_name_override = "custom-qualified-name"
+
+        restored = Recipe._deserialize(original.__getstate__())
+        assert restored.qualified_name == "custom-qualified-name"
+
+    def test_deserialize_yaml_invalid_input(self):
+        """_deserialize_yaml raises RecipeError on non-dict YAML."""
+        with pytest.raises(RecipeError, match="YAML mapping"):
+            Recipe._deserialize_yaml("- just a list")
+
+    def test_re_resolve_after_deserialize(self, sample_v2_recipe_data: dict):
+        """A deserialized recipe can be re-resolved with new overrides."""
+        original = Recipe.from_dict(sample_v2_recipe_data)
+        assert original.runtime == "vllm-distributed"
+
+        restored = Recipe._deserialize(original.__getstate__())
+        restored.resolve({"distributed_executor_backend": "ray"})
+        assert restored.runtime == "vllm-ray"

@@ -154,17 +154,6 @@ def launch_inference(
     # Resolve container image
     container_image = runtime.resolve_container(recipe, overrides)
 
-    # Save job metadata
-    if not dry_run:
-        try:
-            save_job_metadata(
-                cluster_id, recipe, host_list,
-                overrides=overrides, cache_dir=str(config.cache_dir),
-                recipe_ref=recipe_ref,
-            )
-        except Exception:
-            logger.debug("Failed to save job metadata: %s", cluster_id, exc_info=True)
-
     # Builder phase
     if recipe.builder:
         from sparkrun.core.bootstrap import get_builder
@@ -178,6 +167,17 @@ def launch_inference(
             )
         except ValueError:
             logger.warning("Builder '%s' not found, skipping", recipe.builder)
+
+    # Save job metadata
+    if not dry_run:
+        try:
+            save_job_metadata(
+                cluster_id, recipe, host_list,
+                overrides=overrides, cache_dir=str(config.cache_dir),
+                recipe_ref=recipe_ref, container_image=container_image,
+            )
+        except Exception:
+            logger.debug("Failed to save job metadata: %s", cluster_id, exc_info=True)
 
     # Pre-launch preparation (e.g., eugr container builds)
     runtime.prepare(
@@ -321,7 +321,7 @@ def launch_inference(
         env_placement=EnvPlacement.IGNORED,
     )
     exec_cfg = ExecutorConfig.from_chain(exec_chain)
-    executor = DockerExecutor(exec_cfg)
+    executor = DockerExecutor(exec_cfg)  # TODO: future flexible executor
 
     # Launch
     rc = runtime.run(
@@ -381,6 +381,7 @@ def launch_inference(
                         overrides=overrides, cache_dir=str(config.cache_dir),
                         recipe_ref=recipe_ref,
                         runtime_info=runtime_info,
+                        container_image=container_image,
                     )
                 except Exception:
                     logger.debug("Failed to save runtime_info to job metadata", exc_info=True)
