@@ -388,12 +388,16 @@ def export_metadata(ctx, output, include_hidden):
 
             display_runtime = _RUNTIME_DISPLAY.get(recipe.runtime, recipe.runtime)
 
-            # For vllm recipes, expose the clustering backend (ray vs torch/native)
+            # Expose the clustering backend (ray/torch/rpc/mpi)
             cluster_backend = None
             if recipe.runtime == "vllm-ray":
                 cluster_backend = "ray"
-            elif recipe.runtime == "vllm-distributed":
+            elif recipe.runtime in ("vllm-distributed", "sglang"):
                 cluster_backend = "torch"
+            elif recipe.runtime == "llama-cpp":
+                cluster_backend = "rpc"
+            elif recipe.runtime == "trtllm":
+                cluster_backend = "mpi"
 
             # TODO: validate recipe against registry recipe -- to make sure that the recipe metadata
             #       spark_arena_uuid is not spoofed or fake
@@ -423,9 +427,10 @@ def export_metadata(ctx, output, include_hidden):
                 "tp": int(tp_val) if tp_val is not None else 1,
                 "gpu_mem": float(gpu_mem_val) if gpu_mem_val is not None else 0.9,
                 "port": int(port_val) if port_val is not None else 8000,
-                "container": recipe.container,
+                "container": recipe.container,  # TODO: should we replace w/ first-party if meets requirements?
                 "recipe_version": recipe.recipe_version,
                 "raw_url": raw_url,
+                "toks": recipe.metadata.get("toks"),  # TODO: and/or pull from spark arena metadata
                 "spark_arena_uuid": recipe.metadata.get("spark_arena_uuid"),
                 "benchmark_url": (
                     "https://spark-arena.com/benchmark/%s" % recipe.metadata["spark_arena_uuid"]

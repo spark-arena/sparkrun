@@ -110,7 +110,7 @@ DEPRECATED_REGISTRIES: list[str] = [
 # This prevents third-party registries from impersonating official sources.
 RESERVED_NAME_PREFIXES = (
     'arena', 'spark-arena', 'sparkarena',
-    'sparkrun', 'official', 'experimental', 'transitional',
+    'sparkrun', 'official', 'experimental', 'transitional', 'community',
     'eugr', 'dbotwinick', 'raphaelamorim', 'scitrera',
 )
 
