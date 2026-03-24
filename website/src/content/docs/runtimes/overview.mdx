@@ -15,6 +15,10 @@ sparkrun supports multiple inference runtimes through a plugin system. Each runt
 | `llama-cpp` | llama.cpp | Experimental | GGUF quantized models, lightweight deployment |
 | `trtllm` | TensorRT-LLM | Yes (MPI) | NVIDIA TensorRT-LLM with MPI-based multi-node orchestration |
 
+:::note
+The legacy `eugr-vllm` runtime has been removed from the documentation. For new deployments, use `vllm-distributed` (default) or `vllm-ray`.
+:::
+
 ### Automatic runtime detection
 
 Explicitly setting `runtime` in recipes is recommended, but when it is omitted sparkrun can infer the runtime from the `command` field prefix:

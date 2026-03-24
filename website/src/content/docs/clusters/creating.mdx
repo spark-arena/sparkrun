@@ -24,6 +24,9 @@ sparkrun cluster create mylab \
 | `--hosts` / `-H` | Comma-separated list of host IPs or names |
 | `-d` / `--description` | Human-readable description |
 | `--user` | SSH user for connecting to hosts |
+| `--cache-dir` | Override HuggingFace cache directory for this cluster |
+| `--transfer-mode` | Resource distribution mode: `auto` (default), `local`, `push`, `delegated` |
+| `--transfer-interface` | Network interface for high-speed transfers between cluster hosts |
 
 ## Host ordering
 

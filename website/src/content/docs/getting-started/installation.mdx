@@ -1,6 +1,6 @@
 ---
 title: Installation
-description: Install sparkrun on your system using uv or pip.
+description: Install sparkrun on your system using uv.
 ---
 
 ## Recommended: One-command setup
@@ -15,18 +15,9 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uvx sparkrun setup
 ```
 
-This runs the **setup wizard**, which walks you through everything interactively:
+This runs the **setup wizard**, which walks you through everything interactively — cluster creation, SSH mesh, CX7 networking, and more. Each phase is optional and can be revisited later.
 
-1. **Installs sparkrun** as a managed uv tool with shell alias and tab completion
-2. **Creates a cluster** — detects CX7 peers automatically when running on a DGX Spark, or prompts for host IPs
-3. **Sets up SSH mesh** — establishes passwordless SSH between all hosts and your control machine
-4. **Configures CX7 networking** — assigns static IPs with jumbo frames on high-speed ConnectX-7 interfaces
-5. **Installs sudoers entries** — scoped rules for cache permissions and page cache clearing (no broad sudo)
-6. **Installs earlyoom** — OOM protection that keeps your nodes responsive under memory pressure
-
-Each phase is optional — you can skip any step and come back to it later with the individual `sparkrun setup <command>` subcommands.
-
-See the [Setup Commands](/cli/setup-commands/) reference for the full wizard options.
+See the [Setup Wizard Walkthrough](/getting-started/setup-wizard/) for a detailed step-by-step guide.
 
 ## Alternative: Install only
 
@@ -37,21 +28,6 @@ uvx sparkrun setup install
 ```
 
 This creates a managed virtual environment, installs sparkrun, creates a shell-ready command, and sets up tab completion — all in one. You can run the wizard later with `sparkrun setup wizard`.
-
-## Alternative: pip install
-
-```bash
-pip install sparkrun
-# or
-uv pip install sparkrun
-```
-
-With a manual pip install, you'll need to set up tab completion separately:
-
-```bash
-# NOTE: relies on the 'sparkrun' command being in your PATH
-sparkrun setup completion
-```
 
 ## Verify installation
 

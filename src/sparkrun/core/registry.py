@@ -83,7 +83,6 @@ FALLBACK_DEFAULT_REGISTRIES = [
         description="Transitional registry for recipes",
         visible=True,
     ),
-
     RegistryEntry(
         name="experimental",
         url="https://github.com/spark-arena/recipe-registry.git",

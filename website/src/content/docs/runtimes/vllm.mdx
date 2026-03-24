@@ -72,30 +72,17 @@ command: |
 
 ## Multi-node with vllm-distributed (default)
 
-`vllm-distributed` uses vLLM's built-in multi-node support. Each node runs the full `vllm serve` command with node-specific arguments:
-
-1. Cleans up existing containers on each node
-2. Detects InfiniBand/RDMA interfaces on all hosts
-3. Detects the head node IP
-4. Launches the head node (rank 0) with `--nnodes`, `--node-rank 0`, and `--master-addr`
-5. Waits for the master port to become ready
-6. Launches worker nodes in parallel, each with `--node-rank N` and `--headless`
+`vllm-distributed` uses vLLM's built-in multi-node support. sparkrun handles container lifecycle, InfiniBand detection, and node coordination automatically:
 
 ```bash
 sparkrun run nemotron3-nano-30b-nvfp4-vllm --tp 2
 ```
 
-No Ray cluster is involved — vLLM coordinates the nodes directly via its native distributed backend.
+No Ray cluster is involved — vLLM coordinates the nodes directly via its native distributed backend. See [Execution Flow](/developer-reference/execution-flow/) for the full multi-node orchestration details.
 
 ## Multi-node with vllm-ray
 
-`vllm-ray` forms a Ray cluster first, then runs the serve command on the head node:
-
-1. Cleans up existing containers on each node
-2. Detects InfiniBand/RDMA interfaces on all hosts
-3. Starts a Ray head node on the first host
-4. Joins worker nodes to the Ray cluster
-5. Launches the vLLM serve command on the head container
+`vllm-ray` forms a Ray cluster first, then runs the serve command on the head node. sparkrun handles Ray cluster setup, InfiniBand detection, and container lifecycle automatically.
 
 To use `vllm-ray`, either set `runtime: vllm-ray` explicitly or add the Ray hint to defaults:
 

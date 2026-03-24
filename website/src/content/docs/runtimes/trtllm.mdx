@@ -94,14 +94,18 @@ moe_config:
   backend: cutlass
 ```
 
-## Multi-node strategy
+## Multi-node usage
 
-TRT-LLM uses a custom MPI-based approach for multi-node inference. Instead of installing openssh-server inside containers, sparkrun generates a custom `mpirun` rsh agent that routes through host-level SSH and `docker exec` into worker containers.
+TRT-LLM uses MPI for multi-node inference. sparkrun handles the full orchestration automatically — container lifecycle, InfiniBand detection, MPI configuration, and environment setup:
+
+```bash
+sparkrun run my-trtllm-recipe --tp 2
+```
 
 ### Requirements
 
-- SSH keys at `~/.ssh` on the control machine (mounted as `/tmp/.ssh:ro` into containers)
-- All hosts must be SSH-accessible from each other (use `sparkrun setup ssh-mesh` to configure)
+- SSH keys at `~/.ssh` on the control machine (mounted into containers)
+- All hosts must be SSH-accessible from each other (use `sparkrun setup ssh` to configure)
 
 ### Docker options
 
@@ -110,32 +114,7 @@ TRT-LLM containers automatically get these extra Docker options for large memory
 - `--ulimit memlock=-1`
 - `--ulimit stack=67108864`
 
-### Cluster launch steps
-
-When launching with `--tp 2` or more (multiple hosts), sparkrun orchestrates a 7-step process:
-
-1. **Cleanup** -- Remove existing containers for this cluster ID on all hosts
-2. **InfiniBand detection** -- Detect IB interfaces and compute NCCL environment variables
-3. **IP detection** -- Detect management IPs on all hosts for MPI host list
-4. **Container launch** -- Launch containers with `sleep infinity` on all hosts in parallel
-5. **Verify** -- Confirm all containers are running
-6. **Write rsh wrapper + config** -- Generate the MPI rsh wrapper script and extra LLM API config YAML, write both into the head container
-7. **Exec mpirun** -- Execute `mpirun` on the head container with `trtllm-llmapi-launch` wrapping the `trtllm-serve` command
-
-The rsh wrapper script maps each host IP to its container name, then uses `ssh <host> docker exec <container> <command>` to route MPI commands into the correct worker container -- no openssh-server needed inside the containers.
-
-### Environment variables
-
-sparkrun sets these environment variables automatically for TRT-LLM clusters:
-
-| Variable | Value | Purpose |
-|---|---|---|
-| `OMPI_ALLOW_RUN_AS_ROOT` | `1` | Allow mpirun as root |
-| `OMPI_ALLOW_RUN_AS_ROOT_CONFIRM` | `1` | Confirm root execution |
-| `NCCL_CUMEM_ENABLE` | `0` | Disable NCCL cuMem (compatibility) |
-| `OMPI_MCA_rmaps_ppr_n_pernode` | `1` | One process per node |
-
-NCCL-related variables (`NCCL_SOCKET_IFNAME`, `UCX_NET_DEVICES`, etc.) and `HF_TOKEN` are also propagated to all nodes via `mpirun -x`.
+See [Execution Flow](/developer-reference/execution-flow/) for the full MPI orchestration details, including the rsh wrapper mechanism and environment variables.
 
 ## Auto-detection
 

@@ -35,12 +35,9 @@ export default defineConfig({
                 {
                     label: 'Getting Started',
                     items: [
-                        {label: 'Installation', slug: 'getting-started/installation'},
                         {label: 'Quick Start', slug: 'getting-started/quick-start'},
-                        {label: 'Networking', slug: 'getting-started/networking'},
-                        {label: 'SSH Setup', slug: 'getting-started/ssh-setup'},
-                        {label: 'Tips & Troubleshooting', slug: 'getting-started/troubleshooting'},
-                        {label: 'Diagnostics', slug: 'getting-started/diagnostics'},
+                        {label: 'Installation', slug: 'getting-started/installation'},
+                        {label: 'Setup Wizard Walkthrough', slug: 'getting-started/setup-wizard'},
                     ],
                 },
                 {
@@ -50,6 +47,49 @@ export default defineConfig({
                         {label: 'Multi-Node Tensor Parallelism', slug: 'tutorials/multi-node'},
                         {label: 'Benchmarking Models', slug: 'tutorials/benchmarking'},
                         {label: 'Proxy Gateway', slug: 'tutorials/proxy-gateway'},
+                    ],
+                },
+                {
+                    label: 'Recipes',
+                    items: [
+                        {label: 'Recipe Format', slug: 'recipes/format'},
+                        {label: 'Writing Recipes', slug: 'recipes/writing-recipes'},
+                        {label: 'GGUF Recipes', slug: 'recipes/gguf-recipes'},
+                        {label: 'Registries', slug: 'recipes/registries'},
+                    ],
+                },
+                {
+                    label: 'Clusters',
+                    items: [
+                        {label: 'Creating Clusters', slug: 'clusters/creating'},
+                        {label: 'Managing Clusters', slug: 'clusters/managing'},
+                        {label: 'Cluster Status', slug: 'clusters/status'},
+                    ],
+                },
+                {
+                    label: 'Runtimes',
+                    items: [
+                        {label: 'Overview', slug: 'runtimes/overview'},
+                        {label: 'vLLM', slug: 'runtimes/vllm'},
+                        {label: 'SGLang', slug: 'runtimes/sglang'},
+                        {label: 'llama.cpp', slug: 'runtimes/llama-cpp'},
+                        {label: 'TensorRT-LLM', slug: 'runtimes/trtllm'},
+                    ],
+                },
+                {
+                    label: 'Advanced Topics',
+                    items: [
+                        {label: 'Networking', slug: 'getting-started/networking'},
+                        {label: 'SSH Setup', slug: 'getting-started/ssh-setup'},
+                        {label: 'Tips & Troubleshooting', slug: 'getting-started/troubleshooting'},
+                        {label: 'Diagnostics', slug: 'getting-started/diagnostics'},
+                    ],
+                },
+                {
+                    label: 'Claude Code Plugin',
+                    items: [
+                        {label: 'Overview', slug: 'claude-code-plugin/overview'},
+                        {label: 'Commands', slug: 'claude-code-plugin/commands'},
                     ],
                 },
                 {
@@ -70,39 +110,12 @@ export default defineConfig({
                     ],
                 },
                 {
-                    label: 'Recipes',
+                    label: 'Developer Reference',
                     items: [
-                        {label: 'Recipe Format', slug: 'recipes/format'},
-                        {label: 'Writing Recipes', slug: 'recipes/writing-recipes'},
-                        {label: 'GGUF Recipes', slug: 'recipes/gguf-recipes'},
-                        {label: 'Registries', slug: 'recipes/registries'},
-                        {label: 'Builders', slug: 'recipes/builders'},
-                    ],
-                },
-                {
-                    label: 'Runtimes',
-                    items: [
-                        {label: 'Overview', slug: 'runtimes/overview'},
-                        {label: 'vLLM', slug: 'runtimes/vllm'},
-                        {label: 'SGLang', slug: 'runtimes/sglang'},
-                        {label: 'llama.cpp', slug: 'runtimes/llama-cpp'},
-                        {label: 'TensorRT-LLM', slug: 'runtimes/trtllm'},
-                        {label: 'eugr-vllm (Legacy)', slug: 'runtimes/eugr-vllm'},
-                    ],
-                },
-                {
-                    label: 'Clusters',
-                    items: [
-                        {label: 'Creating Clusters', slug: 'clusters/creating'},
-                        {label: 'Managing Clusters', slug: 'clusters/managing'},
-                        {label: 'Cluster Status', slug: 'clusters/status'},
-                    ],
-                },
-                {
-                    label: 'Claude Code Plugin',
-                    items: [
-                        {label: 'Overview', slug: 'claude-code-plugin/overview'},
-                        {label: 'Commands', slug: 'claude-code-plugin/commands'},
+                        {label: 'CLI Automation', slug: 'developer-reference/cli-automation'},
+                        {label: 'Execution Flow', slug: 'developer-reference/execution-flow'},
+                        {label: 'Architecture', slug: 'developer-reference/architecture'},
+                        {label: 'Contributing', slug: 'developer-reference/contributing'},
                     ],
                 },
             ],

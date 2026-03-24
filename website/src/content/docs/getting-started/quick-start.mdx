@@ -3,76 +3,41 @@ title: Quick Start
 description: Get up and running with sparkrun in minutes.
 ---
 
-## Single-node usage
+## Install
+
+```bash
+# Install uv if you don't have it
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install sparkrun and set up your cluster
+uvx sparkrun setup
+```
+
+The setup wizard walks you through cluster creation, SSH mesh, and CX7 networking interactively. See the [Setup Wizard Walkthrough](/getting-started/setup-wizard/) for a detailed step-by-step guide.
+
+## Run a model (single node)
 
 No cluster setup needed — just point sparkrun at a host and run:
 
 ```bash
-# Run on a single DGX Spark (defaults to localhost if no host specified)
+# Run on localhost (or your default cluster's first host)
 sparkrun run qwen3-1.7b-vllm
 
 # Run on a specific remote host
 sparkrun run qwen3-1.7b-vllm --hosts 10.24.11.13
-
-# GGUF quantized models via llama.cpp
-sparkrun run qwen3-1.7b-llama-cpp
 ```
 
-sparkrun launches jobs in the background (detached containers) and follows logs. **Ctrl+C detaches from logs — it never kills your inference job.** Your model keeps serving.
+sparkrun launches containers in the background and follows logs. **Ctrl+C detaches from logs — it never kills your inference job.** Your model keeps serving.
 
-## Multi-node cluster setup
+## Run multi-node (tensor parallelism)
 
-Multi-node inference (tensor parallelism across Sparks) requires a one-time setup. The **setup wizard** handles everything interactively:
-
-```bash
-sparkrun setup
-```
-
-The wizard walks through each step:
-
-1. **Cluster creation** — saves your DGX Spark hosts by name so you don't repeat host lists
-2. **SSH mesh** — establishes passwordless SSH between all hosts and your control machine
-3. **CX7 networking** — configures high-speed ConnectX-7 interfaces with static IPs and jumbo frames
-4. **Sudoers entries** — scoped rules for cache permissions and page cache clearing
-5. **earlyoom** — OOM protection that keeps nodes responsive under memory pressure
-
-Each step is optional — skip any and come back later. When running on a DGX Spark, the wizard auto-detects CX7 peers on your network.
-
-:::tip
-Running `sparkrun setup` with no subcommand auto-launches the wizard when no default cluster is configured. You can also invoke it explicitly with `sparkrun setup wizard`.
-:::
-
-<details>
-<summary>Manual setup (step-by-step)</summary>
-
-If you prefer to configure each step individually:
-
-1. **Create a cluster**: `sparkrun cluster create mylab --hosts 10.24.11.13,10.24.11.14 --user dgxuser` — see [Cluster Commands](/cli/cluster-commands/)
-2. **SSH mesh**: `sparkrun setup ssh` — see [SSH Setup](/getting-started/ssh-setup/)
-3. **CX7 networking**: `sparkrun setup cx7` — see [Networking Best Practices](/getting-started/networking/)
-4. **earlyoom**: `sparkrun setup earlyoom` — see [Setup Commands](/cli/setup-commands/#install-earlyoom-oom-killer)
-
-Set your cluster as default so you don't need `--cluster` on every command:
+With a cluster configured, scale across multiple DGX Sparks:
 
 ```bash
-sparkrun cluster set-default mylab
-```
-
-</details>
-
-## Run an inference job
-
-```bash
-# Single node — minimum nodes/parallelism is set by the recipe
-sparkrun run qwen3-1.7b-vllm
-
-# Multi-node tensor parallel using your default cluster
 sparkrun run qwen3-1.7b-vllm --tp 2
-
-# Override settings on the fly
-sparkrun run qwen3-1.7b-vllm --hosts 192.168.11.14 --port 9000 --gpu-mem 0.8
-sparkrun run qwen3-1.7b-vllm --tp 2 -H 192.168.11.13,192.168.11.14 -o max_model_len=8192
 ```
+
+Each DGX Spark has one GPU with 128 GB unified memory, so `--tp 2` splits the model across 2 nodes. See [Multi-Node Tensor Parallelism](/tutorials/multi-node/) for a full walkthrough.
 
 ## Inspect a recipe
 
@@ -80,66 +45,32 @@ sparkrun run qwen3-1.7b-vllm --tp 2 -H 192.168.11.13,192.168.11.14 -o max_model_
 sparkrun show nemotron3-nano-30b-nvfp4-vllm
 ```
 
-This displays recipe details including a VRAM estimation that tells you whether the configuration fits DGX Spark's 128 GB unified memory before you launch.
+This displays recipe details including a VRAM estimation that tells you whether the model fits in memory before you launch.
 
-## Manage running workloads
+## Status, logs, and stop
 
 ```bash
+# Check what's running
+sparkrun status
+
 # Re-attach to logs (Ctrl+C is always safe)
-sparkrun logs nemotron3-nano-30b-nvfp4-vllm --cluster mylab
+sparkrun logs nemotron3-nano-30b-nvfp4-vllm
 
 # Stop a workload
-sparkrun stop nemotron3-nano-30b-nvfp4-vllm --cluster mylab
+sparkrun stop nemotron3-nano-30b-nvfp4-vllm
 ```
 
 :::note
-If you launched with `--tp` (modifying the recipe default), pass the same `--tp` flag to `stop` and `logs` so they resolve the same cluster ID:
-
-```bash
-sparkrun run nemotron3-nano-30b-nvfp4-vllm --tp 2
-sparkrun stop nemotron3-nano-30b-nvfp4-vllm --tp 2
-sparkrun logs nemotron3-nano-30b-nvfp4-vllm --tp 2
-```
+If you launched with `--tp` (modifying the recipe default), pass the same `--tp` flag to `stop` and `logs` so they resolve the same cluster ID.
 :::
 
-## Spark Arena recipes
+## Spark Arena
 
-[Spark Arena](https://spark-arena.com) is the community recipe hub for DGX Spark. Browse tested recipes and benchmark results, then run them directly:
-
-```bash
-# Run a recipe from Spark Arena using its short link
-sparkrun run @spark-arena/<recipe-id>
-
-# Inspect it first with VRAM estimation
-sparkrun show @spark-arena/<recipe-id>
-
-# Save a copy locally for customization
-sparkrun show @spark-arena/<recipe-id> --save my-recipe.yaml
-```
-
-Spark Arena recipes are also included in sparkrun's default registries — `sparkrun list` shows them automatically.
-
-## Custom recipe registries
-
-```bash
-# See configured registries
-sparkrun registry list
-
-# Add a community or private registry
-sparkrun registry add https://github.com/myorg/spark-recipes.git
-
-# Update all registries
-sparkrun registry update
-
-# Search across all registries
-sparkrun search qwen3
-```
-
-See [Registries](/recipes/registries/) for more details.
+[Spark Arena](https://spark-arena.com) is the community recipe hub for DGX Spark — browse tested recipes and benchmark results, then run them directly with sparkrun. Spark Arena recipes are included in sparkrun's default registries, so `sparkrun list` shows them automatically.
 
 ## Next steps
 
-- [Tutorials](/tutorials/first-inference/) — step-by-step walkthroughs for common workflows
+- [Your First Model](/tutorials/first-model/) — step-by-step tutorial
 - [Recipe Format](/recipes/format/) — write your own recipes
-- [Setup Commands](/cli/setup-commands/) — full reference for all setup subcommands
-- [Networking Best Practices](/getting-started/networking/) — CX7 configuration details and verification
+- [Registries](/recipes/registries/) — add community or private recipe registries
+- [Networking](/getting-started/networking/) — CX7 configuration for multi-node clusters
