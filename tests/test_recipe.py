@@ -698,21 +698,25 @@ class TestRecipeMetadata:
         assert recipe.metadata["model_vram"] == 5.2
         assert recipe.metadata["kv_vram_per_token"] == 0.00004
 
-    def test_spark_arena_uuid_roundtrip(self):
-        """Test that spark_arena_uuid is preserved in recipe metadata."""
+    def test_spark_arena_benchmarks_roundtrip(self):
+        """Test that spark_arena_benchmarks is preserved in recipe metadata."""
+        benchmarks = [
+            {"tp": 1, "uuid": "076136cd-260a-4e77-b6e2-309d8f64619b"},
+            {"tp": 2, "uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"},
+        ]
         recipe = Recipe.from_dict({
             "name": "Test",
             "model": "test-model",
             "metadata": {
-                "spark_arena_uuid": "076136cd-260a-4e77-b6e2-309d8f64619b",
+                "spark_arena_benchmarks": benchmarks,
             },
         })
-        assert recipe.metadata["spark_arena_uuid"] == "076136cd-260a-4e77-b6e2-309d8f64619b"
+        assert recipe.spark_arena_benchmarks == benchmarks
 
-    def test_spark_arena_uuid_absent(self):
-        """Test that spark_arena_uuid is absent when not provided."""
+    def test_spark_arena_benchmarks_absent(self):
+        """Test that spark_arena_benchmarks returns empty list when not provided."""
         recipe = Recipe.from_dict({"name": "Test", "model": "test-model"})
-        assert recipe.metadata.get("spark_arena_uuid") is None
+        assert recipe.spark_arena_benchmarks == []
 
     def test_estimate_vram_with_metadata(self):
         """Test estimate_vram() with full metadata (no HF detection)."""
@@ -940,6 +944,114 @@ class TestRecipeMetadata:
         est = recipe.estimate_vram(auto_detect=True)
         assert est.model_params is None
         assert est.model_weights_gb == 0.0
+
+    def test_estimate_vram_quant_dtype_from_hf_config(self, monkeypatch):
+        """HF quantization_config.quant_method should override torch_dtype for model weights."""
+        def _fake_fetch(model_id, revision=None, cache_dir=None):
+            return {
+                "torch_dtype": "bfloat16",
+                "num_hidden_layers": 64,
+                "num_key_value_heads": 4,
+                "num_attention_heads": 24,
+                "head_dim": 128,
+                "quantization_config": {"quant_method": "fp8"},
+            }
+
+        monkeypatch.setattr("sparkrun.models.vram.fetch_model_config", _fake_fetch)
+        monkeypatch.setattr(
+            "sparkrun.models.vram.fetch_safetensors_size",
+            lambda model_id, revision=None, cache_dir=None: 35_000_000_000,
+        )
+
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "org/model-35b-fp8",
+            "metadata": {"model_params": "35B"},
+            "defaults": {"tensor_parallel": 1},
+        })
+        est = recipe.estimate_vram(auto_detect=True)
+        assert est.model_dtype == "fp8"
+        # 35B * 1 byte (fp8) / 1024^3 ≈ 32.6 GiB
+        assert est.model_weights_gb < 35
+        assert est.model_weights_gb > 30
+
+    def test_estimate_vram_recipe_quantization_default_overrides_hf(self, monkeypatch):
+        """Recipe defaults quantization key should take priority over HF torch_dtype."""
+        def _fake_fetch(model_id, revision=None, cache_dir=None):
+            return {
+                "torch_dtype": "bfloat16",
+                "num_hidden_layers": 32,
+                "num_key_value_heads": 8,
+                "num_attention_heads": 32,
+                "head_dim": 128,
+            }
+
+        monkeypatch.setattr("sparkrun.models.vram.fetch_model_config", _fake_fetch)
+
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "org/model-7b",
+            "metadata": {"model_params": "7B"},
+            "defaults": {
+                "tensor_parallel": 1,
+                "quantization": "fp8",
+            },
+        })
+        est = recipe.estimate_vram(auto_detect=True)
+        assert est.model_dtype == "fp8"
+
+    def test_estimate_vram_metadata_dtype_takes_precedence_over_quant(self, monkeypatch):
+        """Explicit metadata.model_dtype should win over any quant detection."""
+        def _fake_fetch(model_id, revision=None, cache_dir=None):
+            return {
+                "torch_dtype": "bfloat16",
+                "num_hidden_layers": 32,
+                "num_key_value_heads": 8,
+                "num_attention_heads": 32,
+                "head_dim": 128,
+                "quantization_config": {"quant_method": "fp8"},
+            }
+
+        monkeypatch.setattr("sparkrun.models.vram.fetch_model_config", _fake_fetch)
+
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "org/model-7b",
+            "metadata": {
+                "model_params": "7B",
+                "model_dtype": "bfloat16",
+            },
+            "defaults": {"tensor_parallel": 1},
+        })
+        est = recipe.estimate_vram(auto_detect=True)
+        # metadata.model_dtype is explicit — should not be overridden
+        assert est.model_dtype == "bfloat16"
+
+    def test_estimate_vram_quantization_none_falls_through(self, monkeypatch):
+        """quantization: none/auto in defaults should not override HF dtype."""
+        def _fake_fetch(model_id, revision=None, cache_dir=None):
+            return {
+                "torch_dtype": "bfloat16",
+                "num_hidden_layers": 32,
+                "num_key_value_heads": 8,
+                "num_attention_heads": 32,
+                "head_dim": 128,
+            }
+
+        monkeypatch.setattr("sparkrun.models.vram.fetch_model_config", _fake_fetch)
+
+        for quant_val in ("none", "auto", "None", ""):
+            recipe = Recipe.from_dict({
+                "name": "Test",
+                "model": "org/model-7b",
+                "metadata": {"model_params": "7B"},
+                "defaults": {
+                    "tensor_parallel": 1,
+                    "quantization": quant_val,
+                },
+            })
+            est = recipe.estimate_vram(auto_detect=True)
+            assert est.model_dtype == "bfloat16", f"quantization={quant_val!r} should not override dtype"
 
 
 class TestResolverChain:

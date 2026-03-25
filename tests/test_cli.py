@@ -399,6 +399,55 @@ class TestExportCommand:
         assert result.exit_code != 0
         assert "No job metadata" in result.output
 
+    def test_apply_spark_arena_benchmarks_sets_metadata(self):
+        """_apply_spark_arena_benchmarks populates spark_arena_benchmarks from @spark-arena/ prefix."""
+        from sparkrun.cli._export import _apply_spark_arena_benchmarks
+        from sparkrun.core.recipe import Recipe
+
+        recipe = Recipe.__new__(Recipe)
+        recipe.metadata = {}
+        recipe.defaults = {"tensor_parallel": 2}
+        _apply_spark_arena_benchmarks(recipe, "@spark-arena/076136cd-260a-4e77-b6e2-309d8f64619b")
+        assert recipe.metadata["spark_arena_benchmarks"] == [
+            {"tp": 2, "uuid": "076136cd-260a-4e77-b6e2-309d8f64619b"},
+        ]
+
+    def test_apply_spark_arena_benchmarks_default_tp(self):
+        """_apply_spark_arena_benchmarks defaults tp to 1 when not in recipe defaults."""
+        from sparkrun.cli._export import _apply_spark_arena_benchmarks
+        from sparkrun.core.recipe import Recipe
+
+        recipe = Recipe.__new__(Recipe)
+        recipe.metadata = {}
+        recipe.defaults = {}
+        _apply_spark_arena_benchmarks(recipe, "@spark-arena/076136cd-260a-4e77-b6e2-309d8f64619b")
+        assert recipe.metadata["spark_arena_benchmarks"] == [
+            {"tp": 1, "uuid": "076136cd-260a-4e77-b6e2-309d8f64619b"},
+        ]
+
+    def test_apply_spark_arena_benchmarks_preserves_existing(self):
+        """_apply_spark_arena_benchmarks does not overwrite existing spark_arena_benchmarks."""
+        from sparkrun.cli._export import _apply_spark_arena_benchmarks
+        from sparkrun.core.recipe import Recipe
+
+        existing = [{"tp": 4, "uuid": "existing-uuid"}]
+        recipe = Recipe.__new__(Recipe)
+        recipe.metadata = {"spark_arena_benchmarks": existing}
+        recipe.defaults = {}
+        _apply_spark_arena_benchmarks(recipe, "@spark-arena/new-uuid")
+        assert recipe.metadata["spark_arena_benchmarks"] == existing
+
+    def test_apply_spark_arena_benchmarks_ignores_non_spark_arena(self):
+        """_apply_spark_arena_benchmarks is a no-op for non-spark-arena recipes."""
+        from sparkrun.cli._export import _apply_spark_arena_benchmarks
+        from sparkrun.core.recipe import Recipe
+
+        recipe = Recipe.__new__(Recipe)
+        recipe.metadata = {}
+        recipe.defaults = {}
+        _apply_spark_arena_benchmarks(recipe, "my-local-recipe")
+        assert "spark_arena_benchmarks" not in recipe.metadata
+
 
 class TestExportSystemdCommand:
     """Test the export systemd command."""
@@ -3413,8 +3462,8 @@ class TestUrlRecipe:
 
         assert _build_raw_url("https://gitlab.com/org/repo", "recipes", "model.yaml") == ""
 
-    def test_display_recipe_detail_spark_arena_uuid(self):
-        """display_recipe_detail shows Spark Arena URL when spark_arena_uuid is present."""
+    def test_display_recipe_detail_spark_arena_single(self):
+        """display_recipe_detail shows Spark Arena URL for single benchmark entry."""
         from unittest.mock import MagicMock
         from sparkrun.utils.cli_formatters import display_recipe_detail
 
@@ -3422,7 +3471,9 @@ class TestUrlRecipe:
         recipe.qualified_name = "test-recipe"
         recipe.description = "A test"
         recipe.maintainer = "tester"
-        recipe.metadata = {"spark_arena_uuid": "076136cd-260a-4e77-b6e2-309d8f64619b"}
+        recipe.metadata = {"spark_arena_benchmarks": [
+            {"tp": 1, "uuid": "076136cd-260a-4e77-b6e2-309d8f64619b"},
+        ]}
         recipe.runtime = "vllm"
         recipe.model = "test-model"
         recipe.container = "test:latest"
@@ -3443,8 +3494,42 @@ class TestUrlRecipe:
         assert "https://spark-arena.com/benchmarks/076136cd-260a-4e77-b6e2-309d8f64619b" in result.output
         assert "Spark Arena:" in result.output
 
-    def test_display_recipe_detail_no_spark_arena_uuid(self):
-        """display_recipe_detail omits Spark Arena line when uuid is absent."""
+    def test_display_recipe_detail_multi_spark_arena_benchmarks(self):
+        """display_recipe_detail shows multi-TP Spark Arena URLs."""
+        from unittest.mock import MagicMock
+        from sparkrun.utils.cli_formatters import display_recipe_detail
+
+        recipe = MagicMock()
+        recipe.qualified_name = "test-recipe"
+        recipe.description = "A test"
+        recipe.maintainer = "tester"
+        recipe.metadata = {"spark_arena_benchmarks": [
+            {"tp": 1, "uuid": "uuid-tp1"},
+            {"tp": 2, "uuid": "uuid-tp2"},
+        ]}
+        recipe.runtime = "vllm"
+        recipe.model = "test-model"
+        recipe.container = "test:latest"
+        recipe.min_nodes = 1
+        recipe.max_nodes = 2
+        recipe.defaults = {}
+        recipe.env = {}
+        recipe.command = None
+
+        from click.testing import CliRunner
+        import click
+
+        @click.command()
+        def _show():
+            display_recipe_detail(recipe, show_vram=False)
+
+        result = CliRunner().invoke(_show)
+        assert "Spark Arena:" in result.output
+        assert "tp1: https://spark-arena.com/benchmarks/uuid-tp1" in result.output
+        assert "tp2: https://spark-arena.com/benchmarks/uuid-tp2" in result.output
+
+    def test_display_recipe_detail_no_spark_arena_benchmarks(self):
+        """display_recipe_detail omits Spark Arena line when benchmarks are absent."""
         from unittest.mock import MagicMock
         from sparkrun.utils.cli_formatters import display_recipe_detail
 

@@ -137,9 +137,13 @@ def display_recipe_detail(recipe, show_vram=True, registry_name=None, cli_overri
     click.echo(f"Description:  {recipe.description}")
     if recipe.maintainer:
         click.echo(f"Maintainer:   {recipe.maintainer}")
-    spark_arena_uuid = recipe.metadata.get("spark_arena_uuid")
-    if spark_arena_uuid:
-        click.echo(f"Spark Arena:  https://spark-arena.com/benchmarks/{spark_arena_uuid}")
+    spark_arena_benchmarks = recipe.metadata.get("spark_arena_benchmarks", [])
+    if len(spark_arena_benchmarks) == 1:
+        click.echo("Spark Arena:  https://spark-arena.com/benchmarks/%s" % spark_arena_benchmarks[0]["uuid"])
+    elif len(spark_arena_benchmarks) > 1:
+        click.echo("Spark Arena:")
+        for entry in spark_arena_benchmarks:
+            click.echo("  tp%s: https://spark-arena.com/benchmarks/%s" % (entry["tp"], entry["uuid"]))
     click.echo(f"Runtime:      {recipe.runtime}")
     click.echo(f"Model:        {recipe.model}")
     click.echo(f"Container:    {recipe.container}")

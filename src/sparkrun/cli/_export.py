@@ -28,6 +28,19 @@ from ._common import (
 logger = logging.getLogger(__name__)
 
 
+def _apply_spark_arena_benchmarks(recipe, recipe_name: str):
+    """Set metadata.spark_arena_benchmarks when the recipe comes from spark-arena."""
+    from sparkrun.core.recipe import SPARK_ARENA_PREFIX
+
+    if recipe.metadata.get("spark_arena_benchmarks"):
+        return  # already set
+
+    if recipe_name.startswith(SPARK_ARENA_PREFIX):
+        uuid = recipe_name[len(SPARK_ARENA_PREFIX):]
+        tp = recipe.defaults.get("tensor_parallel", 1)
+        recipe.metadata["spark_arena_benchmarks"] = [{"tp": tp, "uuid": uuid}]
+
+
 @click.group()
 @click.pass_context
 def export(ctx):
@@ -44,6 +57,9 @@ def export_recipe(ctx, recipe_name, output_json=False, save_path=None):
     """Export normalized recipe to stdout or file."""
     config, _ = _get_config_and_registry()
     recipe, recipe_path, registry_mgr = _load_recipe(config, recipe_name)
+
+    # Auto-populate spark_arena_benchmarks from @spark-arena/UUID references
+    _apply_spark_arena_benchmarks(recipe, recipe_name)
 
     if save_path is None:
         click.echo(recipe.export(json=output_json))

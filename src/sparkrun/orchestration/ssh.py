@@ -196,6 +196,7 @@ def run_remote_command(
         connect_timeout: int = 10,
         timeout: int | None = None,
         dry_run: bool = False,
+        quiet: bool = False,
 ) -> RemoteResult:
     """Execute a single command on a remote host (not via bash -s).
 
@@ -210,6 +211,7 @@ def run_remote_command(
         connect_timeout: SSH connection timeout in seconds.
         timeout: Overall execution timeout in seconds.
         dry_run: If True, log the command but don't execute.
+        quiet: If True, downgrade failure logging from WARNING to DEBUG.
 
     Returns:
         RemoteResult with returncode, stdout, stderr.
@@ -224,7 +226,7 @@ def run_remote_command(
     logger.debug("  SSH cmd -> %s: %s", host, command[:80])
     logger.debug("SSH command: %s", " ".join(cmd))
 
-    result = _run_subprocess(cmd, host, "SSH cmd", timeout=timeout)
+    result = _run_subprocess(cmd, host, "SSH cmd", timeout=timeout, quiet=quiet)
     if result.stdout.strip():
         logger.debug("Remote command stdout on %s:\n%s", host, result.stdout.strip())
     if result.stderr.strip():

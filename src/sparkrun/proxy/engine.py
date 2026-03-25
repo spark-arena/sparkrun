@@ -27,8 +27,8 @@ logger = logging.getLogger(__name__)
 
 
 def build_litellm_config(
-    endpoints: list[DiscoveredEndpoint],
-    master_key: str | None = DEFAULT_MASTER_KEY,
+        endpoints: list[DiscoveredEndpoint],
+        master_key: str | None = DEFAULT_MASTER_KEY,
 ) -> dict[str, Any]:
     """Generate a litellm proxy config dict from discovered endpoints.
 
@@ -109,11 +109,11 @@ class ProxyEngine:
     """Manages the litellm proxy subprocess and its management API."""
 
     def __init__(
-        self,
-        host: str = DEFAULT_PROXY_HOST,
-        port: int = DEFAULT_PROXY_PORT,
-        master_key: str | None = DEFAULT_MASTER_KEY,
-        state_dir: Path | None = None,
+            self,
+            host: str = DEFAULT_PROXY_HOST,
+            port: int = DEFAULT_PROXY_PORT,
+            master_key: str | None = DEFAULT_MASTER_KEY,
+            state_dir: Path | None = None,
     ):
         self.host = host
         self.port = port
@@ -128,11 +128,11 @@ class ProxyEngine:
         self._autodiscover_config_path = state_dir / "autodiscover.yaml"
 
     def start(
-        self,
-        config_path: Path | None = None,
-        foreground: bool = False,
-        dry_run: bool = False,
-        autodiscover_kwargs: dict | None = None,
+            self,
+            config_path: Path | None = None,
+            foreground: bool = False,
+            dry_run: bool = False,
+            autodiscover_kwargs: dict | None = None,
     ) -> int:
         """Launch the LiteLLM proxy server via uvx.
 
@@ -247,12 +247,12 @@ class ProxyEngine:
             return 0
 
     def start_autodiscover(
-        self,
-        proxy_pid: int,
-        interval: int = 30,
-        host_list: list[str] | None = None,
-        ssh_kwargs: dict | None = None,
-        cache_dir: str | None = None,
+            self,
+            proxy_pid: int,
+            interval: int = 30,
+            host_list: list[str] | None = None,
+            ssh_kwargs: dict | None = None,
+            cache_dir: str | None = None,
     ) -> int | None:
         """Spawn the background auto-discovery process.
 

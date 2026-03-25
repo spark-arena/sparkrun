@@ -13,6 +13,7 @@ from ._common import (
     dry_run_option,
     host_options,
 )
+from ._arena import arena
 from ._benchmark import benchmark
 from ._cluster import cluster, cluster_status
 from ._export import export
@@ -48,6 +49,7 @@ main.add_command(registry)
 main.add_command(benchmark)
 main.add_command(export)
 main.add_command(proxy)
+main.add_command(arena)
 
 
 # ---------------------------------------------------------------------------

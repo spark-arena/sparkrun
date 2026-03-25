@@ -6,6 +6,8 @@ import logging
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass, field
+from typing import Optional, TYPE_CHECKING
 
 import click
 
@@ -30,6 +32,20 @@ from ._common import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_BENCHMARK_TIMEOUT: int = 14400  # 4 hours
+
+if TYPE_CHECKING:
+    from ..core.launcher import LaunchResult
+
+
+@dataclass
+class BenchmarkResult:
+    """Result of a benchmark run with output file paths."""
+    success: bool = False
+    output_yaml: Optional[str] = None
+    output_csv: Optional[str] = None
+    output_json: Optional[str] = None
+    recipe_name: Optional[str] = None
+    launch_result: Optional['LaunchResult'] = None
 
 
 @click.command()
@@ -81,7 +97,7 @@ def benchmark(ctx, recipe_name, hosts, hosts_file, cluster_name,
 
       sparkrun benchmark qwen3-1.7b-sglang --skip-run --solo
     """
-    _run_benchmark(
+    return _run_benchmark(
         ctx, recipe_name, hosts, hosts_file, cluster_name,
         tensor_parallel, pipeline_parallel, gpu_mem, max_model_len,
         options, image, solo, port,
@@ -99,7 +115,10 @@ def _run_benchmark(
         output_file, bench_options, exit_on_first_fail, no_stop, skip_run,
         sync_tuning, rootful, bench_timeout, dry_run,
 ):
-    """Execute the full benchmark flow: launch inference -> benchmark -> stop."""
+    """Execute the full benchmark flow: launch inference -> benchmark -> stop.
+
+    Returns a :class:`BenchmarkResult` with output file paths on success.
+    """
     from sparkrun.benchmarking.base import export_results
     from ..core.benchmark_profiles import BenchmarkSpec
     from sparkrun.core.bootstrap import init_sparkrun, get_runtime, get_benchmarking_framework
@@ -113,6 +132,7 @@ def _run_benchmark(
         wait_for_port,
     )
 
+    bench_result = BenchmarkResult(recipe_name=recipe_name)
     v = init_sparkrun()
     _setup_logging(ctx.obj["verbose"])
     config = SparkrunConfig()
@@ -360,6 +380,7 @@ def _run_benchmark(
         click.echo("")
 
         launched = True
+        bench_result.launch_result = launch_result
     else:
         click.echo("Step 1/3: Skipping inference launch (--skip-run)")
 
@@ -531,6 +552,7 @@ def _run_benchmark(
                 runtime_info=launch_result.runtime_info if launch_result else None,
             )
             click.echo("Results saved to: %s" % output_file)
+            bench_result.output_yaml = output_file
 
             from pathlib import Path
             _OUTPUT_WRITERS = {
@@ -545,6 +567,10 @@ def _run_benchmark(
                 fmt_path = Path(output_file).with_suffix(".%s" % fmt)
                 writer(content, fmt_path)
                 click.echo("%s results saved to: %s" % (fmt.upper(), fmt_path))
+                if fmt == "csv":
+                    bench_result.output_csv = str(fmt_path)
+                elif fmt == "json":
+                    bench_result.output_json = str(fmt_path)
         else:
             click.echo("[dry-run] Would parse and export results to: %s" % (output_file or "benchmark_<recipe>_<framework>.yaml"))
 
@@ -565,6 +591,7 @@ def _run_benchmark(
 
         click.echo("")
         click.echo("Benchmark complete.")
+        bench_result.success = True
 
     except KeyboardInterrupt:
         click.echo("")
@@ -580,6 +607,8 @@ def _run_benchmark(
             os.unlink(result_file)
         except OSError:
             pass
+
+    return bench_result
 
 
 def _stop_inference(runtime, host_list, cluster_id, config, dry_run):

@@ -8,6 +8,7 @@ import pytest
 
 from sparkrun.models.vram import (
     VRAMEstimate,
+    _resolve_quant_dtype,
     bytes_per_element,
     estimate_vram,
     extract_model_info,
@@ -513,3 +514,90 @@ class TestExtractModelInfo:
         }
         info = extract_model_info(config)
         assert info["model_dtype"] == "float16"
+
+    def test_fp8_quantization_config(self):
+        """FP8 quantization_config should produce quant_dtype."""
+        config = {
+            "torch_dtype": "bfloat16",
+            "num_hidden_layers": 32,
+            "quantization_config": {"quant_method": "fp8"},
+        }
+        info = extract_model_info(config)
+        assert info["model_dtype"] == "bfloat16"  # torch_dtype unchanged
+        assert info["quant_dtype"] == "fp8"
+
+    def test_awq_quantization_config(self):
+        """AWQ quantization_config should produce quant_dtype."""
+        config = {
+            "torch_dtype": "float16",
+            "quantization_config": {"quant_method": "awq", "bits": 4},
+        }
+        info = extract_model_info(config)
+        assert info["quant_dtype"] == "awq4"
+
+    def test_gptq_quantization_config(self):
+        """GPTQ quantization_config should produce quant_dtype."""
+        config = {
+            "torch_dtype": "float16",
+            "quantization_config": {"quant_method": "gptq", "bits": 4},
+        }
+        info = extract_model_info(config)
+        assert info["quant_dtype"] == "gptq"
+
+    def test_no_quantization_config(self):
+        """Without quantization_config, quant_dtype should be absent."""
+        config = {"torch_dtype": "bfloat16", "num_hidden_layers": 32}
+        info = extract_model_info(config)
+        assert "quant_dtype" not in info
+
+    def test_empty_quantization_config(self):
+        """Empty quantization_config should not produce quant_dtype."""
+        config = {
+            "torch_dtype": "bfloat16",
+            "quantization_config": {},
+        }
+        info = extract_model_info(config)
+        assert "quant_dtype" not in info
+
+
+class TestResolveQuantDtype:
+    """Test _resolve_quant_dtype helper."""
+
+    def test_fp8(self):
+        assert _resolve_quant_dtype({"quant_method": "fp8"}) == "fp8"
+
+    def test_awq_default_4bit(self):
+        assert _resolve_quant_dtype({"quant_method": "awq"}) == "awq4"
+
+    def test_awq_explicit_4bit(self):
+        assert _resolve_quant_dtype({"quant_method": "awq", "bits": 4}) == "awq4"
+
+    def test_awq_8bit(self):
+        assert _resolve_quant_dtype({"quant_method": "awq", "bits": 8}) == "awq8"
+
+    def test_gptq_default_4bit(self):
+        assert _resolve_quant_dtype({"quant_method": "gptq"}) == "gptq"
+
+    def test_gptq_8bit(self):
+        assert _resolve_quant_dtype({"quant_method": "gptq", "bits": 8}) == "int8"
+
+    def test_marlin(self):
+        assert _resolve_quant_dtype({"quant_method": "marlin", "bits": 4}) == "gptq"
+
+    def test_bitsandbytes_4bit(self):
+        assert _resolve_quant_dtype({"quant_method": "bitsandbytes", "load_in_4bit": True}) == "int4"
+
+    def test_bitsandbytes_nf4(self):
+        assert _resolve_quant_dtype({"quant_method": "bitsandbytes", "quant_type": "nf4"}) == "int4"
+
+    def test_bitsandbytes_8bit(self):
+        assert _resolve_quant_dtype({"quant_method": "bitsandbytes", "load_in_8bit": True}) == "int8"
+
+    def test_unknown_method(self):
+        assert _resolve_quant_dtype({"quant_method": "unknown_method"}) is None
+
+    def test_empty_method(self):
+        assert _resolve_quant_dtype({"quant_method": ""}) is None
+
+    def test_no_method(self):
+        assert _resolve_quant_dtype({}) is None

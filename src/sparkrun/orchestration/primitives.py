@@ -530,7 +530,7 @@ def wait_for_port(
                 )
                 return False
 
-        result = run_command_on_host(host, check_cmd, ssh_kwargs=ssh_kwargs, timeout=5)
+        result = run_command_on_host(host, check_cmd, ssh_kwargs=ssh_kwargs, timeout=5, quiet=True)
         if result.success:
             logger.info("  Port %d ready after %ds", port, attempt * retry_interval)
             return True
@@ -673,10 +673,11 @@ def run_command_on_host(
         ssh_kwargs: dict | None = None,
         timeout: int | None = None,
         dry_run: bool = False,
+        quiet: bool = False,
 ) -> RemoteResult:
     """Run a command on a host — dispatches to local or remote execution."""
     from sparkrun.utils import is_local_host
     if is_local_host(host):
         return run_local_script("#!/bin/bash\n" + command, dry_run=dry_run)
     kw = ssh_kwargs or {}
-    return run_remote_command(host, command, timeout=timeout, dry_run=dry_run, **kw)
+    return run_remote_command(host, command, timeout=timeout, dry_run=dry_run, quiet=quiet, **kw)

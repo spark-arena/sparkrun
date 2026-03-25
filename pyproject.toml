@@ -24,19 +24,20 @@ classifiers = [
     "Topic :: System :: Clustering",
 ]
 dependencies = [
-    "scitrera-app-framework>=0.0.55",
-    "vpd>=0.9.5",
-    "click>=8.0",
-    "pyyaml>=6.0",
-    "huggingface_hub>=0.20",
-    "textual>=1.0.0",
+    "scitrera-app-framework==0.0.69",
+    "vpd==0.9.13",
+    "six==1.17.0", # transitive dependency of vpd but we pin the version for security reasons
+    "click==8.3.1",
+    "pyyaml==6.0.3",
+    "huggingface-hub==1.8.0",
+    "textual==8.1.1",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0",
-    "pytest-cov>=4.0",
-    "pytest-asyncio>=0.21",
+    "pytest==9.0.2",
+    "pytest-cov==7.1.0",
+    "pytest-asyncio==1.3.0",
 ]
 
 [project.scripts]

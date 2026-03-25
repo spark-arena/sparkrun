@@ -400,7 +400,7 @@ def export_metadata(ctx, output, include_hidden):
                 cluster_backend = "mpi"
 
             # TODO: validate recipe against registry recipe -- to make sure that the recipe metadata
-            #       spark_arena_uuid is not spoofed or fake
+            #       spark_arena_uuid is not spoofed or fake ?? really only applies if recipes come from external sources
 
             slug = "%s/%s" % (entry.name, recipe.name)
             if slug in seen_slugs:
@@ -430,13 +430,11 @@ def export_metadata(ctx, output, include_hidden):
                 "container": recipe.container,  # TODO: should we replace w/ first-party if meets requirements?
                 "recipe_version": recipe.recipe_version,
                 "raw_url": raw_url,
-                "toks": recipe.metadata.get("toks"),  # TODO: and/or pull from spark arena metadata
-                "spark_arena_uuid": recipe.metadata.get("spark_arena_uuid"),
-                "benchmark_url": (
-                    "https://spark-arena.com/benchmark/%s" % recipe.metadata["spark_arena_uuid"]
-                    if recipe.metadata.get("spark_arena_uuid")
-                    else None
-                ),
+                "spark_arena_benchmarks": [
+                                              {"tp": b["tp"], "uuid": b["uuid"],
+                                               "url": "https://spark-arena.com/benchmark/%s" % b["uuid"]}
+                                              for b in recipe.metadata.get("spark_arena_benchmarks", [])
+                                          ] or None,
             })
             all_runtimes.add(display_runtime)
             recipe_count += 1

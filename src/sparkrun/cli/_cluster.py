@@ -483,24 +483,20 @@ def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, config_path=No
                 click.echo(f"  stop: {stop_cmd}")
             click.echo()
 
-    # Display solo / ungrouped containers
+    # Display solo / ungrouped containers (same format as cluster jobs)
     if result.solo_entries:
         from sparkrun.orchestration.job_metadata import load_job_metadata
         for host, name, status, image in result.solo_entries:
             cid = name.removesuffix("_solo")
             meta = load_job_metadata(cid, cache_dir=str(config.cache_dir)) or {}
+            click.echo(f"Job: {format_job_label(meta, cid)}  (1 container(s))")
             hdisp = format_host_display(host, meta)
-            click.echo(f"  {format_job_label(meta, cid):<40s} {hdisp:<40s} {status:<25s} {image}")
-            # ri = meta.get("runtime_info")
-            # if ri and isinstance(ri, dict):
-            #     click.echo("    versions: %s" % ", ".join(
-            #         "%s=%s" % (k, v) for k, v in sorted(ri.items())
-            #     ))
+            click.echo(f"  {'solo':<10s} {hdisp:<40s} {status:<25s} {image}")
             logs_cmd, stop_cmd = format_job_commands(meta, cluster_id=cid)
             if logs_cmd:
-                click.echo(f"    logs: {logs_cmd}")
-                click.echo(f"    stop: {stop_cmd}")
-        click.echo()
+                click.echo(f"  logs: {logs_cmd}")
+                click.echo(f"  stop: {stop_cmd}")
+            click.echo()
 
     # Display errors
     for host in host_list:
