@@ -167,9 +167,9 @@ class TestDefaultRegistries:
         assert eugr.enabled is True
         assert eugr.visible is True
 
-    def test_five_default_registries(self):
-        """Test that there are exactly five default registries."""
-        assert len(FALLBACK_DEFAULT_REGISTRIES) == 5
+    def test_six_default_registries(self):
+        """Test that there are exactly six default registries."""
+        assert len(FALLBACK_DEFAULT_REGISTRIES) == 6
 
     def test_testing_registry_subpath(self):
         """Test the sparkrun-testing registry subpath."""
@@ -915,6 +915,61 @@ class TestDeprecatedRegistries:
             assert mgr.get_registry("some-name")
         finally:
             reg_module.DEPRECATED_REGISTRIES = original
+
+
+class TestRestoreMissingDefaults:
+    """Test restore_missing_defaults functionality."""
+
+    def test_restore_no_missing(self, mgr):
+        """When all fallback defaults are present, nothing is added."""
+        mgr._save_registries(list(FALLBACK_DEFAULT_REGISTRIES))
+        restored = mgr.restore_missing_defaults()
+        assert restored == []
+        assert len(mgr.list_registries()) == len(FALLBACK_DEFAULT_REGISTRIES)
+
+    def test_restore_adds_missing_entry(self, mgr):
+        """Missing fallback entries are appended to the config."""
+        # Save only the first fallback entry — the rest should be restored
+        mgr._save_registries([FALLBACK_DEFAULT_REGISTRIES[0]])
+        restored = mgr.restore_missing_defaults()
+        expected_missing = [e.name for e in FALLBACK_DEFAULT_REGISTRIES[1:]]
+        assert sorted(restored) == sorted(expected_missing)
+        # All fallback entries should now be present
+        names = {e.name for e in mgr.list_registries()}
+        for fb in FALLBACK_DEFAULT_REGISTRIES:
+            assert fb.name in names
+
+    def test_restore_preserves_existing_entries(self, mgr):
+        """Existing non-default entries are preserved after restore."""
+        custom = RegistryEntry(name="my-custom", url="https://example.com/repo", subpath="r")
+        mgr._save_registries([custom])
+        mgr.restore_missing_defaults()
+        entries = mgr.list_registries()
+        names = {e.name for e in entries}
+        assert "my-custom" in names
+        for fb in FALLBACK_DEFAULT_REGISTRIES:
+            assert fb.name in names
+
+    def test_restore_does_not_duplicate(self, mgr):
+        """Calling restore twice does not create duplicate entries."""
+        mgr._save_registries([FALLBACK_DEFAULT_REGISTRIES[0]])
+        mgr.restore_missing_defaults()
+        restored_again = mgr.restore_missing_defaults()
+        assert restored_again == []
+        names = [e.name for e in mgr.list_registries()]
+        assert len(names) == len(set(names)), "Duplicate registry names found"
+
+    def test_restore_empty_config(self, mgr):
+        """All fallback defaults are added when config is empty."""
+        mgr._save_registries([])
+        restored = mgr.restore_missing_defaults()
+        assert sorted(restored) == sorted(e.name for e in FALLBACK_DEFAULT_REGISTRIES)
+
+    def test_restore_returns_empty_when_no_file(self, mgr):
+        """When no registries.yaml exists, falls back to _load_registries which already has defaults."""
+        # No file saved — _load_registries returns defaults, so all names are present
+        restored = mgr.restore_missing_defaults()
+        assert restored == []
 
 
 class TestReservedNamePrefixes:

@@ -245,6 +245,11 @@ def registry_update(ctx, name, config_path=None):
             for cname in cleaned:
                 click.echo("Removed deprecated registry: %s" % cname)
 
+            # Restore any missing default registries
+            restored = registry_mgr.restore_missing_defaults()
+            for rname in restored:
+                click.echo("Added missing default registry: %s" % rname)
+
         if name:
             entry = registry_mgr.get_registry(name)
             if not entry.enabled:

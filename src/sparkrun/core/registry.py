@@ -81,6 +81,7 @@ FALLBACK_DEFAULT_REGISTRIES = [
         url="https://github.com/dbotwinick/sparkrun-recipe-registry.git",
         subpath="transitional/recipes",
         description="Transitional registry for recipes",
+        tuning_subpath="testing/tuning",
         visible=True,
     ),
     RegistryEntry(
@@ -90,6 +91,13 @@ FALLBACK_DEFAULT_REGISTRIES = [
         description="Spark Arena registry for experimental recipes",
         visible=False,
     ),
+    RegistryEntry(
+        name="community",
+        url="https://github.com/spark-arena/community-recipe-registry.git",
+        subpath="recipes",
+        description="Community recipe registry",
+        visible=False,
+    ),
 ]
 
 # Git URLs whose .sparkrun/registry.yaml manifests are used for first-run
@@ -97,6 +105,7 @@ FALLBACK_DEFAULT_REGISTRIES = [
 DEFAULT_REGISTRIES_GIT = [
     "https://github.com/dbotwinick/sparkrun-recipe-registry.git",
     "https://github.com/spark-arena/recipe-registry.git",
+    "https://github.com/spark-arena/community-recipe-registry.git",
 ]
 
 # List of git URLs for registries that have been superseded and should be cleaned up.
@@ -788,6 +797,35 @@ class RegistryManager:
                 return True
         return False
 
+    def restore_missing_defaults(self) -> list[str]:
+        """Add default registry entries that are missing from the config.
+
+        Checks ``FALLBACK_DEFAULT_REGISTRIES`` for entries whose name is not
+        present in the current ``registries.yaml``.  Missing entries are
+        appended and persisted.
+
+        Returns:
+            List of registry names that were added.
+        """
+        try:
+            entries = self._load_registries_from_file()
+        except Exception:
+            entries = self._load_registries()
+
+        existing_names = {e.name for e in entries}
+        added: list[str] = []
+
+        for default in FALLBACK_DEFAULT_REGISTRIES:
+            if default.name not in existing_names:
+                entries.append(default)
+                added.append(default.name)
+                logger.info("Restored missing default registry: %s", default.name)
+
+        if added:
+            self._save_registries(entries)
+
+        return added
+
     def cleanup_deprecated(self) -> list[str]:
         """Remove deprecated registries and their caches.
 
@@ -955,9 +993,9 @@ class RegistryManager:
         raise RegistryError(f"Registry {name!r} not found")
 
     def update(
-        self,
-        name: str | None = None,
-        progress: Callable[[str, bool], None] | None = None,
+            self,
+            name: str | None = None,
+            progress: Callable[[str, bool], None] | None = None,
     ) -> dict[str, bool]:
         """Update one or all registries.
 
@@ -1254,9 +1292,9 @@ class RegistryManager:
         return benchmark_path if benchmark_path.exists() else None
 
     def find_benchmark_profile_in_registries(
-        self,
-        name: str,
-        include_hidden: bool = False,
+            self,
+            name: str,
+            include_hidden: bool = False,
     ) -> list[tuple[str, Path]]:
         """Find benchmark profile by file stem across registries.
 
@@ -1283,9 +1321,9 @@ class RegistryManager:
         return matches
 
     def list_benchmark_profiles(
-        self,
-        registry_name: str | None = None,
-        include_hidden: bool = False,
+            self,
+            registry_name: str | None = None,
+            include_hidden: bool = False,
     ) -> list[dict[str, Any]]:
         """List all benchmark profiles across registries.
 
