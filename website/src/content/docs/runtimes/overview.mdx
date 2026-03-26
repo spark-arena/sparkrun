@@ -66,18 +66,11 @@ Both `vllm-distributed` and `vllm-ray` use the same container images and support
 
 ## Maintained container images
 
-Scitrera maintains several specialized container images for DGX Spark. For more information on how these images are built and maintained, see the [cuda-containers](https://github.com/scitrera/cuda-containers) repository.
+The Spark Arena team maintains several specialized container images for DGX Spark.
 
-| Image | Description | Docker Hub |
+| Image | Description | Link |
 |---|---|---|
-| `dgx-spark-vllm` | Optimized vLLM for DGX Spark | [Link](https://hub.docker.com/r/scitrera/dgx-spark-vllm) |
+| `ghcr.io/spark-arena/dgx-vllm-eugr-nightly` | Optimized eugr vLLM for DGX Spark | [GitHub](https://github.com/eugr/spark-vllm-docker) |
+| `ghcr.io/spark-arena/dgx-vllm-eugr-nightly-tf5` | Optimized eugr vLLM for DGX Spark with Transformers 5.x | [GitHub](https://github.com/eugr/spark-vllm-docker) |
 | `dgx-spark-sglang` | Optimized SGLang for DGX Spark | [Link](https://hub.docker.com/r/scitrera/dgx-spark-sglang) |
-| `dgx-spark-llama-cpp` | Optimized llama.cpp for DGX Spark | [Link](https://hub.docker.com/r/scitrera/dgx-spark-llama-cpp) |
-| `dgx-spark-pytorch-runtime` | PyTorch runtime with Spark-optimized dependencies | [Link](https://hub.docker.com/r/scitrera/dgx-spark-pytorch-runtime) |
-| `dgx-spark-pytorch-dev` | PyTorch development image for DGX Spark | [Link](https://hub.docker.com/r/scitrera/dgx-spark-pytorch-dev) |
-
-We recommend checking Docker Hub for the latest available tags for each image.
-
-Note: These are not the only images that work with sparkrun; sparkrun is designed for general use. The above images are maintained by Scitrera to ensure compatibility and performance on DGX Spark, but you can use any container that meets the requirements of your chosen runtime.
-The images above are intended to be a middle ground. The NVIDIA NGC containers are often a bit far behind in the interest of stability, while bleeding-edge community images can sometimes be a bit too volatile for production use.
-The above images are regularly updated to keep up with the latest versions of vLLM, SGLang, and llama.cpp while ensuring stability on DGX Spark.
+| `ghcr.io/spark-arena/dgx-llama-cpp` | Optimized llama.cpp for DGX Spark <br/>Mirror of `scitrera/dgx-spark-llama-cpp` | [Docker](https://hub.docker.com/r/scitrera/dgx-spark-llama-cpp) <br/> [GitHub](https://github.com/scitrera/cuda-containers) |
