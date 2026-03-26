@@ -27,9 +27,9 @@ class QuantizationInfo:
 
 
 def fetch_hf_quant_config(
-        model_id: str,
-        revision: str | None = None,
-        cache_dir: str | None = None,
+    model_id: str,
+    revision: str | None = None,
+    cache_dir: str | None = None,
 ) -> dict[str, Any] | None:
     """Fetch ``hf_quant_config.json`` from HuggingFace Hub.
 
@@ -274,11 +274,55 @@ def _resolve_compressed_tensors(qc: dict[str, Any]) -> QuantizationInfo:
     return QuantizationInfo(method="compressed-tensors", bits=None, weight_dtype="compressed-tensors")
 
 
+def _gguf_normalize_quant(name: str) -> str | None:
+    """Normalize a GGUF quant variant name to a recognized dtype.
+
+    Tries an exact match first (e.g. ``q4_k_m``), then strips the
+    ``_s``/``_m``/``_l`` mix suffix to try the base K-quant name
+    (e.g. ``q4_k_m`` → ``q4_k``).
+
+    Returns the matched dtype string or ``None`` if unrecognized.
+    """
+    from sparkrun.models.vram import bytes_per_element
+
+    qlower = name.lower().strip().replace("-", "_")
+    # Exact match (e.g. q4_k_m, q8_0, iq4_xs)
+    if bytes_per_element(qlower) is not None:
+        return qlower
+    # Strip mix suffix: q3_k_m -> q3_k, q5_k_s -> q5_k
+    if qlower.endswith(("_s", "_m", "_l")):
+        base = qlower[:-2]
+        if bytes_per_element(base) is not None:
+            return base
+    return None
+
+
+def resolve_from_gguf(model_id: str) -> QuantizationInfo | None:
+    """Derive quantization info from a GGUF model spec's quant variant.
+
+    GGUF models use colon syntax: ``Qwen/Qwen3-1.7B-GGUF:Q4_K_M``.
+    The suffix after ``:`` is the quantization variant.
+
+    Returns ``QuantizationInfo`` if a recognized GGUF quant suffix is found,
+    or ``None`` for non-GGUF models.
+    """
+    if ":" not in model_id:
+        return None
+    _repo, quant = model_id.rsplit(":", 1)
+    if not quant:
+        return None
+    dtype = _gguf_normalize_quant(quant)
+    if dtype is not None:
+        return QuantizationInfo(method="gguf", bits=None, weight_dtype=dtype)
+    return None
+
+
 def resolve_quantization(
-        *,
-        hf_config: dict[str, Any] | None = None,
-        hf_quant_config: dict[str, Any] | None = None,
-        recipe_quant: str | None = None,
+    *,
+    hf_config: dict[str, Any] | None = None,
+    hf_quant_config: dict[str, Any] | None = None,
+    recipe_quant: str | None = None,
+    model_id: str | None = None,
 ) -> QuantizationInfo | None:
     """Merge quantization info from all available sources.
 
@@ -286,6 +330,7 @@ def resolve_quantization(
       1. ``recipe_quant`` — explicit recipe author override (``metadata.quantization``)
       2. ``hf_config`` → ``quantization_config`` block (standard HF)
       3. ``hf_quant_config`` (modelopt supplement)
+      4. ``model_id`` — GGUF colon syntax (e.g. ``repo:Q4_K_M``)
 
     The ``hf_quant_config`` is checked last for method because ``config.json``
     is the standard HF mechanism, but ``hf_quant_config.json`` is the *only*
@@ -295,7 +340,7 @@ def resolve_quantization(
     info_from_config: QuantizationInfo | None = None
     info_from_quant_file: QuantizationInfo | None = None
 
-    # Source 3 (weakest for method): hf_quant_config.json
+    # Source 3: hf_quant_config.json
     if hf_quant_config:
         info_from_quant_file = _resolve_from_hf_quant_config(hf_quant_config)
 
@@ -319,6 +364,11 @@ def resolve_quantization(
 
     # Pick the best method source
     result = info_from_config or info_from_quant_file
+
+    # Source 4 (weakest): GGUF model spec
+    if result is None and model_id:
+        result = resolve_from_gguf(model_id)
+
     if result is None:
         return None
 

@@ -26,11 +26,45 @@ _DTYPE_BYTES: dict[str, float] = {
     "awq8": 1.0,
     "gptq": 0.5,
     "mxfp4": 0.5,
-    # TODO: GGUF quants
-    "q3_k_m": 0.4,
-    "q4_k_m": 0.608,
-    "q6_k": 0.823,
-    "q8_0": 1.0,
+    # GGUF quants — bytes per weight from llama.cpp ggml type_size / block_size.
+    # Basic quants
+    "q4_0": 0.5625,
+    "q4_1": 0.625,
+    "q5_0": 0.6875,
+    "q5_1": 0.75,
+    "q8_0": 1.0625,
+    "q8_1": 1.125,
+    # K-quants (base types — dominant tensor type in K-quant mixes)
+    "q2_k": 0.3125,
+    "q3_k": 0.4375,
+    "q4_k": 0.5625,
+    "q5_k": 0.6875,
+    "q6_k": 0.8125,
+    "q8_k": 1.0625,
+    # K-quant mixes (suffixed names used by llama.cpp quantize CLI).
+    # The _s/_m suffix selects which layers use the base vs higher-precision quant;
+    # bytes-per-element is the same as the base type for estimation purposes.
+    # Uncommon _l variants fall back to the base via _gguf_normalize_quant().
+    "q2_k_s": 0.3125,
+    "q3_k_s": 0.4375,
+    "q3_k_m": 0.4375,
+    "q4_k_s": 0.5625,
+    "q4_k_m": 0.5625,
+    "q5_k_s": 0.6875,
+    "q5_k_m": 0.6875,
+    # IQ (importance-matrix quants)
+    "iq1_s": 0.1875,
+    "iq1_m": 0.1875,
+    "iq2_xxs": 0.25,
+    "iq2_xs": 0.3125,
+    "iq2_s": 0.3125,
+    "iq3_xxs": 0.4063,
+    "iq3_s": 0.4375,
+    "iq4_nl": 0.5625,
+    "iq4_xs": 0.5625,
+    # Ternary
+    "tq1_0": 0.1875,
+    "tq2_0": 0.3125,
 }
 
 # Shorthand suffixes for parameter counts

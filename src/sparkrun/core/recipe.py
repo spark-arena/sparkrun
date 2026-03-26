@@ -223,9 +223,9 @@ def resolve_builder(data: dict[str, Any]) -> str:
     runtime_config = data.get("runtime_config") or {}
     runtime = data.get("runtime", "")
     if runtime in ("vllm", "") and (
-            data.get("build_args")
-            or data.get("mods")
-            or (isinstance(runtime_config, dict) and (runtime_config.get("build_args") or runtime_config.get("mods")))
+        data.get("build_args")
+        or data.get("mods")
+        or (isinstance(runtime_config, dict) and (runtime_config.get("build_args") or runtime_config.get("mods")))
     ):
         return "eugr"
     return ""
@@ -274,7 +274,7 @@ def expand_recipe_shortcut(name: str) -> str:
         @spark-arena/UUID  ->  https://spark-arena.com/api/recipes/UUID/raw
     """
     if name.startswith(SPARK_ARENA_PREFIX):
-        recipe_id = name[len(SPARK_ARENA_PREFIX):]
+        recipe_id = name[len(SPARK_ARENA_PREFIX) :]
         return SPARK_ARENA_API_URL % recipe_id
     return name
 
@@ -594,6 +594,7 @@ class Recipe:
                     "auto-round",
                     "autoround",
                     "auto_round",
+                    "gguf",
                     "int4",
                     "int8",
                     "none",
@@ -635,10 +636,10 @@ class Recipe:
         return recipe
 
     def estimate_vram(
-            self,
-            cli_overrides: dict[str, Any] | None = None,
-            auto_detect: bool = True,
-            cache_dir: str | None = None,
+        self,
+        cli_overrides: dict[str, Any] | None = None,
+        auto_detect: bool = True,
+        cache_dir: str | None = None,
     ) -> VRAMEstimate:
         """Estimate VRAM usage for this recipe.
 
@@ -687,24 +688,25 @@ class Recipe:
         # Auto-detect from HF if fields are missing and model is specified
         if auto_detect and self.model:
             needs_detection = (model_vram is None and (not model_dtype or model_params_raw is None)) or (
-                    kv_vram_per_token is None and (not num_layers or not num_kv_heads or not head_dim)
+                kv_vram_per_token is None and (not num_layers or not num_kv_heads or not head_dim)
             )
             if needs_detection:
                 hf_config = fetch_model_config(self.model, revision=self.model_revision, cache_dir=cache_dir)
                 hf_quant_config = fetch_hf_quant_config(self.model, revision=self.model_revision, cache_dir=cache_dir)
+
+                # Resolve quantization from all sources (works even without hf_config for GGUF)
+                recipe_quant_meta = self.metadata.get("quantization")
+                recipe_quant_default = config.get("quantization")
+                effective_recipe_quant = recipe_quant_meta or (str(recipe_quant_default) if recipe_quant_default else None)
+                quant_info = resolve_quantization(
+                    hf_config=hf_config,
+                    hf_quant_config=hf_quant_config,
+                    recipe_quant=effective_recipe_quant,
+                    model_id=self.model,
+                )
+
                 if hf_config:
                     hf_info = extract_model_info(hf_config)
-
-                    # Resolve quantization from all sources
-                    recipe_quant_meta = self.metadata.get("quantization")
-                    recipe_quant_default = config.get("quantization")
-                    # metadata.quantization is strongest, then defaults quantization
-                    effective_recipe_quant = recipe_quant_meta or (str(recipe_quant_default) if recipe_quant_default else None)
-                    quant_info = resolve_quantization(
-                        hf_config=hf_config,
-                        hf_quant_config=hf_quant_config,
-                        recipe_quant=effective_recipe_quant,
-                    )
 
                     # Fill in missing fields (metadata takes precedence)
                     if not model_dtype:
@@ -722,6 +724,10 @@ class Recipe:
                     # Use kv_cache_quant from hf_quant_config to inform kv_dtype
                     if not kv_dtype and quant_info and quant_info.kv_cache_quant:
                         kv_dtype = quant_info.kv_cache_quant
+                else:
+                    # No HF config (e.g. GGUF models) — still use quant_info if available
+                    if not model_dtype and quant_info:
+                        model_dtype = quant_info.weight_dtype
 
         # Parse model_params
         model_params = parse_param_count(model_params_raw) if model_params_raw is not None else None
@@ -1009,11 +1015,11 @@ class Recipe:
         return d
 
     def export(
-            self,
-            path: Optional[str | Path] = None,
-            json: bool = False,
-            overrides: Optional[dict] = None,
-            container_image: Optional[str] = None,
+        self,
+        path: Optional[str | Path] = None,
+        json: bool = False,
+        overrides: Optional[dict] = None,
+        container_image: Optional[str] = None,
     ) -> Optional[str | Path]:
         """Export the recipe as canonical YAML.
 
@@ -1082,10 +1088,10 @@ class Recipe:
 
 
 def find_recipe(
-        name: str,
-        search_paths: list[Path] | None = None,
-        registry_manager: RegistryManager | None = None,
-        local_files: list[Path] | None = None,
+    name: str,
+    search_paths: list[Path] | None = None,
+    registry_manager: RegistryManager | None = None,
+    local_files: list[Path] | None = None,
 ) -> Path:
     """Find a recipe by name across search paths.
 
@@ -1228,10 +1234,10 @@ def recipe_summary(path: Path, registry_name: str | None = None) -> dict[str, An
 
 
 def list_recipes(
-        search_paths: list[Path] | None = None,
-        registry_manager: RegistryManager | None = None,
-        include_hidden: bool = False,
-        local_files: list[Path] | None = None,
+    search_paths: list[Path] | None = None,
+    registry_manager: RegistryManager | None = None,
+    include_hidden: bool = False,
+    local_files: list[Path] | None = None,
 ) -> list[dict[str, Any]]:
     """List all available recipes with name and path."""
     recipes: list[dict[str, Any]] = []
@@ -1277,10 +1283,10 @@ def list_recipes(
 
 
 def filter_recipes(
-        recipes: list[dict[str, Any]],
-        *,
-        runtime: str | None = None,
-        registry: str | None = None,
+    recipes: list[dict[str, Any]],
+    *,
+    runtime: str | None = None,
+    registry: str | None = None,
 ) -> list[dict[str, Any]]:
     """Filter a recipe list by runtime and/or registry.
 
