@@ -133,12 +133,12 @@ def cluster_update(ctx, name, hosts, hosts_file, add_host, remove_host, descript
 
     has_host_change = host_list is not None or add_host or remove_host
     if (
-        not has_host_change
-        and description is None
-        and not user_provided
-        and not cache_dir_provided
-        and not transfer_mode_provided
-        and not transfer_interface_provided
+            not has_host_change
+            and description is None
+            and not user_provided
+            and not cache_dir_provided
+            and not transfer_mode_provided
+            and not transfer_interface_provided
     ):
         click.echo(
             "Error: Nothing to update. Provide --hosts, --hosts-file, --add-host, "
@@ -225,7 +225,7 @@ def cluster_list(ctx):
         # Break hosts into lines of 2 addresses each
         host_lines = []
         for i in range(0, len(c.hosts), 2):
-            host_lines.append(", ".join(c.hosts[i : i + 2]))
+            host_lines.append(", ".join(c.hosts[i: i + 2]))
         first_hosts = host_lines[0] if host_lines else ""
         click.echo(f"{marker}{c.name:<20} {first_hosts:<40} {desc:<30}")
         for extra in host_lines[1:]:
