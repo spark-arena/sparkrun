@@ -27,10 +27,10 @@ _DTYPE_BYTES: dict[str, float] = {
     "gptq": 0.5,
     "mxfp4": 0.5,
     # TODO: GGUF quants
-    'q3_k_m': 0.4,
-    'q4_k_m': 0.608,
-    'q6_k': 0.823,
-    'q8_0': 1.0,
+    "q3_k_m": 0.4,
+    "q4_k_m": 0.608,
+    "q6_k": 0.823,
+    "q8_0": 1.0,
 }
 
 # Shorthand suffixes for parameter counts
@@ -81,6 +81,24 @@ class VRAMEstimate:
         return self.total_per_gpu_gb <= DGX_SPARK_VRAM_GB
 
 
+_DTYPE_CANONICAL: dict[str, str] = {
+    "fp32": "float32",
+    "fp16": "float16",
+    "bf16": "bfloat16",
+}
+
+
+def normalize_dtype(dtype: str) -> str:
+    """Normalize a dtype string to its canonical form.
+
+    Maps common short aliases (``bf16`` → ``bfloat16``, ``fp16`` → ``float16``,
+    ``fp32`` → ``float32``) to full names.  Unknown dtypes are returned
+    lower-cased but otherwise unchanged.
+    """
+    key = dtype.lower().strip().replace("-", "_")
+    return _DTYPE_CANONICAL.get(key, key)
+
+
 def bytes_per_element(dtype: str) -> float | None:
     """Return bytes per element for a dtype string, or None if unknown."""
     return _DTYPE_BYTES.get(dtype.lower().strip().replace("-", "_"))
@@ -115,9 +133,9 @@ def parse_param_count(value: int | float | str) -> int | None:
 
 
 def fetch_model_config(
-        model_id: str,
-        revision: str | None = None,
-        cache_dir: str | None = None,
+    model_id: str,
+    revision: str | None = None,
+    cache_dir: str | None = None,
 ) -> dict[str, Any] | None:
     """Fetch model config.json from HuggingFace Hub without downloading weights.
 
@@ -151,9 +169,9 @@ def fetch_model_config(
 
 
 def fetch_safetensors_size(
-        model_id: str,
-        revision: str | None = None,
-        cache_dir: str | None = None,
+    model_id: str,
+    revision: str | None = None,
+    cache_dir: str | None = None,
 ) -> int | None:
     """Fetch total parameter storage size from safetensors index metadata.
 
@@ -194,6 +212,34 @@ def fetch_safetensors_size(
             return int(total_size)
     except Exception as e:
         logger.debug("Could not fetch safetensors index for %s: %s", model_id, e)
+    return None
+
+
+def _resolve_quant_dtype(quantization_config: dict[str, Any]) -> str | None:
+    """Derive a model weight dtype from a HuggingFace quantization_config block.
+
+    Handles common quant methods: fp8, awq, gptq, bitsandbytes, compressed-tensors.
+    Returns a dtype string recognized by :func:`bytes_per_element`, or ``None``
+    if the method is unrecognized.
+    """
+    method = str(quantization_config.get("quant_method", "")).lower().strip()
+    if not method:
+        return None
+
+    if method == "fp8":
+        return "fp8"
+
+    bits = quantization_config.get("bits")
+    if method == "awq":
+        return "awq4" if bits is None or int(bits) == 4 else f"awq{int(bits)}"
+    if method in ("gptq", "marlin"):
+        return "gptq" if bits is None or int(bits) == 4 else f"int{int(bits)}"
+    if method == "bitsandbytes":
+        if quantization_config.get("load_in_4bit") or quantization_config.get("quant_type") == "nf4":
+            return "int4"
+        if quantization_config.get("load_in_8bit"):
+            return "int8"
+
     return None
 
 
@@ -265,22 +311,31 @@ def extract_model_info(hf_config: dict[str, Any]) -> dict[str, Any]:
                         info[k] = v
                 break  # only use the first matching nested config
 
+    # Extract quantization dtype from quantization_config if present.
+    # This is more accurate than torch_dtype for quantized models (e.g.
+    # an FP8 model will have torch_dtype=bfloat16 but quant_method=fp8).
+    qc = hf_config.get("quantization_config")
+    if isinstance(qc, dict):
+        qd = _resolve_quant_dtype(qc)
+        if qd:
+            info["quant_dtype"] = qd
+
     return info
 
 
 def estimate_vram(
-        *,
-        model_params: int | None = None,
-        model_dtype: str | None = None,
-        kv_dtype: str | None = None,
-        num_layers: int | None = None,
-        num_kv_heads: int | None = None,
-        head_dim: int | None = None,
-        max_model_len: int | None = None,
-        tensor_parallel: int = 1,
-        model_vram: float | None = None,
-        kv_vram_per_token: float | None = None,
-        gpu_memory_utilization: float | None = None,
+    *,
+    model_params: int | None = None,
+    model_dtype: str | None = None,
+    kv_dtype: str | None = None,
+    num_layers: int | None = None,
+    num_kv_heads: int | None = None,
+    head_dim: int | None = None,
+    max_model_len: int | None = None,
+    tensor_parallel: int = 1,
+    model_vram: float | None = None,
+    kv_vram_per_token: float | None = None,
+    gpu_memory_utilization: float | None = None,
 ) -> VRAMEstimate:
     """Estimate VRAM usage for an inference workload.
 
@@ -312,7 +367,7 @@ def estimate_vram(
     elif model_params and model_dtype:
         bpe = bytes_per_element(model_dtype)
         if bpe is not None:
-            model_weights_gb = model_params * bpe / (1024 ** 3)
+            model_weights_gb = model_params * bpe / (1024**3)
         else:
             warnings.append("Unknown dtype %r; cannot estimate model weight VRAM" % model_dtype)
     elif not model_params:
@@ -326,7 +381,7 @@ def estimate_vram(
 
     if kv_vram_per_token is not None:
         # Direct override: user provides GB per token
-        kv_cache_per_token_bytes = kv_vram_per_token * (1024 ** 3)  # convert to bytes for display
+        kv_cache_per_token_bytes = kv_vram_per_token * (1024**3)  # convert to bytes for display
         if max_model_len:
             kv_cache_total_gb = kv_vram_per_token * max_model_len
     elif num_layers and num_kv_heads and head_dim:
@@ -335,7 +390,7 @@ def estimate_vram(
             # Per token: 2 (K+V) * num_layers * num_kv_heads * head_dim * bytes
             kv_cache_per_token_bytes = 2.0 * num_layers * num_kv_heads * head_dim * kv_bpe
             if max_model_len:
-                kv_cache_total_gb = kv_cache_per_token_bytes * max_model_len / (1024 ** 3)
+                kv_cache_total_gb = kv_cache_per_token_bytes * max_model_len / (1024**3)
         else:
             warnings.append("Unknown KV cache dtype %r" % kv_dtype)
     else:
@@ -346,9 +401,7 @@ def estimate_vram(
             missing.append("num_kv_heads")
         if not head_dim:
             missing.append("head_dim")
-        warnings.append(
-            "Missing architecture info (%s); KV cache estimate unavailable" % ", ".join(missing)
-        )
+        warnings.append("Missing architecture info (%s); KV cache estimate unavailable" % ", ".join(missing))
 
     # --- Per-GPU total ---
     # Model weights split across TP GPUs
@@ -374,15 +427,13 @@ def estimate_vram(
         if available_kv_gb < 0:
             warnings.append(
                 "Model weights (%.1f GB) exceed usable GPU memory "
-                "(%.1f GB at %.0f%% utilization)"
-                % (per_gpu_weights_gb, usable_gpu_memory_gb,
-                   gpu_memory_utilization * 100)
+                "(%.1f GB at %.0f%% utilization)" % (per_gpu_weights_gb, usable_gpu_memory_gb, gpu_memory_utilization * 100)
             )
             available_kv_gb = 0.0
 
         # Estimate max context tokens that fit in available KV space
         if kv_cache_per_token_bytes and kv_cache_per_token_bytes > 0:
-            per_gpu_kv_per_token_gb = (kv_cache_per_token_bytes / tp) / (1024 ** 3)
+            per_gpu_kv_per_token_gb = (kv_cache_per_token_bytes / tp) / (1024**3)
             if per_gpu_kv_per_token_gb > 0:
                 max_context_tokens = int(available_kv_gb / per_gpu_kv_per_token_gb)
 

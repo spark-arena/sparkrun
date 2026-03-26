@@ -1,36 +1,33 @@
 ---
 title: Installation
-description: Install sparkrun on your system using uv or pip.
+description: Install sparkrun on your system using uv.
 ---
 
-## Recommended: Install via uvx
+## Recommended: One-command setup
 
-The easiest way to install sparkrun is with [uv](https://docs.astral.sh/uv/), the fast Python package manager:
+The fastest way to get started is with [uv](https://docs.astral.sh/uv/), the fast Python package manager:
 
 ```bash
 # Install uv if you don't have it
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Install sparkrun (manages venv + shell alias + tab completion)
+# Install sparkrun and set up your cluster in one step
+uvx sparkrun setup
+```
+
+This runs the **setup wizard**, which walks you through everything interactively — cluster creation, SSH mesh, CX7 networking, and more. Each phase is optional and can be revisited later.
+
+See the [Setup Wizard Walkthrough](/getting-started/setup-wizard/) for a detailed step-by-step guide.
+
+## Alternative: Install only
+
+If you just want to install sparkrun without running the full wizard:
+
+```bash
 uvx sparkrun setup install
 ```
 
-This creates a managed virtual environment, installs sparkrun, creates a shell-ready command, and sets up tab completion — all in one.
-
-## Alternative: pip install
-
-```bash
-pip install sparkrun
-# or
-uv pip install sparkrun
-```
-
-With a manual pip install, you'll need to set up tab completion separately:
-
-```bash
-# NOTE: relies on the 'sparkrun' command being in your PATH
-sparkrun setup completion
-```
+This creates a managed virtual environment, installs sparkrun, creates a shell-ready command, and sets up tab completion — all in one. You can run the wizard later with `sparkrun setup wizard`.
 
 ## Verify installation
 
@@ -41,8 +38,7 @@ sparkrun --version
 ## Updating
 
 ```bash
-# NOTE: only works if you installed with the recommended installation methods
-sparkrun setup update
+sparkrun update
 ```
 
 This updates sparkrun to the latest version and refreshes all recipe registries. Use `--no-update-registries` to skip the registry update.

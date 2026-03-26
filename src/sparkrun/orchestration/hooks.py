@@ -17,14 +17,14 @@ logger = logging.getLogger(__name__)
 
 
 def build_hook_context(
-        config_chain,
-        *,
-        head_host: str | None = None,
-        head_ip: str | None = None,
-        port: int | str | None = None,
-        cluster_id: str | None = None,
-        container_name: str | None = None,
-        cache_dir: str | None = None,
+    config_chain,
+    *,
+    head_host: str | None = None,
+    head_ip: str | None = None,
+    port: int | str | None = None,
+    cluster_id: str | None = None,
+    container_name: str | None = None,
+    cache_dir: str | None = None,
 ) -> dict[str, str]:
     """Build an extended variable dict for post-hook template substitution.
 
@@ -46,12 +46,12 @@ def build_hook_context(
     ctx: dict[str, str] = {}
 
     # Pull all values from the config chain into a flat dict
-    if hasattr(config_chain, 'keys'):
+    if hasattr(config_chain, "keys"):
         for key in config_chain.keys():
             val = config_chain.get(key)
             if val is not None:
                 ctx[key] = str(val)
-    elif hasattr(config_chain, 'get'):
+    elif hasattr(config_chain, "get"):
         # Minimal interface: only pull known keys
         pass
 
@@ -97,8 +97,8 @@ def render_hook_command(cmd: str, context: dict[str, str]) -> str:
 
 
 def render_hook_commands(
-        commands: list[str | dict[str, str]],
-        context: dict[str, str],
+    commands: list[str | dict[str, str]],
+    context: dict[str, str],
 ) -> list[str | dict[str, str]]:
     """Render ``{key}`` placeholders in a list of hook commands.
 
@@ -117,21 +117,18 @@ def render_hook_commands(
         if isinstance(cmd, str):
             rendered.append(render_hook_command(cmd, context))
         elif isinstance(cmd, dict):
-            rendered.append({
-                k: render_hook_command(v, context) if isinstance(v, str) else v
-                for k, v in cmd.items()
-            })
+            rendered.append({k: render_hook_command(v, context) if isinstance(v, str) else v for k, v in cmd.items()})
         else:
             rendered.append(cmd)
     return rendered
 
 
 def run_pre_exec(
-        hosts_containers: list[tuple[str, str]],
-        commands: list[str | dict[str, str]],
-        config_chain,
-        ssh_kwargs: dict | None = None,
-        dry_run: bool = False,
+    hosts_containers: list[tuple[str, str]],
+    commands: list[str | dict[str, str]],
+    config_chain,
+    ssh_kwargs: dict | None = None,
+    dry_run: bool = False,
 ) -> None:
     """Execute pre_exec commands inside containers.
 
@@ -157,7 +154,7 @@ def run_pre_exec(
 
     # Build context from config chain for rendering
     ctx: dict[str, str] = {}
-    if hasattr(config_chain, 'keys'):
+    if hasattr(config_chain, "keys"):
         for key in config_chain.keys():
             val = config_chain.get(key)
             if val is not None:
@@ -178,12 +175,12 @@ def run_pre_exec(
 
 
 def run_post_exec(
-        head_host: str,
-        container_name: str,
-        commands: list[str],
-        context: dict[str, str],
-        ssh_kwargs: dict | None = None,
-        dry_run: bool = False,
+    head_host: str,
+    container_name: str,
+    commands: list[str],
+    context: dict[str, str],
+    ssh_kwargs: dict | None = None,
+    dry_run: bool = False,
 ) -> None:
     """Execute post_exec commands inside the head container.
 
@@ -215,25 +212,49 @@ def run_post_exec(
 
 
 def run_post_commands(
-        commands: list[str],
-        context: dict[str, str],
-        dry_run: bool = False,
+    commands: list[str],
+    context: dict[str, str],
+    dry_run: bool = False,
+    trust: bool = False,
 ) -> None:
     """Execute post_commands on the control machine.
 
     Runs via ``subprocess`` on the machine where sparkrun is running.
     Sequential, fail-fast.  Stdout/stderr are streamed to terminal.
 
+    When *trust* is False (the default), commands from third-party
+    registries require explicit user confirmation before executing.
+    If stdin is not a TTY, execution is refused and a RuntimeError is
+    raised directing the user to pass ``--trust``.
+
     Args:
         commands: Post_commands list from recipe.
         context: Extended variable dict for substitution.
         dry_run: Show what would be done without executing.
+        trust: Skip confirmation prompt (auto-trust the commands).
 
     Raises:
-        RuntimeError: If any command fails (fail-fast).
+        RuntimeError: If any command fails (fail-fast), or if *trust*
+            is False and stdin is not a TTY.
     """
+    import sys
+
     if not commands:
         return
+
+    if not trust:
+        logger.warning("Recipe post_commands will execute on this machine:")
+        for i, cmd in enumerate(commands, 1):
+            if isinstance(cmd, str):
+                logger.warning("  [%d] %s", i, cmd)
+        if not sys.stdin.isatty():
+            raise RuntimeError(
+                "post_commands require confirmation but stdin is not a TTY. Use --trust to allow post_commands from third-party registries."
+            )
+        import click
+
+        if not click.confirm("Allow these post_commands to run on this machine?", default=False):
+            raise RuntimeError("post_commands execution cancelled by user.")
 
     rendered = render_hook_commands(commands, context)
 
@@ -264,23 +285,21 @@ def run_post_commands(
                 logger.info("  | %s", line)
 
         if result.returncode != 0:
-            raise RuntimeError(
-                "post_commands[%d] failed (exit %d): %s"
-                % (i, result.returncode, cmd)
-            )
+            raise RuntimeError("post_commands[%d] failed (exit %d): %s" % (i, result.returncode, cmd))
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+
 def _run_exec_command(
-        host: str,
-        container_name: str,
-        cmd: str,
-        ssh_kwargs: dict | None = None,
-        dry_run: bool = False,
-        label: str = "hook",
+    host: str,
+    container_name: str,
+    cmd: str,
+    ssh_kwargs: dict | None = None,
+    dry_run: bool = False,
+    label: str = "hook",
 ) -> None:
     """Execute a single command inside a container via docker exec.
 
@@ -299,7 +318,7 @@ def _run_exec_command(
 
     # Escape single quotes in command for bash -c
     escaped = cmd.replace("'", "'\\''")
-    script = "docker exec %s bash -c '%s'" % (container_name, escaped)
+    script = "docker exec --user root %s bash -c '%s'" % (container_name, escaped)
 
     logger.info("  %s on %s/%s: %s", label, host, container_name, cmd)
 
@@ -307,19 +326,16 @@ def _run_exec_command(
 
     if not dry_run and not result.success:
         error_msg = result.stderr or result.stdout or "(no output)"
-        raise RuntimeError(
-            "%s failed (exit %d) on %s/%s: %s"
-            % (label, result.returncode, host, container_name, error_msg[:500])
-        )
+        raise RuntimeError("%s failed (exit %d) on %s/%s: %s" % (label, result.returncode, host, container_name, error_msg[:500]))
 
 
 def _run_copy_command(
-        host: str,
-        container_name: str,
-        cmd: dict[str, str],
-        ssh_kwargs: dict | None = None,
-        dry_run: bool = False,
-        label: str = "hook",
+    host: str,
+    container_name: str,
+    cmd: dict[str, str],
+    ssh_kwargs: dict | None = None,
+    dry_run: bool = False,
+    label: str = "hook",
 ) -> None:
     """Execute a file copy into a container via docker cp.
 
@@ -349,7 +365,7 @@ def _run_copy_command(
         RuntimeError: If the copy fails.
     """
     from sparkrun.orchestration.primitives import run_script_on_host
-    from sparkrun.core.hosts import is_local_host
+    from sparkrun.utils import is_local_host
 
     source = cmd["copy"]
     source_path = Path(source)
@@ -365,53 +381,61 @@ def _run_copy_command(
     if source_host is not None:
         # Delegated mode: source files live on source_host, not locally.
         result = _run_delegated_copy(
-            host, container_name, source, dest, source_host,
-            ssh_kwargs=ssh_kwargs, label=label,
+            host,
+            container_name,
+            source,
+            dest,
+            source_host,
+            ssh_kwargs=ssh_kwargs,
+            label=label,
         )
     elif is_local_host(host):
         # Local: docker cp directly
-        script = (
-            "docker exec %(c)s mkdir -p %(dest)s\n"
-            "docker cp %(src)s/. %(c)s:%(dest)s/\n"
-        ) % {"c": container_name, "src": source, "dest": dest}
+        script = ("set -e\ndocker exec --user root %(c)s mkdir -p %(dest)s\ndocker cp %(src)s/. %(c)s:%(dest)s/\n") % {
+            "c": container_name,
+            "src": source,
+            "dest": dest,
+        }
         result = run_script_on_host(host, script, ssh_kwargs=ssh_kwargs, timeout=120)
     else:
         # Remote: rsync source to temp dir, then docker cp
         from sparkrun.orchestration.ssh import run_rsync_parallel
+
         kw = ssh_kwargs or {}
 
         remote_tmp = "/tmp/sparkrun_hook_%s" % basename
         run_script_on_host(host, "mkdir -p %s" % remote_tmp, ssh_kwargs=ssh_kwargs, timeout=30)
 
         run_rsync_parallel(
-            str(source_path) + "/", [host], remote_tmp + "/",
+            str(source_path) + "/",
+            [host],
+            remote_tmp + "/",
             ssh_user=kw.get("ssh_user"),
             ssh_key=kw.get("ssh_key"),
             ssh_options=kw.get("ssh_options"),
         )
 
-        script = (
-            "docker exec %(c)s mkdir -p %(dest)s\n"
-            "docker cp %(tmp)s/. %(c)s:%(dest)s/\n"
-            "rm -rf %(tmp)s\n"
-        ) % {"c": container_name, "dest": dest, "tmp": remote_tmp}
+        script = ("set -e\ndocker exec --user root %(c)s mkdir -p %(dest)s\ndocker cp %(tmp)s/. %(c)s:%(dest)s/\nrm -rf %(tmp)s\n") % {
+            "c": container_name,
+            "dest": dest,
+            "tmp": remote_tmp,
+        }
         result = run_script_on_host(host, script, ssh_kwargs=ssh_kwargs, timeout=120)
 
     if not result.success:
         raise RuntimeError(
-            "%s copy failed on %s/%s: %s"
-            % (label, host, container_name, result.stderr[:500] if result.stderr else "(no output)")
+            "%s copy failed on %s/%s: %s" % (label, host, container_name, result.stderr[:500] if result.stderr else "(no output)")
         )
 
 
 def _run_delegated_copy(
-        host: str,
-        container_name: str,
-        source: str,
-        dest: str,
-        source_host: str,
-        ssh_kwargs: dict | None = None,
-        label: str = "hook",
+    host: str,
+    container_name: str,
+    source: str,
+    dest: str,
+    source_host: str,
+    ssh_kwargs: dict | None = None,
+    label: str = "hook",
 ):
     """Copy files from *source_host* into a container on *host*.
 
@@ -430,10 +454,11 @@ def _run_delegated_copy(
 
     if host == source_host:
         # Files already on this host — docker cp directly
-        script = (
-            "docker exec %(c)s mkdir -p %(dest)s\n"
-            "docker cp %(src)s/. %(c)s:%(dest)s/\n"
-        ) % {"c": container_name, "src": source, "dest": dest}
+        script = ("set -e\ndocker exec --user root %(c)s mkdir -p %(dest)s\ndocker cp %(src)s/. %(c)s:%(dest)s/\n") % {
+            "c": container_name,
+            "src": source,
+            "dest": dest,
+        }
         logger.info("  %s delegated copy (local to %s): %s -> %s:%s", label, host, source, container_name, dest)
         return run_script_on_host(host, script, ssh_kwargs=ssh_kwargs, timeout=120)
     else:
@@ -455,16 +480,25 @@ def _run_delegated_copy(
             "set -e\n"
             "mkdir -p %(tmp)s\n"
             "rsync -a %(rsync_ssh)s %(user)s%(src_host)s:%(src)s/ %(tmp)s/\n"
-            "docker exec %(c)s mkdir -p %(dest)s\n"
+            "docker exec --user root %(c)s mkdir -p %(dest)s\n"
             "docker cp %(tmp)s/. %(c)s:%(dest)s/\n"
             "rm -rf %(tmp)s\n"
         ) % {
-            "c": container_name, "dest": dest, "tmp": remote_tmp,
-            "src": source, "src_host": source_host,
-            "user": ssh_user_prefix, "rsync_ssh": rsync_ssh,
+            "c": container_name,
+            "dest": dest,
+            "tmp": remote_tmp,
+            "src": source,
+            "src_host": source_host,
+            "user": ssh_user_prefix,
+            "rsync_ssh": rsync_ssh,
         }
         logger.info(
             "  %s delegated copy (rsync %s -> %s): %s -> %s:%s",
-            label, source_host, host, source, container_name, dest,
+            label,
+            source_host,
+            host,
+            source,
+            container_name,
+            dest,
         )
         return run_script_on_host(host, script, ssh_kwargs=ssh_kwargs, timeout=300)

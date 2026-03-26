@@ -34,6 +34,10 @@ def sync_image_to_hosts(
     script = read_script("image_sync.sh").format(image=image)
 
     return sync_resource_to_hosts(
-        script, hosts, "Image",
-        ssh_user=ssh_user, ssh_key=ssh_key, dry_run=dry_run,
+        script,
+        hosts,
+        "Image",
+        ssh_user=ssh_user,
+        ssh_key=ssh_key,
+        dry_run=dry_run,
     )

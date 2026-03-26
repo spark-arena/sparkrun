@@ -78,19 +78,71 @@ class TestExecutorConfig:
         cfg = ExecutorConfig.from_chain(chain)
         assert cfg.restart_policy is None
 
-    def test_vpd_chain_layering(self):
-        """Verify VPD chain resolution: CLI > recipe > defaults."""
-        from vpd.legacy.yaml_dict import vpd_chain
+    def test_user_field(self):
+        cfg = ExecutorConfig(user="1000:1000")
+        assert cfg.user == "1000:1000"
+
+    def test_user_shell_user(self):
+        cfg = ExecutorConfig(user="$SHELL_USER")
+        assert cfg.user == "$SHELL_USER"
+
+    def test_security_opt_field(self):
+        cfg = ExecutorConfig(security_opt=["no-new-privileges"])
+        assert cfg.security_opt == ["no-new-privileges"]
+
+    def test_user_default_none(self):
+        cfg = ExecutorConfig()
+        assert cfg.user is None
+        assert cfg.security_opt is None
+
+    def test_from_chain_user_and_security_opt(self):
+        chain = {"user": "$SHELL_USER", "security_opt": ["no-new-privileges"]}
+        cfg = ExecutorConfig.from_chain(chain)
+        assert cfg.user == "$SHELL_USER"
+        assert cfg.security_opt == ["no-new-privileges"]
+
+    def test_from_chain_security_opt_string(self):
+        chain = {"security_opt": "no-new-privileges"}
+        cfg = ExecutorConfig.from_chain(chain)
+        assert cfg.security_opt == ["no-new-privileges"]
+
+    def test_from_chain_empty_user_is_none(self):
+        chain = {"user": ""}
+        cfg = ExecutorConfig.from_chain(chain)
+        assert cfg.user is None
+
+    def test_config_chain_layering(self):
+        """Verify config chain resolution: CLI > recipe > defaults."""
+        from scitrera_app_framework.api import Variables, EnvPlacement
 
         cli_opts = {"auto_remove": False}
         recipe_opts = {"restart_policy": "always", "shm_size": "20gb"}
-        chain = vpd_chain(cli_opts, recipe_opts, EXECUTOR_DEFAULTS)
+        chain = Variables(sources=(cli_opts, recipe_opts, EXECUTOR_DEFAULTS), env_placement=EnvPlacement.IGNORED)
         cfg = ExecutorConfig.from_chain(chain)
 
         assert cfg.auto_remove is False  # CLI wins
         assert cfg.restart_policy == "always"  # recipe
         assert cfg.shm_size == "20gb"  # recipe
         assert cfg.gpus == "all"  # default
+
+    def test_config_chain_privileged_false(self):
+        """Verify privileged=False survives config chain (falsy value preserved)."""
+        from scitrera_app_framework.api import Variables, EnvPlacement
+
+        cli_opts = {
+            "privileged": False, "user": "$SHELL_USER",
+            "security_opt": ["no-new-privileges"],
+            "cap_add": ["IPC_LOCK", "SYS_PTRACE"],
+            "ulimit": ["memlock=-1:-1"],
+        }
+        chain = Variables(sources=(cli_opts, {}, EXECUTOR_DEFAULTS), env_placement=EnvPlacement.IGNORED)
+        cfg = ExecutorConfig.from_chain(chain)
+
+        assert cfg.privileged is False
+        assert cfg.user == "$SHELL_USER"
+        assert cfg.security_opt == ["no-new-privileges"]
+        assert cfg.cap_add == ["IPC_LOCK", "SYS_PTRACE"]
+        assert cfg.ulimit == ["memlock=-1:-1"]
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +331,70 @@ class TestDockerExecutorConfig:
         cmd = executor.run_cmd("img:latest")
         assert "--privileged" not in cmd
 
+    def test_user_explicit(self):
+        cfg = ExecutorConfig(user="1000:1000")
+        executor = DockerExecutor(cfg)
+        cmd = executor.run_cmd("img:latest")
+        assert "--user 1000:1000" in cmd
+
+    def test_user_shell_user_resolves(self):
+        cfg = ExecutorConfig(user="$SHELL_USER")
+        executor = DockerExecutor(cfg)
+        cmd = executor.run_cmd("img:latest")
+        assert "--user $(id -u):$(id -g)" in cmd
+
+    def test_security_opt(self):
+        cfg = ExecutorConfig(security_opt=["no-new-privileges"])
+        executor = DockerExecutor(cfg)
+        cmd = executor.run_cmd("img:latest")
+        assert "--security-opt no-new-privileges" in cmd
+
+    def test_security_opt_multiple(self):
+        cfg = ExecutorConfig(security_opt=["no-new-privileges", "seccomp=unconfined"])
+        executor = DockerExecutor(cfg)
+        cmd = executor.run_cmd("img:latest")
+        assert "--security-opt no-new-privileges" in cmd
+        assert "--security-opt seccomp=unconfined" in cmd
+
+    def test_rootless_config(self):
+        """Verify the combination of settings that --rootless would produce."""
+        cfg = ExecutorConfig(
+            privileged=False, user="$SHELL_USER",
+            security_opt=["no-new-privileges"],
+            cap_add=["IPC_LOCK", "SYS_PTRACE", "SYS_NICE", "NET_ADMIN"],
+            ulimit=["memlock=-1:-1"],
+        )
+        executor = DockerExecutor(cfg)
+        cmd = executor.run_cmd("img:latest")
+        assert "--privileged" not in cmd
+        assert "--user $(id -u):$(id -g)" in cmd
+        assert "--security-opt no-new-privileges" in cmd
+        assert "--cap-add IPC_LOCK" in cmd
+        assert "--cap-add SYS_PTRACE" in cmd
+        assert "--cap-add SYS_NICE" in cmd
+        assert "--cap-add NET_ADMIN" in cmd
+        assert "--ulimit memlock=-1:-1" in cmd
+
+    def test_cap_add_single(self):
+        cfg = ExecutorConfig(cap_add=["SYS_PTRACE"])
+        executor = DockerExecutor(cfg)
+        cmd = executor.run_cmd("img:latest")
+        assert "--cap-add SYS_PTRACE" in cmd
+
+    def test_ulimit_single(self):
+        cfg = ExecutorConfig(ulimit=["memlock=-1:-1"])
+        executor = DockerExecutor(cfg)
+        cmd = executor.run_cmd("img:latest")
+        assert "--ulimit memlock=-1:-1" in cmd
+
+    def test_no_user_by_default(self):
+        executor = DockerExecutor()
+        cmd = executor.run_cmd("img:latest")
+        assert "--user" not in cmd
+        assert "--security-opt" not in cmd
+        assert "--cap-add" not in cmd
+        assert "--ulimit" not in cmd
+
 
 # ---------------------------------------------------------------------------
 # High-level script generator tests
@@ -363,67 +479,3 @@ class TestScriptGenerators:
         assert "--restart always" in script
         assert "--rm" not in script
 
-    def test_launch_script_parity_with_scripts_module(self):
-        """Verify generate_launch_script matches scripts.generate_container_launch_script."""
-        from sparkrun.orchestration.scripts import generate_container_launch_script
-
-        kwargs = dict(
-            image="nvcr.io/nvidia/vllm:latest",
-            container_name="sparkrun0_solo",
-            command="sleep infinity",
-            env={"KEY": "val"},
-            volumes={"/host": "/container"},
-            nccl_env={"NCCL_SOCKET_IFNAME": "eth0"},
-        )
-        expected = generate_container_launch_script(**kwargs)
-        actual = self.executor.generate_launch_script(**kwargs)
-        assert actual == expected
-
-    def test_exec_serve_parity_with_scripts_module(self):
-        """Verify generate_exec_serve_script matches scripts.generate_exec_serve_script."""
-        from sparkrun.orchestration.scripts import generate_exec_serve_script
-
-        kwargs = dict(
-            container_name="sparkrun0_solo",
-            serve_command="vllm serve model --port 8000",
-            env={"KEY": "val"},
-            detached=True,
-        )
-        expected = generate_exec_serve_script(**kwargs)
-        actual = self.executor.generate_exec_serve_script(**kwargs)
-        assert actual == expected
-
-    def test_ray_head_parity_with_scripts_module(self):
-        """Verify generate_ray_head_script matches scripts.generate_ray_head_script."""
-        from sparkrun.orchestration.scripts import generate_ray_head_script
-
-        kwargs = dict(
-            image="nvcr.io/nvidia/vllm:latest",
-            container_name="sparkrun0_head",
-            ray_port=46379,
-            dashboard_port=8265,
-            dashboard=True,
-            env={"KEY": "val"},
-            volumes={"/host": "/container"},
-            nccl_env={"NCCL_SOCKET_IFNAME": "eth0"},
-        )
-        expected = generate_ray_head_script(**kwargs)
-        actual = self.executor.generate_ray_head_script(**kwargs)
-        assert actual == expected
-
-    def test_ray_worker_parity_with_scripts_module(self):
-        """Verify generate_ray_worker_script matches scripts.generate_ray_worker_script."""
-        from sparkrun.orchestration.scripts import generate_ray_worker_script
-
-        kwargs = dict(
-            image="nvcr.io/nvidia/vllm:latest",
-            container_name="sparkrun0_worker",
-            head_ip="10.0.0.1",
-            ray_port=46379,
-            env={"KEY": "val"},
-            volumes={"/host": "/container"},
-            nccl_env={"NCCL_SOCKET_IFNAME": "eth0"},
-        )
-        expected = generate_ray_worker_script(**kwargs)
-        actual = self.executor.generate_ray_worker_script(**kwargs)
-        assert actual == expected

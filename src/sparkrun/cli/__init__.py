@@ -13,8 +13,10 @@ from ._common import (
     dry_run_option,
     host_options,
 )
+from ._arena import arena
 from ._benchmark import benchmark
 from ._cluster import cluster, cluster_status
+from ._export import export
 from ._proxy import proxy
 from ._recipe import recipe, recipe_list, recipe_search, recipe_show
 from ._registry import registry, registry_update
@@ -45,12 +47,15 @@ main.add_command(cluster)
 main.add_command(recipe)
 main.add_command(registry)
 main.add_command(benchmark)
+main.add_command(export)
 main.add_command(proxy)
+main.add_command(arena)
 
 
 # ---------------------------------------------------------------------------
 # Top-level aliases
 # ---------------------------------------------------------------------------
+
 
 @main.command("list")
 @click.option("--registry", type=REGISTRY_NAME, default=None, help="Filter by registry name")
@@ -65,17 +70,12 @@ def list_cmd(ctx, registry, runtime, query):
 @main.command()
 @click.argument("recipe_name", type=RECIPE_NAME)
 @click.option("--no-vram", is_flag=True, help="Skip VRAM estimation")
-@click.option("--tp", "--tensor-parallel", "tensor_parallel", type=int, default=None,
-              help="Override tensor parallelism")
-@click.option("--gpu-mem", type=float, default=None,
-              help="Override GPU memory utilization (0.0-1.0)")
-@click.option("--save", "save_path", default=None, type=click.Path(),
-              help="Save a copy of the recipe YAML to a file")
+@click.option("--tp", "--tensor-parallel", "tensor_parallel", type=int, default=None, help="Override tensor parallelism")
+@click.option("--gpu-mem", type=float, default=None, help="Override GPU memory utilization (0.0-1.0)")
 @click.pass_context
-def show(ctx, recipe_name, no_vram, tensor_parallel, gpu_mem, save_path):
+def show(ctx, recipe_name, no_vram, tensor_parallel, gpu_mem):
     """Show detailed recipe information (alias for 'recipe show')."""
-    ctx.invoke(recipe_show, recipe_name=recipe_name, no_vram=no_vram,
-               tensor_parallel=tensor_parallel, gpu_mem=gpu_mem, save_path=save_path)
+    ctx.invoke(recipe_show, recipe_name=recipe_name, no_vram=no_vram, tensor_parallel=tensor_parallel, gpu_mem=gpu_mem)
 
 
 @main.command("search")
@@ -94,8 +94,7 @@ def search_cmd(ctx, registry, runtime, query):
 @click.pass_context
 def status(ctx, hosts, hosts_file, cluster_name, dry_run):
     """Show sparkrun containers running on cluster hosts (alias for 'cluster status')."""
-    ctx.invoke(cluster_status, hosts=hosts, hosts_file=hosts_file,
-               cluster_name=cluster_name, dry_run=dry_run)
+    ctx.invoke(cluster_status, hosts=hosts, hosts_file=hosts_file, cluster_name=cluster_name, dry_run=dry_run)
 
 
 @main.command("update")
@@ -121,18 +120,21 @@ def update(ctx):
     if uv:
         check = subprocess.run(
             [uv, "tool", "list"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         if check.returncode == 0 and "sparkrun" in check.stdout:
             click.echo("Checking for sparkrun updates (current: %s)..." % old_version)
             result = subprocess.run(
                 [uv, "tool", "upgrade", "sparkrun"],
-                capture_output=True, text=True,
+                capture_output=True,
+                text=True,
             )
             if result.returncode == 0:
                 ver_result = subprocess.run(
                     ["sparkrun", "--version"],
-                    capture_output=True, text=True,
+                    capture_output=True,
+                    text=True,
                 )
                 if ver_result.returncode == 0:
                     new_version = ver_result.stdout.strip().rsplit(None, 1)[-1]

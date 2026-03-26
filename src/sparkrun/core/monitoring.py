@@ -165,7 +165,9 @@ class ClusterMonitor:
             self.states[host].process = proc
 
             thread = threading.Thread(
-                target=self._reader, args=(host, proc), daemon=True,
+                target=self._reader,
+                args=(host, proc),
+                daemon=True,
             )
             thread.start()
         except OSError as e:
@@ -233,7 +235,9 @@ class ClusterMonitor:
                 if age > stale_threshold:
                     logger.warning(
                         "Host %s data is %.1fs stale (threshold %.1fs), reconnecting",
-                        host, age, stale_threshold,
+                        host,
+                        age,
+                        stale_threshold,
                     )
                     self._reconnect_host(host)
 

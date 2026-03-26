@@ -1,0 +1,143 @@
+---
+title: Diagnostics
+description: Collect hardware, firmware, network, and Docker diagnostics from DGX Spark hosts.
+---
+
+sparkrun provides two diagnostic tools for inspecting DGX Spark hosts and capturing runtime information:
+
+- **Host diagnostics** (`sparkrun setup diagnose`) -- inspect hardware, firmware, network, and Docker status across your hosts
+- **Run diagnostics** (`sparkrun run --collect-diagnostics`) -- capture the entire lifecycle of an inference run for post-mortem analysis
+
+Both tools produce structured [NDJSON](https://ndjson.org/) (newline-delimited JSON) output for easy processing.
+
+## Host diagnostics
+
+### Usage
+
+```bash
+# Diagnose all hosts in a cluster
+sparkrun setup diagnose --cluster mylab
+
+# Diagnose specific hosts
+sparkrun setup diagnose --hosts 192.168.11.13,192.168.11.14
+
+# Custom output file
+sparkrun setup diagnose --cluster mylab -o my_diagnostics.ndjson
+
+# Include sudo diagnostics (dmidecode: BIOS, system board, memory details)
+sparkrun setup diagnose --cluster mylab --sudo
+
+# Print JSON summary to stdout
+sparkrun setup diagnose --cluster mylab --json
+```
+
+By default, the output file is named `spark_diag_<timestamp>.ndjson`.
+
+### What it collects
+
+The diagnostic script runs on each host over SSH (no elevated privileges required for the base collection) and gathers:
+
+| Category | Details |
+|---|---|
+| **Hardware** | CPU model, cores, threads, RAM total/available, disk usage (root and home), GPU name, memory, driver, power state, temperature, serial, UUID |
+| **Firmware** | Hostname, OS name/version, kernel, architecture, BIOS version, board name, product name, JetPack version, CUDA version |
+| **Network** | All interfaces (name, state, MTU, MAC, speed, IP), default interface, management IP |
+| **Docker** | Docker version, storage driver, root directory, NVIDIA runtime status, running container count, sparkrun container count |
+| **Firmware updates** | Device inventory and update history from `fwupdmgr` (if available) |
+
+With `--sudo`, additional DMI data is collected via `dmidecode`:
+
+| Category | Details |
+|---|---|
+| **DMI** | BIOS vendor/version/date, system manufacturer/product/version/serial/UUID, board manufacturer/product/version/serial, memory slots/populated/max |
+
+### Structured output
+
+Each record in the NDJSON file has an envelope with metadata fields:
+
+```json
+{"_type": "host_hardware", "_seq": 1, "_ts": "2026-03-22T20:39:29.123456+00:00", "host": "192.168.11.13", "cpu_model": "ARMv8 ...", "gpu_name": "GH200 480 GB", ...}
+```
+
+Record types emitted for each host:
+
+| Record type | Contents |
+|---|---|
+| `diag_header` | sparkrun version, host list, command used |
+| `host_hardware` | CPU, RAM, disk, GPU details |
+| `host_firmware` | OS, kernel, BIOS, JetPack, CUDA |
+| `host_network` | Network interfaces, default route, management IP |
+| `host_docker` | Docker version, storage, NVIDIA runtime, container counts |
+| `host_firmware_updates` | Firmware device inventory and update history |
+| `host_dmi` | DMI/dmidecode data (sudo only) |
+| `host_error` | Error details for hosts that failed collection |
+| `diag_summary` | Total hosts, successful/failed counts, duration |
+
+## Run diagnostics
+
+:::note
+Run diagnostics is currently a hidden option intended for advanced debugging and support workflows.
+:::
+
+When launching an inference workload, you can capture the full lifecycle into an NDJSON file:
+
+```bash
+sparkrun run my-recipe --collect-diagnostics run_diag.ndjson
+```
+
+### What it captures
+
+The `RunDiagnosticsCollector` wraps the entire `sparkrun run` lifecycle and records:
+
+| Record type | Contents |
+|---|---|
+| `diag_header` | sparkrun version, host list |
+| `run_recipe` | Recipe name, model, runtime, container, defaults, CLI overrides |
+| `run_config` | Launch configuration details |
+| `run_serve_command` | Generated serve command and container image |
+| `run_phase` | Phase start/end timestamps with duration (e.g., distribution, launch, health check) |
+| `run_launch_result` | Return code, cluster ID, runtime info, NCCL env |
+| `run_health_check` | Health check attempts with URL, status code, success |
+| `run_container_logs` | Tail of container logs from each host |
+| `run_error` | Error details with phase context and traceback |
+| `run_summary` | Total duration, per-phase timings, overall success |
+
+Host diagnostics (`host_hardware`, `host_firmware`, etc.) are also collected at the start of the run.
+
+### Lifecycle phases
+
+The collector tracks timing for each phase of the run, making it easy to identify where time is spent or where failures occur:
+
+1. Host diagnostics collection
+2. Recipe resolution and validation
+3. Resource distribution (model and container sync)
+4. Container launch and cluster formation
+5. Health check polling
+6. Summary and cleanup
+
+## Use cases
+
+- **Debugging multi-node issues** -- inspect network interfaces, IB status, and Docker configuration across all nodes
+- **Support tickets** -- attach the NDJSON file for complete system state
+- **Hardware verification** -- confirm GPU memory, driver versions, and firmware across a fleet
+- **Pre-deployment checks** -- verify Docker runtime, CUDA version, and network connectivity before launching workloads
+- **Post-mortem analysis** -- review phase timings and container logs after a failed run
+
+## Processing NDJSON output
+
+NDJSON files can be processed with standard tools:
+
+```bash
+# Pretty-print all records
+cat spark_diag_*.ndjson | python -m json.tool --no-ensure-ascii
+
+# Extract only hardware records
+cat spark_diag_*.ndjson | jq 'select(._type == "host_hardware")'
+
+# Get GPU info for all hosts
+cat spark_diag_*.ndjson | jq 'select(._type == "host_hardware") | {host, gpu_name, gpu_memory_mb, gpu_driver}'
+```
+
+:::tip
+See the [troubleshooting guide](/getting-started/troubleshooting/) for common issues and their solutions.
+:::

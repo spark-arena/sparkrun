@@ -11,6 +11,7 @@ transfer so hosts that already have the correct image are skipped.
 from __future__ import annotations
 
 import logging
+import shlex
 
 from sparkrun.containers.registry import ensure_image, get_image_id
 from sparkrun.orchestration.primitives import map_transfer_failures
@@ -55,15 +56,19 @@ def _check_remote_image_ids(
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    cmd = _REMOTE_IMAGE_ID_CMD.format(image=image)
+    cmd = _REMOTE_IMAGE_ID_CMD.format(image=shlex.quote(image))
     result_map: dict[str, str] = {}
 
     with ThreadPoolExecutor(max_workers=len(hosts)) as executor:
         futures = {
             executor.submit(
-                run_remote_command, host, cmd,
-                ssh_user=ssh_user, ssh_key=ssh_key,
-                ssh_options=ssh_options, timeout=15,
+                run_remote_command,
+                host,
+                cmd,
+                ssh_user=ssh_user,
+                ssh_key=ssh_key,
+                ssh_options=ssh_options,
+                timeout=15,
             ): host
             for host in hosts
         }
@@ -106,8 +111,11 @@ def _filter_hosts_needing_image(
         return list(hosts)
 
     remote_ids = _check_remote_image_ids(
-        image, hosts,
-        ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options,
+        image,
+        hosts,
+        ssh_user=ssh_user,
+        ssh_key=ssh_key,
+        ssh_options=ssh_options,
     )
 
     needs_transfer = []
@@ -181,8 +189,12 @@ def distribute_image_from_local(
     local_id = get_image_id(image) if not dry_run else None
 
     needs_transfer = _filter_hosts_needing_image(
-        image, xfer, local_id,
-        ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options,
+        image,
+        xfer,
+        local_id,
+        ssh_user=ssh_user,
+        ssh_key=ssh_key,
+        ssh_options=ssh_options,
         dry_run=dry_run,
     )
 
@@ -190,13 +202,18 @@ def distribute_image_from_local(
         return []
 
     # Step 3: stream to hosts that need it
-    local_cmd = f"docker save {image}"
+    local_cmd = "docker save %s" % shlex.quote(image)
     remote_cmd = "docker load"
 
     results = run_pipeline_to_remotes_parallel(
-        needs_transfer, local_cmd, remote_cmd,
-        ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options,
-        timeout=timeout, dry_run=dry_run,
+        needs_transfer,
+        local_cmd,
+        remote_cmd,
+        ssh_user=ssh_user,
+        ssh_key=ssh_key,
+        ssh_options=ssh_options,
+        timeout=timeout,
+        dry_run=dry_run,
     )
 
     # Map transfer IPs back to management hosts for failure reporting
@@ -246,29 +263,34 @@ def distribute_image_from_head(
         return []
 
     head = hosts[0]
-    logger.info("Distributing image '%s' from head (%s) to %d host(s)",
-                image, head, len(hosts))
+    logger.info("Distributing image '%s' from head (%s) to %d host(s)", image, head, len(hosts))
 
     # Build ensure script (pull image on head)
-    ensure_script = read_script("image_sync.sh").format(image=image)
+    ensure_script = read_script("image_sync.sh").format(image=shlex.quote(image))
 
     # Build distribute script (stream from head to workers)
     targets = worker_transfer_hosts or hosts[1:]
     ssh_opts = build_ssh_opts_string(
-        ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options,
+        ssh_user=ssh_user,
+        ssh_key=ssh_key,
+        ssh_options=ssh_options,
     )
     dist_script = read_script("image_distribute.sh").format(
-        image=image,
-        targets=" ".join(targets),
+        image=shlex.quote(image),
+        targets=" ".join(shlex.quote(t) for t in targets),
         ssh_opts=ssh_opts,
         ssh_user=ssh_user or "",
     )
 
     return _distribute_from_head(
-        head=head, hosts=hosts,
+        head=head,
+        hosts=hosts,
         ensure_script=ensure_script,
         distribute_script=dist_script,
         resource_label="Image '%s'" % image,
-        ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options,
-        timeout=timeout, dry_run=dry_run,
+        ssh_user=ssh_user,
+        ssh_key=ssh_key,
+        ssh_options=ssh_options,
+        timeout=timeout,
+        dry_run=dry_run,
     )

@@ -6,40 +6,15 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 from sparkrun.runtimes.base import RuntimePlugin
+from sparkrun.runtimes._vllm_common import VllmMixin, VLLM_FLAG_MAP, VLLM_BOOL_FLAGS
 
 if TYPE_CHECKING:
     from sparkrun.core.recipe import Recipe
 
 logger = logging.getLogger(__name__)
 
-# Standard vLLM CLI flags and their recipe default keys
-_VLLM_FLAG_MAP = {
-    "port": "--port",
-    "host": "--host",
-    "tensor_parallel": "-tp",
-    "gpu_memory_utilization": "--gpu-memory-utilization",
-    "max_model_len": "--max-model-len",
-    "max_num_batched_tokens": "--max-num-batched-tokens",
-    "max_num_seqs": "--max-num-seqs",
-    "served_model_name": "--served-model-name",
-    "dtype": "--dtype",
-    "quantization": "--quantization",
-    "enforce_eager": "--enforce-eager",
-    "enable_prefix_caching": "--enable-prefix-caching",
-    "trust_remote_code": "--trust-remote-code",
-    "distributed_executor_backend": "--distributed-executor-backend",
-    "pipeline_parallel": "-pp",
-    "kv_cache_dtype": "--kv-cache-dtype",
-}
 
-# Boolean flags (present = True, absent = False)
-_VLLM_BOOL_FLAGS = {
-    "enforce_eager", "enable_prefix_caching", "trust_remote_code",
-    "enable_auto_tool_choice",
-}
-
-
-class VllmRayRuntime(RuntimePlugin):
+class VllmRayRuntime(VllmMixin, RuntimePlugin):
     """vLLM runtime using Ray for multi-node clustering.
 
     Uses Ray head/worker orchestration for distributed inference.
@@ -48,12 +23,20 @@ class VllmRayRuntime(RuntimePlugin):
     """
 
     runtime_name = "vllm-ray"
-    default_image_prefix = "scitrera/dgx-spark-vllm"
+    default_image_prefix = "ghcr.io/spark-arena/dgx-vllm-eugr-nightly-tf5"
 
-    def generate_command(self, recipe: Recipe, overrides: dict[str, Any],
-                         is_cluster: bool, num_nodes: int = 1,
-                         head_ip: str | None = None,
-                         skip_keys: set[str] | frozenset[str] = frozenset()) -> str:
+    def get_family(self) -> str:
+        return "vllm"
+
+    def generate_command(
+        self,
+        recipe: Recipe,
+        overrides: dict[str, Any],
+        is_cluster: bool,
+        num_nodes: int = 1,
+        head_ip: str | None = None,
+        skip_keys: set[str] | frozenset[str] = frozenset(),
+    ) -> str:
         """Generate the vllm serve command."""
         config = recipe.build_config_chain(overrides)
 
@@ -64,19 +47,26 @@ class VllmRayRuntime(RuntimePlugin):
             if is_cluster and "--distributed-executor-backend" not in rendered:
                 rendered = rendered.rstrip() + " --distributed-executor-backend ray"
             rendered = self._augment_served_model_name(
-                rendered, config, "--served-model-name", skip_keys,
+                rendered,
+                config,
+                "--served-model-name",
+                skip_keys,
             )
             if skip_keys:
                 rendered = self.strip_flags_from_command(
-                    rendered, skip_keys, _VLLM_FLAG_MAP, _VLLM_BOOL_FLAGS,
+                    rendered,
+                    skip_keys,
+                    VLLM_FLAG_MAP,
+                    VLLM_BOOL_FLAGS,
                 )
             return rendered
 
         # Otherwise, build command from structured defaults
         return self._build_command(recipe, config, is_cluster, num_nodes, skip_keys=skip_keys)
 
-    def _build_command(self, recipe: Recipe, config, is_cluster: bool, num_nodes: int,
-                       skip_keys: set[str] | frozenset[str] = frozenset()) -> str:
+    def _build_command(
+        self, recipe: Recipe, config, is_cluster: bool, num_nodes: int, skip_keys: set[str] | frozenset[str] = frozenset()
+    ) -> str:
         """Build the vllm serve command from structured config."""
         parts = ["vllm", "serve", recipe.model]
 
@@ -96,23 +86,16 @@ class VllmRayRuntime(RuntimePlugin):
         if is_cluster:
             skip.add("distributed_executor_backend")
         skip.update(skip_keys)
-        parts.extend(self.build_flags_from_map(
-            config, _VLLM_FLAG_MAP, bool_keys=_VLLM_BOOL_FLAGS, skip_keys=skip,
-        ))
+        parts.extend(
+            self.build_flags_from_map(
+                config,
+                VLLM_FLAG_MAP,
+                bool_keys=VLLM_BOOL_FLAGS,
+                skip_keys=skip,
+            )
+        )
 
         return " ".join(parts)
-
-    # --- Tuning config auto-mount ---
-
-    def get_extra_volumes(self) -> dict[str, str]:
-        """Mount vLLM tuning configs if available."""
-        from sparkrun.tuning.vllm import get_vllm_tuning_volumes
-        return get_vllm_tuning_volumes() or {}
-
-    def get_extra_env(self) -> dict[str, str]:
-        """Set VLLM_TUNED_CONFIG_FOLDER if tuning configs exist."""
-        from sparkrun.tuning.vllm import get_vllm_tuning_env
-        return get_vllm_tuning_env() or {}
 
     def get_cluster_env(self, head_ip: str, num_nodes: int) -> dict[str, str]:
         """Return vLLM-specific cluster environment variables."""
@@ -120,10 +103,6 @@ class VllmRayRuntime(RuntimePlugin):
             "RAY_memory_monitor_refresh_ms": "0",
             "RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO": "0",
         }
-
-    def validate_recipe(self, recipe: Recipe) -> list[str]:
-        """Validate vLLM-specific recipe fields."""
-        return super().validate_recipe(recipe)
 
     # --- Log following hooks ---
 
@@ -134,11 +113,11 @@ class VllmRayRuntime(RuntimePlugin):
     # --- Cluster launch / stop ---
 
     def _stop_cluster(
-            self,
-            hosts: list[str],
-            cluster_id: str,
-            config=None,
-            dry_run: bool = False,
+        self,
+        hosts: list[str],
+        cluster_id: str,
+        config=None,
+        dry_run: bool = False,
     ) -> int:
         """Stop a vLLM Ray cluster."""
         from sparkrun.orchestration.primitives import build_ssh_kwargs, cleanup_containers
@@ -148,31 +127,33 @@ class VllmRayRuntime(RuntimePlugin):
         ssh_kwargs = build_ssh_kwargs(config)
 
         cleanup_containers(
-            hosts, [head_container, worker_container],
-            ssh_kwargs=ssh_kwargs, dry_run=dry_run,
+            hosts,
+            [head_container, worker_container],
+            ssh_kwargs=ssh_kwargs,
+            dry_run=dry_run,
         )
         logger.info("Cluster '%s' stopped on %d host(s)", cluster_id, len(hosts))
         return 0
 
     def _run_cluster(
-            self,
-            hosts: list[str],
-            image: str,
-            serve_command: str,
-            recipe=None,
-            overrides=None,
-            *,
-            cluster_id: str = "sparkrun0",
-            env: dict[str, str] | None = None,
-            cache_dir: str | None = None,
-            config=None,
-            dry_run: bool = False,
-            detached: bool = True,
-            nccl_env: dict[str, str] | None = None,
-            ray_port: int = 46379,
-            dashboard_port: int = 8265,
-            dashboard: bool = False,
-            **kwargs,
+        self,
+        hosts: list[str],
+        image: str,
+        serve_command: str,
+        recipe=None,
+        overrides=None,
+        *,
+        cluster_id: str = "sparkrun0",
+        env: dict[str, str] | None = None,
+        cache_dir: str | None = None,
+        config=None,
+        dry_run: bool = False,
+        detached: bool = True,
+        nccl_env: dict[str, str] | None = None,
+        ray_port: int = 46379,
+        dashboard_port: int = 8265,
+        dashboard: bool = False,
+        **kwargs,
     ) -> int:
         """Orchestrate a multi-node Ray cluster for vLLM.
 
@@ -187,11 +168,11 @@ class VllmRayRuntime(RuntimePlugin):
         from sparkrun.orchestration.primitives import (
             build_ssh_kwargs,
             build_volumes,
-            merge_env,
             cleanup_containers,
             is_valid_ip,
             resolve_nccl_env,
         )
+        from sparkrun.utils import merge_env
         from sparkrun.orchestration.ssh import run_remote_script, run_remote_scripts_parallel
 
         head_host = hosts[0]
@@ -205,9 +186,11 @@ class VllmRayRuntime(RuntimePlugin):
         all_env = merge_env(runtime_env, self.get_extra_env(), env)
 
         self._print_cluster_banner(
-            "Ray Cluster Launcher", hosts, image, cluster_id,
-            {"Ray Port": ray_port, "Dashboard Port": dashboard_port,
-             "Command": serve_command[:80]},
+            "Ray Cluster Launcher",
+            hosts,
+            image,
+            cluster_id,
+            {"Ray Port": ray_port, "Dashboard Port": dashboard_port, "Command": serve_command[:80]},
             dry_run,
         )
 
@@ -215,8 +198,10 @@ class VllmRayRuntime(RuntimePlugin):
         t0 = time.monotonic()
         logger.info("Step 1/5: Cleaning up existing containers for cluster '%s'...", cluster_id)
         cleanup_containers(
-            hosts, [head_container, worker_container],
-            ssh_kwargs=ssh_kwargs, dry_run=dry_run,
+            hosts,
+            [head_container, worker_container],
+            ssh_kwargs=ssh_kwargs,
+            dry_run=dry_run,
         )
         logger.info("Step 1/5: Cleanup done (%.1fs)", time.monotonic() - t0)
 
@@ -224,13 +209,17 @@ class VllmRayRuntime(RuntimePlugin):
         t0 = time.monotonic()
         logger.info("Step 2/5: InfiniBand detection...")
         nccl_env = resolve_nccl_env(
-            nccl_env, hosts,
-            head_host=head_host, ssh_kwargs=ssh_kwargs, dry_run=dry_run,
+            nccl_env,
+            hosts,
+            head_host=head_host,
+            ssh_kwargs=ssh_kwargs,
+            dry_run=dry_run,
         )
         logger.info("Step 2/5: IB step done (%.1fs)", time.monotonic() - t0)
 
         # Auto-detect available ports to avoid collisions with running instances
         from sparkrun.orchestration.primitives import find_available_port
+
         ray_port = find_available_port(head_host, ray_port, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
         if dashboard:
             dashboard_port = find_available_port(head_host, dashboard_port, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
@@ -249,7 +238,11 @@ class VllmRayRuntime(RuntimePlugin):
             nccl_env=nccl_env,
         )
         head_result = run_remote_script(
-            head_host, head_script, timeout=120, dry_run=dry_run, **ssh_kwargs,
+            head_host,
+            head_script,
+            timeout=120,
+            dry_run=dry_run,
+            **ssh_kwargs,
         )
         if not head_result.success and not dry_run:
             logger.error("Failed to launch Ray head: %s", head_result.stderr)
@@ -266,17 +259,21 @@ class VllmRayRuntime(RuntimePlugin):
 
         if not dry_run:
             from sparkrun.orchestration.primitives import wait_for_port
+
             logger.info("  Waiting for Ray head port %s:%d...", head_host, ray_port)
             ready = wait_for_port(
-                head_host, ray_port,
-                max_retries=30, retry_interval=2,
+                head_host,
+                ray_port,
+                max_retries=30,
+                retry_interval=2,
                 ssh_kwargs=ssh_kwargs,
                 container_name=head_container,
             )
             if not ready:
                 logger.error(
-                    "Ray head failed to become ready. "
-                    "Check logs: ssh %s 'docker logs %s'", head_host, head_container,
+                    "Ray head failed to become ready. Check logs: ssh %s 'docker logs %s'",
+                    head_host,
+                    head_container,
                 )
                 return 1
         logger.info("Step 3/5: Ray head ready (%.1fs)", time.monotonic() - t0)
@@ -286,7 +283,8 @@ class VllmRayRuntime(RuntimePlugin):
         if worker_hosts:
             logger.info(
                 "Step 4/5: Launching %d Ray worker(s) on %s...",
-                len(worker_hosts), ", ".join(worker_hosts),
+                len(worker_hosts),
+                ", ".join(worker_hosts),
             )
             worker_script = self.executor.generate_ray_worker_script(
                 image=image,
@@ -298,17 +296,24 @@ class VllmRayRuntime(RuntimePlugin):
                 nccl_env=nccl_env,
             )
             worker_results = run_remote_scripts_parallel(
-                worker_hosts, worker_script, timeout=120, dry_run=dry_run, **ssh_kwargs,
+                worker_hosts,
+                worker_script,
+                timeout=120,
+                dry_run=dry_run,
+                **ssh_kwargs,
             )
             failed = [r for r in worker_results if not r.success and not dry_run]
             for r in failed:
                 logger.warning(
-                    "  Worker launch may have failed on %s: %s", r.host, r.stderr[:100],
+                    "  Worker launch may have failed on %s: %s",
+                    r.host,
+                    r.stderr[:100],
                 )
             if not dry_run:
                 logger.info(
                     "  Waiting 3s for workers to connect to head at %s:%d...",
-                    head_ip, ray_port,
+                    head_ip,
+                    ray_port,
                 )
                 time.sleep(3)
             logger.info("Step 4/5: Workers launched (%.1fs)", time.monotonic() - t0)
@@ -326,7 +331,8 @@ class VllmRayRuntime(RuntimePlugin):
         t0 = time.monotonic()
         logger.info(
             "Step 5/5: Executing serve command on head node %s (container: %s)...",
-            head_host, head_container,
+            head_host,
+            head_container,
         )
         exec_script = self.executor.generate_exec_serve_script(
             container_name=head_container,
@@ -335,11 +341,14 @@ class VllmRayRuntime(RuntimePlugin):
             detached=detached,
         )
 
-        self._print_connection_info(hosts, cluster_id, head_ip=head_ip,
-                                    dashboard_port=dashboard_port)
+        self._print_connection_info(hosts, cluster_id, head_ip=head_ip, dashboard_port=dashboard_port)
 
         exec_result = run_remote_script(
-            head_host, exec_script, timeout=60, dry_run=dry_run, **ssh_kwargs,
+            head_host,
+            exec_script,
+            timeout=60,
+            dry_run=dry_run,
+            **ssh_kwargs,
         )
         logger.info("Step 5/5: Serve command dispatched (%.1fs)", time.monotonic() - t0)
 
@@ -347,8 +356,7 @@ class VllmRayRuntime(RuntimePlugin):
             return 0
         return exec_result.returncode
 
-    def _print_connection_info(self, hosts, cluster_id, head_ip=None,
-                               dashboard_port=8265):
+    def _print_connection_info(self, hosts, cluster_id, head_ip=None, dashboard_port=8265):
         """Print vLLM-specific connection info including Dashboard URL."""
         logger.info("=" * 60)
         logger.info("Cluster launched successfully. Nodes: %d", len(hosts))

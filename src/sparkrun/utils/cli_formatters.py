@@ -6,15 +6,21 @@ from typing import TYPE_CHECKING, Any
 
 import click
 
+# Collapse vllm variants into a single display runtime for the website / metadata export.
+RUNTIME_DISPLAY: dict[str, str] = {
+    "vllm-distributed": "vllm",
+    "vllm-ray": "vllm",
+}
+
 if TYPE_CHECKING:
     from sparkrun.core.monitoring import HostMonitorState
 
 
 def format_recipe_table(
-        recipes: list[dict[str, Any]],
-        *,
-        show_model: bool = False,
-        show_file: bool = False,
+    recipes: list[dict[str, Any]],
+    *,
+    show_model: bool = False,
+    show_file: bool = False,
 ) -> str:
     """Format recipe metadata as a text table.
 
@@ -78,7 +84,7 @@ def format_recipe_table(
 
 def format_job_label(meta: dict[str, Any], cluster_id: str) -> str:
     """Format a display label from job metadata."""
-    short_id = cluster_id.removeprefix("sparkrun_")[:8]
+    short_id = cluster_id.removeprefix("sparkrun_")  # [:8]
     label = meta.get("recipe", cluster_id)
     tp = meta.get("tensor_parallel")
     if tp:
@@ -133,17 +139,24 @@ def format_host_display(host: str, meta: dict[str, Any] | None) -> str:
 
 def display_recipe_detail(recipe, show_vram=True, registry_name=None, cli_overrides=None, cache_dir=None):
     """Display recipe details (shared by show and recipe show commands)."""
-    click.echo(f"Name:         {recipe.name}")
+    click.echo(f"Name:         {recipe.qualified_name}")
     click.echo(f"Description:  {recipe.description}")
     if recipe.maintainer:
         click.echo(f"Maintainer:   {recipe.maintainer}")
+    spark_arena_benchmarks = recipe.metadata.get("spark_arena_benchmarks", [])
+    if len(spark_arena_benchmarks) == 1:
+        click.echo("Spark Arena:  https://spark-arena.com/benchmarks/%s" % spark_arena_benchmarks[0]["uuid"])
+    elif len(spark_arena_benchmarks) > 1:
+        click.echo("Spark Arena:")
+        for entry in spark_arena_benchmarks:
+            click.echo("  tp%s: https://spark-arena.com/benchmarks/%s" % (entry["tp"], entry["uuid"]))
     click.echo(f"Runtime:      {recipe.runtime}")
     click.echo(f"Model:        {recipe.model}")
     click.echo(f"Container:    {recipe.container}")
     max_nodes = recipe.max_nodes or "unlimited"
     click.echo(f"Nodes:        {recipe.min_nodes} - {max_nodes}")
-    click.echo(f"Repository:   {registry_name or 'Local'}")
-    click.echo(f"File Path:    {recipe.source_path}")
+    # click.echo(f"Registry:     {registry_name or 'N/A'}")
+    # click.echo(f"File Path:    {recipe.source_path}")
 
     if recipe.defaults:
         click.echo("\nDefaults:")
@@ -192,17 +205,16 @@ def display_vram_estimate(recipe, cli_overrides=None, auto_detect=True, cache_di
     if est.gpu_memory_utilization is not None:
         click.echo("\n  GPU Memory Budget:")
         click.echo(f"    gpu_memory_utilization: {est.gpu_memory_utilization:.0%}")
-        click.echo(f"    Usable GPU memory:     {est.usable_gpu_memory_gb:.1f} GB"
-                   f" ({DGX_SPARK_VRAM_GB:.0f} GB x {est.gpu_memory_utilization:.0%})")
+        click.echo(
+            f"    Usable GPU memory:     {est.usable_gpu_memory_gb:.1f} GB ({DGX_SPARK_VRAM_GB:.0f} GB x {est.gpu_memory_utilization:.0%})"
+        )
         click.echo(f"    Available for KV:      {est.available_kv_gb:.1f} GB")
         if est.max_context_tokens is not None:
             click.echo(f"    Max context tokens:    {est.max_context_tokens:,}")
             if est.context_multiplier is not None and est.max_model_len:
-                click.echo(f"    Context multiplier:    {est.context_multiplier:.1f}x"
-                           f" (vs max_model_len={est.max_model_len:,})")
+                click.echo(f"    Context multiplier:    {est.context_multiplier:.1f}x (vs max_model_len={est.max_model_len:,})")
                 if est.context_multiplier < 1.0:
-                    click.echo(f"    WARNING: max_model_len exceeds available KV budget"
-                               f" ({est.context_multiplier:.1%} fits)")
+                    click.echo(f"    WARNING: max_model_len exceeds available KV budget ({est.context_multiplier:.1%} fits)")
 
     for w in est.warnings:
         click.echo(f"  Warning: {w}")
@@ -224,16 +236,7 @@ def format_monitor_table(
     # Widths are minimums; host column expands to fit longest hostname.
     host_w = max(16, *(len(h) for h in hosts)) + 2
 
-    header = (
-        f"{'HOST':<{host_w}}"
-        f"{'Jobs':>6}"
-        f"{'CPU%':>8}"
-        f"{'RAM%':>8}"
-        f"{'GPU%':>8}"
-        f"{'CPU Temp':>10}"
-        f"{'GPU Temp':>10}"
-        f"{'GPU Power':>11}"
-    )
+    header = f"{'HOST':<{host_w}}{'Jobs':>6}{'CPU%':>8}{'RAM%':>8}{'GPU%':>8}{'CPU Temp':>10}{'GPU Temp':>10}{'GPU Power':>11}"
     separator = "-" * len(header)
 
     lines = [header, separator]
@@ -258,15 +261,6 @@ def format_monitor_table(
         gpu_temp = "%s C" % s.gpu_temp_c if s.gpu_temp_c else "-"
         gpu_power = "%s W" % s.gpu_power_w if s.gpu_power_w else "-"
 
-        lines.append(
-            f"{host_label:<{host_w}}"
-            f"{jobs:>6}"
-            f"{cpu_pct:>8}"
-            f"{ram_pct:>8}"
-            f"{gpu_util:>8}"
-            f"{cpu_temp:>10}"
-            f"{gpu_temp:>10}"
-            f"{gpu_power:>11}"
-        )
+        lines.append(f"{host_label:<{host_w}}{jobs:>6}{cpu_pct:>8}{ram_pct:>8}{gpu_util:>8}{cpu_temp:>10}{gpu_temp:>10}{gpu_power:>11}")
 
     return "\n".join(lines)

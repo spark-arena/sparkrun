@@ -14,6 +14,7 @@ from ._common import (
     _setup_logging,
     dry_run_option,
     host_options,
+    resolve_cluster_config,
 )
 
 logger = logging.getLogger(__name__)
@@ -29,20 +30,26 @@ def tune(ctx):
 @tune.command("sglang")
 @click.argument("recipe_name", type=RECIPE_NAME)
 @host_options
-@click.option("--tp", "tp_sizes", type=int, multiple=True,
-              help="TP size(s) to tune (repeatable; default: 1,2,4,8)")
+@click.option("--tp", "tp_sizes", type=int, multiple=True, help="TP size(s) to tune (repeatable; default: 1,2,4,8)")
 @click.option("--image", default=None, help="Override container image")
-@click.option("--cache-dir", default=None, help="HuggingFace cache directory")
 @click.option("--output-dir", default=None, help="Override tuning config output directory")
 @click.option("--skip-clone", is_flag=True, help="Skip cloning SGLang repo (scripts already in image)")
-@click.option("--parallel", "-j", type=int, default=1,
-              help="Run N tuning jobs concurrently (default: 1 = sequential)")
+@click.option("--parallel", "-j", type=int, default=1, help="Run N tuning jobs concurrently (default: 1 = sequential)")
 @dry_run_option
 @click.pass_context
 def tune_sglang(
-        ctx, recipe_name, hosts, hosts_file, cluster_name,
-        tp_sizes, image, cache_dir, output_dir, skip_clone, parallel, dry_run,
-        config_path=None,
+    ctx,
+    recipe_name,
+    hosts,
+    hosts_file,
+    cluster_name,
+    tp_sizes,
+    image,
+    output_dir,
+    skip_clone,
+    parallel,
+    dry_run,
+    config_path=None,
 ):
     """Tune SGLang fused MoE Triton kernels for DGX Spark.
 
@@ -87,6 +94,10 @@ def tune_sglang(
     if len(host_list) > 1:
         logger.info("Tuning runs on a single host; using first host: %s", target_host)
 
+    # Resolve remote cache dir from cluster config
+    cluster_cfg = resolve_cluster_config(cluster_name, hosts, hosts_file, _cluster_mgr)
+    remote_cache_dir = cluster_cfg.cache_dir  # None is fine — tuner/build_volumes handles default
+
     # Default TP sizes
     effective_tp = tuple(tp_sizes) if tp_sizes else DEFAULT_TP_SIZES
 
@@ -95,7 +106,7 @@ def tune_sglang(
         image=container_image,
         model=recipe.model,
         config=config,
-        cache_dir=cache_dir,
+        cache_dir=remote_cache_dir,
         output_dir=output_dir,
         skip_clone=skip_clone,
         dry_run=dry_run,
@@ -111,20 +122,26 @@ VLLM_RUNTIMES = {"vllm-ray", "vllm-distributed", "eugr-vllm"}
 @tune.command("vllm")
 @click.argument("recipe_name", type=RECIPE_NAME)
 @host_options
-@click.option("--tp", "tp_sizes", type=int, multiple=True,
-              help="TP size(s) to tune (repeatable; default: 1,2,4,8)")
+@click.option("--tp", "tp_sizes", type=int, multiple=True, help="TP size(s) to tune (repeatable; default: 1,2,4,8)")
 @click.option("--image", default=None, help="Override container image")
-@click.option("--cache-dir", default=None, help="HuggingFace cache directory")
 @click.option("--output-dir", default=None, help="Override tuning config output directory")
 @click.option("--skip-clone", is_flag=True, help="Skip cloning vLLM repo (scripts already in image)")
-@click.option("--parallel", "-j", type=int, default=1,
-              help="Run N tuning jobs concurrently (default: 1 = sequential)")
+@click.option("--parallel", "-j", type=int, default=1, help="Run N tuning jobs concurrently (default: 1 = sequential)")
 @dry_run_option
 @click.pass_context
 def tune_vllm(
-        ctx, recipe_name, hosts, hosts_file, cluster_name,
-        tp_sizes, image, cache_dir, output_dir, skip_clone, parallel, dry_run,
-        config_path=None,
+    ctx,
+    recipe_name,
+    hosts,
+    hosts_file,
+    cluster_name,
+    tp_sizes,
+    image,
+    output_dir,
+    skip_clone,
+    parallel,
+    dry_run,
+    config_path=None,
 ):
     """Tune vLLM fused MoE Triton kernels for DGX Spark.
 
@@ -169,6 +186,10 @@ def tune_vllm(
     if len(host_list) > 1:
         logger.info("Tuning runs on a single host; using first host: %s", target_host)
 
+    # Resolve remote cache dir from cluster config
+    cluster_cfg = resolve_cluster_config(cluster_name, hosts, hosts_file, _cluster_mgr)
+    remote_cache_dir = cluster_cfg.cache_dir  # None is fine — tuner/build_volumes handles default
+
     # Default TP sizes
     effective_tp = tuple(tp_sizes) if tp_sizes else DEFAULT_TP_SIZES
 
@@ -177,7 +198,7 @@ def tune_vllm(
         image=container_image,
         model=recipe.model,
         config=config,
-        cache_dir=cache_dir,
+        cache_dir=remote_cache_dir,
         output_dir=output_dir,
         skip_clone=skip_clone,
         dry_run=dry_run,

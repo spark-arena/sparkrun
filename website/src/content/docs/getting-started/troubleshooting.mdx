@@ -10,11 +10,13 @@ DGX Spark inference containers typically run as **root** inside rootful Docker. 
 :::note[Cache directory resolution]
 sparkrun uses the same cache directory as `huggingface_hub`, resolved in this order:
 
-1. `--cache-dir` CLI flag or `hf_cache_dir` in `~/.config/sparkrun/config.yaml` (sparkrun-specific override)
+1. `hf_cache_dir` in `~/.config/sparkrun/config.yaml` (sparkrun-specific override)
 2. `HF_HUB_CACHE` environment variable
 3. `HUGGINGFACE_HUB_CACHE` environment variable (legacy alias)
 4. `HF_HOME` environment variable + `/hub`
 5. `~/.cache/huggingface` (default)
+
+For remote cluster hosts, the cache directory can also be set per-cluster via `sparkrun cluster create --cache-dir` or `sparkrun cluster update --cache-dir`. This is useful when the control machine and cluster hosts have different filesystem layouts (e.g. macOS control machine managing Linux DGX Spark nodes).
 
 If you've set `HF_HOME` or `HF_HUB_CACHE`, sparkrun respects those automatically — no sparkrun-specific configuration needed.
 :::
@@ -121,3 +123,174 @@ This installs a minimal sudoers rule on each host that permits **only** writing 
 # Preview what the sudoers entry would look like
 sparkrun setup clear-cache --cluster mylab --save-sudo --dry-run
 ```
+
+## SSH connection failures
+
+**Symptoms:**
+
+- `Permission denied (publickey)` when sparkrun tries to connect
+- SSH connection timeouts
+
+**Fixes:**
+
+- Check key permissions: `chmod 600 ~/.ssh/id_*` and `chmod 700 ~/.ssh`
+- Re-establish the SSH mesh across cluster hosts:
+  ```bash
+  sparkrun setup ssh --cluster mylab
+  ```
+- Verify your SSH agent is running and has the correct key loaded (`ssh-add -l`)
+- Check `~/.ssh/config` for conflicting `Host` entries that might override settings for your DGX Spark IPs
+- Debug with verbose SSH output: `ssh -vv <host>` to see exactly where authentication fails
+
+## Docker permission errors
+
+**Symptoms:**
+
+- `permission denied` errors referencing the Docker socket (`/var/run/docker.sock`)
+
+**Fix:**
+
+Ensure the SSH user is in the `docker` group on each DGX Spark host:
+
+```bash
+sudo usermod -aG docker $USER
+```
+
+You must reconnect the SSH session after changing groups (or log out and back in on the host). sparkrun's SSH mesh doesn't pick up group changes from existing connections.
+
+## Container launch failures
+
+**Symptoms:**
+
+- Container starts and immediately exits
+- `image not found` or `manifest unknown` errors
+
+**Fixes:**
+
+- Pull the image manually to check availability: `docker pull <image>`
+- Verify the image tag exists — typos in container references are common
+- Check Docker disk space on the target host:
+  ```bash
+  docker system df
+  ```
+- Inspect container logs for the exit reason:
+  ```bash
+  docker logs <container-name>
+  ```
+
+## Port conflicts
+
+**Symptoms:**
+
+- `address already in use` errors when launching a workload
+
+**Fix:**
+
+Override the serve port with `--port` or `-o`:
+
+```bash
+sparkrun run my-recipe --port 9001
+sparkrun run my-recipe -o port=9001
+```
+
+To find what's using the default port:
+
+```bash
+ss -tlnp | grep 8000
+```
+
+## Model doesn't fit in VRAM
+
+**Symptoms:**
+
+- OOM errors during model loading
+- `CUDA out of memory` or similar allocation failures
+
+**Fixes:**
+
+- Check the VRAM estimate before launching:
+  ```bash
+  sparkrun show <recipe>
+  ```
+- Lower `gpu_memory_utilization` to leave headroom for the system (e.g. 0.7):
+  ```bash
+  sparkrun run <recipe> -o gpu_memory_utilization=0.7
+  ```
+- Reduce `max_model_len` to shrink KV cache allocation:
+  ```bash
+  sparkrun run <recipe> -o max_model_len=4096
+  ```
+- Use multi-node tensor parallelism to split the model across hosts:
+  ```bash
+  sparkrun run <recipe> --tp 2
+  ```
+- Try a quantized variant of the model (AWQ, GPTQ, FP8, etc.)
+
+:::note[DGX Spark memory]
+Each DGX Spark has 128 GB of unified CPU/GPU memory shared between the system and the GPU. The actual VRAM available for inference depends on system memory usage, page cache, and the `gpu_memory_utilization` setting.
+:::
+
+## InfiniBand not detected
+
+**Symptoms:**
+
+- NCCL falls back to TCP for multi-node communication
+- Slow multi-node inference performance compared to expectations
+
+**Fix:**
+
+Run the CX7 configuration command to detect and set up ConnectX-7 interfaces:
+
+```bash
+sparkrun setup cx7 --cluster mylab
+```
+
+Verify IB interfaces are up on each host:
+
+```bash
+ibstat
+ip addr show
+```
+
+Check that CX7 IPs are reachable between all hosts in the cluster.
+
+## NCCL errors
+
+**Symptoms:**
+
+- `NCCL WARN` messages in container logs
+- Timeout during distributed initialization
+- `Connection refused` errors between nodes
+
+**Fixes:**
+
+- Verify InfiniBand subnets match across all hosts — nodes must be on the same subnet to communicate
+- Check firewall rules: NCCL and Ray use ports including 25000 and 46379. Ensure these are open between cluster hosts
+- If NCCL auto-detection picks the wrong network interface, set it explicitly:
+  ```bash
+  sparkrun run <recipe> -o NCCL_SOCKET_IFNAME=enp3s0f0np0
+  ```
+- Enable detailed NCCL logging for debugging:
+  ```bash
+  sparkrun run <recipe> -o NCCL_DEBUG=INFO
+  ```
+
+## Multi-node startup issues
+
+**Symptoms:**
+
+- Containers start on all nodes but the serve command fails
+- Workers can't reach the head node
+- Distributed initialization hangs or times out
+
+**Fixes:**
+
+- Verify the SSH mesh is healthy:
+  ```bash
+  sparkrun setup ssh --cluster mylab
+  ```
+- Check InfiniBand connectivity between hosts (see [InfiniBand not detected](#infiniband-not-detected) above)
+- Ensure the same container image is present on all hosts — image ID mismatches can cause subtle failures. sparkrun automatically syncs container images to all target hosts during `sparkrun run`. To force a full re-distribution, stop the workload and re-run the recipe.
+- For very large models, increase the distributed initialization timeout via runtime-specific environment variables
+
+For systematic debugging, use [diagnostics](/getting-started/diagnostics/) to collect detailed host information.

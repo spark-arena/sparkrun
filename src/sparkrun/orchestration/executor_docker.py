@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import shlex
 
 from sparkrun.orchestration.executor import Executor
 
@@ -32,6 +33,23 @@ class DockerExecutor(Executor):
             opts.append("--shm-size=%s" % cfg.shm_size)
         if cfg.network:
             opts.append("--network %s" % cfg.network)
+        if cfg.user:
+            if cfg.user == "$SHELL_USER":
+                opts.extend(["--user", "$(id -u):$(id -g)"])
+            else:
+                opts.extend(["--user", cfg.user])
+        if cfg.security_opt:
+            for opt in cfg.security_opt:
+                opts.extend(["--security-opt", opt])
+        if cfg.cap_add:
+            for cap in cfg.cap_add:
+                opts.extend(["--cap-add", cap])
+        if cfg.ulimit:
+            for ul in cfg.ulimit:
+                opts.extend(["--ulimit", ul])
+        if cfg.devices:
+            for dev in cfg.devices:
+                opts.extend(["--device", dev])
 
         return opts
 
@@ -74,7 +92,7 @@ class DockerExecutor(Executor):
         if extra_opts:
             parts.extend(extra_opts)
 
-        parts.append(image)
+        parts.append(shlex.quote(image))
 
         if command:
             parts.append(command)
@@ -103,14 +121,16 @@ class DockerExecutor(Executor):
         if env:
             for key, value in sorted(env.items()):
                 parts.extend(["-e", "%s=%s" % (key, value)])
-        parts.extend([container_name, "bash", "-c", "'%s'" % command])
+        escaped_cmd = command.replace("'", "'\\''")
+        parts.extend([shlex.quote(container_name), "bash", "-c", "'%s'" % escaped_cmd])
         return " ".join(parts)
 
     def stop_cmd(self, container_name: str, force: bool = True) -> str:
         """Generate a docker stop/rm command string."""
+        quoted = shlex.quote(container_name)
         if force:
-            return "docker rm -f %s 2>/dev/null || true" % container_name
-        return "docker stop %s 2>/dev/null || true" % container_name
+            return "docker rm -f %s 2>/dev/null || true" % quoted
+        return "docker stop %s 2>/dev/null || true" % quoted
 
     def logs_cmd(
         self,
@@ -129,8 +149,8 @@ class DockerExecutor(Executor):
 
     def inspect_exists_cmd(self, image: str) -> str:
         """Generate a command to check if a docker image exists locally."""
-        return "docker image inspect %s >/dev/null 2>&1" % image
+        return "docker image inspect %s >/dev/null 2>&1" % shlex.quote(image)
 
     def pull_cmd(self, image: str) -> str:
         """Generate a ``docker pull`` command."""
-        return "docker pull %s" % image
+        return "docker pull %s" % shlex.quote(image)

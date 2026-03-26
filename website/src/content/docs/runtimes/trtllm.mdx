@@ -1,0 +1,121 @@
+---
+title: TensorRT-LLM
+description: TensorRT-LLM runtime with MPI-based multi-node inference.
+---
+
+[TensorRT-LLM](https://github.com/NVIDIA/TensorRT-LLM) is NVIDIA's high-performance inference engine with TensorRT optimizations. sparkrun's `trtllm` runtime uses MPI (OpenMPI) for multi-node tensor parallelism. Solo mode (tp=1) uses the standard sleep-infinity + exec pattern.
+
+## When to use
+
+- You want NVIDIA's TensorRT-LLM inference engine with TensorRT optimizations
+- You need high-throughput serving with features like FP8 KV cache, CUDA graphs, and MoE backends
+- Your model is supported by TensorRT-LLM's PyTorch or TensorRT backend
+
+## Container images
+
+Default image prefix: `nvcr.io/nvidia/tensorrt-llm/release`
+
+sparkrun resolves container tags from the recipe. For example, `container: nvcr.io/nvidia/tensorrt-llm/release:0.18.0` pulls the 0.18.0 release image from NVIDIA's NGC registry.
+
+## Example recipe
+
+```yaml
+model: nvidia/Llama-3.1-8B-Instruct-FP8
+runtime: trtllm
+container: nvcr.io/nvidia/tensorrt-llm/release:0.18.0
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 1
+  backend: pytorch
+```
+
+## Configuration options
+
+These recipe `defaults` keys map to `trtllm-serve` CLI flags:
+
+| Key | Flag | Description |
+|---|---|---|
+| `port` | `--port` | Serving port |
+| `host` | `--host` | Bind address |
+| `tensor_parallel` | `--tp_size` | Tensor parallelism degree |
+| `pipeline_parallel` | `--pp_size` | Pipeline parallelism degree |
+| `expert_parallel` | `--ep_size` | Expert parallelism degree (MoE models) |
+| `max_num_tokens` | `--max_num_tokens` | Maximum number of tokens per batch |
+| `max_batch_size` | `--max_batch_size` | Maximum batch size |
+| `max_model_len` | `--max_seq_len` | Maximum sequence length |
+| `backend` | `--backend` | Inference backend (`pytorch` or `tensorrt`) |
+| `tokenizer` | `--tokenizer` | Tokenizer path or name |
+| `kv_cache_free_gpu_memory_fraction` | `--kv_cache_free_gpu_memory_fraction` | Fraction of free GPU memory for KV cache |
+| `trust_remote_code` | `--trust_remote_code` | Trust remote code from HuggingFace (boolean flag) |
+
+If no `backend` is specified, sparkrun defaults to `pytorch`.
+
+## Extra LLM API config
+
+Certain advanced options are passed via a generated `extra-llm-api-config.yml` file rather than CLI flags. When any of these keys appear in recipe `defaults`, sparkrun generates the YAML file, writes it into the container, and passes it via `--extra_llm_api_options`:
+
+| Recipe key | Config section | YAML field |
+|---|---|---|
+| `free_gpu_memory_fraction` | `kv_cache_config` | `free_gpu_memory_fraction` |
+| `kv_cache_dtype` | `kv_cache_config` | `dtype` |
+| `kv_cache_enable_block_reuse` | `kv_cache_config` | `enable_block_reuse` |
+| `cuda_graph_padding` | `cuda_graph_config` | `enable_padding` |
+| `cuda_graph_max_batch_size` | `cuda_graph_config` | `max_batch_size` |
+| `moe_backend` | `moe_config` | `backend` |
+| `print_iter_log` | (top-level) | `print_iter_log` |
+
+Example recipe using extra config keys:
+
+```yaml
+model: some/moe-model
+runtime: trtllm
+container: nvcr.io/nvidia/tensorrt-llm/release:0.18.0
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 2
+  backend: pytorch
+  free_gpu_memory_fraction: 0.85
+  kv_cache_dtype: fp8_e5m2
+  cuda_graph_padding: true
+  moe_backend: cutlass
+```
+
+This generates an `extra-llm-api-config.yml` like:
+
+```yaml
+kv_cache_config:
+  free_gpu_memory_fraction: 0.85
+  dtype: fp8_e5m2
+cuda_graph_config:
+  enable_padding: true
+moe_config:
+  backend: cutlass
+```
+
+## Multi-node usage
+
+TRT-LLM uses MPI for multi-node inference. sparkrun handles the full orchestration automatically — container lifecycle, InfiniBand detection, MPI configuration, and environment setup:
+
+```bash
+sparkrun run my-trtllm-recipe --tp 2
+```
+
+### Requirements
+
+- SSH keys at `~/.ssh` on the control machine (mounted into containers)
+- All hosts must be SSH-accessible from each other (use `sparkrun setup ssh` to configure)
+
+### Docker options
+
+TRT-LLM containers automatically get these extra Docker options for large memory allocations:
+
+- `--ulimit memlock=-1`
+- `--ulimit stack=67108864`
+
+See [Execution Flow](/developer-reference/execution-flow/) for the full MPI orchestration details, including the rsh wrapper mechanism and environment variables.
+
+## Auto-detection
+
+sparkrun auto-detects TRT-LLM recipes by checking the command template. If the command starts with `trtllm-serve` or `mpirun...trtllm`, the `trtllm` runtime is selected automatically.

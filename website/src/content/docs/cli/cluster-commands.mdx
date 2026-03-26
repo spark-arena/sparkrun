@@ -19,8 +19,9 @@ sparkrun cluster create <name> --hosts <ip1>,<ip2>,... [options]
 | `--hosts-file` | File with hosts (one per line) |
 | `-d` / `--description` | Cluster description |
 | `--user` / `-u` | SSH username for this cluster |
-| `--cache-dir` | HuggingFace cache directory for this cluster |
+| `--cache-dir` | HuggingFace cache directory on cluster hosts (useful when control machine and cluster have different paths, e.g. macOS → Linux) |
 | `--transfer-mode` | Resource transfer mode: `auto`, `local`, `push`, or `delegated` |
+| `--transfer-interface` | Network interface for transfers: `auto`, `cx7`, or `mgmt` |
 
 ```bash
 sparkrun cluster create mylab \

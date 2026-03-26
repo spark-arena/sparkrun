@@ -478,18 +478,14 @@ def plan_cluster_cx7(
             taken_s1.add(octet1)
             ip1 = str(subnet1.network_address + octet1)
             if octet1 != preferred_octet:
-                plan.warnings.append(
-                    "%s: octet %d taken on %s, using %d instead" % (host, preferred_octet, subnet1, octet1)
-                )
+                plan.warnings.append("%s: octet %d taken on %s, using %d instead" % (host, preferred_octet, subnet1, octet1))
 
             # Assign IP on subnet2
             octet2 = _find_available_octet(taken_s2, preferred_octet)
             taken_s2.add(octet2)
             ip2 = str(subnet2.network_address + octet2)
             if octet2 != preferred_octet:
-                plan.warnings.append(
-                    "%s: octet %d taken on %s, using %d instead" % (host, preferred_octet, subnet2, octet2)
-                )
+                plan.warnings.append("%s: octet %d taken on %s, using %d instead" % (host, preferred_octet, subnet2, octet2))
 
             host_plan.assignments = [
                 CX7InterfaceAssignment(
@@ -531,9 +527,7 @@ def generate_cx7_configure_script(host_plan: CX7HostPlan, mtu: int, prefix_len: 
         Bash script content ready to pipe via SSH.
     """
     if len(host_plan.assignments) != 2:
-        raise ValueError(
-            "Expected 2 interface assignments for %s, got %d" % (host_plan.host, len(host_plan.assignments))
-        )
+        raise ValueError("Expected 2 interface assignments for %s, got %d" % (host_plan.host, len(host_plan.assignments)))
 
     template = read_script("cx7_configure.sh")
     a1, a2 = host_plan.assignments[0], host_plan.assignments[1]
@@ -577,7 +571,12 @@ def configure_cx7_host(
 
     if sudo_password:
         return run_remote_sudo_script(
-            host_plan.host, script, sudo_password, timeout=60, dry_run=dry_run, **kw,
+            host_plan.host,
+            script,
+            sudo_password,
+            timeout=60,
+            dry_run=dry_run,
+            **kw,
         )
     else:
         return run_remote_script(host_plan.host, script, timeout=60, dry_run=dry_run, **kw)
@@ -617,8 +616,12 @@ def apply_cx7_plan(
     for hp in hosts_to_configure:
         host_pw = sudo_password if hp.host in sudo_hosts else None
         result = configure_cx7_host(
-            hp, plan.mtu, plan.prefix_len,
-            ssh_kwargs=kw, dry_run=dry_run, sudo_password=host_pw,
+            hp,
+            plan.mtu,
+            plan.prefix_len,
+            ssh_kwargs=kw,
+            dry_run=dry_run,
+            sudo_password=host_pw,
         )
         results.append(result)
         if result.success:
@@ -677,7 +680,11 @@ def discover_host_network_ips(
     logger.info("Discovering additional network IPs on %d host(s)...", len(hosts))
     ib_script = generate_ib_detect_script()
     ib_results = run_remote_scripts_parallel(
-        hosts, ib_script, timeout=30, dry_run=dry_run, **kw,
+        hosts,
+        ib_script,
+        timeout=30,
+        dry_run=dry_run,
+        **kw,
     )
 
     discovered: dict[str, list[str]] = {}
@@ -687,10 +694,7 @@ def discover_host_network_ips(
         ib_info = parse_ib_detect_output(result.stdout)
         ib_ips = extract_ib_ips(ib_info)
         # Filter out management IPs already in host list and loopback
-        extra = [
-            ip for ip in ib_ips
-            if ip not in host_set and ip != "127.0.0.1"
-        ]
+        extra = [ip for ip in ib_ips if ip not in host_set and ip != "127.0.0.1"]
         if extra:
             discovered[result.host] = extra
 
@@ -749,7 +753,9 @@ def distribute_host_keys(
         try:
             subprocess.run(
                 ["bash", "-c", script],
-                timeout=30, capture_output=True, text=True,
+                timeout=30,
+                capture_output=True,
+                text=True,
             )
             logger.info("  local: host keys added to known_hosts")
         except Exception as e:
@@ -772,3 +778,61 @@ def distribute_host_keys(
 
 # Backward-compatible alias (used by setup_cx7 command)
 distribute_cx7_host_keys = distribute_host_keys
+
+
+# ---------------------------------------------------------------------------
+# CX7 peer discovery
+# ---------------------------------------------------------------------------
+
+
+def discover_cx7_peers(
+    subnets: list[str],
+    exclude_ips: list[str] | None = None,
+    timeout: int = 15,
+) -> list[str]:
+    """Discover peer hosts on CX7 subnets via ARP table + ping sweep.
+
+    Runs locally (no SSH). Pings the /24 broadcast to populate the ARP
+    table, then reads ARP entries for the given subnets. Returns a list
+    of discovered peer IPs (excluding local IPs).
+
+    Args:
+        subnets: List of CIDR subnet strings (e.g. ``["192.168.11.0/24"]``).
+        exclude_ips: Additional IPs to exclude from results.
+        timeout: Subprocess timeout in seconds.
+
+    Returns:
+        List of discovered peer IP addresses.
+    """
+    import subprocess
+
+    if not subnets:
+        return []
+
+    script = read_script("cx7_discover_peers.sh")
+    try:
+        result = subprocess.run(
+            ["bash", "-s"] + subnets,
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("CX7 peer discovery timed out after %ds", timeout)
+        return []
+
+    if result.returncode != 0:
+        logger.warning("CX7 peer discovery failed: %s", result.stderr[:200])
+        return []
+
+    parsed = parse_kv_output(result.stdout)
+    count = int(parsed.get("PEER_COUNT", "0"))
+    exclude = set(exclude_ips or [])
+    peers = []
+    for i in range(count):
+        ip = parsed.get("PEER_%d_IP" % i, "")
+        if ip and ip not in exclude:
+            peers.append(ip)
+
+    return peers

@@ -40,7 +40,6 @@ On subsequent `sparkrun run` invocations, tuning configs are automatically detec
 | `--cluster` | Use a saved cluster by name |
 | `--tp` | TP size(s) to tune (repeatable; default: 1,2,4,8) |
 | `--image` | Override container image |
-| `--cache-dir` | HuggingFace cache directory (default: `HF_HOME`, typically `~/.cache/huggingface`) |
 | `--output-dir` | Override tuning config output directory |
 | `--skip-clone` | Skip cloning benchmark scripts (if already in image) |
 | `--parallel` / `-j` | Run N tuning jobs concurrently (default: 1 = sequential) |
@@ -86,7 +85,7 @@ sparkrun tune vllm qwen3-moe-vllm -H 127.0.0.1 -j4
 sparkrun tune vllm qwen3-moe-vllm -H 127.0.0.1 --dry-run
 ```
 
-Accepts any vLLM recipe variant (`vllm-distributed`, `vllm-ray`, or `eugr-vllm`). Configs are saved to `~/.cache/sparkrun/tuning/vllm/` and auto-mounted via `VLLM_TUNED_CONFIG_FOLDER`.
+Accepts any vLLM recipe variant (`vllm-distributed` or `vllm-ray`). Configs are saved to `~/.cache/sparkrun/tuning/vllm/` and auto-mounted via `VLLM_TUNED_CONFIG_FOLDER`.
 
 ## Tuning output
 

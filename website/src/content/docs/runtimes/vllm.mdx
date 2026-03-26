@@ -22,17 +22,18 @@ You can write `runtime: vllm` in a recipe and sparkrun resolves it automatically
 
 Both `vllm-distributed` and `vllm-ray` use the same container images. sparkrun works with ready-built images including:
 
+- Spark Arena Official Images (built from @eugr's repo): `ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest` and `ghcr.io/spark-arena/dgx-vllm-eugr-nightly-tf5:latest`
 - [Self-built community images from eugr/spark-vllm-docker](https://github.com/eugr/spark-vllm-docker) (often the first to have the latest fixes)
-- [scitrera/dgx-spark-vllm](https://hub.docker.com/r/scitrera/dgx-spark-vllm)
 - [Official NVIDIA Images](https://catalog.ngc.nvidia.com/orgs/nvidia/containers/vllm)
+
+We recommend that you use the Spark Arena images for sparkrun recipes; when you use the official Spark Arena images, sparkrun will automatically manage using the latest eugr/spark-vllm-docker.
 
 ## Runtime alias resolution
 
 When a recipe specifies `runtime: vllm` (or omits `runtime` entirely), sparkrun resolves it to a concrete runtime in this order:
 
-1. If the recipe has eugr signals (`build_args`, `mods`, or `recipe_version: "1"`) → **`eugr-vllm`** (see [eugr-vllm](/runtimes/eugr-vllm/))
-2. If the recipe hints at Ray usage (`distributed_executor_backend: ray` in defaults, or `--distributed-executor-backend ray` in the command template) → **`vllm-ray`**
-3. Otherwise → **`vllm-distributed`** (the default)
+1. If the recipe hints at Ray usage (`distributed_executor_backend: ray` in defaults, or `--distributed-executor-backend ray` in the command template) → **`vllm-ray`**
+2. Otherwise → **`vllm-distributed`** (the default)
 
 You can also set `runtime: vllm-distributed` or `runtime: vllm-ray` explicitly to bypass this resolution.
 
@@ -41,62 +42,57 @@ You can also set `runtime: vllm-distributed` or `runtime: vllm-ray` explicitly t
 This recipe uses `runtime: vllm`, which resolves to `vllm-distributed` by default:
 
 ```yaml
+recipe_version: "2"
 model: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4
 runtime: vllm
-min_nodes: 1
-container: scitrera/dgx-spark-vllm:0.16.0-t5
+max_nodes: 1
+container: ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest
 
 metadata:
-  description: NVIDIA Nemotron 3 Nano 30B (upstream NVFP4)
-  maintainer: scitrera.ai <open-source-team@scitrera.com>
-  model_params: 30B
-  model_dtype: nvfp4
+  description: Nemotron-3-Nano NVFP4 — single node only
+
+mods:  # this is pulled via eugr/spark-vllm-docker
+  - mods/nemotron-nano
 
 defaults:
   port: 8000
   host: 0.0.0.0
   tensor_parallel: 1
-  gpu_memory_utilization: 0.8
-  max_model_len: 200000
-  served_model_name: nemotron3-30b-a3b
+  gpu_memory_utilization: 0.7
+  max_model_len: 262144
 
 command: |
-  vllm serve \
-      {model} \
-      --served-model-name {served_model_name} \
-      --max-model-len {max_model_len} \
-      --gpu-memory-utilization {gpu_memory_utilization} \
-      -tp {tensor_parallel} \
-      --host {host} \
-      --port {port}
+  vllm serve {model} \
+    --moe-backend cutlass \
+    --max-model-len {max_model_len} \
+    --host {host} \
+    --port {port} \
+    --trust-remote-code \
+    --enable-auto-tool-choice \
+    --tool-call-parser qwen3_coder \
+    --reasoning-parser-plugin nano_v3_reasoning_parser.py \
+    --reasoning-parser nano_v3 \
+    --kv-cache-dtype fp8 \
+    --enable-prefix-caching \
+    --load-format fastsafetensors \
+    --gpu-memory-utilization {gpu_memory_utilization}
 ```
 
 ## Multi-node with vllm-distributed (default)
 
-`vllm-distributed` uses vLLM's built-in multi-node support. Each node runs the full `vllm serve` command with node-specific arguments:
-
-1. Cleans up existing containers on each node
-2. Detects InfiniBand/RDMA interfaces on all hosts
-3. Detects the head node IP
-4. Launches the head node (rank 0) with `--nnodes`, `--node-rank 0`, and `--master-addr`
-5. Waits for the master port to become ready
-6. Launches worker nodes in parallel, each with `--node-rank N` and `--headless`
+`vllm-distributed` uses vLLM's built-in multi-node support. sparkrun handles container lifecycle, InfiniBand detection, and node coordination automatically:
 
 ```bash
-sparkrun run nemotron3-nano-30b-nvfp4-vllm --tp 2
+sparkrun run qwen3-1.7b-vllm --tp 2
 ```
 
-No Ray cluster is involved — vLLM coordinates the nodes directly via its native distributed backend.
+In this case, the recipe default is for single node with tensor_parallel of 1, but we override tensor parallel to leverage 2 DGX Sparks.
+
+No Ray cluster is involved — vLLM coordinates the nodes directly via its native distributed backend. See [Execution Flow](/developer-reference/execution-flow/) for the full multi-node orchestration details.
 
 ## Multi-node with vllm-ray
 
-`vllm-ray` forms a Ray cluster first, then runs the serve command on the head node:
-
-1. Cleans up existing containers on each node
-2. Detects InfiniBand/RDMA interfaces on all hosts
-3. Starts a Ray head node on the first host
-4. Joins worker nodes to the Ray cluster
-5. Launches the vLLM serve command on the head container
+`vllm-ray` forms a Ray cluster first, then runs the serve command on the head node. sparkrun handles Ray cluster setup, InfiniBand detection, and container lifecycle automatically.
 
 To use `vllm-ray`, either set `runtime: vllm-ray` explicitly or add the Ray hint to defaults:
 
@@ -108,7 +104,7 @@ defaults:
 
 ### Ray-specific options
 
-These options apply only to `vllm-ray` (and `eugr-vllm`, which extends it):
+These options apply only to `vllm-ray`:
 
 | Option | Default | Description |
 |---|---|---|
@@ -121,6 +117,6 @@ These options apply only to `vllm-ray` (and `eugr-vllm`, which extends it):
 Both variants support the same models and vLLM flags. The difference is in multi-node orchestration:
 
 - **`vllm-distributed`** is simpler — no Ray dependency, each node runs independently with vLLM's built-in coordination. This is the default.
-- **`vllm-ray`** provides Ray's cluster management, dashboard, and monitoring. Use it when you need Ray-specific features or when running `eugr-vllm` (which extends `vllm-ray`).
+- **`vllm-ray`** provides Ray's cluster management, dashboard, and monitoring. Use it when you need Ray-specific features.
 
 For single-node (solo) workloads, both variants behave identically.

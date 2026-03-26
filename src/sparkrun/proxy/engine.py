@@ -57,14 +57,16 @@ def build_litellm_config(
                 continue
             seen.add(dedup_key)
 
-            model_list.append({
-                "model_name": model_name,
-                "litellm_params": {
-                    "model": "openai/%s" % model_name,
-                    "api_base": "http://%s:%d/v1" % (ep.host, ep.port),
-                    "api_key": "not-needed",
-                },
-            })
+            model_list.append(
+                {
+                    "model_name": model_name,
+                    "litellm_params": {
+                        "model": "openai/%s" % model_name,
+                        "api_base": "http://%s:%d/v1" % (ep.host, ep.port),
+                        "api_key": "not-needed",
+                    },
+                }
+            )
 
     general_settings: dict[str, Any] = {}
     if master_key:
@@ -95,6 +97,7 @@ def write_config(config_dict: dict[str, Any], config_path: Path | None = None) -
     """
     if config_path is None:
         from sparkrun.core.config import DEFAULT_CACHE_DIR
+
         config_path = DEFAULT_CACHE_DIR / "proxy" / "litellm_config.yaml"
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -121,6 +124,7 @@ class ProxyEngine:
 
         if state_dir is None:
             from sparkrun.core.config import DEFAULT_CACHE_DIR
+
             state_dir = DEFAULT_CACHE_DIR / "proxy"
         self.state_dir = state_dir
         self.state_file = state_dir / "state.yaml"
@@ -136,7 +140,7 @@ class ProxyEngine:
     ) -> int:
         """Launch the LiteLLM proxy server via uvx.
 
-        Uses ``uvx --from 'litellm[proxy]' litellm`` to run the
+        Uses ``uvx --from 'litellm[proxy]==1.82.6' litellm`` to run the
         LiteLLM proxy server without requiring a permanent install.
 
         Note: ``litellm`` is the server command; ``litellm-proxy`` is the
@@ -155,20 +159,23 @@ class ProxyEngine:
         """
         uvx = shutil.which("uvx")
         if not uvx:
-            logger.error(
-                "uvx not found on PATH. Install uv: "
-                "https://docs.astral.sh/uv/getting-started/installation/"
-            )
+            logger.error("uvx not found on PATH. Install uv: https://docs.astral.sh/uv/getting-started/installation/")
             return 1
 
         if config_path is None:
             config_path = self.config_path
 
         cmd = [
-            uvx, "--from", "litellm[proxy]", "litellm",
-            "--config", str(config_path),
-            "--host", self.host,
-            "--port", str(self.port),
+            uvx,
+            "--from",
+            "litellm[proxy]==1.82.6",
+            "litellm",
+            "--config",
+            str(config_path),
+            "--host",
+            self.host,
+            "--port",
+            str(self.port),
         ]
 
         if dry_run:
@@ -192,7 +199,8 @@ class ProxyEngine:
             self._save_state(proc.pid)
             if autodiscover_kwargs:
                 ad_pid = self.start_autodiscover(
-                    proxy_pid=proc.pid, **autodiscover_kwargs,
+                    proxy_pid=proc.pid,
+                    **autodiscover_kwargs,
                 )
                 if ad_pid:
                     self.update_autodiscover_pid(ad_pid)
@@ -218,6 +226,7 @@ class ProxyEngine:
 
             # Wait briefly and verify the process survived startup
             import time
+
             time.sleep(2)
             poll = proc.poll()
             if poll is not None:
@@ -229,7 +238,8 @@ class ProxyEngine:
                     tail = ""
                 logger.error(
                     "Proxy exited immediately (code %d). Log tail:\n%s",
-                    poll, tail,
+                    poll,
+                    tail,
                 )
                 return poll or 1
 
@@ -237,7 +247,8 @@ class ProxyEngine:
 
             if autodiscover_kwargs:
                 ad_pid = self.start_autodiscover(
-                    proxy_pid=proc.pid, **autodiscover_kwargs,
+                    proxy_pid=proc.pid,
+                    **autodiscover_kwargs,
                 )
                 if ad_pid:
                     self.update_autodiscover_pid(ad_pid)
@@ -284,15 +295,16 @@ class ProxyEngine:
 
         try:
             proc = subprocess.Popen(
-                [sys.executable, "-m", "sparkrun.proxy.autodiscover",
-                 str(self._autodiscover_config_path)],
+                [sys.executable, "-m", "sparkrun.proxy.autodiscover", str(self._autodiscover_config_path)],
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
             logger.info(
                 "Auto-discover started (PID %d), interval=%ds, log=%s",
-                proc.pid, interval, log_path,
+                proc.pid,
+                interval,
+                log_path,
             )
             return proc.pid
         except Exception:
@@ -384,7 +396,8 @@ class ProxyEngine:
             except Exception:
                 logger.debug(
                     "Failed to add model %s via management API",
-                    model_name, exc_info=True,
+                    model_name,
+                    exc_info=True,
                 )
                 success = False
 
@@ -405,7 +418,8 @@ class ProxyEngine:
         except Exception:
             logger.debug(
                 "Failed to remove model %s via management API",
-                model_id, exc_info=True,
+                model_id,
+                exc_info=True,
             )
             return False
 
@@ -490,16 +504,13 @@ class ProxyEngine:
             True if at least one alias entry was added.
         """
         registered = self.list_models_via_api()
-        backends = [
-            m.get("litellm_params", {})
-            for m in registered
-            if m.get("model_name") == target_model
-        ]
+        backends = [m.get("litellm_params", {}) for m in registered if m.get("model_name") == target_model]
 
         if not backends:
             logger.warning(
                 "Cannot add alias %r: target model %r not found in proxy",
-                alias_name, target_model,
+                alias_name,
+                target_model,
             )
             return False
 
@@ -520,7 +531,8 @@ class ProxyEngine:
             except Exception:
                 logger.debug(
                     "Failed to add alias %s via management API",
-                    alias_name, exc_info=True,
+                    alias_name,
+                    exc_info=True,
                 )
 
         return success
@@ -621,6 +633,7 @@ class ProxyEngine:
     def _save_state(self, pid: int, autodiscover_pid: int | None = None) -> None:
         """Save proxy state to disk."""
         import datetime
+
         self.state_dir.mkdir(parents=True, exist_ok=True)
         state = {
             "pid": pid,

@@ -48,3 +48,37 @@ sparkrun cluster unset-default
 ```
 
 When a default cluster is set, workload commands (`run`, `stop`, `logs`, `status`) use it automatically unless `--hosts` or `--cluster` is specified.
+
+## Cluster status
+
+```bash
+sparkrun cluster status
+sparkrun cluster status --cluster mylab
+```
+
+Shows sparkrun containers running on cluster hosts — container names, images, and status.
+
+## Cluster monitor
+
+```bash
+sparkrun cluster monitor              # Interactive TUI (default)
+sparkrun cluster monitor --simple     # Plain text output
+sparkrun cluster monitor --json       # JSON output for scripting
+```
+
+Live-monitors CPU, RAM, and GPU metrics across all hosts in the cluster. The TUI mode (default) uses Textual for a rich terminal interface with progress bars. Press `q` to quit.
+
+| Option | Description |
+|---|---|
+| `--cluster` | Target a specific cluster |
+| `--interval` | Refresh interval in seconds (default: 5) |
+| `--simple` | Plain text output instead of TUI |
+| `--json` | JSON output for scripting |
+
+## Check job status
+
+```bash
+sparkrun cluster check-job <recipe>
+```
+
+Check whether a specific recipe's containers are still running across cluster hosts.

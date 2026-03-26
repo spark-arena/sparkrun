@@ -19,12 +19,11 @@ The fix injects a ``_normalize_moe_config()`` helper and inserts a call
 to it directly before the first ``config.architectures`` access in
 ``get_model_config()``.
 """
+
 import pathlib
 import sys
 
-TARGET = pathlib.Path(
-    "/tmp/sglang_src/benchmark/kernels/fused_moe_triton/common_utils.py"
-)
+TARGET = pathlib.Path("/tmp/sglang_src/benchmark/kernels/fused_moe_triton/common_utils.py")
 
 NORMALIZER_FN = '''\
 
@@ -97,9 +96,7 @@ def main() -> int:
         for line in lines:
             if target_line in line:
                 indent = len(line) - len(line.lstrip())
-                new_lines.append(
-                    " " * indent + "config = _normalize_moe_config(config)"
-                )
+                new_lines.append(" " * indent + "config = _normalize_moe_config(config)")
             new_lines.append(line)
         text = "\n".join(new_lines)
 

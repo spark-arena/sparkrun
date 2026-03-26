@@ -1,0 +1,227 @@
+---
+title: Setup Wizard Walkthrough
+description: Step-by-step guide through the sparkrun setup wizard for first-time users.
+---
+
+The setup wizard is the easiest way to get your DGX Spark cluster ready for multi-node inference. It walks you through every step interactively — just answer the prompts and sparkrun handles the rest.
+
+```bash
+sparkrun setup
+```
+
+:::tip
+Running `sparkrun setup` with no subcommand auto-launches the wizard when no default cluster is configured. You can also invoke it explicitly anytime with `sparkrun setup wizard`.
+:::
+
+## What the wizard does
+
+The wizard runs six phases in order. Each phase is optional — you can skip any step and come back to it later with the individual `sparkrun setup <command>` subcommands.
+
+| Phase | What it does | Why it matters |
+|---|---|---|
+| 1. Cluster creation | Saves your DGX Spark hosts by name | So you don't repeat host lists on every command |
+| 2. SSH mesh | Sets up passwordless SSH between all hosts | Required for sparkrun to orchestrate containers remotely |
+| 3. CX7 networking | Configures high-speed ConnectX-7 interfaces | Enables fast NCCL communication and data transfers between nodes |
+| 4. Docker group | Adds your user to the `docker` group | So you can run containers without sudo |
+| 5. Sudoers entries | Installs scoped sudo rules | Allows automatic cache permission fixes and page cache clearing |
+| 6. earlyoom | Installs OOM protection | Prevents system hangs when models approach the 128 GB memory limit |
+
+## Before you begin
+
+You'll need:
+- sparkrun installed ([Installation](/getting-started/installation/))
+- The IP address or hostname of your DGX Spark system(s)
+- SSH access to each Spark (you'll be prompted for passwords during setup)
+
+## Phase 1: Cluster creation
+
+The wizard starts by discovering your DGX Sparks and creating a named cluster.
+
+### If you're running on a DGX Spark
+
+sparkrun detects the local ConnectX-7 interfaces and scans for peer Sparks on the same CX7 subnets:
+
+```
+Detecting CX7 interfaces on this machine...
+  CX7 detected! This machine is a DGX Spark.
+  Scanning CX7 subnets for peer Sparks...
+  Found 1 peer(s) on CX7: 192.168.11.14
+
+  Note: These are CX7 addresses. Enter management IPs below
+  if your hosts use separate management networking.
+
+Enter host IPs/hostnames (comma-separated) [10.24.11.13]: 10.24.11.13,10.24.11.14
+```
+
+The wizard suggests hosts it found, but you should enter **management network IPs** (the 10 Gbps built-in Ethernet), not CX7 IPs. sparkrun uses management IPs for SSH orchestration and discovers CX7 interfaces automatically.
+
+### If you're running from an external machine
+
+```
+Detecting CX7 interfaces on this machine...
+  No CX7 interfaces detected on this machine.
+
+Enter DGX Spark host IPs/hostnames (comma-separated): 10.24.11.13,10.24.11.14
+```
+
+Enter the management IPs of your DGX Sparks, separated by commas.
+
+### Naming your cluster
+
+```
+Cluster name [default]: mylab
+SSH username [drew]: dgxuser
+Created cluster 'mylab' with 2 host(s), set as default.
+```
+
+Pick any name you like. The **first host** in the list becomes the head node for multi-node jobs. The SSH username should be the same user account on all your Sparks.
+
+:::note
+If you already have a cluster configured, the wizard offers to reuse it instead of creating a new one.
+:::
+
+## Phase 2: SSH mesh
+
+```
+Phase 2: SSH Mesh
+------------------------------
+Set up SSH mesh across 2 host(s) + this machine? [Y/n]: y
+```
+
+This establishes passwordless SSH between all hosts and your control machine. You'll be prompted for passwords on first connection to each host — after that, everything is passwordless.
+
+The SSH mesh is required for sparkrun to:
+- Launch and stop containers on remote hosts
+- Sync model files and container images between nodes
+- Coordinate multi-node inference
+
+If SSH is already configured between your hosts, this phase detects that and skips the already-working connections.
+
+For more details, see [SSH Setup](/getting-started/ssh-setup/).
+
+## Phase 3: CX7 network configuration
+
+```
+Phase 3: CX7 Network Configuration
+------------------------------
+Configures high-speed CX7 networking between hosts.
+Configure CX7 networking? [Y/n]: y
+  Subnets: 192.168.11.0/24, 192.168.12.0/24
+```
+
+This phase configures the ConnectX-7 high-speed network interfaces on each DGX Spark. It:
+
+1. **Detects** CX7 interfaces on each host
+2. **Selects subnets** — picks two `/24` subnets that don't conflict with your existing networks
+3. **Assigns static IPs** — derives CX7 IPs from each host's management IP (e.g., management `10.24.11.13` → CX7 `192.168.11.13` and `192.168.12.13`)
+4. **Sets MTU 9000** (jumbo frames) for maximum throughput
+5. **Applies netplan** configuration and distributes host keys
+
+If your CX7 interfaces are already configured correctly, this phase skips them automatically.
+
+:::note
+This phase only appears when CX7 interfaces are detected on your hosts and you have 2+ hosts. For single-node setups, CX7 configuration isn't needed.
+:::
+
+For a deep dive into DGX Spark networking, see [Networking](/getting-started/networking/).
+
+## Phase 4: Docker group membership
+
+```
+Phase 4: Docker Group Membership
+------------------------------
+Ensures user can run Docker commands without sudo.
+Add 'dgxuser' to the docker group on all hosts? [Y/n]: y
+```
+
+sparkrun runs Docker commands over SSH. Your user needs to be in the `docker` group on each Spark to run containers without sudo. This phase checks and fixes group membership automatically.
+
+## Phase 5: Sudoers entries
+
+```
+Phase 5: Sudoers Entries
+------------------------------
+Scoped sudoers for fix-permissions + clear-cache (no broad sudo).
+Install sudoers entries? [Y/n]: y
+```
+
+This installs two minimal, scoped sudoers rules on each host:
+
+- **fix-permissions** — allows sparkrun to fix HuggingFace cache ownership without a password. Docker containers create cache files as root, which can break subsequent runs. See [HuggingFace cache owned by root](/getting-started/troubleshooting/#huggingface-cache-owned-by-root).
+- **clear-cache** — allows sparkrun to drop the Linux page cache before launching containers, freeing memory for inference. See [Linux page cache consuming memory](/getting-started/troubleshooting/#linux-page-cache-consuming-memory).
+
+These rules grant **only** the specific operations needed — no broad sudo privileges. You may be prompted for your sudo password once.
+
+## Phase 6: earlyoom
+
+```
+Phase 6: earlyoom OOM Protection
+------------------------------
+Prevents system hangs by proactively managing memory pressure.
+Install earlyoom? [Y/n]: y
+  earlyoom configured on 2/2 host(s).
+```
+
+[earlyoom](https://github.com/rfjakob/earlyoom) monitors available memory and proactively terminates processes before the system becomes unresponsive. This is especially important on DGX Spark because the 128 GB is shared between CPU and GPU — running a large model near the memory limit without earlyoom can require a hard reboot.
+
+sparkrun configures earlyoom with inference-aware defaults:
+- **Prefer killing**: inference processes (vllm, sglang, llama-server, trtllm)
+- **Avoid killing**: system services (sshd, dockerd, systemd)
+
+## Summary
+
+After all phases complete, the wizard shows a summary:
+
+```
+Setup Complete!
+================================================
+
+  Cluster:    mylab (2 hosts, set as default)
+  SSH mesh:   OK
+  CX7:        configured (192.168.11.0/24, 192.168.12.0/24)
+  Docker:     OK (2/2)
+  Sudoers:    installed (fix-permissions, clear-cache)
+  earlyoom:   installed
+
+Next steps:
+  sparkrun list                            # Browse available recipes
+  sparkrun show qwen3-1.7b-vllm           # Recipe details + VRAM estimate
+  sparkrun run qwen3-1.7b-vllm --dry-run  # Preview a launch
+  sparkrun run qwen3-1.7b-vllm            # Launch inference
+```
+
+Your cluster is ready. Head to the [Quick Start](/getting-started/quick-start/) to launch your first model.
+
+## Skipping phases
+
+Every phase asks for confirmation. Press `n` to skip any step:
+
+```
+Configure CX7 networking? [Y/n]: n
+```
+
+You can configure skipped steps later with the individual commands:
+
+| Phase | Individual command |
+|---|---|
+| SSH mesh | `sparkrun setup ssh` |
+| CX7 networking | `sparkrun setup cx7` |
+| Docker group | (manual: `sudo usermod -aG docker $USER`) |
+| Sudoers | `sparkrun setup fix-permissions --save-sudo` and `sparkrun setup clear-cache --save-sudo` |
+| earlyoom | `sparkrun setup earlyoom` |
+
+## Non-interactive mode
+
+For scripted or CI/CD setups, use `--yes` to accept all defaults:
+
+```bash
+sparkrun setup wizard --yes --hosts 10.24.11.13,10.24.11.14 --cluster mylab
+```
+
+Use `--dry-run` to preview what would happen without making changes:
+
+```bash
+sparkrun setup wizard --dry-run --hosts 10.24.11.13,10.24.11.14
+```
+
+See [Setup Commands](/cli/setup-commands/) for the full reference of all wizard options and individual setup subcommands.

@@ -13,7 +13,11 @@ sparkrun supports multiple inference runtimes through a plugin system. Each runt
 | `vllm-ray` | vLLM | Yes (Ray) | vLLM with Ray head/worker orchestration. |
 | `sglang` | SGLang | Yes (native) | High-throughput inference, structured generation, experimental GGUF |
 | `llama-cpp` | llama.cpp | Experimental | GGUF quantized models, lightweight deployment |
-| `eugr-vllm` | vLLM (eugr) | Yes (Ray) | Gold standard community vLLM — nightly builds, mods, battle-tested. Extends `vllm-ray`. |
+| `trtllm` | TensorRT-LLM | Yes (MPI) | NVIDIA TensorRT-LLM with MPI-based multi-node orchestration |
+
+:::note
+The legacy `eugr-vllm` runtime has been removed from the documentation. For new deployments, use `vllm-distributed` (default) or `vllm-ray`.
+:::
 
 ### Automatic runtime detection
 
@@ -25,6 +29,8 @@ Explicitly setting `runtime` in recipes is recommended, but when it is omitted s
 | `sglang serve ...` | `sglang` |
 | `python[3] -m sglang.launch_server ...` | `sglang` |
 | `llama-server ...` | `llama-cpp` |
+| `trtllm-serve ...` | `trtllm` |
+| `mpirun...trtllm` | `trtllm` |
 
 If the command doesn't match any known pattern (or there is no `command`), the recipe falls through to `vllm` behavior. An explicit `runtime` field always takes precedence over command-based detection.
 
@@ -34,9 +40,8 @@ See the [recipe format docs](/recipes/format/#automatic-runtime-detection) for t
 
 You can write `runtime: vllm` in a recipe (or let it be auto-detected from a `vllm serve` command) — sparkrun treats it as a virtual alias and resolves it to a concrete runtime:
 
-1. If the recipe has eugr signals (`build_args`, `mods`, or `recipe_version: "1"`) → **`eugr-vllm`**
-2. If the recipe hints at Ray usage (`distributed_executor_backend: ray` in defaults, or `--distributed-executor-backend ray` in the command template) → **`vllm-ray`**
-3. Otherwise → **`vllm-distributed`** (the default)
+1. If the recipe hints at Ray usage (`distributed_executor_backend: ray` in defaults, or `--distributed-executor-backend ray` in the command template) → **`vllm-ray`**
+2. Otherwise → **`vllm-distributed`** (the default)
 
 Both `vllm-distributed` and `vllm-ray` use the same container images and support the same vLLM flags — they differ only in how multi-node clustering is orchestrated.
 
@@ -46,7 +51,7 @@ Both `vllm-distributed` and `vllm-ray` use the same container images and support
 
 - Container launch configuration (volumes, networking, GPU access)
 - InfiniBand/RDMA detection and NCCL environment variables
-- Multi-node clustering (native distributed for `vllm-distributed` and `sglang`, Ray for `vllm-ray` and `eugr-vllm`)
+- Multi-node clustering (native distributed for `vllm-distributed` and `sglang`, Ray for `vllm-ray`, MPI for `trtllm`)
 - Model pre-sync and cache path resolution
 - Command generation when no explicit `command` template is provided
 
@@ -57,22 +62,15 @@ Both `vllm-distributed` and `vllm-ray` use the same container images and support
   - **vllm-ray** uses Ray head/worker orchestration — a Ray cluster is formed first, then the serve command runs on the head node.
 - **SGLang** offers competitive performance, good structured generation support, and experimental GGUF quantized model serving.
 - **llama.cpp** is ideal for GGUF quantized models or when you want a lightweight alternative.
-- **eugr-vllm** extends `vllm-ray` with eugr's container build system and mod support — nightly builds, mods, and a battle-tested container pipeline.
+- **TensorRT-LLM** provides NVIDIA's optimized inference engine with MPI-based multi-node orchestration.
 
 ## Maintained container images
 
-Scitrera maintains several specialized container images for DGX Spark. For more information on how these images are built and maintained, see the [cuda-containers](https://github.com/scitrera/cuda-containers) repository.
+The Spark Arena team maintains several specialized container images for DGX Spark.
 
-| Image | Description | Docker Hub |
+| Image | Description | Link |
 |---|---|---|
-| `dgx-spark-vllm` | Optimized vLLM for DGX Spark | [Link](https://hub.docker.com/r/scitrera/dgx-spark-vllm) |
+| `ghcr.io/spark-arena/dgx-vllm-eugr-nightly` | Optimized eugr vLLM for DGX Spark | [GitHub](https://github.com/eugr/spark-vllm-docker) |
+| `ghcr.io/spark-arena/dgx-vllm-eugr-nightly-tf5` | Optimized eugr vLLM for DGX Spark with Transformers 5.x | [GitHub](https://github.com/eugr/spark-vllm-docker) |
 | `dgx-spark-sglang` | Optimized SGLang for DGX Spark | [Link](https://hub.docker.com/r/scitrera/dgx-spark-sglang) |
-| `dgx-spark-llama-cpp` | Optimized llama.cpp for DGX Spark | [Link](https://hub.docker.com/r/scitrera/dgx-spark-llama-cpp) |
-| `dgx-spark-pytorch-runtime` | PyTorch runtime with Spark-optimized dependencies | [Link](https://hub.docker.com/r/scitrera/dgx-spark-pytorch-runtime) |
-| `dgx-spark-pytorch-dev` | PyTorch development image for DGX Spark | [Link](https://hub.docker.com/r/scitrera/dgx-spark-pytorch-dev) |
-
-We recommend checking Docker Hub for the latest available tags for each image.
-
-Note: These are not the only images that work with sparkrun; sparkrun is designed for general use. The above images are maintained by Scitrera to ensure compatibility and performance on DGX Spark, but you can use any container that meets the requirements of your chosen runtime.
-The images above are intended to be a middle ground. The NVIDIA NGC containers are often a bit far behind in the interest of stability, while bleeding-edge community images can sometimes be a bit too volatile for production use.
-The above images are regularly updated to keep up with the latest versions of vLLM, SGLang, and llama.cpp while ensuring stability on DGX Spark.
+| `ghcr.io/spark-arena/dgx-llama-cpp` | Optimized llama.cpp for DGX Spark <br/>Mirror of `scitrera/dgx-spark-llama-cpp` | [Docker](https://hub.docker.com/r/scitrera/dgx-spark-llama-cpp) <br/> [GitHub](https://github.com/scitrera/cuda-containers) |

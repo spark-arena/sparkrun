@@ -69,6 +69,7 @@ def discover_endpoints(
     """
     if cache_dir is None:
         from sparkrun.core.config import DEFAULT_CACHE_DIR
+
         cache_dir = str(DEFAULT_CACHE_DIR)
 
     # Live path: query actual running containers
@@ -87,6 +88,7 @@ def discover_endpoints(
 # ---------------------------------------------------------------------------
 # Live discovery (primary)
 # ---------------------------------------------------------------------------
+
 
 def _discover_live(
     host_list: list[str],
@@ -162,6 +164,7 @@ def _endpoint_from_meta(
 # ---------------------------------------------------------------------------
 # Metadata-only discovery (fallback)
 # ---------------------------------------------------------------------------
+
 
 def _discover_from_metadata(
     host_filter: list[str] | None,
@@ -261,10 +264,7 @@ def _discover_from_metadata(
 def _check_health_parallel(endpoints: list[DiscoveredEndpoint]) -> None:
     """Run health checks in parallel using ThreadPoolExecutor."""
     with ThreadPoolExecutor(max_workers=min(len(endpoints), 8)) as pool:
-        futures = {
-            pool.submit(_check_single_health, ep): ep
-            for ep in endpoints
-        }
+        futures = {pool.submit(_check_single_health, ep): ep for ep in endpoints}
         for future in as_completed(futures):
             ep = futures[future]
             try:
@@ -273,7 +273,9 @@ def _check_health_parallel(endpoints: list[DiscoveredEndpoint]) -> None:
                 ep.actual_models = models
             except Exception:
                 logger.debug(
-                    "Health check failed for %s:%d", ep.host, ep.port,
+                    "Health check failed for %s:%d",
+                    ep.host,
+                    ep.port,
                     exc_info=True,
                 )
 
@@ -292,7 +294,11 @@ def _deduplicate_by_identity(endpoints: list[DiscoveredEndpoint]) -> list[Discov
         if identity in seen:
             logger.debug(
                 "Dedup: %s:%d is same server as %s:%d (same models on port %d), keeping newer",
-                seen[identity].host, seen[identity].port, ep.host, ep.port, ep.port,
+                seen[identity].host,
+                seen[identity].port,
+                ep.host,
+                ep.port,
+                ep.port,
             )
         seen[identity] = ep
     return list(seen.values())
@@ -310,9 +316,7 @@ def _check_single_health(ep: DiscoveredEndpoint) -> tuple[bool, list[str]]:
         with urllib.request.urlopen(req, timeout=_HEALTH_TIMEOUT) as resp:
             if resp.status == 200:
                 body = json.loads(resp.read())
-                models = [
-                    m.get("id", "") for m in body.get("data", [])
-                ]
+                models = [m.get("id", "") for m in body.get("data", [])]
                 return True, models
     except (urllib.error.URLError, urllib.error.HTTPError, OSError, json.JSONDecodeError):
         pass

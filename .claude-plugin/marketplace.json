@@ -10,7 +10,7 @@
     {
       "name": "sparkrun",
       "description": "Claude Code plugin for sparkrun - launch, manage, and stop LLM inference workloads on NVIDIA DGX Spark systems. Provides slash commands and skills for recipe browsing, cluster management, and multi-node orchestration.",
-      "version": "0.0.3",
+      "version": "0.0.4",
       "author": {
         "name": "scitrera.ai",
         "email": "open-source-team@scitrera.com"

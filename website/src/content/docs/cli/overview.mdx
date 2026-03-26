@@ -23,6 +23,7 @@ sparkrun provides a unified CLI for managing LLM inference workloads on DGX Spar
 | `sparkrun stop <recipe>` | Stop a running workload |
 | `sparkrun logs <recipe>` | Re-attach to workload logs |
 | `sparkrun benchmark <recipe>` | Benchmark an inference recipe (auto: run → benchmark → stop) |
+| `sparkrun update` | Update sparkrun + registries (`--no-update-registries` to skip) |
 
 ### Recipe commands
 
@@ -38,7 +39,7 @@ sparkrun provides a unified CLI for managing LLM inference workloads on DGX Spar
 | `sparkrun recipe vram <recipe>` | Estimate VRAM usage for a recipe |
 
 :::tip
-Recipes can be local names, file paths, URLs, or [Spark Arena](https://spark-arena.com) shortcuts (`@spark-arena/<recipe-id>`). For example: `sparkrun run @spark-arena/abc123` or `sparkrun show @spark-arena/abc123 --save my-recipe.yaml`.
+Recipes can be local names, file paths, URLs, or [Spark Arena](https://spark-arena.com) shortcuts (`@spark-arena/<recipe-id>`). For example: `sparkrun run @spark-arena/abc123` or `sparkrun show @spark-arena/abc123`.
 :::
 
 ### Registry commands
@@ -71,6 +72,16 @@ Recipes can be local names, file paths, URLs, or [Spark Arena](https://spark-are
 | `sparkrun cluster status` | Show sparkrun containers running on cluster hosts |
 | `sparkrun cluster monitor` | Live-monitor CPU, RAM, and GPU metrics across hosts |
 
+### Export commands
+
+| Command | Description |
+|---|---|
+| `sparkrun export recipe <recipe>` | Export a normalized recipe to stdout or file |
+| `sparkrun export running-recipe <target>` | Export the effective recipe from a running workload |
+| `sparkrun export systemd <target>` | Generate (and optionally install) a systemd service for persistent inference |
+
+See [export](/cli/export/) for details.
+
 ### Tune commands
 
 | Command | Description |
@@ -102,8 +113,10 @@ See [proxy](/cli/proxy/) for details.
 |---|---|
 | `sparkrun setup install` | Install sparkrun as a uv tool + tab-completion + registry sync |
 | `sparkrun setup completion` | Install shell tab-completion (bash/zsh/fish) |
-| `sparkrun setup update` | Update sparkrun + registries (`--no-update-registries` to skip) |
+| `sparkrun setup update` | Update sparkrun + registries (alias: `sparkrun update`) |
 | `sparkrun setup ssh` | Set up passwordless SSH mesh across hosts |
 | `sparkrun setup cx7` | Detect and configure ConnectX-7 NICs across hosts |
 | `sparkrun setup fix-permissions` | Fix root-owned HF cache files on cluster hosts |
 | `sparkrun setup clear-cache` | Drop Linux page cache on cluster hosts to free memory |
+| `sparkrun setup wizard` | Guided setup wizard (cluster, SSH, CX7, sudoers, earlyoom) |
+| `sparkrun setup diagnose` | Collect hardware/firmware/network/Docker diagnostics |

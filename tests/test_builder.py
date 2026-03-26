@@ -126,7 +126,8 @@ class TestEugrPrepareImage:
         with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
             with mock.patch("subprocess.run") as mock_run:
                 mock_run.return_value = mock.Mock(returncode=0)
-                result = builder.prepare_image("my-image", recipe, ["10.0.0.1"])
+                with mock.patch.object(builder, "_save_build_metadata"):
+                    result = builder.prepare_image("my-image", recipe, ["10.0.0.1"])
 
         assert result == "my-image"
         mock_run.assert_called_once()
@@ -160,7 +161,8 @@ class TestEugrPrepareImage:
             with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
                 with mock.patch("subprocess.run") as mock_run:
                     mock_run.return_value = mock.Mock(returncode=0)
-                    result = builder.prepare_image("my-image", recipe, ["10.0.0.1"])
+                    with mock.patch.object(builder, "_save_build_metadata"):
+                        result = builder.prepare_image("my-image", recipe, ["10.0.0.1"])
 
         mock_run.assert_called_once()
         cmd = mock_run.call_args[0][0]

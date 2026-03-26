@@ -58,7 +58,7 @@ def _parse_container_jobs(container_names: list[str], cache_dir: str | None) -> 
             prefix_end = name.find("_", len("sparkrun_"))
             if 0 < prefix_end < len(name) - 1:
                 cid = name[:prefix_end]
-                role = name[prefix_end + 1:]
+                role = name[prefix_end + 1 :]
             else:
                 cid = name
                 role = "?"
@@ -68,15 +68,17 @@ def _parse_container_jobs(container_names: list[str], cache_dir: str | None) -> 
     for cid, members in clusters.items():
         meta = load_job_metadata(cid, cache_dir=cache_dir) or {}
         for name, role in members:
-            result.append({
-                "name": name,
-                "role": role,
-                "cluster_id": cid,
-                "recipe": meta.get("recipe", ""),
-                "model": meta.get("model", ""),
-                "runtime": meta.get("runtime", ""),
-                "tp": meta.get("tensor_parallel", ""),
-            })
+            result.append(
+                {
+                    "name": name,
+                    "role": role,
+                    "cluster_id": cid,
+                    "recipe": meta.get("recipe", ""),
+                    "model": meta.get("model", ""),
+                    "runtime": meta.get("runtime", ""),
+                    "tp": meta.get("tensor_parallel", ""),
+                }
+            )
     return result
 
 
@@ -101,13 +103,15 @@ def _render_detail(host: str, state: HostMonitorState | None, cache_dir: str | N
     if state.error:
         lines.append(f"  [yellow]{state.error}[/yellow]")
 
-    lines.extend([
-        "",
-        f"  CPU  [cyan]{_bar(cpu)}[/cyan] {cpu:5.1f}%",
-        f"  RAM  [green]{_bar(ram)}[/green] {ram:5.1f}%",
-        f"  GPU  [yellow]{_bar(gpu)}[/yellow] {gpu:5.1f}%",
-        "",
-    ])
+    lines.extend(
+        [
+            "",
+            f"  CPU  [cyan]{_bar(cpu)}[/cyan] {cpu:5.1f}%",
+            f"  RAM  [green]{_bar(ram)}[/green] {ram:5.1f}%",
+            f"  GPU  [yellow]{_bar(gpu)}[/yellow] {gpu:5.1f}%",
+            "",
+        ]
+    )
 
     # Hardware details
     extras: list[str] = []
@@ -162,6 +166,7 @@ def _render_detail(host: str, state: HostMonitorState | None, cache_dir: str | N
 # Table cell formatters
 # ---------------------------------------------------------------------------
 
+
 def _cell_jobs(s: MonitorSample) -> str:
     return s.sparkrun_jobs or "-"
 
@@ -205,6 +210,7 @@ _TABLE_COLS: list[tuple[str, str, object]] = [
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
+
 
 class ClusterMonitorApp(App):
     """Textual TUI for live cluster monitoring."""

@@ -1,6 +1,6 @@
 {
   "name": "sparkrun",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "AI-assisted inference on NVIDIA DGX Spark - run, manage, and stop LLM workloads",
   "author": {
     "name": "scitrera.ai",
@@ -17,6 +17,8 @@
     "vllm",
     "sglang",
     "gpu",
-    "cluster"
+    "cluster",
+    "proxy",
+    "benchmark"
   ]
 }

@@ -1,6 +1,6 @@
 """Executor abstraction for container engine operations.
 
-Provides ``ExecutorConfig`` (typed config from VPD chain resolution)
+Provides ``ExecutorConfig`` (typed config from config chain resolution)
 and ``Executor`` (abstract base for container engines like Docker/Podman).
 
 Runtimes call ``self.executor.*`` instead of importing ``docker.py``
@@ -13,10 +13,12 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from scitrera_app_framework.util import ext_parse_bool
+
 logger = logging.getLogger(__name__)
 
 # Default executor settings for DGX Spark GPU workloads.
-# Lowest priority in the VPD chain: CLI → recipe → these defaults.
+# Lowest priority in the config chain: CLI → recipe → these defaults.
 EXECUTOR_DEFAULTS = {
     "auto_remove": True,
     "restart_policy": None,
@@ -25,6 +27,11 @@ EXECUTOR_DEFAULTS = {
     "ipc": "host",
     "shm_size": "10.24gb",
     "network": "host",
+    "user": None,
+    "security_opt": None,
+    "cap_add": None,
+    "ulimit": None,
+    "devices": None,
 }
 
 
@@ -32,7 +39,7 @@ EXECUTOR_DEFAULTS = {
 class ExecutorConfig:
     """Typed view of resolved executor settings.
 
-    Constructed from a VPD chain (or plain dict) after CLI → recipe →
+    Constructed from a config chain (or plain dict) after CLI → recipe →
     defaults layering.
     """
 
@@ -43,33 +50,54 @@ class ExecutorConfig:
     ipc: str = "host"
     shm_size: str = "10.24gb"
     network: str = "host"
+    user: str | None = None
+    security_opt: list[str] | None = None
+    cap_add: list[str] | None = None
+    ulimit: list[str] | None = None
+    devices: list[str] | None = None
 
     @classmethod
     def from_chain(cls, chain) -> ExecutorConfig:
-        """Build from a VPD chain or plain dict."""
+        """Build from a config chain or plain dict."""
+        raw_sec = chain.get("security_opt")
+        if isinstance(raw_sec, str):
+            raw_sec = [raw_sec]
+        raw_cap = chain.get("cap_add")
+        if isinstance(raw_cap, str):
+            raw_cap = [raw_cap]
+        raw_ulimit = chain.get("ulimit")
+        if isinstance(raw_ulimit, str):
+            raw_ulimit = [raw_ulimit]
+        raw_devices = chain.get("devices")
+        if isinstance(raw_devices, str):
+            raw_devices = [raw_devices]
+
+        # Fallback to EXECUTOR_DEFAULTS for None values. With Variables,
+        # falsy values like False/0 are preserved correctly, but None
+        # still means "not set" and should fall back.
+        def _get(key):
+            v = chain.get(key)
+            return v if v is not None else EXECUTOR_DEFAULTS.get(key)
+
         return cls(
-            auto_remove=_resolve_bool(chain.get("auto_remove", True)),
+            auto_remove=ext_parse_bool(_get("auto_remove")),
             restart_policy=chain.get("restart_policy") or None,
-            privileged=_resolve_bool(chain.get("privileged", True)),
-            gpus=str(chain.get("gpus", "all")),
-            ipc=str(chain.get("ipc", "host")),
-            shm_size=str(chain.get("shm_size", "10.24gb")),
-            network=str(chain.get("network", "host")),
+            privileged=ext_parse_bool(_get("privileged")),
+            gpus=str(_get("gpus")),
+            ipc=str(_get("ipc")),
+            shm_size=str(_get("shm_size")),
+            network=str(_get("network")),
+            user=chain.get("user") or None,
+            security_opt=raw_sec or None,
+            cap_add=raw_cap or None,
+            ulimit=raw_ulimit or None,
+            devices=raw_devices or None,
         )
 
     def __post_init__(self):
         # Docker does not allow --rm with --restart
         if self.restart_policy:
             self.auto_remove = False
-
-
-def _resolve_bool(value) -> bool:
-    """Coerce a value to bool (handles string 'false'/'true')."""
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.lower() not in ("false", "0", "no", "")
-    return bool(value)
 
 
 class Executor(ABC):
@@ -179,7 +207,7 @@ class Executor(ABC):
 
         Absorbs ``scripts.py::generate_container_launch_script``.
         """
-        from sparkrun.orchestration.primitives import merge_env
+        from sparkrun.utils import merge_env
         from sparkrun.scripts import read_script
 
         all_env = merge_env(nccl_env, env)
@@ -245,29 +273,19 @@ class Executor(ABC):
 
         Absorbs ``scripts.py::generate_ray_head_script``.
         """
-        from sparkrun.orchestration.primitives import merge_env
+        from sparkrun.utils import merge_env
         from sparkrun.scripts import read_script
 
         all_env = merge_env({"RAY_memory_monitor_refresh_ms": "0"}, nccl_env, env)
 
         dashboard_flags = ""
         if dashboard:
-            dashboard_flags = (
-                "--include-dashboard=True "
-                "--dashboard-host 0.0.0.0 "
-                "--dashboard-port %d " % dashboard_port
-            )
+            dashboard_flags = "--include-dashboard=True --dashboard-host 0.0.0.0 --dashboard-port %d " % dashboard_port
 
         cleanup = self.stop_cmd(container_name)
         run = self.run_cmd(
             image=image,
-            command=(
-                "ray start --block --head "
-                "--port %d "
-                "--node-ip-address $NODE_IP "
-                "%s"
-                "--disable-usage-stats" % (ray_port, dashboard_flags)
-            ),
+            command=("ray start --block --head --port %d --node-ip-address $NODE_IP %s--disable-usage-stats" % (ray_port, dashboard_flags)),
             container_name=container_name,
             detach=True,
             env=all_env,
@@ -294,7 +312,7 @@ class Executor(ABC):
 
         Absorbs ``scripts.py::generate_ray_worker_script``.
         """
-        from sparkrun.orchestration.primitives import merge_env
+        from sparkrun.utils import merge_env
         from sparkrun.scripts import read_script
 
         all_env = merge_env({"RAY_memory_monitor_refresh_ms": "0"}, nccl_env, env)
@@ -302,11 +320,7 @@ class Executor(ABC):
         cleanup = self.stop_cmd(container_name)
         run = self.run_cmd(
             image=image,
-            command=(
-                "ray start --block "
-                "--address=%s:%d "
-                "--node-ip-address $NODE_IP" % (head_ip, ray_port)
-            ),
+            command=("ray start --block --address=%s:%d --node-ip-address $NODE_IP" % (head_ip, ray_port)),
             container_name=container_name,
             detach=True,
             env=all_env,
@@ -340,7 +354,7 @@ class Executor(ABC):
 
         Absorbs ``base.py::_generate_node_script``.
         """
-        from sparkrun.orchestration.primitives import merge_env
+        from sparkrun.utils import merge_env
 
         all_env = merge_env(nccl_env, env)
         cleanup = self.stop_cmd(container_name)

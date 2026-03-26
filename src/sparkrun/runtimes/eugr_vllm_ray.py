@@ -58,18 +58,19 @@ class EugrVllmRayRuntime(VllmRayRuntime):
         return issues
 
     def prepare(
-            self,
-            recipe: Recipe,
-            hosts: list[str],
-            config: SparkrunConfig | None = None,
-            dry_run: bool = False,
-            transfer_mode: str = "local",
+        self,
+        recipe: Recipe,
+        hosts: list[str],
+        config: SparkrunConfig | None = None,
+        dry_run: bool = False,
+        transfer_mode: str = "local",
     ) -> None:
         """Delegate to EugrBuilder for image building and mod injection.
 
         Issues a deprecation warning since users should migrate to
         ``vllm-ray`` runtime with ``builder: eugr``.
         """
+        logger.warning("eugr-vllm runtime is deprecated. Use 'vllm' runtime with 'builder: eugr' instead.")
         warnings.warn(
             "eugr-vllm runtime is deprecated. Use 'vllm-ray' runtime with 'builder: eugr' instead.",
             DeprecationWarning,
@@ -77,6 +78,7 @@ class EugrVllmRayRuntime(VllmRayRuntime):
         )
         from sparkrun.core.bootstrap import get_builder
         from sparkrun.orchestration.primitives import build_ssh_kwargs
+
         try:
             builder = get_builder("eugr", v=self._v)
         except ValueError:
@@ -85,7 +87,11 @@ class EugrVllmRayRuntime(VllmRayRuntime):
 
         image = self.resolve_container(recipe)
         builder.prepare_image(
-            image, recipe, hosts, config=config, dry_run=dry_run,
+            image,
+            recipe,
+            hosts,
+            config=config,
+            dry_run=dry_run,
             transfer_mode=transfer_mode,
             ssh_kwargs=build_ssh_kwargs(config),
         )

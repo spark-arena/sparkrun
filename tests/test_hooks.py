@@ -77,10 +77,10 @@ class TestBuildHookContext:
         ctx = build_hook_context(
             {},
             container_name="sparkrun_abc_solo",
-            cache_dir="/root/.cache/huggingface",
+            cache_dir="/cache/huggingface",
         )
         assert ctx["container_name"] == "sparkrun_abc_solo"
-        assert ctx["cache_dir"] == "/root/.cache/huggingface"
+        assert ctx["cache_dir"] == "/cache/huggingface"
 
     def test_build_hook_context_port_coerced_to_str(self):
         """Port value (int) is coerced to string."""
@@ -417,6 +417,7 @@ class TestRunPostCommands:
         run_post_commands(
             commands=["echo hello"],
             context={"model": "llama-7b"},
+            trust=True,
         )
         mock_subproc.assert_called_once()
         call_kwargs = mock_subproc.call_args
@@ -430,6 +431,7 @@ class TestRunPostCommands:
         run_post_commands(
             commands=["curl {base_url}/health"],
             context={"base_url": "http://10.0.0.1:8000/v1"},
+            trust=True,
         )
         mock_subproc.assert_called_once()
         assert mock_subproc.call_args[0][0] == "curl http://10.0.0.1:8000/v1/health"
@@ -442,6 +444,7 @@ class TestRunPostCommands:
             run_post_commands(
                 commands=["bad-command"],
                 context={},
+                trust=True,
             )
 
     @mock.patch("subprocess.run")
@@ -451,6 +454,7 @@ class TestRunPostCommands:
             commands=["echo hello", "ls /tmp"],
             context={},
             dry_run=True,
+            trust=True,
         )
         mock_subproc.assert_not_called()
 
@@ -467,6 +471,7 @@ class TestRunPostCommands:
         run_post_commands(
             commands=["echo step1", "echo step2"],
             context={},
+            trust=True,
         )
         assert mock_subproc.call_count == 2
         first_cmd = mock_subproc.call_args_list[0][0][0]
@@ -482,6 +487,7 @@ class TestRunPostCommands:
             run_post_commands(
                 commands=["bad-command", "echo should-not-run"],
                 context={},
+                trust=True,
             )
         # Only one call made before fail-fast
         assert mock_subproc.call_count == 1
@@ -493,6 +499,7 @@ class TestRunPostCommands:
         run_post_commands(
             commands=["echo valid", {"not": "a string"}],
             context={},
+            trust=True,
         )
         # Only the string command runs
         assert mock_subproc.call_count == 1

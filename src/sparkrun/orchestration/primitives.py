@@ -9,11 +9,9 @@ from __future__ import annotations
 
 import logging
 import subprocess
-import time
 
 from sparkrun.core.config import SparkrunConfig, resolve_cache_dir
-from sparkrun.utils import is_valid_ip  # noqa: F401 — re-exported for callers
-from sparkrun.utils import merge_env  # noqa: F401 — re-exported for callers
+from sparkrun.utils import is_valid_ip
 from sparkrun.orchestration.ssh import (
     RemoteResult,
     run_remote_command,
@@ -29,10 +27,15 @@ from sparkrun.orchestration.docker import docker_stop_cmd
 
 logger = logging.getLogger(__name__)
 
+# Orchestration constants
+MAX_PARALLEL_SSH = 20
+PORT_SCAN_MAX_ATTEMPTS = 24
+
 
 # ---------------------------------------------------------------------------
 # Config helpers
 # ---------------------------------------------------------------------------
+
 
 def build_ssh_kwargs(config: SparkrunConfig | None) -> dict:
     """Extract SSH connection parameters from a SparkrunConfig.
@@ -50,8 +53,8 @@ def build_ssh_kwargs(config: SparkrunConfig | None) -> dict:
 
 
 def build_volumes(
-        cache_dir: str | None = None,
-        extra: dict[str, str] | None = None,
+    cache_dir: str | None = None,
+    extra: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Build the standard volume mapping for HuggingFace cache + extras.
 
@@ -64,7 +67,7 @@ def build_volumes(
         Merged volume dict.
     """
     hf_cache = resolve_cache_dir(cache_dir)
-    volumes: dict[str, str] = {hf_cache: "/root/.cache/huggingface"}
+    volumes: dict[str, str] = {hf_cache: "/cache/huggingface"}
     if extra:
         volumes.update(extra)
     return volumes
@@ -74,13 +77,14 @@ def build_volumes(
 # Resource sync helpers
 # ---------------------------------------------------------------------------
 
+
 def sync_resource_to_hosts(
-        script: str,
-        hosts: list[str],
-        resource_label: str,
-        ssh_user: str | None = None,
-        ssh_key: str | None = None,
-        dry_run: bool = False,
+    script: str,
+    hosts: list[str],
+    resource_label: str,
+    ssh_user: str | None = None,
+    ssh_key: str | None = None,
+    dry_run: bool = False,
 ) -> list[str]:
     """Run a sync script on all hosts in parallel and return failures.
 
@@ -113,9 +117,9 @@ def sync_resource_to_hosts(
 
 
 def map_transfer_failures(
-        results: list[RemoteResult],
-        transfer_hosts: list[str],
-        management_hosts: list[str],
+    results: list[RemoteResult],
+    transfer_hosts: list[str],
+    management_hosts: list[str],
 ) -> list[str]:
     """Map failed transfer-host results back to management hostnames.
 
@@ -140,11 +144,12 @@ def map_transfer_failures(
 # InfiniBand detection flow
 # ---------------------------------------------------------------------------
 
+
 def detect_infiniband(
-        hosts: list[str],
-        head_host: str | None = None,
-        ssh_kwargs: dict | None = None,
-        dry_run: bool = False,
+    hosts: list[str],
+    head_host: str | None = None,
+    ssh_kwargs: dict | None = None,
+    dry_run: bool = False,
 ) -> dict[str, str]:
     """Run InfiniBand detection on *hosts* and return NCCL env vars.
 
@@ -169,7 +174,11 @@ def detect_infiniband(
     logger.info("Detecting InfiniBand on %d host(s)...", len(hosts))
     ib_script = generate_ib_detect_script()
     ib_results = run_remote_scripts_parallel(
-        hosts, ib_script, timeout=30, dry_run=dry_run, **kw,
+        hosts,
+        ib_script,
+        timeout=30,
+        dry_run=dry_run,
+        **kw,
     )
 
     nccl_env: dict[str, str] = {}
@@ -188,7 +197,7 @@ def detect_infiniband(
 
 
 def detect_infiniband_local(
-        dry_run: bool = False,
+    dry_run: bool = False,
 ) -> dict[str, str]:
     """Run InfiniBand detection locally and return NCCL env vars."""
     ib_script = generate_ib_detect_script()
@@ -209,11 +218,11 @@ def detect_infiniband_local(
 
 
 def resolve_nccl_env(
-        nccl_env: dict[str, str] | None,
-        hosts: list[str],
-        head_host: str | None = None,
-        ssh_kwargs: dict | None = None,
-        dry_run: bool = False,
+    nccl_env: dict[str, str] | None,
+    hosts: list[str],
+    head_host: str | None = None,
+    ssh_kwargs: dict | None = None,
+    dry_run: bool = False,
 ) -> dict[str, str]:
     """Resolve NCCL environment: reuse pre-detected or detect.
 
@@ -234,8 +243,10 @@ def resolve_nccl_env(
         return nccl_env
     logger.info("Detecting InfiniBand on %d host(s)...", len(hosts))
     return detect_infiniband(
-        hosts, head_host=head_host,
-        ssh_kwargs=ssh_kwargs, dry_run=dry_run,
+        hosts,
+        head_host=head_host,
+        ssh_kwargs=ssh_kwargs,
+        dry_run=dry_run,
     )
 
 
@@ -243,10 +254,11 @@ def resolve_nccl_env(
 # Host preparation (pre-launch)
 # ---------------------------------------------------------------------------
 
+
 def try_clear_page_cache(
-        hosts: list[str],
-        ssh_kwargs: dict | None = None,
-        dry_run: bool = False,
+    hosts: list[str],
+    ssh_kwargs: dict | None = None,
+    dry_run: bool = False,
 ) -> None:
     """Best-effort drop of the Linux page cache on hosts before container launch.
 
@@ -256,7 +268,7 @@ def try_clear_page_cache(
     Failures are non-fatal — a warning is logged with a hint about
     ``sparkrun setup clear-cache --save-sudo``.
     """
-    from sparkrun.core.hosts import is_local_host
+    from sparkrun.utils import is_local_host
     from sparkrun.scripts import read_script
 
     script = read_script("clear_cache.sh")
@@ -276,7 +288,11 @@ def try_clear_page_cache(
 
     if remote_hosts:
         results = run_remote_scripts_parallel(
-            remote_hosts, script, timeout=30, dry_run=dry_run, **kw,
+            remote_hosts,
+            script,
+            timeout=30,
+            dry_run=dry_run,
+            **kw,
         )
         failed = [r.host for r in results if not r.success]
         if failed:
@@ -292,10 +308,11 @@ def try_clear_page_cache(
 # Container cleanup
 # ---------------------------------------------------------------------------
 
+
 def check_tcp_reachability(
-        ips: list[str],
-        port: int = 22,
-        timeout: float = 3.0,
+    ips: list[str],
+    port: int = 22,
+    timeout: float = 3.0,
 ) -> dict[str, bool]:
     """Test TCP port reachability from the control machine to each IP.
 
@@ -324,17 +341,17 @@ def check_tcp_reachability(
         except (OSError, socket.timeout):
             return ip, False
 
-    with ThreadPoolExecutor(max_workers=min(len(ips), 20)) as pool:
+    with ThreadPoolExecutor(max_workers=min(len(ips), MAX_PARALLEL_SSH)) as pool:
         results = dict(pool.map(_check, ips))
 
     return results
 
 
 def cleanup_containers(
-        hosts: list[str],
-        container_names: list[str],
-        ssh_kwargs: dict | None = None,
-        dry_run: bool = False,
+    hosts: list[str],
+    container_names: list[str],
+    ssh_kwargs: dict | None = None,
+    dry_run: bool = False,
 ) -> None:
     """Stop and remove named containers on every host.
 
@@ -352,8 +369,8 @@ def cleanup_containers(
 
 
 def cleanup_containers_local(
-        container_names: list[str],
-        dry_run: bool = False,
+    container_names: list[str],
+    dry_run: bool = False,
 ) -> None:
     """Stop and remove named containers locally."""
     cmds = "; ".join(docker_stop_cmd(name) for name in container_names)
@@ -364,6 +381,7 @@ def cleanup_containers_local(
 # IP detection
 # ---------------------------------------------------------------------------
 
+
 def local_ip_for(target_host: str) -> str | None:
     """Return the local IP address on the interface that routes to *target_host*.
 
@@ -371,6 +389,7 @@ def local_ip_for(target_host: str) -> str | None:
     source address.  Falls back to ``socket.gethostname()`` on failure.
     """
     import socket
+
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.connect((target_host, 1))  # port is arbitrary; no traffic sent
@@ -382,9 +401,9 @@ def local_ip_for(target_host: str) -> str | None:
 
 
 def detect_host_ip(
-        host: str,
-        ssh_kwargs: dict | None = None,
-        dry_run: bool = False,
+    host: str,
+    ssh_kwargs: dict | None = None,
+    dry_run: bool = False,
 ) -> str:
     """Detect the management IP of a remote host.
 
@@ -408,9 +427,7 @@ def detect_host_ip(
 
     ip = result.last_line.strip()
     if not is_valid_ip(ip):
-        raise RuntimeError(
-            "Could not determine IP from output on %s: %s" % (host, result.stdout[-200:])
-        )
+        raise RuntimeError("Could not determine IP from output on %s: %s" % (host, result.stdout[-200:]))
     return ip
 
 
@@ -418,38 +435,24 @@ def detect_host_ip(
 # Container liveness
 # ---------------------------------------------------------------------------
 
-def is_container_running(
-        host: str,
-        container_name: str,
-        ssh_kwargs: dict | None = None,
-) -> bool:
-    """Check whether a Docker container is running on a host.
-
-    Uses local execution when *host* is localhost, SSH otherwise.
-
-    Args:
-        host: Hostname (local or remote).
-        container_name: Docker container name.
-        ssh_kwargs: SSH connection parameters.
-
-    Returns:
-        True if the container is currently running.
-    """
-    cmd = "docker inspect -f '{{.State.Running}}' %s 2>/dev/null" % container_name
-    result = run_command_on_host(host, cmd, ssh_kwargs=ssh_kwargs, timeout=10)
-    return result.success and "true" in result.stdout.lower()
+from sparkrun.orchestration.health import (  # noqa: F401, E402
+    is_container_running,
+    wait_for_port,
+    wait_for_healthy,
+)
 
 
 # ---------------------------------------------------------------------------
 # Port availability detection
 # ---------------------------------------------------------------------------
 
+
 def find_available_port(
-        host: str,
-        port: int,
-        max_attempts: int = 24,
-        ssh_kwargs: dict | None = None,
-        dry_run: bool = False,
+    host: str,
+    port: int,
+    max_attempts: int = PORT_SCAN_MAX_ATTEMPTS,
+    ssh_kwargs: dict | None = None,
+    dry_run: bool = False,
 ) -> int:
     """Find an available TCP port on a host, starting from *port*.
 
@@ -476,140 +479,18 @@ def find_available_port(
 
     logger.warning(
         "All %d ports starting from %d are in use on %s; using %d anyway",
-        max_attempts, original, host, original,
+        max_attempts,
+        original,
+        host,
+        original,
     )
     return original
 
 
 # ---------------------------------------------------------------------------
-# Port readiness polling
-# ---------------------------------------------------------------------------
-
-def wait_for_port(
-        host: str,
-        port: int,
-        max_retries: int = 60,
-        retry_interval: int = 2,
-        ssh_kwargs: dict | None = None,
-        dry_run: bool = False,
-        container_name: str | None = None,
-) -> bool:
-    """Poll until a TCP port is listening on a host.
-
-    Uses local execution when *host* is localhost, SSH otherwise.
-
-    Args:
-        host: Hostname (local or remote).
-        port: Port to check.
-        max_retries: Maximum number of retries.
-        retry_interval: Seconds between retries.
-        ssh_kwargs: SSH connection parameters.
-        dry_run: Skip waiting in dry-run mode.
-        container_name: If provided, verify the container is still
-            running on each iteration.  Aborts early if the container
-            has exited (e.g. crashed on startup).
-
-    Returns:
-        True if port became reachable, False if timed out or the
-        container exited.
-    """
-    if dry_run:
-        return True
-
-    check_cmd = "nc -z localhost %d" % port
-    for attempt in range(1, max_retries + 1):
-        # Check container liveness before polling the port
-        if container_name and attempt > 1:
-            if not is_container_running(host, container_name, ssh_kwargs=ssh_kwargs):
-                logger.error(
-                    "  Container %s is no longer running on %s — aborting wait",
-                    container_name, host,
-                )
-                return False
-
-        result = run_command_on_host(host, check_cmd, ssh_kwargs=ssh_kwargs, timeout=5)
-        if result.success:
-            logger.info("  Port %d ready after %ds", port, attempt * retry_interval)
-            return True
-        if attempt % 10 == 0:
-            logger.info(
-                "  Still waiting for port %d (%ds elapsed)...",
-                port, attempt * retry_interval,
-            )
-        time.sleep(retry_interval)
-
-    return False
-
-
-def wait_for_healthy(
-        url: str,
-        max_retries: int = 120,
-        retry_interval: int = 5,
-        dry_run: bool = False,
-        max_consecutive_refused=2,
-) -> bool:
-    """Poll an HTTP endpoint until it returns 200.
-
-    Inference servers (vLLM, SGLang, llama-server) bind their port
-    immediately on startup but only return HTTP 200 on ``/v1/models``
-    once the model is fully loaded and the server is ready to serve
-    requests.
-
-    Args:
-        url: Full URL to poll (e.g. ``http://host:port/v1/models``).
-        max_retries: Maximum number of retries.
-        retry_interval: Seconds between retries.
-        dry_run: Skip waiting in dry-run mode.
-        max_consecutive_refused: Maximum number of consecutive refused connections before giving up.
-
-    Returns:
-        True if the endpoint returned 200, False if timed out.
-    """
-    if dry_run:
-        return True
-
-    import urllib.request
-    import urllib.error
-
-    consecutive_refused = 0
-    for attempt in range(1, max_retries + 1):
-        try:
-            req = urllib.request.Request(url, method="GET")
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                if resp.status == 200:
-                    logger.info(
-                        "  Health check passed after %ds",
-                        attempt * retry_interval,
-                    )
-                    return True
-            # Got a response but not 200 — server is alive, reset counter
-            consecutive_refused = 0
-        except urllib.error.HTTPError:
-            # Server responded with an error status — alive but not ready
-            consecutive_refused = 0
-        except (urllib.error.URLError, OSError):
-            # Connection refused / unreachable — port may have closed
-            consecutive_refused += 1
-            if consecutive_refused >= max_consecutive_refused:
-                logger.error(
-                    "  Server appears to have died (%d consecutive connection failures)",
-                    consecutive_refused,
-                )
-                return False
-
-        if attempt % 12 == 0:
-            logger.info(
-                "  Still waiting for server to be ready (%ds elapsed)...",
-                attempt * retry_interval,
-            )
-        time.sleep(retry_interval)
-
-    return False
-
-
-# ---------------------------------------------------------------------------
 # Local execution
 # ---------------------------------------------------------------------------
+
 
 def run_local_script(script: str, dry_run: bool = False) -> RemoteResult:
     """Execute a script locally via subprocess.
@@ -622,9 +503,8 @@ def run_local_script(script: str, dry_run: bool = False) -> RemoteResult:
         RemoteResult with host set to ``"localhost"``.
     """
     if dry_run:
-        script_lines = script.count('\n')
-        logger.info("[dry-run] Would execute locally (%d lines, %d bytes)",
-                    script_lines, len(script))
+        script_lines = script.count("\n")
+        logger.info("[dry-run] Would execute locally (%d lines, %d bytes)", script_lines, len(script))
         return RemoteResult(host="localhost", returncode=0, stdout="[dry-run]", stderr="")
 
     proc = subprocess.run(
@@ -645,19 +525,21 @@ def run_local_script(script: str, dry_run: bool = False) -> RemoteResult:
 # Execution helpers (local-or-remote dispatch)
 # ---------------------------------------------------------------------------
 
+
 def run_script_on_host(
-        host: str,
-        script: str,
-        ssh_kwargs: dict | None = None,
-        timeout: int | None = None,
-        dry_run: bool = False,
+    host: str,
+    script: str,
+    ssh_kwargs: dict | None = None,
+    timeout: int | None = None,
+    dry_run: bool = False,
 ) -> RemoteResult:
     """Run a script on a host — dispatches to local or remote execution.
 
     If *host* is ``"localhost"``, ``"127.0.0.1"``, or empty, runs locally.
     Otherwise runs via SSH.
     """
-    from sparkrun.core.hosts import is_local_host
+    from sparkrun.utils import is_local_host
+
     if is_local_host(host):
         return run_local_script(script, dry_run=dry_run)
     kw = ssh_kwargs or {}
@@ -665,15 +547,17 @@ def run_script_on_host(
 
 
 def run_command_on_host(
-        host: str,
-        command: str,
-        ssh_kwargs: dict | None = None,
-        timeout: int | None = None,
-        dry_run: bool = False,
+    host: str,
+    command: str,
+    ssh_kwargs: dict | None = None,
+    timeout: int | None = None,
+    dry_run: bool = False,
+    quiet: bool = False,
 ) -> RemoteResult:
     """Run a command on a host — dispatches to local or remote execution."""
-    from sparkrun.core.hosts import is_local_host
+    from sparkrun.utils import is_local_host
+
     if is_local_host(host):
         return run_local_script("#!/bin/bash\n" + command, dry_run=dry_run)
     kw = ssh_kwargs or {}
-    return run_remote_command(host, command, timeout=timeout, dry_run=dry_run, **kw)
+    return run_remote_command(host, command, timeout=timeout, dry_run=dry_run, quiet=quiet, **kw)

@@ -12,6 +12,7 @@ from ._common import (
     REGISTRY_NAME,
     _get_config_and_registry,
 )
+from sparkrun.utils.cli_formatters import RUNTIME_DISPLAY as _RUNTIME_DISPLAY
 
 
 @click.group()
@@ -244,6 +245,11 @@ def registry_update(ctx, name, config_path=None):
             for cname in cleaned:
                 click.echo("Removed deprecated registry: %s" % cname)
 
+            # Restore any missing default registries
+            restored = registry_mgr.restore_missing_defaults()
+            for rname in restored:
+                click.echo("Added missing default registry: %s" % rname)
+
         if name:
             entry = registry_mgr.get_registry(name)
             if not entry.enabled:
@@ -280,16 +286,189 @@ def registry_update(ctx, name, config_path=None):
         sys.exit(1)
 
 
+def _build_raw_url(repo_url: str, subpath: str, rel_path: str) -> str:
+    """Build a raw GitHub URL from a registry's git URL, subpath, and relative file path.
+
+    ``rel_path`` is the file path relative to the recipe directory (``subpath``),
+    which may include nested subdirectories discovered via rglob.
+    """
+    import re
+
+    url = repo_url.rstrip("/")
+    if url.endswith(".git"):
+        url = url[:-4]
+    m = re.match(r"https?://github\.com/([^/]+/[^/]+)", url)
+    if m:
+        return "https://raw.githubusercontent.com/%s/main/%s/%s" % (m.group(1), subpath, rel_path)
+    return ""
+
+
+def _format_param_count(value) -> str | None:
+    """Format a parameter count as a human-readable string (e.g. '1.7B', '480M')."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        # Already formatted (e.g. "1.7B") — pass through
+        if any(value.upper().endswith(s) for s in ("B", "M", "K", "T")):
+            return value
+        # Raw numeric string — parse it
+        try:
+            value = int(float(value.replace("_", "")))
+        except (ValueError, TypeError):
+            return value
+    if not isinstance(value, (int, float)):
+        return str(value)
+    n = int(value)
+    if n >= 1_000_000_000:
+        v = n / 1_000_000_000
+        return ("%.0fB" if v == int(v) else "%.1fB") % v
+    if n >= 1_000_000:
+        v = n / 1_000_000
+        return ("%.0fM" if v == int(v) else "%.1fM") % v
+    return str(n)
+
+
+@registry.command("export-metadata", hidden=True)
+@click.option("--output", "-o", type=click.Path(), default="recipes.json", help="Output path for the JSON manifest")
+@click.option("--include-hidden", is_flag=True, help="Include recipes from hidden registries")
+@click.pass_context
+def export_metadata(ctx, output, include_hidden):
+    """Export recipe metadata manifest as JSON"""
+    import json
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    from vpd.next.util import read_yaml
+    from sparkrun.core.recipe import Recipe
+    from sparkrun.models.download import parse_gguf_model_spec
+
+    config, registry_mgr = _get_config_and_registry()
+    registry_mgr.ensure_initialized()
+
+    registries = registry_mgr.list_registries()
+    registry_meta = []
+    all_recipes = []
+    all_runtimes = set()
+    seen_slugs = {}  # slug -> source_path, for duplicate detection
+
+    for entry in registries:
+        if not entry.enabled:
+            continue
+        if not include_hidden and not entry.visible:
+            continue
+
+        recipe_dir = registry_mgr._recipe_dir(entry)
+        if not recipe_dir or not recipe_dir.is_dir():
+            continue
+
+        recipe_count = 0
+        for f in sorted(recipe_dir.rglob("*.yaml"), key=lambda p: (len(p.relative_to(recipe_dir).parts), p.name)):
+            try:
+                data = read_yaml(str(f))
+                if not isinstance(data, dict):
+                    continue
+                recipe = Recipe(data, source_path=str(f))
+                recipe.resolve()
+            except Exception as e:
+                click.echo("  Warning: skipping %s: %s" % (f.name, e), err=True)
+                continue
+
+            # Run VRAM estimation to auto-detect model_params and model_dtype
+            # from HuggingFace when not present in recipe metadata.
+            try:
+                recipe.estimate_vram(auto_detect=True)
+            except Exception:
+                pass  # best-effort — metadata fields may remain None
+
+            rel_path = f.relative_to(recipe_dir)
+            raw_url = _build_raw_url(entry.url, entry.subpath, str(rel_path))
+            tp_val = recipe.defaults.get("tensor_parallel")
+            gpu_mem_val = recipe.defaults.get("gpu_memory_utilization")
+            port_val = recipe.defaults.get("port")
+
+            display_runtime = _RUNTIME_DISPLAY.get(recipe.runtime, recipe.runtime)
+
+            # Expose the clustering backend (ray/torch/rpc/mpi)
+            cluster_backend = None
+            if recipe.runtime == "vllm-ray":
+                cluster_backend = "ray"
+            elif recipe.runtime in ("vllm-distributed", "sglang"):
+                cluster_backend = "torch"
+            elif recipe.runtime == "llama-cpp":
+                cluster_backend = "rpc"
+            elif recipe.runtime == "trtllm":
+                cluster_backend = "mpi"
+
+            # TODO: validate recipe against registry recipe -- to make sure that the recipe metadata
+            #       spark_arena_uuid is not spoofed or fake ?? really only applies if recipes come from external sources
+
+            slug = "%s/%s" % (entry.name, recipe.name)
+            if slug in seen_slugs:
+                click.echo("  Warning: duplicate recipe slug '%s' — keeping %s, skipping %s" % (slug, seen_slugs[slug], f), err=True)
+                continue
+            seen_slugs[slug] = str(f)
+
+            all_recipes.append(
+                {
+                    "slug": slug,
+                    "name": recipe.name,
+                    "registry": entry.name,
+                    "model": parse_gguf_model_spec(recipe.model)[0],
+                    "model_full": recipe.model,
+                    "runtime": display_runtime,
+                    "cluster_backend": cluster_backend,
+                    "description": recipe.description,
+                    "model_params": _format_param_count(recipe.metadata.get("model_params")),
+                    "model_dtype": str(recipe.metadata["model_dtype"]) if recipe.metadata.get("model_dtype") else None,
+                    "category": recipe.metadata.get("category"),
+                    "maintainer": recipe.maintainer,
+                    "min_nodes": recipe.min_nodes,
+                    "max_nodes": recipe.max_nodes,
+                    "mode": recipe.mode,
+                    "tp": int(tp_val) if tp_val is not None else 1,
+                    "gpu_mem": float(gpu_mem_val) if gpu_mem_val is not None else 0.9,
+                    "port": int(port_val) if port_val is not None else 8000,
+                    "container": recipe.container,  # TODO: should we replace w/ first-party if meets requirements?
+                    "recipe_version": recipe.recipe_version,
+                    "raw_url": raw_url,
+                    "spark_arena_benchmarks": [
+                        {"tp": b["tp"], "uuid": b["uuid"], "url": "https://spark-arena.com/benchmark/%s" % b["uuid"]}
+                        for b in recipe.metadata.get("spark_arena_benchmarks", [])
+                    ]
+                    or None,
+                }
+            )
+            all_runtimes.add(display_runtime)
+            recipe_count += 1
+
+        registry_meta.append(
+            {
+                "name": entry.name,
+                "url": entry.url,
+                "description": entry.description,
+                "recipe_count": recipe_count,
+            }
+        )
+
+    manifest = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "registries": registry_meta,
+        "runtimes": sorted(all_runtimes),
+        "recipes": all_recipes,
+    }
+
+    Path(output).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    click.echo("Exported %d recipes from %d registries to %s" % (len(all_recipes), len(registry_meta), output))
+
+
 # ---------------------------------------------------------------------------
 # Benchmark profile subcommands
 # ---------------------------------------------------------------------------
 
 
 @registry.command("list-benchmark-profiles")
-@click.option("--all", "-a", "show_all", is_flag=True, default=False,
-              help="Include profiles from hidden registries")
-@click.option("--registry", "registry_name", default=None, type=REGISTRY_NAME,
-              help="Filter by registry name")
+@click.option("--all", "-a", "show_all", is_flag=True, default=False, help="Include profiles from hidden registries")
+@click.option("--registry", "registry_name", default=None, type=REGISTRY_NAME, help="Filter by registry name")
 @click.pass_context
 def list_benchmark_profiles(ctx, show_all, registry_name, config_path=None):
     """List available benchmark profiles across registries."""
@@ -304,8 +483,7 @@ def list_benchmark_profiles(ctx, show_all, registry_name, config_path=None):
         except RegistryError:
             available = [r.name for r in registry_mgr.list_registries() if r.enabled]
             click.echo(
-                "Error: registry '%s' not found. Available: %s"
-                % (registry_name, ", ".join(available) if available else "(none)"),
+                "Error: registry '%s' not found. Available: %s" % (registry_name, ", ".join(available) if available else "(none)"),
                 err=True,
             )
             sys.exit(1)

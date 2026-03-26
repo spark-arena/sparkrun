@@ -1,13 +1,14 @@
 """Unit tests for sparkrun.orchestration.scripts module."""
 
 import pytest
-from sparkrun.orchestration.scripts import (
-    generate_ip_detect_script,
-    generate_container_launch_script,
-    generate_ray_head_script,
-    generate_ray_worker_script,
-    generate_exec_serve_script,
-)
+from sparkrun.orchestration.scripts import generate_ip_detect_script
+from sparkrun.orchestration.executor_docker import DockerExecutor
+
+_executor = DockerExecutor()
+generate_container_launch_script = _executor.generate_launch_script
+generate_ray_head_script = _executor.generate_ray_head_script
+generate_ray_worker_script = _executor.generate_ray_worker_script
+generate_exec_serve_script = _executor.generate_exec_serve_script
 
 
 def test_generate_ip_detect_script():

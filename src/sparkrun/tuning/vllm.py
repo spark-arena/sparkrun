@@ -24,7 +24,7 @@ from sparkrun.tuning._common import (
 # ---------------------------------------------------------------------------
 
 VLLM_TUNING_CACHE_SUBDIR = "tuning/vllm"
-VLLM_TUNING_CONTAINER_PATH = "/root/vllm_tuning_configs"
+VLLM_TUNING_CONTAINER_PATH = "/tuning/vllm"
 VLLM_TUNING_CONTAINER_OUTPUT_PATH = "/tuning_output"
 
 TUNE_VLLM_CONTAINER_NAME = "sparkrun_tune_vllm"
@@ -62,7 +62,9 @@ def get_vllm_tuning_env() -> dict[str, str] | None:
         tuning configs are available.
     """
     return _get_tuning_env(
-        get_vllm_tuning_volumes, "VLLM_TUNED_CONFIG_FOLDER", VLLM_TUNING_CONTAINER_PATH,
+        get_vllm_tuning_volumes,
+        "VLLM_TUNED_CONFIG_FOLDER",
+        VLLM_TUNING_CONTAINER_PATH,
     )
 
 
@@ -93,92 +95,8 @@ class VllmTuner(BaseTuner):
     def _default_output_dir(self) -> Path:
         return get_vllm_tuning_dir()
 
-    def _pre_check_tp(self, tp_size: int, triton_version: str) -> bool:
-        """Check if vLLM tuning configs already exist for this TP size.
-
-        Runs a lightweight script inside the container that loads the model
-        config to determine MoE shape params (E, N), then checks whether
-        matching config files already exist in the output directory.
-
-        Returns ``True`` if configs exist (skip tuning), ``False`` otherwise.
-        On any error, returns ``False`` (safe default — tune anyway).
-        """
-        import logging
-        from sparkrun.orchestration.primitives import run_command_on_host
-        from sparkrun.orchestration.docker import docker_exec_cmd
-
-        logger = logging.getLogger(__name__)
-
-        if self.dry_run:
-            return False
-
-        config_dir = VLLM_TUNING_CONTAINER_OUTPUT_PATH
-
-        check_script = (
-            "python3 -c \""
-            "import sys, os, glob; "
-            "from transformers import AutoConfig; "
-            "c = AutoConfig.from_pretrained('%s', trust_remote_code=True); "
-            "E = getattr(c, 'num_local_experts', getattr(c, 'num_experts', 0)); "
-            "I = getattr(c, 'intermediate_size', getattr(c, 'moe_intermediate_size', 0)); "
-            "N = (I * 2) // %d; "
-            "pattern = os.path.join('%s', 'E=%%d,N=%%d,*' %% (E, N)); "
-            "matches = glob.glob(pattern); "
-            "sys.exit(0 if matches else 1)"
-            "\""
-        ) % (self.model, tp_size, config_dir)
-
-        exec_cmd = docker_exec_cmd(self.container_name, check_script)
-        try:
-            result = run_command_on_host(
-                self.host, exec_cmd,
-                ssh_kwargs=self.ssh_kwargs, timeout=60, dry_run=False,
-            )
-            return result.success
-        except Exception:
-            logger.debug("Pre-check failed for TP=%d, will proceed with tuning", tp_size)
-            return False
-
-    def _run_tune_for_tp(self, tp_size: int, triton_version: str) -> int:
-        """Step 4 (per-TP): Run the tuning script for a given TP size."""
-        import logging
-        import time
-        from sparkrun.orchestration.primitives import run_command_on_host
-        from sparkrun.orchestration.docker import docker_exec_cmd
-
-        logger = logging.getLogger(__name__)
-        t0 = time.monotonic()
-
-        tune_cmd = build_vllm_tuning_command(self.model, tp_size)
-
-        exec_cmd = docker_exec_cmd(self.container_name, tune_cmd)
-
-        # Tuning can take many hours (e.g. 4+ hours for TP=4 on large
-        # models).  Use an 8-hour timeout so remote SSH sessions aren't
-        # killed prematurely.
-        result = run_command_on_host(
-            self.host, exec_cmd,
-            ssh_kwargs=self.ssh_kwargs, timeout=28800, dry_run=self.dry_run,
-        )
-
-        if self.dry_run:
-            logger.info("  [dry-run] Would run tuning for TP=%d", tp_size)
-            return 0
-
-        elapsed = time.monotonic() - t0
-        if not result.success:
-            logger.error(
-                "  Tuning for TP=%d failed (exit %d, %.1fs)",
-                tp_size, result.returncode, elapsed,
-            )
-            if result.stdout and result.stdout.strip():
-                logger.error("  stdout:\n%s", result.stdout.rstrip())
-            if result.stderr and result.stderr.strip():
-                logger.error("  stderr:\n%s", result.stderr.rstrip())
-            return result.returncode
-
-        logger.info("  TP=%d tuning complete (%.1fs)", tp_size, elapsed)
-        return 0
+    def _build_tune_command(self, tp_size: int, triton_version: str) -> str:
+        return build_vllm_tuning_command(self.model, tp_size)
 
 
 def build_vllm_tuning_command(model: str, tp_size: int) -> str:

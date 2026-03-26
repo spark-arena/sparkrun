@@ -28,6 +28,7 @@ class ProxyConfig:
     def __init__(self, config_path: Path | None = None):
         if config_path is None:
             from sparkrun.core.config import DEFAULT_CONFIG_DIR
+
             config_path = DEFAULT_CONFIG_DIR / "proxy.yaml"
         self.config_path = config_path
         self._data: dict[str, Any] = {}

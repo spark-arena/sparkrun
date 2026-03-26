@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from sparkrun.core.hosts import is_local_host
+from sparkrun.utils import is_local_host
 from sparkrun.tuning.sync import _get_local_tuning_dir
 
 logger = logging.getLogger(__name__)
@@ -67,13 +67,20 @@ def distribute_tuning_to_hosts(
 
         logger.info(
             "Distributing tuning configs (%s) via %s mode: head=%s, %d worker(s)",
-            runtime, transfer_mode, head, len(workers),
+            runtime,
+            transfer_mode,
+            head,
+            len(workers),
         )
 
         # Step 1: rsync to head
         head_results = run_rsync_parallel(
-            source, [head], source,
-            ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options,
+            source,
+            [head],
+            source,
+            ssh_user=ssh_user,
+            ssh_key=ssh_key,
+            ssh_options=ssh_options,
             rsync_options=["-az", "--delete", "--partial"],
             dry_run=dry_run,
         )
@@ -84,45 +91,56 @@ def distribute_tuning_to_hosts(
 
         # Step 2: distribute from head to workers
         ssh_opts = build_ssh_opts_string(
-            ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options,
+            ssh_user=ssh_user,
+            ssh_key=ssh_key,
+            ssh_options=ssh_options,
         )
         user_prefix = "%s@" % ssh_user if ssh_user else ""
         targets_str = " ".join(workers)
         dist_script = (
-            'set -euo pipefail\n'
+            "set -euo pipefail\n"
             'SOURCE="{source}"\n'
-            'for TARGET in {targets}; do\n'
+            "for TARGET in {targets}; do\n"
             '  rsync -az --delete --partial -e "ssh {ssh_opts}" '
             '"$SOURCE/" {user_prefix}$TARGET:"$SOURCE/"\n'
-            'done\n'
+            "done\n"
         ).format(
-            source=source, targets=targets_str,
-            ssh_opts=ssh_opts, user_prefix=user_prefix,
+            source=source,
+            targets=targets_str,
+            ssh_opts=ssh_opts,
+            user_prefix=user_prefix,
         )
 
         dist_result = run_remote_script(
-            head, dist_script,
-            ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options,
-            timeout=120, dry_run=dry_run,
+            head,
+            dist_script,
+            ssh_user=ssh_user,
+            ssh_key=ssh_key,
+            ssh_options=ssh_options,
+            timeout=120,
+            dry_run=dry_run,
         )
         if not dist_result.success:
-            logger.warning("Tuning config distribution from head failed (rc=%d)",
-                           dist_result.returncode)
+            logger.warning("Tuning config distribution from head failed (rc=%d)", dist_result.returncode)
             return list(workers)
 
-        logger.info("Tuning configs distributed via %s mode to all %d host(s)",
-                     transfer_mode, len(remote_hosts))
+        logger.info("Tuning configs distributed via %s mode to all %d host(s)", transfer_mode, len(remote_hosts))
         return []
 
     # Default (local mode) or single remote host: direct rsync to all
     logger.info(
         "Distributing tuning configs (%s) to %d host(s)",
-        runtime, len(remote_hosts),
+        runtime,
+        len(remote_hosts),
     )
 
     results = run_rsync_parallel(
-        source, remote_hosts, source,
-        ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options,
+        source,
+        remote_hosts,
+        source,
+        ssh_user=ssh_user,
+        ssh_key=ssh_key,
+        ssh_options=ssh_options,
         rsync_options=["-az", "--delete", "--partial"],
         dry_run=dry_run,
     )

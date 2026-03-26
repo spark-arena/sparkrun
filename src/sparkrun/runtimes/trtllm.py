@@ -50,8 +50,11 @@ _EXTRA_CONFIG_FLAG = "--extra_llm_api_options"
 
 # Keys in recipe defaults that map to extra-llm-api-config.yml
 _EXTRA_CONFIG_KEYS = {
-    "free_gpu_memory_fraction", "kv_cache_dtype", "kv_cache_enable_block_reuse",
-    "cuda_graph_padding", "cuda_graph_max_batch_size",
+    "free_gpu_memory_fraction",
+    "kv_cache_dtype",
+    "kv_cache_enable_block_reuse",
+    "cuda_graph_padding",
+    "cuda_graph_max_batch_size",
     "moe_backend",
     "print_iter_log",
 }
@@ -75,8 +78,7 @@ class TrtllmRuntime(RuntimePlugin):
         """TRT-LLM uses native clustering with MPI orchestration."""
         return "native"
 
-    def _augment_extra_config_flag(self, command: str, recipe: Recipe,
-                                    overrides: dict[str, Any] | None = None) -> str:
+    def _augment_extra_config_flag(self, command: str, recipe: Recipe, overrides: dict[str, Any] | None = None) -> str:
         """Append ``--extra_llm_api_options`` if extra config keys are present.
 
         When ``_build_extra_config`` produces YAML content but the flag
@@ -90,10 +92,15 @@ class TrtllmRuntime(RuntimePlugin):
             return command
         return "%s %s %s" % (command.rstrip(), _EXTRA_CONFIG_FLAG, _EXTRA_CONFIG_PATH)
 
-    def generate_command(self, recipe: Recipe, overrides: dict[str, Any],
-                         is_cluster: bool, num_nodes: int = 1,
-                         head_ip: str | None = None,
-                         skip_keys: set[str] | frozenset[str] = frozenset()) -> str:
+    def generate_command(
+        self,
+        recipe: Recipe,
+        overrides: dict[str, Any],
+        is_cluster: bool,
+        num_nodes: int = 1,
+        head_ip: str | None = None,
+        skip_keys: set[str] | frozenset[str] = frozenset(),
+    ) -> str:
         """Generate the trtllm-serve command.
 
         For cluster mode, the command is later wrapped by ``mpirun``
@@ -108,15 +115,17 @@ class TrtllmRuntime(RuntimePlugin):
             rendered = self._augment_extra_config_flag(rendered, recipe, overrides)
             if skip_keys:
                 rendered = self.strip_flags_from_command(
-                    rendered, skip_keys, _TRTLLM_FLAG_MAP, _TRTLLM_BOOL_FLAGS,
+                    rendered,
+                    skip_keys,
+                    _TRTLLM_FLAG_MAP,
+                    _TRTLLM_BOOL_FLAGS,
                 )
             return rendered
 
         cmd = self._build_command(recipe, config, skip_keys=skip_keys)
         return self._augment_extra_config_flag(cmd, recipe, overrides)
 
-    def _build_command(self, recipe: Recipe, config,
-                       skip_keys: set[str] | frozenset[str] = frozenset()) -> str:
+    def _build_command(self, recipe: Recipe, config, skip_keys: set[str] | frozenset[str] = frozenset()) -> str:
         """Build the trtllm-serve command from structured config."""
         parts = ["trtllm-serve", recipe.model]
 
@@ -125,20 +134,23 @@ class TrtllmRuntime(RuntimePlugin):
         if not backend:
             parts.extend(["--backend", "pytorch"])
 
-        parts.extend(self.build_flags_from_map(
-            config, _TRTLLM_FLAG_MAP,
-            bool_keys=_TRTLLM_BOOL_FLAGS,
-            skip_keys=skip_keys,
-        ))
+        parts.extend(
+            self.build_flags_from_map(
+                config,
+                _TRTLLM_FLAG_MAP,
+                bool_keys=_TRTLLM_BOOL_FLAGS,
+                skip_keys=skip_keys,
+            )
+        )
 
         return " ".join(parts)
 
     def _build_mpirun_command(
-            self,
-            serve_cmd: str,
-            host_ips: list[str],
-            nccl_env: dict[str, str] | None = None,
-            extra_env_keys: list[str] | None = None,
+        self,
+        serve_cmd: str,
+        host_ips: list[str],
+        nccl_env: dict[str, str] | None = None,
+        extra_env_keys: list[str] | None = None,
     ) -> str:
         """Wrap a trtllm-serve command with mpirun for multi-node execution.
 
@@ -152,10 +164,16 @@ class TrtllmRuntime(RuntimePlugin):
             Complete ``mpirun`` command string.
         """
         parts = [
-            "mpirun", "--allow-run-as-root",
-            "--mca", "plm_rsh_agent", "/tmp/sparkrun-rsh-wrapper.sh",
-            "--mca", "rmaps_ppr_n_pernode", "1",
-            "-H", ",".join(host_ips),
+            "mpirun",
+            "--allow-run-as-root",
+            "--mca",
+            "plm_rsh_agent",
+            "/tmp/sparkrun-rsh-wrapper.sh",
+            "--mca",
+            "rmaps_ppr_n_pernode",
+            "1",
+            "-H",
+            ",".join(host_ips),
         ]
 
         # Propagate NCCL env vars
@@ -163,11 +181,15 @@ class TrtllmRuntime(RuntimePlugin):
         if nccl_env:
             env_keys_to_pass.update(nccl_env.keys())
         # Always propagate common keys
-        env_keys_to_pass.update([
-            "NCCL_SOCKET_IFNAME", "UCX_NET_DEVICES",
-            "OMPI_MCA_btl_tcp_if_include", "HF_TOKEN",
-            "NCCL_CUMEM_ENABLE",
-        ])
+        env_keys_to_pass.update(
+            [
+                "NCCL_SOCKET_IFNAME",
+                "UCX_NET_DEVICES",
+                "OMPI_MCA_btl_tcp_if_include",
+                "HF_TOKEN",
+                "NCCL_CUMEM_ENABLE",
+            ]
+        )
         if extra_env_keys:
             env_keys_to_pass.update(extra_env_keys)
 
@@ -181,9 +203,9 @@ class TrtllmRuntime(RuntimePlugin):
 
     @staticmethod
     def _generate_rsh_wrapper(
-            host_ip_map: dict[str, str],
-            cluster_id: str,
-            ssh_key_path: str = "/tmp/.ssh/id_ed25519",
+        host_ip_map: dict[str, str],
+        cluster_id: str,
+        ssh_key_path: str = "/tmp/.ssh/id_ed25519",
     ) -> str:
         """Generate the bash rsh wrapper script for mpirun.
 
@@ -209,12 +231,14 @@ class TrtllmRuntime(RuntimePlugin):
         ]
         for ip, container_name in sorted(host_ip_map.items()):
             lines.append('    %s) CONTAINER="%s" ;;' % (ip, container_name))
-        lines.extend([
-            '    *) echo "Unknown host: $HOST" >&2; exit 1 ;;',
-            "esac",
-            'exec ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \\',
-            '  -i %s "$HOST" docker exec "$CONTAINER" "$@"' % ssh_key_path,
-        ])
+        lines.extend(
+            [
+                '    *) echo "Unknown host: $HOST" >&2; exit 1 ;;',
+                "esac",
+                "exec ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \\",
+                '  -i %s "$HOST" docker exec "$CONTAINER" "$@"' % ssh_key_path,
+            ]
+        )
         return "\n".join(lines) + "\n"
 
     @staticmethod
@@ -269,6 +293,11 @@ class TrtllmRuntime(RuntimePlugin):
 
         return yaml.safe_dump(extra, default_flow_style=False)
 
+    def version_commands(self) -> dict[str, str]:
+        cmds = super().version_commands()
+        cmds["trtllm"] = "python3 -c 'import tensorrt_llm; print(tensorrt_llm.__version__)' 2>/dev/null || echo unknown"
+        return cmds
+
     def get_cluster_env(self, head_ip: str, num_nodes: int) -> dict[str, str]:
         """Return TRT-LLM cluster environment variables."""
         return {
@@ -290,12 +319,12 @@ class TrtllmRuntime(RuntimePlugin):
         return {}
 
     def _pre_serve(
-            self,
-            hosts_containers: list[tuple[str, str]],
-            ssh_kwargs: dict,
-            dry_run: bool,
-            recipe: Recipe | None = None,
-            config_chain=None,
+        self,
+        hosts_containers: list[tuple[str, str]],
+        ssh_kwargs: dict,
+        dry_run: bool,
+        recipe: Recipe | None = None,
+        config_chain=None,
     ) -> None:
         """Write extra-llm-api-config.yml into containers before serve.
 
@@ -315,21 +344,22 @@ class TrtllmRuntime(RuntimePlugin):
         from sparkrun.orchestration.ssh import run_remote_command
         from sparkrun.orchestration.docker import docker_exec_cmd
 
-        write_cmd = (
-            "cat > %s << 'SPARKRUN_EOF'\n"
-            "%s"
-            "SPARKRUN_EOF"
-        ) % (_EXTRA_CONFIG_PATH, extra_yaml)
+        write_cmd = ("cat > %s << 'SPARKRUN_EOF'\n%sSPARKRUN_EOF") % (_EXTRA_CONFIG_PATH, extra_yaml)
 
         for host, container_name in hosts_containers:
             exec_cmd = docker_exec_cmd(container_name, write_cmd)
             result = run_remote_command(
-                host, exec_cmd, timeout=30, dry_run=dry_run, **ssh_kwargs,
+                host,
+                exec_cmd,
+                timeout=30,
+                dry_run=dry_run,
+                **ssh_kwargs,
             )
             if not result.success and not dry_run:
                 logger.warning(
                     "Failed to write extra-llm-api-config.yml on %s: %s",
-                    host, result.stderr[:100],
+                    host,
+                    result.stderr[:100],
                 )
             else:
                 logger.info("Wrote extra-llm-api-config.yml into %s on %s", container_name, host)
@@ -343,15 +373,10 @@ class TrtllmRuntime(RuntimePlugin):
             ssh_dir = Path.home() / ".ssh"
             if not ssh_dir.is_dir():
                 issues.append(
-                    "[trtllm] Multi-node requires SSH keys at ~/.ssh for "
-                    "mpirun inter-node communication. No ~/.ssh directory found."
+                    "[trtllm] Multi-node requires SSH keys at ~/.ssh for mpirun inter-node communication. No ~/.ssh directory found."
                 )
 
         return issues
-
-    def _head_container_name(self, cluster_id: str) -> str:
-        """TRT-LLM names the head container ``{cluster_id}_node_0``."""
-        return self.executor.node_container_name(cluster_id, 0)
 
     def _cluster_log_mode(self) -> str:
         """TRT-LLM cluster uses docker logs (mpirun output goes to stdout)."""
@@ -360,11 +385,11 @@ class TrtllmRuntime(RuntimePlugin):
     # --- Cluster stop ---
 
     def _stop_cluster(
-            self,
-            hosts: list[str],
-            cluster_id: str,
-            config: SparkrunConfig | None = None,
-            dry_run: bool = False,
+        self,
+        hosts: list[str],
+        cluster_id: str,
+        config: SparkrunConfig | None = None,
+        dry_run: bool = False,
     ) -> int:
         """Stop a TRT-LLM native cluster."""
         return self._stop_native_cluster(hosts, cluster_id, config=config, dry_run=dry_run)
@@ -372,22 +397,22 @@ class TrtllmRuntime(RuntimePlugin):
     # --- Cluster launch ---
 
     def _run_cluster(
-            self,
-            hosts: list[str],
-            image: str,
-            serve_command: str = "",
-            recipe: Recipe | None = None,
-            overrides: dict[str, Any] | None = None,
-            *,
-            cluster_id: str = "sparkrun0",
-            env: dict[str, str] | None = None,
-            cache_dir: str | None = None,
-            config: SparkrunConfig | None = None,
-            dry_run: bool = False,
-            detached: bool = True,
-            nccl_env: dict[str, str] | None = None,
-            skip_keys: set[str] | frozenset[str] = frozenset(),
-            **kwargs,
+        self,
+        hosts: list[str],
+        image: str,
+        serve_command: str = "",
+        recipe: Recipe | None = None,
+        overrides: dict[str, Any] | None = None,
+        *,
+        cluster_id: str = "sparkrun0",
+        env: dict[str, str] | None = None,
+        cache_dir: str | None = None,
+        config: SparkrunConfig | None = None,
+        dry_run: bool = False,
+        detached: bool = True,
+        nccl_env: dict[str, str] | None = None,
+        skip_keys: set[str] | frozenset[str] = frozenset(),
+        **kwargs,
     ) -> int:
         """Orchestrate a multi-node TRT-LLM cluster using MPI.
 
@@ -411,7 +436,8 @@ class TrtllmRuntime(RuntimePlugin):
             resolve_nccl_env,
         )
         from sparkrun.orchestration.ssh import (
-            run_remote_script, run_remote_command,
+            run_remote_script,
+            run_remote_command,
         )
         from sparkrun.orchestration.docker import docker_exec_cmd
 
@@ -423,8 +449,12 @@ class TrtllmRuntime(RuntimePlugin):
         extra_docker_opts = self.get_extra_docker_opts()
 
         self._print_cluster_banner(
-            "TRT-LLM MPI Cluster Launcher", hosts, image, cluster_id,
-            {"Nodes": num_nodes}, dry_run,
+            "TRT-LLM MPI Cluster Launcher",
+            hosts,
+            image,
+            cluster_id,
+            {"Nodes": num_nodes},
+            dry_run,
         )
 
         # Step 1: Cleanup
@@ -433,8 +463,11 @@ class TrtllmRuntime(RuntimePlugin):
         for rank, host in enumerate(hosts):
             container_name = self.executor.node_container_name(cluster_id, rank)
             run_remote_command(
-                host, self.executor.stop_cmd(container_name),
-                timeout=30, dry_run=dry_run, **ssh_kwargs,
+                host,
+                self.executor.stop_cmd(container_name),
+                timeout=30,
+                dry_run=dry_run,
+                **ssh_kwargs,
             )
         logger.info("Step 1/7: Cleanup done (%.1fs)", time.monotonic() - t0)
 
@@ -442,8 +475,11 @@ class TrtllmRuntime(RuntimePlugin):
         t0 = time.monotonic()
         logger.info("Step 2/7: InfiniBand detection...")
         nccl_env = resolve_nccl_env(
-            nccl_env, hosts,
-            head_host=hosts[0], ssh_kwargs=ssh_kwargs, dry_run=dry_run,
+            nccl_env,
+            hosts,
+            head_host=hosts[0],
+            ssh_kwargs=ssh_kwargs,
+            dry_run=dry_run,
         )
         logger.info("Step 2/7: IB step done (%.1fs)", time.monotonic() - t0)
 
@@ -481,8 +517,12 @@ class TrtllmRuntime(RuntimePlugin):
                     extra_docker_opts=extra_docker_opts or None,
                 )
                 future = executor.submit(
-                    run_remote_script, host, launch_script,
-                    timeout=120, dry_run=dry_run, **ssh_kwargs,
+                    run_remote_script,
+                    host,
+                    launch_script,
+                    timeout=120,
+                    dry_run=dry_run,
+                    **ssh_kwargs,
                 )
                 futures[future] = (host, rank)
 
@@ -492,7 +532,9 @@ class TrtllmRuntime(RuntimePlugin):
                 if not result.success and not dry_run:
                     logger.error(
                         "Failed to launch container on %s (rank %d): %s",
-                        host, rank, result.stderr[:200],
+                        host,
+                        rank,
+                        result.stderr[:200],
                     )
                     return 1
         logger.info("Step 4/7: Containers launched (%.1fs)", time.monotonic() - t0)
@@ -506,7 +548,9 @@ class TrtllmRuntime(RuntimePlugin):
                 if not is_container_running(host, container_name, ssh_kwargs=ssh_kwargs):
                     logger.error(
                         "Container %s not running on %s (rank %d)",
-                        container_name, host, rank,
+                        container_name,
+                        host,
+                        rank,
                     )
                     return 1
             logger.info("Step 5/7: All containers verified (%.1fs)", time.monotonic() - t0)
@@ -524,20 +568,23 @@ class TrtllmRuntime(RuntimePlugin):
 
         # Generate rsh wrapper
         rsh_wrapper = self._generate_rsh_wrapper(
-            host_ip_map, cluster_id, ssh_key_path=ssh_key_path,
+            host_ip_map,
+            cluster_id,
+            ssh_key_path=ssh_key_path,
         )
 
         # Write wrapper into head container
         write_wrapper_cmd = (
-            "cat > /tmp/sparkrun-rsh-wrapper.sh << 'SPARKRUN_EOF'\n"
-            "%s"
-            "SPARKRUN_EOF\n"
-            "chmod +x /tmp/sparkrun-rsh-wrapper.sh"
+            "cat > /tmp/sparkrun-rsh-wrapper.sh << 'SPARKRUN_EOF'\n%sSPARKRUN_EOF\nchmod +x /tmp/sparkrun-rsh-wrapper.sh"
         ) % rsh_wrapper
 
         exec_write = docker_exec_cmd(head_container, write_wrapper_cmd)
         result = run_remote_command(
-            head_host, exec_write, timeout=30, dry_run=dry_run, **ssh_kwargs,
+            head_host,
+            exec_write,
+            timeout=30,
+            dry_run=dry_run,
+            **ssh_kwargs,
         )
         if not result.success and not dry_run:
             logger.error("Failed to write rsh wrapper: %s", result.stderr[:200])
@@ -547,14 +594,14 @@ class TrtllmRuntime(RuntimePlugin):
         if recipe is not None:
             extra_config_yaml = self._build_extra_config(recipe, overrides)
             if extra_config_yaml:
-                write_config_cmd = (
-                    "cat > %s << 'SPARKRUN_EOF'\n"
-                    "%s"
-                    "SPARKRUN_EOF"
-                ) % (_EXTRA_CONFIG_PATH, extra_config_yaml)
+                write_config_cmd = ("cat > %s << 'SPARKRUN_EOF'\n%sSPARKRUN_EOF") % (_EXTRA_CONFIG_PATH, extra_config_yaml)
                 exec_config = docker_exec_cmd(head_container, write_config_cmd)
                 result = run_remote_command(
-                    head_host, exec_config, timeout=30, dry_run=dry_run, **ssh_kwargs,
+                    head_host,
+                    exec_config,
+                    timeout=30,
+                    dry_run=dry_run,
+                    **ssh_kwargs,
                 )
                 if not result.success and not dry_run:
                     logger.error("Failed to write extra config: %s", result.stderr[:200])
@@ -573,8 +620,11 @@ class TrtllmRuntime(RuntimePlugin):
             trtllm_cmd = serve_command
         elif recipe is not None:
             trtllm_cmd = self.generate_command(
-                recipe, overrides or {}, is_cluster=True,
-                num_nodes=num_nodes, head_ip=host_ips[0],
+                recipe,
+                overrides or {},
+                is_cluster=True,
+                num_nodes=num_nodes,
+                head_ip=host_ips[0],
                 skip_keys=skip_keys,
             )
         else:
@@ -583,7 +633,9 @@ class TrtllmRuntime(RuntimePlugin):
 
         # Build mpirun command
         mpirun_cmd = self._build_mpirun_command(
-            trtllm_cmd, host_ips, nccl_env=nccl_env,
+            trtllm_cmd,
+            host_ips,
+            nccl_env=nccl_env,
         )
 
         logger.info("mpirun command:")
@@ -594,10 +646,16 @@ class TrtllmRuntime(RuntimePlugin):
         detach_flag = "-d" if detached else ""
         escaped_mpirun = mpirun_cmd.replace("'", "'\\''")
         exec_mpirun = "docker exec %s %s bash -c '%s'" % (
-            detach_flag, head_container, escaped_mpirun,
+            detach_flag,
+            head_container,
+            escaped_mpirun,
         )
         result = run_remote_command(
-            head_host, exec_mpirun, timeout=60, dry_run=dry_run, **ssh_kwargs,
+            head_host,
+            exec_mpirun,
+            timeout=60,
+            dry_run=dry_run,
+            **ssh_kwargs,
         )
         logger.info("Step 7/7: mpirun dispatched (%.1fs)", time.monotonic() - t0)
 

@@ -11,7 +11,7 @@ import logging
 from dataclasses import dataclass, field
 
 from sparkrun.scripts import read_script
-from sparkrun.utils import parse_kv_output  # noqa: F401 — re-exported for callers
+from sparkrun.utils import parse_kv_output
 
 logger = logging.getLogger(__name__)
 
@@ -130,9 +130,9 @@ def extract_ib_ips(ib_info: dict[str, str]) -> list[str]:
 
 
 def validate_ib_connectivity(
-        ib_ip_map: dict[str, str],
-        ssh_kwargs: dict | None = None,
-        dry_run: bool = False,
+    ib_ip_map: dict[str, str],
+    ssh_kwargs: dict | None = None,
+    dry_run: bool = False,
 ) -> dict[str, str]:
     """Validate that the control machine can reach detected IB IPs.
 
@@ -164,8 +164,10 @@ def validate_ib_connectivity(
 
     logger.info("Verifying IB network reachability from control machine (testing %s)...", test_ip)
     result = run_remote_command(
-        test_ip, "true",
-        connect_timeout=5, timeout=10,
+        test_ip,
+        "true",
+        connect_timeout=5,
+        timeout=10,
         **kw,
     )
 
@@ -174,17 +176,17 @@ def validate_ib_connectivity(
         return ib_ip_map
 
     logger.warning(
-        "  Control machine cannot reach IB network (tested %s for host %s) "
-        "— falling back to management network for transfers",
-        test_ip, test_host,
+        "  Control machine cannot reach IB network (tested %s for host %s) — falling back to management network for transfers",
+        test_ip,
+        test_host,
     )
     return {}
 
 
 def detect_ib_for_hosts(
-        hosts: list[str],
-        ssh_kwargs: dict | None = None,
-        dry_run: bool = False,
+    hosts: list[str],
+    ssh_kwargs: dict | None = None,
+    dry_run: bool = False,
 ) -> IBDetectionResult:
     """Run IB detection on all hosts and return aggregated results.
 
@@ -211,7 +213,11 @@ def detect_ib_for_hosts(
     logger.info("Detecting InfiniBand on %d host(s)...", len(hosts))
     ib_script = generate_ib_detect_script()
     ib_results = run_remote_scripts_parallel(
-        hosts, ib_script, timeout=30, dry_run=dry_run, **kw,
+        hosts,
+        ib_script,
+        timeout=30,
+        dry_run=dry_run,
+        **kw,
     )
 
     nccl_env: dict[str, str] = {}
@@ -245,8 +251,7 @@ def detect_ib_for_hosts(
         logger.info("  No InfiniBand detected, using default networking")
 
     if ib_ip_map:
-        logger.info("  IB transfer IPs resolved for %d/%d host(s)",
-                    len(ib_ip_map), len(hosts))
+        logger.info("  IB transfer IPs resolved for %d/%d host(s)", len(ib_ip_map), len(hosts))
     else:
         logger.info("  No IB IPs found, transfers will use management network")
 

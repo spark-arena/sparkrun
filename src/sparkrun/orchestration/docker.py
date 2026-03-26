@@ -8,6 +8,7 @@ They do not execute Docker commands directly.
 from __future__ import annotations
 
 import logging
+import shlex
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +82,7 @@ def docker_run_cmd(
     if extra_opts:
         parts.extend(extra_opts)
 
-    parts.append(image)
+    parts.append(shlex.quote(image))
 
     if command:
         parts.append(command)
@@ -120,7 +121,8 @@ def docker_exec_cmd(
     if env:
         for key, value in sorted(env.items()):
             parts.extend(["-e", f"{key}={value}"])
-    parts.extend([container_name, "bash", "-c", f"'{command}'"])
+    escaped_cmd = command.replace("'", "'\\''")
+    parts.extend([shlex.quote(container_name), "bash", "-c", "'%s'" % escaped_cmd])
     return " ".join(parts)
 
 
@@ -134,9 +136,10 @@ def docker_stop_cmd(container_name: str, force: bool = True) -> str:
     Returns:
         Command string that stops (and optionally removes) the container.
     """
+    quoted = shlex.quote(container_name)
     if force:
-        return f"docker rm -f {container_name} 2>/dev/null || true"
-    return f"docker stop {container_name} 2>/dev/null || true"
+        return "docker rm -f %s 2>/dev/null || true" % quoted
+    return "docker stop %s 2>/dev/null || true" % quoted
 
 
 def docker_inspect_exists_cmd(image: str) -> str:
@@ -148,7 +151,7 @@ def docker_inspect_exists_cmd(image: str) -> str:
     Returns:
         Command string that exits 0 if the image exists locally.
     """
-    return f"docker image inspect {image} >/dev/null 2>&1"
+    return "docker image inspect %s >/dev/null 2>&1" % shlex.quote(image)
 
 
 def docker_pull_cmd(image: str) -> str:
@@ -160,7 +163,7 @@ def docker_pull_cmd(image: str) -> str:
     Returns:
         Command string.
     """
-    return f"docker pull {image}"
+    return "docker pull %s" % shlex.quote(image)
 
 
 def docker_logs_cmd(
@@ -183,10 +186,8 @@ def docker_logs_cmd(
         parts.append("-f")
     if tail is not None:
         parts.extend(["--tail", str(tail)])
-    parts.append(container_name)
+    parts.append(shlex.quote(container_name))
     return " ".join(parts)
-
-
 
 
 def generate_container_name(cluster_id: str, role: str = "head") -> str:

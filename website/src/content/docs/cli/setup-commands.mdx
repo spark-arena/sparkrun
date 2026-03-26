@@ -3,6 +3,48 @@ title: Setup Commands
 description: Install sparkrun, configure networking, permissions, and cluster prerequisites.
 ---
 
+## Setup wizard
+
+```bash
+sparkrun setup wizard [options]
+```
+
+Guided interactive wizard that walks through the full cluster setup process in one session. When you run bare `sparkrun setup` and no default cluster exists, the wizard launches automatically.
+
+**Phases:**
+
+1. **Install check** — detects whether sparkrun is installed as a uv tool; installs it if not
+2. **Cluster creation** — discovers CX7 peers (when running on a DGX Spark), prompts for hosts, creates/updates a named cluster, and sets it as default
+3. **SSH mesh** — establishes passwordless SSH between all cluster hosts and the control machine
+4. **CX7 configuration** — detects ConnectX-7 interfaces, selects conflict-free subnets, assigns static IPs with jumbo frames (MTU 9000), and distributes host keys
+5. **Sudoers entries** — installs scoped sudoers rules for `fix-permissions` and `clear-cache` (no broad sudo)
+6. **earlyoom** — installs and configures OOM protection with inference-aware defaults
+
+Each phase is optional — you can skip any step when prompted, and configure it later with the individual subcommand.
+
+```bash
+sparkrun setup wizard
+sparkrun setup wizard --hosts 10.24.11.13,10.24.11.14 --cluster mylab
+sparkrun setup wizard --dry-run
+sparkrun setup wizard --yes --hosts 10.24.11.13,10.24.11.14
+```
+
+| Option | Description |
+|---|---|
+| `--hosts` / `-H` | Pre-populate host list (comma-separated) |
+| `--cluster` | Cluster name (default: prompted, or `default` with `--yes`) |
+| `--user` / `-u` | SSH username (default: current OS user) |
+| `--dry-run` / `-n` | Preview all phases without executing |
+| `--yes` / `-y` | Accept all defaults for non-interactive mode |
+
+:::tip[Smart routing]
+Running `sparkrun setup` with no subcommand auto-launches the wizard when no default cluster is configured. If a default cluster already exists, it shows the setup help instead. You can always invoke the wizard explicitly with `sparkrun setup wizard`.
+:::
+
+:::note
+When running on a DGX Spark with CX7 interfaces, the wizard auto-detects peer Sparks on CX7 subnets. It reports discovered peers and suggests management IPs as defaults.
+:::
+
 ## Install sparkrun
 
 ```bash
@@ -27,10 +69,12 @@ If you installed via `sparkrun setup install`, tab completion is already configu
 ## Update sparkrun
 
 ```bash
-sparkrun setup update
+sparkrun update
 ```
 
 Updates sparkrun to the latest version in your managed environment and refreshes all recipe registries. Use `--no-update-registries` to skip the registry update.
+
+`sparkrun update` is a top-level alias for `sparkrun setup update`.
 
 ## SSH mesh setup
 
@@ -178,4 +222,44 @@ Use `--prefer` and `--avoid` to add custom process patterns to the defaults. For
 
 :::tip
 We recommend installing earlyoom as part of your initial cluster setup. Running large models near the memory limit without earlyoom can cause the system to become completely unresponsive, requiring a hard reboot.
+:::
+
+## Collect diagnostics
+
+```bash
+sparkrun setup diagnose [options]
+```
+
+Collect hardware, firmware, network, and Docker diagnostics from cluster hosts. Useful for debugging issues, filing support tickets, or verifying hardware configuration across your cluster.
+
+**Collected information:**
+- OS, kernel, CPU, memory, and disk details
+- GPU information (nvidia-smi)
+- Network interfaces and configuration
+- Docker status and version
+- Firmware/BIOS data (with `--sudo` — uses dmidecode)
+
+Output is written as NDJSON (one JSON record per line) for easy parsing and processing.
+
+```bash
+sparkrun setup diagnose --cluster mylab
+sparkrun setup diagnose --hosts 10.24.11.13,10.24.11.14
+sparkrun setup diagnose --cluster mylab --output diag.ndjson
+sparkrun setup diagnose --cluster mylab --sudo
+sparkrun setup diagnose --cluster mylab --json
+```
+
+| Option | Description |
+|---|---|
+| `--hosts` / `-H` | Comma-separated host list |
+| `--hosts-file` | File with hosts (one per line, `#` comments) |
+| `--cluster` | Use a saved cluster definition |
+| `--user` / `-u` | SSH username (default: from cluster config or current user) |
+| `--output` / `-o` | Output NDJSON file path (default: `spark_diag_<timestamp>.ndjson`) |
+| `--json` | Also print a summary to stdout as JSON |
+| `--sudo` | Collect additional sudo-only diagnostics (dmidecode for BIOS, system, baseboard, memory details) |
+| `--dry-run` / `-n` | Show what would be done without executing |
+
+:::note
+The base diagnostics run without elevated privileges. Use `--sudo` to also collect dmidecode data — you'll be prompted for a sudo password.
 :::

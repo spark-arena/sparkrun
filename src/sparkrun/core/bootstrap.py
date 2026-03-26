@@ -8,6 +8,9 @@ from typing import TYPE_CHECKING
 from scitrera_app_framework import Variables, register_plugin, get_extensions
 from scitrera_app_framework.util import find_types_in_modules
 
+from sparkrun.runtimes.base import EXT_RUNTIME
+from sparkrun.builders.base import EXT_BUILDER
+
 if TYPE_CHECKING:
     from sparkrun.runtimes.base import RuntimePlugin
     from sparkrun.benchmarking.base import BenchmarkingPlugin
@@ -15,9 +18,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-EXT_RUNTIME = "sparkrun.runtime"
 EXT_BENCHMARKING_FRAMEWORKS = "sparkrun.benchmarking"
-EXT_BUILDER = "sparkrun.builder"
 
 # Module-level singleton for the sparkrun Variables instance
 _variables: Variables | None = None
@@ -44,10 +45,12 @@ def init_sparkrun(v: Variables | None = None, log_level: str = "WARNING") -> Var
 
     if v is None:
         from scitrera_app_framework import init_framework_desktop
+
         v = init_framework_desktop("sparkrun", log_level=log_level, fault_handler=False, shutdown_hooks=False, fixed_logger=logger)
 
         # suppress noisy loggers (separate from our logging level)
         from sparkrun.utils import suppress_noisy_loggers
+
         suppress_noisy_loggers()
 
     _variables = v
@@ -66,6 +69,7 @@ def init_sparkrun(v: Variables | None = None, log_level: str = "WARNING") -> Var
 
     # Auto-discover all BenchmarkingPlugin subclasses in sparkrun.benchmarking
     from sparkrun.benchmarking.base import BenchmarkingPlugin as _BenchPlugin
+
     discovered_bench = list(find_types_in_modules("sparkrun.benchmarking", _BenchPlugin))
     for bench_cls in discovered_bench:
         try:
@@ -76,6 +80,7 @@ def init_sparkrun(v: Variables | None = None, log_level: str = "WARNING") -> Var
 
     # Auto-discover all BuilderPlugin subclasses in sparkrun.builders
     from sparkrun.builders.base import BuilderPlugin as _BuilderPlugin
+
     discovered_builders = list(find_types_in_modules("sparkrun.builders", _BuilderPlugin))
     for builder_cls in discovered_builders:
         try:
@@ -126,7 +131,7 @@ def list_runtimes(v: Variables | None = None) -> list[str]:
     return sorted(r.runtime_name for r in all_runtimes.values())
 
 
-def get_benchmarking_framework(name: str, v: Variables | None = None) -> 'BenchmarkingPlugin':
+def get_benchmarking_framework(name: str, v: Variables | None = None) -> "BenchmarkingPlugin":
     """Get a specific benchmarking framework by name.
 
     Args:
@@ -157,7 +162,7 @@ def list_benchmarking_frameworks(v: Variables | None = None) -> list[str]:
     return sorted(r.framework_name for r in all_frameworks.values())
 
 
-def get_builder(name: str, v: Variables | None = None) -> 'BuilderPlugin':
+def get_builder(name: str, v: Variables | None = None) -> "BuilderPlugin":
     """Get a specific builder by name.
 
     Args:

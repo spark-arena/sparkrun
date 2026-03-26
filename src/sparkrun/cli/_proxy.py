@@ -8,15 +8,14 @@ import click
 
 from ._common import (
     RECIPE_NAME,
-    _apply_node_trimming,
     _apply_recipe_overrides,
     _load_recipe,
-    _resolve_cluster_cache_dir,
     _resolve_hosts_or_exit,
-    _resolve_transfer_mode,
     dry_run_option,
     host_options,
     recipe_override_options,
+    resolve_cluster_config,
+    validate_and_prepare_hosts,
 )
 
 
@@ -33,6 +32,7 @@ def proxy():
 # proxy start
 # ---------------------------------------------------------------------------
 
+
 @proxy.command()
 @click.option("--port", type=int, default=None, help="Proxy listen port (default: 4000)")
 @click.option("--host", "bind_host", default=None, help="Bind address (default: 0.0.0.0)")
@@ -40,11 +40,9 @@ def proxy():
 @host_options
 @click.option("--foreground", is_flag=True, help="Run in foreground (default: daemonize)")
 @click.option("--no-auto-discover", is_flag=True, help="Disable periodic endpoint re-scanning")
-@click.option("--discover-interval", type=int, default=None,
-              help="Seconds between discovery sweeps (default: 30)")
+@click.option("--discover-interval", type=int, default=None, help="Seconds between discovery sweeps (default: 30)")
 @dry_run_option
-def start(port, bind_host, master_key, cluster_name, hosts, hosts_file,
-          foreground, no_auto_discover, discover_interval, dry_run):
+def start(port, bind_host, master_key, cluster_name, hosts, hosts_file, foreground, no_auto_discover, discover_interval, dry_run):
     """Start the inference proxy.
 
     Discovers running endpoints, generates LiteLLM config, and launches
@@ -71,7 +69,10 @@ def start(port, bind_host, master_key, cluster_name, hosts, hosts_file,
     # Resolve host filter and live discovery args
     host_filter = _resolve_host_filter(cluster_name, hosts, hosts_file)
     live_hosts, ssh_kwargs = _resolve_live_discovery_args(
-        cluster_name, hosts, hosts_file, host_filter,
+        cluster_name,
+        hosts,
+        hosts_file,
+        host_filter,
     )
 
     # Discover endpoints
@@ -100,8 +101,7 @@ def start(port, bind_host, master_key, cluster_name, hosts, hosts_file,
 
     if dry_run:
         click.echo("")
-        click.echo("[dry-run] Would write litellm config and start proxy on %s:%d"
-                   % (effective_host, effective_port))
+        click.echo("[dry-run] Would write litellm config and start proxy on %s:%d" % (effective_host, effective_port))
         aliases = proxy_cfg.aliases
         if aliases:
             click.echo("[dry-run] Aliases: %s" % aliases)
@@ -156,6 +156,7 @@ def start(port, bind_host, master_key, cluster_name, hosts, hosts_file,
         aliases = proxy_cfg.aliases
         if aliases:
             import time
+
             time.sleep(1)  # Brief delay for proxy readiness
             added, _removed = engine.sync_aliases(aliases)
             if added:
@@ -165,6 +166,7 @@ def start(port, bind_host, master_key, cluster_name, hosts, hosts_file,
 # ---------------------------------------------------------------------------
 # proxy stop
 # ---------------------------------------------------------------------------
+
 
 @proxy.command()
 @dry_run_option
@@ -192,6 +194,7 @@ def stop(dry_run):
 # proxy status
 # ---------------------------------------------------------------------------
 
+
 @proxy.command()
 def status():
     """Show proxy process status and registered models."""
@@ -214,6 +217,7 @@ def status():
     ad_pid = state.get("autodiscover_pid")
     if ad_pid:
         import os
+
         try:
             os.kill(int(ad_pid), 0)
             click.echo("  Auto-discover: running (PID %s)" % ad_pid)
@@ -300,6 +304,7 @@ def status():
 # proxy models
 # ---------------------------------------------------------------------------
 
+
 @proxy.command()
 @click.option("--refresh", is_flag=True, help="Re-discover endpoints and update proxy")
 def models(refresh):
@@ -318,6 +323,7 @@ def models(refresh):
 
     if refresh:
         from sparkrun.proxy.discovery import discover_endpoints
+
         click.echo("Re-discovering endpoints...")
         endpoints = discover_endpoints()
         healthy = [ep for ep in endpoints if ep.healthy]
@@ -348,6 +354,7 @@ def models(refresh):
 # ---------------------------------------------------------------------------
 # proxy alias
 # ---------------------------------------------------------------------------
+
 
 @proxy.group()
 def alias():
@@ -381,8 +388,7 @@ def alias_add(alias_name, target_model):
         if engine.add_alias_via_api(alias_name, target_model):
             click.echo("Alias applied to running proxy.")
         else:
-            click.echo("Warning: could not apply alias — target model '%s' not found in proxy."
-                       % target_model, err=True)
+            click.echo("Warning: could not apply alias — target model '%s' not found in proxy." % target_model, err=True)
             click.echo("The alias is saved and will apply when the target model is loaded.")
 
 
@@ -438,17 +444,29 @@ def alias_list():
 # proxy load / unload
 # ---------------------------------------------------------------------------
 
+
 @proxy.command("load")
 @click.argument("recipe_name", type=RECIPE_NAME)
 @host_options
 @recipe_override_options
 @click.option("--solo", is_flag=True, help="Force single-node mode")
 @click.option("--port", type=int, default=None, help="Override serve port")
-@click.option("--cache-dir", default=None, help="HuggingFace cache directory")
 @dry_run_option
-def load_cmd(recipe_name, hosts, hosts_file, cluster_name,
-             tensor_parallel, pipeline_parallel, gpu_mem, max_model_len,
-             options, image, solo, port, cache_dir, dry_run):
+def load_cmd(
+    recipe_name,
+    hosts,
+    hosts_file,
+    cluster_name,
+    tensor_parallel,
+    pipeline_parallel,
+    gpu_mem,
+    max_model_len,
+    options,
+    image,
+    solo,
+    port,
+    dry_run,
+):
     """Load a model via sparkrun run and register with proxy.
 
     Launches inference and registers the new endpoint with the running
@@ -467,18 +485,23 @@ def load_cmd(recipe_name, hosts, hosts_file, cluster_name,
     v = init_sparkrun()
     config = SparkrunConfig()
 
-    # Load recipe
-    recipe, _recipe_path, registry_mgr = _load_recipe(config, recipe_name)
+    # Load recipe (defer resolution until overrides are built)
+    recipe, _recipe_path, registry_mgr = _load_recipe(config, recipe_name, resolve=False)
+
+    # Build overrides and resolve runtime (overrides may influence resolution)
+    recipe, overrides = _apply_recipe_overrides(
+        options,
+        tensor_parallel=tensor_parallel,
+        pipeline_parallel=pipeline_parallel,
+        gpu_mem=gpu_mem,
+        max_model_len=max_model_len,
+        image=image,
+        recipe=recipe,
+    )
 
     issues = recipe.validate()
     for issue in issues:
         click.echo("Warning: %s" % issue, err=True)
-
-    # Build overrides
-    overrides = _apply_recipe_overrides(
-        options, tensor_parallel=tensor_parallel, pipeline_parallel=pipeline_parallel,
-        gpu_mem=gpu_mem, max_model_len=max_model_len, image=image, recipe=recipe,
-    )
     if port is not None:
         overrides["port"] = port
 
@@ -492,40 +515,12 @@ def load_cmd(recipe_name, hosts, hosts_file, cluster_name,
     # Resolve hosts
     host_list, cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v)
 
-    # Node count validation / trimming
-    if len(host_list) > 1 and not solo:
-        try:
-            required = runtime.compute_required_nodes(recipe, overrides)
-        except ValueError as e:
-            click.echo("Error: %s" % e, err=True)
-            sys.exit(1)
-        if required is not None:
-            if required > len(host_list):
-                click.echo(
-                    "Error: runtime requires %d nodes, but only %d hosts provided"
-                    % (required, len(host_list)),
-                    err=True,
-                )
-                sys.exit(1)
-            elif required < len(host_list):
-                host_list = _apply_node_trimming(
-                    host_list, recipe, overrides, runtime=runtime,
-                )
+    # Node count validation, max_nodes enforcement, and solo mode determination
+    host_list, is_solo = validate_and_prepare_hosts(host_list, recipe, overrides, runtime, solo=solo)
 
-    if recipe.max_nodes is not None and len(host_list) > recipe.max_nodes:
-        host_list = host_list[:recipe.max_nodes]
-
-    is_solo = solo or len(host_list) <= 1
-    if recipe.mode == "solo":
-        is_solo = True
-    if is_solo and len(host_list) > 1:
-        host_list = host_list[:1]
-
-    # Resolve cache dir and transfer mode
-    cluster_cache_dir = _resolve_cluster_cache_dir(cluster_name, hosts, hosts_file, cluster_mgr)
-    effective_cache_dir = cache_dir or cluster_cache_dir or str(config.hf_cache_dir)
-    cluster_transfer_mode = _resolve_transfer_mode(cluster_name, hosts, hosts_file, cluster_mgr)
-    effective_transfer_mode = cluster_transfer_mode or "auto"
+    # Resolve cache dir, transfer mode, and transfer interface from cluster config
+    cluster_cfg = resolve_cluster_config(cluster_name, hosts, hosts_file, cluster_mgr)
+    local_cache_dir, remote_cache_dir, effective_transfer_mode, effective_transfer_interface = cluster_cfg.resolve_transfer_config(config)
 
     # Launch via shared pipeline (auto_port=True for conflict avoidance)
     click.echo("Loading model: %s" % recipe_name)
@@ -537,12 +532,17 @@ def load_cmd(recipe_name, hosts, hosts_file, cluster_name,
         config=config,
         v=v,
         is_solo=is_solo,
-        cache_dir=effective_cache_dir,
+        cache_dir=remote_cache_dir,
+        local_cache_dir=local_cache_dir,
         transfer_mode=effective_transfer_mode,
+        transfer_interface=effective_transfer_interface,
         registry_mgr=registry_mgr,
         auto_port=True,
         dry_run=dry_run,
         detached=True,
+        # non-root user and non-privileged
+        rootless=True,
+        auto_user=True,
     )
 
     if result.rc != 0:
@@ -554,11 +554,13 @@ def load_cmd(recipe_name, hosts, hosts_file, cluster_name,
     if not dry_run:
         # Try to register with running proxy
         from sparkrun.proxy.engine import ProxyEngine
+
         engine = ProxyEngine()
         if engine.is_running():
             click.echo("Registering with proxy...")
             from sparkrun.proxy.discovery import discover_endpoints
             import time
+
             time.sleep(2)  # Brief delay for server startup
             endpoints = discover_endpoints()
             healthy = [ep for ep in endpoints if ep.healthy]
@@ -587,10 +589,12 @@ def unload_cmd(recipe_name, hosts, hosts_file, cluster_name, dry_run):
     if not dry_run:
         # Sync proxy to remove the now-stale model entry
         from sparkrun.proxy.engine import ProxyEngine
+
         engine = ProxyEngine()
         if engine.is_running():
             click.echo("Syncing proxy models...")
             from sparkrun.proxy.discovery import discover_endpoints
+
             endpoints = discover_endpoints()
             healthy = [ep for ep in endpoints if ep.healthy]
             _added, removed = engine.sync_models(healthy)
@@ -602,11 +606,12 @@ def unload_cmd(recipe_name, hosts, hosts_file, cluster_name, dry_run):
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _resolve_live_discovery_args(
-        cluster_name: str | None,
-        hosts: str | None,
-        hosts_file: str | None,
-        host_filter: list[str] | None,
+    cluster_name: str | None,
+    hosts: str | None,
+    hosts_file: str | None,
+    host_filter: list[str] | None,
 ) -> tuple[list[str] | None, dict | None]:
     """Resolve host list and SSH kwargs for live container discovery.
 
@@ -629,9 +634,10 @@ def _resolve_live_discovery_args(
 
         # Apply cluster SSH user if applicable
         if cluster_name:
-            from sparkrun.cli._common import _get_cluster_manager, _resolve_cluster_user
+            from sparkrun.cli._common import _get_cluster_manager, resolve_cluster_config
+
             cluster_mgr = _get_cluster_manager()
-            cluster_user = _resolve_cluster_user(cluster_name, hosts, hosts_file, cluster_mgr)
+            cluster_user = resolve_cluster_config(cluster_name, hosts, hosts_file, cluster_mgr).user
             if cluster_user:
                 config.ssh_user = cluster_user
 
@@ -641,9 +647,9 @@ def _resolve_live_discovery_args(
 
 
 def _resolve_host_filter(
-        cluster_name: str | None,
-        hosts: str | None,
-        hosts_file: str | None,
+    cluster_name: str | None,
+    hosts: str | None,
+    hosts_file: str | None,
 ) -> list[str] | None:
     """Resolve host filter from CLI args without exiting on empty.
 
@@ -656,12 +662,9 @@ def _resolve_host_filter(
     if hosts_file:
         try:
             from pathlib import Path
+
             text = Path(hosts_file).read_text()
-            return [
-                line.strip()
-                for line in text.splitlines()
-                if line.strip() and not line.strip().startswith("#")
-            ]
+            return [line.strip() for line in text.splitlines() if line.strip() and not line.strip().startswith("#")]
         except OSError:
             click.echo("Warning: could not read hosts file: %s" % hosts_file, err=True)
             return None
@@ -669,6 +672,7 @@ def _resolve_host_filter(
     if cluster_name:
         try:
             from sparkrun.cli._common import _get_cluster_manager
+
             cluster_mgr = _get_cluster_manager()
             cluster_def = cluster_mgr.get(cluster_name)
             return cluster_def.hosts if cluster_def else None

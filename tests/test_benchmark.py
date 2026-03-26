@@ -880,7 +880,8 @@ def test_export_results_writes_yaml(tmp_path: Path):
     assert "timestamp" in bench
 
     # Recipe section
-    assert bench["recipe"]["name"] == "unnamed"  # from_dict has no source_path
+    assert bench["recipe"]["name"] == "unnamed"  # bare name for backward compat
+    assert bench["recipe"]["qualified_name"] == "@test-registry/unnamed"
     assert bench["recipe"]["model"] == "org/model"
     assert bench["recipe"]["type"] == "sparkrun"
     # Note: Recipe runtime resolution converts "vllm" to "vllm-distributed"

@@ -95,7 +95,7 @@ def tmp_recipe_dir(tmp_path: Path) -> Path:
     with open(recipe_dir / "test-sglang.yaml", "w") as f:
         yaml.dump(v2_sglang, f)
 
-    # v1 recipe with mods (should migrate to eugr-vllm)
+    # v1 recipe with mods (should auto-set eugr builder)
     v1_eugr = {
         "recipe_version": "1",
         "name": "Test EUGR Recipe",
@@ -110,7 +110,7 @@ def tmp_recipe_dir(tmp_path: Path) -> Path:
     with open(recipe_dir / "test-eugr.yaml", "w") as f:
         yaml.dump(v1_eugr, f)
 
-    # v1 recipe without mods (should stay vllm)
+    # v1 recipe without mods (should auto-set eugr builder, resolve to vllm-distributed)
     v1_plain = {
         "recipe_version": "1",
         "name": "Test Plain v1 Recipe",
@@ -180,7 +180,7 @@ def sample_v1_recipe_data() -> dict[str, Any]:
     """Return a dict for a v1 eugr-style recipe with mods and build_args.
 
     Returns:
-        Dictionary containing a valid v1 recipe that should migrate to eugr-vllm.
+        Dictionary containing a valid v1 recipe that should auto-set eugr builder.
     """
     return {
         "recipe_version": "1",

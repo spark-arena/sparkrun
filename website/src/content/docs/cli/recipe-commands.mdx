@@ -25,7 +25,7 @@ The output table includes:
 | Column | Description |
 |---|---|
 | Name | Recipe display name |
-| Runtime | Inference runtime (vllm, sglang, llama-cpp, eugr-vllm) |
+| Runtime | Inference runtime (vllm, sglang, llama-cpp, trtllm) |
 | TP | Default tensor parallelism setting (`-` if not set) |
 | Nodes | Minimum node count (`min_nodes`) |
 | GPU Mem | Default `gpu_memory_utilization` setting (`-` if not set) |
@@ -49,18 +49,21 @@ sparkrun show qwen3-1.7b-vllm
 
 # Show a Spark Arena recipe
 sparkrun show @spark-arena/<recipe-id>
+```
 
-# Save a Spark Arena recipe locally for customization
-sparkrun show @spark-arena/<recipe-id> --save my-recipe.yaml
+To save a copy of a recipe for customization, use `sparkrun export recipe`:
+
+```bash
+sparkrun export recipe @spark-arena/<recipe-id> --save my-recipe.yaml
 ```
 
 ### Options
 
 | Option | Description |
 |---|---|
-| `--save <path>` | Save the recipe to the specified file path |
 | `--no-vram` | Skip VRAM estimation display |
 | `--tp` / `--tensor-parallel` | Override tensor parallelism for VRAM estimate |
+| `--gpu-mem` | Override GPU memory utilization (0.0-1.0) for VRAM estimate |
 
 ## Search recipes
 

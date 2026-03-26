@@ -6,30 +6,35 @@ import logging
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 import click
 
 from ._common import (
     PROFILE_NAME,
     RECIPE_NAME,
-    _apply_node_trimming,
     _apply_recipe_overrides,
     _display_vram_estimate,
     _expand_recipe_shortcut,
     _is_recipe_url,
     _load_recipe,
-    _resolve_cluster_cache_dir,
     _resolve_hosts_or_exit,
     _setup_logging,
     _simplify_recipe_ref,
     dry_run_option,
     host_options,
     recipe_override_options,
+    resolve_cluster_config,
+    validate_and_prepare_hosts,
 )
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_BENCHMARK_TIMEOUT: int = 14400  # 4 hours
+
+if TYPE_CHECKING:
+    pass
 
 
 @click.command()
@@ -38,28 +43,55 @@ DEFAULT_BENCHMARK_TIMEOUT: int = 14400  # 4 hours
 @recipe_override_options
 @click.option("--solo", is_flag=True, help="Force single-node mode")
 @click.option("--port", type=int, default=None, help="Override serve port")
-@click.option("--cache-dir", default=None, help="HuggingFace cache directory")
 @click.option("--profile", default=None, type=PROFILE_NAME, help="Benchmark profile name or file path")
 @click.option("--framework", default=None, help="Override benchmarking framework (default: llama-benchy)")
-@click.option("--out", "--output", "output_file", default=None, type=click.Path(),
-              help="Output file for results YAML")
-@click.option("-b", "--benchmark-option", "bench_options", multiple=True,
-              help="Override benchmark arg: -b key=value (repeatable)")
-@click.option("--exit-on-first-fail/--no-exit-on-first-fail", "exit_on_first_fail", default=True,
-              help="Abort benchmark on first failure and skip saving results (default: enabled)")
+@click.option("--out", "--output", "output_file", default=None, type=click.Path(), help="Output file for results YAML")
+@click.option("-b", "--benchmark-option", "bench_options", multiple=True, help="Override benchmark arg: -b key=value (repeatable)")
+@click.option(
+    "--exit-on-first-fail/--no-exit-on-first-fail",
+    "exit_on_first_fail",
+    default=True,
+    help="Abort benchmark on first failure and skip saving results (default: enabled)",
+)
 @click.option("--no-stop", is_flag=True, help="Don't stop inference after benchmarking")
 @click.option("--skip-run", is_flag=True, help="Skip launching inference (benchmark existing instance)")
 @click.option("--sync-tuning", is_flag=True, help="Sync tuning configs from registries before benchmarking")
-@click.option("--timeout", "bench_timeout", type=int, default=None,
-              help="Benchmark timeout in seconds (default: %d, or from profile)" % DEFAULT_BENCHMARK_TIMEOUT)
+@click.option("--rootful", is_flag=True, help="Run with --privileged as root inside container (legacy behavior)")
+@click.option(
+    "--timeout",
+    "bench_timeout",
+    type=int,
+    default=None,
+    help="Benchmark timeout in seconds (default: %d, or from profile)" % DEFAULT_BENCHMARK_TIMEOUT,
+)
 @dry_run_option
 @click.pass_context
-def benchmark(ctx, recipe_name, hosts, hosts_file, cluster_name,
-              tensor_parallel, pipeline_parallel, gpu_mem, max_model_len,
-              options, image, solo, port, cache_dir,
-              profile, framework,
-              output_file, bench_options, exit_on_first_fail, no_stop, skip_run,
-              sync_tuning, bench_timeout, dry_run):
+def benchmark(
+    ctx,
+    recipe_name,
+    hosts,
+    hosts_file,
+    cluster_name,
+    tensor_parallel,
+    pipeline_parallel,
+    gpu_mem,
+    max_model_len,
+    options,
+    image,
+    solo,
+    port,
+    profile,
+    framework,
+    output_file,
+    bench_options,
+    exit_on_first_fail,
+    no_stop,
+    skip_run,
+    sync_tuning,
+    rootful,
+    bench_timeout,
+    dry_run,
+):
     """Benchmark an inference recipe.
 
     Runs the full benchmark flow: launch inference, run benchmark, stop
@@ -81,30 +113,70 @@ def benchmark(ctx, recipe_name, hosts, hosts_file, cluster_name,
 
       sparkrun benchmark qwen3-1.7b-sglang --skip-run --solo
     """
-    _run_benchmark(
-        ctx, recipe_name, hosts, hosts_file, cluster_name,
-        tensor_parallel, pipeline_parallel, gpu_mem, max_model_len,
-        options, image, solo, port, cache_dir,
-        profile, framework,
-        output_file, bench_options, exit_on_first_fail, no_stop, skip_run,
-        sync_tuning, bench_timeout, dry_run,
+    return _run_benchmark(
+        ctx,
+        recipe_name,
+        hosts,
+        hosts_file,
+        cluster_name,
+        tensor_parallel,
+        pipeline_parallel,
+        gpu_mem,
+        max_model_len,
+        options,
+        image,
+        solo,
+        port,
+        profile,
+        framework,
+        output_file,
+        bench_options,
+        exit_on_first_fail,
+        no_stop,
+        skip_run,
+        sync_tuning,
+        rootful,
+        bench_timeout,
+        dry_run,
     )
 
 
 def _run_benchmark(
-        ctx, recipe_name, hosts, hosts_file, cluster_name,
-        tensor_parallel, pipeline_parallel, gpu_mem, max_model_len,
-        options, image, solo, port, cache_dir,
-        profile, framework_name,
-        output_file, bench_options, exit_on_first_fail, no_stop, skip_run,
-        sync_tuning, bench_timeout, dry_run,
+    ctx,
+    recipe_name,
+    hosts,
+    hosts_file,
+    cluster_name,
+    tensor_parallel,
+    pipeline_parallel,
+    gpu_mem,
+    max_model_len,
+    options,
+    image,
+    solo,
+    port,
+    profile,
+    framework_name,
+    output_file,
+    bench_options,
+    exit_on_first_fail,
+    no_stop,
+    skip_run,
+    sync_tuning,
+    rootful,
+    bench_timeout,
+    dry_run,
+    export_results_files=True,
 ):
-    """Execute the full benchmark flow: launch inference -> benchmark -> stop."""
-    from sparkrun.benchmarking.base import export_results
+    """Execute the full benchmark flow: launch inference -> benchmark -> stop.
+
+    Returns a :class:`BenchmarkResult` with output file paths on success.
+    """
+    from sparkrun.benchmarking.base import export_results, BenchmarkResult
     from ..core.benchmark_profiles import BenchmarkSpec
     from sparkrun.core.bootstrap import init_sparkrun, get_runtime, get_benchmarking_framework
     from sparkrun.core.config import SparkrunConfig
-    from sparkrun.core.hosts import is_local_host
+    from sparkrun.utils import is_local_host
     from sparkrun.core.launcher import launch_inference
     from sparkrun.orchestration.primitives import (
         build_ssh_kwargs,
@@ -113,6 +185,7 @@ def _run_benchmark(
         wait_for_port,
     )
 
+    bench_result = BenchmarkResult(recipe_name=recipe_name)
     v = init_sparkrun()
     _setup_logging(ctx.obj["verbose"])
     config = SparkrunConfig()
@@ -120,14 +193,10 @@ def _run_benchmark(
     # ---------------------------------------------------------------
     # 1. Load recipe
     # ---------------------------------------------------------------
-    recipe, _recipe_path, registry_mgr = _load_recipe(config, recipe_name)
+    recipe, _recipe_path, registry_mgr = _load_recipe(config, recipe_name, resolve=False)
 
     _resolved_name = _expand_recipe_shortcut(recipe_name)
     recipe_ref = _simplify_recipe_ref(_resolved_name) if _is_recipe_url(_resolved_name) else None
-
-    issues = recipe.validate()
-    for issue in issues:
-        click.echo("Warning: %s" % issue, err=True)
 
     # ---------------------------------------------------------------
     # 2. Resolve benchmark configuration
@@ -139,6 +208,7 @@ def _run_benchmark(
         from ..core.benchmark_profiles import find_benchmark_profile
         from ..core.benchmark_profiles import ProfileAmbiguousError
         from ..core.benchmark_profiles import ProfileError
+
         try:
             profile_path = find_benchmark_profile(profile, config, registry_mgr)
         except (ProfileError, ProfileAmbiguousError) as e:
@@ -164,10 +234,12 @@ def _run_benchmark(
         click.echo("Error: %s" % e, err=True)
         sys.exit(1)
 
+    bench_result.framework = fw
+
     # Build layered bench args
     passthrough_layer: dict = {}
     if fw.passthrough_args:
-        recipe_bench_block = recipe._raw.get("benchmark", {}) if hasattr(recipe, '_raw') else {}
+        recipe_bench_block = recipe._raw.get("benchmark", {}) if hasattr(recipe, "_raw") else {}
         if isinstance(recipe_bench_block, dict):
             for key in fw.passthrough_args:
                 if key in recipe_bench_block:
@@ -199,12 +271,21 @@ def _run_benchmark(
     # ---------------------------------------------------------------
     # 4. Build overrides and resolve runtime/hosts
     # ---------------------------------------------------------------
-    overrides = _apply_recipe_overrides(
-        options, tensor_parallel=tensor_parallel, pipeline_parallel=pipeline_parallel,
-        gpu_mem=gpu_mem, max_model_len=max_model_len, image=image, recipe=recipe,
+    recipe, overrides = _apply_recipe_overrides(
+        options,
+        tensor_parallel=tensor_parallel,
+        pipeline_parallel=pipeline_parallel,
+        gpu_mem=gpu_mem,
+        max_model_len=max_model_len,
+        image=image,
+        recipe=recipe,
+        # custom
+        port=port,
     )
-    if port is not None:
-        overrides["port"] = port
+
+    issues = recipe.validate()
+    for issue in issues:
+        click.echo("Warning: %s" % issue, err=True)
 
     try:
         runtime = get_runtime(recipe.runtime, v)
@@ -218,61 +299,12 @@ def _run_benchmark(
 
     host_list, cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v)
 
-    # Node count validation / trimming
-    if len(host_list) > 1 and not solo:
-        try:
-            required = runtime.compute_required_nodes(recipe, overrides)
-        except ValueError as e:
-            click.echo("Error: %s" % e, err=True)
-            sys.exit(1)
-        if required is not None:
-            if required > len(host_list):
-                click.echo(
-                    "Error: runtime requires %d nodes, but only %d hosts provided"
-                    % (required, len(host_list)),
-                    err=True,
-                )
-                sys.exit(1)
-            elif required < len(host_list):
-                original_count = len(host_list)
-                host_list = _apply_node_trimming(
-                    host_list, recipe, overrides, runtime=runtime,
-                )
-                click.echo(
-                    "Note: %d nodes required, using %d of %d hosts"
-                    % (required, required, original_count)
-                )
+    # Node count validation, max_nodes enforcement, and solo mode determination
+    host_list, is_solo = validate_and_prepare_hosts(host_list, recipe, overrides, runtime, solo=solo)
 
-    if recipe.max_nodes is not None and len(host_list) > recipe.max_nodes:
-        try:
-            _req = runtime.compute_required_nodes(recipe, overrides)
-        except ValueError:
-            _req = None
-        if _req is not None and _req > recipe.max_nodes:
-            click.echo(
-                "Error: runtime requires %d nodes (from parallelism settings), "
-                "but recipe '%s' specifies max_nodes=%d"
-                % (_req, recipe.name, recipe.max_nodes),
-                err=True,
-            )
-            sys.exit(1)
-
-        click.echo(
-            "Note: recipe max_nodes=%d, using %d of %d hosts"
-            % (recipe.max_nodes, recipe.max_nodes, len(host_list))
-        )
-        host_list = host_list[:recipe.max_nodes]
-
-    is_solo = solo or len(host_list) <= 1
-    if recipe.mode == "solo":
-        is_solo = True
-    if is_solo and len(host_list) > 1:
-        click.echo("Note: solo mode enabled, using 1 of %d hosts" % len(host_list))
-        host_list = host_list[:1]
-
-    # Resolve cache dir
-    cluster_cache_dir = _resolve_cluster_cache_dir(cluster_name, hosts, hosts_file, cluster_mgr)
-    effective_cache_dir = cache_dir or cluster_cache_dir or str(config.hf_cache_dir)
+    # Resolve cache dir, transfer mode, and transfer interface from cluster config
+    cluster_cfg = resolve_cluster_config(cluster_name, hosts, hosts_file, cluster_mgr)
+    local_cache_dir, remote_cache_dir, effective_transfer_mode, effective_transfer_interface = cluster_cfg.resolve_transfer_config(config)
 
     # For --skip-run, resolve port without auto-increment (server already listening)
     if skip_run:
@@ -281,6 +313,7 @@ def _run_benchmark(
         overrides["port"] = serve_port
         # Derive cluster_id for skip-run (needed for stop)
         from sparkrun.orchestration.job_metadata import generate_cluster_id
+
         cluster_id = generate_cluster_id(recipe, host_list, overrides=overrides)
 
     container_image = runtime.resolve_container(recipe, overrides)
@@ -295,7 +328,7 @@ def _run_benchmark(
     click.echo("=" * 60)
     click.echo("sparkrun benchmark")
     click.echo("=" * 60)
-    click.echo("Recipe:                %s" % recipe.name)
+    click.echo("Recipe:                %s" % recipe.qualified_name)
     click.echo("Model:                 %s" % recipe.model)
     click.echo("Runtime:               %s" % runtime.runtime_name)
     click.echo("Image:                 %s" % container_image)
@@ -311,7 +344,7 @@ def _run_benchmark(
     click.echo("=" * 60)
     click.echo("")
 
-    _display_vram_estimate(recipe, cli_overrides=overrides, auto_detect=True, cache_dir=effective_cache_dir)
+    _display_vram_estimate(recipe, cli_overrides=overrides, auto_detect=True, cache_dir=remote_cache_dir)
 
     # ---------------------------------------------------------------
     # 6. Launch inference (unless --skip-run)
@@ -329,7 +362,10 @@ def _run_benchmark(
             config=config,
             v=v,
             is_solo=is_solo,
-            cache_dir=effective_cache_dir,
+            cache_dir=remote_cache_dir,
+            local_cache_dir=local_cache_dir,
+            transfer_mode=effective_transfer_mode,
+            transfer_interface=effective_transfer_interface,
             recipe_ref=recipe_ref,
             registry_mgr=registry_mgr,
             auto_port=True,
@@ -337,6 +373,8 @@ def _run_benchmark(
             skip_keys={"served_model_name"},
             dry_run=dry_run,
             detached=True,
+            rootless=not rootful,
+            auto_user=not rootful,
         )
 
         if launch_result.rc != 0 and not dry_run:
@@ -352,6 +390,7 @@ def _run_benchmark(
         click.echo("")
 
         launched = True
+        bench_result.launch_result = launch_result
     else:
         click.echo("Step 1/3: Skipping inference launch (--skip-run)")
 
@@ -381,9 +420,12 @@ def _run_benchmark(
             head_container = runtime.get_head_container_name(cluster_id, is_solo=is_solo)
             click.echo("Waiting for inference server on %s:%d..." % (head_host, serve_port))
             ready = wait_for_port(
-                head_host, serve_port,
-                max_retries=180, retry_interval=5,  # TODO: maybe make this dynamic with model size somewhat??
-                ssh_kwargs=ssh_kwargs, dry_run=dry_run,
+                head_host,
+                serve_port,
+                max_retries=180,
+                retry_interval=5,  # TODO: maybe make this dynamic with model size somewhat??
+                ssh_kwargs=ssh_kwargs,
+                dry_run=dry_run,
                 container_name=head_container,
             )
             if not ready:
@@ -395,7 +437,10 @@ def _run_benchmark(
             health_url = "http://%s:%d/v1/models" % (target_ip, serve_port)
             click.echo("Waiting for model to finish loading (%s)..." % health_url)
             healthy = wait_for_healthy(
-                health_url, max_retries=360, retry_interval=5, dry_run=dry_run,
+                health_url,
+                max_retries=360,
+                retry_interval=5,
+                dry_run=dry_run,
             )
             if not healthy:
                 click.echo("Error: inference server health check timed out", err=True)
@@ -424,6 +469,8 @@ def _run_benchmark(
             args=bench_args,
             result_file=result_file,
         )
+        bench_result.profile = profile
+        bench_result.benchmark_args = bench_args
 
         click.echo("Benchmark command:")
         click.echo("  %s" % " ".join(bench_cmd))
@@ -435,10 +482,13 @@ def _run_benchmark(
             stderr_text = ""
         else:
             import time
+
             click.echo("--- benchmark output ---")
             bench_start = time.monotonic()
+            bench_result.start_time = datetime.now(tz=timezone.utc)
             try:
                 import os
+
                 bench_env = os.environ.copy()
                 bench_env["PYTHONUNBUFFERED"] = "1"
                 proc = subprocess.Popen(
@@ -460,6 +510,7 @@ def _run_benchmark(
                 stderr_text = proc.stderr.read()
 
                 elapsed = time.monotonic() - bench_start
+                bench_result.end_time = datetime.now(tz=timezone.utc)
                 click.echo("--- end benchmark output ---")
                 click.echo("")
 
@@ -493,49 +544,58 @@ def _run_benchmark(
         # -----------------------------------------------------------
         if not dry_run:
             results = fw.parse_results(stdout_text, stderr_text, result_file=result_file)
+            bench_result.results = results
 
             rows = results.get("rows", [])
             if rows:
                 click.echo("")
                 click.echo("Results: %d test row(s) collected" % len(rows))
 
-            if not output_file:
-                profile_slug = profile.replace("/", "_").replace("@", "") if profile else "default"
-                effective_pp = int(config_chain.get("pipeline_parallel") or 1)
-                pp_suffix = "_pp%d" % effective_pp if effective_pp > 1 else ""
-                output_file = "benchmark_%s_%s_tp%d%s.yaml" % (
-                    recipe.name.replace("/", "_"),
-                    profile_slug,
-                    effective_tp,
-                    pp_suffix,
+            if export_results_files:
+                # create a standard output file basis
+                if not output_file:
+                    profile_slug = profile.replace("/", "_").replace("@", "") if profile else "default"
+                    effective_pp = int(config_chain.get("pipeline_parallel") or 1)
+                    pp_suffix = "_pp%d" % effective_pp if effective_pp > 1 else ""
+                    output_file = "benchmark_%s_%s_tp%d%s.yaml" % (
+                        recipe.name.replace("/", "_"),
+                        profile_slug,
+                        effective_tp,
+                        pp_suffix,
+                    )
+
+                export_results(
+                    recipe=recipe,
+                    hosts=host_list,
+                    tp=effective_tp,
+                    cluster_id=cluster_id,
+                    framework_name=fw.framework_name,
+                    profile_name=profile,
+                    args=bench_args,
+                    results=results,
+                    output_path=output_file,
+                    runtime_info=launch_result.runtime_info if launch_result else None,
                 )
+                click.echo("Results saved to: %s" % output_file)
+                bench_result.output_yaml = output_file
 
-            export_results(
-                recipe=recipe,
-                hosts=host_list,
-                tp=effective_tp,
-                cluster_id=cluster_id,
-                framework_name=fw.framework_name,
-                profile_name=profile,
-                args=bench_args,
-                results=results,
-                output_path=output_file,
-            )
-            click.echo("Results saved to: %s" % output_file)
+                from pathlib import Path
 
-            from pathlib import Path
-            _OUTPUT_WRITERS = {
-                "json": lambda data, path: path.write_text(
-                    __import__("json").dumps(data, indent=2)),
-                "csv": lambda data, path: path.write_text(data),
-            }
-            for fmt, writer in _OUTPUT_WRITERS.items():
-                content = results.get(fmt)
-                if not content:
-                    continue
-                fmt_path = Path(output_file).with_suffix(".%s" % fmt)
-                writer(content, fmt_path)
-                click.echo("%s results saved to: %s" % (fmt.upper(), fmt_path))
+                _OUTPUT_WRITERS = {
+                    "json": lambda data, path: path.write_text(__import__("json").dumps(data, indent=2)),
+                    "csv": lambda data, path: path.write_text(data),
+                }
+                for fmt, writer in _OUTPUT_WRITERS.items():
+                    content = results.get(fmt)
+                    if not content:
+                        continue
+                    fmt_path = Path(output_file).with_suffix(".%s" % fmt)
+                    writer(content, fmt_path)
+                    click.echo("%s results saved to: %s" % (fmt.upper(), fmt_path))
+                    if fmt == "csv":
+                        bench_result.output_csv = str(fmt_path)
+                    elif fmt == "json":
+                        bench_result.output_json = str(fmt_path)
         else:
             click.echo("[dry-run] Would parse and export results to: %s" % (output_file or "benchmark_<recipe>_<framework>.yaml"))
 
@@ -556,6 +616,7 @@ def _run_benchmark(
 
         click.echo("")
         click.echo("Benchmark complete.")
+        bench_result.success = True
 
     except KeyboardInterrupt:
         click.echo("")
@@ -567,10 +628,13 @@ def _run_benchmark(
         sys.exit(130)
     finally:
         import os
+
         try:
             os.unlink(result_file)
         except OSError:
             pass
+
+    return bench_result
 
 
 def _stop_inference(runtime, host_list, cluster_id, config, dry_run):

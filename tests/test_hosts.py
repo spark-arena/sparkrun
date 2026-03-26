@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
-from sparkrun.core.hosts import resolve_hosts, parse_hosts_file, HostResolutionError
+from sparkrun.core.hosts import resolve_hosts, parse_hosts_file, HostResolutionError, is_control_in_cluster
 from sparkrun.core.cluster_manager import ClusterManager
 
 
@@ -246,3 +247,110 @@ def test_resolve_hosts_whitespace_only_string_returns_empty():
     """hosts string with only whitespace/commas returns empty list."""
     result = resolve_hosts(hosts="  ,  ,  ")
     assert result == []
+
+
+# ---------------------------------------------------------------------------
+# is_control_in_cluster
+# ---------------------------------------------------------------------------
+
+class TestIsControlInCluster:
+    """Tests for is_control_in_cluster() local membership detection."""
+
+    @mock.patch("sparkrun.core.hosts.socket")
+    def test_hostname_match(self, mock_socket):
+        """Returns True when hostname matches a host in the list."""
+        mock_socket.gethostname.return_value = "spark-node-01"
+        mock_socket.getfqdn.return_value = "spark-node-01.local"
+        mock_socket.getaddrinfo.return_value = []
+        mock_socket.gaierror = OSError
+
+        assert is_control_in_cluster(["spark-node-01", "spark-node-02"]) is True
+
+    @mock.patch("sparkrun.core.hosts.socket")
+    def test_fqdn_match(self, mock_socket):
+        """Returns True when FQDN matches a host in the list."""
+        mock_socket.gethostname.return_value = "myhost"
+        mock_socket.getfqdn.return_value = "myhost.example.com"
+        mock_socket.getaddrinfo.return_value = []
+        mock_socket.gaierror = OSError
+
+        assert is_control_in_cluster(["myhost.example.com", "other"]) is True
+
+    @mock.patch("sparkrun.core.hosts.socket")
+    def test_ip_match_via_local_resolution(self, mock_socket):
+        """Returns True when host resolves to a local IP."""
+        mock_socket.gethostname.return_value = "myhost"
+        mock_socket.getfqdn.return_value = "myhost"
+        mock_socket.gaierror = OSError
+
+        # First two getaddrinfo calls are for _get_local_identifiers
+        # (hostname + gethostname), third is for the host entry in the loop
+        def getaddrinfo_side_effect(host, port):
+            if host == "myhost":
+                return [(None, None, None, None, ("192.168.1.10",))]
+            if host == "remote-host":
+                return [(None, None, None, None, ("192.168.1.10",))]
+            return []
+
+        mock_socket.getaddrinfo.side_effect = getaddrinfo_side_effect
+
+        assert is_control_in_cluster(["remote-host"]) is True
+
+    @mock.patch("sparkrun.core.hosts.socket")
+    def test_no_match_returns_false(self, mock_socket):
+        """Returns False when no host matches local identifiers."""
+        mock_socket.gethostname.return_value = "myhost"
+        mock_socket.getfqdn.return_value = "myhost.local"
+        mock_socket.gaierror = OSError
+
+        def getaddrinfo_side_effect(host, port):
+            if host == "myhost":
+                return [(None, None, None, None, ("192.168.1.10",))]
+            if host == "remote-node":
+                return [(None, None, None, None, ("10.0.0.99",))]
+            return []
+
+        mock_socket.getaddrinfo.side_effect = getaddrinfo_side_effect
+
+        assert is_control_in_cluster(["remote-node"]) is False
+
+    @mock.patch("sparkrun.core.hosts.socket")
+    def test_case_insensitive_match(self, mock_socket):
+        """Hostname comparison is case-insensitive."""
+        mock_socket.gethostname.return_value = "MyHost"
+        mock_socket.getfqdn.return_value = "MyHost.local"
+        mock_socket.getaddrinfo.return_value = []
+        mock_socket.gaierror = OSError
+
+        assert is_control_in_cluster(["myhost", "other"]) is True
+
+    @mock.patch("sparkrun.core.hosts.socket")
+    def test_dns_failure_skipped_gracefully(self, mock_socket):
+        """DNS resolution failure for a host is skipped, not raised."""
+        mock_socket.gethostname.return_value = "myhost"
+        mock_socket.getfqdn.return_value = "myhost"
+        mock_socket.gaierror = OSError
+
+        def getaddrinfo_side_effect(host, port):
+            if host == "myhost":
+                return [(None, None, None, None, ("192.168.1.10",))]
+            raise OSError("DNS lookup failed")
+
+        mock_socket.getaddrinfo.side_effect = getaddrinfo_side_effect
+
+        assert is_control_in_cluster(["unknown-host"]) is False
+
+    @mock.patch("sparkrun.core.hosts._get_local_identifiers", side_effect=Exception("boom"))
+    def test_exception_returns_false(self, mock_ids):
+        """Returns False (safe default) when local identifier gathering fails."""
+        assert is_control_in_cluster(["any-host"]) is False
+
+    @mock.patch("sparkrun.core.hosts.socket")
+    def test_empty_host_list(self, mock_socket):
+        """Returns False for empty host list."""
+        mock_socket.gethostname.return_value = "myhost"
+        mock_socket.getfqdn.return_value = "myhost"
+        mock_socket.getaddrinfo.return_value = []
+        mock_socket.gaierror = OSError
+
+        assert is_control_in_cluster([]) is False

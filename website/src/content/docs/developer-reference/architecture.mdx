@@ -1,0 +1,148 @@
+---
+title: Architecture & Source Layout
+description: sparkrun's internal architecture, plugin system, and source layout.
+---
+
+This page provides an overview of sparkrun's source code organization, plugin system, and internal data flows for developers working on or integrating with sparkrun.
+
+## Source layout
+
+```
+src/sparkrun/
+├── cli/                # Click CLI package
+├── core/               # Core data models, bootstrap, and business logic
+├── runtimes/           # Runtime plugins (vllm, sglang, llama-cpp, trtllm)
+├── orchestration/      # SSH, Docker, InfiniBand, script execution primitives
+├── models/             # HuggingFace model download, distribution, and VRAM estimation
+├── containers/         # Container image distribution (docker save/load over SSH)
+├── tuning/             # Triton fused MoE kernel tuning for SGLang and vLLM
+├── builders/           # Container image builder plugins (docker-pull, eugr)
+├── diagnostics/        # Host and run diagnostic collection (NDJSON output)
+├── proxy/              # LiteLLM-based inference proxy gateway
+├── benchmarking/       # Benchmark framework plugins and result export
+├── utils/              # Shared helpers (coerce_value, suppress_noisy_loggers, etc.)
+└── scripts/            # Embedded bash scripts (IB detection, container launch, etc.)
+```
+
+## Plugin system (SAF)
+
+sparkrun uses [scitrera-app-framework](https://github.com/scitrera/python-app-framework) (SAF) for plugin discovery and lifecycle management. Three types of plugins are registered:
+
+| Plugin type | Base class | Extension point | Discovery |
+|---|---|---|---|
+| Runtimes | `RuntimePlugin` | `sparkrun.runtime` | `find_types_in_modules("sparkrun.runtimes", RuntimePlugin)` |
+| Builders | `BuilderPlugin` | `sparkrun.builder` | `find_types_in_modules("sparkrun.builders", BuilderPlugin)` |
+| Benchmarking | `BenchmarkingPlugin` | `sparkrun.benchmarking` | `find_types_in_modules("sparkrun.benchmarking", BenchmarkingPlugin)` |
+
+All plugins are discovered via Python entry points defined in `pyproject.toml`.
+
+### Bootstrap flow
+
+```
+cli/__init__.py → core.bootstrap.init_sparkrun()
+    → SAF init_framework_desktop()
+    → find_types_in_modules() for runtimes, builders, benchmarking
+    → register_plugin() for each discovered plugin
+```
+
+### Runtime plugins
+
+All runtimes extend `RuntimePlugin` (in `runtimes/base.py`), which itself extends SAF's `Plugin` class. The base class provides solo-mode orchestration; runtimes override `run()`/`stop()`/`follow_logs()` for multi-node support.
+
+Key methods:
+- `generate_command()` — produce the serve command from recipe defaults
+- `resolve_container()` — determine the container image to use
+- `cluster_strategy()` — return `"ray"`, `"native"`, or `"native/rpc"` to select orchestration path
+
+## Core modules
+
+| Module | Purpose |
+|---|---|
+| `core/bootstrap.py` | SAF plugin initialization, runtime and benchmarking framework discovery |
+| `core/config.py` | `SparkrunConfig` — reads `~/.config/sparkrun/config.yaml`, cache dir resolution |
+| `core/registry.py` | `RegistryManager` — git-based recipe registry system |
+| `core/recipe.py` | `Recipe` loading, validation, v1→v2 migration, config chain via SAF Variables |
+| `core/cluster_manager.py` | `ClusterManager` — named cluster CRUD (YAML files) |
+| `core/hosts.py` | Host resolution priority chain (CLI → file → cluster → default) |
+| `core/pending_ops.py` | PID-based lock files for in-progress operations |
+| `core/benchmark_profiles.py` | Benchmark profile discovery and rendering across registries |
+
+## Recipe resolution chain
+
+When you run `sparkrun run my-recipe`, recipe resolution follows this search order:
+
+1. Bundled recipes (shipped with sparkrun)
+2. Local `./recipes/` directory
+3. User config recipes (`~/.config/sparkrun/recipes/`)
+4. Git-cloned registries (`~/.cache/sparkrun/registries/`)
+
+The `@registry/recipe` syntax skips the search chain and loads directly from a specific registry.
+
+## Registry system internals
+
+The `RegistryManager` tracks recipe collections from remote git repos using sparse checkouts.
+
+### Default registry initialization
+
+On first run (no `registries.yaml`):
+
+1. `_load_registries()` → no file → `_default_registries()`
+2. Clones each URL in `DEFAULT_REGISTRIES_GIT` and reads its `.sparkrun/registry.yaml` manifest
+3. Merges manifest entries with `FALLBACK_DEFAULT_REGISTRIES` (manifest entries take priority by name)
+4. Saves combined list to `registries.yaml`
+5. If all manifest URLs fail, pure fallback entries are returned (offline safety net)
+
+### Manifest format
+
+The `.sparkrun/registry.yaml` file in a git repo supports both canonical and short keys:
+
+| Canonical key | Short key | Purpose |
+|---|---|---|
+| `subpath` | `recipes` | Recipe directory within the repo |
+| `tuning_subpath` | `tuning` | Tuning configs directory |
+| `benchmark_subpath` | `benchmarks` | Benchmark profiles directory |
+
+### Shared clones
+
+When multiple registries point to the same git URL, a single shared clone is used with per-registry symlinks. Sparse checkout paths are the union of all subpaths for that URL.
+
+### Reserved name prefixes
+
+Names starting with reserved prefixes (`sparkrun`, `official`, `arena`, etc.) can only be used by repos hosted under allowed GitHub organizations. Enforced via `validate_registry_name()`.
+
+## Config & state paths
+
+| Path | Purpose |
+|---|---|
+| `~/.config/sparkrun/config.yaml` | User configuration |
+| `~/.config/sparkrun/clusters/*.yaml` | Named cluster definitions |
+| `~/.config/sparkrun/registries.yaml` | Custom recipe registry list |
+| `~/.cache/sparkrun/registries/` | Git-cloned recipe registries |
+| `~/.cache/sparkrun/jobs/` | Job metadata (cluster_id → recipe mapping) |
+| `~/.cache/sparkrun/pending/` | PID lock files for in-progress operations |
+| `~/.cache/huggingface/` | HuggingFace model cache (mounted into containers) |
+
+## Orchestration layer
+
+All remote operations use SSH stdin piping — scripts are generated as Python strings and piped to `ssh <host> bash -s`. No files are ever copied to remote hosts.
+
+| Module | Purpose |
+|---|---|
+| `orchestration/ssh.py` | `RemoteResult`, `build_ssh_cmd()`, `run_remote_script()`, parallel execution |
+| `orchestration/sudo.py` | `run_with_sudo_fallback()` — tries non-interactive sudo, then password fallback |
+| `orchestration/docker.py` | Pure command-string generators (`docker_run_cmd`, `docker_exec_cmd`, etc.) |
+| `orchestration/distribution.py` | High-level resource distribution: IB detection, container and model syncing |
+| `orchestration/infiniband.py` | IB detection script generation, NCCL env var computation |
+| `orchestration/networking.py` | ConnectX-7 NIC detection, IP assignment, CX7 configuration |
+| `orchestration/primitives.py` | Higher-level composition: `build_ssh_kwargs()`, `build_volumes()`, `merge_env()` |
+| `orchestration/job_metadata.py` | Persistent job metadata stored in `~/.cache/sparkrun/jobs/` |
+
+## Key dependencies
+
+| Package | Purpose |
+|---|---|
+| `scitrera-app-framework` (SAF) | Plugin system, lifecycle, variables/config management |
+| `vpd` | YAML reading and command template placeholder substitution |
+| `click` | CLI framework |
+| `huggingface_hub` | Model downloading (`snapshot_download`) |
+| `pyyaml` | YAML parsing for recipes, clusters, registries |

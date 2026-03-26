@@ -18,7 +18,7 @@ from sparkrun.core.config import resolve_cache_dir
 logger = logging.getLogger(__name__)
 
 # Container-side mount point for the HuggingFace cache (set by build_volumes)
-CONTAINER_HF_CACHE = "/root/.cache/huggingface"
+CONTAINER_HF_CACHE = "/cache/huggingface"
 
 
 def _hub_cache(cache_dir: str | None = None) -> str:
@@ -36,13 +36,14 @@ def _hub_cache(cache_dir: str | None = None) -> str:
     > ``HF_HOME/hub`` > ``~/.cache/huggingface/hub``).
 
     Our volume mount maps the HF cache root (``HF_HOME``) to
-    ``/root/.cache/huggingface`` inside containers, so the ``hub/``
+    ``/cache/huggingface`` inside containers, so the ``hub/``
     subdirectory is preserved on both sides.
     """
     if cache_dir:
         return cache_dir + "/hub"
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
+
         return HF_HUB_CACHE
     except ImportError:  # pragma: no cover
         return resolve_cache_dir(None) + "/hub"
@@ -51,6 +52,7 @@ def _hub_cache(cache_dir: str | None = None) -> str:
 # ---------------------------------------------------------------------------
 # GGUF model spec helpers
 # ---------------------------------------------------------------------------
+
 
 def parse_gguf_model_spec(model_id: str) -> tuple[str, str | None]:
     """Parse a GGUF model specification into (repo_id, quant_variant).
@@ -162,13 +164,14 @@ def resolve_gguf_container_path(
     cache = resolve_cache_dir(cache_dir)
     # Replace host cache prefix with container mount path
     if host_path.startswith(cache):
-        return container_cache + host_path[len(cache):]
+        return container_cache + host_path[len(cache) :]
     return None
 
 
 # ---------------------------------------------------------------------------
 # Cache path computation
 # ---------------------------------------------------------------------------
+
 
 def model_cache_path(model_id: str, cache_dir: str | None = None) -> str:
     """Compute the HF cache path for a model.
@@ -192,6 +195,7 @@ def model_cache_path(model_id: str, cache_dir: str | None = None) -> str:
 # ---------------------------------------------------------------------------
 # Cache checking
 # ---------------------------------------------------------------------------
+
 
 def _snapshot_dirs_for_revision(
     model_cache: Path,
@@ -291,6 +295,7 @@ def is_model_cached(
 # Download
 # ---------------------------------------------------------------------------
 
+
 def _snapshot_download(
     repo_id: str,
     cache: str,
@@ -367,15 +372,17 @@ def download_model(
     """
     if is_gguf_model(model_id):
         return _download_gguf(
-            model_id, cache_dir=cache_dir, token=token,
-            revision=revision, dry_run=dry_run,
+            model_id,
+            cache_dir=cache_dir,
+            token=token,
+            revision=revision,
+            dry_run=dry_run,
         )
 
     cache = resolve_cache_dir(cache_dir)
 
     if dry_run:
-        logger.info("[dry-run] Would download model: %s (revision=%s) to %s",
-                     model_id, revision or "latest", cache)
+        logger.info("[dry-run] Would download model: %s (revision=%s) to %s", model_id, revision or "latest", cache)
         return 0
 
     cached = is_model_cached(model_id, cache, revision=revision)
@@ -385,8 +392,11 @@ def download_model(
         logger.info("Downloading model: %s (revision=%s)...", model_id, revision or "latest")
 
     return _snapshot_download(
-        repo_id=model_id, cache=cache, label=model_id,
-        token=token, revision=revision,
+        repo_id=model_id,
+        cache=cache,
+        label=model_id,
+        token=token,
+        revision=revision,
     )
 
 
@@ -416,19 +426,21 @@ def _download_gguf(
     cache = resolve_cache_dir(cache_dir)
 
     if dry_run:
-        logger.info("[dry-run] Would download GGUF model: %s (quant=%s, revision=%s) to %s",
-                     repo_id, quant, revision or "latest", cache)
+        logger.info("[dry-run] Would download GGUF model: %s (quant=%s, revision=%s) to %s", repo_id, quant, revision or "latest", cache)
         return 0
 
     cached = resolve_gguf_path(model_id, cache) is not None
     if cached:
         logger.info("GGUF model %s appears cached — verifying completeness...", model_id)
     else:
-        logger.info("Downloading GGUF model: %s (quant=%s, revision=%s)...",
-                     repo_id, quant or "any", revision or "latest")
+        logger.info("Downloading GGUF model: %s (quant=%s, revision=%s)...", repo_id, quant or "any", revision or "latest")
 
     patterns = ["*%s*" % quant] if quant else None
     return _snapshot_download(
-        repo_id=repo_id, cache=cache, label=model_id,
-        token=token, revision=revision, allow_patterns=patterns,
+        repo_id=repo_id,
+        cache=cache,
+        label=model_id,
+        token=token,
+        revision=revision,
+        allow_patterns=patterns,
     )

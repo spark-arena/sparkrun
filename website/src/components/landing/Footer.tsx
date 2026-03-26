@@ -21,14 +21,14 @@ export default function Footer() {
             <li><a href="/runtimes/vllm/">vLLM</a></li>
             <li><a href="/runtimes/sglang/">SGLang</a></li>
             <li><a href="/runtimes/llama-cpp/">llama.cpp</a></li>
-            <li><a href="/runtimes/eugr-vllm/">eugr-vllm</a></li>
+
           </ul>
         </div>
         <div className="footer-column">
           <h4>Community</h4>
           <ul>
-            <li><a href="https://github.com/scitrera/sparkrun">GitHub</a></li>
-            <li><a href="https://github.com/scitrera/sparkrun/issues">Issues</a></li>
+            <li><a href="https://github.com/spark-arena/sparkrun">GitHub</a></li>
+            <li><a href="https://github.com/spark-arena/sparkrun/issues">Issues</a></li>
             <li><a href="https://pypi.org/project/sparkrun/">PyPI</a></li>
           </ul>
         </div>

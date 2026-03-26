@@ -31,10 +31,10 @@ class ProfileAmbiguousError(ProfileError):
 
 
 def find_benchmark_profile(
-        name: str,
-        config,
-        registry_manager=None,
-        include_hidden: bool = False,
+    name: str,
+    config,
+    registry_manager=None,
+    include_hidden: bool = False,
 ) -> Path:
     """Find a benchmark profile by name.
 
@@ -59,6 +59,7 @@ def find_benchmark_profile(
     """
     # Parse @registry/ prefix
     from sparkrun.utils import parse_scoped_name
+
     scoped_registry, lookup_name = parse_scoped_name(name)
 
     # 1. Direct file path
@@ -76,14 +77,13 @@ def find_benchmark_profile(
     # 2. Scoped registry lookup
     if scoped_registry and registry_manager:
         matches = registry_manager.find_benchmark_profile_in_registries(
-            lookup_name, include_hidden=True,
+            lookup_name,
+            include_hidden=True,
         )
         scoped_matches = [(reg, path) for reg, path in matches if reg == scoped_registry]
         if scoped_matches:
             return scoped_matches[0][1]
-        raise ProfileError(
-            "Benchmark profile '%s' not found in registry '%s'" % (lookup_name, scoped_registry)
-        )
+        raise ProfileError("Benchmark profile '%s' not found in registry '%s'" % (lookup_name, scoped_registry))
 
     # 3. Local benchmarking directory
     local_dir = config.config_path.parent / "benchmarking"
@@ -96,7 +96,8 @@ def find_benchmark_profile(
     # 4. Registry search with ambiguity detection
     if registry_manager:
         matches = registry_manager.find_benchmark_profile_in_registries(
-            lookup_name, include_hidden=include_hidden,
+            lookup_name,
+            include_hidden=include_hidden,
         )
         if len(matches) == 1:
             return matches[0][1]

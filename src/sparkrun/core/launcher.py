@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from sparkrun.core.recipe import Recipe
     from sparkrun.core.registry import RegistryManager
     from sparkrun.runtimes.base import RuntimePlugin
+    from sparkrun.builders.base import BuilderPlugin
 
 logger = logging.getLogger(__name__)
 
@@ -40,33 +41,40 @@ class LaunchResult:
     nccl_env: dict[str, str] | None = None
     ib_ip_map: dict[str, str] = field(default_factory=dict)
     serve_command: str = ""
+    runtime_info: dict[str, str] = field(default_factory=dict)
+    builder: BuilderPlugin | None = None
 
 
 def launch_inference(
-        *,
-        recipe: Recipe,
-        runtime: RuntimePlugin,
-        host_list: list[str],
-        overrides: dict[str, Any],
-        config: SparkrunConfig,
-        v=None,
-        is_solo: bool = False,
-        cache_dir: str | None = None,
-        transfer_mode: str | None = None,
-        recipe_ref: str | None = None,
-        registry_mgr: RegistryManager | None = None,
-        auto_port: bool = False,
-        sync_tuning: bool = True,
-        skip_keys: set[str] | frozenset[str] = frozenset(),
-        dry_run: bool = False,
-        detached: bool = True,
-        # Runtime-specific kwargs forwarded to runtime.run()
-        ray_port: int | None = None,
-        dashboard_port: int | None = None,
-        dashboard: bool = False,
-        init_port: int | None = None,
-        # Executor config (dict for VPD chain layering)
-        executor_config: dict | None = None,
+    *,
+    recipe: Recipe,
+    runtime: RuntimePlugin,
+    host_list: list[str],
+    overrides: dict[str, Any],
+    config: SparkrunConfig,
+    v=None,
+    is_solo: bool = False,
+    cache_dir: str | None = None,
+    local_cache_dir: str | None = None,
+    transfer_mode: str | None = None,
+    transfer_interface: str | None = None,
+    recipe_ref: str | None = None,
+    registry_mgr: RegistryManager | None = None,
+    auto_port: bool = False,
+    sync_tuning: bool = True,
+    skip_keys: set[str] | frozenset[str] = frozenset(),
+    dry_run: bool = False,
+    detached: bool = True,
+    # Runtime-specific kwargs forwarded to runtime.run()
+    ray_port: int | None = None,
+    dashboard_port: int | None = None,
+    dashboard: bool = False,
+    init_port: int | None = None,
+    # Executor config (dict for config chain layering)
+    executor_config: dict | None = None,
+    # note: transition to rootless by default
+    rootless: bool = True,
+    auto_user: bool = True,
 ) -> LaunchResult:
     """Launch an inference workload.
 
@@ -91,8 +99,10 @@ def launch_inference(
         config: SparkrunConfig instance.
         v: SAF Variables instance (optional, uses singleton if None).
         is_solo: Whether to launch in solo mode.
-        cache_dir: Explicit cache dir override (None = resolve from config).
+        cache_dir: Remote/cluster cache dir (None = resolve from config).
+        local_cache_dir: Control-machine cache dir for downloads (None = same as cache_dir).
         transfer_mode: Resource transfer mode override (None = "auto").
+        transfer_interface: Network interface for transfers (cx7 or mgmt; None = cx7 default).
         recipe_ref: Simplified recipe reference for display (e.g. @spark-arena/UUID).
         registry_mgr: Registry manager for tuning config sync.
         auto_port: If True, auto-increment port when the desired port is in use.
@@ -104,6 +114,10 @@ def launch_inference(
         dashboard_port: Ray dashboard port (forwarded to runtime.run).
         dashboard: Enable Ray dashboard (forwarded to runtime.run).
         init_port: Distributed init port (forwarded to runtime.run).
+        executor_config: Executor config
+        rootless: Run containers in rootless mode (applies defaults to executor_config)
+        auto_user: Automatically set user and group IDs to match host. (applies defaults to executor_config)
+
 
     Returns:
         LaunchResult with the outcome and all resolved context.
@@ -112,6 +126,7 @@ def launch_inference(
     from sparkrun.orchestration.primitives import build_ssh_kwargs
 
     effective_cache_dir = cache_dir or str(config.hf_cache_dir)
+    effective_local_cache = local_cache_dir or effective_cache_dir
     effective_transfer_mode = transfer_mode or "auto"
     ssh_kwargs = build_ssh_kwargs(config)
 
@@ -123,12 +138,17 @@ def launch_inference(
         desired_port = int(config_chain.get("port") or 8000)
         head_host = host_list[0]
         serve_port = find_available_port(
-            head_host, desired_port, ssh_kwargs=ssh_kwargs, dry_run=dry_run,
+            head_host,
+            desired_port,
+            ssh_kwargs=ssh_kwargs,
+            dry_run=dry_run,
         )
         if serve_port != desired_port:
             logger.info(
                 "Port %d in use on %s, using %d instead",
-                desired_port, head_host, serve_port,
+                desired_port,
+                head_host,
+                serve_port,
             )
         overrides["port"] = serve_port
     else:
@@ -141,34 +161,46 @@ def launch_inference(
     # Resolve container image
     container_image = runtime.resolve_container(recipe, overrides)
 
-    # Save job metadata
-    if not dry_run:
-        try:
-            save_job_metadata(
-                cluster_id, recipe, host_list,
-                overrides=overrides, cache_dir=str(config.cache_dir),
-                recipe_ref=recipe_ref,
-            )
-        except Exception:
-            logger.debug("Failed to save job metadata: %s", cluster_id, exc_info=True)
-
     # Builder phase
+    builder = None
     if recipe.builder:
         from sparkrun.core.bootstrap import get_builder
 
         try:
             builder = get_builder(recipe.builder, v)
             container_image = builder.prepare_image(
-                container_image, recipe, host_list, config=config, dry_run=dry_run,
+                container_image,
+                recipe,
+                host_list,
+                config=config,
+                dry_run=dry_run,
                 transfer_mode=effective_transfer_mode,
                 ssh_kwargs=ssh_kwargs,
             )
         except ValueError:
             logger.warning("Builder '%s' not found, skipping", recipe.builder)
 
+    # Save job metadata
+    if not dry_run:
+        try:
+            save_job_metadata(
+                cluster_id,
+                recipe,
+                host_list,
+                overrides=overrides,
+                cache_dir=str(config.cache_dir),
+                recipe_ref=recipe_ref,
+                container_image=container_image,
+            )
+        except Exception:
+            logger.debug("Failed to save job metadata: %s", cluster_id, exc_info=True)
+
     # Pre-launch preparation (e.g., eugr container builds)
     runtime.prepare(
-        recipe, host_list, config=config, dry_run=dry_run,
+        recipe,
+        host_list,
+        config=config,
+        dry_run=dry_run,
         transfer_mode=effective_transfer_mode,
     )
 
@@ -179,20 +211,29 @@ def launch_inference(
         from sparkrun.orchestration.distribution import distribute_resources
 
         nccl_env, ib_ip_map, mgmt_ip_map = distribute_resources(
-            container_image, recipe.model, host_list,
+            container_image,
+            recipe.model,
+            host_list,
             effective_cache_dir,
-            config, dry_run,
+            config,
+            dry_run,
             model_revision=recipe.model_revision,
             recipe_name=recipe.name,
             transfer_mode=effective_transfer_mode,
+            transfer_interface=transfer_interface,
+            local_cache_dir=effective_local_cache,
         )
         # Re-save job metadata with IP maps from IB detection
         if not dry_run and (ib_ip_map or mgmt_ip_map):
             try:
                 save_job_metadata(
-                    cluster_id, recipe, host_list,
-                    overrides=overrides, cache_dir=str(config.cache_dir),
-                    ib_ip_map=ib_ip_map, mgmt_ip_map=mgmt_ip_map,
+                    cluster_id,
+                    recipe,
+                    host_list,
+                    overrides=overrides,
+                    cache_dir=str(config.cache_dir),
+                    ib_ip_map=ib_ip_map,
+                    mgmt_ip_map=mgmt_ip_map,
                     recipe_ref=recipe_ref,
                 )
             except Exception:
@@ -204,7 +245,9 @@ def launch_inference(
 
         try:
             synced = sync_registry_tuning(
-                registry_mgr, recipe.runtime, dry_run=dry_run,
+                registry_mgr,
+                recipe.runtime,
+                dry_run=dry_run,
                 registry_name=recipe.source_registry,
             )
             if synced:
@@ -218,7 +261,8 @@ def launch_inference(
 
         try:
             tuning_failed = distribute_tuning_to_hosts(
-                recipe.runtime, host_list,
+                recipe.runtime,
+                host_list,
                 dry_run=dry_run,
                 transfer_mode=effective_transfer_mode,
                 **ssh_kwargs,
@@ -236,7 +280,8 @@ def launch_inference(
 
     if is_gguf_model(recipe.model) and not dry_run:
         gguf_container_path = resolve_gguf_container_path(
-            recipe.model, effective_cache_dir,
+            recipe.model,
+            effective_cache_dir,
         )
         if gguf_container_path:
             overrides["_gguf_model_path"] = gguf_container_path
@@ -272,21 +317,41 @@ def launch_inference(
         run_kwargs["init_port"] = init_port
 
     # Build executor from layered config: CLI → recipe → defaults
-    from vpd.legacy.yaml_dict import vpd_chain as _vpd_chain
+    from scitrera_app_framework.api import Variables, EnvPlacement
     from sparkrun.orchestration.executor import EXECUTOR_DEFAULTS, ExecutorConfig
     from sparkrun.orchestration.executor_docker import DockerExecutor
+
+    exec_adjustments = {}
+    if rootless:
+        exec_adjustments["privileged"] = False
+        exec_adjustments["security_opt"] = ["no-new-privileges"]
+        exec_adjustments["cap_add"] = []
+        exec_adjustments["ulimit"] = [
+            "memlock=-1:-1",
+            "stack=67108864",
+        ]
+        # TODO: confirm existence and/or adjust? (for future heterogeneous support??)
+        exec_adjustments["devices"] = [
+            "/dev/infiniband",
+        ]
+    if auto_user:
+        exec_adjustments["user"] = "$SHELL_USER"  # auto hint to use ssh user+group
 
     recipe_executor_config = getattr(recipe, "executor_config", None)
     if not isinstance(recipe_executor_config, dict):
         recipe_executor_config = {}
     cli_exec_opts = executor_config if isinstance(executor_config, dict) else {}
-    exec_chain = _vpd_chain(
-        cli_exec_opts,                  # CLI flags (highest priority)
-        recipe_executor_config,         # recipe YAML
-        EXECUTOR_DEFAULTS,              # hardcoded defaults
+    exec_chain = Variables(
+        sources=(
+            cli_exec_opts,  # CLI flags (highest priority)
+            recipe_executor_config,  # recipe YAML
+            exec_adjustments,  # executor adjustments
+            EXECUTOR_DEFAULTS,  # hardcoded defaults
+        ),
+        env_placement=EnvPlacement.IGNORED,
     )
     exec_cfg = ExecutorConfig.from_chain(exec_chain)
-    executor = DockerExecutor(exec_cfg)
+    executor = DockerExecutor(exec_cfg)  # TODO: future flexible executor
 
     # Launch
     rc = runtime.run(
@@ -308,6 +373,60 @@ def launch_inference(
         **run_kwargs,
     )
 
+    # Collect runtime version info from the head container (non-blocking)
+    runtime_info: dict[str, str] = {}
+    if rc == 0 and not dry_run:
+        try:
+            head_host = host_list[0] if host_list else "localhost"
+            head_container = runtime.get_head_container_name(cluster_id, is_solo=is_solo)
+            # Resolve builder for version info collection
+            ver_builder = None
+            if recipe.builder:
+                from sparkrun.core.bootstrap import get_builder
+
+                try:
+                    ver_builder = get_builder(recipe.builder, v)
+                except ValueError:
+                    pass
+            # noinspection PyProtectedMember
+            runtime_info = runtime._collect_runtime_info(
+                head_host,
+                head_container,
+                ssh_kwargs,
+                dry_run=False,
+                builder=ver_builder,
+            )
+            # Collect container image labels (separate docker inspect call)
+            if ver_builder:
+                try:
+                    label_info = ver_builder.collect_container_labels(
+                        head_container,
+                        head_host,
+                        ssh_kwargs,
+                    )
+                    # Merge without overwriting existing keys
+                    for k, lv in label_info.items():
+                        if k not in runtime_info:
+                            runtime_info[k] = lv
+                except Exception:
+                    logger.debug("Container label collection failed", exc_info=True)
+            if runtime_info:
+                try:
+                    save_job_metadata(
+                        cluster_id,
+                        recipe,
+                        host_list,
+                        overrides=overrides,
+                        cache_dir=str(config.cache_dir),
+                        recipe_ref=recipe_ref,
+                        runtime_info=runtime_info,
+                        container_image=container_image,
+                    )
+                except Exception:
+                    logger.debug("Failed to save runtime_info to job metadata", exc_info=True)
+        except Exception:
+            logger.debug("Runtime info collection failed", exc_info=True)
+
     return LaunchResult(
         rc=rc,
         cluster_id=cluster_id,
@@ -324,4 +443,141 @@ def launch_inference(
         nccl_env=nccl_env,
         ib_ip_map=ib_ip_map,
         serve_command=serve_command,
+        runtime_info=runtime_info,
+        builder=builder,
     )
+
+
+def post_launch_lifecycle(
+    result: LaunchResult,
+    remote_cache_dir: str,
+    trust: bool = False,
+    dry_run: bool = False,
+) -> None:
+    """Run post-serve lifecycle: port polling, health checks, hooks, conditional stop.
+
+    Called after a successful detached launch when recipe defines post_exec or post_commands.
+    Handles:
+    1. Determining head container name
+    2. Detecting head IP
+    3. Waiting for port and health check
+    4. Building hook context
+    5. Running post_exec and post_commands
+    6. Handling stop_after_post
+
+    Args:
+        result: LaunchResult from launch_inference.
+        remote_cache_dir: Remote cache directory for hook context.
+        trust: Trust post_commands from non-default registries without prompting.
+        dry_run: Show what would be done without executing.
+    """
+    import sys
+
+    import click
+
+    from sparkrun.orchestration.hooks import (
+        build_hook_context,
+        run_post_commands,
+        run_post_exec,
+    )
+    from sparkrun.orchestration.health import wait_for_healthy, wait_for_port
+    from sparkrun.orchestration.primitives import build_ssh_kwargs, detect_host_ip
+    from sparkrun.orchestration.docker import generate_container_name, generate_node_container_name
+    from sparkrun.utils import is_local_host
+
+    recipe = result.recipe
+    runtime = result.runtime
+    host_list = result.host_list
+    overrides = result.overrides
+    config = result.config
+    is_solo = result.is_solo
+
+    head_host = host_list[0] if host_list else "localhost"
+    _ssh_kw = build_ssh_kwargs(config)
+
+    # Determine head container name
+    if is_solo:
+        head_container = generate_container_name(result.cluster_id, "solo")
+    else:
+        head_container = generate_node_container_name(result.cluster_id, 0)
+
+    # Detect head IP for health checks
+    if is_local_host(head_host):
+        head_ip = "127.0.0.1"
+    else:
+        try:
+            head_ip = detect_host_ip(head_host, ssh_kwargs=_ssh_kw, dry_run=dry_run)
+        except RuntimeError:
+            head_ip = head_host
+
+    # Determine effective port
+    config_chain = recipe.build_config_chain(overrides)
+    effective_port = config_chain.get("port", 8000)
+
+    click.echo("Waiting for server to become ready...")
+    if not dry_run:
+        # Wait for port to be listening
+        port_ready = wait_for_port(
+            head_host,
+            effective_port,
+            max_retries=120,
+            retry_interval=2,
+            ssh_kwargs=_ssh_kw,
+            dry_run=dry_run,
+            container_name=head_container,
+        )
+        if not port_ready:
+            click.echo("Error: Server port %d never became ready" % effective_port, err=True)
+            sys.exit(1)
+
+        # Wait for HTTP 200 on /v1/models
+        health_url = "http://%s:%s/v1/models" % (head_ip, effective_port)
+        healthy = wait_for_healthy(health_url, max_retries=120, retry_interval=5, dry_run=dry_run)
+        if not healthy:
+            click.echo("Error: Server health check never passed at %s" % health_url, err=True)
+            sys.exit(1)
+
+    # Build hook context with extended variables
+    hook_context = build_hook_context(
+        config_chain,
+        head_host=head_host,
+        head_ip=head_ip,
+        port=effective_port,
+        cluster_id=result.cluster_id,
+        container_name=head_container,
+        cache_dir=remote_cache_dir,
+    )
+
+    try:
+        # Run post_exec inside head container
+        if recipe.post_exec:
+            click.echo("Running post_exec commands...")
+            run_post_exec(head_host, head_container, recipe.post_exec, hook_context, ssh_kwargs=_ssh_kw, dry_run=dry_run)
+
+        # Run post_commands on control machine
+        if recipe.post_commands:
+            click.echo("Running post_commands on control machine...")
+            from sparkrun.core.registry import DEFAULT_REGISTRIES_GIT
+
+            _is_trusted = (
+                trust
+                or recipe.source_registry is None  # local recipe
+                or (recipe.source_registry_url is not None and recipe.source_registry_url in DEFAULT_REGISTRIES_GIT)
+            )
+            run_post_commands(recipe.post_commands, hook_context, dry_run=dry_run, trust=_is_trusted)
+    except RuntimeError as e:
+        click.echo("Error in post hooks: %s" % e, err=True)
+        sys.exit(1)
+
+    click.echo("Post hooks completed successfully.")
+
+    # If stop_after_post, stop the workload and exit
+    if recipe.stop_after_post:
+        click.echo("Stopping workload (stop_after_post=true)...")
+        runtime.stop(
+            hosts=host_list,
+            cluster_id=result.cluster_id,
+            config=config,
+            dry_run=dry_run,
+        )
+        sys.exit(0)

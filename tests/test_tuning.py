@@ -346,7 +346,7 @@ class TestSglangRuntimeAutoMount:
             lambda: None,
         )
         runtime = get_runtime("sglang", v)
-        assert runtime.get_extra_env() == {}
+        assert runtime.get_extra_env() == {"HF_HOME": "/cache/huggingface"}
 
     def test_get_extra_volumes_returns_mapping(self, v, monkeypatch):
         """SglangRuntime.get_extra_volumes returns mapping when configs exist."""
@@ -362,10 +362,10 @@ class TestSglangRuntimeAutoMount:
     def test_get_extra_env_returns_env(self, v, monkeypatch):
         """SglangRuntime.get_extra_env returns env when configs exist."""
         from sparkrun.core.bootstrap import get_runtime
-        expected = {"SGLANG_MOE_CONFIG_DIR": TUNING_ENV_PATH}
+        expected = {"HF_HOME": "/cache/huggingface", "SGLANG_MOE_CONFIG_DIR": TUNING_ENV_PATH}
         monkeypatch.setattr(
             "sparkrun.tuning.sglang.get_sglang_tuning_env",
-            lambda: expected,
+            lambda: {"SGLANG_MOE_CONFIG_DIR": TUNING_ENV_PATH},
         )
         runtime = get_runtime("sglang", v)
         assert runtime.get_extra_env() == expected
@@ -384,10 +384,10 @@ class TestBaseRuntimeHooks:
         assert runtime.get_extra_volumes() == {}
 
     def test_default_get_extra_env(self, v):
-        """Base RuntimePlugin.get_extra_env returns empty dict."""
+        """Base RuntimePlugin.get_extra_env returns HF_HOME."""
         from sparkrun.core.bootstrap import get_runtime
         runtime = get_runtime("llama-cpp", v)
-        assert runtime.get_extra_env() == {}
+        assert runtime.get_extra_env() == {"HF_HOME": "/cache/huggingface"}
 
 
 # ===========================================================================
@@ -666,14 +666,14 @@ class TestVllmRayRuntimeAutoMount:
         assert runtime.get_extra_volumes() == {}
 
     def test_get_extra_env_empty_when_no_configs(self, v, monkeypatch):
-        """VllmRayRuntime.get_extra_env returns {} when no tuning configs."""
+        """VllmRayRuntime.get_extra_env returns base env when no tuning configs."""
         from sparkrun.core.bootstrap import get_runtime
         monkeypatch.setattr(
             "sparkrun.tuning.vllm.get_vllm_tuning_env",
             lambda: None,
         )
         runtime = get_runtime("vllm-ray", v)
-        assert runtime.get_extra_env() == {}
+        assert runtime.get_extra_env() == {"HF_HOME": "/cache/huggingface"}
 
     def test_get_extra_volumes_returns_mapping(self, v, monkeypatch):
         """VllmRayRuntime.get_extra_volumes returns mapping when configs exist."""
@@ -689,10 +689,10 @@ class TestVllmRayRuntimeAutoMount:
     def test_get_extra_env_returns_env(self, v, monkeypatch):
         """VllmRayRuntime.get_extra_env returns env when configs exist."""
         from sparkrun.core.bootstrap import get_runtime
-        expected = {"VLLM_TUNED_CONFIG_FOLDER": VLLM_TUNING_CONTAINER_PATH}
+        expected = {"HF_HOME": "/cache/huggingface", "VLLM_TUNED_CONFIG_FOLDER": VLLM_TUNING_CONTAINER_PATH}
         monkeypatch.setattr(
             "sparkrun.tuning.vllm.get_vllm_tuning_env",
-            lambda: expected,
+            lambda: {"VLLM_TUNED_CONFIG_FOLDER": VLLM_TUNING_CONTAINER_PATH},
         )
         runtime = get_runtime("vllm-ray", v)
         assert runtime.get_extra_env() == expected
@@ -710,14 +710,14 @@ class TestVllmDistributedAutoMount:
         assert runtime.get_extra_volumes() == {}
 
     def test_get_extra_env_empty_when_no_configs(self, v, monkeypatch):
-        """VllmDistributedRuntime.get_extra_env returns {} when no configs."""
+        """VllmDistributedRuntime.get_extra_env returns base env when no configs."""
         from sparkrun.core.bootstrap import get_runtime
         monkeypatch.setattr(
             "sparkrun.tuning.vllm.get_vllm_tuning_env",
             lambda: None,
         )
         runtime = get_runtime("vllm-distributed", v)
-        assert runtime.get_extra_env() == {}
+        assert runtime.get_extra_env() == {"HF_HOME": "/cache/huggingface"}
 
     def test_get_extra_volumes_returns_mapping(self, v, monkeypatch):
         """VllmDistributedRuntime.get_extra_volumes returns mapping when configs exist."""
@@ -733,10 +733,10 @@ class TestVllmDistributedAutoMount:
     def test_get_extra_env_returns_env(self, v, monkeypatch):
         """VllmDistributedRuntime.get_extra_env returns env when configs exist."""
         from sparkrun.core.bootstrap import get_runtime
-        expected = {"VLLM_TUNED_CONFIG_FOLDER": VLLM_TUNING_CONTAINER_PATH}
+        expected = {"HF_HOME": "/cache/huggingface", "VLLM_TUNED_CONFIG_FOLDER": VLLM_TUNING_CONTAINER_PATH}
         monkeypatch.setattr(
             "sparkrun.tuning.vllm.get_vllm_tuning_env",
-            lambda: expected,
+            lambda: {"VLLM_TUNED_CONFIG_FOLDER": VLLM_TUNING_CONTAINER_PATH},
         )
         runtime = get_runtime("vllm-distributed", v)
         assert runtime.get_extra_env() == expected
@@ -757,10 +757,10 @@ class TestEugrVllmAutoMount:
     def test_inherits_vllm_ray_auto_env(self, v, monkeypatch):
         """EugrVllmRayRuntime inherits get_extra_env from VllmRayRuntime."""
         from sparkrun.core.bootstrap import get_runtime
-        expected = {"VLLM_TUNED_CONFIG_FOLDER": VLLM_TUNING_CONTAINER_PATH}
+        expected = {"HF_HOME": "/cache/huggingface", "VLLM_TUNED_CONFIG_FOLDER": VLLM_TUNING_CONTAINER_PATH}
         monkeypatch.setattr(
             "sparkrun.tuning.vllm.get_vllm_tuning_env",
-            lambda: expected,
+            lambda: {"VLLM_TUNED_CONFIG_FOLDER": VLLM_TUNING_CONTAINER_PATH},
         )
         runtime = get_runtime("eugr-vllm", v)
         assert runtime.get_extra_env() == expected
@@ -773,10 +773,11 @@ class TestEugrVllmAutoMount:
 class TestPreCheckTp:
     """Test that _pre_check_tp is called and can skip tuning."""
 
-    def test_base_pre_check_returns_false(self):
-        """BaseTuner._pre_check_tp always returns False (tune anyway)."""
+    def test_base_pre_check_returns_false_in_dry_run(self):
+        """BaseTuner._pre_check_tp returns False in dry-run mode."""
         from sparkrun.tuning._common import BaseTuner
         tuner = BaseTuner.__new__(BaseTuner)
+        tuner.dry_run = True
         assert tuner._pre_check_tp(1, "3.6.0") is False
 
     def test_sglang_pre_check_returns_false_in_dry_run(self):

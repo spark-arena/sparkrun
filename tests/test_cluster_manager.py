@@ -370,6 +370,109 @@ def test_valid_transfer_modes_constant():
 
 
 # ---------------------------------------------------------------------------
+# transfer_interface field tests
+# ---------------------------------------------------------------------------
+
+
+def test_create_cluster_with_transfer_interface(tmp_path: Path):
+    """Create a cluster with transfer_interface and verify persistence."""
+    manager = ClusterManager(tmp_path)
+    manager.create("ib-lab", ["host1", "host2"], transfer_interface="cx7")
+
+    cluster = manager.get("ib-lab")
+    assert cluster.transfer_interface == "cx7"
+    assert cluster.hosts == ["host1", "host2"]
+
+
+def test_create_cluster_with_mgmt_interface(tmp_path: Path):
+    """Create a cluster with mgmt transfer_interface."""
+    manager = ClusterManager(tmp_path)
+    manager.create("mgmt-lab", ["host1"], transfer_interface="mgmt")
+
+    cluster = manager.get("mgmt-lab")
+    assert cluster.transfer_interface == "mgmt"
+
+
+def test_create_cluster_without_transfer_interface(tmp_path: Path):
+    """Cluster created without transfer_interface defaults to None."""
+    manager = ClusterManager(tmp_path)
+    manager.create("basic", ["host1"])
+
+    cluster = manager.get("basic")
+    assert cluster.transfer_interface is None
+
+
+def test_create_cluster_invalid_transfer_interface(tmp_path: Path):
+    """Invalid transfer_interface raises ClusterError."""
+    manager = ClusterManager(tmp_path)
+
+    with pytest.raises(ClusterError):
+        manager.create("bad", ["host1"], transfer_interface="invalid")
+
+
+def test_update_cluster_transfer_interface(tmp_path: Path):
+    """Update transfer_interface without affecting other fields."""
+    manager = ClusterManager(tmp_path)
+    manager.create("test", ["host1"], description="My cluster", user="admin")
+
+    manager.update("test", transfer_interface="mgmt")
+
+    cluster = manager.get("test")
+    assert cluster.transfer_interface == "mgmt"
+    assert cluster.hosts == ["host1"]
+    assert cluster.description == "My cluster"
+    assert cluster.user == "admin"
+
+
+def test_update_cluster_clear_transfer_interface(tmp_path: Path):
+    """Pass transfer_interface=None explicitly to clear it."""
+    manager = ClusterManager(tmp_path)
+    manager.create("test", ["host1"], transfer_interface="cx7")
+
+    manager.update("test", transfer_interface=None)
+
+    cluster = manager.get("test")
+    assert cluster.transfer_interface is None
+
+
+def test_update_cluster_invalid_transfer_interface(tmp_path: Path):
+    """Updating with invalid transfer_interface raises ClusterError."""
+    manager = ClusterManager(tmp_path)
+    manager.create("test", ["host1"])
+
+    with pytest.raises(ClusterError):
+        manager.update("test", transfer_interface="bogus")
+
+
+def test_create_cluster_with_all_fields_including_interface(tmp_path: Path):
+    """Create a cluster with all optional fields including transfer_interface."""
+    manager = ClusterManager(tmp_path)
+    manager.create(
+        "full", ["host1", "host2"],
+        description="Full cluster",
+        user="admin",
+        cache_dir="/mnt/models",
+        transfer_mode="delegated",
+        transfer_interface="mgmt",
+    )
+
+    cluster = manager.get("full")
+    assert cluster.name == "full"
+    assert cluster.hosts == ["host1", "host2"]
+    assert cluster.description == "Full cluster"
+    assert cluster.user == "admin"
+    assert cluster.cache_dir == "/mnt/models"
+    assert cluster.transfer_mode == "delegated"
+    assert cluster.transfer_interface == "mgmt"
+
+
+def test_valid_transfer_interfaces_constant():
+    """VALID_TRANSFER_INTERFACES contains the expected values."""
+    from sparkrun.core.cluster_manager import VALID_TRANSFER_INTERFACES
+    assert VALID_TRANSFER_INTERFACES == ("cx7", "mgmt")
+
+
+# ---------------------------------------------------------------------------
 # Monitoring parse tests
 # ---------------------------------------------------------------------------
 

@@ -6,16 +6,81 @@ Resolves hosts from CLI args, files, cluster manager, or config defaults.
 from __future__ import annotations
 
 import logging
+import socket
 from pathlib import Path
 
 from sparkrun.core.cluster_manager import ClusterError, ClusterManager
+from sparkrun.utils import is_local_host  # noqa: F401 re-exported for backward compat
 
 logger = logging.getLogger(__name__)
 
 
-def is_local_host(host: str) -> bool:
-    """Check if a host string refers to the local machine."""
-    return host in ("localhost", "127.0.0.1", "")
+def _get_local_identifiers() -> set[str]:
+    """Gather local hostname, FQDN, and interface IPs for membership checks.
+
+    Returns:
+        Set of lowercase strings identifying the local machine.
+    """
+    identifiers: set[str] = {"localhost", "127.0.0.1"}
+    try:
+        hostname = socket.gethostname()
+        identifiers.add(hostname.lower())
+    except OSError:
+        hostname = None
+
+    try:
+        fqdn = socket.getfqdn()
+        identifiers.add(fqdn.lower())
+    except OSError:
+        pass
+
+    # Resolve hostname to IPs
+    if hostname:
+        try:
+            for info in socket.getaddrinfo(hostname, None):
+                identifiers.add(info[4][0])
+        except (OSError, socket.gaierror):
+            pass
+
+    return identifiers
+
+
+def is_control_in_cluster(host_list: list[str]) -> bool:
+    """Check whether the control machine is a member of the target cluster.
+
+    Compares local identifiers (hostname, FQDN, interface IPs) against
+    each entry in *host_list* using string matching and DNS resolution.
+    No SSH calls are made — this is a pure local check.
+
+    Args:
+        host_list: Target hostnames/IPs for the cluster.
+
+    Returns:
+        True if any host in the list matches a local identifier.
+        False on any failure (safe default = treat as external).
+    """
+    try:
+        local_ids = _get_local_identifiers()
+    except Exception:
+        logger.debug("Failed to gather local identifiers, assuming external control")
+        return False
+
+    for host in host_list:
+        # Direct string match
+        if host.lower() in local_ids:
+            logger.debug("Control is cluster member: %s matched local identifier", host)
+            return True
+
+        # DNS resolution of the host entry
+        try:
+            for info in socket.getaddrinfo(host, None):
+                if info[4][0] in local_ids:
+                    logger.debug("Control is cluster member: %s resolved to local IP", host)
+                    return True
+        except (OSError, socket.gaierror):
+            pass
+
+    return False
 
 
 class HostResolutionError(Exception):
@@ -98,9 +163,7 @@ def resolve_hosts(
         try:
             cluster = cluster_manager.get(cluster_name)
             resolved = cluster.hosts
-            logger.debug(
-                "Resolved %d hosts from cluster '%s'", len(resolved), cluster_name
-            )
+            logger.debug("Resolved %d hosts from cluster '%s'", len(resolved), cluster_name)
             return resolved
         except ClusterError as e:
             logger.warning("Failed to resolve cluster '%s': %s", cluster_name, e)

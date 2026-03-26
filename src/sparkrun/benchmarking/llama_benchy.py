@@ -22,9 +22,14 @@ _LIST_ARGS = {"pp", "tg", "depth", "concurrency"}
 
 # llama-benchy boolean flags (present = enabled, absent = disabled).
 _BOOL_ARGS = {
-    "no_cache", "enable_prefix_caching", "no_warmup", "skip_coherence",
-    "adapt_prompt", "no_adapt_prompt",
-    "save_total_throughput_timeseries", "save_all_throughput_timeseries",
+    "no_cache",
+    "enable_prefix_caching",
+    "no_warmup",
+    "skip_coherence",
+    "adapt_prompt",
+    "no_adapt_prompt",
+    "save_total_throughput_timeseries",
+    "save_all_throughput_timeseries",
     "exit_on_first_fail",
 }
 
@@ -35,7 +40,7 @@ _ARG_ALIASES: dict[str, str] = {
 }
 
 _PASSTHROUGH_ARGS = {
-    'tokenizer',  # tokenizer value configured in a recipe can pass-thru to benchmark profile definitions
+    "tokenizer",  # tokenizer value configured in a recipe can pass-thru to benchmark profile definitions
 }
 
 
@@ -61,18 +66,15 @@ class LlamaBenchyFramework(BenchmarkingPlugin):
         """Check that uvx is available on PATH."""
         missing = []
         if shutil.which("uvx") is None:
-            missing.append(
-                "uvx not found on PATH. Install uv: "
-                "https://docs.astral.sh/uv/getting-started/installation/"
-            )
+            missing.append("uvx not found on PATH. Install uv: https://docs.astral.sh/uv/getting-started/installation/")
         return missing
 
     def build_benchmark_command(
-            self,
-            target_url: str,
-            model: str,
-            args: dict[str, Any],
-            result_file: str | None = None,
+        self,
+        target_url: str,
+        model: str,
+        args: dict[str, Any],
+        result_file: str | None = None,
     ) -> list[str]:
         """Build the uvx llama-benchy command.
 
@@ -82,13 +84,18 @@ class LlamaBenchyFramework(BenchmarkingPlugin):
         # Strip GGUF quant suffix (e.g. "repo/model-GGUF:Q4_K_M" → "repo/model-GGUF")
         # The colon syntax is a sparkrun convention; the served model uses the repo ID.
         from sparkrun.models.download import parse_gguf_model_spec
+
         model_id, _ = parse_gguf_model_spec(model)
 
         cmd = [
-            "uvx", "llama-benchy",
-            "--base-url", target_url,
-            "--model", model_id,
-            "--format", "json",
+            "uvx",
+            "llama-benchy",
+            "--base-url",
+            target_url,
+            "--model",
+            model_id,
+            "--format",
+            "json",
         ]
 
         if result_file:
@@ -174,6 +181,7 @@ class LlamaBenchyFramework(BenchmarkingPlugin):
         if result_file:
             try:
                 from pathlib import Path
+
                 json_text = Path(result_file).read_text()
             except (OSError, FileNotFoundError):
                 logger.debug("Could not read result file %s, falling back to stdout", result_file)
@@ -203,11 +211,22 @@ class LlamaBenchyFramework(BenchmarkingPlugin):
 
 # -- CSV headers matching llama-benchy's save_report(format="csv") --
 _CSV_HEADERS = [
-    "model", "test_name",
-    "t_s_mean", "t_s_std", "t_s_req_mean", "t_s_req_std",
-    "peak_ts_mean", "peak_ts_std", "peak_ts_req_mean", "peak_ts_req_std",
-    "ttfr_mean", "ttfr_std", "est_ppt_mean", "est_ppt_std",
-    "e2e_ttft_mean", "e2e_ttft_std",
+    "model",
+    "test_name",
+    "t_s_mean",
+    "t_s_std",
+    "t_s_req_mean",
+    "t_s_req_std",
+    "peak_ts_mean",
+    "peak_ts_std",
+    "peak_ts_req_mean",
+    "peak_ts_req_std",
+    "ttfr_mean",
+    "ttfr_std",
+    "est_ppt_mean",
+    "est_ppt_std",
+    "e2e_ttft_mean",
+    "e2e_ttft_std",
 ]
 
 
@@ -238,9 +257,9 @@ def json_to_csv(json_data: dict[str, Any]) -> str:
 
 
 def _generate_csv_rows(
-        benchmarks: list[dict],
-        model_name: str,
-        max_concurrency: int,
+    benchmarks: list[dict],
+    model_name: str,
+    max_concurrency: int,
 ) -> list[dict[str, Any]]:
     """Replicate llama-benchy's ``_generate_rows()`` → CSV row mapping.
 
@@ -256,15 +275,15 @@ def _generate_csv_rows(
         return metric["std"] if metric else None
 
     def _csv_row(
-            model: str,
-            test_name: str,
-            t_s: dict | None,
-            t_s_req: dict | None,
-            peak_ts: dict | None,
-            peak_ts_req: dict | None,
-            ttfr: dict | None,
-            est_ppt: dict | None,
-            e2e_ttft: dict | None,
+        model: str,
+        test_name: str,
+        t_s: dict | None,
+        t_s_req: dict | None,
+        peak_ts: dict | None,
+        peak_ts_req: dict | None,
+        ttfr: dict | None,
+        est_ppt: dict | None,
+        e2e_ttft: dict | None,
     ) -> dict[str, Any]:
         return {
             "model": model,
@@ -307,38 +326,66 @@ def _generate_csv_rows(
         if is_context_phase:
             # Context prefill — PP row
             if pp_tp:
-                rows.append(_csv_row(
-                    model_name, "ctx_pp @ d%d%s" % (context_size, c_suffix),
-                    t_s=pp_tp, t_s_req=pp_req_tp,
-                    peak_ts=None, peak_ts_req=None,
-                    ttfr=ttfr, est_ppt=est_ppt, e2e_ttft=e2e_ttft,
-                ))
+                rows.append(
+                    _csv_row(
+                        model_name,
+                        "ctx_pp @ d%d%s" % (context_size, c_suffix),
+                        t_s=pp_tp,
+                        t_s_req=pp_req_tp,
+                        peak_ts=None,
+                        peak_ts_req=None,
+                        ttfr=ttfr,
+                        est_ppt=est_ppt,
+                        e2e_ttft=e2e_ttft,
+                    )
+                )
             # Context prefill — TG row
             if tg_tp:
-                rows.append(_csv_row(
-                    model_name, "ctx_tg @ d%d%s" % (context_size, c_suffix),
-                    t_s=tg_tp, t_s_req=tg_req_tp,
-                    peak_ts=peak_tp, peak_ts_req=peak_req_tp,
-                    ttfr=None, est_ppt=None, e2e_ttft=None,
-                ))
+                rows.append(
+                    _csv_row(
+                        model_name,
+                        "ctx_tg @ d%d%s" % (context_size, c_suffix),
+                        t_s=tg_tp,
+                        t_s_req=tg_req_tp,
+                        peak_ts=peak_tp,
+                        peak_ts_req=peak_req_tp,
+                        ttfr=None,
+                        est_ppt=None,
+                        e2e_ttft=None,
+                    )
+                )
         else:
             d_suffix = " @ d%d" % context_size if context_size > 0 else ""
 
             # Standard — PP row
             if pp_tp:
-                rows.append(_csv_row(
-                    model_name, "pp%d%s%s" % (prompt_size, d_suffix, c_suffix),
-                    t_s=pp_tp, t_s_req=pp_req_tp,
-                    peak_ts=None, peak_ts_req=None,
-                    ttfr=ttfr, est_ppt=est_ppt, e2e_ttft=e2e_ttft,
-                ))
+                rows.append(
+                    _csv_row(
+                        model_name,
+                        "pp%d%s%s" % (prompt_size, d_suffix, c_suffix),
+                        t_s=pp_tp,
+                        t_s_req=pp_req_tp,
+                        peak_ts=None,
+                        peak_ts_req=None,
+                        ttfr=ttfr,
+                        est_ppt=est_ppt,
+                        e2e_ttft=e2e_ttft,
+                    )
+                )
             # Standard — TG row
             if tg_tp:
-                rows.append(_csv_row(
-                    model_name, "tg%d%s%s" % (response_size, d_suffix, c_suffix),
-                    t_s=tg_tp, t_s_req=tg_req_tp,
-                    peak_ts=peak_tp, peak_ts_req=peak_req_tp,
-                    ttfr=None, est_ppt=None, e2e_ttft=None,
-                ))
+                rows.append(
+                    _csv_row(
+                        model_name,
+                        "tg%d%s%s" % (response_size, d_suffix, c_suffix),
+                        t_s=tg_tp,
+                        t_s_req=tg_req_tp,
+                        peak_ts=peak_tp,
+                        peak_ts_req=peak_req_tp,
+                        ttfr=None,
+                        est_ppt=None,
+                        e2e_ttft=None,
+                    )
+                )
 
     return rows

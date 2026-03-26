@@ -85,7 +85,7 @@ def test_vllm_resolve_container_default():
     runtime = VllmRayRuntime()
 
     container = runtime.resolve_container(recipe)
-    assert container == "scitrera/dgx-spark-vllm:latest"
+    assert container == "ghcr.io/spark-arena/dgx-vllm-eugr-nightly-tf5:latest"
 
 
 def test_vllm_generate_command_from_template():
@@ -321,7 +321,7 @@ def test_vllm_distributed_resolve_container():
     runtime = VllmDistributedRuntime()
 
     container = runtime.resolve_container(recipe)
-    assert container == "scitrera/dgx-spark-vllm:latest"
+    assert container == "ghcr.io/spark-arena/dgx-vllm-eugr-nightly-tf5:latest"
 
 
 def test_vllm_distributed_generate_command_structured():
@@ -675,7 +675,8 @@ class TestEugrPrepare:
         with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
             with mock.patch("subprocess.run") as mock_run:
                 mock_run.return_value = mock.Mock(returncode=0)
-                builder.prepare_image("my-image", recipe, ["10.0.0.1"])
+                with mock.patch.object(builder, "_save_build_metadata"):
+                    builder.prepare_image("my-image", recipe, ["10.0.0.1"])
 
                 # Should call build-and-copy.sh with -t and build_args
                 cmd = mock_run.call_args[0][0]
@@ -707,7 +708,8 @@ class TestEugrPrepare:
             with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
                 with mock.patch("subprocess.run") as mock_run:
                     mock_run.return_value = mock.Mock(returncode=0)
-                    builder.prepare_image("my-image", recipe, ["10.0.0.1"])
+                    with mock.patch.object(builder, "_save_build_metadata"):
+                        builder.prepare_image("my-image", recipe, ["10.0.0.1"])
                     mock_run.assert_called_once()
                     cmd = mock_run.call_args[0][0]
                     assert str(repo_dir / "build-and-copy.sh") in cmd[0]
@@ -1296,7 +1298,7 @@ def test_llama_cpp_generate_command_gguf_presync_template():
     recipe = Recipe.from_dict(recipe_data)
     runtime = LlamaCppRuntime()
 
-    gguf_path = "/root/.cache/huggingface/hub/models--Qwen--Qwen3-1.7B-GGUF/snapshots/abc123/q4_k_m.gguf"
+    gguf_path = "/cache/huggingface/hub/models--Qwen--Qwen3-1.7B-GGUF/snapshots/abc123/q4_k_m.gguf"
     cmd = runtime.generate_command(
         recipe,
         {"_gguf_model_path": gguf_path, "model": gguf_path},
@@ -1326,7 +1328,7 @@ def test_llama_cpp_generate_command_gguf_presync_structured():
     recipe = Recipe.from_dict(recipe_data)
     runtime = LlamaCppRuntime()
 
-    gguf_path = "/root/.cache/huggingface/hub/models--Qwen--Qwen3-1.7B-GGUF/snapshots/abc123/q4_k_m.gguf"
+    gguf_path = "/cache/huggingface/hub/models--Qwen--Qwen3-1.7B-GGUF/snapshots/abc123/q4_k_m.gguf"
     cmd = runtime.generate_command(
         recipe,
         {"_gguf_model_path": gguf_path, "model": gguf_path},

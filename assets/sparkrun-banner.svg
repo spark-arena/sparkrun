@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 80" fill="none">
+  <!-- Spark icon -->
+  <path d="M36 8 L44 32 L60 28 L40 72 L36 48 L20 52 Z" fill="#1e40af" />
+  <path d="M40 72 L36 48 L20 52 Z" fill="#76b900" opacity="0.9" />
+  <!-- Wordmark -->
+  <text x="80" y="50" font-family="Inter, system-ui, sans-serif" font-size="40" font-weight="700">
+    <tspan fill="#1e40af">spark</tspan><tspan fill="#76b900">run</tspan>
+  </text>
+  <!-- Subtitle -->
+  <text x="80" y="70" font-family="Inter, system-ui, sans-serif" font-size="13" font-weight="400" fill="#64748b">
+    Part of the Spark Arena ecosystem
+  </text>
+</svg>

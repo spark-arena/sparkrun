@@ -48,6 +48,12 @@ _LLAMA_CPP_FLAG_ALIASES: dict[str, list[str]] = {
 # Default RPC port for llama.cpp distributed inference
 _DEFAULT_RPC_PORT = 50052
 
+# first party images for special handling -- TODO: ensure specific tag for image available as label for spark-arena snapshot
+_FIRST_PARTY_IMAGES = (
+    "scitrera/dgx-spark-llama-cpp:latest",
+    "ghcr.io/spark-arena/dgx-llama-cpp:latest",
+)
+
 
 class LlamaCppRuntime(RuntimePlugin):
     """llama.cpp runtime using llama-server for GGUF model inference.
@@ -159,15 +165,21 @@ class LlamaCppRuntime(RuntimePlugin):
     def _inject_split_mode_in_command(command: str, split_mode: str) -> str:
         """Strip existing ``--split-mode`` from *command* and append the correct one."""
         import re
+
         command = re.sub(r"--split-mode\s+\S+", "", command).strip()
         return "%s --split-mode %s" % (command, split_mode)
 
     # --- Command generation ---
 
-    def generate_command(self, recipe: Recipe, overrides: dict[str, Any],
-                         is_cluster: bool, num_nodes: int = 1,
-                         head_ip: str | None = None,
-                         skip_keys: set[str] | frozenset[str] = frozenset()) -> str:
+    def generate_command(
+        self,
+        recipe: Recipe,
+        overrides: dict[str, Any],
+        is_cluster: bool,
+        num_nodes: int = 1,
+        head_ip: str | None = None,
+        skip_keys: set[str] | frozenset[str] = frozenset(),
+    ) -> str:
         """Generate the llama-server command.
 
         When a pre-resolved GGUF path is available (``_gguf_model_path``
@@ -210,29 +222,38 @@ class LlamaCppRuntime(RuntimePlugin):
             if split_mode is not None:
                 rendered = self._inject_split_mode_in_command(rendered, split_mode)
             rendered = self._augment_served_model_name(
-                rendered, config, "--alias", skip_keys,
+                rendered,
+                config,
+                "--alias",
+                skip_keys,
             )
             if skip_keys:
                 all_flags = {**_LLAMA_CPP_FLAG_MAP, **_LLAMA_CPP_BOOL_FLAGS}
                 rendered = self.strip_flags_from_command(
-                    rendered, skip_keys, all_flags, set(_LLAMA_CPP_BOOL_FLAGS),
+                    rendered,
+                    skip_keys,
+                    all_flags,
+                    set(_LLAMA_CPP_BOOL_FLAGS),
                     flag_aliases=_LLAMA_CPP_FLAG_ALIASES,
                 )
             return rendered
 
         # Otherwise, build command from structured defaults
-        return self._build_command(recipe, config, skip_keys=skip_keys,
-                                   split_mode_override=split_mode)
+        return self._build_command(recipe, config, skip_keys=skip_keys, split_mode_override=split_mode)
 
-    def _build_command(self, recipe: Recipe, config,
-                       skip_keys: set[str] | frozenset[str] = frozenset(),
-                       split_mode_override: str | None = None) -> str:
+    def _build_command(
+        self, recipe: Recipe, config, skip_keys: set[str] | frozenset[str] = frozenset(), split_mode_override: str | None = None
+    ) -> str:
         """Build the llama-server command from structured config."""
-        from vpd.legacy.yaml_dict import vpd_chain
+        from scitrera_app_framework.api import Variables, EnvPlacement
 
-        # TP/PP → split_mode takes highest priority, then config, then defaults
+        # TP/PP → split_mode takes highest priority, then config, then defaults.
+        # Export config to dict first — Variables cannot nest as a source
+        # because its .get() returns None for missing keys instead of raising
+        # KeyError, which stops the outer chain from checking later sources.
+        config_dict = config.export_all_variables() if isinstance(config, Variables) else config
         parallelism_layer = {"split_mode": split_mode_override} if split_mode_override else {}
-        config = vpd_chain(parallelism_layer, config, _LLAMA_CPP_DEFAULTS)
+        config = Variables(sources=(parallelism_layer, config_dict, _LLAMA_CPP_DEFAULTS), env_placement=EnvPlacement.IGNORED)
 
         model = recipe.model
 
@@ -254,17 +275,20 @@ class LlamaCppRuntime(RuntimePlugin):
 
         # Add valued and boolean flags from config
         all_flags = {**_LLAMA_CPP_FLAG_MAP, **_LLAMA_CPP_BOOL_FLAGS}
-        parts.extend(self.build_flags_from_map(
-            config, all_flags, bool_keys=set(_LLAMA_CPP_BOOL_FLAGS),
-            skip_keys=skip_keys,
-        ))
+        parts.extend(
+            self.build_flags_from_map(
+                config,
+                all_flags,
+                bool_keys=set(_LLAMA_CPP_BOOL_FLAGS),
+                skip_keys=skip_keys,
+            )
+        )
 
         return " ".join(parts)
 
-    def _build_rpc_head_command(self, recipe: Recipe, config,
-                                worker_hosts: list[str],
-                                rpc_port: int,
-                                skip_keys: set[str] | frozenset[str] = frozenset()) -> str:
+    def _build_rpc_head_command(
+        self, recipe: Recipe, config, worker_hosts: list[str], rpc_port: int, skip_keys: set[str] | frozenset[str] = frozenset()
+    ) -> str:
         """Build the llama-server head command with --rpc for worker nodes."""
         base = self._build_command(recipe, config, skip_keys=skip_keys)
         rpc_addrs = ",".join("%s:%d" % (h, rpc_port) for h in worker_hosts)
@@ -274,6 +298,11 @@ class LlamaCppRuntime(RuntimePlugin):
     def _build_rpc_worker_command(rpc_port: int) -> str:
         """Build the rpc-server command for a worker node."""
         return "rpc-server --host 0.0.0.0 --port %d" % rpc_port
+
+    def version_commands(self) -> dict[str, str]:
+        cmds = super().version_commands()
+        cmds["llama_cpp"] = "llama-server --version 2>/dev/null | head -1 || echo unknown"
+        return cmds
 
     def validate_recipe(self, recipe: Recipe) -> list[str]:
         """Validate llama.cpp-specific recipe fields."""
@@ -297,11 +326,11 @@ class LlamaCppRuntime(RuntimePlugin):
     # --- Cluster stop ---
 
     def _stop_cluster(
-            self,
-            hosts: list[str],
-            cluster_id: str,
-            config=None,
-            dry_run: bool = False,
+        self,
+        hosts: list[str],
+        cluster_id: str,
+        config=None,
+        dry_run: bool = False,
     ) -> int:
         """Stop a llama.cpp RPC cluster."""
         from sparkrun.orchestration.primitives import build_ssh_kwargs
@@ -312,16 +341,22 @@ class LlamaCppRuntime(RuntimePlugin):
         # Stop head
         head_container = self._container_name(cluster_id, "head")
         run_remote_command(
-            hosts[0], self.executor.stop_cmd(head_container),
-            timeout=30, dry_run=dry_run, **ssh_kwargs,
+            hosts[0],
+            self.executor.stop_cmd(head_container),
+            timeout=30,
+            dry_run=dry_run,
+            **ssh_kwargs,
         )
 
         # Stop workers
         for host in hosts[1:]:
             worker_container = self._container_name(cluster_id, "worker")
             run_remote_command(
-                host, self.executor.stop_cmd(worker_container),
-                timeout=30, dry_run=dry_run, **ssh_kwargs,
+                host,
+                self.executor.stop_cmd(worker_container),
+                timeout=30,
+                dry_run=dry_run,
+                **ssh_kwargs,
             )
 
         logger.info("llama.cpp cluster '%s' stopped on %d host(s)", cluster_id, len(hosts))
@@ -335,24 +370,24 @@ class LlamaCppRuntime(RuntimePlugin):
     # --- Cluster launch ---
 
     def _run_cluster(
-            self,
-            hosts: list[str],
-            image: str,
-            serve_command: str = "",
-            recipe=None,
-            overrides=None,
-            *,
-            cluster_id: str = "sparkrun0",
-            env: dict[str, str] | None = None,
-            cache_dir: str | None = None,
-            config=None,
-            dry_run: bool = False,
-            detached: bool = True,
-            nccl_env: dict[str, str] | None = None,
-            ib_ip_map: dict[str, str] | None = None,
-            rpc_port: int = _DEFAULT_RPC_PORT,
-            skip_keys: set[str] | frozenset[str] = frozenset(),
-            **kwargs,
+        self,
+        hosts: list[str],
+        image: str,
+        serve_command: str = "",
+        recipe=None,
+        overrides=None,
+        *,
+        cluster_id: str = "sparkrun0",
+        env: dict[str, str] | None = None,
+        cache_dir: str | None = None,
+        config=None,
+        dry_run: bool = False,
+        detached: bool = True,
+        nccl_env: dict[str, str] | None = None,
+        ib_ip_map: dict[str, str] | None = None,
+        rpc_port: int = _DEFAULT_RPC_PORT,
+        skip_keys: set[str] | frozenset[str] = frozenset(),
+        **kwargs,
     ) -> int:
         """Orchestrate a multi-node llama.cpp cluster using RPC.
 
@@ -376,10 +411,7 @@ class LlamaCppRuntime(RuntimePlugin):
         from sparkrun.orchestration.infiniband import detect_ib_for_hosts
         from sparkrun.orchestration.ssh import run_remote_script, run_remote_command
 
-        logger.warning(
-            "llama.cpp RPC clustering is EXPERIMENTAL. "
-            "Behavior may change in future versions."
-        )
+        logger.warning("llama.cpp RPC clustering is EXPERIMENTAL. Behavior may change in future versions.")
 
         head_host = hosts[0]
         worker_hosts = hosts[1:]
@@ -390,21 +422,31 @@ class LlamaCppRuntime(RuntimePlugin):
         all_env = merge_env(env)
 
         self._print_cluster_banner(
-            "llama.cpp RPC Cluster Launcher (EXPERIMENTAL)", hosts, image, cluster_id,
-            {"RPC Port": rpc_port}, dry_run,
+            "llama.cpp RPC Cluster Launcher (EXPERIMENTAL)",
+            hosts,
+            image,
+            cluster_id,
+            {"RPC Port": rpc_port},
+            dry_run,
         )
 
         # Step 1: Cleanup
         t0 = time.monotonic()
         logger.info("Step 1/5: Cleaning up existing containers for cluster '%s'...", cluster_id)
         run_remote_command(
-            head_host, self.executor.stop_cmd(head_container),
-            timeout=30, dry_run=dry_run, **ssh_kwargs,
+            head_host,
+            self.executor.stop_cmd(head_container),
+            timeout=30,
+            dry_run=dry_run,
+            **ssh_kwargs,
         )
         for host in worker_hosts:
             run_remote_command(
-                host, self.executor.stop_cmd(worker_container_name),
-                timeout=30, dry_run=dry_run, **ssh_kwargs,
+                host,
+                self.executor.stop_cmd(worker_container_name),
+                timeout=30,
+                dry_run=dry_run,
+                **ssh_kwargs,
             )
         logger.info("Step 1/5: Cleanup done (%.1fs)", time.monotonic() - t0)
 
@@ -419,7 +461,9 @@ class LlamaCppRuntime(RuntimePlugin):
         else:
             logger.info("Step 2/5: Detecting InfiniBand on all hosts...")
             ib_result = detect_ib_for_hosts(
-                hosts, ssh_kwargs=ssh_kwargs, dry_run=dry_run,
+                hosts,
+                ssh_kwargs=ssh_kwargs,
+                dry_run=dry_run,
             )
             nccl_env = ib_result.nccl_env
             ib_ip_map = ib_result.ib_ip_map
@@ -441,7 +485,8 @@ class LlamaCppRuntime(RuntimePlugin):
         if worker_hosts:
             logger.info(
                 "Step 3/5: Launching %d RPC worker(s) on %s...",
-                len(worker_hosts), ", ".join(worker_hosts),
+                len(worker_hosts),
+                ", ".join(worker_hosts),
             )
             rpc_worker_command = self._build_rpc_worker_command(rpc_port)
 
@@ -449,13 +494,21 @@ class LlamaCppRuntime(RuntimePlugin):
                 futures = {}
                 for host in worker_hosts:
                     script = self._generate_node_script(
-                        image=image, container_name=worker_container_name,
-                        serve_command=rpc_worker_command, label="llama.cpp node",
-                        env=all_env, volumes=volumes, nccl_env=nccl_env,
+                        image=image,
+                        container_name=worker_container_name,
+                        serve_command=rpc_worker_command,
+                        label="llama.cpp node",
+                        env=all_env,
+                        volumes=volumes,
+                        nccl_env=nccl_env,
                     )
                     future = executor.submit(
-                        run_remote_script, host, script,
-                        timeout=120, dry_run=dry_run, **ssh_kwargs,
+                        run_remote_script,
+                        host,
+                        script,
+                        timeout=120,
+                        dry_run=dry_run,
+                        **ssh_kwargs,
                     )
                     futures[future] = host
 
@@ -465,7 +518,8 @@ class LlamaCppRuntime(RuntimePlugin):
                     if not result.success and not dry_run:
                         logger.warning(
                             "  RPC worker on %s may have failed: %s",
-                            host, result.stderr[:100],
+                            host,
+                            result.stderr[:100],
                         )
 
             logger.info("Step 3/5: RPC workers launched (%.1fs)", time.monotonic() - t0)
@@ -480,16 +534,20 @@ class LlamaCppRuntime(RuntimePlugin):
             logger.info("Step 4/5: Waiting for RPC workers to be ready...")
             for host in worker_hosts:
                 ready = wait_for_port(
-                    host, rpc_port,
-                    max_retries=30, retry_interval=2,
-                    ssh_kwargs=ssh_kwargs, dry_run=dry_run,
+                    host,
+                    rpc_port,
+                    max_retries=30,
+                    retry_interval=2,
+                    ssh_kwargs=ssh_kwargs,
+                    dry_run=dry_run,
                     container_name=worker_container_name,
                 )
                 if not ready:
                     logger.error(
-                        "RPC worker on %s failed to become ready. "
-                        "Check logs: ssh %s 'docker logs %s'",
-                        host, host, worker_container_name,
+                        "RPC worker on %s failed to become ready. Check logs: ssh %s 'docker logs %s'",
+                        host,
+                        host,
+                        worker_container_name,
                     )
                     return 1
             logger.info("Step 4/5: RPC workers ready (%.1fs)", time.monotonic() - t0)
@@ -500,19 +558,30 @@ class LlamaCppRuntime(RuntimePlugin):
         t0 = time.monotonic()
         config_chain = recipe.build_config_chain(overrides)
         head_command = self._build_rpc_head_command(
-            recipe, config_chain, rpc_hosts, rpc_port,
+            recipe,
+            config_chain,
+            rpc_hosts,
+            rpc_port,
             skip_keys=skip_keys,
         )
         logger.info("Step 5/5: Launching llama-server on head %s...", head_host)
         logger.info("  Command: %s", head_command[:120])
 
         head_script = self._generate_node_script(
-            image=image, container_name=head_container,
-            serve_command=head_command, label="llama.cpp node",
-            env=all_env, volumes=volumes, nccl_env=nccl_env,
+            image=image,
+            container_name=head_container,
+            serve_command=head_command,
+            label="llama.cpp node",
+            env=all_env,
+            volumes=volumes,
+            nccl_env=nccl_env,
         )
         head_result = run_remote_script(
-            head_host, head_script, timeout=120, dry_run=dry_run, **ssh_kwargs,
+            head_host,
+            head_script,
+            timeout=120,
+            dry_run=dry_run,
+            **ssh_kwargs,
         )
         if not head_result.success and not dry_run:
             logger.error("Failed to launch head: %s", head_result.stderr[:200])

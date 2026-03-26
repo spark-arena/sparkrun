@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from json import dumps as json_dumps
 from os import path as osp
 from pathlib import Path
 from typing import Any, TYPE_CHECKING, Optional
@@ -11,8 +12,8 @@ from typing import Any, TYPE_CHECKING, Optional
 import yaml
 
 from vpd.next.util import read_yaml
-from vpd.legacy.yaml_dict import vpd_chain, VirtualPathDictChain
 from vpd.legacy.arguments import arg_substitute
+from scitrera_app_framework.api import Variables, EnvPlacement
 
 if TYPE_CHECKING:
     from sparkrun.core.registry import RegistryManager
@@ -33,14 +34,32 @@ _CMD_LLAMA_CPP_RE = re.compile(r"^llama-server\b")
 _CMD_TRTLLM_RE = re.compile(r"^(?:trtllm-serve|mpirun\b.*trtllm)")
 
 _KNOWN_KEYS = {
-    "sparkrun_version", "recipe_version", "name", "description", "model",
+    "sparkrun_version",
+    "recipe_version",
+    "name",
+    "description",
+    "model",
     "model_revision",
-    "runtime", "runtime_version", "mode", "min_nodes", "max_nodes",
-    "container", "defaults", "env", "command", "runtime_config",
-    "cluster_only", "solo_only",
-    "benchmark", "metadata",
-    "pre_exec", "post_exec", "post_commands", "stop_after_post",
-    "builder", "builder_config",
+    "runtime",
+    "runtime_version",
+    "mode",
+    "min_nodes",
+    "max_nodes",
+    "container",
+    "defaults",
+    "env",
+    "command",
+    "runtime_config",
+    "cluster_only",
+    "solo_only",
+    "benchmark",
+    "metadata",
+    "pre_exec",
+    "post_exec",
+    "post_commands",
+    "stop_after_post",
+    "builder",
+    "builder_config",
     "executor_config",
 }
 
@@ -98,31 +117,32 @@ def _resolve_runtime_from_command_hint(recipe: Recipe) -> None:
     elif _CMD_TRTLLM_RE.match(cmd):
         recipe.runtime = "trtllm"
 
-    return
-
 
 def _resolve_v1_migration(recipe: Recipe) -> None:
-    """v1 format recipes -> eugr-vllm runtime."""
+    """v1 format recipes -> eugr builder (runtime left for vllm variant resolution)."""
     if recipe.recipe_version != "1":
         return
     if recipe.runtime in ("vllm", ""):
-        recipe.runtime = "eugr-vllm"
+        if not recipe.builder:
+            recipe.builder = "eugr"
 
 
 def _resolve_eugr_signals(recipe: Recipe) -> None:
-    """build_args or mods present -> eugr-vllm."""
+    """build_args or mods present -> eugr builder (runtime left for vllm variant resolution)."""
     if recipe.runtime not in ("vllm", ""):
         return
     rc = recipe.runtime_config
-    if rc.get("build_args") or rc.get("mods"):
-        recipe.runtime = "eugr-vllm"
+    if rc.get("build_args") or rc.get("mods") or recipe.container.strip().startswith("ghcr.io/spark-arena/dgx-vllm-eugr-nightly"):
+        if not recipe.builder:
+            recipe.builder = "eugr"
 
 
 def _resolve_vllm_variant(recipe: Recipe) -> None:
     """Bare 'vllm' (or empty) -> 'vllm-distributed' (default) or 'vllm-ray' (Ray hints)."""
     if recipe.runtime not in ("vllm", ""):
         return
-    if str(recipe.defaults.get("distributed_executor_backend", "")).lower() == "ray":
+    # noinspection PyProtectedMember
+    if str(recipe._effective_default("distributed_executor_backend", "")).lower() == "ray":
         recipe.runtime = "vllm-ray"
         return
     if recipe.command and _RAY_BACKEND_RE.search(recipe.command):
@@ -139,11 +159,16 @@ _RECIPE_RESOLVERS = [
 ]
 
 
-def resolve_runtime(data: dict[str, Any]) -> str:
+def resolve_runtime(data: dict[str, Any], overrides: dict[str, Any] | None = None) -> str:
     """Lightweight runtime resolution from raw data (for listing/display).
 
     Mirrors the runtime-affecting resolvers in :data:`_RECIPE_RESOLVERS`
     without constructing a full Recipe.
+
+    Args:
+        data: Raw recipe dict.
+        overrides: Optional CLI overrides (checked before defaults for
+            the vllm-variant decision).
     """
     runtime = data.get("runtime") or ""
 
@@ -159,34 +184,51 @@ def resolve_runtime(data: dict[str, Any]) -> str:
             return "trtllm"
         # vllm serve or unrecognised → fall through to vllm variant resolution
 
-    # v1 migration and eugr detection (mirror _resolve_v1_migration and _resolve_eugr_signals)
-    version = str(data.get("sparkrun_version", data.get("recipe_version", "2")))
-    if runtime in ("vllm", "") and version == "1":
-        return "eugr-vllm"
+    # v1 migration and eugr detection now only affect builder, not runtime.
+    # Runtime falls through to vllm variant resolution below.
 
-    # In Recipe.__init__, unknown keys are swept into runtime_config, and
-    # _resolve_eugr_signals inspects recipe.runtime_config for build_args/mods.
     runtime_config = data.get("runtime_config") or {}
     if runtime_config is not None and not isinstance(runtime_config, dict):
         raise RecipeError("Recipe 'runtime_config' field must be a mapping, got %s" % type(runtime_config).__name__)
-    if runtime in ("vllm", "") and (
-            data.get("build_args")
-            or data.get("mods")
-            or runtime_config.get("build_args")
-            or runtime_config.get("mods")
-    ):
-        return "eugr-vllm"
     if runtime in ("vllm", ""):
+        effective = dict(overrides or {})
         defaults = data.get("defaults")
         if defaults is not None and not isinstance(defaults, dict):
             raise RecipeError("Recipe 'defaults' field must be a mapping, got %s" % type(defaults).__name__)
         defaults = defaults or {}
-        if str(defaults.get("distributed_executor_backend", "")).lower() == "ray":
+        # Overrides take precedence over defaults
+        deb = effective.get("distributed_executor_backend") or defaults.get("distributed_executor_backend", "")
+        if str(deb).lower() == "ray":
             return "vllm-ray"
         if _RAY_BACKEND_RE.search(cmd):
             return "vllm-ray"
         return "vllm-distributed"
     return runtime
+
+
+def resolve_builder(data: dict[str, Any]) -> str:
+    """Lightweight builder resolution from raw data (for listing/display).
+
+    Detects eugr signals (v1 version, build_args, mods) and returns
+    ``"eugr"`` or ``""`` without constructing a full Recipe.
+    """
+    builder = data.get("builder", "")
+    if builder:
+        return builder
+    version = str(data.get("sparkrun_version", data.get("recipe_version", "2")))
+    if version == "1":
+        runtime = data.get("runtime", "")
+        if runtime in ("vllm", ""):
+            return "eugr"
+    runtime_config = data.get("runtime_config") or {}
+    runtime = data.get("runtime", "")
+    if runtime in ("vllm", "") and (
+        data.get("build_args")
+        or data.get("mods")
+        or (isinstance(runtime_config, dict) and (runtime_config.get("build_args") or runtime_config.get("mods")))
+    ):
+        return "eugr"
+    return ""
 
 
 def is_recipe_file(path: Path) -> bool:
@@ -221,6 +263,90 @@ def discover_cwd_recipes(directory: Path | None = None) -> list[Path]:
     return sorted(p for p in candidates if is_recipe_file(p))
 
 
+SPARK_ARENA_PREFIX = "@spark-arena/"
+SPARK_ARENA_API_URL = "https://spark-arena.com/api/recipes/%s/raw"
+
+
+def expand_recipe_shortcut(name: str) -> str:
+    """Expand known recipe shortcuts to full URLs.
+
+    Currently supports:
+        @spark-arena/UUID  ->  https://spark-arena.com/api/recipes/UUID/raw
+    """
+    if name.startswith(SPARK_ARENA_PREFIX):
+        recipe_id = name[len(SPARK_ARENA_PREFIX) :]
+        return SPARK_ARENA_API_URL % recipe_id
+    return name
+
+
+def simplify_recipe_ref(url: str) -> str:
+    """Simplify a recipe URL to a shortcut if possible (inverse of expand).
+
+    Currently supports:
+        https://spark-arena.com/api/recipes/UUID/raw  ->  @spark-arena/UUID
+
+    Returns the original string unchanged if no simplification applies.
+    """
+    m = re.match(r"https?://spark-arena\.com/api/recipes/([^/]+)/raw$", url)
+    if m:
+        return "%s%s" % (SPARK_ARENA_PREFIX, m.group(1))
+    return url
+
+
+def is_recipe_url(name: str) -> bool:
+    """Check if recipe_name looks like an HTTP(S) URL."""
+    return name.startswith(("http://", "https://"))
+
+
+def _url_cache_path(url: str) -> Path:
+    """Return the local cache path for a remote recipe URL."""
+    import hashlib
+
+    from sparkrun.core.config import DEFAULT_CACHE_DIR
+
+    url_hash = hashlib.sha256(url.encode()).hexdigest()[:16]
+    return DEFAULT_CACHE_DIR / "remote-recipes" / ("%s.yaml" % url_hash)
+
+
+def fetch_and_cache_recipe(url: str) -> Path:
+    """Fetch a recipe from URL and cache it locally.
+
+    On success, writes/updates the cache file and returns its path.
+    On network failure, falls back to cached copy if available.
+    Raises RecipeError if fetch fails and no cache exists.
+    """
+    from urllib.error import HTTPError, URLError
+    from urllib.request import Request, urlopen
+
+    cache_path = _url_cache_path(url)
+
+    try:
+        req = Request(url, headers={"User-Agent": "sparkrun"})
+        with urlopen(req, timeout=30) as resp:
+            content = resp.read()
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_bytes(content)
+        return cache_path
+    except (HTTPError, URLError, OSError) as e:
+        if cache_path.exists():
+            reason = e.code if isinstance(e, HTTPError) else e.reason
+            logger.warning(
+                "Failed to fetch recipe (using cached copy): %s",
+                reason,
+            )
+            return cache_path
+        if isinstance(e, HTTPError):
+            raise RecipeError("Failed to fetch recipe from %s: HTTP %d" % (url, e.code))
+        raise RecipeError("Failed to fetch recipe from %s: %s" % (url, e.reason if isinstance(e, URLError) else e))
+
+
+# Backward-compat aliases (old underscore names)
+_expand_recipe_shortcut = expand_recipe_shortcut
+_simplify_recipe_ref = simplify_recipe_ref
+_is_recipe_url = is_recipe_url
+_fetch_and_cache_recipe = fetch_and_cache_recipe
+
+
 class RecipeError(Exception):
     """Raised when a recipe is invalid or cannot be loaded."""
 
@@ -232,10 +358,7 @@ class RecipeAmbiguousError(RecipeError):
         self.name = name
         self.matches = matches
         registries = ", ".join(reg for reg, _ in matches)
-        super().__init__(
-            "Recipe '%s' found in multiple registries: %s. "
-            "Use @registry/%s to specify." % (name, registries, name)
-        )
+        super().__init__("Recipe '%s' found in multiple registries: %s. Use @registry/%s to specify." % (name, registries, name))
 
 
 class Recipe:
@@ -246,6 +369,8 @@ class Recipe:
         self.source_path = source_path
         self.source_registry: str | None = None  # set by _load_recipe after resolution
         self.source_registry_url: str | None = None  # set by _load_recipe after resolution
+
+        self._qualified_name_override: str | None = None  # optional override for qualified_name
 
         # Detect version
         self.recipe_version = str(data.get("recipe_version", "2"))
@@ -263,12 +388,12 @@ class Recipe:
         self.mode: str = data.get("mode", "auto")  # "solo", "cluster", "auto"
         self.min_nodes: int = int(data.get("min_nodes", 1))
         self.max_nodes: int | None = data.get("max_nodes")
-        if self.mode == 'solo':
+        if self.mode == "solo":
             self.max_nodes = self.min_nodes = 1
-        elif self.mode == 'auto' and self.min_nodes > 1:
-            self.mode = 'cluster'
-        elif self.mode == 'auto' and self.max_nodes == 1:
-            self.mode = 'solo'
+        elif self.mode == "auto" and self.min_nodes > 1:
+            self.mode = "cluster"
+        elif self.mode == "auto" and self.max_nodes == 1:
+            self.mode = "solo"
 
         # Topology - Handle solo_only/cluster_only as first-class fields (works for both v1 and v2)
         if data.get("cluster_only"):
@@ -282,10 +407,8 @@ class Recipe:
         self.container: str = data.get("container", "")
 
         # Configuration
-        self.defaults: dict[str, Any] = dict(data.get("defaults", {}))
-        self.env: dict[str, str] = {
-            str(k): osp.expandvars(str(v)) for k, v in data.get("env", {}).items()
-        }
+        self.defaults: dict[str, Any] = dict(data.get("defaults") or {})
+        self.env: dict[str, str] = {str(k): osp.expandvars(str(v)) for k, v in (data.get("env") or {}).items()}
         self.command: str | None = data.get("command")
 
         # Metadata section (v2 extension for VRAM estimation, model info)
@@ -326,9 +449,66 @@ class Recipe:
         raw_exec = data.get("executor_config", {})
         self.executor_config: dict[str, Any] = dict(raw_exec) if isinstance(raw_exec, dict) else {}
 
-        # Post-init resolver chain — all runtime/migration logic lives here
+        # Applied overrides (populated by resolve())
+        self._applied_overrides: dict[str, Any] = {}
+
+    # ------------------------------------------------------------------
+    # Runtime resolution (separated from __init__ for override support)
+    # ------------------------------------------------------------------
+
+    def _effective_default(self, key: str, fallback: Any = None) -> Any:
+        """Get effective value: applied overrides -> recipe defaults -> fallback.
+
+        Used by resolvers so they naturally see CLI overrides without
+        per-resolver maintenance.
+        """
+        v = self._applied_overrides.get(key)
+        if v is not None:
+            return v
+        return self.defaults.get(key, fallback)
+
+    def resolve(self, overrides: dict[str, Any] | None = None) -> Recipe:
+        """Run the resolver chain, optionally with CLI overrides.
+
+        Overrides are visible to resolvers via ``_effective_default()`` so
+        they can influence runtime resolution (e.g.
+        ``distributed_executor_backend=ray`` switches vllm-distributed to
+        vllm-ray).
+
+        Can be called multiple times safely — resets runtime to its raw
+        YAML value before re-running the chain.
+        """
+        self._applied_overrides = dict(overrides) if overrides else {}
+        self.runtime = self._raw.get("runtime", "")
+        self.builder = self._raw.get("builder", "")
         for resolver in _RECIPE_RESOLVERS:
             resolver(self)
+        return self
+
+    @property
+    def qualified_name(self) -> str:
+        """Fully qualified name for unambiguous CLI display.
+
+        Returns @registry/name for registry recipes, source_path for
+        path/URL recipes, or bare name for bundled/CWD recipes.
+        """
+        if self._qualified_name_override:
+            return self._qualified_name_override
+        if self.source_registry:
+            return "@%s/%s" % (self.source_registry, self.name)
+        if self.source_path:
+            p = self.source_path
+            if p.startswith(("http://", "https://")):
+                return p
+            sp = Path(p)
+            if sp.is_absolute() or "/" in p:
+                return p
+        return self.name
+
+    @property
+    def spark_arena_benchmarks(self) -> list[dict[str, Any]]:
+        """List of ``{tp, uuid}`` dicts linking to Spark Arena benchmark results."""
+        return self.metadata.get("spark_arena_benchmarks", [])
 
     @property
     def slug(self) -> str:
@@ -339,17 +519,16 @@ class Recipe:
         """Get a value from defaults with optional fallback."""
         return self.defaults.get(key, fallback)
 
-    def build_config_chain(self, cli_overrides: dict[str, Any] | None = None,
-                           user_config: dict[str, Any] | None = None) -> VirtualPathDictChain:
+    def build_config_chain(self, cli_overrides: dict[str, Any] | None = None, user_config: dict[str, Any] | None = None) -> Variables:
         """Build cascading config: CLI overrides -> user config -> recipe defaults.
 
         Also injects 'model' into the chain for template substitution.
         """
         base = dict(self.defaults)
         base.setdefault("model", self.model)
-        return vpd_chain(cli_overrides or {}, user_config or {}, base)
+        return Variables(sources=(cli_overrides or {}, user_config or {}, base), env_placement=EnvPlacement.IGNORED)
 
-    def render_command(self, config_chain: VirtualPathDictChain) -> str | None:
+    def render_command(self, config_chain: Variables) -> str | None:
         """Render the command template with values from the config chain.
 
         Returns None if no command template is defined.
@@ -405,26 +584,41 @@ class Recipe:
         return issues
 
     @classmethod
-    def load(cls, path: str | Path) -> Recipe:
-        """Load a recipe from a YAML file path."""
+    def load(cls, path: str | Path, resolve: bool = True) -> Recipe:
+        """Load a recipe from a YAML file path.
+
+        Args:
+            path: Path to the recipe YAML file.
+            resolve: Run the resolver chain immediately (default True).
+                Pass ``False`` when CLI overrides need to influence
+                resolution — call ``recipe.resolve(overrides)`` later.
+        """
         path = Path(path)
         if not path.exists():
             raise RecipeError("Recipe file not found: %s" % path)
         data = read_yaml(str(path))
         if not isinstance(data, dict):
             raise RecipeError("Recipe file must contain a YAML mapping: %s" % path)
-        return cls(data, source_path=str(path))
+        recipe = cls(data, source_path=str(path))
+        if resolve:
+            recipe.resolve()
+        return recipe
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> Recipe:
-        """Create a recipe from a dict (useful for testing)."""
-        return cls(data)
+    def from_dict(cls, data: dict[str, Any], overrides: dict[str, Any] | None = None) -> Recipe:
+        """Create a recipe from a dict (useful for testing).
+
+        Always resolves immediately for backward compatibility.
+        """
+        recipe = cls(data)
+        recipe.resolve(overrides)
+        return recipe
 
     def estimate_vram(
-            self,
-            cli_overrides: dict[str, Any] | None = None,
-            auto_detect: bool = True,
-            cache_dir: str | None = None,
+        self,
+        cli_overrides: dict[str, Any] | None = None,
+        auto_detect: bool = True,
+        cache_dir: str | None = None,
     ) -> VRAMEstimate:
         """Estimate VRAM usage for this recipe.
 
@@ -451,9 +645,13 @@ class Recipe:
         config = self.build_config_chain(cli_overrides)
 
         # Start with metadata values
-        model_dtype = self.metadata.get("model_dtype")
+        from sparkrun.models.vram import normalize_dtype
+
+        _raw_dtype = self.metadata.get("model_dtype")
+        model_dtype = normalize_dtype(str(_raw_dtype)) if _raw_dtype else None
         model_params_raw = self.metadata.get("model_params")
-        kv_dtype = self.metadata.get("kv_dtype")
+        _raw_kv = self.metadata.get("kv_dtype")
+        kv_dtype = normalize_dtype(str(_raw_kv)) if _raw_kv else None
         num_layers = self.metadata.get("num_layers")
         num_kv_heads = self.metadata.get("num_kv_heads")
         head_dim = self.metadata.get("head_dim")
@@ -462,20 +660,26 @@ class Recipe:
 
         # Auto-detect from HF if fields are missing and model is specified
         if auto_detect and self.model:
-            needs_detection = (
-                                      model_vram is None
-                                      and (not model_dtype or model_params_raw is None)
-                              ) or (
-                                      kv_vram_per_token is None
-                                      and (not num_layers or not num_kv_heads or not head_dim)
-                              )
+            needs_detection = (model_vram is None and (not model_dtype or model_params_raw is None)) or (
+                kv_vram_per_token is None and (not num_layers or not num_kv_heads or not head_dim)
+            )
             if needs_detection:
                 hf_config = fetch_model_config(self.model, revision=self.model_revision, cache_dir=cache_dir)
                 if hf_config:
                     hf_info = extract_model_info(hf_config)
                     # Fill in missing fields (metadata takes precedence)
                     if not model_dtype:
-                        model_dtype = hf_info.get("model_dtype")
+                        # Resolve model_dtype with quantization awareness:
+                        # 1. Recipe defaults "quantization" key (e.g. quantization: fp8)
+                        # 2. HF quantization_config.quant_method (extracted as quant_dtype)
+                        # 3. HF torch_dtype (fallback — often bfloat16 even for quant models)
+                        recipe_quant = config.get("quantization")
+                        if recipe_quant and str(recipe_quant).lower() not in ("none", "auto", ""):
+                            model_dtype = str(recipe_quant).lower()
+                        elif hf_info.get("quant_dtype"):
+                            model_dtype = hf_info["quant_dtype"]
+                        else:
+                            model_dtype = hf_info.get("model_dtype")
                     if not num_layers:
                         num_layers = hf_info.get("num_layers")
                     if not num_kv_heads:
@@ -530,8 +734,8 @@ class Recipe:
 
         # Write back auto-detected values so downstream consumers
         # (e.g. benchmark result export) can use them without re-fetching.
-        if model_dtype and "model_dtype" not in self.metadata:
-            self.metadata["model_dtype"] = str(model_dtype)
+        if model_dtype:
+            self.metadata["model_dtype"] = normalize_dtype(str(model_dtype))
         if num_layers is not None and "num_layers" not in self.metadata:
             self.metadata["num_layers"] = int(num_layers)
         if num_kv_heads is not None and "num_kv_heads" not in self.metadata:
@@ -543,6 +747,113 @@ class Recipe:
 
         return result
 
+    # ------------------------------------------------------------------
+    # Internal serialization (full round-trip state, not canonical export)
+    # ------------------------------------------------------------------
+
+    _SERIALIZATION_VERSION = 1
+
+    def __getstate__(self) -> dict[str, Any]:
+        """Serialize the full effective Recipe state into a plain dict.
+
+        Unlike ``export()`` (which produces a clean canonical recipe),
+        this captures *all* resolved fields so the object can be
+        faithfully restored without re-running the resolver chain.
+        """
+        return {
+            "_serialization_version": self._SERIALIZATION_VERSION,
+            "name": self.name,
+            "source_path": self.source_path,
+            "source_registry": self.source_registry,
+            "source_registry_url": self.source_registry_url,
+            "_qualified_name_override": self._qualified_name_override,
+            "recipe_version": self.recipe_version,
+            "description": self.description,
+            "model": self.model,
+            "model_revision": self.model_revision,
+            "runtime": self.runtime,
+            "runtime_version": self.runtime_version,
+            "mode": self.mode,
+            "min_nodes": self.min_nodes,
+            "max_nodes": self.max_nodes,
+            "container": self.container,
+            "defaults": dict(self.defaults),
+            "env": dict(self.env),
+            "command": self.command,
+            "metadata": dict(self.metadata),
+            "maintainer": self.maintainer,
+            "runtime_config": dict(self.runtime_config),
+            "pre_exec": list(self.pre_exec),
+            "post_exec": list(self.post_exec),
+            "post_commands": list(self.post_commands),
+            "stop_after_post": self.stop_after_post,
+            "builder": self.builder,
+            "builder_config": dict(self.builder_config),
+            "executor_config": dict(self.executor_config),
+            "_applied_overrides": dict(self._applied_overrides),
+            "_raw": dict(self._raw),
+        }
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        """Restore Recipe fields from a state dict produced by ``__getstate__``."""
+        self._raw = state.get("_raw", {})
+        self.source_path = state.get("source_path")
+        self.source_registry = state.get("source_registry")
+        self.source_registry_url = state.get("source_registry_url")
+        self._qualified_name_override = state.get("_qualified_name_override")
+        self.recipe_version = state.get("recipe_version", "2")
+        self.name = state.get("name", "unnamed")
+        self.description = state.get("description", "")
+        self.model = state.get("model", "")
+        self.model_revision = state.get("model_revision")
+        self.runtime = state.get("runtime", "")
+        self.runtime_version = state.get("runtime_version", "")
+        self.mode = state.get("mode", "auto")
+        self.min_nodes = state.get("min_nodes", 1)
+        self.max_nodes = state.get("max_nodes")
+        self.container = state.get("container", "")
+        self.defaults = dict(state.get("defaults") or {})
+        self.env = dict(state.get("env") or {})
+        self.command = state.get("command")
+        self.metadata = dict(state.get("metadata") or {})
+        self.maintainer = state.get("maintainer", "")
+        self.runtime_config = dict(state.get("runtime_config") or {})
+        self.pre_exec = list(state.get("pre_exec") or [])
+        self.post_exec = list(state.get("post_exec") or [])
+        self.post_commands = list(state.get("post_commands") or [])
+        self.stop_after_post = bool(state.get("stop_after_post", False))
+        self.builder = state.get("builder", "")
+        self.builder_config = dict(state.get("builder_config") or {})
+        self.executor_config = dict(state.get("executor_config") or {})
+        self._applied_overrides = dict(state.get("_applied_overrides") or {})
+
+    @classmethod
+    def _deserialize(cls, data: dict[str, Any]) -> Recipe:
+        """Construct a Recipe from a serialized state dict (no resolution)."""
+        instance = cls.__new__(cls)
+        instance.__setstate__(data)
+        return instance
+
+    def _serialize_yaml(self) -> str:
+        """Serialize full Recipe state to a YAML string."""
+        from sparkrun.utils.yaml_helpers import LiteralBlockDumper
+
+        return yaml.dump(
+            self.__getstate__(),
+            Dumper=LiteralBlockDumper,
+            indent=2,
+            sort_keys=False,
+            default_flow_style=False,
+        )
+
+    @classmethod
+    def _deserialize_yaml(cls, text: str) -> Recipe:
+        """Restore a Recipe from a YAML string produced by ``_serialize_yaml``."""
+        data = yaml.safe_load(text)
+        if not isinstance(data, dict):
+            raise RecipeError("Expected a YAML mapping for Recipe deserialization")
+        return cls._deserialize(data)
+
     def __repr__(self) -> str:
         return "Recipe(name=%r, runtime=%r, model=%r)" % (self.name, self.runtime, self.model)
 
@@ -550,13 +861,15 @@ class Recipe:
     # or fnmatch-style patterns (e.g. "model*" matches "model", "model_revision").
     # Keys not listed here are appended alphabetically after the last group.
     EXPORT_KEY_ORDER: list[str] = [
-        'recipe_version',
+        "recipe_version",
         "model*",
         "runtime*",
         "builder*",
-        "min_nodes", "max_nodes",
+        "min_nodes",
+        "max_nodes",
         "container",
-        "solo_only", "cluster_only",
+        "solo_only",
+        "cluster_only",
         "metadata",
         "defaults",
         "env",
@@ -580,15 +893,12 @@ class Recipe:
         - Drops v1-only and internal keys (``recipe_version``, ``sparkrun_version``,
           ``name``, ``mode``, ``runtime_config``, unknown sweep keys).
         """
-        d: dict[str, Any] = {
-            'recipe_version': self.recipe_version,
-            "model": self.model
-        }
+        d: dict[str, Any] = {"recipe_version": self.recipe_version, "model": self.model}
 
         # -- Core fields (always present) --
         if self.model_revision:
             d["model_revision"] = self.model_revision
-        d["runtime"] = self._raw.get('runtime', self.runtime)  # use bare original if given
+        d["runtime"] = self._raw.get("runtime", self.runtime)  # use bare original if given
         if self.runtime_version:
             d["runtime_version"] = self.runtime_version
 
@@ -609,20 +919,20 @@ class Recipe:
             d["cluster_only"] = True
 
         # -- Metadata (absorb promoted keys) --
-        meta = dict(self.metadata)
+        d["metadata"] = meta = dict(self.metadata)
         if self.description:
             meta["description"] = self.description
         if self.maintainer:
             meta["maintainer"] = self.maintainer
 
         # transfer SELECTED model parameters to recipe
-        if meta and meta.get('model_dtype', None) is not None:
-            meta['model_dtype'] = str(meta['model_dtype'])
+        if meta and meta.get("model_dtype", None) is not None:
+            meta["model_dtype"] = str(meta["model_dtype"])
         # TODO: kv_dtype should be included and reflect command overrides on kv dtype not just hf auto-detect
         # if meta and meta.get('kv_dtype', None) is not None:
         #     meta['kv_dtype'] = str(meta['kv_dtype'])
-        if meta and meta.get('model_params', None) is not None:
-            meta['model_params'] = str(meta['model_params'])
+        if meta and meta.get("model_params", None) is not None:
+            meta["model_params"] = str(meta["model_params"])
 
         # -- Builder --
         if self.builder:
@@ -653,24 +963,85 @@ class Recipe:
 
         return d
 
-    def export(self, path: Optional[str | Path]) -> Optional[str]:
+    def export(
+        self,
+        path: Optional[str | Path] = None,
+        json: bool = False,
+        overrides: Optional[dict] = None,
+        container_image: Optional[str] = None,
+    ) -> Optional[str | Path]:
         """Export the recipe as canonical YAML.
 
         Builds a clean dict from resolved attributes (not raw input),
         applies preferred key ordering, and writes YAML.
+
+        Args:
+            path: Write to file instead of returning text.
+            json: Output JSON instead of YAML.
+            overrides: When provided, merge into the exported ``defaults``
+                dict so the export captures the effective configuration.
+            container_image: When provided, override the ``container`` field
+                (accounts for builder mutations).
         """
+        from sparkrun.utils.yaml_helpers import LiteralBlockDumper
+
         export_dict = self._build_export_dict()
+
+        # Bake overrides into defaults so the export is self-contained
+        if overrides:
+            defaults = dict(export_dict.get("defaults") or {})
+            defaults.update(overrides)
+            export_dict["defaults"] = defaults
+
+        # Override container with effective image (post-builder)
+        if container_image:
+            export_dict["container"] = container_image
+
+        # filter out pre-/post- commands that were added by
+        # runtime, builder, etc. because those should be reproducible
+        # implicitly by relying on the runtime & builder in the future as well
+
+        # ensure that pre_exec is excluded if raw is empty
+        export_dict["pre_exec"] = self._raw.get("pre_exec", [])
+        if not export_dict["pre_exec"]:
+            del export_dict["pre_exec"]
+
+        # ensure that post_exec is excluded if raw is empty
+        export_dict["post_exec"] = self._raw.get("post_exec", [])
+        if not export_dict["post_exec"]:
+            del export_dict["post_exec"]
+
+        # ensure that post_commands are excluded if raw is empty
+        export_dict["post_commands"] = self._raw.get("post_commands", [])
+        if not export_dict["post_commands"]:
+            del export_dict["post_commands"]
+
+        # ensure that `stop_after_post` is excluded if False
+        if not export_dict.get("stop_after_post", False):
+            export_dict.pop("stop_after_post", None)
+
         ordered = _sort_dict_by_patterns(export_dict, self.EXPORT_KEY_ORDER)
-        recipe_text = yaml.safe_dump(ordered, indent=2, sort_keys=False)
+
+        text = (
+            json_dumps(ordered, sort_keys=False)
+            if json
+            else yaml.dump(ordered, Dumper=LiteralBlockDumper, indent=2, sort_keys=False, default_flow_style=False)
+        )
+
         if path is None:
-            return recipe_text
-        Path(path).write_text(recipe_text, encoding="utf-8")
-        return None
+            return text
+
+        dest = Path(path)
+        dest.write_text(text, encoding="utf-8")
+        return dest
 
 
-def find_recipe(name: str, search_paths: list[Path] | None = None,
-                registry_manager: RegistryManager | None = None,
-                local_files: list[Path] | None = None) -> Path:
+def find_recipe(
+    name: str,
+    search_paths: list[Path] | None = None,
+    registry_manager: RegistryManager | None = None,
+    local_files: list[Path] | None = None,
+) -> Path:
     """Find a recipe by name across search paths.
 
     Supports @registry/recipe-name syntax for scoped lookups.
@@ -688,19 +1059,19 @@ def find_recipe(name: str, search_paths: list[Path] | None = None,
     """
     # Parse @registry/name prefix
     from sparkrun.utils import parse_scoped_name
+
     scoped_registry, lookup_name = parse_scoped_name(name)
 
     # Scoped lookup: search only the specified registry
     if scoped_registry and registry_manager:
         matches = registry_manager.find_recipe_in_registries(
-            lookup_name, include_hidden=True,
+            lookup_name,
+            include_hidden=True,
         )
         scoped_matches = [(reg, path) for reg, path in matches if reg == scoped_registry]
         if scoped_matches:
             return scoped_matches[0][1]
-        raise RecipeError(
-            "Recipe '%s' not found in registry '%s'" % (lookup_name, scoped_registry)
-        )
+        raise RecipeError("Recipe '%s' not found in registry '%s'" % (lookup_name, scoped_registry))
 
     # 1. Check if it's a direct path
     direct = Path(lookup_name)
@@ -726,12 +1097,12 @@ def find_recipe(name: str, search_paths: list[Path] | None = None,
                     return lf
 
     # 3. Search user-provided paths (flat first, then recursive by stem)
-    for search_dir in (search_paths or []):
+    for search_dir in search_paths or []:
         for ext in ("", ".yaml", ".yml"):
             candidate = search_dir / (lookup_name + ext)
             if candidate.exists():
                 return candidate
-    for search_dir in (search_paths or []):
+    for search_dir in search_paths or []:
         for ext in (".yaml", ".yml"):
             for m in search_dir.rglob(f"**/{lookup_name}{ext}"):
                 return m
@@ -750,14 +1121,10 @@ def find_recipe(name: str, search_paths: list[Path] | None = None,
     search_desc = [str(p) for p in (search_paths or [])]
     if registry_manager:
         search_desc.append("registry paths")
-    raise RecipeError(
-        "Recipe '%s' not found. Searched: %s"
-        % (lookup_name, search_desc)
-    )
+    raise RecipeError("Recipe '%s' not found. Searched: %s" % (lookup_name, search_desc))
 
 
-def find_recipe_in_registry(name: str, registry_name: str,
-                            registry_manager: RegistryManager) -> Path:
+def find_recipe_in_registry(name: str, registry_name: str, registry_manager: RegistryManager) -> Path:
     """Find a recipe in a specific registry by name.
 
     Args:
@@ -795,8 +1162,10 @@ def recipe_summary(path: Path, registry_name: str | None = None) -> dict[str, An
         return None
     stem = path.stem
     defaults = data.get("defaults", {})
+    qualified = ("@%s/%s" % (registry_name, stem)) if registry_name else stem
+    builder = resolve_builder(data)
     entry: dict[str, Any] = {
-        "name": stem,
+        "name": qualified,
         "file": stem,
         "path": str(path),
         "model": data.get("model", ""),
@@ -806,21 +1175,25 @@ def recipe_summary(path: Path, registry_name: str | None = None) -> dict[str, An
         "tp": defaults.get("tensor_parallel", "") if isinstance(defaults, dict) else "",
         "gpu_mem": defaults.get("gpu_memory_utilization", "") if isinstance(defaults, dict) else "",
     }
+    if builder:
+        entry["builder"] = builder
     if registry_name:
         entry["registry"] = registry_name
     return entry
 
 
-def list_recipes(search_paths: list[Path] | None = None,
-                 registry_manager: RegistryManager | None = None,
-                 include_hidden: bool = False,
-                 local_files: list[Path] | None = None) -> list[dict[str, Any]]:
+def list_recipes(
+    search_paths: list[Path] | None = None,
+    registry_manager: RegistryManager | None = None,
+    include_hidden: bool = False,
+    local_files: list[Path] | None = None,
+) -> list[dict[str, Any]]:
     """List all available recipes with name and path."""
     recipes: list[dict[str, Any]] = []
     seen_names: set[str] = set()
 
     # Process CWD-discovered local files first (no registry label)
-    for f in (local_files or []):
+    for f in local_files or []:
         if f.stem in seen_names:
             continue
         seen_names.add(f.stem)
@@ -859,10 +1232,10 @@ def list_recipes(search_paths: list[Path] | None = None,
 
 
 def filter_recipes(
-        recipes: list[dict[str, Any]],
-        *,
-        runtime: str | None = None,
-        registry: str | None = None,
+    recipes: list[dict[str, Any]],
+    *,
+    runtime: str | None = None,
+    registry: str | None = None,
 ) -> list[dict[str, Any]]:
     """Filter a recipe list by runtime and/or registry.
 

@@ -91,7 +91,7 @@ def sync_registry_tuning(
         parts = config_path.parts
         try:
             runtime_idx = parts.index(tuning_runtime)
-            rel_parts = parts[runtime_idx + 1:]
+            rel_parts = parts[runtime_idx + 1 :]
             rel_path = Path(*rel_parts) if rel_parts else Path(config_path.name)
         except (ValueError, TypeError):
             rel_path = Path(config_path.name)

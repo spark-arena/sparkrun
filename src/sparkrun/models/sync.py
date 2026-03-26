@@ -41,10 +41,16 @@ def sync_model_to_hosts(
     revision_flag = "--revision %s " % revision if revision else ""
 
     script = read_script("model_sync.sh").format(
-        model_id=model_id, cache=cache, revision_flag=revision_flag,
+        model_id=model_id,
+        cache=cache,
+        revision_flag=revision_flag,
     )
 
     return sync_resource_to_hosts(
-        script, hosts, "Model",
-        ssh_user=ssh_user, ssh_key=ssh_key, dry_run=dry_run,
+        script,
+        hosts,
+        "Model",
+        ssh_user=ssh_user,
+        ssh_key=ssh_key,
+        dry_run=dry_run,
     )

@@ -26,60 +26,77 @@ uvx sparkrun setup install
 
 This creates a managed virtual environment, installs sparkrun, and sets up shell tab-completion.
 
-### Step 2: Configure a cluster
+### Step 2: Run the setup wizard (recommended)
 
-Ask the user for their DGX Spark host IPs, then create and set a default cluster:
+The wizard handles cluster creation, SSH mesh, CX7 networking, Docker group, sudoers, and earlyoom in one guided flow:
 
 ```bash
-sparkrun cluster create <name> --hosts <ip1>,<ip2>,... -d "<description>" --user <ssh_user>
+sparkrun setup wizard
+sparkrun setup wizard --hosts <ip1>,<ip2> --cluster mylab
+sparkrun setup wizard --yes --hosts <ip1>,<ip2>    # non-interactive
+sparkrun setup wizard --dry-run                     # preview
+```
+
+The wizard auto-detects CX7 interfaces and discovers peer DGX Sparks on the local network.
+
+Running `sparkrun setup` with no subcommand also auto-launches the wizard when no default cluster is configured.
+
+### Alternative: Manual step-by-step setup
+
+If the user prefers manual control, each step can be run individually:
+
+#### Create a cluster
+
+```bash
+sparkrun cluster create <name> --hosts <ip1>,<ip2>,... [-d "description"] [--user <ssh_user>]
 sparkrun cluster set-default <name>
 ```
 
-### Step 3: Set up SSH mesh
-
-Multi-node inference requires passwordless SSH. Run the mesh setup interactively:
+#### SSH mesh
 
 ```bash
 sparkrun setup ssh --cluster <name>
 ```
 
-**IMPORTANT:** This command is interactive (prompts for passwords). Do NOT capture its output. Let it pass through to the terminal.
+**IMPORTANT:** This command is interactive (prompts for passwords). Do NOT capture its output.
 
-### Step 4: Configure CX7 networking (optional)
-
-If the cluster has ConnectX-7 interfaces for high-speed transfers:
+#### CX7 networking (optional)
 
 ```bash
 sparkrun setup cx7 --cluster <name>
 ```
 
-This detects CX7 interfaces, assigns static IPs, and applies netplan configuration. Requires sudo.
+#### Docker group membership
 
-### Step 5: Fix file permissions (optional)
+```bash
+sparkrun setup docker-group --cluster <name>
+```
 
-If Docker containers have created root-owned files in the HuggingFace cache:
+Ensures the SSH user can run Docker without sudo.
+
+#### Fix file permissions (optional)
 
 ```bash
 sparkrun setup fix-permissions --cluster <name>
-```
-
-Optionally install a sudoers entry for passwordless future runs:
-
-```bash
 sparkrun setup fix-permissions --cluster <name> --save-sudo
 ```
 
-### Step 6: Clear page cache (optional)
-
-Free cached file data to maximize available memory for inference:
+#### Clear page cache (optional)
 
 ```bash
 sparkrun setup clear-cache --cluster <name>
+sparkrun setup clear-cache --cluster <name> --save-sudo
 ```
 
-### Step 7: Verify
+#### earlyoom OOM protection (optional)
 
-Run a quick check to confirm everything works:
+```bash
+sparkrun setup earlyoom --cluster <name>
+```
+
+Installs earlyoom on cluster hosts to prevent system hangs from memory pressure.
+
+### Step 3: Verify
 
 ```bash
 sparkrun cluster show <name>
@@ -87,13 +104,18 @@ sparkrun list
 sparkrun show <recipe> --tp <N>
 ```
 
-### Step 8: Summary
+### Step 4: Update
 
-Report the setup results:
-- sparkrun version
-- Cluster name, hosts, default status
-- SSH mesh status
-- Available recipe count
+```bash
+# Update sparkrun + registries in one command
+sparkrun update
+
+# Or update just registries
+sparkrun registry update
+
+# Or update sparkrun only
+sparkrun setup update --no-update-registries
+```
 
 ## Notes
 
@@ -102,3 +124,4 @@ Report the setup results:
 - DGX Spark has 1 GPU per host, so tensor_parallel = number of hosts
 - SSH user defaults to current OS user; override with `--user`
 - Use `sparkrun setup update` to update sparkrun and registries to the latest version
+- `sparkrun update` is a top-level alias that upgrades sparkrun (if installed via uv) and updates registries

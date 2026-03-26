@@ -22,6 +22,7 @@ DEFAULT_CACHE_DIR = Path.home() / ".cache" / "sparkrun"
 # respects HF_HOME, HF_HUB_CACHE, and HUGGINGFACE_HUB_CACHE env vars.
 try:
     from huggingface_hub.constants import HF_HOME as _HF_HOME
+
     DEFAULT_HF_CACHE_DIR = Path(_HF_HOME)
 except ImportError:  # pragma: no cover — huggingface_hub is a required dep
     DEFAULT_HF_CACHE_DIR = Path.home() / ".cache" / "huggingface"
@@ -41,6 +42,7 @@ def get_config_root(v: Variables | None = None) -> Path:
     """Config root from SAF stateful root, falling back to DEFAULT_CONFIG_DIR."""
     if v is not None:
         from scitrera_app_framework.core import is_stateful_ready
+
         stateful_root = is_stateful_ready(v)
         if stateful_root:
             return Path(stateful_root)
@@ -135,9 +137,10 @@ class SparkrunConfig:
                 paths.append(p)
         return paths
 
-    def get_registry_manager(self) -> 'RegistryManager':
+    def get_registry_manager(self) -> "RegistryManager":
         """Create a RegistryManager using the config root and cache dir."""
         from sparkrun.core.registry import RegistryManager
+
         return RegistryManager(
             config_root=self.config_path.parent if self.config_path else DEFAULT_CONFIG_DIR,
             cache_root=self.cache_dir / "registries",

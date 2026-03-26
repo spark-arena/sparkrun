@@ -74,7 +74,9 @@ def run_autodiscover(config_path: str) -> None:
 
     logger.info(
         "Auto-discover started: interval=%ds, proxy_pid=%d, hosts=%s",
-        interval, proxy_pid, host_list,
+        interval,
+        proxy_pid,
+        host_list,
     )
 
     while not _SHUTDOWN:

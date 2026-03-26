@@ -5,10 +5,11 @@ from __future__ import annotations
 import hashlib
 import logging
 from abc import abstractmethod
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from logging import Logger
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING, Optional
 
 import yaml
 from scitrera_app_framework import Plugin, Variables
@@ -17,6 +18,7 @@ from sparkrun.core.bootstrap import EXT_BENCHMARKING_FRAMEWORKS
 
 if TYPE_CHECKING:
     from sparkrun.core.recipe import Recipe
+    from sparkrun.core.launcher import LaunchResult
 
 logger = logging.getLogger(__name__)
 
@@ -83,11 +85,11 @@ class BenchmarkingPlugin(Plugin):
 
     @abstractmethod
     def build_benchmark_command(
-            self,
-            target_url: str,
-            model: str,
-            args: dict[str, Any],
-            result_file: str | None = None,
+        self,
+        target_url: str,
+        model: str,
+        args: dict[str, Any],
+        result_file: str | None = None,
     ) -> list[str]:
         """Build the benchmark command argv list.
 
@@ -144,17 +146,172 @@ class BenchmarkingPlugin(Plugin):
         return "%s(framework_name=%r)" % (self.__class__.__name__, self.framework_name)
 
 
+# TODO: _build_cluster_meta and _PARALLELISM_KEYS should perhaps
+#       be somewhere more central because useful to use for any parallelism checks
+_PARALLELISM_KEYS = [
+    ("tensor_parallel", "tp"),
+    ("pipeline_parallel", "pp"),
+    ("data_parallel", "dp"),
+    ("expert_parallel", "ep"),
+    ("context_parallel", "cp"),
+]
+
+
+def _build_cluster_meta(recipe, overrides, cluster_id, host_list):
+    """Build cluster metadata dict with only non-default parallelism values."""
+    config_chain = recipe.build_config_chain(overrides)
+    meta = {
+        "cluster_id": cluster_id,
+        "node_count": len(host_list),
+    }
+    for key, short in _PARALLELISM_KEYS:
+        val = config_chain.get(key)
+        if val is not None:
+            meta[short] = int(val)
+    return meta
+
+
+@dataclass
+class BenchmarkResult:
+    """Result of a benchmark run with output file paths."""
+
+    # benchmark results
+    success: bool = False
+    results: dict[str, Any] = None
+    outputs: Optional[dict[str, Any]] = None
+    start_time: datetime = None
+    end_time: datetime = None
+
+    # recipe/launch info
+    recipe_name: Optional[str] = None
+    launch_result: Optional["LaunchResult"] = None
+
+    # benchmark info
+    framework: Optional["BenchmarkingPlugin"] = None
+    profile: Optional[str] = None
+    benchmark_args: Optional[dict[str, Any]] = None
+
+    @property
+    def output_csv(self):
+        return self.outputs.get("csv") if self.outputs else None
+
+    @output_csv.setter
+    def output_csv(self, value):
+        if self.outputs is None:
+            self.outputs = {}
+        self.outputs["csv"] = value
+
+    @property
+    def output_json(self):
+        return self.outputs.get("json") if self.outputs else None
+
+    @output_json.setter
+    def output_json(self, value):
+        if self.outputs is None:
+            self.outputs = {}
+        self.outputs["json"] = value
+
+    @property
+    def output_yaml(self):
+        return self.outputs.get("yaml") if self.outputs else None
+
+    @output_yaml.setter
+    def output_yaml(self, value):
+        if self.outputs is None:
+            self.outputs = {}
+        self.outputs["yaml"] = value
+
+    def generate_metadata(self):
+        from sparkrun.models.download import parse_gguf_model_spec
+        from sparkrun.utils.cli_formatters import RUNTIME_DISPLAY as _RUNTIME_DISPLAY
+
+        launch_result = self.launch_result
+        recipe = launch_result.recipe
+        overrides = launch_result.overrides
+        framework = self.framework
+        profile = self.profile
+        benchmark_args = self.benchmark_args
+
+        # Resolve container image to a pinned long-term reference when possible
+        container_pinned = False
+        recipe_container = launch_result.container_image
+        if launch_result.builder:
+            try:
+                resolved_image, pinned = launch_result.builder.resolve_long_term_image(
+                    container_image=launch_result.container_image,
+                    runtime_info=launch_result.runtime_info,
+                    recipe=recipe,
+                )
+                if pinned:
+                    recipe_container = resolved_image
+                    container_pinned = True
+                    logger.info("Pinned container image: %s", recipe_container)
+            except Exception:
+                logger.debug("Long-term image resolution failed", exc_info=True)
+
+        recipe_hash = hashlib.sha256(recipe.export(overrides=None).encode("utf-8")).hexdigest()
+        # effective_recipe = recipe.export(overrides=overrides, container_image=recipe_container, )
+
+        hf_model = parse_gguf_model_spec(recipe.model)[0]
+        model_meta: dict[str, Any] = {}
+        if recipe.metadata.get("model_dtype"):
+            model_meta["dtype"] = recipe.metadata["model_dtype"]
+        if recipe.model_revision:
+            model_meta["revision"] = recipe.model_revision
+        if recipe.metadata.get("model_params"):
+            model_meta["params"] = recipe.metadata["model_params"]
+        if recipe.metadata.get("num_layers"):
+            model_meta["num_layers"] = recipe.metadata["num_layers"]
+        if recipe.metadata.get("num_kv_heads"):
+            model_meta["num_kv_heads"] = recipe.metadata["num_kv_heads"]
+        if recipe.metadata.get("head_dim"):
+            model_meta["head_dim"] = recipe.metadata["head_dim"]
+
+        metadata = {
+            "recipe": {
+                "name": recipe.name,
+                "qualified_name": recipe.qualified_name,
+                "type": "sparkrun",
+                "model": recipe.model,  # will include quant if applicable
+                "hf_model": hf_model,  # will exclude quant if applicable
+                "raw_container": recipe.container,
+                "container": recipe_container,
+                "container_pinned": container_pinned,
+                "runtime": _RUNTIME_DISPLAY.get(recipe.runtime, recipe.runtime),
+                "runtime_full": recipe.runtime,
+                "registry": recipe.source_registry,
+                "registry_git": recipe.source_registry_url or "",
+                "hash": recipe_hash,
+            },
+            "timing": {
+                "start": self.start_time.isoformat(),
+                "end": self.end_time.isoformat(),
+                "duration": (self.end_time - self.start_time).total_seconds(),
+            },
+            "cluster": _build_cluster_meta(recipe, overrides, launch_result.cluster_id, launch_result.host_list),
+            "benchmark": {
+                "framework": framework.framework_name if framework else "unknown",
+                "profile": profile,
+                "args": benchmark_args,
+            },
+            "model": model_meta,
+            "runtime_info": launch_result.runtime_info,
+        }
+        return metadata
+
+
 def export_results(
-        *,
-        recipe: Recipe,
-        hosts: list[str],
-        tp: int,
-        cluster_id: str,
-        framework_name: str,
-        profile_name: str | None,
-        args: dict[str, Any],
-        results: dict[str, Any],
-        output_path: str | Path,
+    *,
+    recipe: Recipe,
+    hosts: list[str],
+    tp: int,
+    cluster_id: str,
+    framework_name: str,
+    profile_name: str | None,
+    args: dict[str, Any],
+    results: dict[str, Any],
+    output_path: str | Path,
+    runtime_info: dict[str, str] | None = None,
 ) -> Path:
     """Export benchmark results to a YAML file.
 
@@ -199,6 +356,7 @@ def export_results(
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "recipe": {
                 "name": recipe.name,
+                "qualified_name": recipe.qualified_name,
                 "type": "sparkrun",
                 "model": recipe.model,
                 "container": recipe.container,
@@ -212,6 +370,7 @@ def export_results(
             "cluster": {
                 "tp": tp,
                 "cluster_id": cluster_id,
+                "runtime_info": runtime_info or {},
             },
             "benchmark": {
                 "framework": framework_name,

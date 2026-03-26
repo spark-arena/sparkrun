@@ -77,6 +77,44 @@ for h in "${HOSTS[@]}"; do
 done
 echo
 
+# If the caller (local OS user) differs from the mesh user, install the
+# caller's public key on every host so the control machine can later SSH
+# as USER_NAME without password prompts (BatchMode=yes).
+CALLER="$(whoami)"
+if [[ "$CALLER" != "$USER_NAME" ]]; then
+  LOCAL_PUBKEY=""
+  for kf in "$HOME/.ssh/id_ed25519.pub" "$HOME/.ssh/id_rsa.pub" "$HOME/.ssh/id_ecdsa.pub"; do
+    if [[ -f "$kf" ]]; then
+      LOCAL_PUBKEY="$(cat "$kf")"
+      break
+    fi
+  done
+  if [[ -z "$LOCAL_PUBKEY" ]]; then
+    echo "[*] No SSH key found for local user '$CALLER'. Generating ed25519 key..."
+    mkdir -p "$HOME/.ssh"
+    chmod 700 "$HOME/.ssh"
+    ssh-keygen -t ed25519 -N '' -f "$HOME/.ssh/id_ed25519" >/dev/null
+    LOCAL_PUBKEY="$(cat "$HOME/.ssh/id_ed25519.pub")"
+  fi
+  echo "=== Installing control machine key for remote access ==="
+  echo "Caller '$CALLER' differs from mesh user '$USER_NAME'."
+  echo "Installing caller's public key so the control machine can SSH as '$USER_NAME'..."
+  for h in "${HOSTS[@]}"; do
+    echo "[*] Installing caller key on $h ..."
+    printf '%s\n' "$LOCAL_PUBKEY" | ssh_stdin_cmd "$h" "set -euo pipefail
+      umask 077
+      mkdir -p ~/.ssh
+      chmod 700 ~/.ssh
+      touch ~/.ssh/authorized_keys
+      chmod 600 ~/.ssh/authorized_keys
+
+      read -r incoming_key
+      grep -qxF \"\$incoming_key\" ~/.ssh/authorized_keys || echo \"\$incoming_key\" >> ~/.ssh/authorized_keys
+    "
+  done
+  echo
+fi
+
 echo "=== Phase 2: Ensure SSH key exists on each host ==="
 for h in "${HOSTS[@]}"; do
   echo "[*] Ensuring ~/.ssh and id_ed25519 exist on $h ..."
