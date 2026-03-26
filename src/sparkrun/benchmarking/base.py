@@ -157,10 +157,10 @@ _PARALLELISM_KEYS = [
 ]
 
 
-def _build_cluster_meta(recipe, overrides, cluster_id):
+def _build_cluster_meta(recipe, overrides, cluster_id, host_list):
     """Build cluster metadata dict with only non-default parallelism values."""
     config_chain = recipe.build_config_chain(overrides)
-    meta = {'cluster_id': cluster_id}
+    meta = {'cluster_id': cluster_id, 'node_count': len(host_list), }
     for key, short in _PARALLELISM_KEYS:
         val = config_chain.get(key)
         if val is not None:
@@ -285,7 +285,7 @@ class BenchmarkResult:
                 "end": self.end_time.isoformat(),
                 "duration": (self.end_time - self.start_time).total_seconds(),
             },
-            'cluster': _build_cluster_meta(recipe, overrides, launch_result.cluster_id),
+            'cluster': _build_cluster_meta(recipe, overrides, launch_result.cluster_id, launch_result.host_list),
             'benchmark': {
                 'framework': framework.framework_name if framework else 'unknown',
                 'profile': profile,
