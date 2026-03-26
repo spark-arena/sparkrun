@@ -1,9 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 40" fill="none">
-  <!-- Spark icon -->
-  <path d="M18 4 L22 16 L30 14 L20 36 L18 24 L10 26 Z" fill="#1e40af" />
-  <path d="M20 36 L18 24 L10 26 Z" fill="#76b900" opacity="0.9" />
-  <!-- Wordmark -->
-  <text x="40" y="29" font-family="Inter, system-ui, sans-serif" font-size="22" font-weight="700" fill="currentColor">
-    <tspan fill="#1e40af">spark</tspan><tspan fill="#76b900">run</tspan>
-  </text>
-</svg>

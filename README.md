@@ -56,13 +56,20 @@ See the [full CLI reference](https://sparkrun.dev/cli/overview/) for all command
 - **Multi-runtime** — vLLM, SGLang, llama.cpp out of the box
 - **Multi-node tensor parallelism** — `--tp 2` = 2 hosts, automatic InfiniBand/RDMA detection
 - **VRAM estimation** — know if your model fits before you launch (`sparkrun show <recipe>`)
-- **Git-based recipe registries** — community recipes via [Spark Arena](https://spark-arena.com), plus private registries
+- **Git-based recipe registries** — we publish official recipes, community recipes, and benchmarked recipes via [Spark Arena](https://spark-arena.com), plus you can add your own registries.
 - **Guided setup wizard** — cluster creation, SSH mesh, CX7 auto-detection, sudoers, earlyoom
 - **Model & container distribution** — syncs models and images to cluster nodes over SSH automatically
 
 ## Spark Arena
+[Spark Arena](https://spark-arena.com) is the community hub for DGX Spark recipe benchmarks — browse benchmark results, then run them directly with sparkrun.
 
-[Spark Arena](https://spark-arena.com) is the community hub for DGX Spark — tested recipes, benchmark results, and one-click launch configs. Spark Arena recipes are included in sparkrun's default registries, so `sparkrun list` shows them automatically.
+## Official Recipes
+[Official Recipes](https://github.com/spark-arena/recipe-registry) are maintained by the Spark Arena team and hosted on GitHub. They are tested and optimized for NVIDIA DGX Spark systems.
+
+## Community Recipes
+[Community Recipes](https://github.com/spark-arena/community-recipe-registry) are contributed by the community and hosted on GitHub.
+
+
 
 ## Sponsored by
 
