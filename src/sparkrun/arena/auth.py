@@ -68,7 +68,7 @@ def clear_refresh_token() -> None:
         pass
 
 
-def exchange_token(refresh_token: str) -> ExchangeResult:
+def exchange_token(refresh_token: str, debug_mode: bool = False) -> ExchangeResult:
     """Exchange a refresh token for user credentials via auth proxy.
 
     Raises ``RuntimeError`` on failure.
@@ -98,7 +98,8 @@ def exchange_token(refresh_token: str) -> ExchangeResult:
     bucket = data.get("bucket")
     if not id_token or not user_id or not bucket:
         raise RuntimeError("Incomplete exchange response")
-    logger.debug("Exchange data: %s", data)
+    if debug_mode:  # only show exchange data under explicit debug (not just all debug logging)
+        logger.debug("Exchange data: %s", data)
     return ExchangeResult(
         id_token=id_token,
         user_id=user_id,
