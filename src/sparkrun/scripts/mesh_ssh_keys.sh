@@ -101,7 +101,7 @@ if [[ "$CALLER" != "$USER_NAME" ]]; then
   echo "Installing caller's public key so the control machine can SSH as '$USER_NAME'..."
   for h in "${HOSTS[@]}"; do
     echo "[*] Installing caller key on $h ..."
-    printf '%s\n' "$LOCAL_PUBKEY" | ssh_stdin_cmd "$h" "set -euo pipefail
+    printf '%s\n' "$LOCAL_PUBKEY" | ssh_stdin_cmd "$h" "set -eu
       umask 077
       mkdir -p ~/.ssh
       chmod 700 ~/.ssh
@@ -118,10 +118,10 @@ fi
 echo "=== Phase 2: Ensure SSH key exists on each host ==="
 for h in "${HOSTS[@]}"; do
   echo "[*] Ensuring ~/.ssh and id_ed25519 exist on $h ..."
-  ssh_cmd "$h" "set -euo pipefail
+  ssh_cmd "$h" "set -eu
     mkdir -p ~/.ssh
     chmod 700 ~/.ssh
-    if [[ ! -f ~/.ssh/id_ed25519 ]]; then
+    if [ ! -f ~/.ssh/id_ed25519 ]; then
       ssh-keygen -t ed25519 -N '' -f ~/.ssh/id_ed25519 >/dev/null
     fi
     chmod 600 ~/.ssh/id_ed25519
@@ -153,7 +153,7 @@ for src in "${HOSTS[@]}"; do
 
     echo "    - $src -> $dst"
     # Send the key over stdin and append only if not already present.
-    printf '%s\n' "$key" | ssh_stdin_cmd "$dst" "set -euo pipefail
+    printf '%s\n' "$key" | ssh_stdin_cmd "$dst" "set -eu
       umask 077
       mkdir -p ~/.ssh
       chmod 700 ~/.ssh

@@ -516,6 +516,11 @@ def setup_ssh(ctx, hosts, hosts_file, cluster_name, extra_hosts, include_self, u
                 host_list[i] = ""
     host_list = [h for h in host_list if h]
 
+    # Resolve effective user early (needed for self-inclusion decision)
+    local_user = os.environ.get("USER", "root")
+    if user is None:
+        user = cluster_user or config.ssh_user or local_user
+
     # Track original cluster hosts before extras/self are appended
     cluster_hosts = list(host_list)
     seen = set(host_list)
@@ -532,12 +537,31 @@ def setup_ssh(ctx, hosts, hosts_file, cluster_name, extra_hosts, include_self, u
     # Use the local IP that can route to the first cluster host, since
     # remote hosts may not be able to resolve this machine's hostname.
     self_host: str | None = None
+    cross_user = user != local_user
     if include_self and host_list:
         self_host = local_ip_for(host_list[0])
-        if self_host and self_host not in seen:
+        if self_host and self_host in seen and cross_user:
+            # Control machine IP is in the cluster list but the SSH user
+            # differs from the local OS user — remove it to avoid trying
+            # to SSH as the cluster user on the control machine.
+            host_list = [h for h in host_list if h != self_host]
+            cluster_hosts = [h for h in cluster_hosts if h != self_host]
+            seen.discard(self_host)
+            click.echo(
+                "Note: Removed control machine (%s) from mesh — user '%s' differs from "
+                "local user '%s'. Control→cluster SSH is handled automatically by the mesh script."
+                % (self_host, user, local_user)
+            )
+        elif self_host and self_host not in seen and not cross_user:
             host_list.append(self_host)
             seen.add(self_host)
             added.append("%s (this machine)" % self_host)
+        elif self_host and self_host not in seen and cross_user:
+            click.echo(
+                "Note: Skipping control machine (%s) in mesh — user '%s' differs from "
+                "local user '%s'. Control→cluster SSH is handled automatically by the mesh script."
+                % (self_host, user, local_user)
+            )
 
     if not host_list:
         click.echo("Error: No hosts specified. Use --hosts, --hosts-file, or --cluster.", err=True)
@@ -549,10 +573,6 @@ def setup_ssh(ctx, hosts, hosts_file, cluster_name, extra_hosts, include_self, u
             err=True,
         )
         sys.exit(1)
-
-    # Default user: --user flag > cluster user > config ssh.user > OS user
-    if user is None:
-        user = cluster_user or config.ssh_user or os.environ.get("USER", "root")
 
     if not dry_run:
         click.echo("Setting up SSH mesh for user '%s' across %d hosts..." % (user, len(host_list)))
