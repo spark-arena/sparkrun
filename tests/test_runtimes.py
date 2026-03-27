@@ -517,9 +517,9 @@ class TestVllmDistributedFollowLogs:
         mock_stream.assert_called_once()
         assert mock_stream.call_args[0][1] == "test0_solo"
 
-    @mock.patch("sparkrun.orchestration.ssh.stream_remote_logs")
+    @mock.patch("sparkrun.orchestration.ssh.stream_container_file_logs")
     def test_follow_logs_cluster_uses_node_0(self, mock_stream):
-        """Multi-host vllm-distributed follows the _node_0 container (docker logs mode)."""
+        """Multi-host vllm-distributed follows the _node_0 container (file mode, sleep-infinity + exec)."""
         runtime = VllmDistributedRuntime()
         runtime.follow_logs(
             hosts=["10.0.0.1", "10.0.0.2"],
@@ -1026,9 +1026,9 @@ class TestSglangFollowLogs:
         mock_stream.assert_called_once()
         assert mock_stream.call_args[0][1] == "test0_solo"
 
-    @mock.patch("sparkrun.orchestration.ssh.stream_remote_logs")
+    @mock.patch("sparkrun.orchestration.ssh.stream_container_file_logs")
     def test_follow_logs_cluster_uses_node_0(self, mock_stream):
-        """Multi-host sglang follows the _node_0 container on hosts[0]."""
+        """Multi-host sglang follows the _node_0 container (file mode, sleep-infinity + exec)."""
         runtime = SglangRuntime()
         runtime.follow_logs(
             hosts=["10.0.0.1", "10.0.0.2"],
@@ -1371,9 +1371,9 @@ class TestLlamaCppFollowLogs:
         mock_stream.assert_called_once()
         assert mock_stream.call_args[0][1] == "test0_solo"
 
-    @mock.patch("sparkrun.orchestration.ssh.stream_remote_logs")
-    def test_follow_logs_cluster_uses_docker_logs_on_head(self, mock_stream):
-        """Multi-host llama-cpp follows docker logs on _head container."""
+    @mock.patch("sparkrun.orchestration.ssh.stream_container_file_logs")
+    def test_follow_logs_cluster_uses_file_logs_on_head(self, mock_stream):
+        """Multi-host llama-cpp follows file logs on _head container (sleep-infinity + exec)."""
         runtime = LlamaCppRuntime()
         runtime.follow_logs(
             hosts=["10.0.0.1", "10.0.0.2"],

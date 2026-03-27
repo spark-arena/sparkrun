@@ -15,6 +15,7 @@ from typing import Any, TYPE_CHECKING
 
 import yaml
 
+from sparkrun.runtimes._util import default_env_hf_offline
 from sparkrun.runtimes.base import RuntimePlugin
 
 if TYPE_CHECKING:
@@ -93,13 +94,13 @@ class TrtllmRuntime(RuntimePlugin):
         return "%s %s %s" % (command.rstrip(), _EXTRA_CONFIG_FLAG, _EXTRA_CONFIG_PATH)
 
     def generate_command(
-        self,
-        recipe: Recipe,
-        overrides: dict[str, Any],
-        is_cluster: bool,
-        num_nodes: int = 1,
-        head_ip: str | None = None,
-        skip_keys: set[str] | frozenset[str] = frozenset(),
+            self,
+            recipe: Recipe,
+            overrides: dict[str, Any],
+            is_cluster: bool,
+            num_nodes: int = 1,
+            head_ip: str | None = None,
+            skip_keys: set[str] | frozenset[str] = frozenset(),
     ) -> str:
         """Generate the trtllm-serve command.
 
@@ -146,11 +147,11 @@ class TrtllmRuntime(RuntimePlugin):
         return " ".join(parts)
 
     def _build_mpirun_command(
-        self,
-        serve_cmd: str,
-        host_ips: list[str],
-        nccl_env: dict[str, str] | None = None,
-        extra_env_keys: list[str] | None = None,
+            self,
+            serve_cmd: str,
+            host_ips: list[str],
+            nccl_env: dict[str, str] | None = None,
+            extra_env_keys: list[str] | None = None,
     ) -> str:
         """Wrap a trtllm-serve command with mpirun for multi-node execution.
 
@@ -203,9 +204,9 @@ class TrtllmRuntime(RuntimePlugin):
 
     @staticmethod
     def _generate_rsh_wrapper(
-        host_ip_map: dict[str, str],
-        cluster_id: str,
-        ssh_key_path: str = "/tmp/.ssh/id_ed25519",
+            host_ip_map: dict[str, str],
+            cluster_id: str,
+            ssh_key_path: str = "/tmp/.ssh/id_ed25519",
     ) -> str:
         """Generate the bash rsh wrapper script for mpirun.
 
@@ -298,11 +299,15 @@ class TrtllmRuntime(RuntimePlugin):
         cmds["trtllm"] = "python3 -c 'import tensorrt_llm; print(tensorrt_llm.__version__)' 2>/dev/null || echo unknown"
         return cmds
 
+    def get_common_env(self):
+        return default_env_hf_offline()
+
     def get_cluster_env(self, head_ip: str, num_nodes: int) -> dict[str, str]:
         """Return TRT-LLM cluster environment variables."""
         return {
-            "OMPI_ALLOW_RUN_AS_ROOT": "1",
-            "OMPI_ALLOW_RUN_AS_ROOT_CONFIRM": "1",
+            **RuntimePlugin.get_cluster_env(self, head_ip, num_nodes),
+            "OMPI_ALLOW_RUN_AS_ROOT": "1",  # TODO: only if rootful
+            "OMPI_ALLOW_RUN_AS_ROOT_CONFIRM": "1",  # TODO: only if rootful
             "NCCL_CUMEM_ENABLE": "0",
             "OMPI_MCA_rmaps_ppr_n_pernode": "1",
         }
@@ -319,12 +324,12 @@ class TrtllmRuntime(RuntimePlugin):
         return {}
 
     def _pre_serve(
-        self,
-        hosts_containers: list[tuple[str, str]],
-        ssh_kwargs: dict,
-        dry_run: bool,
-        recipe: Recipe | None = None,
-        config_chain=None,
+            self,
+            hosts_containers: list[tuple[str, str]],
+            ssh_kwargs: dict,
+            dry_run: bool,
+            recipe: Recipe | None = None,
+            config_chain=None,
     ) -> None:
         """Write extra-llm-api-config.yml into containers before serve.
 
@@ -385,11 +390,11 @@ class TrtllmRuntime(RuntimePlugin):
     # --- Cluster stop ---
 
     def _stop_cluster(
-        self,
-        hosts: list[str],
-        cluster_id: str,
-        config: SparkrunConfig | None = None,
-        dry_run: bool = False,
+            self,
+            hosts: list[str],
+            cluster_id: str,
+            config: SparkrunConfig | None = None,
+            dry_run: bool = False,
     ) -> int:
         """Stop a TRT-LLM native cluster."""
         return self._stop_native_cluster(hosts, cluster_id, config=config, dry_run=dry_run)
@@ -397,22 +402,22 @@ class TrtllmRuntime(RuntimePlugin):
     # --- Cluster launch ---
 
     def _run_cluster(
-        self,
-        hosts: list[str],
-        image: str,
-        serve_command: str = "",
-        recipe: Recipe | None = None,
-        overrides: dict[str, Any] | None = None,
-        *,
-        cluster_id: str = "sparkrun0",
-        env: dict[str, str] | None = None,
-        cache_dir: str | None = None,
-        config: SparkrunConfig | None = None,
-        dry_run: bool = False,
-        detached: bool = True,
-        nccl_env: dict[str, str] | None = None,
-        skip_keys: set[str] | frozenset[str] = frozenset(),
-        **kwargs,
+            self,
+            hosts: list[str],
+            image: str,
+            serve_command: str = "",
+            recipe: Recipe | None = None,
+            overrides: dict[str, Any] | None = None,
+            *,
+            cluster_id: str = "sparkrun0",
+            env: dict[str, str] | None = None,
+            cache_dir: str | None = None,
+            config: SparkrunConfig | None = None,
+            dry_run: bool = False,
+            detached: bool = True,
+            nccl_env: dict[str, str] | None = None,
+            skip_keys: set[str] | frozenset[str] = frozenset(),
+            **kwargs,
     ) -> int:
         """Orchestrate a multi-node TRT-LLM cluster using MPI.
 
@@ -430,7 +435,6 @@ class TrtllmRuntime(RuntimePlugin):
         from sparkrun.orchestration.primitives import (
             build_ssh_kwargs,
             build_volumes,
-            merge_env,
             detect_host_ip,
             is_container_running,
             resolve_nccl_env,
@@ -439,13 +443,19 @@ class TrtllmRuntime(RuntimePlugin):
             run_remote_script,
             run_remote_command,
         )
+        from sparkrun.utils import merge_env
         from sparkrun.orchestration.docker import docker_exec_cmd
 
         num_nodes = len(hosts)
         ssh_kwargs = build_ssh_kwargs(config)
         volumes = build_volumes(cache_dir, extra=self.get_extra_volumes())
-        runtime_env = self.get_cluster_env(head_ip="<pending>", num_nodes=num_nodes)
-        all_env = merge_env(runtime_env, env)
+        rc_cluster_env = self.get_cluster_env(head_ip="<pending>", num_nodes=num_nodes)
+        all_env = merge_env(
+            self.get_common_env(),  # runtime common env
+            rc_cluster_env,  # cluster env
+            env,  # recipe env
+            self.get_extra_env(),  # tunings/overrides
+        )
         extra_docker_opts = self.get_extra_docker_opts()
 
         self._print_cluster_banner(
@@ -575,8 +585,8 @@ class TrtllmRuntime(RuntimePlugin):
 
         # Write wrapper into head container
         write_wrapper_cmd = (
-            "cat > /tmp/sparkrun-rsh-wrapper.sh << 'SPARKRUN_EOF'\n%sSPARKRUN_EOF\nchmod +x /tmp/sparkrun-rsh-wrapper.sh"
-        ) % rsh_wrapper
+                                "cat > /tmp/sparkrun-rsh-wrapper.sh << 'SPARKRUN_EOF'\n%sSPARKRUN_EOF\nchmod +x /tmp/sparkrun-rsh-wrapper.sh"
+                            ) % rsh_wrapper
 
         exec_write = docker_exec_cmd(head_container, write_wrapper_cmd)
         result = run_remote_command(

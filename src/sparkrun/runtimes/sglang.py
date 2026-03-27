@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, TYPE_CHECKING
 
+from sparkrun.runtimes._util import default_env_hf_offline
 from sparkrun.runtimes.base import RuntimePlugin
 
 if TYPE_CHECKING:
@@ -53,13 +54,13 @@ class SglangRuntime(RuntimePlugin):
         return "native"
 
     def generate_command(
-        self,
-        recipe: Recipe,
-        overrides: dict[str, Any],
-        is_cluster: bool,
-        num_nodes: int = 1,
-        head_ip: str | None = None,
-        skip_keys: set[str] | frozenset[str] = frozenset(),
+            self,
+            recipe: Recipe,
+            overrides: dict[str, Any],
+            is_cluster: bool,
+            num_nodes: int = 1,
+            head_ip: str | None = None,
+            skip_keys: set[str] | frozenset[str] = frozenset(),
     ) -> str:
         """Generate the sglang launch_server command.
 
@@ -91,14 +92,14 @@ class SglangRuntime(RuntimePlugin):
         return self._build_command(recipe, config, is_cluster, num_nodes, head_ip, skip_keys=skip_keys)
 
     def generate_node_command(
-        self,
-        recipe: Recipe,
-        overrides: dict[str, Any],
-        head_ip: str,
-        num_nodes: int,
-        node_rank: int,
-        init_port: int = 25000,
-        skip_keys: set[str] | frozenset[str] = frozenset(),
+            self,
+            recipe: Recipe,
+            overrides: dict[str, Any],
+            head_ip: str,
+            num_nodes: int,
+            node_rank: int,
+            init_port: int = 25000,
+            skip_keys: set[str] | frozenset[str] = frozenset(),
     ) -> str:
         """Generate the sglang command for a specific node.
 
@@ -177,13 +178,13 @@ class SglangRuntime(RuntimePlugin):
         return " ".join(parts)
 
     def _build_command(
-        self,
-        recipe: Recipe,
-        config,
-        is_cluster: bool,
-        num_nodes: int,
-        head_ip: str | None = None,
-        skip_keys: set[str] | frozenset[str] = frozenset(),
+            self,
+            recipe: Recipe,
+            config,
+            is_cluster: bool,
+            num_nodes: int,
+            head_ip: str | None = None,
+            skip_keys: set[str] | frozenset[str] = frozenset(),
     ) -> str:
         """Build the sglang launch_server command from structured config.
 
@@ -203,9 +204,13 @@ class SglangRuntime(RuntimePlugin):
         cmds["sglang"] = "python3 -c 'import sglang; print(sglang.__version__)' 2>/dev/null || echo unknown"
         return cmds
 
+    def get_common_env(self):
+        return default_env_hf_offline()
+
     def get_cluster_env(self, head_ip: str, num_nodes: int) -> dict[str, str]:
         """Return SGLang-specific cluster environment variables."""
         return {
+            **RuntimePlugin.get_cluster_env(self, head_ip, num_nodes),
             "NCCL_CUMEM_ENABLE": "0",
             "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "0",  # confirmed for v0.5.9 on 20260205 by DB
         }
@@ -275,11 +280,11 @@ class SglangRuntime(RuntimePlugin):
     # --- Cluster stop ---
 
     def _stop_cluster(
-        self,
-        hosts: list[str],
-        cluster_id: str,
-        config=None,
-        dry_run: bool = False,
+            self,
+            hosts: list[str],
+            cluster_id: str,
+            config=None,
+            dry_run: bool = False,
     ) -> int:
         """Stop an SGLang native cluster."""
         return self._stop_native_cluster(hosts, cluster_id, config=config, dry_run=dry_run)
@@ -287,23 +292,23 @@ class SglangRuntime(RuntimePlugin):
     # --- Cluster launch ---
 
     def _run_cluster(
-        self,
-        hosts: list[str],
-        image: str,
-        serve_command: str = "",
-        recipe=None,
-        overrides=None,
-        *,
-        cluster_id: str = "sparkrun0",
-        env: dict[str, str] | None = None,
-        cache_dir: str | None = None,
-        config=None,
-        dry_run: bool = False,
-        detached: bool = True,
-        nccl_env: dict[str, str] | None = None,
-        init_port: int = 25000,
-        skip_keys: set[str] | frozenset[str] = frozenset(),
-        **kwargs,
+            self,
+            hosts: list[str],
+            image: str,
+            serve_command: str = "",
+            recipe=None,
+            overrides=None,
+            *,
+            cluster_id: str = "sparkrun0",
+            env: dict[str, str] | None = None,
+            cache_dir: str | None = None,
+            config=None,
+            dry_run: bool = False,
+            detached: bool = True,
+            nccl_env: dict[str, str] | None = None,
+            init_port: int = 25000,
+            skip_keys: set[str] | frozenset[str] = frozenset(),
+            **kwargs,
     ) -> int:
         """Orchestrate a multi-node SGLang cluster using native distribution."""
         return self._run_native_cluster(

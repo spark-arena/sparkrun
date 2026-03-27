@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from sparkrun.runtimes._util import default_env_hf_offline
+
 
 class VllmMixin:
     """Shared methods for vLLM runtimes.
@@ -9,6 +11,9 @@ class VllmMixin:
     Provides tuning config auto-mounting and version detection
     that are identical between vllm-ray and vllm-distributed.
     """
+
+    def get_common_env(self):
+        return default_env_hf_offline()
 
     def get_extra_volumes(self) -> dict[str, str]:
         """Mount vLLM tuning configs if available."""
