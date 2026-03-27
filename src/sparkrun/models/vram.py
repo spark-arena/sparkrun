@@ -185,11 +185,13 @@ def fetch_model_config(
         from huggingface_hub.utils import disable_progress_bars, enable_progress_bars
         import json
 
+        from sparkrun.models.download import _hub_cache
+
         kwargs: dict[str, Any] = {"repo_id": model_id, "filename": "config.json"}
         if revision:
             kwargs["revision"] = revision
         if cache_dir:
-            kwargs["cache_dir"] = cache_dir
+            kwargs["cache_dir"] = _hub_cache(cache_dir)
         try:
             disable_progress_bars()
             config_path = hf_hub_download(**kwargs)
@@ -226,6 +228,8 @@ def fetch_safetensors_size(
         from huggingface_hub.utils import disable_progress_bars, enable_progress_bars
         import json
 
+        from sparkrun.models.download import _hub_cache
+
         kwargs: dict[str, Any] = {
             "repo_id": model_id,
             "filename": "model.safetensors.index.json",
@@ -233,7 +237,7 @@ def fetch_safetensors_size(
         if revision:
             kwargs["revision"] = revision
         if cache_dir:
-            kwargs["cache_dir"] = cache_dir
+            kwargs["cache_dir"] = _hub_cache(cache_dir)
         disable_progress_bars()
         try:
             index_path = hf_hub_download(**kwargs)

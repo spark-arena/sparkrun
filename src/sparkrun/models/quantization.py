@@ -44,11 +44,13 @@ def fetch_hf_quant_config(
         from huggingface_hub.utils import disable_progress_bars, enable_progress_bars
         import json
 
+        from sparkrun.models.download import _hub_cache
+
         kwargs: dict[str, Any] = {"repo_id": model_id, "filename": "hf_quant_config.json"}
         if revision:
             kwargs["revision"] = revision
         if cache_dir:
-            kwargs["cache_dir"] = cache_dir
+            kwargs["cache_dir"] = _hub_cache(cache_dir)
         try:
             disable_progress_bars()
             config_path = hf_hub_download(**kwargs)
