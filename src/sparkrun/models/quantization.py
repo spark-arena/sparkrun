@@ -27,9 +27,9 @@ class QuantizationInfo:
 
 
 def fetch_hf_quant_config(
-    model_id: str,
-    revision: str | None = None,
-    cache_dir: str | None = None,
+        model_id: str,
+        revision: str | None = None,
+        cache_dir: str | None = None,
 ) -> dict[str, Any] | None:
     """Fetch ``hf_quant_config.json`` from HuggingFace Hub.
 
@@ -318,11 +318,11 @@ def resolve_from_gguf(model_id: str) -> QuantizationInfo | None:
 
 
 def resolve_quantization(
-    *,
-    hf_config: dict[str, Any] | None = None,
-    hf_quant_config: dict[str, Any] | None = None,
-    recipe_quant: str | None = None,
-    model_id: str | None = None,
+        *,
+        hf_config: dict[str, Any] | None = None,
+        hf_quant_config: dict[str, Any] | None = None,
+        recipe_quant: str | None = None,
+        model_id: str | None = None,
 ) -> QuantizationInfo | None:
     """Merge quantization info from all available sources.
 
