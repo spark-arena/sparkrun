@@ -2371,6 +2371,7 @@ class TestSetupSshCommand:
         import sparkrun.core.config
 
         monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+        monkeypatch.setenv("USER", "testuser")
 
         from sparkrun.orchestration.primitives import local_ip_for
 
@@ -2401,6 +2402,7 @@ class TestSetupSshCommand:
         import sparkrun.core.config
 
         monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+        monkeypatch.setenv("USER", "testuser")
 
         from sparkrun.orchestration.primitives import local_ip_for
 
@@ -2621,6 +2623,69 @@ class TestSetupSshCommand:
         call_ips = mock_dist.call_args[0][0]
         assert "192.168.11.1" in call_ips
         assert "192.168.11.2" in call_ips
+
+    def test_setup_ssh_exclude_self_when_user_differs(self, runner, tmp_path, monkeypatch):
+        """Test that --include-self skips control machine when SSH user differs from local user."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.core.config
+
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+        monkeypatch.setenv("USER", "localuser")
+
+        result = runner.invoke(
+            main,
+            [
+                "setup",
+                "ssh",
+                "--hosts",
+                "10.0.0.1,10.0.0.2",
+                "--user",
+                "differentuser",
+                "--include-self",
+                "--dry-run",
+            ],
+        )
+        assert result.exit_code == 0
+        # Self IP should NOT appear in the mesh command
+        assert "Skipping control machine" in result.output
+        assert "differs from local user" in result.output
+        # The two cluster hosts should still be there
+        assert "10.0.0.1" in result.output
+        assert "10.0.0.2" in result.output
+
+    def test_setup_ssh_remove_self_from_cluster_when_user_differs(self, runner, tmp_path, monkeypatch):
+        """Test that control machine IP is removed from host list when user differs."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.core.config
+
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+        monkeypatch.setenv("USER", "localuser")
+
+        from sparkrun.orchestration.primitives import local_ip_for
+
+        local_ip = local_ip_for("10.0.0.1")
+
+        result = runner.invoke(
+            main,
+            [
+                "setup",
+                "ssh",
+                "--hosts",
+                "10.0.0.1,%s,10.0.0.2" % local_ip,
+                "--user",
+                "differentuser",
+                "--include-self",
+                "--dry-run",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "Removed control machine" in result.output
+        assert "differs from local user" in result.output
+        # The local IP should NOT appear in the mesh command line
+        cmd_line = result.output.split("Would run")[-1]
+        assert local_ip not in cmd_line
 
 
 class TestSetupFixPermissions:
