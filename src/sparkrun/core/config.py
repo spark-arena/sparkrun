@@ -28,6 +28,16 @@ except ImportError:  # pragma: no cover — huggingface_hub is a required dep
     DEFAULT_HF_CACHE_DIR = Path.home() / ".cache" / "huggingface"
 
 
+def resolve_sparkrun_cache_dir(cache_dir: str | Path | None = None) -> Path:
+    """Resolve sparkrun's own cache directory (~/.cache/sparkrun/).
+
+    For HuggingFace model cache, use ``resolve_cache_dir()`` instead.
+    """
+    if cache_dir is not None:
+        return Path(cache_dir)
+    return DEFAULT_CACHE_DIR
+
+
 def resolve_cache_dir(cache_dir: str | None) -> str:
     """Resolve an optional cache directory override to a concrete path.
 
