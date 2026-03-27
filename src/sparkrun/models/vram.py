@@ -26,11 +26,45 @@ _DTYPE_BYTES: dict[str, float] = {
     "awq8": 1.0,
     "gptq": 0.5,
     "mxfp4": 0.5,
-    # TODO: GGUF quants
-    "q3_k_m": 0.4,
-    "q4_k_m": 0.608,
-    "q6_k": 0.823,
-    "q8_0": 1.0,
+    # GGUF quants — bytes per weight from llama.cpp ggml type_size / block_size.
+    # Basic quants
+    "q4_0": 0.5625,
+    "q4_1": 0.625,
+    "q5_0": 0.6875,
+    "q5_1": 0.75,
+    "q8_0": 1.0625,
+    "q8_1": 1.125,
+    # K-quants (base types — dominant tensor type in K-quant mixes)
+    "q2_k": 0.3125,
+    "q3_k": 0.4375,
+    "q4_k": 0.5625,
+    "q5_k": 0.6875,
+    "q6_k": 0.8125,
+    "q8_k": 1.0625,
+    # K-quant mixes (suffixed names used by llama.cpp quantize CLI).
+    # The _s/_m suffix selects which layers use the base vs higher-precision quant;
+    # bytes-per-element is the same as the base type for estimation purposes.
+    # Uncommon _l variants fall back to the base via _gguf_normalize_quant().
+    "q2_k_s": 0.3125,
+    "q3_k_s": 0.4375,
+    "q3_k_m": 0.4375,
+    "q4_k_s": 0.5625,
+    "q4_k_m": 0.5625,
+    "q5_k_s": 0.6875,
+    "q5_k_m": 0.6875,
+    # IQ (importance-matrix quants)
+    "iq1_s": 0.1875,
+    "iq1_m": 0.1875,
+    "iq2_xxs": 0.25,
+    "iq2_xs": 0.3125,
+    "iq2_s": 0.3125,
+    "iq3_xxs": 0.4063,
+    "iq3_s": 0.4375,
+    "iq4_nl": 0.5625,
+    "iq4_xs": 0.5625,
+    # Ternary
+    "tq1_0": 0.1875,
+    "tq2_0": 0.3125,
 }
 
 # Shorthand suffixes for parameter counts
@@ -218,29 +252,21 @@ def fetch_safetensors_size(
 def _resolve_quant_dtype(quantization_config: dict[str, Any]) -> str | None:
     """Derive a model weight dtype from a HuggingFace quantization_config block.
 
-    Handles common quant methods: fp8, awq, gptq, bitsandbytes, compressed-tensors.
+    Handles common quant methods: fp8, awq, gptq, marlin, bitsandbytes,
+    mxfp4, nvfp4, compressed-tensors.
     Returns a dtype string recognized by :func:`bytes_per_element`, or ``None``
     if the method is unrecognized.
+
+    .. note::
+       This is a thin wrapper around
+       :func:`sparkrun.models.quantization._resolve_from_quantization_config`
+       kept for backward compatibility.  New code should use
+       :func:`~sparkrun.models.quantization.resolve_quantization` instead.
     """
-    method = str(quantization_config.get("quant_method", "")).lower().strip()
-    if not method:
-        return None
+    from sparkrun.models.quantization import _resolve_from_quantization_config
 
-    if method == "fp8":
-        return "fp8"
-
-    bits = quantization_config.get("bits")
-    if method == "awq":
-        return "awq4" if bits is None or int(bits) == 4 else f"awq{int(bits)}"
-    if method in ("gptq", "marlin"):
-        return "gptq" if bits is None or int(bits) == 4 else f"int{int(bits)}"
-    if method == "bitsandbytes":
-        if quantization_config.get("load_in_4bit") or quantization_config.get("quant_type") == "nf4":
-            return "int4"
-        if quantization_config.get("load_in_8bit"):
-            return "int8"
-
-    return None
+    info = _resolve_from_quantization_config(quantization_config)
+    return info.weight_dtype if info else None
 
 
 def _extract_from_config(cfg: dict[str, Any]) -> dict[str, Any]:
@@ -316,9 +342,12 @@ def extract_model_info(hf_config: dict[str, Any]) -> dict[str, Any]:
     # an FP8 model will have torch_dtype=bfloat16 but quant_method=fp8).
     qc = hf_config.get("quantization_config")
     if isinstance(qc, dict):
-        qd = _resolve_quant_dtype(qc)
-        if qd:
-            info["quant_dtype"] = qd
+        from sparkrun.models.quantization import _resolve_from_quantization_config
+
+        qi = _resolve_from_quantization_config(qc)
+        if qi:
+            info["quant_dtype"] = qi.weight_dtype
+            info["quant_info"] = qi
 
     return info
 

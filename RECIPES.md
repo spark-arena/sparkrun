@@ -82,10 +82,15 @@ metadata:
   head_dim: 128
   model_vram: 16.5           # GB override — skips param-based calculation
   kv_vram_per_token: 0.0001  # GB/token override — skips architecture-based calculation
+  quantization: awq          # Quantization method: awq, gptq, fp8, nvfp4, mxfp4, auto-round, bitsandbytes, compressed-tensors, none
+  quant_bits: 4              # Quantization bit width (4, 8)
 ```
 
-sparkrun auto-detects `model_params`, `model_dtype`, `num_layers`, `num_kv_heads`, and `head_dim` from HuggingFace Hub
-config when not provided. Metadata values always take precedence.
+sparkrun auto-detects `model_params`, `model_dtype`, `num_layers`, `num_kv_heads`, `head_dim`, `quantization`, and
+`quant_bits` from HuggingFace Hub config when not provided. Both `config.json` (`quantization_config` block) and
+`hf_quant_config.json` (modelopt supplement, e.g. NVIDIA NVFP4 models) are checked. When `hf_quant_config.json`
+contains `kv_cache_quant_algo`, it is used to set `kv_dtype` if not already specified. Metadata values always take
+precedence over auto-detected values.
 
 ### Benchmark
 

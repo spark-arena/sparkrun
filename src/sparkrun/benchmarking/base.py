@@ -266,6 +266,12 @@ class BenchmarkResult:
             model_meta["num_kv_heads"] = recipe.metadata["num_kv_heads"]
         if recipe.metadata.get("head_dim"):
             model_meta["head_dim"] = recipe.metadata["head_dim"]
+        if recipe.metadata.get("quantization"):
+            model_meta["quantization"] = recipe.metadata["quantization"]
+        if recipe.metadata.get("quant_bits"):
+            model_meta["quant_bits"] = recipe.metadata["quant_bits"]
+        if recipe.metadata.get("kv_dtype"):
+            model_meta["kv_dtype"] = recipe.metadata["kv_dtype"]
 
         metadata = {
             "recipe": {
@@ -349,6 +355,12 @@ def export_results(
         model_meta["num_kv_heads"] = recipe.metadata["num_kv_heads"]
     if recipe.metadata.get("head_dim"):
         model_meta["head_dim"] = recipe.metadata["head_dim"]
+    if recipe.metadata.get("quantization"):
+        model_meta["quantization"] = recipe.metadata["quantization"]
+    if recipe.metadata.get("quant_bits"):
+        model_meta["quant_bits"] = recipe.metadata["quant_bits"]
+    if recipe.metadata.get("kv_dtype"):
+        model_meta["kv_dtype"] = recipe.metadata["kv_dtype"]
 
     data = {
         "sparkrun_benchmark": {
