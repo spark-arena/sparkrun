@@ -395,9 +395,9 @@ class EugrBuilder(BuilderPlugin):
         # Resolve cache dir for index caching
         cache_dir = None
         try:
-            from sparkrun.core.config import resolve_cache_dir
+            from sparkrun.core.config import resolve_sparkrun_cache_dir
 
-            cache_dir = Path(resolve_cache_dir(None))
+            cache_dir = resolve_sparkrun_cache_dir()
         except Exception:
             pass
 
@@ -546,9 +546,9 @@ class EugrBuilder(BuilderPlugin):
     def _resolve_cache_dir(self, config: SparkrunConfig | None) -> Path | None:
         """Resolve the cache directory for build cache storage."""
         try:
-            from sparkrun.core.config import resolve_cache_dir
+            from sparkrun.core.config import resolve_sparkrun_cache_dir
 
-            return Path(resolve_cache_dir(config.cache_dir if config else None))
+            return resolve_sparkrun_cache_dir(config.cache_dir if config else None)
         except Exception:
             return None
 
@@ -859,9 +859,9 @@ class EugrBuilder(BuilderPlugin):
             if self._v is not None:
                 cache_dir = Path(get_working_path(v=self._v)) / "cache"
             else:
-                from sparkrun.core.config import resolve_cache_dir
+                from sparkrun.core.config import resolve_sparkrun_cache_dir
 
-                cache_dir = Path(resolve_cache_dir(None))
+                cache_dir = resolve_sparkrun_cache_dir()
         repo_dir = cache_dir / "eugr-spark-vllm-docker"
 
         if repo_dir.exists() and (repo_dir / ".git").exists():
