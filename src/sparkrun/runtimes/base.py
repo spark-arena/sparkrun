@@ -749,12 +749,13 @@ class RuntimePlugin(Plugin):
             detect_infiniband,
             detect_infiniband_local,
             run_script_on_host,
+            should_run_locally,
         )
-        from sparkrun.utils import is_local_host, merge_env
+        from sparkrun.utils import merge_env
 
-        is_local = is_local_host(host)
-        container_name = self.executor.container_name(cluster_id, "solo")
         ssh_kwargs = build_ssh_kwargs(config)
+        is_local = should_run_locally(host, ssh_kwargs.get("ssh_user"))
+        container_name = self.executor.container_name(cluster_id, "solo")
         volumes = build_volumes(cache_dir, extra=self.get_extra_volumes())
         all_env = merge_env(
             self.get_common_env(),  # base env
@@ -858,16 +859,16 @@ class RuntimePlugin(Plugin):
             build_ssh_kwargs,
             cleanup_containers,
             cleanup_containers_local,
+            should_run_locally,
         )
-        from sparkrun.utils import is_local_host
 
         container_name = self.executor.container_name(cluster_id, "solo")
-        is_local = is_local_host(host)
+        ssh_kwargs = build_ssh_kwargs(config)
+        is_local = should_run_locally(host, ssh_kwargs.get("ssh_user"))
 
         if is_local:
             cleanup_containers_local([container_name], dry_run=dry_run)
         else:
-            ssh_kwargs = build_ssh_kwargs(config)
             cleanup_containers([host], [container_name], ssh_kwargs=ssh_kwargs, dry_run=dry_run)
 
         logger.info("Solo workload '%s' stopped on %s", cluster_id, host)

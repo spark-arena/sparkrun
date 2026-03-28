@@ -264,11 +264,11 @@ def stream_remote_logs(
         dry_run: If True, print the command that would run and return.
     """
     from sparkrun.orchestration.docker import docker_logs_cmd
-    from sparkrun.utils import is_local_host
+    from sparkrun.orchestration.primitives import should_run_locally
 
     logs_cmd = docker_logs_cmd(container_name, follow=True, tail=tail)
 
-    if is_local_host(host):
+    if should_run_locally(host, ssh_user):
         cmd = logs_cmd.split()
     else:
         ssh_base = build_ssh_cmd(host, ssh_user, ssh_key, ssh_options)
@@ -322,9 +322,9 @@ def stream_container_file_logs(
         log_file,
     ]
 
-    from sparkrun.utils import is_local_host
+    from sparkrun.orchestration.primitives import should_run_locally
 
-    if is_local_host(host):
+    if should_run_locally(host, ssh_user):
         cmd = tail_cmd
     else:
         ssh_base = build_ssh_cmd(host, ssh_user, ssh_key, ssh_options)
@@ -362,11 +362,11 @@ def start_log_capture(
         A :class:`subprocess.Popen` handle, or ``None`` on failure.
     """
     from sparkrun.orchestration.docker import docker_logs_cmd
-    from sparkrun.utils import is_local_host
+    from sparkrun.orchestration.primitives import should_run_locally
 
     logs_cmd = docker_logs_cmd(container_name, follow=True, tail=tail)
 
-    if is_local_host(host):
+    if should_run_locally(host, ssh_kwargs.get("ssh_user")):
         cmd = logs_cmd.split()
     else:
         ssh_base = build_ssh_cmd(

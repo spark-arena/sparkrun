@@ -135,7 +135,7 @@ def _stop_by_cluster_id(target, hosts, hosts_file, cluster_name, config, dry_run
     """
     from sparkrun.orchestration.docker import enumerate_cluster_containers
     from sparkrun.orchestration.job_metadata import load_job_metadata, remove_job_metadata
-    from sparkrun.orchestration.primitives import build_ssh_kwargs, cleanup_containers, cleanup_containers_local
+    from sparkrun.orchestration.primitives import build_ssh_kwargs, cleanup_containers, cleanup_containers_local, should_run_locally
 
     cluster_id = _is_cluster_id(target)
     meta = load_job_metadata(cluster_id, cache_dir=str(config.cache_dir))
@@ -153,9 +153,7 @@ def _stop_by_cluster_id(target, hosts, hosts_file, cluster_name, config, dry_run
     ssh_kwargs = build_ssh_kwargs(config)
     container_names = enumerate_cluster_containers(cluster_id, len(host_list))
 
-    from sparkrun.utils import is_local_host
-
-    is_local = len(host_list) == 1 and is_local_host(host_list[0])
+    is_local = len(host_list) == 1 and should_run_locally(host_list[0], ssh_kwargs.get("ssh_user"))
     if is_local:
         cleanup_containers_local(container_names, dry_run=dry_run)
     else:
@@ -194,7 +192,7 @@ def _stop_recipe(recipe_name, hosts, hosts_file, cluster_name, config, tp_overri
         click.echo("Error: %s" % e, err=True)
         sys.exit(1)
 
-    from sparkrun.orchestration.primitives import build_ssh_kwargs, cleanup_containers, cleanup_containers_local
+    from sparkrun.orchestration.primitives import build_ssh_kwargs, cleanup_containers, cleanup_containers_local, should_run_locally
     from sparkrun.orchestration.docker import enumerate_cluster_containers
     from sparkrun.orchestration.job_metadata import generate_cluster_id
 
@@ -206,9 +204,7 @@ def _stop_recipe(recipe_name, hosts, hosts_file, cluster_name, config, tp_overri
 
     container_names = enumerate_cluster_containers(cluster_id, len(host_list))
 
-    from sparkrun.utils import is_local_host
-
-    is_local = len(host_list) == 1 and is_local_host(host_list[0])
+    is_local = len(host_list) == 1 and should_run_locally(host_list[0], ssh_kwargs.get("ssh_user"))
     if is_local:
         cleanup_containers_local(container_names, dry_run=dry_run)
     else:

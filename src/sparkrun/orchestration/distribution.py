@@ -15,6 +15,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _is_cross_user(ssh_kwargs: dict | None) -> bool:
+    """True when *ssh_kwargs* specifies a user different from the OS user."""
+    import os
+
+    ssh_user = ssh_kwargs.get("ssh_user") if ssh_kwargs else None
+    if ssh_user is None:
+        return False
+    return ssh_user != os.environ.get("USER", "root")
+
+
 def _distribute_from_head(
     head: str,
     hosts: list[str],
@@ -308,23 +318,38 @@ def distribute_resources(
         )
 
     _auto_delegated = False
+    _cross_user = _is_cross_user(ssh_kwargs)
     if transfer_mode == "auto":
         _in_cluster = is_control_in_cluster(host_list)
-        if _in_cluster or _ib_validated:
+        if _in_cluster and not _cross_user:
             transfer_mode = "local"
-            if _in_cluster:
-                logger.info("Auto-detected transfer mode: local (control is cluster member)")
-            else:
-                logger.info("Auto-detected transfer mode: local (IB reachable from control node)")
+            logger.info("Auto-detected transfer mode: local (control is cluster member)")
+        elif _ib_validated and not _cross_user:
+            transfer_mode = "local"
+            logger.info("Auto-detected transfer mode: local (IB reachable from control node)")
         else:
             transfer_mode = "delegated"
             _auto_delegated = True
-            logger.info("Auto-detected transfer mode: delegated (external control, no IB connectivity)")
+            if _cross_user:
+                logger.info(
+                    "Auto-detected transfer mode: delegated (cluster user '%s' differs from OS user)",
+                    ssh_kwargs.get("ssh_user"),
+                )
+            else:
+                logger.info("Auto-detected transfer mode: delegated (external control, no IB connectivity)")
 
     # Determine effective transfer interface (default: cx7)
     _use_mgmt = transfer_interface == "mgmt"
     if _use_mgmt:
         logger.info("Transfer interface: mgmt — using management IPs for transfers")
+
+    if transfer_mode == "local" and _cross_user:
+        logger.warning(
+            "transfer_mode='local' but cluster user '%s' differs from OS user — "
+            "local Docker operations will run as the current OS user, not the cluster user. "
+            "Consider using transfer_mode='delegated' or 'push'.",
+            ssh_kwargs.get("ssh_user"),
+        )
 
     if transfer_mode == "local":
         # Local mode: use validated IB IPs for direct transfers

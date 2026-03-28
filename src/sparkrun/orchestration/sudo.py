@@ -90,12 +90,12 @@ def run_sudo_script_on_host(
     Returns:
         RemoteResult with the original host label preserved.
     """
-    from sparkrun.utils import is_local_host
+    from sparkrun.orchestration.primitives import should_run_locally
 
-    if is_local_host(host):
+    kw = ssh_kwargs or {}
+    if should_run_locally(host, kw.get("ssh_user")):
         r = _run_local_sudo_script(script, password=password, timeout=timeout, dry_run=dry_run)
         return RemoteResult(host=host, returncode=r.returncode, stdout=r.stdout, stderr=r.stderr)
-    kw = ssh_kwargs or {}
     return _ssh.run_remote_sudo_script(host, script, password, timeout=timeout, dry_run=dry_run, **kw)
 
 
@@ -136,11 +136,12 @@ def run_with_sudo_fallback(
         {host: SSHResult} and still_failed_hosts is a list of hosts
         that failed even after password-based sudo.
     """
-    from sparkrun.utils import is_local_host
+    from sparkrun.orchestration.primitives import should_run_locally
 
     # Separate local and remote hosts
-    local_hosts = [h for h in host_list if is_local_host(h)]
-    remote_hosts = [h for h in host_list if not is_local_host(h)]
+    ssh_user = ssh_kwargs.get("ssh_user")
+    local_hosts = [h for h in host_list if should_run_locally(h, ssh_user)]
+    remote_hosts = [h for h in host_list if not should_run_locally(h, ssh_user)]
 
     result_map: dict[str, object] = {}
     failed_hosts: list[str] = []
@@ -180,7 +181,7 @@ def run_with_sudo_fallback(
     # Step 2: For failed hosts, fall back to password-based sudo
     if failed_hosts and not dry_run and sudo_password is not None:
         for h in failed_hosts:
-            if is_local_host(h):
+            if should_run_locally(h, ssh_user):
                 r = _run_local_sudo_script(
                     fallback_script,
                     password=sudo_password,

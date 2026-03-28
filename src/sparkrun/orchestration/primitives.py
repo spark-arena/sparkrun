@@ -268,14 +268,14 @@ def try_clear_page_cache(
     Failures are non-fatal — a warning is logged with a hint about
     ``sparkrun setup clear-cache --save-sudo``.
     """
-    from sparkrun.utils import is_local_host
     from sparkrun.scripts import read_script
 
     script = read_script("clear_cache.sh")
 
     kw = ssh_kwargs or {}
-    local_hosts = [h for h in hosts if is_local_host(h)]
-    remote_hosts = [h for h in hosts if not is_local_host(h)]
+    ssh_user = kw.get("ssh_user")
+    local_hosts = [h for h in hosts if should_run_locally(h, ssh_user)]
+    remote_hosts = [h for h in hosts if not should_run_locally(h, ssh_user)]
 
     if local_hosts:
         result = run_local_script(script, dry_run=dry_run)
@@ -488,6 +488,32 @@ def find_available_port(
 
 
 # ---------------------------------------------------------------------------
+# Execution dispatch predicate
+# ---------------------------------------------------------------------------
+
+
+def should_run_locally(host: str, ssh_user: str | None = None) -> bool:
+    """True if *host* is local AND no cross-user SSH is needed.
+
+    Use this instead of :func:`~sparkrun.utils.is_local_host` at
+    execution dispatch points (where the code decides "run locally via
+    subprocess" vs "run via SSH").  Keep ``is_local_host`` for pure
+    address-identity checks (e.g. "is this IP me?").
+
+    Returns ``True`` when the host is local and *ssh_user* is ``None``
+    or matches the current OS user.
+    """
+    import os
+    from sparkrun.utils import is_local_host
+
+    if not is_local_host(host):
+        return False
+    if ssh_user is None:
+        return True
+    return ssh_user == os.environ.get("USER", "root")
+
+
+# ---------------------------------------------------------------------------
 # Local execution
 # ---------------------------------------------------------------------------
 
@@ -535,14 +561,12 @@ def run_script_on_host(
 ) -> RemoteResult:
     """Run a script on a host — dispatches to local or remote execution.
 
-    If *host* is ``"localhost"``, ``"127.0.0.1"``, or empty, runs locally.
-    Otherwise runs via SSH.
+    Uses :func:`should_run_locally` so that a local host with a
+    different ``ssh_user`` is still reached via SSH.
     """
-    from sparkrun.utils import is_local_host
-
-    if is_local_host(host):
-        return run_local_script(script, dry_run=dry_run)
     kw = ssh_kwargs or {}
+    if should_run_locally(host, kw.get("ssh_user")):
+        return run_local_script(script, dry_run=dry_run)
     return run_remote_script(host, script, timeout=timeout, dry_run=dry_run, **kw)
 
 
@@ -555,9 +579,7 @@ def run_command_on_host(
     quiet: bool = False,
 ) -> RemoteResult:
     """Run a command on a host — dispatches to local or remote execution."""
-    from sparkrun.utils import is_local_host
-
-    if is_local_host(host):
-        return run_local_script("#!/bin/bash\n" + command, dry_run=dry_run)
     kw = ssh_kwargs or {}
+    if should_run_locally(host, kw.get("ssh_user")):
+        return run_local_script("#!/bin/bash\n" + command, dry_run=dry_run)
     return run_remote_command(host, command, timeout=timeout, dry_run=dry_run, quiet=quiet, **kw)

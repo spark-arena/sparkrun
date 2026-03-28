@@ -364,14 +364,14 @@ def _run_copy_command(
     Raises:
         RuntimeError: If the copy fails.
     """
-    from sparkrun.orchestration.primitives import run_script_on_host
-    from sparkrun.utils import is_local_host
+    from sparkrun.orchestration.primitives import run_script_on_host, should_run_locally
 
     source = cmd["copy"]
     source_path = Path(source)
     basename = source_path.name
     dest = cmd.get("dest", "/workspace/mods/%s" % basename)
     source_host = cmd.get("source_host")
+    kw = ssh_kwargs or {}
 
     logger.info("  %s copy %s -> %s:%s on %s", label, source, container_name, dest, host)
 
@@ -389,7 +389,7 @@ def _run_copy_command(
             ssh_kwargs=ssh_kwargs,
             label=label,
         )
-    elif is_local_host(host):
+    elif should_run_locally(host, kw.get("ssh_user")):
         # Local: docker cp directly
         script = ("set -e\ndocker exec --user root %(c)s mkdir -p %(dest)s\ndocker cp %(src)s/. %(c)s:%(dest)s/\n") % {
             "c": container_name,
