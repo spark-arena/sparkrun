@@ -852,15 +852,16 @@ echo "DOCKER_GROUP=added"
 """
 
 
-def _docker_group_summary(stdout: str) -> str:
+def _docker_group_summary(stdout: str, user: str | None = None) -> str:
     """Extract status from docker-group script output."""
+    label = "'%s' " % user if user else ""
     for line in stdout.strip().splitlines():
         if line.startswith("DOCKER_GROUP="):
             val = line.split("=", 1)[1]
             if val == "already_member":
-                return "already a member"
+                return "%salready a member" % label
             elif val == "added":
-                return "added to docker group"
+                return "added %sto docker group" % label
     return stdout.strip()[:80]
 
 
@@ -910,7 +911,7 @@ def setup_docker_group(ctx, hosts, hosts_file, cluster_name, user, dry_run):
     for h in host_list:
         r = result_map.get(h)
         if r and r.success:
-            click.echo("  [OK]   %s: %s" % (h, _docker_group_summary(r.stdout)))
+            click.echo("  [OK]   %s: %s" % (h, _docker_group_summary(r.stdout, user=user)))
 
     # Prompt and retry if needed
     if still_failed and not dry_run:
@@ -935,7 +936,7 @@ def setup_docker_group(ctx, hosts, hosts_file, cluster_name, user, dry_run):
         if r and not r.success:
             click.echo("  [FAIL] %s: %s" % (h, r.stderr.strip()[:200]), err=True)
         elif r and r.success and h in (still_failed or []):
-            click.echo("  [OK]   %s: %s" % (h, _docker_group_summary(r.stdout)))
+            click.echo("  [OK]   %s: %s" % (h, _docker_group_summary(r.stdout, user=user)))
 
     click.echo()
     parts = []

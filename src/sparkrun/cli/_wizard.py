@@ -618,7 +618,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                         for h in host_list:
                             r = dg_result_map.get(h)
                             if r and r.success:
-                                click.echo("  %s: %s" % (h, _docker_group_summary(r.stdout)))
+                                click.echo("  %s: %s" % (h, _docker_group_summary(r.stdout, user=user)))
                 except Exception as e:
                     results["docker"] = "failed"
                     click.echo("Docker group error: %s" % e, err=True)
