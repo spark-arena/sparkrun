@@ -16,3 +16,4 @@ reference_materials/
 /website/package-lock.json
 /MagicMock/
 /benchmarks/
+/.slop/

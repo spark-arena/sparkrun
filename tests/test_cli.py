@@ -2624,8 +2624,8 @@ class TestSetupSshCommand:
         assert "192.168.11.1" in call_ips
         assert "192.168.11.2" in call_ips
 
-    def test_setup_ssh_exclude_self_when_user_differs(self, runner, tmp_path, monkeypatch):
-        """Test that --include-self skips control machine when SSH user differs from local user."""
+    def test_setup_ssh_skip_self_when_user_differs(self, runner, tmp_path, monkeypatch):
+        """Test that --include-self skips auto-adding control machine when SSH user differs."""
         config_root = tmp_path / "config"
         config_root.mkdir()
         import sparkrun.core.config
@@ -2647,15 +2647,15 @@ class TestSetupSshCommand:
             ],
         )
         assert result.exit_code == 0
-        # Self IP should NOT appear in the mesh command
+        # Self IP should NOT be auto-added — cluster user may not exist on control machine
         assert "Skipping control machine" in result.output
         assert "differs from local user" in result.output
         # The two cluster hosts should still be there
         assert "10.0.0.1" in result.output
         assert "10.0.0.2" in result.output
 
-    def test_setup_ssh_remove_self_from_cluster_when_user_differs(self, runner, tmp_path, monkeypatch):
-        """Test that control machine IP is removed from host list when user differs."""
+    def test_setup_ssh_keep_self_when_explicitly_listed_cross_user(self, runner, tmp_path, monkeypatch):
+        """Test that control machine IP stays in host list when explicitly listed, even with different user."""
         config_root = tmp_path / "config"
         config_root.mkdir()
         import sparkrun.core.config
@@ -2681,11 +2681,44 @@ class TestSetupSshCommand:
             ],
         )
         assert result.exit_code == 0
-        assert "Removed control machine" in result.output
+        assert "cross-user key exchange" in result.output
         assert "differs from local user" in result.output
-        # The local IP should NOT appear in the mesh command line
+        # The local IP should still appear — user explicitly listed it
         cmd_line = result.output.split("Would run")[-1]
-        assert local_ip not in cmd_line
+        assert local_ip in cmd_line
+
+    def test_setup_ssh_two_node_explicit_cross_user_mesh_proceeds(self, runner, tmp_path, monkeypatch):
+        """Test that a 2-node cluster with control machine explicitly listed proceeds with both hosts."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.core.config
+
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+        monkeypatch.setenv("USER", "localuser")
+
+        from sparkrun.orchestration.primitives import local_ip_for
+
+        local_ip = local_ip_for("10.0.0.1")
+
+        result = runner.invoke(
+            main,
+            [
+                "setup",
+                "ssh",
+                "--hosts",
+                "%s,10.0.0.1" % local_ip,
+                "--user",
+                "dgxuser",
+                "--dry-run",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "cross-user key exchange" in result.output
+        # Both hosts should be in the mesh — no "at least 2 hosts" error
+        assert "at least 2 hosts" not in result.output
+        cmd_line = result.output.split("Would run")[-1]
+        assert local_ip in cmd_line
+        assert "10.0.0.1" in cmd_line
 
 
 class TestSetupFixPermissions:

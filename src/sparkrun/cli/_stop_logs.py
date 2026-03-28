@@ -9,10 +9,10 @@ import click
 from ._common import (
     TARGET,
     _apply_node_trimming,
+    _get_context,
     _is_cluster_id,
     _load_recipe,
     _resolve_hosts_or_exit,
-    _setup_logging,
     build_cluster_id_overrides,
     dry_run_option,
     host_options,
@@ -239,13 +239,12 @@ def logs_cmd(ctx, target, hosts, hosts_file, cluster_name, tp_override, port, se
 
       sparkrun logs e5f6a7b8
     """
-    from sparkrun.core.bootstrap import init_sparkrun, get_runtime
-    from sparkrun.core.config import SparkrunConfig
+    from sparkrun.core.bootstrap import get_runtime
     from sparkrun.orchestration.job_metadata import generate_cluster_id
 
-    v = init_sparkrun()
-    _setup_logging(ctx.obj["verbose"])
-    config = SparkrunConfig(config_path) if config_path else SparkrunConfig()
+    sctx = _get_context(ctx)
+    v = sctx.variables
+    config = sctx.config
 
     # Branch: cluster ID target
     if _is_cluster_id(target) is not None:
@@ -274,7 +273,7 @@ def logs_cmd(ctx, target, hosts, hosts_file, cluster_name, tp_override, port, se
             config,
             meta,
             target,
-            v,
+            sctx=sctx,
         )
 
         if runtime is not None:
@@ -301,7 +300,7 @@ def logs_cmd(ctx, target, hosts, hosts_file, cluster_name, tp_override, port, se
     recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name)
 
     # Resolve hosts
-    host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v)
+    host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, sctx=sctx)
 
     # Resolve runtime so we call the correct follow_logs implementation
     try:

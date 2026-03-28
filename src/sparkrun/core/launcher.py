@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from sparkrun.core.config import SparkrunConfig
+    from sparkrun.core.context import SparkrunContext
     from sparkrun.core.recipe import Recipe
     from sparkrun.core.registry import RegistryManager
     from sparkrun.runtimes.base import RuntimePlugin
@@ -51,8 +52,9 @@ def launch_inference(
     runtime: RuntimePlugin,
     host_list: list[str],
     overrides: dict[str, Any],
-    config: SparkrunConfig,
+    config: SparkrunConfig | None = None,
     v=None,
+    sctx: SparkrunContext | None = None,
     is_solo: bool = False,
     cache_dir: str | None = None,
     local_cache_dir: str | None = None,
@@ -124,6 +126,13 @@ def launch_inference(
     """
     from sparkrun.orchestration.job_metadata import generate_cluster_id, save_job_metadata
     from sparkrun.orchestration.primitives import build_ssh_kwargs
+
+    # Resolve config and v from sctx when provided
+    if sctx is not None:
+        if config is None:
+            config = sctx.config
+        if v is None:
+            v = sctx.variables
 
     effective_cache_dir = cache_dir or str(config.hf_cache_dir)
     effective_local_cache = local_cache_dir or effective_cache_dir

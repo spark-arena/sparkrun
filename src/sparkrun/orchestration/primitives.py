@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import subprocess
 
-from sparkrun.core.config import SparkrunConfig, resolve_cache_dir
+from sparkrun.core.config import SparkrunConfig, resolve_hf_cache_home
 from sparkrun.utils import is_valid_ip
 from sparkrun.orchestration.ssh import (
     RemoteResult,
@@ -66,7 +66,7 @@ def build_volumes(
     Returns:
         Merged volume dict.
     """
-    hf_cache = resolve_cache_dir(cache_dir)
+    hf_cache = resolve_hf_cache_home(cache_dir)
     volumes: dict[str, str] = {hf_cache: "/cache/huggingface"}
     if extra:
         volumes.update(extra)
@@ -469,7 +469,7 @@ def find_available_port(
     original = port
 
     for _ in range(max_attempts):
-        result = run_command_on_host(host, "nc -z localhost %d" % port, ssh_kwargs=ssh_kwargs, timeout=5)
+        result = run_command_on_host(host, "nc -z localhost %d" % port, ssh_kwargs=ssh_kwargs, timeout=5, quiet=True)
         if not result.success:
             # nc failed → port is free
             if port != original:

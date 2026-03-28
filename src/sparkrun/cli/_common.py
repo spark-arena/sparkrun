@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import logging
 import sys
+from typing import TYPE_CHECKING
 
 import click
+
+if TYPE_CHECKING:
+    from sparkrun.core.context import SparkrunContext
 
 from sparkrun.core.recipe import (
     expand_recipe_shortcut as _expand_recipe_shortcut,
@@ -17,9 +21,42 @@ from sparkrun.core.recipe import (
 logger = logging.getLogger(__name__)
 
 
-# TODO: converge logging with SAF logging
+def _get_context(ctx) -> "SparkrunContext":
+    """Lazily create and cache a :class:`SparkrunContext` on the Click context.
+
+    Calls ``init_sparkrun()`` and creates a ``SparkrunConfig``, bundling
+    them into a single context object stored in ``ctx.obj["sparkrun_ctx"]``.
+
+    Logging is *not* re-applied here — ``_setup_logging()`` is already
+    called once from the ``main()`` group callback, and SAF's
+    ``fixed_logger`` parameter means ``init_framework_desktop`` skips
+    its own logging setup entirely.
+    """
+    from sparkrun.core.context import SparkrunContext
+
+    obj = ctx.ensure_object(dict)
+    sctx = obj.get("sparkrun_ctx")
+    if sctx is not None:
+        return sctx
+
+    from sparkrun.core.bootstrap import init_sparkrun
+    from sparkrun.core.config import SparkrunConfig
+
+    v = init_sparkrun()
+    config_path = obj.get("config_path")
+    config = SparkrunConfig(config_path) if config_path else SparkrunConfig()
+    sctx = SparkrunContext(variables=v, config=config, verbose=obj.get("verbose", False))
+    obj["sparkrun_ctx"] = sctx
+    return sctx
+
+
 def _setup_logging(verbose: bool):
     """Configure logging based on verbosity.
+
+    Called once from the ``main()`` Click group callback.  No re-call
+    is needed after ``init_sparkrun()`` because sparkrun passes
+    ``fixed_logger`` to SAF's ``init_framework_desktop``, which skips
+    SAF's own logging setup entirely (see SAF ``core.py:376``).
 
     Uses explicit handler setup instead of ``logging.basicConfig`` which
     is silently a no-op when the root logger already has handlers (common
@@ -83,12 +120,12 @@ def _get_config_and_registry(config_path=None):
 
 
 def _apply_node_trimming(
-    host_list: list[str],
-    recipe,
-    overrides: dict | None = None,
-    runtime=None,
-    tp_override: int | None = None,
-    quiet: bool = False,
+        host_list: list[str],
+        recipe,
+        overrides: dict | None = None,
+        runtime=None,
+        tp_override: int | None = None,
+        quiet: bool = False,
 ) -> list[str]:
     """Trim host list to match the runtime's required node count.
 
@@ -145,10 +182,10 @@ def _apply_node_trimming(
 
 
 def _apply_tp_trimming(
-    host_list: list[str],
-    recipe,
-    overrides: dict | None = None,
-    tp_override: int | None = None,
+        host_list: list[str],
+        recipe,
+        overrides: dict | None = None,
+        tp_override: int | None = None,
 ) -> list[str]:
     """Trim host list to match tensor_parallel if TP < host count.
 
@@ -175,12 +212,17 @@ def _apply_tp_trimming(
 from sparkrun.core.cluster_manager import ResolvedClusterConfig, resolve_cluster_config  # noqa: E402, F401 — re-exported
 
 
-def _get_cluster_manager(v=None):
-    """Create a ClusterManager using the SAF config root."""
+def _get_cluster_manager(v=None, sctx: SparkrunContext | None = None):
+    """Create a ClusterManager using the SAF config root.
+
+    When *sctx* is provided, returns its cached ``cluster_manager``.
+    """
+    if sctx is not None:
+        return sctx.cluster_manager
+
     from sparkrun.core.cluster_manager import ClusterManager
     from sparkrun.core.config import get_config_root
 
-    # TODO: switch to leveraging scitrera-app-framework plugin for ClusterManager singleton?
     return ClusterManager(get_config_root(v))
 
 
@@ -258,7 +300,7 @@ def _load_recipe(config, recipe_name, resolve=True):
     return recipe, recipe_path, registry_mgr
 
 
-def _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v=None):
+def _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v=None, sctx: SparkrunContext | None = None):
     """Resolve hosts from CLI args; exit if none are found.
 
     Also applies the cluster's SSH user to *config* when a cluster is
@@ -270,7 +312,7 @@ def _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v=None):
     """
     from sparkrun.core.hosts import resolve_hosts
 
-    cluster_mgr = _get_cluster_manager(v)
+    cluster_mgr = _get_cluster_manager(v) if sctx is None else _get_cluster_manager(sctx=sctx)
     host_list = resolve_hosts(
         hosts=hosts,
         hosts_file=hosts_file,
@@ -657,7 +699,8 @@ def recipe_override_options(f):
     f = click.option("--option", "-o", "options", multiple=True, help="Override any recipe default: -o key=value (repeatable)")(f)
     f = click.option("--image", default=None, help="Override container image")(f)
     f = click.option("--max-model-len", type=int, default=None, help="Override maximum model context length")(f)
-    f = click.option("--gpu-mem", type=float, default=None, help="Override GPU memory utilization")(f)
+    f = click.option("--gpu-mem", '--gpu-memory-utilization', '--mem-fraction-static',
+                     type=float, default=None, help="Override GPU memory utilization")(f)
     f = click.option("--pp", "--pipeline-parallel", "pipeline_parallel", type=int, default=None, help="Override pipeline parallelism")(f)
     f = click.option("--tp", "--tensor-parallel", "tensor_parallel", type=int, default=None, help="Override tensor parallelism")(f)
     # TODO: add options for expert parallel and data parallel and context parallel ??? and runtime arg validation
@@ -665,7 +708,7 @@ def recipe_override_options(f):
 
 
 def _apply_recipe_overrides(
-    options, tensor_parallel=None, pipeline_parallel=None, gpu_mem=None, max_model_len=None, image=None, recipe=None, **kwargs
+        options, tensor_parallel=None, pipeline_parallel=None, gpu_mem=None, max_model_len=None, image=None, recipe=None, **kwargs
 ):
     """Build overrides dict, apply to recipe, and resolve runtime.
 
@@ -706,11 +749,11 @@ def dry_run_option(f):
 
 
 def validate_and_prepare_hosts(
-    host_list: list[str],
-    recipe,
-    overrides: dict,
-    runtime,
-    solo: bool = False,
+        host_list: list[str],
+        recipe,
+        overrides: dict,
+        runtime,
+        solo: bool = False,
 ) -> tuple[list[str], bool]:
     """Validate node count, enforce max_nodes, and determine solo mode.
 
@@ -769,9 +812,9 @@ def validate_and_prepare_hosts(
 
 
 def build_cluster_id_overrides(
-    port: int | None = None,
-    served_model_name: str | None = None,
-    tp_override: int | None = None,
+        port: int | None = None,
+        served_model_name: str | None = None,
+        tp_override: int | None = None,
 ) -> dict | None:
     """Build overrides dict for cluster_id generation from CLI flags.
 
@@ -788,13 +831,14 @@ def build_cluster_id_overrides(
 
 
 def resolve_hosts_with_metadata_fallback(
-    hosts,
-    hosts_file,
-    cluster_name,
-    config,
-    meta,
-    target_label,
-    v=None,
+        hosts,
+        hosts_file,
+        cluster_name,
+        config,
+        meta,
+        target_label,
+        v=None,
+        sctx: SparkrunContext | None = None,
 ) -> list[str]:
     """Resolve hosts from CLI args, job metadata, or defaults.
 
@@ -802,12 +846,12 @@ def resolve_hosts_with_metadata_fallback(
     Exits with error if no hosts can be resolved.
     """
     if hosts or hosts_file or cluster_name:
-        host_list, _ = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v)
+        host_list, _ = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v, sctx=sctx)
         return host_list
     if meta and meta.get("hosts"):
         return meta["hosts"]
     try:
-        host_list, _ = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v)
+        host_list, _ = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v, sctx=sctx)
         return host_list
     except SystemExit:
         click.echo(

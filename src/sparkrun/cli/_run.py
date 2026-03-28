@@ -13,10 +13,10 @@ from ._common import (
     _apply_recipe_overrides,
     _display_vram_estimate,
     _expand_recipe_shortcut,
+    _get_context,
     _is_recipe_url,
     _load_recipe,
     _resolve_hosts_or_exit,
-    _setup_logging,
     _simplify_recipe_ref,
     dry_run_option,
     host_options,
@@ -112,21 +112,19 @@ def run(
 
       sparkrun run my-recipe.yaml -o attention_backend=triton -o max_model_len=4096
     """
-    from sparkrun.core.bootstrap import init_sparkrun, get_runtime
-    from sparkrun.core.config import SparkrunConfig
+    from sparkrun.core.bootstrap import get_runtime
     from sparkrun.core.launcher import launch_inference
 
-    v = init_sparkrun()
-    # SAF's init_framework_desktop reconfigures the root logger — re-apply ours
-    _setup_logging(ctx.obj["verbose"])
-    config = SparkrunConfig(config_path) if config_path else SparkrunConfig()
+    sctx = _get_context(ctx)
+    v = sctx.variables
+    config = sctx.config
 
     # warn that --solo flag is not recommended if solo==True at this point
     if solo:
         click.echo("Notice: --solo flag is not recommended; it is better to explicitly specify parallelism via e.g. --tp 1", err=True)
 
     # Determine hosts
-    host_list, cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v)
+    host_list, cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, sctx=sctx)
 
     # Find and load recipe (defer resolution until overrides are built)
     recipe, _recipe_path, registry_mgr = _load_recipe(config, recipe_name, resolve=False)
@@ -276,8 +274,7 @@ def run(
             runtime=runtime,
             host_list=host_list,
             overrides=overrides,
-            config=config,
-            v=v,
+            sctx=sctx,
             is_solo=is_solo,
             cache_dir=remote_cache_dir,
             local_cache_dir=local_cache_dir,

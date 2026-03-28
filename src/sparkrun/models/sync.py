@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from sparkrun.core.config import resolve_cache_dir
+from sparkrun.core.config import resolve_hf_cache_home
 from sparkrun.orchestration.primitives import sync_resource_to_hosts
 from sparkrun.scripts import read_script
 
@@ -37,7 +37,7 @@ def sync_model_to_hosts(
     Returns:
         List of hostnames where the sync failed.
     """
-    cache = resolve_cache_dir(cache_dir)
+    cache = resolve_hf_cache_home(cache_dir)
     revision_flag = "--revision %s " % revision if revision else ""
 
     script = read_script("model_sync.sh").format(

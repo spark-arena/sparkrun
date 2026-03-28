@@ -85,11 +85,11 @@ class BenchmarkingPlugin(Plugin):
 
     @abstractmethod
     def build_benchmark_command(
-        self,
-        target_url: str,
-        model: str,
-        args: dict[str, Any],
-        result_file: str | None = None,
+            self,
+            target_url: str,
+            model: str,
+            args: dict[str, Any],
+            result_file: str | None = None,
     ) -> list[str]:
         """Build the benchmark command argv list.
 
@@ -303,21 +303,32 @@ class BenchmarkResult:
             "model": model_meta,
             "runtime_info": launch_result.runtime_info,
         }
+
+        # TODO: more care for sparkrun version and/or other metadata
+        # noinspection PyBroadException
+        try:
+            from sparkrun import __version__ as sparkrun_version
+            metadata['sparkrun'] = {
+                'version': sparkrun_version,
+            }
+        except Exception as e:
+            pass
+
         return metadata
 
 
 def export_results(
-    *,
-    recipe: Recipe,
-    hosts: list[str],
-    tp: int,
-    cluster_id: str,
-    framework_name: str,
-    profile_name: str | None,
-    args: dict[str, Any],
-    results: dict[str, Any],
-    output_path: str | Path,
-    runtime_info: dict[str, str] | None = None,
+        *,
+        recipe: Recipe,
+        hosts: list[str],
+        tp: int,
+        cluster_id: str,
+        framework_name: str,
+        profile_name: str | None,
+        args: dict[str, Any],
+        results: dict[str, Any],
+        output_path: str | Path,
+        runtime_info: dict[str, str] | None = None,
 ) -> Path:
     """Export benchmark results to a YAML file.
 

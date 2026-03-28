@@ -541,26 +541,24 @@ def setup_ssh(ctx, hosts, hosts_file, cluster_name, extra_hosts, include_self, u
     if include_self and host_list:
         self_host = local_ip_for(host_list[0])
         if self_host and self_host in seen and cross_user:
-            # Control machine IP is in the cluster list but the SSH user
-            # differs from the local OS user — remove it to avoid trying
-            # to SSH as the cluster user on the control machine.
-            host_list = [h for h in host_list if h != self_host]
-            cluster_hosts = [h for h in cluster_hosts if h != self_host]
-            seen.discard(self_host)
+            # Control machine was explicitly listed — keep it. The user
+            # included it intentionally so the cluster user should exist there.
             click.echo(
-                "Note: Removed control machine (%s) from mesh — user '%s' differs from "
-                "local user '%s'. Control→cluster SSH is handled automatically by the mesh script."
-                % (self_host, user, local_user)
+                "Note: SSH user '%s' differs from local user '%s'. "
+                "The mesh script will handle cross-user key exchange for %s automatically." % (user, local_user, self_host)
             )
         elif self_host and self_host not in seen and not cross_user:
             host_list.append(self_host)
             seen.add(self_host)
             added.append("%s (this machine)" % self_host)
         elif self_host and self_host not in seen and cross_user:
+            # Don't auto-add the control machine — the cluster user
+            # likely doesn't exist here.  The mesh script's cross-user
+            # block will still install the local user's key on the
+            # remote hosts for passwordless control→cluster SSH.
             click.echo(
                 "Note: Skipping control machine (%s) in mesh — user '%s' differs from "
-                "local user '%s'. Control→cluster SSH is handled automatically by the mesh script."
-                % (self_host, user, local_user)
+                "local user '%s'. Control→cluster SSH is handled automatically by the mesh script." % (self_host, user, local_user)
             )
 
     if not host_list:
@@ -1508,8 +1506,6 @@ def setup_diagnose(ctx, hosts, hosts_file, cluster_name, dry_run, output_file, j
     import json as _json
     from datetime import datetime, timezone
 
-    from sparkrun.core.bootstrap import init_sparkrun
-    from sparkrun.core.config import SparkrunConfig
     from sparkrun.diagnostics import (
         NDJSONWriter,
         collect_config_diagnostics,
@@ -1517,11 +1513,10 @@ def setup_diagnose(ctx, hosts, hosts_file, cluster_name, dry_run, output_file, j
         collect_sudo_diagnostics,
     )
 
-    from ._common import _get_cluster_manager, _resolve_setup_context, _setup_logging
+    from ._common import _get_cluster_manager, _get_context, _resolve_setup_context
 
-    init_sparkrun()
-    _setup_logging(ctx.obj["verbose"])
-    config = SparkrunConfig()
+    sctx = _get_context(ctx)
+    config = sctx.config
 
     host_list, user, ssh_kwargs = _resolve_setup_context(hosts, hosts_file, cluster_name, config)
 

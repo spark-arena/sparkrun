@@ -38,7 +38,7 @@ def resolve_sparkrun_cache_dir(cache_dir: str | Path | None = None) -> Path:
     return DEFAULT_CACHE_DIR
 
 
-def resolve_cache_dir(cache_dir: str | None) -> str:
+def resolve_hf_cache_home(cache_dir: str | None) -> str:
     """Resolve an optional cache directory override to a concrete path.
 
     Returns *cache_dir* if provided, otherwise the HuggingFace cache

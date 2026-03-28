@@ -13,6 +13,7 @@ from ._common import (
     _display_recipe_detail,
     _display_vram_estimate,
     _get_config_and_registry,
+    _get_context,
     _load_recipe,
 )
 
@@ -111,9 +112,10 @@ def recipe_show(ctx, recipe_name, no_vram, tensor_parallel, gpu_mem=None, config
 @click.pass_context
 def recipe_validate(ctx, recipe_name, config_path=None):
     """Validate a recipe file."""
-    from sparkrun.core.bootstrap import init_sparkrun, get_runtime
+    from sparkrun.core.bootstrap import get_runtime
 
-    v = init_sparkrun()
+    sctx = _get_context(ctx)
+    v = sctx.variables
     config, _ = _get_config_and_registry(config_path)
     recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name)
 

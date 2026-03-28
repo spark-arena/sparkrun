@@ -358,18 +358,15 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                     local_user = os.environ.get("USER", "root")
                     cross_user = user != local_user
                     if self_ip and self_ip in seen and cross_user:
-                        # Control machine IP is in the cluster but SSH user
-                        # differs from local OS user — remove to avoid SSH
-                        # as the cluster user on the control machine.
-                        mesh_hosts = [h for h in mesh_hosts if h != self_ip]
-                        seen.discard(self_ip)
+                        # Control machine was explicitly listed — keep it.
                         click.echo(
-                            "Note: Removed control machine (%s) from mesh — user '%s' differs from "
-                            "local user '%s'. Control→cluster SSH is handled automatically."
-                            % (self_ip, user, local_user)
+                            "Note: SSH user '%s' differs from local user '%s'. "
+                            "The mesh script will handle cross-user key exchange for %s automatically."
+                            % (user, local_user, self_ip)
                         )
                     elif self_ip and self_ip not in seen and not cross_user:
                         mesh_hosts.append(self_ip)
+                        seen.add(self_ip)
                     elif self_ip and self_ip not in seen and cross_user:
                         click.echo(
                             "Note: Skipping control machine (%s) in mesh — user '%s' differs from "

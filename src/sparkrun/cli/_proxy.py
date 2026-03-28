@@ -478,12 +478,14 @@ def load_cmd(
 
       sparkrun proxy load qwen3-1.7b-vllm --solo --gpu-mem 0.8
     """
-    from sparkrun.core.bootstrap import init_sparkrun, get_runtime
-    from sparkrun.core.config import SparkrunConfig
+    from sparkrun.core.bootstrap import get_runtime
     from sparkrun.core.launcher import launch_inference
 
-    v = init_sparkrun()
-    config = SparkrunConfig()
+    from ._common import _get_context
+
+    sctx = _get_context(click.get_current_context())
+    v = sctx.variables
+    config = sctx.config
 
     # Load recipe (defer resolution until overrides are built)
     recipe, _recipe_path, registry_mgr = _load_recipe(config, recipe_name, resolve=False)
@@ -513,7 +515,7 @@ def load_cmd(
         sys.exit(1)
 
     # Resolve hosts
-    host_list, cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v)
+    host_list, cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, sctx=sctx)
 
     # Node count validation, max_nodes enforcement, and solo mode determination
     host_list, is_solo = validate_and_prepare_hosts(host_list, recipe, overrides, runtime, solo=solo)
@@ -529,8 +531,7 @@ def load_cmd(
         runtime=runtime,
         host_list=host_list,
         overrides=overrides,
-        config=config,
-        v=v,
+        sctx=sctx,
         is_solo=is_solo,
         cache_dir=remote_cache_dir,
         local_cache_dir=local_cache_dir,

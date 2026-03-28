@@ -17,10 +17,10 @@ from ._common import (
     _apply_recipe_overrides,
     _display_vram_estimate,
     _expand_recipe_shortcut,
+    _get_context,
     _is_recipe_url,
     _load_recipe,
     _resolve_hosts_or_exit,
-    _setup_logging,
     _simplify_recipe_ref,
     dry_run_option,
     host_options,
@@ -174,8 +174,7 @@ def _run_benchmark(
     """
     from sparkrun.benchmarking.base import export_results, BenchmarkResult
     from ..core.benchmark_profiles import BenchmarkSpec
-    from sparkrun.core.bootstrap import init_sparkrun, get_runtime, get_benchmarking_framework
-    from sparkrun.core.config import SparkrunConfig
+    from sparkrun.core.bootstrap import get_runtime, get_benchmarking_framework
     from sparkrun.utils import is_local_host
     from sparkrun.core.launcher import launch_inference
     from sparkrun.orchestration.primitives import (
@@ -186,9 +185,9 @@ def _run_benchmark(
     )
 
     bench_result = BenchmarkResult(recipe_name=recipe_name)
-    v = init_sparkrun()
-    _setup_logging(ctx.obj["verbose"])
-    config = SparkrunConfig()
+    sctx = _get_context(ctx)
+    v = sctx.variables
+    config = sctx.config
 
     # ---------------------------------------------------------------
     # 1. Load recipe
@@ -297,7 +296,7 @@ def _run_benchmark(
     for issue in runtime_issues:
         click.echo("Warning: %s" % issue, err=True)
 
-    host_list, cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v)
+    host_list, cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, sctx=sctx)
 
     # Node count validation, max_nodes enforcement, and solo mode determination
     host_list, is_solo = validate_and_prepare_hosts(host_list, recipe, overrides, runtime, solo=solo)
@@ -359,8 +358,7 @@ def _run_benchmark(
             runtime=runtime,
             host_list=host_list,
             overrides=overrides,
-            config=config,
-            v=v,
+            sctx=sctx,
             is_solo=is_solo,
             cache_dir=remote_cache_dir,
             local_cache_dir=local_cache_dir,

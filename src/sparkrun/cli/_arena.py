@@ -242,10 +242,11 @@ def arena_benchmark(
 
     # --- Write files to cache directory ---
     from sparkrun.arena.upload import generate_submission_id
-    from sparkrun.core.config import DEFAULT_CACHE_DIR
+    from ._common import _get_context
 
     submission_id = generate_submission_id()
-    cache_dir = DEFAULT_CACHE_DIR / "benchmarks" / submission_id
+    arena_cache = _get_context(ctx).config.cache_dir
+    cache_dir = arena_cache / "benchmarks" / submission_id
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     recipe_path = cache_dir / "recipe.yaml"

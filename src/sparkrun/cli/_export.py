@@ -37,7 +37,7 @@ def _apply_spark_arena_benchmarks(recipe, recipe_name: str):
 
     if recipe_name.startswith(SPARK_ARENA_PREFIX):
         uuid = recipe_name[len(SPARK_ARENA_PREFIX):]
-        tp = recipe.defaults.get("tensor_parallel", 1)
+        tp = recipe.defaults.get("tensor_parallel", 1)  # TODO: should resolve all cluster_meta parallelism possibilities
         recipe.metadata["spark_arena_benchmarks"] = [{"tp": tp, "uuid": uuid}]
 
 

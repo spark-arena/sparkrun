@@ -9,9 +9,9 @@ import click
 
 from ._common import (
     RECIPE_NAME,
+    _get_context,
     _load_recipe,
     _resolve_hosts_or_exit,
-    _setup_logging,
     dry_run_option,
     host_options,
     resolve_cluster_config,
@@ -66,13 +66,12 @@ def tune_sglang(
       sparkrun tune sglang qwen3.5-35b-bf16-sglang -H myhost --tp 1 --tp 2 --tp 4
       sparkrun tune sglang qwen3.5-35b-bf16-sglang -H myhost --parallel 2
     """
-    from sparkrun.core.bootstrap import init_sparkrun, get_runtime
-    from sparkrun.core.config import SparkrunConfig
+    from sparkrun.core.bootstrap import get_runtime
     from sparkrun.tuning.sglang import SglangTuner, DEFAULT_TP_SIZES
 
-    v = init_sparkrun()
-    _setup_logging(ctx.obj["verbose"])
-    config = SparkrunConfig(config_path) if config_path else SparkrunConfig()
+    sctx = _get_context(ctx)
+    v = sctx.variables
+    config = sctx.config
 
     recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name)
 
@@ -89,7 +88,7 @@ def tune_sglang(
     container_image = image or runtime.resolve_container(recipe)
 
     # Resolve hosts — only use the first host
-    host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v)
+    host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, sctx=sctx)
     target_host = host_list[0]
     if len(host_list) > 1:
         logger.info("Tuning runs on a single host; using first host: %s", target_host)
@@ -158,13 +157,12 @@ def tune_vllm(
       sparkrun tune vllm qwen3-moe-vllm -H myhost --tp 1 --tp 2 --tp 4
       sparkrun tune vllm qwen3-moe-vllm -H myhost --parallel 2
     """
-    from sparkrun.core.bootstrap import init_sparkrun, get_runtime
-    from sparkrun.core.config import SparkrunConfig
+    from sparkrun.core.bootstrap import get_runtime
     from sparkrun.tuning.vllm import VllmTuner, DEFAULT_TP_SIZES
 
-    v = init_sparkrun()
-    _setup_logging(ctx.obj["verbose"])
-    config = SparkrunConfig(config_path) if config_path else SparkrunConfig()
+    sctx = _get_context(ctx)
+    v = sctx.variables
+    config = sctx.config
 
     recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name)
 
@@ -181,7 +179,7 @@ def tune_vllm(
     container_image = image or runtime.resolve_container(recipe)
 
     # Resolve hosts — only use the first host
-    host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v)
+    host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, sctx=sctx)
     target_host = host_list[0]
     if len(host_list) > 1:
         logger.info("Tuning runs on a single host; using first host: %s", target_host)
