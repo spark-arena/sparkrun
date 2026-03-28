@@ -50,7 +50,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
         distribute_cx7_host_keys,
     )
     from sparkrun.orchestration.primitives import build_ssh_kwargs, local_ip_for
-    from sparkrun.orchestration.sudo import run_with_sudo_fallback, run_sudo_script_on_host
+    from sparkrun.orchestration.sudo import run_with_sudo_fallback, run_sudo_script_on_host, run_indirect_sudo_script
     from sparkrun.scripts import read_script
 
     from ._common import _get_cluster_manager
@@ -410,12 +410,32 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
             ssh_kwargs["ssh_user"] = user
 
         # For sudo operations (docker group, sudoers, earlyoom), the SSH user
-        # must be someone with sudo access.  When the cluster user differs
-        # from the OS user, the OS user typically has sudo while the cluster
-        # user may not.  Build separate kwargs for sudo phases.
+        # may need to differ from the cluster user.  Start with the cluster
+        # user and fall back to the OS user (or a user-specified alternate)
+        # if the cluster user lacks sudo access.
         sudo_ssh_kwargs = dict(ssh_kwargs)
-        if user != default_user:
-            sudo_ssh_kwargs["ssh_user"] = default_user
+        _indirect_sudo_user: str | None = None
+
+        def _run_sudo_on_host(host, script, password, timeout=300):
+            """Dispatch to direct or indirect sudo based on _indirect_sudo_user."""
+            if _indirect_sudo_user:
+                return run_indirect_sudo_script(
+                    host,
+                    script,
+                    sudo_user=_indirect_sudo_user,
+                    sudo_password=password,
+                    ssh_kwargs=ssh_kwargs,
+                    timeout=timeout,
+                    dry_run=dry_run,
+                )
+            return run_sudo_script_on_host(
+                host,
+                script,
+                password,
+                ssh_kwargs=sudo_ssh_kwargs,
+                timeout=timeout,
+                dry_run=dry_run,
+            )
 
         # ── Management IP normalization ──────────────────────────────
         # After SSH mesh, detect each host's management IP and update the
@@ -438,29 +458,53 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
 
         # ── Sudo password helper (deferred collection) ───────────────
         def _ensure_sudo_password():
-            nonlocal sudo_password
+            nonlocal sudo_password, sudo_ssh_kwargs
             if sudo_password is not None:
                 return sudo_password
             if dry_run:
                 return None
 
-            # Try NOPASSWD on all hosts
+            # Try NOPASSWD on all hosts using the current sudo user
             from sparkrun.orchestration.ssh import run_remote_scripts_parallel
 
+            sudo_user = sudo_ssh_kwargs.get("ssh_user", user)
             try:
                 test_results = run_remote_scripts_parallel(
                     host_list,
                     "sudo -n true",
                     quiet=True,
                     timeout=10,
-                    **ssh_kwargs,
+                    **sudo_ssh_kwargs,
                 )
                 if all(r.success for r in test_results):
                     return None
             except Exception:
                 pass
 
-            sudo_password = click.prompt("[sudo] password for %s" % user, hide_input=True)
+            # Prompt for sudo password
+            sudo_password = click.prompt("[sudo] password for %s" % sudo_user, hide_input=True)
+
+            # Verify sudo works with this password on at least one host
+            test_host = host_list[0]
+            test_r = run_sudo_script_on_host(
+                test_host,
+                "true",
+                sudo_password,
+                ssh_kwargs=sudo_ssh_kwargs,
+                timeout=10,
+            )
+            if not test_r.success:
+                # Sudo failed for cluster user — offer alternate user
+                alt_default = default_user if sudo_user != default_user else ""
+                click.echo("  Sudo failed for '%s'. Specify a user with sudo access." % sudo_user)
+                alt_user = click.prompt("Sudo user", default=alt_default)
+                sudo_password = click.prompt("[sudo] password for %s" % alt_user, hide_input=True)
+
+                # Use indirect sudo: SSH as cluster user, su to alt_user
+                # Store the alt user so sudo phases can use run_indirect_sudo_script
+                nonlocal _indirect_sudo_user
+                _indirect_sudo_user = alt_user
+
             return sudo_password
 
         # ── Phase 3: CX7 Configuration ───────────────────────────────
@@ -548,26 +592,26 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                         click.echo("  [dry-run] Would ensure docker group on %d host(s)." % len(host_list))
                         results["docker"] = "dry-run"
                     else:
-                        dg_result_map, dg_still_failed = run_with_sudo_fallback(
-                            host_list,
-                            dg_script,
-                            dg_fallback,
-                            sudo_ssh_kwargs,
-                            dry_run=dry_run,
-                        )
-
-                        if dg_still_failed:
-                            pw = _ensure_sudo_password()
-                            if pw:
-                                for h in dg_still_failed:
-                                    r = run_sudo_script_on_host(
-                                        h,
-                                        dg_fallback,
-                                        pw,
-                                        ssh_kwargs=sudo_ssh_kwargs,
-                                        timeout=30,
-                                    )
-                                    dg_result_map[h] = r
+                        pw = _ensure_sudo_password()
+                        if _indirect_sudo_user:
+                            # Indirect sudo: SSH as cluster user, su to sudo user
+                            dg_result_map = {}
+                            for h in host_list:
+                                r = _run_sudo_on_host(h, dg_fallback, pw, timeout=30)
+                                dg_result_map[h] = r
+                        else:
+                            dg_result_map, dg_still_failed = run_with_sudo_fallback(
+                                host_list,
+                                dg_script,
+                                dg_fallback,
+                                sudo_ssh_kwargs,
+                                dry_run=dry_run,
+                            )
+                            if dg_still_failed:
+                                if pw:
+                                    for h in dg_still_failed:
+                                        r = _run_sudo_on_host(h, dg_fallback, pw, timeout=30)
+                                        dg_result_map[h] = r
 
                         dg_ok = sum(1 for h in host_list if dg_result_map.get(h) and dg_result_map[h].success)
                         results["docker"] = "OK (%d/%d)" % (dg_ok, len(host_list)) if dg_ok else "failed"
@@ -630,13 +674,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                         for label, script in sudoers_scripts:
                             label_ok = 0
                             for h in host_list:
-                                r = run_sudo_script_on_host(
-                                    h,
-                                    script,
-                                    pw or "",
-                                    ssh_kwargs=sudo_ssh_kwargs,
-                                    timeout=300,
-                                )
+                                r = _run_sudo_on_host(h, script, pw or "", timeout=300)
                                 if r.success:
                                     label_ok += 1
                                 else:
@@ -682,26 +720,27 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                     )
 
                     pw = _ensure_sudo_password()
-                    result_map, still_failed = run_with_sudo_fallback(
-                        host_list,
-                        install_script,
-                        fallback_script,
-                        sudo_ssh_kwargs,
-                        dry_run=dry_run,
-                        sudo_password=pw,
-                    )
-
-                    # Retry failed hosts with password
-                    if still_failed and pw and not dry_run:
-                        for h in still_failed:
-                            r = run_sudo_script_on_host(
-                                h,
-                                fallback_script,
-                                pw,
-                                ssh_kwargs=sudo_ssh_kwargs,
-                                timeout=300,
-                            )
+                    if _indirect_sudo_user:
+                        result_map = {}
+                        still_failed = []
+                        for h in host_list:
+                            r = _run_sudo_on_host(h, fallback_script, pw, timeout=300)
                             result_map[h] = r
+                            if not r.success:
+                                still_failed.append(h)
+                    else:
+                        result_map, still_failed = run_with_sudo_fallback(
+                            host_list,
+                            install_script,
+                            fallback_script,
+                            sudo_ssh_kwargs,
+                            dry_run=dry_run,
+                            sudo_password=pw,
+                        )
+                        if still_failed and pw and not dry_run:
+                            for h in still_failed:
+                                r = _run_sudo_on_host(h, fallback_script, pw, timeout=300)
+                                result_map[h] = r
 
                     ok_count = sum(1 for h in host_list if result_map.get(h) and result_map[h].success)
                     if dry_run:
