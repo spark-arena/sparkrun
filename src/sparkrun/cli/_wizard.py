@@ -409,6 +409,14 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
         if user:
             ssh_kwargs["ssh_user"] = user
 
+        # For sudo operations (docker group, sudoers, earlyoom), the SSH user
+        # must be someone with sudo access.  When the cluster user differs
+        # from the OS user, the OS user typically has sudo while the cluster
+        # user may not.  Build separate kwargs for sudo phases.
+        sudo_ssh_kwargs = dict(ssh_kwargs)
+        if user != default_user:
+            sudo_ssh_kwargs["ssh_user"] = default_user
+
         # ── Management IP normalization ──────────────────────────────
         # After SSH mesh, detect each host's management IP and update the
         # cluster definition if the user provided CX7 or other non-mgmt IPs.
@@ -544,7 +552,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                             host_list,
                             dg_script,
                             dg_fallback,
-                            ssh_kwargs,
+                            sudo_ssh_kwargs,
                             dry_run=dry_run,
                         )
 
@@ -556,7 +564,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                                         h,
                                         dg_fallback,
                                         pw,
-                                        ssh_kwargs=ssh_kwargs,
+                                        ssh_kwargs=sudo_ssh_kwargs,
                                         timeout=30,
                                     )
                                     dg_result_map[h] = r
@@ -626,7 +634,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                                     h,
                                     script,
                                     pw or "",
-                                    ssh_kwargs=ssh_kwargs,
+                                    ssh_kwargs=sudo_ssh_kwargs,
                                     timeout=300,
                                 )
                                 if r.success:
@@ -678,7 +686,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                         host_list,
                         install_script,
                         fallback_script,
-                        ssh_kwargs,
+                        sudo_ssh_kwargs,
                         dry_run=dry_run,
                         sudo_password=pw,
                     )
@@ -690,7 +698,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                                 h,
                                 fallback_script,
                                 pw,
-                                ssh_kwargs=ssh_kwargs,
+                                ssh_kwargs=sudo_ssh_kwargs,
                                 timeout=300,
                             )
                             result_map[h] = r
