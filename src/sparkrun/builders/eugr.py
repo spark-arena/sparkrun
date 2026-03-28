@@ -813,7 +813,7 @@ class EugrBuilder(BuilderPlugin):
             ssh_kwargs: SSH connection kwargs.
             dry_run: Show what would be done without executing.
         """
-        from sparkrun.orchestration.primitives import run_script_on_host
+        from sparkrun.orchestration.ssh import run_remote_script_streaming
 
         # TODO: hard-coded inline script
         remote_path = "~/.cache/sparkrun/eugr-spark-vllm-docker"
@@ -829,7 +829,15 @@ class EugrBuilder(BuilderPlugin):
         if dry_run:
             return
 
-        result = run_script_on_host(head, script, ssh_kwargs=ssh_kwargs, timeout=1800)
+        kw = ssh_kwargs or {}
+        result = run_remote_script_streaming(
+            head,
+            script,
+            ssh_user=kw.get("ssh_user"),
+            ssh_key=kw.get("ssh_key"),
+            ssh_options=kw.get("ssh_options"),
+            timeout=1800,
+        )
         if not result.success:
             raise RuntimeError("eugr remote container build failed on %s (exit %d)" % (head, result.returncode))
 

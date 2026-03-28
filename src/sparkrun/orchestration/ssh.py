@@ -187,6 +187,72 @@ def run_remote_script(
     return result
 
 
+def run_remote_script_streaming(
+    host: str,
+    script: str,
+    ssh_user: str | None = None,
+    ssh_key: str | None = None,
+    ssh_options: list[str] | None = None,
+    connect_timeout: int = 10,
+    timeout: int | None = None,
+    dry_run: bool = False,
+) -> RemoteResult:
+    """Execute a script on a remote host with real-time stdout/stderr.
+
+    Like :func:`run_remote_script` but connects the remote process's
+    stdout and stderr directly to the terminal so output streams in
+    real time.  Useful for long-running operations like container builds.
+
+    Args:
+        host: Remote hostname or IP.
+        script: Bash script content to execute.
+        ssh_user: Optional SSH username.
+        ssh_key: Optional path to SSH private key.
+        ssh_options: Additional SSH options.
+        connect_timeout: SSH connection timeout in seconds.
+        timeout: Overall execution timeout in seconds.
+        dry_run: If True, log the script but don't execute.
+
+    Returns:
+        RemoteResult with returncode (stdout/stderr are empty since
+        they were streamed to the terminal).
+    """
+    if dry_run:
+        logger.info("[dry-run] Would execute (streaming) on %s (%d bytes)", host, len(script))
+        return RemoteResult(host=host, returncode=0, stdout="[dry-run]", stderr="")
+
+    cmd = build_ssh_cmd(host, ssh_user, ssh_key, ssh_options, connect_timeout)
+    cmd.extend(["bash", "-s"])
+
+    logger.debug("  SSH script (streaming) -> %s (%d bytes)%s", host, len(script), " [timeout=%ds]" % timeout if timeout else "")
+
+    t0 = time.monotonic()
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=script,
+            text=True,
+            timeout=timeout,
+            # stdout/stderr go to terminal (no capture)
+            stdout=None,
+            stderr=None,
+        )
+        elapsed = time.monotonic() - t0
+        if proc.returncode == 0:
+            logger.debug("  SSH script (streaming) <- %s OK (%.1fs)", host, elapsed)
+        else:
+            logger.warning("  SSH script (streaming) <- %s FAILED rc=%d (%.1fs)", host, proc.returncode, elapsed)
+        return RemoteResult(host=host, returncode=proc.returncode, stdout="", stderr="")
+    except subprocess.TimeoutExpired:
+        elapsed = time.monotonic() - t0
+        logger.error("  SSH script (streaming) <- %s TIMEOUT after %.0fs", host, elapsed)
+        return RemoteResult(host=host, returncode=-1, stdout="", stderr="Execution timed out")
+    except Exception as e:
+        elapsed = time.monotonic() - t0
+        logger.error("  SSH script (streaming) <- %s ERROR (%.1fs): %s", host, elapsed, e)
+        return RemoteResult(host=host, returncode=-1, stdout="", stderr=str(e))
+
+
 def run_remote_command(
     host: str,
     command: str,
