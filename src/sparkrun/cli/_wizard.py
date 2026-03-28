@@ -181,6 +181,17 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                 cluster_name = default_name
                 results["cluster"] = "%s (%d hosts, default)" % (cluster_name, len(host_list))
 
+        # When using an existing cluster, inherit its SSH user if the
+        # wizard's --user flag wasn't explicitly provided.
+        if cluster_name and user == default_user:
+            try:
+                _cluster_def = cluster_mgr.get(cluster_name)
+                if _cluster_def.user:
+                    user = _cluster_def.user
+                    click.echo("Using cluster SSH user: %s" % user)
+            except Exception:
+                pass
+
         if not host_list:
             # Step 1a: Local CX7 detection
             click.echo("Detecting CX7 interfaces on this machine...")
