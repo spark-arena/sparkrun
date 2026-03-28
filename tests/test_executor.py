@@ -225,6 +225,7 @@ class TestDockerExecutorConfig:
         assert "--user 1000:1000" in cmd
         assert "/etc/passwd" not in cmd
         assert "/etc/group" not in cmd
+        assert "HOME=/tmp" not in cmd
 
     def test_user_shell_user_resolves(self):
         cfg = ExecutorConfig(user="$SHELL_USER")
@@ -233,6 +234,7 @@ class TestDockerExecutorConfig:
         assert "--user $(id -u):$(id -g)" in cmd
         assert "-v /etc/passwd:/etc/passwd:ro" in cmd
         assert "-v /etc/group:/etc/group:ro" in cmd
+        assert "-e HOME=/tmp" in cmd
 
     def test_security_opt(self):
         cfg = ExecutorConfig(security_opt=["no-new-privileges"])
@@ -261,6 +263,7 @@ class TestDockerExecutorConfig:
         assert "--user $(id -u):$(id -g)" in cmd
         assert "-v /etc/passwd:/etc/passwd:ro" in cmd
         assert "-v /etc/group:/etc/group:ro" in cmd
+        assert "-e HOME=/tmp" in cmd
         assert "--security-opt no-new-privileges" in cmd
         assert "--cap-add IPC_LOCK" in cmd
         assert "--cap-add SYS_PTRACE" in cmd
@@ -286,9 +289,21 @@ class TestDockerExecutorConfig:
         assert "--user" not in cmd
         assert "/etc/passwd" not in cmd
         assert "/etc/group" not in cmd
+        assert "HOME=/tmp" not in cmd
         assert "--security-opt" not in cmd
         assert "--cap-add" not in cmd
         assert "--ulimit" not in cmd
+
+    def test_shell_user_home_overridable(self):
+        """Recipe env vars can override the default HOME=/tmp."""
+        cfg = ExecutorConfig(user="$SHELL_USER")
+        executor = DockerExecutor(cfg)
+        cmd = executor.run_cmd("img:latest", env={"HOME": "/workspace"})
+        # Default HOME=/tmp from _build_default_opts appears first
+        assert "-e HOME=/tmp" in cmd
+        # Recipe override appears later — Docker uses the last -e value
+        assert "-e HOME=/workspace" in cmd
+        assert cmd.index("-e HOME=/tmp") < cmd.index("-e HOME=/workspace")
 
 
 # ---------------------------------------------------------------------------
