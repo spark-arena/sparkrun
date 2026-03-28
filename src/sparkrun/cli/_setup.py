@@ -411,6 +411,22 @@ def _run_ssh_mesh(mesh_hosts, user, cluster_hosts=None, ssh_key=None, discover_i
                 all_discovered_ips.append(ip)
                 seen_ips.add(ip)
 
+    # When the SSH user differs from the OS user and the control machine is
+    # a cluster member, cross-user SSH to 127.0.0.1 needs a known_hosts
+    # entry.  Include loopback addresses in the keyscan list so that
+    # ``ssh <user>@127.0.0.1`` works without host-key prompts.
+    import os
+
+    from sparkrun.core.hosts import is_control_in_cluster
+
+    _os_user = os.environ.get("USER")
+    if user != _os_user and is_control_in_cluster(cluster_hosts):
+        for loopback in ("127.0.0.1", "localhost"):
+            if loopback not in seen_ips:
+                all_discovered_ips.append(loopback)
+                seen_ips.add(loopback)
+        click.echo("  Including loopback host keys (cross-user SSH to local node)")
+
     # Informational reachability check from control machine
     click.echo()
     click.echo("Checking reachability from control machine...")
