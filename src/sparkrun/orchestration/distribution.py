@@ -25,6 +25,42 @@ def _is_cross_user(ssh_kwargs: dict | None) -> bool:
     return ssh_user != os.environ.get("USER", "root")
 
 
+def resolve_auto_transfer_mode(
+    transfer_mode: str,
+    host_list: list[str],
+    ssh_kwargs: dict | None = None,
+) -> str:
+    """Resolve ``"auto"`` transfer mode to ``"local"`` or ``"delegated"``.
+
+    Call this early (before builder and distribution phases) so all
+    downstream consumers receive a concrete mode.  Explicit modes
+    (``"local"``, ``"push"``, ``"delegated"``) are returned unchanged.
+
+    Cross-user check: when the control machine is a cluster member but
+    the SSH user differs from the OS user, ``"delegated"`` is chosen
+    instead of ``"local"`` — local Docker operations would otherwise
+    run as the wrong user.
+    """
+    if transfer_mode != "auto":
+        return transfer_mode
+
+    _cross_user = _is_cross_user(ssh_kwargs)
+    _in_cluster = is_control_in_cluster(host_list)
+
+    if _in_cluster and not _cross_user:
+        logger.info("Auto-detected transfer mode: local (control is cluster member)")
+        return "local"
+
+    if _cross_user:
+        logger.info(
+            "Auto-detected transfer mode: delegated (cluster user '%s' differs from OS user)",
+            ssh_kwargs.get("ssh_user") if ssh_kwargs else None,
+        )
+    else:
+        logger.info("Auto-detected transfer mode: delegated (external control)")
+    return "delegated"
+
+
 def _distribute_from_head(
     head: str,
     hosts: list[str],
@@ -281,8 +317,10 @@ def distribute_resources(
 
     effective_local_cache = local_cache_dir or cache_dir
 
-    if len(host_list) <= 1 and is_local_host(host_list[0]):
-        # Local-only: just ensure image and model exist, no SSH needed
+    ssh_kwargs = build_ssh_kwargs(config)
+
+    if len(host_list) <= 1 and is_local_host(host_list[0]) and not _is_cross_user(ssh_kwargs):
+        # Local-only (same user): just ensure image and model exist, no SSH needed
         with pending_op(_lock_id, "image_pull", **_pop_kw):
             logger.info("Ensuring container image is available locally...")
             ensure_image(image, dry_run=dry_run)
@@ -291,8 +329,6 @@ def distribute_resources(
                 logger.info("Ensuring model %s is available locally...", model)
                 download_model(model, cache_dir=effective_local_cache, revision=model_revision, dry_run=dry_run)
         return None, {}, {}  # let runtime handle its own local IB detection
-
-    ssh_kwargs = build_ssh_kwargs(config)
     nccl_env: dict[str, str] = {}
     ib_ip_map: dict[str, str] = {}
     mgmt_ip_map: dict[str, str] = {}

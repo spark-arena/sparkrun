@@ -159,6 +159,7 @@ class EugrBuilder(BuilderPlugin):
             Final image name (may be unchanged).
         """
         delegated = transfer_mode == "delegated"
+        logger.debug("eugr prepare_image: transfer_mode=%s, delegated=%s", transfer_mode, delegated)
         head = hosts[0] if hosts else "localhost"
         build_args = recipe.runtime_config.get("build_args", [])
         mods = recipe.runtime_config.get("mods", [])

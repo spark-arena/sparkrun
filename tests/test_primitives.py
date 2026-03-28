@@ -3,7 +3,7 @@
 from unittest.mock import patch, MagicMock
 
 from sparkrun.orchestration.ssh import RemoteResult
-from sparkrun.orchestration.distribution import _is_cross_user
+from sparkrun.orchestration.distribution import _is_cross_user, resolve_auto_transfer_mode
 from sparkrun.orchestration.primitives import check_tcp_reachability, find_available_port, should_run_locally
 
 
@@ -287,6 +287,42 @@ def test_is_cross_user_none():
     assert _is_cross_user({"ssh_user": None}) is False
     assert _is_cross_user({}) is False
     assert _is_cross_user(None) is False
+
+
+# ---------------------------------------------------------------------------
+# resolve_auto_transfer_mode tests
+# ---------------------------------------------------------------------------
+
+
+@patch("sparkrun.orchestration.distribution.is_control_in_cluster", return_value=True)
+@patch.dict("os.environ", {"USER": "drew"})
+def test_resolve_auto_cross_user_returns_delegated(mock_in_cluster):
+    """Auto + control in cluster + cross-user → delegated."""
+    result = resolve_auto_transfer_mode("auto", ["10.0.0.5"], ssh_kwargs={"ssh_user": "dgxuser"})
+    assert result == "delegated"
+
+
+@patch("sparkrun.orchestration.distribution.is_control_in_cluster", return_value=True)
+@patch.dict("os.environ", {"USER": "drew"})
+def test_resolve_auto_same_user_returns_local(mock_in_cluster):
+    """Auto + control in cluster + same user → local."""
+    result = resolve_auto_transfer_mode("auto", ["10.0.0.5"], ssh_kwargs={"ssh_user": "drew"})
+    assert result == "local"
+
+
+def test_resolve_explicit_mode_passthrough():
+    """Explicit modes are returned unchanged."""
+    assert resolve_auto_transfer_mode("local", ["10.0.0.5"]) == "local"
+    assert resolve_auto_transfer_mode("delegated", ["10.0.0.5"]) == "delegated"
+    assert resolve_auto_transfer_mode("push", ["10.0.0.5"]) == "push"
+
+
+@patch("sparkrun.orchestration.distribution.is_control_in_cluster", return_value=False)
+@patch.dict("os.environ", {"USER": "drew"})
+def test_resolve_auto_external_control_returns_delegated(mock_in_cluster):
+    """Auto + not in cluster → delegated."""
+    result = resolve_auto_transfer_mode("auto", ["10.0.0.5"], ssh_kwargs={"ssh_user": "drew"})
+    assert result == "delegated"
 
 
 # ---------------------------------------------------------------------------

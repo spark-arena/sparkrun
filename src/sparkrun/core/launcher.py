@@ -134,10 +134,16 @@ def launch_inference(
         if v is None:
             v = sctx.variables
 
+    from sparkrun.orchestration.distribution import resolve_auto_transfer_mode
+
     effective_cache_dir = cache_dir or str(config.hf_cache_dir)
     effective_local_cache = local_cache_dir or effective_cache_dir
-    effective_transfer_mode = transfer_mode or "auto"
     ssh_kwargs = build_ssh_kwargs(config)
+    effective_transfer_mode = resolve_auto_transfer_mode(
+        transfer_mode or "auto",
+        host_list,
+        ssh_kwargs=ssh_kwargs,
+    )
 
     # -- Port resolution --
     if auto_port:
