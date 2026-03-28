@@ -130,7 +130,7 @@ def run_indirect_sudo_script(
     Returns:
         RemoteResult with returncode, stdout, stderr.
     """
-    from sparkrun.utils.shell import quote
+    import base64
 
     if dry_run:
         logger.info("[dry-run] Would execute indirect sudo on %s (via su %s)", host, sudo_user)
@@ -140,70 +140,77 @@ def run_indirect_sudo_script(
     # It uses pty.fork() to feed the su password, then pipes the
     # script through sudo -S bash -s.
     #
-    # stdin layout: <password>\n<script>
-    # The wrapper reads the password line, then feeds it to su and sudo.
+    # The password and script are base64-encoded into the wrapper itself
+    # (not read from stdin) because stdin is used as the pipe to python3.
+    b64_password = base64.b64encode(sudo_password.encode()).decode()
+    b64_script = base64.b64encode(script.encode()).decode()
+
     wrapper = (
-        "import os, pty, select, sys, time\n"
-        "password = sys.stdin.readline().rstrip('\\n')\n"
-        "script = sys.stdin.read()\n"
-        "pid, fd = pty.fork()\n"
-        "if pid == 0:\n"
-        "    os.execlp('su', 'su', '-', %s, '-c', 'sudo -S bash -s')\n"
-        "else:\n"
-        "    buf = b''\n"
-        "    deadline = time.time() + 10\n"
-        "    fed_su = False\n"
-        "    while time.time() < deadline:\n"
-        "        r, _, _ = select.select([fd], [], [], 0.5)\n"
-        "        if r:\n"
+        "import base64, os, pty, select, sys, time\n"
+        "try:\n"
+        "    password = base64.b64decode('%s').decode()\n"
+        "    script = base64.b64decode('%s').decode()\n"
+        "    sudo_user = %r\n"
+        "    pid, fd = pty.fork()\n"
+        "    if pid == 0:\n"
+        "        os.execlp('su', 'su', '-', sudo_user, '-c', 'sudo -S bash -s')\n"
+        "    else:\n"
+        "        buf = b''\n"
+        "        deadline = time.time() + 10\n"
+        "        fed_su = False\n"
+        "        while time.time() < deadline:\n"
+        "            r, _, _ = select.select([fd], [], [], 0.5)\n"
+        "            if r:\n"
+        "                try:\n"
+        "                    data = os.read(fd, 4096)\n"
+        "                except OSError:\n"
+        "                    break\n"
+        "                buf += data\n"
+        "                low = buf.lower()\n"
+        "                if not fed_su and (b'password' in low or b'passwort' in low):\n"
+        "                    os.write(fd, (password + '\\n').encode())\n"
+        "                    fed_su = True\n"
+        "                    buf = b''\n"
+        "                elif fed_su and (b'password' in low or b'passwort' in low):\n"
+        "                    os.write(fd, (password + '\\n').encode())\n"
+        "                    time.sleep(0.2)\n"
+        "                    os.write(fd, script.encode())\n"
+        "                    break\n"
+        "        else:\n"
+        "            os.close(fd)\n"
+        "            sys.stderr.write('Timeout waiting for su/sudo prompts\\n')\n"
+        "            sys.exit(1)\n"
+        "        # Drain remaining output\n"
+        "        out = b''\n"
+        "        while True:\n"
+        "            r, _, _ = select.select([fd], [], [], 2)\n"
+        "            if not r:\n"
+        "                break\n"
         "            try:\n"
-        "                data = os.read(fd, 4096)\n"
+        "                chunk = os.read(fd, 4096)\n"
+        "                if not chunk:\n"
+        "                    break\n"
+        "                out += chunk\n"
         "            except OSError:\n"
         "                break\n"
-        "            buf += data\n"
-        "            low = buf.lower()\n"
-        "            if not fed_su and (b'password' in low or b'passwort' in low):\n"
-        "                os.write(fd, (password + '\\n').encode())\n"
-        "                fed_su = True\n"
-        "                buf = b''\n"
-        "            elif fed_su and (b'password' in low or b'passwort' in low):\n"
-        "                os.write(fd, (password + '\\n').encode())\n"
-        "                time.sleep(0.2)\n"
-        "                os.write(fd, script.encode())\n"
-        "                break\n"
-        "    else:\n"
         "        os.close(fd)\n"
-        "        sys.stderr.write('Timeout waiting for su/sudo prompts\\n')\n"
-        "        sys.exit(1)\n"
-        "    # Drain remaining output\n"
-        "    out = b''\n"
-        "    while True:\n"
-        "        r, _, _ = select.select([fd], [], [], 2)\n"
-        "        if not r:\n"
-        "            break\n"
-        "        try:\n"
-        "            chunk = os.read(fd, 4096)\n"
-        "            if not chunk:\n"
-        "                break\n"
-        "            out += chunk\n"
-        "        except OSError:\n"
-        "            break\n"
-        "    os.close(fd)\n"
-        "    _, status = os.waitpid(pid, 0)\n"
-        "    sys.stdout.buffer.write(out)\n"
-        "    sys.exit(os.WEXITSTATUS(status))\n"
-    ) % quote(sudo_user)
+        "        _, status = os.waitpid(pid, 0)\n"
+        "        sys.stdout.buffer.write(out)\n"
+        "        sys.exit(os.WEXITSTATUS(status))\n"
+        "except Exception as e:\n"
+        "    sys.stderr.write('indirect-sudo wrapper error: ' + str(e) + '\\n')\n"
+        "    sys.exit(1)\n"
+    ) % (b64_password, b64_script, sudo_user)
 
-    # SSH as the cluster user, run python3 with the wrapper
+    # Pipe the wrapper to python3 via stdin (avoids shell escaping issues
+    # that occur with python3 -c when SSH joins args for the remote shell).
     kw = ssh_kwargs or {}
     cmd = _ssh.build_ssh_cmd(host, **{k: v for k, v in kw.items() if k in ("ssh_user", "ssh_key", "ssh_options")})
-    cmd.extend(["python3", "-c", quote(wrapper)])
-
-    full_input = sudo_password + "\n" + script
+    cmd.append("python3")
 
     logger.debug("  SSH indirect sudo -> %s (su %s, %d bytes)", host, sudo_user, len(script))
 
-    result = _ssh._run_subprocess(cmd, host, "SSH indirect sudo", timeout=timeout, input_data=full_input)
+    result = _ssh._run_subprocess(cmd, host, "SSH indirect sudo", timeout=timeout, input_data=wrapper)
     if result.success:
         logger.info("  SSH indirect sudo <- %s OK", host)
     return result
