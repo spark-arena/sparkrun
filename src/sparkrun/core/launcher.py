@@ -158,13 +158,6 @@ def launch_inference(
             ssh_kwargs=ssh_kwargs,
             dry_run=dry_run,
         )
-        if serve_port != desired_port:
-            logger.info(
-                "Port %d in use on %s, using %d instead",
-                desired_port,
-                head_host,
-                serve_port,
-            )
         overrides["port"] = serve_port
     else:
         config_chain = recipe.build_config_chain(overrides)
