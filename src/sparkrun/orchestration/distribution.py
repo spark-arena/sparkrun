@@ -30,16 +30,16 @@ def resolve_auto_transfer_mode(
     host_list: list[str],
     ssh_kwargs: dict | None = None,
 ) -> str:
-    """Resolve ``"auto"`` transfer mode to ``"local"`` or ``"delegated"``.
+    """Resolve ``"auto"`` transfer mode where definitively determinable.
 
-    Call this early (before builder and distribution phases) so all
-    downstream consumers receive a concrete mode.  Explicit modes
-    (``"local"``, ``"push"``, ``"delegated"``) are returned unchanged.
+    Call this early (before builder and distribution phases) so
+    downstream consumers receive a concrete mode when possible.
+    Explicit modes (``"local"``, ``"push"``, ``"delegated"``) are
+    returned unchanged.
 
-    Cross-user check: when the control machine is a cluster member but
-    the SSH user differs from the OS user, ``"delegated"`` is chosen
-    instead of ``"local"`` — local Docker operations would otherwise
-    run as the wrong user.
+    Returns ``"auto"`` when the control node is external with the same
+    SSH user — ``distribute_resources()`` will probe IB connectivity
+    and make the final call.
     """
     if transfer_mode != "auto":
         return transfer_mode
@@ -56,9 +56,12 @@ def resolve_auto_transfer_mode(
             "Auto-detected transfer mode: delegated (cluster user '%s' differs from OS user)",
             ssh_kwargs.get("ssh_user") if ssh_kwargs else None,
         )
-    else:
-        logger.info("Auto-detected transfer mode: delegated (external control)")
-    return "delegated"
+        return "delegated"
+
+    # External control + same user: defer to distribute_resources() which
+    # probes IB connectivity and may upgrade to "local"
+    logger.info("Transfer mode: auto (external control, pending IB connectivity check)")
+    return "auto"
 
 
 def _distribute_from_head(

@@ -319,9 +319,17 @@ def test_resolve_explicit_mode_passthrough():
 
 @patch("sparkrun.orchestration.distribution.is_control_in_cluster", return_value=False)
 @patch.dict("os.environ", {"USER": "drew"})
-def test_resolve_auto_external_control_returns_delegated(mock_in_cluster):
-    """Auto + not in cluster → delegated."""
+def test_resolve_auto_external_control_same_user_defers(mock_in_cluster):
+    """Auto + not in cluster + same user → auto (deferred to IB probe)."""
     result = resolve_auto_transfer_mode("auto", ["10.0.0.5"], ssh_kwargs={"ssh_user": "drew"})
+    assert result == "auto"
+
+
+@patch("sparkrun.orchestration.distribution.is_control_in_cluster", return_value=False)
+@patch.dict("os.environ", {"USER": "drew"})
+def test_resolve_auto_external_control_cross_user_returns_delegated(mock_in_cluster):
+    """Auto + not in cluster + cross-user → delegated."""
+    result = resolve_auto_transfer_mode("auto", ["10.0.0.5"], ssh_kwargs={"ssh_user": "dgxuser"})
     assert result == "delegated"
 
 
