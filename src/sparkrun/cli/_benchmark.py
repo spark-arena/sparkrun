@@ -343,7 +343,7 @@ def _run_benchmark(
     click.echo("=" * 60)
     click.echo("")
 
-    _display_vram_estimate(recipe, cli_overrides=overrides, auto_detect=True, cache_dir=remote_cache_dir)
+    _display_vram_estimate(recipe, cli_overrides=overrides, auto_detect=True, cache_dir=local_cache_dir)
 
     # ---------------------------------------------------------------
     # 6. Launch inference (unless --skip-run)
