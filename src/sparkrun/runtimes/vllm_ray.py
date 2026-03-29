@@ -173,19 +173,30 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
         from sparkrun.orchestration.primitives import is_valid_ip, wait_for_port
         from sparkrun.orchestration.ssh import run_remote_script, run_remote_scripts_parallel
 
+        progress = kwargs.pop("progress", None)
+
         ctx = ClusterContext.build(self, hosts, image, cluster_id, env, cache_dir, config, dry_run)
         head_container = self.executor.container_name(cluster_id, "head")
         worker_container = self.executor.container_name(cluster_id, "worker")
 
+        if progress:
+            progress.begin_runtime_steps(5)
+
         # Step 1: Cleanup
         t0 = time.monotonic()
-        logger.info("Step 1/5: Cleaning up existing containers for cluster '%s'...", cluster_id)
+        if progress:
+            progress.step("Cleaning up existing containers")
+        else:
+            logger.info("Step 1/5: Cleaning up existing containers for cluster '%s'...", cluster_id)
         cleanup_named_containers(ctx, [head_container, worker_container])
         logger.info("Step 1/5: Cleanup done (%.1fs)", time.monotonic() - t0)
 
         # Step 2: InfiniBand detection (skip if pre-detected nccl_env provided)
         t0 = time.monotonic()
-        logger.info("Step 2/5: InfiniBand detection...")
+        if progress:
+            progress.step("Detecting InfiniBand")
+        else:
+            logger.info("Step 2/5: InfiniBand detection...")
         nccl_env = resolve_ib_env(ctx, nccl_env)
         logger.info("Step 2/5: IB step done (%.1fs)", time.monotonic() - t0)
 
@@ -206,7 +217,10 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
 
         # Step 3: Launch Ray head
         t0 = time.monotonic()
-        logger.info("Step 3/5: Launching Ray head on %s...", ctx.head_host)
+        if progress:
+            progress.step("Launching Ray head")
+        else:
+            logger.info("Step 3/5: Launching Ray head on %s...", ctx.head_host)
         head_script = self.executor.generate_ray_head_script(
             image=image,
             container_name=head_container,
@@ -259,11 +273,14 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
         # Step 4: Launch Ray workers (parallel)
         t0 = time.monotonic()
         if ctx.worker_hosts:
-            logger.info(
-                "Step 4/5: Launching %d Ray worker(s) on %s...",
-                len(ctx.worker_hosts),
-                ", ".join(ctx.worker_hosts),
-            )
+            if progress:
+                progress.step("Launching Ray workers")
+            else:
+                logger.info(
+                    "Step 4/5: Launching %d Ray worker(s) on %s...",
+                    len(ctx.worker_hosts),
+                    ", ".join(ctx.worker_hosts),
+                )
             worker_script = self.executor.generate_ray_worker_script(
                 image=image,
                 container_name=worker_container,
@@ -294,9 +311,14 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
                     ray_port,
                 )
                 time.sleep(3)
-            logger.info("Step 4/5: Workers launched (%.1fs)", time.monotonic() - t0)
+            if not progress:
+                logger.info("Step 4/5: Workers launched (%.1fs)", time.monotonic() - t0)
         else:
-            logger.info("Step 4/5: No worker hosts, skipping")
+            if progress:
+                progress.step("Launching Ray workers")
+                progress.detail("  No worker hosts, skipping")
+            else:
+                logger.info("Step 4/5: No worker hosts, skipping")
 
         # Pre-serve hook (e.g., apply mods to containers, run pre_exec)
         all_containers = [(ctx.head_host, head_container)]
@@ -306,11 +328,14 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
 
         # Step 5: Execute serve command on head
         t0 = time.monotonic()
-        logger.info(
-            "Step 5/5: Executing serve command on head node %s (container: %s)...",
-            ctx.head_host,
-            head_container,
-        )
+        if progress:
+            progress.step("Executing serve command on head")
+        else:
+            logger.info(
+                "Step 5/5: Executing serve command on head node %s (container: %s)...",
+                ctx.head_host,
+                head_container,
+            )
         exec_script = self.executor.generate_exec_serve_script(
             container_name=head_container,
             serve_command=serve_command,

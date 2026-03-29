@@ -413,7 +413,10 @@ def distribute_resources(
         ib_ip_map = ib_result.ib_ip_map
 
     # Step 2: Distribute container image
+    from sparkrun.core.progress import PROGRESS as _PROGRESS_LEVEL
+
     logger.info("Distribution mode: %s (image=%s, model=%s, hosts=%d)", transfer_mode, image, model or "(none)", len(host_list))
+    logger.log(_PROGRESS_LEVEL, "  Syncing container image to %d host(s) (this may take a moment)", len(host_list))
     with pending_op(_lock_id, "image_distribute", **_pop_kw):
         if transfer_mode == "local":
             img_failed = distribute_image_from_local(
@@ -463,6 +466,7 @@ def distribute_resources(
 
     # Step 3: Distribute model
     if model:
+        logger.log(_PROGRESS_LEVEL, "  Syncing model to %d host(s)", len(host_list))
         with pending_op(_lock_id, "model_download", **_pop_kw):
             if transfer_mode == "local":
                 mdl_failed = distribute_model_from_local(

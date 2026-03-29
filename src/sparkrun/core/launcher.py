@@ -353,7 +353,10 @@ def launch_inference(
 
     # -- Phase 5: Launch runtime --
     if p:
-        p.phase(5)
+        from sparkrun.utils.cli_formatters import RUNTIME_DISPLAY
+
+        _rt_display = RUNTIME_DISPLAY.get(runtime.runtime_name, runtime.runtime_name)
+        p.phase(5, "Launching %s runtime" % _rt_display)
 
     # Build runtime.run() kwargs — include runtime-specific options only
     # when they were explicitly provided.

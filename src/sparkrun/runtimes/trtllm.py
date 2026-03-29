@@ -442,6 +442,8 @@ class TrtllmRuntime(RuntimePlugin):
         from sparkrun.orchestration.ssh import run_remote_command
         from sparkrun.orchestration.docker import docker_exec_cmd
 
+        progress = kwargs.pop("progress", None)
+
         ctx = ClusterContext.build(self, hosts, image, cluster_id, env, cache_dir, config, dry_run)
         extra_docker_opts = self.get_extra_docker_opts()
 
@@ -454,21 +456,33 @@ class TrtllmRuntime(RuntimePlugin):
             dry_run,
         )
 
+        if progress:
+            progress.begin_runtime_steps(7)
+
         # Step 1: Cleanup
         t0 = time.monotonic()
-        logger.info("Step 1/7: Cleaning up existing containers for cluster '%s'...", cluster_id)
+        if progress:
+            progress.step("Cleaning up existing containers")
+        else:
+            logger.info("Step 1/7: Cleaning up existing containers for cluster '%s'...", cluster_id)
         cleanup_ranked_containers(ctx, self.executor)
         logger.info("Step 1/7: Cleanup done (%.1fs)", time.monotonic() - t0)
 
         # Step 2: InfiniBand detection
         t0 = time.monotonic()
-        logger.info("Step 2/7: InfiniBand detection...")
+        if progress:
+            progress.step("Detecting InfiniBand")
+        else:
+            logger.info("Step 2/7: InfiniBand detection...")
         nccl_env = resolve_ib_env(ctx, nccl_env)
         logger.info("Step 2/7: IB step done (%.1fs)", time.monotonic() - t0)
 
         # Step 3: Detect management IPs on all hosts
         t0 = time.monotonic()
-        logger.info("Step 3/7: Detecting management IPs on %d host(s)...", ctx.num_nodes)
+        if progress:
+            progress.step("Detecting management IPs")
+        else:
+            logger.info("Step 3/7: Detecting management IPs on %d host(s)...", ctx.num_nodes)
         host_ip_map: dict[str, str] = {}  # management_ip -> container_name
         host_ips: list[str] = []  # ordered by rank
         for rank, host in enumerate(hosts):
@@ -485,7 +499,10 @@ class TrtllmRuntime(RuntimePlugin):
 
         # Step 4: Launch all containers with sleep infinity (parallel)
         t0 = time.monotonic()
-        logger.info("Step 4/7: Launching %d container(s) with sleep infinity...", ctx.num_nodes)
+        if progress:
+            progress.step("Launching containers")
+        else:
+            logger.info("Step 4/7: Launching %d container(s) with sleep infinity...", ctx.num_nodes)
         containers = [
             (host, self.executor.node_container_name(cluster_id, rank))
             for rank, host in enumerate(hosts)
@@ -500,7 +517,10 @@ class TrtllmRuntime(RuntimePlugin):
 
         # Step 5: Verify containers are running
         t0 = time.monotonic()
-        logger.info("Step 5/7: Verifying containers are running...")
+        if progress:
+            progress.step("Verifying containers")
+        else:
+            logger.info("Step 5/7: Verifying containers are running...")
         if not dry_run:
             for rank, host in enumerate(hosts):
                 container_name = self.executor.node_container_name(cluster_id, rank)
@@ -520,7 +540,10 @@ class TrtllmRuntime(RuntimePlugin):
         t0 = time.monotonic()
         head_host = hosts[0]
         head_container = self.executor.node_container_name(cluster_id, 0)
-        logger.info("Step 6/7: Writing rsh wrapper into head container %s...", head_container)
+        if progress:
+            progress.step("Writing rsh wrapper")
+        else:
+            logger.info("Step 6/7: Writing rsh wrapper into head container %s...", head_container)
 
         # Determine SSH key path inside container
         ssh_key_path = "/tmp/.ssh/id_ed25519"
@@ -571,7 +594,10 @@ class TrtllmRuntime(RuntimePlugin):
 
         # Step 7: Exec mpirun on head container
         t0 = time.monotonic()
-        logger.info("Step 7/7: Executing mpirun on head container...")
+        if progress:
+            progress.step("Executing mpirun on head")
+        else:
+            logger.info("Step 7/7: Executing mpirun on head container...")
 
         # Build the trtllm-serve command (generate_command auto-appends
         # --extra_llm_api_options when extra config keys are present)

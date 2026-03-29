@@ -416,6 +416,8 @@ class LlamaCppRuntime(RuntimePlugin):
 
         logger.warning("llama.cpp RPC clustering is EXPERIMENTAL. Behavior may change in future versions.")
 
+        progress = kwargs.pop("progress", None)
+
         ctx = ClusterContext.build(self, hosts, image, cluster_id, env, cache_dir, config, dry_run)
         head_container = self._container_name(cluster_id, "head")
         worker_container_name = self._container_name(cluster_id, "worker")
@@ -429,15 +431,24 @@ class LlamaCppRuntime(RuntimePlugin):
             dry_run,
         )
 
+        if progress:
+            progress.begin_runtime_steps(6)
+
         # Step 1: Cleanup
         t0 = time.monotonic()
-        logger.info("Step 1/6: Cleaning up existing containers for cluster '%s'...", cluster_id)
+        if progress:
+            progress.step("Cleaning up existing containers")
+        else:
+            logger.info("Step 1/6: Cleaning up existing containers for cluster '%s'...", cluster_id)
         cleanup_named_containers(ctx, [head_container, worker_container_name])
         logger.info("Step 1/6: Cleanup done (%.1fs)", time.monotonic() - t0)
 
         # Step 2: InfiniBand detection (also resolves IB IPs for RPC routing)
         t0 = time.monotonic()
-        logger.info("Step 2/6: InfiniBand detection...")
+        if progress:
+            progress.step("Detecting InfiniBand")
+        else:
+            logger.info("Step 2/6: InfiniBand detection...")
         nccl_env, ib_ip_map = detect_ib_with_ips(ctx, nccl_env, ib_ip_map)
         logger.info("Step 2/6: IB step done (%.1fs)", time.monotonic() - t0)
 
@@ -454,7 +465,10 @@ class LlamaCppRuntime(RuntimePlugin):
 
         # Step 3: Launch ALL containers with sleep infinity
         t0 = time.monotonic()
-        logger.info("Step 3/6: Launching containers with sleep infinity on all %d host(s)...", len(hosts))
+        if progress:
+            progress.step("Launching containers")
+        else:
+            logger.info("Step 3/6: Launching containers with sleep infinity on all %d host(s)...", len(hosts))
 
         all_containers: list[tuple[str, str]] = [(ctx.head_host, head_container)]
         for host in ctx.worker_hosts:
@@ -467,7 +481,10 @@ class LlamaCppRuntime(RuntimePlugin):
 
         # Step 4: Pre-serve hooks (pre_exec)
         t0 = time.monotonic()
-        logger.info("Step 4/6: Running pre-serve hooks...")
+        if progress:
+            progress.step("Running pre-serve hooks")
+        else:
+            logger.info("Step 4/6: Running pre-serve hooks...")
         run_pre_serve_hooks(self, ctx, all_containers, recipe, overrides)
         logger.info("Step 4/6: Pre-serve hooks done (%.1fs)", time.monotonic() - t0)
 
@@ -475,11 +492,14 @@ class LlamaCppRuntime(RuntimePlugin):
         t0 = time.monotonic()
         config_chain = recipe.build_config_chain(overrides) if recipe else None
         if ctx.worker_hosts:
-            logger.info(
-                "Step 5/6: Executing RPC server on %d worker(s) on %s...",
-                len(ctx.worker_hosts),
-                ", ".join(ctx.worker_hosts),
-            )
+            if progress:
+                progress.step("Starting RPC workers")
+            else:
+                logger.info(
+                    "Step 5/6: Executing RPC server on %d worker(s) on %s...",
+                    len(ctx.worker_hosts),
+                    ", ".join(ctx.worker_hosts),
+                )
             rpc_worker_command = self._build_rpc_worker_command(rpc_port)
 
             from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -537,9 +557,14 @@ class LlamaCppRuntime(RuntimePlugin):
                         )
                         return 1
 
-            logger.info("Step 5/6: RPC workers ready (%.1fs)", time.monotonic() - t0)
+            if not progress:
+                logger.info("Step 5/6: RPC workers ready (%.1fs)", time.monotonic() - t0)
         else:
-            logger.info("Step 5/6: No worker hosts, skipping")
+            if progress:
+                progress.step("Starting RPC workers")
+                progress.detail("  No worker hosts, skipping")
+            else:
+                logger.info("Step 5/6: No worker hosts, skipping")
 
         # Step 6: Exec llama-server on head with --rpc (uses IB IPs when available)
         t0 = time.monotonic()
@@ -550,7 +575,10 @@ class LlamaCppRuntime(RuntimePlugin):
             rpc_port,
             skip_keys=skip_keys,
         )
-        logger.info("Step 6/6: Executing llama-server on head %s...", ctx.head_host)
+        if progress:
+            progress.step("Executing llama-server on head")
+        else:
+            logger.info("Step 6/6: Executing llama-server on head %s...", ctx.head_host)
         logger.info("  Command: %s", head_command[:120])
 
         rc = exec_serve_on_container(ctx, self.executor, ctx.head_host, head_container, head_command)
