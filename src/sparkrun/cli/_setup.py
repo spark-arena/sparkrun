@@ -18,6 +18,24 @@ from ._common import (
 )
 
 
+def _record_setup_phase(cluster_name, user, host_list, phase, **extra):
+    """Record a setup phase in the manifest (best-effort, never raises)."""
+    try:
+        resolved = cluster_name
+        if not resolved:
+            mgr = _get_cluster_manager()
+            resolved = mgr.get_default()
+        if not resolved:
+            return
+        from sparkrun.core.setup_manifest import ManifestManager
+        mgr = _get_cluster_manager()
+        manifest_mgr = ManifestManager(mgr.clusters_dir)
+        manifest_mgr.record_phase(resolved, user, host_list, phase, **extra)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).debug("Failed to record manifest phase '%s'", phase, exc_info=True)
+
+
 @click.group(invoke_without_command=True)
 @click.pass_context
 def setup(ctx):
@@ -606,6 +624,8 @@ def setup_ssh(ctx, hosts, hosts_file, cluster_name, extra_hosts, include_self, u
         dry_run=dry_run,
         control_is_member=_resolved_loopback or (self_host is not None and self_host in set(cluster_hosts)),
     )
+    if ok and not dry_run:
+        _record_setup_phase(cluster_name, user, host_list, "ssh_mesh", mesh_hosts=list(host_list))
     sys.exit(0 if ok else 1)
 
 
@@ -816,6 +836,13 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
             click.echo("  Warning: keyscan failed on %d host(s)." % ks_fail, err=True)
         click.echo("  Host keys for %d CX7 IPs distributed to %d host(s) + local." % (len(all_cx7_ips), ks_ok))
 
+    if configured and not dry_run:
+        _record_setup_phase(
+            cluster_name, user, host_list, "cx7",
+            subnets=[str(s1), str(s2)], cx7_ips=all_cx7_ips,
+            netplan_file="/etc/netplan/40-cx7.yaml",
+        )
+
     if failed:
         sys.exit(1)
 
@@ -946,6 +973,9 @@ def setup_docker_group(ctx, hosts, hosts_file, cluster_name, user, dry_run):
         parts.append("%d failed" % fail_count)
     click.echo("Results: %s." % ", ".join(parts) if parts else "No hosts processed.")
 
+    if ok_count and not dry_run:
+        _record_setup_phase(cluster_name, user, host_list, "docker_group")
+
     if ok_count and any("added" in (result_map.get(h).stdout if result_map.get(h) else "") for h in host_list):
         click.echo()
         click.echo("Note: Users newly added to the docker group must re-login")
@@ -1046,6 +1076,11 @@ def setup_fix_permissions(ctx, hosts, hosts_file, cluster_name, user, cache_dir,
                     sudoers_fail += 1
                     click.echo("  [FAIL] %s: %s" % (h, r.stderr.strip()[:200]), err=True)
             click.echo("Sudoers install: %d OK, %d failed." % (sudoers_ok, sudoers_fail))
+            if sudoers_ok:
+                _record_setup_phase(
+                    cluster_name, user, host_list, "sudoers",
+                    files=["/etc/sudoers.d/sparkrun-chown-%s" % user],
+                )
             click.echo()
 
     # Generate the chown script with sudo -n (non-interactive).
@@ -1216,6 +1251,11 @@ def setup_clear_cache(ctx, hosts, hosts_file, cluster_name, user, save_sudo, dry
                     sudoers_fail += 1
                     click.echo("  [FAIL] %s: %s" % (h, r.stderr.strip()[:200]), err=True)
             click.echo("Sudoers install: %d OK, %d failed." % (sudoers_ok, sudoers_fail))
+            if sudoers_ok:
+                _record_setup_phase(
+                    cluster_name, user, host_list, "sudoers",
+                    files=["/etc/sudoers.d/sparkrun-dropcaches-%s" % user],
+                )
             click.echo()
 
     # Generate the drop_caches script with sudo -n (non-interactive).
@@ -1487,6 +1527,16 @@ def setup_earlyoom(ctx, hosts, hosts_file, cluster_name, user, extra_prefer, ext
         parts.append("%d failed" % fail_count)
     click.echo("Results: %s." % ", ".join(parts) if parts else "No hosts processed.")
 
+    if ok_count and not dry_run:
+        installed_pkg = any(
+            "INSTALLING:" in (result_map.get(h) and result_map[h].stdout or "")
+            for h in host_list
+        )
+        _record_setup_phase(
+            cluster_name, user, host_list, "earlyoom",
+            installed_package=installed_pkg,
+        )
+
     if ok_count:
         click.echo()
         click.echo("Thanks to @shahizat for posting this idea on the DGX forums!")
@@ -1621,9 +1671,11 @@ def setup_diagnose(ctx, hosts, hosts_file, cluster_name, dry_run, output_file, j
 
 
 # ---------------------------------------------------------------------------
-# Wizard registration
+# Wizard and uninstall registration
 # ---------------------------------------------------------------------------
 
 from ._wizard import setup_wizard  # noqa: E402
+from ._uninstall import setup_uninstall  # noqa: E402
 
 setup.add_command(setup_wizard)
+setup.add_command(setup_uninstall)

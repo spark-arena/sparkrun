@@ -62,6 +62,9 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
         _build_earlyoom_regex,
     )
 
+    # Manifest tracking
+    from sparkrun.core.setup_manifest import ManifestManager
+
     # Track results for summary
     results = {}
     sudo_password = None
@@ -109,6 +112,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
 
         config = SparkrunConfig()
         cluster_mgr = _get_cluster_manager()
+        manifest_mgr = ManifestManager(cluster_mgr.clusters_dir)
 
         # Check for existing clusters
         existing = cluster_mgr.list_clusters()
@@ -395,6 +399,11 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                         control_is_member=(self_ip is not None and self_ip in seen),
                     )
                     results["ssh"] = "OK" if ok else "failed"
+                    if ok and not dry_run and cluster_name:
+                        manifest_mgr.record_phase(
+                            cluster_name, user, mesh_hosts, "ssh_mesh",
+                            mesh_hosts=mesh_hosts, cross_user=cross_user,
+                        )
                 except Exception as e:
                     results["ssh"] = "failed"
                     click.echo("SSH mesh error: %s" % e, err=True)
@@ -557,6 +566,13 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                             )
 
                         results["cx7"] = "configured (%s, %s)" % (s1, s2) if ok_count else "failed"
+                        if ok_count and not dry_run and cluster_name:
+                            manifest_mgr.record_phase(
+                                cluster_name, user, host_list, "cx7",
+                                subnets=[str(s1), str(s2)],
+                                cx7_ips=all_cx7_ips,
+                                netplan_file="/etc/netplan/40-cx7.yaml",
+                            )
                 except Exception as e:
                     results["cx7"] = "failed"
                     click.echo("CX7 error: %s" % e, err=True)
@@ -615,6 +631,8 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
 
                         dg_ok = sum(1 for h in host_list if dg_result_map.get(h) and dg_result_map[h].success)
                         results["docker"] = "OK (%d/%d)" % (dg_ok, len(host_list)) if dg_ok else "failed"
+                        if dg_ok and not dry_run and cluster_name:
+                            manifest_mgr.record_phase(cluster_name, user, host_list, "docker_group")
                         for h in host_list:
                             r = dg_result_map.get(h)
                             if r and r.success:
@@ -688,6 +706,14 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                                 failed_any = True
                             click.echo("  %s: %d/%d host(s)" % (label, label_ok, len(host_list)))
                         results["sudoers"] = "installed (fix-permissions, clear-cache)" if not failed_any else "partial"
+                        if not dry_run and cluster_name:
+                            manifest_mgr.record_phase(
+                                cluster_name, user, host_list, "sudoers",
+                                files=[
+                                    "/etc/sudoers.d/sparkrun-chown-%s" % user,
+                                    "/etc/sudoers.d/sparkrun-dropcaches-%s" % user,
+                                ],
+                            )
                 except Exception as e:
                     results["sudoers"] = "failed"
                     click.echo("Sudoers error: %s" % e, err=True)
@@ -748,6 +774,15 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                     else:
                         results["earlyoom"] = "installed" if ok_count > 0 else "failed"
                         click.echo("  earlyoom configured on %d/%d host(s)." % (ok_count, len(host_list)))
+                        if ok_count and cluster_name:
+                            installed_pkg = any(
+                                "INSTALLING:" in (result_map.get(h) and result_map[h].stdout or "")
+                                for h in host_list
+                            )
+                            manifest_mgr.record_phase(
+                                cluster_name, user, host_list, "earlyoom",
+                                installed_package=installed_pkg,
+                            )
                 except Exception as e:
                     results["earlyoom"] = "failed"
                     click.echo("earlyoom error: %s" % e, err=True)
