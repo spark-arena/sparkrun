@@ -271,9 +271,10 @@ def _run_ssh_diagnose(host_list, user, local_user):
         control_path = os.path.join(control_dir, "cm-%%r@%%h:%%p")
 
         # Step 1: Test pubkey auth (no password, no ControlMaster)
+        # Use -v (verbose) so we can show WHY the key was rejected on failure.
         click.echo("  [1/4] Testing pubkey authentication (BatchMode)...")
         pubkey_result = subprocess.run(
-            ["ssh"] + ssh_opts + [
+            ["ssh", "-v"] + ssh_opts + [
                 "-o", "ControlPath=none",
                 "-o", "BatchMode=yes",
                 "-o", "ConnectTimeout=5",
@@ -283,6 +284,26 @@ def _run_ssh_diagnose(host_list, user, local_user):
         )
         pubkey_ok = pubkey_result.returncode == 0
         click.echo("        %s" % ("PASS" if pubkey_ok else "FAIL"))
+
+        # Parse verbose SSH output for key diagnostic lines
+        ssh_verbose_lines = []
+        if not pubkey_ok and pubkey_result.stderr:
+            for line in pubkey_result.stderr.splitlines():
+                line_lower = line.lower()
+                # Capture lines about key offers, rejections, auth methods, and errors
+                if any(kw in line_lower for kw in (
+                    "offering", "trying", "authentications that can continue",
+                    "no more authentication", "permission denied",
+                    "key_load", "identity file", "will attempt",
+                    "server accepts key", "authentication refused",
+                    "pubkey_prepare", "sign_and_send",
+                )):
+                    ssh_verbose_lines.append(line.strip())
+            if ssh_verbose_lines:
+                click.echo("        SSH debug (key-related):")
+                for vl in ssh_verbose_lines:
+                    click.echo("          %s" % vl)
+
         if not pubkey_ok:
             all_passed = False
 
@@ -327,6 +348,38 @@ printf 'sshd_pubkey=%s\n' "$(grep -i '^PubkeyAuthentication' /etc/ssh/sshd_confi
 printf 'sshd_strict=%s\n' "$(grep -i '^StrictModes' /etc/ssh/sshd_config 2>/dev/null || echo default)"
 printf 'sshd_allow_users=%s\n' "$(grep -i '^AllowUsers' /etc/ssh/sshd_config 2>/dev/null || echo none)"
 printf 'sshd_allow_groups=%s\n' "$(grep -i '^AllowGroups' /etc/ssh/sshd_config 2>/dev/null || echo none)"
+
+# Check sshd drop-in config files (Ubuntu 22.04+ uses Include)
+_dropin_dir="/etc/ssh/sshd_config.d"
+if [ -d "$_dropin_dir" ]; then
+    _dropin_files="$(ls -1 "$_dropin_dir"/*.conf 2>/dev/null | tr '\n' ',' || echo none)"
+    printf 'sshd_dropin_files=%s\n' "${_dropin_files%,}"
+
+    # Check for overrides in drop-in files that affect pubkey auth
+    _dropin_ak="$(grep -rhi '^AuthorizedKeysFile' "$_dropin_dir"/ 2>/dev/null || echo none)"
+    printf 'sshd_dropin_ak_file=%s\n' "$_dropin_ak"
+    _dropin_pubkey="$(grep -rhi '^PubkeyAuthentication' "$_dropin_dir"/ 2>/dev/null || echo none)"
+    printf 'sshd_dropin_pubkey=%s\n' "$_dropin_pubkey"
+    _dropin_accepted="$(grep -rhi '^PubkeyAcceptedAlgorithms\|^PubkeyAcceptedKeyTypes' "$_dropin_dir"/ 2>/dev/null || echo none)"
+    printf 'sshd_dropin_accepted_algs=%s\n' "$_dropin_accepted"
+    _dropin_allow_users="$(grep -rhi '^AllowUsers' "$_dropin_dir"/ 2>/dev/null || echo none)"
+    printf 'sshd_dropin_allow_users=%s\n' "$_dropin_allow_users"
+    _dropin_allow_groups="$(grep -rhi '^AllowGroups' "$_dropin_dir"/ 2>/dev/null || echo none)"
+    printf 'sshd_dropin_allow_groups=%s\n' "$_dropin_allow_groups"
+else
+    printf 'sshd_dropin_files=none\n'
+    printf 'sshd_dropin_ak_file=none\n'
+    printf 'sshd_dropin_pubkey=none\n'
+    printf 'sshd_dropin_accepted_algs=none\n'
+    printf 'sshd_dropin_allow_users=none\n'
+    printf 'sshd_dropin_allow_groups=none\n'
+fi
+
+# PubkeyAcceptedAlgorithms in main sshd_config
+printf 'sshd_accepted_algs=%s\n' "$(grep -i '^PubkeyAcceptedAlgorithms\|^PubkeyAcceptedKeyTypes' /etc/ssh/sshd_config 2>/dev/null || echo default)"
+
+# Key types present in authorized_keys
+printf 'ak_key_types=%s\n' "$(awk '{print $1}' ~/.ssh/authorized_keys 2>/dev/null | sort -u | tr '\n' ',' || echo none)"
 """
         diag_result = subprocess.run(
             cm_ssh + [diag_script],
@@ -409,6 +462,35 @@ printf 'sshd_allow_groups=%s\n' "$(grep -i '^AllowGroups' /etc/ssh/sshd_config 2
         if allow_groups != "none":
             click.echo("    AllowGroups:        %s — verify '%s' is in a listed group" % (allow_groups, user))
 
+        # Accepted key algorithms (main config)
+        accepted_algs = diag.get("sshd_accepted_algs", "default")
+        click.echo("    AcceptedAlgorithms: %s" % accepted_algs)
+
+        # Key types in authorized_keys
+        ak_key_types = diag.get("ak_key_types", "none")
+        if ak_key_types and ak_key_types != "none":
+            click.echo("    AK key types:       %s" % ak_key_types.rstrip(","))
+
+        # Drop-in config overrides
+        dropin_files = diag.get("sshd_dropin_files", "none")
+        if dropin_files != "none":
+            click.echo("    sshd drop-ins:      %s" % dropin_files)
+            dropin_ak = diag.get("sshd_dropin_ak_file", "none")
+            if dropin_ak != "none":
+                click.echo("    ↳ AuthorizedKeysFile override: %s" % dropin_ak)
+            dropin_pubkey = diag.get("sshd_dropin_pubkey", "none")
+            if dropin_pubkey != "none":
+                click.echo("    ↳ PubkeyAuthentication override: %s" % dropin_pubkey)
+            dropin_accepted = diag.get("sshd_dropin_accepted_algs", "none")
+            if dropin_accepted != "none":
+                click.echo("    ↳ AcceptedAlgorithms override: %s" % dropin_accepted)
+            dropin_allow_users = diag.get("sshd_dropin_allow_users", "none")
+            if dropin_allow_users != "none":
+                click.echo("    ↳ AllowUsers override: %s — verify '%s' is listed" % (dropin_allow_users, user))
+            dropin_allow_groups = diag.get("sshd_dropin_allow_groups", "none")
+            if dropin_allow_groups != "none":
+                click.echo("    ↳ AllowGroups override: %s — verify '%s' is in a listed group" % (dropin_allow_groups, user))
+
         click.echo("    Pubkey auth test:   %s" % ("PASS" if pubkey_ok else "FAIL"))
         if cross_user:
             click.echo("    Local key installed: %s" % ("PASS" if key_installed else "FAIL"))
@@ -429,6 +511,39 @@ printf 'sshd_allow_groups=%s\n' "$(grep -i '^AllowGroups' /etc/ssh/sshd_config 2
                 click.echo("    Enable PubkeyAuthentication in /etc/ssh/sshd_config and restart sshd")
             if cross_user and not key_installed:
                 click.echo("    Re-run 'sparkrun setup ssh' to install your public key")
+
+            # Drop-in specific remediation
+            dropin_ak = diag.get("sshd_dropin_ak_file", "none")
+            if dropin_ak != "none":
+                click.echo("    ** Drop-in override detected: AuthorizedKeysFile = %s" % dropin_ak)
+                click.echo("       Your key may need to go in that location instead of ~/.ssh/authorized_keys")
+                click.echo("       Check files in /etc/ssh/sshd_config.d/ on the remote host")
+            dropin_pubkey = diag.get("sshd_dropin_pubkey", "none")
+            if dropin_pubkey != "none" and "no" in dropin_pubkey.lower():
+                click.echo("    ** Drop-in override DISABLES pubkey auth: %s" % dropin_pubkey)
+                click.echo("       Check files in /etc/ssh/sshd_config.d/ on the remote host")
+            dropin_accepted = diag.get("sshd_dropin_accepted_algs", "none")
+            if dropin_accepted != "none":
+                click.echo("    ** Drop-in restricts accepted key algorithms: %s" % dropin_accepted)
+                click.echo("       Ensure your key type is in the allowed list")
+            dropin_allow_users = diag.get("sshd_dropin_allow_users", "none")
+            if dropin_allow_users != "none":
+                click.echo("    ** Drop-in restricts AllowUsers: %s — verify '%s' is listed" % (dropin_allow_users, user))
+            dropin_allow_groups = diag.get("sshd_dropin_allow_groups", "none")
+            if dropin_allow_groups != "none":
+                click.echo("    ** Drop-in restricts AllowGroups: %s — verify '%s' is in a listed group" % (dropin_allow_groups, user))
+
+            # If everything looks correct but still fails, point to verbose output
+            if (home_ok and ssh_ok and ak_ok and ak_file_ok and pubkey_setting_ok
+                    and (not cross_user or key_installed)
+                    and dropin_ak == "none" and dropin_pubkey == "none"):
+                click.echo("    All standard checks passed but pubkey auth still fails.")
+                click.echo("    The SSH debug output above may reveal the cause.")
+                click.echo("    Common hidden causes:")
+                click.echo("      - sshd_config 'Include' loading a drop-in that overrides settings")
+                click.echo("      - SELinux/AppArmor blocking access to authorized_keys")
+                click.echo("      - authorized_keys owned by wrong user (must be owned by %s)" % user)
+                click.echo("      - Host key changed (check ~/.ssh/known_hosts on control machine)")
             click.echo()
 
         # Clean up ControlMaster
