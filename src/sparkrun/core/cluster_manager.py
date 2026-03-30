@@ -498,6 +498,12 @@ class ResolvedClusterConfig:
     def resolve_transfer_config(self, config, transfer_mode_override: str | None = None):
         """Resolve transfer configuration against defaults.
 
+        When the cluster has a configured ``user`` that differs from the OS
+        user and no explicit ``cache_dir`` is set, the remote cache dir is
+        derived from the SSH user's home directory (``~<user>/.cache/huggingface``)
+        rather than the local user's.  This prevents permission errors when
+        the cluster user can't write to the control user's home directory.
+
         Args:
             config: SparkrunConfig instance.
             transfer_mode_override: CLI ``--transfer-mode`` value (takes precedence).
@@ -505,8 +511,18 @@ class ResolvedClusterConfig:
         Returns:
             Tuple of ``(local_cache_dir, remote_cache_dir, effective_transfer_mode, effective_transfer_interface)``.
         """
+        import os
+
         local_cache_dir = str(config.hf_cache_dir)
-        remote_cache_dir = self.cache_dir or local_cache_dir
+        if self.cache_dir:
+            remote_cache_dir = self.cache_dir
+        elif self.user and self.user != os.environ.get("USER"):
+            # Cross-user: derive remote cache from the SSH user's home.
+            # Use absolute path (not ~user) because tilde isn't expanded
+            # inside quoted strings in bash scripts.
+            remote_cache_dir = "/home/%s/.cache/huggingface" % self.user
+        else:
+            remote_cache_dir = local_cache_dir
         effective_transfer_mode = transfer_mode_override or self.transfer_mode or "auto"
         effective_transfer_interface = self.transfer_interface
         return local_cache_dir, remote_cache_dir, effective_transfer_mode, effective_transfer_interface

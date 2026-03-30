@@ -90,13 +90,178 @@ def run_sudo_script_on_host(
     Returns:
         RemoteResult with the original host label preserved.
     """
-    from sparkrun.utils import is_local_host
+    from sparkrun.orchestration.primitives import should_run_locally
 
-    if is_local_host(host):
+    kw = ssh_kwargs or {}
+    if should_run_locally(host, kw.get("ssh_user")):
         r = _run_local_sudo_script(script, password=password, timeout=timeout, dry_run=dry_run)
         return RemoteResult(host=host, returncode=r.returncode, stdout=r.stdout, stderr=r.stderr)
-    kw = ssh_kwargs or {}
     return _ssh.run_remote_sudo_script(host, script, password, timeout=timeout, dry_run=dry_run, **kw)
+
+
+def run_indirect_sudo_script(
+    host: str,
+    script: str,
+    sudo_user: str,
+    sudo_password: str,
+    ssh_kwargs: dict | None = None,
+    timeout: int = 300,
+    dry_run: bool = False,
+) -> RemoteResult:
+    """Run a sudo script on a host via an intermediate SSH user.
+
+    SSHs as the cluster user (from *ssh_kwargs*), then uses ``su`` on the
+    remote side to switch to *sudo_user* who has sudo access.  A small
+    Python helper using ``pty.fork()`` handles the non-interactive ``su``
+    password prompt, then pipes the script through ``sudo -S bash -s``.
+
+    Use this when the SSH user lacks sudo access but a different user on
+    the remote host does.
+
+    Args:
+        host: Remote hostname or IP.
+        script: Bash script content to execute as root.
+        sudo_user: The user with sudo access on the remote host.
+        sudo_password: Password for *sudo_user* (used for both ``su`` and ``sudo``).
+        ssh_kwargs: SSH connection parameters (SSH user is the cluster user).
+        timeout: Overall execution timeout in seconds.
+        dry_run: If True, log without executing.
+
+    Returns:
+        RemoteResult with returncode, stdout, stderr.
+    """
+    import base64
+
+    if dry_run:
+        logger.info("[dry-run] Would execute indirect sudo on %s (via su %s)", host, sudo_user)
+        return RemoteResult(host=host, returncode=0, stdout="[dry-run]", stderr="")
+
+    # Build a Python wrapper that runs on the remote host.
+    # It uses pty.fork() to feed the su password, then pipes the
+    # script through sudo -S bash -s.
+    #
+    # The password and script are base64-encoded into the wrapper itself
+    # (not read from stdin) because stdin is used as the pipe to python3.
+    b64_password = base64.b64encode(sudo_password.encode()).decode()
+    b64_script = base64.b64encode(script.encode()).decode()
+
+    wrapper = (
+        "import base64, os, pty, select, sys, time\n"
+        "try:\n"
+        "    password = base64.b64decode('%s').decode()\n"
+        "    script = base64.b64decode('%s').decode()\n"
+        "    sudo_user = %r\n"
+        "    pid, fd = pty.fork()\n"
+        "    if pid == 0:\n"
+        "        os.execlp('su', 'su', '-', sudo_user, '-c', 'sudo -S bash -s')\n"
+        "    else:\n"
+        "        buf = b''\n"
+        "        deadline = time.time() + 10\n"
+        "        fed_su = False\n"
+        "        while time.time() < deadline:\n"
+        "            r, _, _ = select.select([fd], [], [], 0.5)\n"
+        "            if r:\n"
+        "                try:\n"
+        "                    data = os.read(fd, 4096)\n"
+        "                except OSError:\n"
+        "                    break\n"
+        "                buf += data\n"
+        "                low = buf.lower()\n"
+        "                if not fed_su and (b'password' in low or b'passwort' in low):\n"
+        "                    os.write(fd, (password + '\\n').encode())\n"
+        "                    fed_su = True\n"
+        "                    buf = b''\n"
+        "                elif fed_su and (b'password' in low or b'passwort' in low):\n"
+        "                    os.write(fd, (password + '\\n').encode())\n"
+        "                    time.sleep(0.2)\n"
+        "                    os.write(fd, script.encode())\n"
+        "                    break\n"
+        "        else:\n"
+        "            os.close(fd)\n"
+        "            sys.stderr.write('Timeout waiting for su/sudo prompts\\n')\n"
+        "            sys.exit(1)\n"
+        "        # Drain remaining output\n"
+        "        out = b''\n"
+        "        while True:\n"
+        "            r, _, _ = select.select([fd], [], [], 2)\n"
+        "            if not r:\n"
+        "                break\n"
+        "            try:\n"
+        "                chunk = os.read(fd, 4096)\n"
+        "                if not chunk:\n"
+        "                    break\n"
+        "                out += chunk\n"
+        "            except OSError:\n"
+        "                break\n"
+        "        os.close(fd)\n"
+        "        _, status = os.waitpid(pid, 0)\n"
+        "        sys.stdout.buffer.write(out)\n"
+        "        sys.exit(os.WEXITSTATUS(status))\n"
+        "except Exception as e:\n"
+        "    sys.stderr.write('indirect-sudo wrapper error: ' + str(e) + '\\n')\n"
+        "    sys.exit(1)\n"
+    ) % (b64_password, b64_script, sudo_user)
+
+    # Pipe the wrapper to python3 via stdin (avoids shell escaping issues
+    # that occur with python3 -c when SSH joins args for the remote shell).
+    kw = ssh_kwargs or {}
+    cmd = _ssh.build_ssh_cmd(host, **{k: v for k, v in kw.items() if k in ("ssh_user", "ssh_key", "ssh_options")})
+    cmd.append("python3")
+
+    logger.debug("  SSH indirect sudo -> %s (su %s, %d bytes)", host, sudo_user, len(script))
+
+    result = _ssh._run_subprocess(cmd, host, "SSH indirect sudo", timeout=timeout, input_data=wrapper)
+    if result.success:
+        logger.info("  SSH indirect sudo <- %s OK", host)
+    return result
+
+
+def dispatch_sudo_script(
+    host: str,
+    script: str,
+    sudo_password: str,
+    ssh_kwargs: dict | None = None,
+    indirect_sudo_user: str | None = None,
+    timeout: int = 300,
+    dry_run: bool = False,
+) -> RemoteResult:
+    """Run a sudo script on a host, dispatching direct vs indirect.
+
+    When *indirect_sudo_user* is set, uses :func:`run_indirect_sudo_script`
+    (SSH as cluster user, ``su`` to sudo user).  Otherwise uses
+    :func:`run_sudo_script_on_host` directly.
+
+    Args:
+        host: Target hostname or IP.
+        script: Bash script content to execute as root.
+        sudo_password: Sudo password.
+        ssh_kwargs: SSH connection parameters.
+        indirect_sudo_user: If set, SSH as cluster user and ``su`` to this
+            user for sudo access.
+        timeout: Execution timeout in seconds.
+        dry_run: If True, skip actual execution.
+
+    Returns:
+        RemoteResult from the executed script.
+    """
+    if indirect_sudo_user:
+        return run_indirect_sudo_script(
+            host,
+            script,
+            sudo_user=indirect_sudo_user,
+            sudo_password=sudo_password,
+            ssh_kwargs=ssh_kwargs,
+            timeout=timeout,
+            dry_run=dry_run,
+        )
+    return run_sudo_script_on_host(
+        host,
+        script,
+        sudo_password,
+        ssh_kwargs=ssh_kwargs,
+        timeout=timeout,
+        dry_run=dry_run,
+    )
 
 
 def run_with_sudo_fallback(
@@ -136,11 +301,12 @@ def run_with_sudo_fallback(
         {host: SSHResult} and still_failed_hosts is a list of hosts
         that failed even after password-based sudo.
     """
-    from sparkrun.utils import is_local_host
+    from sparkrun.orchestration.primitives import should_run_locally
 
     # Separate local and remote hosts
-    local_hosts = [h for h in host_list if is_local_host(h)]
-    remote_hosts = [h for h in host_list if not is_local_host(h)]
+    ssh_user = ssh_kwargs.get("ssh_user")
+    local_hosts = [h for h in host_list if should_run_locally(h, ssh_user)]
+    remote_hosts = [h for h in host_list if not should_run_locally(h, ssh_user)]
 
     result_map: dict[str, object] = {}
     failed_hosts: list[str] = []
@@ -180,7 +346,7 @@ def run_with_sudo_fallback(
     # Step 2: For failed hosts, fall back to password-based sudo
     if failed_hosts and not dry_run and sudo_password is not None:
         for h in failed_hosts:
-            if is_local_host(h):
+            if should_run_locally(h, ssh_user):
                 r = _run_local_sudo_script(
                     fallback_script,
                     password=sudo_password,

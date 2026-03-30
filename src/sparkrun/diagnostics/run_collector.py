@@ -16,6 +16,30 @@ from sparkrun.diagnostics.spark_collector import collect_spark_diagnostics
 logger = logging.getLogger(__name__)
 
 
+class _DiagnosticsLogHandler(logging.Handler):
+    """Logging handler that captures records into an NDJSON writer.
+
+    Attached to the root logger at DEBUG level so that *all* log
+    records are captured regardless of the console verbosity setting.
+    Records are emitted as ``log`` events in the diagnostics file.
+    """
+
+    def __init__(self, writer: NDJSONWriter):
+        super().__init__(level=logging.DEBUG)
+        self._writer = writer
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self._writer.emit("log", {
+                "level": record.levelname,
+                "logger": record.name,
+                "message": self.format(record),
+                "timestamp": record.created,
+            })
+        except Exception:
+            pass  # never let diagnostics logging break the run
+
+
 class RunDiagnosticsCollector:
     """Collects diagnostics around a ``sparkrun run`` lifecycle.
 
@@ -28,6 +52,11 @@ class RunDiagnosticsCollector:
             result = launch_inference(...)
             diag.phase_end("launch")
             diag.emit_summary()
+
+    When opened, attaches a logging handler to the root logger that
+    captures **all** log records (DEBUG and above) into the NDJSON
+    file.  This provides full diagnostic logging in the output file
+    even when the console is at default (quiet) verbosity.
     """
 
     def __init__(
@@ -45,6 +74,8 @@ class RunDiagnosticsCollector:
         self._phases: dict[str, dict] = {}
         self._current_phase: str | None = None
         self._success = True
+        self._log_handler: _DiagnosticsLogHandler | None = None
+        self._prev_root_level: int | None = None
 
     @property
     def writer(self) -> NDJSONWriter:
@@ -53,9 +84,27 @@ class RunDiagnosticsCollector:
     def open(self) -> RunDiagnosticsCollector:
         self._writer.open()
         self._start_time = time.monotonic()
+        # Attach a log handler that captures all records at DEBUG level
+        self._log_handler = _DiagnosticsLogHandler(self._writer)
+        self._log_handler.setFormatter(logging.Formatter("%(message)s"))
+        root = logging.getLogger()
+        root.addHandler(self._log_handler)
+        # Ensure root logger accepts DEBUG even if console is at PROGRESS
+        if root.level > logging.DEBUG:
+            self._prev_root_level = root.level
+            root.setLevel(logging.DEBUG)
+        else:
+            self._prev_root_level = None
         return self
 
     def close(self) -> None:
+        # Remove the diagnostics handler and restore root level
+        if self._log_handler is not None:
+            root = logging.getLogger()
+            root.removeHandler(self._log_handler)
+            if self._prev_root_level is not None:
+                root.setLevel(self._prev_root_level)
+            self._log_handler = None
         self._writer.close()
 
     def collect_spark_diagnostics(self) -> dict[str, dict]:

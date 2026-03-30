@@ -126,14 +126,14 @@ class EugrBuilder(BuilderPlugin):
         return self
 
     def prepare_image(
-        self,
-        image: str,
-        recipe: Recipe,
-        hosts: list[str],
-        config: SparkrunConfig | None = None,
-        dry_run: bool = False,
-        transfer_mode: str = "local",
-        ssh_kwargs: dict | None = None,
+            self,
+            image: str,
+            recipe: Recipe,
+            hosts: list[str],
+            config: SparkrunConfig | None = None,
+            dry_run: bool = False,
+            transfer_mode: str = "local",
+            ssh_kwargs: dict | None = None,
     ) -> str:
         """Build container image and inject mod pre_exec commands.
 
@@ -159,6 +159,7 @@ class EugrBuilder(BuilderPlugin):
             Final image name (may be unchanged).
         """
         delegated = transfer_mode == "delegated"
+        logger.debug("eugr prepare_image: transfer_mode=%s, delegated=%s", transfer_mode, delegated)
         head = hosts[0] if hosts else "localhost"
         build_args = recipe.runtime_config.get("build_args", [])
         mods = recipe.runtime_config.get("mods", [])
@@ -268,9 +269,9 @@ class EugrBuilder(BuilderPlugin):
 
         for m in re.finditer(r"^[a-z]\w*: ", text, re.MULTILINE):
             # Skip URL-like lines (https: //, http: //)
-            if text[m.start() : m.start() + 8].startswith(("https://", "http://")):
+            if text[m.start(): m.start() + 8].startswith(("https://", "http://")):
                 continue
-            return text[m.start() :]
+            return text[m.start():]
         return text
 
     def process_version_info(self, raw: dict[str, str]) -> dict[str, str]:
@@ -293,10 +294,10 @@ class EugrBuilder(BuilderPlugin):
     # --- Long-term image resolution ---
 
     def resolve_long_term_image(
-        self,
-        container_image: str,
-        runtime_info: dict[str, str],
-        recipe: Recipe,
+            self,
+            container_image: str,
+            runtime_info: dict[str, str],
+            recipe: Recipe,
     ) -> tuple[str, bool]:
         """Resolve an eugr container image to a pinned GHCR nightly tag.
 
@@ -348,9 +349,9 @@ class EugrBuilder(BuilderPlugin):
         return container_image, False
 
     def _resolve_ghcr_target(
-        self,
-        container_image: str,
-        recipe: Recipe,
+            self,
+            container_image: str,
+            recipe: Recipe,
     ) -> tuple[str, str] | tuple[None, None]:
         """Determine the GHCR image name and package path for resolution.
 
@@ -379,12 +380,12 @@ class EugrBuilder(BuilderPlugin):
         return None, None
 
     def _match_via_build_index(
-        self,
-        ghcr_image: str,
-        repo_commit: str,
-        vllm_hash: str,
-        flashinfer_hash: str,
-        recipe: Recipe,
+            self,
+            ghcr_image: str,
+            repo_commit: str,
+            vllm_hash: str,
+            flashinfer_hash: str,
+            recipe: Recipe,
     ) -> str | None:
         """Try to match via the spark-arena build-index.json."""
         from sparkrun.builders._ghcr import fetch_build_index
@@ -429,12 +430,12 @@ class EugrBuilder(BuilderPlugin):
         return None
 
     def _match_via_ghcr_api(
-        self,
-        ghcr_image: str,
-        ghcr_pkg: str,
-        repo_commit: str,
-        vllm_hash: str,
-        flashinfer_hash: str,
+            self,
+            ghcr_image: str,
+            ghcr_pkg: str,
+            repo_commit: str,
+            vllm_hash: str,
+            flashinfer_hash: str,
     ) -> str | None:
         """Fall back to GHCR API: enumerate tags and check OCI labels."""
         from sparkrun.builders._ghcr import ghcr_list_tags, ghcr_get_labels
@@ -469,10 +470,10 @@ class EugrBuilder(BuilderPlugin):
     # --- Mod -> pre_exec conversion ---
 
     def _inject_mod_pre_exec(
-        self,
-        recipe: Recipe,
-        mods: list[str],
-        source_host: str | None = None,
+            self,
+            recipe: Recipe,
+            mods: list[str],
+            source_host: str | None = None,
     ) -> None:
         """Convert mod entries to pre_exec commands on the recipe.
 
@@ -553,12 +554,12 @@ class EugrBuilder(BuilderPlugin):
             return None
 
     def _can_skip_build(
-        self,
-        image: str,
-        build_args: list[str],
-        config: SparkrunConfig | None = None,
-        host: str | None = None,
-        ssh_kwargs: dict | None = None,
+            self,
+            image: str,
+            build_args: list[str],
+            config: SparkrunConfig | None = None,
+            host: str | None = None,
+            ssh_kwargs: dict | None = None,
     ) -> bool:
         """Check whether a build can be skipped based on cached metadata.
 
@@ -634,12 +635,12 @@ class EugrBuilder(BuilderPlugin):
         return True
 
     def _save_build_metadata(
-        self,
-        image: str,
-        build_args: list[str],
-        config: SparkrunConfig | None = None,
-        host: str | None = None,
-        ssh_kwargs: dict | None = None,
+            self,
+            image: str,
+            build_args: list[str],
+            config: SparkrunConfig | None = None,
+            host: str | None = None,
+            ssh_kwargs: dict | None = None,
     ) -> None:
         """Save build metadata to the cache after a successful build.
 
@@ -739,7 +740,16 @@ class EugrBuilder(BuilderPlugin):
         if dry_run:
             return
 
-        result = subprocess.run(cmd, cwd=str(self._repo_dir))
+        # Stream build output only at INFO+ (i.e. -v); at default verbosity capture silently
+        stream = logging.getLogger().isEnabledFor(logging.INFO)
+        if stream:
+            result = subprocess.run(cmd, cwd=str(self._repo_dir))
+        else:
+            result = subprocess.run(cmd, cwd=str(self._repo_dir), capture_output=True, text=True)
+            if result.stdout and isinstance(result.stdout, str):
+                logger.debug("Build stdout:\n%s", result.stdout[-2000:])
+            if result.stderr and isinstance(result.stderr, str):
+                logger.debug("Build stderr:\n%s", result.stderr[-2000:])
         if result.returncode != 0:
             raise RuntimeError("eugr container build failed (exit %d)" % result.returncode)
 
@@ -759,10 +769,10 @@ class EugrBuilder(BuilderPlugin):
         return result.success
 
     def _ensure_repo_remote(
-        self,
-        head: str,
-        ssh_kwargs: dict | None = None,
-        dry_run: bool = False,
+            self,
+            head: str,
+            ssh_kwargs: dict | None = None,
+            dry_run: bool = False,
     ) -> str:
         """Clone or update the eugr repo on the head node.
 
@@ -773,16 +783,16 @@ class EugrBuilder(BuilderPlugin):
         # TODO: hard-coded inline script
         remote_path = "~/.cache/sparkrun/eugr-spark-vllm-docker"
         script = (
-            "set -e\n"
-            "REPO_DIR=%(path)s\n"
-            'if [ -d "$REPO_DIR/.git" ]; then\n'
-            '  git -C "$REPO_DIR" pull --ff-only || true\n'
-            "else\n"
-            '  mkdir -p "$(dirname "$REPO_DIR")"\n'
-            '  git clone %(url)s "$REPO_DIR"\n'
-            "fi\n"
-            'echo "$REPO_DIR"\n'
-        ) % {"path": remote_path, "url": EUGR_REPO_URL}
+                     "set -e\n"
+                     "REPO_DIR=%(path)s\n"
+                     'if [ -d "$REPO_DIR/.git" ]; then\n'
+                     '  git -C "$REPO_DIR" pull --ff-only || true\n'
+                     "else\n"
+                     '  mkdir -p "$(dirname "$REPO_DIR")"\n'
+                     '  git clone %(url)s "$REPO_DIR"\n'
+                     "fi\n"
+                     'echo "$REPO_DIR"\n'
+                 ) % {"path": remote_path, "url": EUGR_REPO_URL}
 
         logger.info("Ensuring eugr repo on head node %s...", head)
 
@@ -796,12 +806,12 @@ class EugrBuilder(BuilderPlugin):
         return remote_path
 
     def _build_image_remote(
-        self,
-        image: str,
-        build_args: list[str],
-        head: str,
-        ssh_kwargs: dict | None = None,
-        dry_run: bool = False,
+            self,
+            image: str,
+            build_args: list[str],
+            head: str,
+            ssh_kwargs: dict | None = None,
+            dry_run: bool = False,
     ) -> None:
         """Build container image on the head node via SSH.
 
@@ -812,7 +822,7 @@ class EugrBuilder(BuilderPlugin):
             ssh_kwargs: SSH connection kwargs.
             dry_run: Show what would be done without executing.
         """
-        from sparkrun.orchestration.primitives import run_script_on_host
+        from sparkrun.orchestration.ssh import run_remote_script_streaming
 
         # TODO: hard-coded inline script
         remote_path = "~/.cache/sparkrun/eugr-spark-vllm-docker"
@@ -828,16 +838,25 @@ class EugrBuilder(BuilderPlugin):
         if dry_run:
             return
 
-        result = run_script_on_host(head, script, ssh_kwargs=ssh_kwargs, timeout=1800)
+        kw = ssh_kwargs or {}
+        result = run_remote_script_streaming(
+            head,
+            script,
+            ssh_user=kw.get("ssh_user"),
+            ssh_key=kw.get("ssh_key"),
+            ssh_options=kw.get("ssh_options"),
+            timeout=1800,
+            quiet=not logging.getLogger().isEnabledFor(logging.INFO),
+        )
         if not result.success:
             raise RuntimeError("eugr remote container build failed on %s (exit %d)" % (head, result.returncode))
 
     # --- Repo management ---
 
     def ensure_repo(
-        self,
-        cache_dir: Path | None = None,
-        registry_cache_root: Path | None = None,
+            self,
+            cache_dir: Path | None = None,
+            registry_cache_root: Path | None = None,
     ) -> Path:
         """Clone or update the eugr repo in sparkrun's cache.
 

@@ -505,21 +505,23 @@ class TestEugrDelegatedMode:
         with pytest.raises(RuntimeError, match="Failed to ensure eugr repo"):
             builder._ensure_repo_remote("head", ssh_kwargs={})
 
-    @mock.patch("sparkrun.orchestration.primitives.run_script_on_host")
+    @mock.patch("sparkrun.orchestration.ssh.run_remote_script_streaming")
     def test_build_image_remote_calls_ssh(self, mock_run):
         """_build_image_remote pipes a build script to the head node."""
         from sparkrun.builders.eugr import EugrBuilder
         from sparkrun.orchestration.ssh import RemoteResult
-        mock_run.return_value = RemoteResult(host="head", returncode=0, stdout="ok", stderr="")
+        mock_run.return_value = RemoteResult(host="head", returncode=0, stdout="", stderr="")
         builder = EugrBuilder()
-        builder._build_image_remote("my-image", ["--flag"], "head", ssh_kwargs={})
+        builder._build_image_remote("my-image", ["--flag"], "head", ssh_kwargs={"ssh_user": "test1"})
         mock_run.assert_called_once()
-        script = mock_run.call_args[0][1]
+        _args, kwargs = mock_run.call_args
+        script = _args[1]
         assert "build-and-copy.sh" in script
         assert "-t my-image" in script
         assert "--flag" in script
+        assert kwargs["ssh_user"] == "test1"
 
-    @mock.patch("sparkrun.orchestration.primitives.run_script_on_host")
+    @mock.patch("sparkrun.orchestration.ssh.run_remote_script_streaming")
     def test_build_image_remote_failure_raises(self, mock_run):
         """_build_image_remote raises RuntimeError on SSH failure."""
         from sparkrun.builders.eugr import EugrBuilder

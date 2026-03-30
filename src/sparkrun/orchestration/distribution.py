@@ -15,6 +15,55 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _is_cross_user(ssh_kwargs: dict | None) -> bool:
+    """True when *ssh_kwargs* specifies a user different from the OS user."""
+    import os
+
+    ssh_user = ssh_kwargs.get("ssh_user") if ssh_kwargs else None
+    if ssh_user is None:
+        return False
+    return ssh_user != os.environ.get("USER", "root")
+
+
+def resolve_auto_transfer_mode(
+    transfer_mode: str,
+    host_list: list[str],
+    ssh_kwargs: dict | None = None,
+) -> str:
+    """Resolve ``"auto"`` transfer mode where definitively determinable.
+
+    Call this early (before builder and distribution phases) so
+    downstream consumers receive a concrete mode when possible.
+    Explicit modes (``"local"``, ``"push"``, ``"delegated"``) are
+    returned unchanged.
+
+    Returns ``"auto"`` when the control node is external with the same
+    SSH user — ``distribute_resources()`` will probe IB connectivity
+    and make the final call.
+    """
+    if transfer_mode != "auto":
+        return transfer_mode
+
+    _cross_user = _is_cross_user(ssh_kwargs)
+    _in_cluster = is_control_in_cluster(host_list)
+
+    if _in_cluster and not _cross_user:
+        logger.info("Auto-detected transfer mode: local (control is cluster member)")
+        return "local"
+
+    if _cross_user:
+        logger.info(
+            "Auto-detected transfer mode: delegated (cluster user '%s' differs from OS user)",
+            ssh_kwargs.get("ssh_user") if ssh_kwargs else None,
+        )
+        return "delegated"
+
+    # External control + same user: defer to distribute_resources() which
+    # probes IB connectivity and may upgrade to "local"
+    logger.info("Transfer mode: auto (external control, pending IB connectivity check)")
+    return "auto"
+
+
 def _distribute_from_head(
     head: str,
     hosts: list[str],
@@ -271,8 +320,10 @@ def distribute_resources(
 
     effective_local_cache = local_cache_dir or cache_dir
 
-    if len(host_list) <= 1 and is_local_host(host_list[0]):
-        # Local-only: just ensure image and model exist, no SSH needed
+    ssh_kwargs = build_ssh_kwargs(config)
+
+    if len(host_list) <= 1 and is_local_host(host_list[0]) and not _is_cross_user(ssh_kwargs):
+        # Local-only (same user): just ensure image and model exist, no SSH needed
         with pending_op(_lock_id, "image_pull", **_pop_kw):
             logger.info("Ensuring container image is available locally...")
             ensure_image(image, dry_run=dry_run)
@@ -281,8 +332,6 @@ def distribute_resources(
                 logger.info("Ensuring model %s is available locally...", model)
                 download_model(model, cache_dir=effective_local_cache, revision=model_revision, dry_run=dry_run)
         return None, {}, {}  # let runtime handle its own local IB detection
-
-    ssh_kwargs = build_ssh_kwargs(config)
     nccl_env: dict[str, str] = {}
     ib_ip_map: dict[str, str] = {}
     mgmt_ip_map: dict[str, str] = {}
@@ -308,23 +357,38 @@ def distribute_resources(
         )
 
     _auto_delegated = False
+    _cross_user = _is_cross_user(ssh_kwargs)
     if transfer_mode == "auto":
         _in_cluster = is_control_in_cluster(host_list)
-        if _in_cluster or _ib_validated:
+        if _in_cluster and not _cross_user:
             transfer_mode = "local"
-            if _in_cluster:
-                logger.info("Auto-detected transfer mode: local (control is cluster member)")
-            else:
-                logger.info("Auto-detected transfer mode: local (IB reachable from control node)")
+            logger.info("Auto-detected transfer mode: local (control is cluster member)")
+        elif _ib_validated and not _cross_user:
+            transfer_mode = "local"
+            logger.info("Auto-detected transfer mode: local (IB reachable from control node)")
         else:
             transfer_mode = "delegated"
             _auto_delegated = True
-            logger.info("Auto-detected transfer mode: delegated (external control, no IB connectivity)")
+            if _cross_user:
+                logger.info(
+                    "Auto-detected transfer mode: delegated (cluster user '%s' differs from OS user)",
+                    ssh_kwargs.get("ssh_user"),
+                )
+            else:
+                logger.info("Auto-detected transfer mode: delegated (external control, no IB connectivity)")
 
     # Determine effective transfer interface (default: cx7)
     _use_mgmt = transfer_interface == "mgmt"
     if _use_mgmt:
         logger.info("Transfer interface: mgmt — using management IPs for transfers")
+
+    if transfer_mode == "local" and _cross_user:
+        logger.warning(
+            "transfer_mode='local' but cluster user '%s' differs from OS user — "
+            "local Docker operations will run as the current OS user, not the cluster user. "
+            "Consider using transfer_mode='delegated' or 'push'.",
+            ssh_kwargs.get("ssh_user"),
+        )
 
     if transfer_mode == "local":
         # Local mode: use validated IB IPs for direct transfers
@@ -349,6 +413,10 @@ def distribute_resources(
         ib_ip_map = ib_result.ib_ip_map
 
     # Step 2: Distribute container image
+    from sparkrun.core.progress import PROGRESS as _PROGRESS_LEVEL
+
+    logger.info("Distribution mode: %s (image=%s, model=%s, hosts=%d)", transfer_mode, image, model or "(none)", len(host_list))
+    logger.log(_PROGRESS_LEVEL, "  Syncing container image to %d host(s) (this may take a moment)", len(host_list))
     with pending_op(_lock_id, "image_distribute", **_pop_kw):
         if transfer_mode == "local":
             img_failed = distribute_image_from_local(
@@ -394,10 +462,11 @@ def distribute_resources(
             )
 
     if img_failed:
-        logger.warning("Image distribution failed on: %s", ", ".join(img_failed))
+        raise RuntimeError("Image distribution failed on: %s" % ", ".join(img_failed))
 
     # Step 3: Distribute model
     if model:
+        logger.log(_PROGRESS_LEVEL, "  Syncing model to %d host(s)", len(host_list))
         with pending_op(_lock_id, "model_download", **_pop_kw):
             if transfer_mode == "local":
                 mdl_failed = distribute_model_from_local(
@@ -456,7 +525,7 @@ def distribute_resources(
                 )
 
         if mdl_failed:
-            logger.warning("Model distribution failed on: %s", ", ".join(mdl_failed))
+            raise RuntimeError("Model distribution failed on: %s" % ", ".join(mdl_failed))
 
     logger.info("Distribution complete.")
     return nccl_env, ib_ip_map, mgmt_ip_map

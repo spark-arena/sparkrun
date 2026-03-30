@@ -20,6 +20,15 @@ logger = logging.getLogger(__name__)
 
 _BENCHMARK_PROFILE = "@official/spark-arena-v1"
 
+ASCII_ART = r"""
+!       _____                  __      ___                         
+!      / ___/____  ____ ______/ /__   /   |  ________  ____  ____ _
+!      \__ \/ __ \/ __ `/ ___/ //_/  / /| | / ___/ _ \/ __ \/ __ `/
+!     ___/ / /_/ / /_/ / /  / ,<    / ___ |/ /  /  __/ / / / /_/ / 
+!    /____/ .___/\__,_/_/  /_/|_|  /_/  |_/_/   \___/_/ /_/\__,_/  
+!        /_/                                                       
+"""
+
 
 @click.group()
 @click.pass_context
@@ -41,6 +50,8 @@ def login(ctx, force_browser, force_device):
         sys.exit(1)
 
     success = run_login_flow(force_browser=force_browser, force_device=force_device)
+    if success:
+        click.echo(ASCII_ART)
     if not success:
         sys.exit(1)
 
@@ -100,6 +111,7 @@ def status():
     "exit_on_first_fail",
     default=True,
     help="Abort benchmark on first failure (default: enabled)",
+    hidden=True,
 )
 @click.option("--no-stop", is_flag=True, help="Don't stop inference after benchmarking", hidden=True)
 @click.option("--skip-run", is_flag=True, help="Skip launching inference (benchmark existing instance)", hidden=True)
@@ -110,28 +122,28 @@ def status():
 @dry_run_option
 @click.pass_context
 def arena_benchmark(
-    ctx,
-    recipe_name,
-    hosts,
-    hosts_file,
-    cluster_name,
-    tensor_parallel,
-    pipeline_parallel,
-    gpu_mem,
-    max_model_len,
-    options,
-    image,
-    solo,
-    port,
-    # profile, framework, output_file, bench_options,
-    exit_on_first_fail,
-    no_stop,
-    skip_run,
-    sync_tuning,
-    rootful,
-    bench_timeout,
-    local_test,
-    dry_run,
+        ctx,
+        recipe_name,
+        hosts,
+        hosts_file,
+        cluster_name,
+        tensor_parallel,
+        pipeline_parallel,
+        gpu_mem,
+        max_model_len,
+        options,
+        image,
+        solo,
+        port,
+        # profile, framework, output_file, bench_options,
+        exit_on_first_fail,
+        no_stop,
+        skip_run,
+        sync_tuning,
+        rootful,
+        bench_timeout,
+        local_test,
+        dry_run,
 ):
     """Benchmark a recipe and submit results to Spark Arena.
 
@@ -150,7 +162,8 @@ def arena_benchmark(
     from ._benchmark import _run_benchmark
 
     # --- Pre-flight checks ---
-    click.echo("sparkrun %s — Spark Arena benchmark" % __version__)
+    click.echo(ASCII_ART)
+    click.echo("sparkrun v%s — Spark Arena benchmark" % __version__)
     click.echo()
 
     refresh_token = None

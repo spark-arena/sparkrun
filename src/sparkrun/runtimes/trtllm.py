@@ -431,31 +431,20 @@ class TrtllmRuntime(RuntimePlugin):
         7. Exec mpirun on head container.
         """
         import time
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from sparkrun.runtimes._cluster_ops import (
+            ClusterContext, cleanup_ranked_containers, resolve_ib_env,
+            launch_containers_parallel,
+        )
         from sparkrun.orchestration.primitives import (
-            build_ssh_kwargs,
-            build_volumes,
             detect_host_ip,
             is_container_running,
-            resolve_nccl_env,
         )
-        from sparkrun.orchestration.ssh import (
-            run_remote_script,
-            run_remote_command,
-        )
-        from sparkrun.utils import merge_env
+        from sparkrun.orchestration.ssh import run_remote_command
         from sparkrun.orchestration.docker import docker_exec_cmd
 
-        num_nodes = len(hosts)
-        ssh_kwargs = build_ssh_kwargs(config)
-        volumes = build_volumes(cache_dir, extra=self.get_extra_volumes())
-        rc_cluster_env = self.get_cluster_env(head_ip="<pending>", num_nodes=num_nodes)
-        all_env = merge_env(
-            self.get_common_env(),  # runtime common env
-            rc_cluster_env,  # cluster env
-            env,  # recipe env
-            self.get_extra_env(),  # tunings/overrides
-        )
+        progress = kwargs.pop("progress", None)
+
+        ctx = ClusterContext.build(self, hosts, image, cluster_id, env, cache_dir, config, dry_run)
         extra_docker_opts = self.get_extra_docker_opts()
 
         self._print_cluster_banner(
@@ -463,44 +452,42 @@ class TrtllmRuntime(RuntimePlugin):
             hosts,
             image,
             cluster_id,
-            {"Nodes": num_nodes},
+            {"Nodes": ctx.num_nodes},
             dry_run,
         )
 
+        if progress:
+            progress.begin_runtime_steps(7)
+
         # Step 1: Cleanup
         t0 = time.monotonic()
-        logger.info("Step 1/7: Cleaning up existing containers for cluster '%s'...", cluster_id)
-        for rank, host in enumerate(hosts):
-            container_name = self.executor.node_container_name(cluster_id, rank)
-            run_remote_command(
-                host,
-                self.executor.stop_cmd(container_name),
-                timeout=30,
-                dry_run=dry_run,
-                **ssh_kwargs,
-            )
+        if progress:
+            progress.step("Cleaning up existing containers")
+        else:
+            logger.info("Step 1/7: Cleaning up existing containers for cluster '%s'...", cluster_id)
+        cleanup_ranked_containers(ctx, self.executor)
         logger.info("Step 1/7: Cleanup done (%.1fs)", time.monotonic() - t0)
 
         # Step 2: InfiniBand detection
         t0 = time.monotonic()
-        logger.info("Step 2/7: InfiniBand detection...")
-        nccl_env = resolve_nccl_env(
-            nccl_env,
-            hosts,
-            head_host=hosts[0],
-            ssh_kwargs=ssh_kwargs,
-            dry_run=dry_run,
-        )
+        if progress:
+            progress.step("Detecting InfiniBand")
+        else:
+            logger.info("Step 2/7: InfiniBand detection...")
+        nccl_env = resolve_ib_env(ctx, nccl_env)
         logger.info("Step 2/7: IB step done (%.1fs)", time.monotonic() - t0)
 
         # Step 3: Detect management IPs on all hosts
         t0 = time.monotonic()
-        logger.info("Step 3/7: Detecting management IPs on %d host(s)...", num_nodes)
+        if progress:
+            progress.step("Detecting management IPs")
+        else:
+            logger.info("Step 3/7: Detecting management IPs on %d host(s)...", ctx.num_nodes)
         host_ip_map: dict[str, str] = {}  # management_ip -> container_name
         host_ips: list[str] = []  # ordered by rank
         for rank, host in enumerate(hosts):
             try:
-                ip = detect_host_ip(host, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
+                ip = detect_host_ip(host, ssh_kwargs=ctx.ssh_kwargs, dry_run=dry_run)
             except RuntimeError as e:
                 logger.error("%s", e)
                 return 1
@@ -512,50 +499,32 @@ class TrtllmRuntime(RuntimePlugin):
 
         # Step 4: Launch all containers with sleep infinity (parallel)
         t0 = time.monotonic()
-        logger.info("Step 4/7: Launching %d container(s) with sleep infinity...", num_nodes)
-        with ThreadPoolExecutor(max_workers=num_nodes) as executor:
-            futures = {}
-            for rank, host in enumerate(hosts):
-                container_name = self.executor.node_container_name(cluster_id, rank)
-                launch_script = self.executor.generate_launch_script(
-                    image=image,
-                    container_name=container_name,
-                    command="sleep infinity",
-                    env=all_env,
-                    volumes=volumes,
-                    nccl_env=nccl_env,
-                    extra_docker_opts=extra_docker_opts or None,
-                )
-                future = executor.submit(
-                    run_remote_script,
-                    host,
-                    launch_script,
-                    timeout=120,
-                    dry_run=dry_run,
-                    **ssh_kwargs,
-                )
-                futures[future] = (host, rank)
-
-            for future in as_completed(futures):
-                host, rank = futures[future]
-                result = future.result()
-                if not result.success and not dry_run:
-                    logger.error(
-                        "Failed to launch container on %s (rank %d): %s",
-                        host,
-                        rank,
-                        result.stderr[:200],
-                    )
-                    return 1
+        if progress:
+            progress.step("Launching containers")
+        else:
+            logger.info("Step 4/7: Launching %d container(s) with sleep infinity...", ctx.num_nodes)
+        containers = [
+            (host, self.executor.node_container_name(cluster_id, rank))
+            for rank, host in enumerate(hosts)
+        ]
+        rc = launch_containers_parallel(
+            ctx, containers, self.executor, nccl_env,
+            extra_docker_opts=extra_docker_opts or None,
+        )
+        if rc != 0:
+            return rc
         logger.info("Step 4/7: Containers launched (%.1fs)", time.monotonic() - t0)
 
         # Step 5: Verify containers are running
         t0 = time.monotonic()
-        logger.info("Step 5/7: Verifying containers are running...")
+        if progress:
+            progress.step("Verifying containers")
+        else:
+            logger.info("Step 5/7: Verifying containers are running...")
         if not dry_run:
             for rank, host in enumerate(hosts):
                 container_name = self.executor.node_container_name(cluster_id, rank)
-                if not is_container_running(host, container_name, ssh_kwargs=ssh_kwargs):
+                if not is_container_running(host, container_name, ssh_kwargs=ctx.ssh_kwargs):
                     logger.error(
                         "Container %s not running on %s (rank %d)",
                         container_name,
@@ -571,7 +540,10 @@ class TrtllmRuntime(RuntimePlugin):
         t0 = time.monotonic()
         head_host = hosts[0]
         head_container = self.executor.node_container_name(cluster_id, 0)
-        logger.info("Step 6/7: Writing rsh wrapper into head container %s...", head_container)
+        if progress:
+            progress.step("Writing rsh wrapper")
+        else:
+            logger.info("Step 6/7: Writing rsh wrapper into head container %s...", head_container)
 
         # Determine SSH key path inside container
         ssh_key_path = "/tmp/.ssh/id_ed25519"
@@ -594,7 +566,7 @@ class TrtllmRuntime(RuntimePlugin):
             exec_write,
             timeout=30,
             dry_run=dry_run,
-            **ssh_kwargs,
+            **ctx.ssh_kwargs,
         )
         if not result.success and not dry_run:
             logger.error("Failed to write rsh wrapper: %s", result.stderr[:200])
@@ -611,7 +583,7 @@ class TrtllmRuntime(RuntimePlugin):
                     exec_config,
                     timeout=30,
                     dry_run=dry_run,
-                    **ssh_kwargs,
+                    **ctx.ssh_kwargs,
                 )
                 if not result.success and not dry_run:
                     logger.error("Failed to write extra config: %s", result.stderr[:200])
@@ -622,7 +594,10 @@ class TrtllmRuntime(RuntimePlugin):
 
         # Step 7: Exec mpirun on head container
         t0 = time.monotonic()
-        logger.info("Step 7/7: Executing mpirun on head container...")
+        if progress:
+            progress.step("Executing mpirun on head")
+        else:
+            logger.info("Step 7/7: Executing mpirun on head container...")
 
         # Build the trtllm-serve command (generate_command auto-appends
         # --extra_llm_api_options when extra config keys are present)
@@ -633,7 +608,7 @@ class TrtllmRuntime(RuntimePlugin):
                 recipe,
                 overrides or {},
                 is_cluster=True,
-                num_nodes=num_nodes,
+                num_nodes=ctx.num_nodes,
                 head_ip=host_ips[0],
                 skip_keys=skip_keys,
             )
@@ -655,6 +630,7 @@ class TrtllmRuntime(RuntimePlugin):
         # Exec mpirun on head container (detached)
         detach_flag = "-d" if detached else ""
         escaped_mpirun = mpirun_cmd.replace("'", "'\\''")
+
         exec_mpirun = "docker exec %s %s bash -c '%s'" % (
             detach_flag,
             head_container,
@@ -665,7 +641,7 @@ class TrtllmRuntime(RuntimePlugin):
             exec_mpirun,
             timeout=60,
             dry_run=dry_run,
-            **ssh_kwargs,
+            **ctx.ssh_kwargs,
         )
         logger.info("Step 7/7: mpirun dispatched (%.1fs)", time.monotonic() - t0)
 

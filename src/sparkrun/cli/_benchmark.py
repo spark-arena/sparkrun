@@ -67,30 +67,30 @@ if TYPE_CHECKING:
 @dry_run_option
 @click.pass_context
 def benchmark(
-    ctx,
-    recipe_name,
-    hosts,
-    hosts_file,
-    cluster_name,
-    tensor_parallel,
-    pipeline_parallel,
-    gpu_mem,
-    max_model_len,
-    options,
-    image,
-    solo,
-    port,
-    profile,
-    framework,
-    output_file,
-    bench_options,
-    exit_on_first_fail,
-    no_stop,
-    skip_run,
-    sync_tuning,
-    rootful,
-    bench_timeout,
-    dry_run,
+        ctx,
+        recipe_name,
+        hosts,
+        hosts_file,
+        cluster_name,
+        tensor_parallel,
+        pipeline_parallel,
+        gpu_mem,
+        max_model_len,
+        options,
+        image,
+        solo,
+        port,
+        profile,
+        framework,
+        output_file,
+        bench_options,
+        exit_on_first_fail,
+        no_stop,
+        skip_run,
+        sync_tuning,
+        rootful,
+        bench_timeout,
+        dry_run,
 ):
     """Benchmark an inference recipe.
 
@@ -142,31 +142,31 @@ def benchmark(
 
 
 def _run_benchmark(
-    ctx,
-    recipe_name,
-    hosts,
-    hosts_file,
-    cluster_name,
-    tensor_parallel,
-    pipeline_parallel,
-    gpu_mem,
-    max_model_len,
-    options,
-    image,
-    solo,
-    port,
-    profile,
-    framework_name,
-    output_file,
-    bench_options,
-    exit_on_first_fail,
-    no_stop,
-    skip_run,
-    sync_tuning,
-    rootful,
-    bench_timeout,
-    dry_run,
-    export_results_files=True,
+        ctx,
+        recipe_name,
+        hosts,
+        hosts_file,
+        cluster_name,
+        tensor_parallel,
+        pipeline_parallel,
+        gpu_mem,
+        max_model_len,
+        options,
+        image,
+        solo,
+        port,
+        profile,
+        framework_name,
+        output_file,
+        bench_options,
+        exit_on_first_fail,
+        no_stop,
+        skip_run,
+        sync_tuning,
+        rootful,
+        bench_timeout,
+        dry_run,
+        export_results_files=True,
 ):
     """Execute the full benchmark flow: launch inference -> benchmark -> stop.
 
@@ -324,8 +324,10 @@ def _run_benchmark(
     # ---------------------------------------------------------------
     # 5. Display summary
     # ---------------------------------------------------------------
+    from sparkrun import __version__
+
     click.echo("=" * 60)
-    click.echo("sparkrun benchmark")
+    click.echo("sparkrun v%s — benchmark" % __version__)
     click.echo("=" * 60)
     click.echo("Recipe:                %s" % recipe.qualified_name)
     click.echo("Model:                 %s" % recipe.model)
@@ -343,15 +345,17 @@ def _run_benchmark(
     click.echo("=" * 60)
     click.echo("")
 
-    _display_vram_estimate(recipe, cli_overrides=overrides, auto_detect=True, cache_dir=remote_cache_dir)
+    _display_vram_estimate(recipe, cli_overrides=overrides, auto_detect=True, cache_dir=local_cache_dir)
 
     # ---------------------------------------------------------------
     # 6. Launch inference (unless --skip-run)
     # ---------------------------------------------------------------
+    from sparkrun.core.progress import PROGRESS as _PROGRESS_LEVEL
+
     launched = False
     launch_result = None
     if not skip_run:
-        click.echo("Step 1/3: Launching inference...")
+        logger.log(_PROGRESS_LEVEL, "Step 1/3: Launching inference...")
 
         launch_result = launch_inference(
             recipe=recipe,
@@ -382,15 +386,15 @@ def _run_benchmark(
         cluster_id = launch_result.cluster_id
         serve_port = launch_result.serve_port
 
-        click.echo("Serve command:")
+        logger.info("Serve command:")
         for line in launch_result.serve_command.strip().splitlines():
-            click.echo("  %s" % line)
+            logger.info("  %s", line)
         click.echo("")
 
         launched = True
         bench_result.launch_result = launch_result
     else:
-        click.echo("Step 1/3: Skipping inference launch (--skip-run)")
+        logger.log(_PROGRESS_LEVEL, "Step 1/3: Skipping inference launch (--skip-run)")
 
     # ---------------------------------------------------------------
     # 7. Wait for readiness and build target URL
@@ -416,7 +420,8 @@ def _run_benchmark(
 
         if not dry_run and not skip_run:
             head_container = runtime.get_head_container_name(cluster_id, is_solo=is_solo)
-            click.echo("Waiting for inference server on %s:%d..." % (head_host, serve_port))
+            logger.log(_PROGRESS_LEVEL, "Waiting for inference server on %s:%d...", head_host, serve_port)
+            logger.log(_PROGRESS_LEVEL, "Note that this could take ~5 minutes!")
             ready = wait_for_port(
                 head_host,
                 serve_port,
@@ -433,7 +438,7 @@ def _run_benchmark(
                 sys.exit(1)
 
             health_url = "http://%s:%d/v1/models" % (target_ip, serve_port)
-            click.echo("Waiting for model to finish loading (%s)..." % health_url)
+            logger.log(_PROGRESS_LEVEL, "Waiting for model to finish loading (%s)...", health_url)
             healthy = wait_for_healthy(
                 health_url,
                 max_retries=360,
@@ -445,7 +450,7 @@ def _run_benchmark(
                 if launched and not no_stop:
                     _stop_inference(runtime, host_list, cluster_id, config, dry_run)
                 sys.exit(1)
-            click.echo("Inference server ready.")
+            logger.log(_PROGRESS_LEVEL, "Inference server ready.")
         elif dry_run:
             click.echo("[dry-run] Would wait for inference server on %s:%d" % (head_host, serve_port))
 
@@ -455,11 +460,11 @@ def _run_benchmark(
         # 8. Run benchmark
         # -----------------------------------------------------------
         click.echo("")
-        click.echo("Step 2/3: Running benchmark (%s)..." % fw.framework_name)
+        logger.log(_PROGRESS_LEVEL, "Step 2/3: Running benchmark (%s)...", fw.framework_name)
 
         est_tests = fw.estimate_test_count(bench_args)
         if est_tests is not None:
-            click.echo("Estimated test iterations: %d" % est_tests)
+            logger.info("Estimated test iterations: %d", est_tests)
 
         bench_cmd = fw.build_benchmark_command(
             target_url=base_url,
@@ -470,8 +475,8 @@ def _run_benchmark(
         bench_result.profile = profile
         bench_result.benchmark_args = bench_args
 
-        click.echo("Benchmark command:")
-        click.echo("  %s" % " ".join(bench_cmd))
+        logger.info("Benchmark command:")
+        logger.info("  %s", " ".join(bench_cmd))
         click.echo("")
 
         if dry_run:
@@ -602,18 +607,18 @@ def _run_benchmark(
         # -----------------------------------------------------------
         if launched and not no_stop:
             click.echo("")
-            click.echo("Step 3/3: Stopping inference...")
+            logger.log(_PROGRESS_LEVEL, "Step 3/3: Stopping inference...")
             _stop_inference(runtime, host_list, cluster_id, config, dry_run)
-            click.echo("Inference stopped.")
+            logger.log(_PROGRESS_LEVEL, "Inference stopped.")
         elif no_stop:
             click.echo("")
-            click.echo("Step 3/3: Skipping inference stop (--no-stop)")
+            logger.log(_PROGRESS_LEVEL, "Step 3/3: Skipping inference stop (--no-stop)")
         elif skip_run:
             click.echo("")
-            click.echo("Step 3/3: Skipping inference stop (--skip-run)")
+            logger.log(_PROGRESS_LEVEL, "Step 3/3: Skipping inference stop (--skip-run)")
 
         click.echo("")
-        click.echo("Benchmark complete.")
+        logger.log(_PROGRESS_LEVEL, "Benchmark complete.")
         bench_result.success = True
 
     except KeyboardInterrupt:

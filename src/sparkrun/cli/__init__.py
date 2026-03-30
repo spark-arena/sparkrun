@@ -27,12 +27,15 @@ from ._tune import tune
 
 
 @click.group()
-@click.option("-v", "--verbose", is_flag=True, help="Enable verbose/debug output")
+@click.option("-v", "--verbose", count=True, help="Increase verbosity (-v detail, -vv timestamps, -vvv debug)")
+@click.option("-q", "--quiet", is_flag=True, help="Suppress all output except errors (for scripting)")
 @click.version_option(__version__, prog_name="sparkrun")
 @click.pass_context
-def main(ctx, verbose):
+def main(ctx, verbose, quiet):
     """sparkrun — Launch inference workloads on NVIDIA DGX Spark systems."""
     ctx.ensure_object(dict)
+    if quiet:
+        verbose = -1  # sentinel: WARNING+ only
     ctx.obj["verbose"] = verbose
     _setup_logging(verbose)
 

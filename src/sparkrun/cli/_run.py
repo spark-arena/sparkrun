@@ -54,6 +54,7 @@ logger = logging.getLogger(__name__)
     default=None,
     type=click.Choice(["auto", "local", "push", "delegated"], case_sensitive=False),
     help="Resource transfer mode (overrides cluster setting)",
+    hidden=True,
 )
 @click.option(
     "--collect-diagnostics", "diagnostics_path", default=None, type=click.Path(), hidden=True, help="Collect diagnostics to NDJSON file"
@@ -64,37 +65,37 @@ logger = logging.getLogger(__name__)
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def run(
-    ctx,
-    recipe_name,
-    hosts,
-    hosts_file,
-    cluster_name,
-    solo,
-    port,
-    tensor_parallel,
-    pipeline_parallel,
-    gpu_mem,
-    served_model_name,
-    max_model_len,
-    image,
-    ray_port,
-    init_port,
-    dashboard,
-    dashboard_port,
-    dry_run,
-    ensure,
-    foreground,
-    no_follow,
-    no_sync_tuning,
-    no_rm,
-    rootful,
-    restart_policy,
-    transfer_mode,
-    diagnostics_path,
-    trust,
-    options,
-    extra_args,
-    config_path=None,
+        ctx,
+        recipe_name,
+        hosts,
+        hosts_file,
+        cluster_name,
+        solo,
+        port,
+        tensor_parallel,
+        pipeline_parallel,
+        gpu_mem,
+        served_model_name,
+        max_model_len,
+        image,
+        ray_port,
+        init_port,
+        dashboard,
+        dashboard_port,
+        dry_run,
+        ensure,
+        foreground,
+        no_follow,
+        no_sync_tuning,
+        no_rm,
+        rootful,
+        restart_policy,
+        transfer_mode,
+        diagnostics_path,
+        trust,
+        options,
+        extra_args,
+        config_path=None,
 ):
     """Run an inference recipe.
 
@@ -208,7 +209,11 @@ def run(
     )
 
     # Display summary before launch
+    from sparkrun import __version__
+
     container_image = runtime.resolve_container(recipe, overrides)
+    click.echo("sparkrun v%s" % __version__)
+    click.echo()
     click.echo("Runtime:   %s" % runtime.runtime_name)
     click.echo("Image:     %s" % container_image)
     click.echo("Model:     %s" % recipe.model)
@@ -219,7 +224,7 @@ def run(
     if effective_transfer_mode not in ("auto", "local"):
         click.echo("Transfer:  %s" % effective_transfer_mode)
 
-    _display_vram_estimate(recipe, cli_overrides=overrides, auto_detect=True, cache_dir=remote_cache_dir)
+    _display_vram_estimate(recipe, cli_overrides=overrides, auto_detect=True, cache_dir=local_cache_dir)
 
     click.echo()
     click.echo("Hosts:     %s" % host_source)
@@ -285,6 +290,7 @@ def run(
             sync_tuning=not no_sync_tuning,
             dry_run=dry_run,
             detached=not foreground,
+            follow=not no_follow,
             ray_port=ray_port,
             dashboard_port=dashboard_port,
             dashboard=dashboard,
@@ -306,6 +312,8 @@ def run(
         diag.emit_launch_result(result)
         diag.emit_serve_command(result.serve_command, result.container_image)
 
+    # region USER FACING STDOUT INFORMATION
+
     click.echo("Cluster:   %s" % result.cluster_id)
     click.echo()
     click.echo("Serve command:")
@@ -319,12 +327,17 @@ def run(
             click.echo("  %-10s %s" % (k + ":", v))
         click.echo()
 
+    # endregion
+
     # Post-serve lifecycle: run post_exec and post_commands if recipe defines them
     has_post_hooks = bool(recipe.post_exec or recipe.post_commands)
     if result.rc == 0 and has_post_hooks and not foreground:
         from sparkrun.core.launcher import post_launch_lifecycle
 
-        post_launch_lifecycle(result, remote_cache_dir=remote_cache_dir, trust=trust, dry_run=dry_run)
+        post_launch_lifecycle(result, remote_cache_dir=remote_cache_dir, trust=trust, dry_run=dry_run, progress=sctx.progress)
+    else:
+        if sctx.progress:
+            sctx.progress.phase_skip(6)
 
     # Follow container logs after a successful detached launch
     if result.rc == 0 and not foreground and not dry_run and not no_follow:

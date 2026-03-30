@@ -35,6 +35,7 @@ def patched_cluster_mgr(cluster_mgr):
     with (
         mock.patch("sparkrun.cli._common._get_cluster_manager", return_value=cluster_mgr),
         mock.patch("sparkrun.cli._setup._get_cluster_manager", return_value=cluster_mgr),
+        mock.patch("sparkrun.cli._setup._sudo._get_cluster_manager", return_value=cluster_mgr),
     ):
         yield cluster_mgr
 
@@ -124,7 +125,7 @@ def test_wizard_creates_cluster(runner, v, patched_cluster_mgr):
     with (
         mock.patch("subprocess.run") as mock_sub,
         mock.patch("sparkrun.orchestration.networking.detect_cx7_for_hosts") as mock_cx7,
-        mock.patch("sparkrun.cli._setup._run_ssh_mesh", return_value=True),
+        mock.patch("sparkrun.cli._setup._ssh._run_ssh_mesh", return_value=True),
     ):
         mock_sub.return_value = mock.Mock(
             returncode=0,
@@ -185,7 +186,7 @@ def test_wizard_name_collision(runner, v, patched_cluster_mgr):
     with (
         mock.patch("subprocess.run") as mock_sub,
         mock.patch("sparkrun.orchestration.networking.detect_cx7_for_hosts") as mock_cx7,
-        mock.patch("sparkrun.cli._setup._run_ssh_mesh", return_value=True),
+        mock.patch("sparkrun.cli._setup._ssh._run_ssh_mesh", return_value=True),
     ):
         mock_sub.return_value = mock.Mock(
             returncode=0,
@@ -220,7 +221,7 @@ def test_wizard_yes_mode(runner, v, patched_cluster_mgr):
     with (
         mock.patch("subprocess.run") as mock_sub,
         mock.patch("sparkrun.orchestration.networking.detect_cx7_for_hosts") as mock_cx7,
-        mock.patch("sparkrun.cli._setup._run_ssh_mesh", return_value=True),
+        mock.patch("sparkrun.cli._setup._ssh._run_ssh_mesh", return_value=True),
         mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel") as mock_rsp,
         mock.patch("sparkrun.orchestration.sudo.run_with_sudo_fallback") as mock_sudo,
         mock.patch("sparkrun.orchestration.sudo.run_sudo_script_on_host") as mock_sudo_host,
@@ -265,7 +266,7 @@ def test_wizard_single_host(runner, v, patched_cluster_mgr):
     with (
         mock.patch("subprocess.run") as mock_sub,
         mock.patch("sparkrun.orchestration.networking.detect_cx7_for_hosts") as mock_cx7,
-        mock.patch("sparkrun.cli._setup._run_ssh_mesh", return_value=True) as mock_mesh,
+        mock.patch("sparkrun.cli._setup._ssh._run_ssh_mesh", return_value=True) as mock_mesh,
     ):
         mock_sub.return_value = mock.Mock(
             returncode=0,
@@ -381,7 +382,7 @@ def test_wizard_nopasswd(runner, v, patched_cluster_mgr):
     with (
         mock.patch("subprocess.run") as mock_sub,
         mock.patch("sparkrun.orchestration.networking.detect_cx7_for_hosts") as mock_cx7,
-        mock.patch("sparkrun.cli._setup._run_ssh_mesh", return_value=True),
+        mock.patch("sparkrun.cli._setup._ssh._run_ssh_mesh", return_value=True),
         mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel") as mock_rsp,
         mock.patch("sparkrun.orchestration.sudo.run_with_sudo_fallback") as mock_sudo,
         mock.patch("sparkrun.orchestration.sudo.run_sudo_script_on_host") as mock_sudo_host,
@@ -421,7 +422,7 @@ def test_wizard_sudo_password_reuse(runner, v, patched_cluster_mgr):
     with (
         mock.patch("subprocess.run") as mock_sub,
         mock.patch("sparkrun.orchestration.networking.detect_cx7_for_hosts") as mock_cx7,
-        mock.patch("sparkrun.cli._setup._run_ssh_mesh", return_value=True),
+        mock.patch("sparkrun.cli._setup._ssh._run_ssh_mesh", return_value=True),
         mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel") as mock_rsp,
         mock.patch("sparkrun.orchestration.sudo.run_with_sudo_fallback") as mock_sudo,
         mock.patch("sparkrun.orchestration.sudo.run_sudo_script_on_host") as mock_sudo_host,

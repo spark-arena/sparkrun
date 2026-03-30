@@ -11,6 +11,7 @@ if TYPE_CHECKING:
 
     from sparkrun.core.cluster_manager import ClusterManager
     from sparkrun.core.config import SparkrunConfig
+    from sparkrun.core.progress import LaunchProgress
     from sparkrun.core.registry import RegistryManager
 
 
@@ -25,6 +26,7 @@ class SparkrunContext:
     variables: Variables
     config: SparkrunConfig
     verbose: bool = False
+    progress: LaunchProgress | None = None
 
     @cached_property
     def registry_manager(self) -> RegistryManager:

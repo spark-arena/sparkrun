@@ -4574,7 +4574,7 @@ class TestSetupEarlyoom:
 
     def test_earlyoom_default_patterns(self, runner):
         """Test that _build_earlyoom_regex produces expected output."""
-        from sparkrun.cli._setup import _build_earlyoom_regex, EARLYOOM_PREFER_PATTERNS, EARLYOOM_AVOID_PATTERNS
+        from sparkrun.cli._setup._phases import _build_earlyoom_regex, EARLYOOM_PREFER_PATTERNS, EARLYOOM_AVOID_PATTERNS
 
         prefer_regex = _build_earlyoom_regex(EARLYOOM_PREFER_PATTERNS)
         assert prefer_regex.startswith("(")

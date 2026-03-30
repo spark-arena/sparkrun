@@ -406,26 +406,21 @@ class LlamaCppRuntime(RuntimePlugin):
         .. note:: Experimental. The llama.cpp RPC backend is still evolving.
         """
         import time
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        from sparkrun.orchestration.primitives import (
-            build_ssh_kwargs,
-            build_volumes,
-            wait_for_port,
+        from sparkrun.runtimes._cluster_ops import (
+            ClusterContext, cleanup_named_containers, detect_ib_with_ips,
+            launch_containers_parallel, run_pre_serve_hooks,
+            exec_serve_on_container,
         )
-        from sparkrun.utils import merge_env
-        from sparkrun.orchestration.infiniband import detect_ib_for_hosts
-        from sparkrun.orchestration.ssh import run_remote_script, run_remote_command
+        from sparkrun.orchestration.primitives import wait_for_port
+        from sparkrun.orchestration.ssh import run_remote_script
 
         logger.warning("llama.cpp RPC clustering is EXPERIMENTAL. Behavior may change in future versions.")
 
-        head_host = hosts[0]
-        worker_hosts = hosts[1:]
+        progress = kwargs.pop("progress", None)
+
+        ctx = ClusterContext.build(self, hosts, image, cluster_id, env, cache_dir, config, dry_run)
         head_container = self._container_name(cluster_id, "head")
         worker_container_name = self._container_name(cluster_id, "worker")
-        ssh_kwargs = build_ssh_kwargs(config)
-        volumes = build_volumes(cache_dir)
-        runtime_env = self.get_cluster_env(head_host, len(hosts))
-        all_env = merge_env(runtime_env, env, self.get_extra_env())
 
         self._print_cluster_banner(
             "llama.cpp RPC Cluster Launcher (EXPERIMENTAL)",
@@ -436,48 +431,30 @@ class LlamaCppRuntime(RuntimePlugin):
             dry_run,
         )
 
+        if progress:
+            progress.begin_runtime_steps(6)
+
         # Step 1: Cleanup
         t0 = time.monotonic()
-        logger.info("Step 1/6: Cleaning up existing containers for cluster '%s'...", cluster_id)
-        run_remote_command(
-            head_host,
-            self.executor.stop_cmd(head_container),
-            timeout=30,
-            dry_run=dry_run,
-            **ssh_kwargs,
-        )
-        for host in worker_hosts:
-            run_remote_command(
-                host,
-                self.executor.stop_cmd(worker_container_name),
-                timeout=30,
-                dry_run=dry_run,
-                **ssh_kwargs,
-            )
+        if progress:
+            progress.step("Cleaning up existing containers")
+        else:
+            logger.info("Step 1/6: Cleaning up existing containers for cluster '%s'...", cluster_id)
+        cleanup_named_containers(ctx, [head_container, worker_container_name])
         logger.info("Step 1/6: Cleanup done (%.1fs)", time.monotonic() - t0)
 
         # Step 2: InfiniBand detection (also resolves IB IPs for RPC routing)
         t0 = time.monotonic()
-        if ib_ip_map is None:
-            ib_ip_map = {}
-        if nccl_env is not None:
-            logger.info("Step 2/6: Using pre-detected NCCL env (%d vars)", len(nccl_env))
-            if ib_ip_map:
-                logger.info("  Pre-detected IB IPs for %d host(s)", len(ib_ip_map))
+        if progress:
+            progress.step("Detecting InfiniBand")
         else:
-            logger.info("Step 2/6: Detecting InfiniBand on all hosts...")
-            ib_result = detect_ib_for_hosts(
-                hosts,
-                ssh_kwargs=ssh_kwargs,
-                dry_run=dry_run,
-            )
-            nccl_env = ib_result.nccl_env
-            ib_ip_map = ib_result.ib_ip_map
-            logger.info("Step 2/6: IB detection done (%.1fs)", time.monotonic() - t0)
+            logger.info("Step 2/6: InfiniBand detection...")
+        nccl_env, ib_ip_map = detect_ib_with_ips(ctx, nccl_env, ib_ip_map)
+        logger.info("Step 2/6: IB step done (%.1fs)", time.monotonic() - t0)
 
         # Resolve worker RPC addresses: prefer IB IPs for high-speed fabric
         rpc_hosts = []
-        for h in worker_hosts:
+        for h in ctx.worker_hosts:
             ib_ip = ib_ip_map.get(h)
             if ib_ip:
                 logger.info("  Worker %s RPC via IB: %s", h, ib_ip)
@@ -488,67 +465,52 @@ class LlamaCppRuntime(RuntimePlugin):
 
         # Step 3: Launch ALL containers with sleep infinity
         t0 = time.monotonic()
-        logger.info("Step 3/6: Launching containers with sleep infinity on all %d host(s)...", len(hosts))
+        if progress:
+            progress.step("Launching containers")
+        else:
+            logger.info("Step 3/6: Launching containers with sleep infinity on all %d host(s)...", len(hosts))
 
-        # Build container list: head + workers
-        all_containers: list[tuple[str, str]] = [(head_host, head_container)]
-        for host in worker_hosts:
+        all_containers: list[tuple[str, str]] = [(ctx.head_host, head_container)]
+        for host in ctx.worker_hosts:
             all_containers.append((host, worker_container_name))
 
-        with ThreadPoolExecutor(max_workers=len(all_containers)) as pool:
-            launch_futures = {}
-            for host, cname in all_containers:
-                launch_script = self.executor.generate_launch_script(
-                    image=image,
-                    container_name=cname,
-                    command="sleep infinity",
-                    env=all_env,
-                    volumes=volumes,
-                    nccl_env=nccl_env,
-                )
-                future = pool.submit(
-                    run_remote_script,
-                    host,
-                    launch_script,
-                    timeout=120,
-                    dry_run=dry_run,
-                    **ssh_kwargs,
-                )
-                launch_futures[future] = (host, cname)
-
-            for future in as_completed(launch_futures):
-                host, cname = launch_futures[future]
-                result = future.result()
-                if not result.success and not dry_run:
-                    logger.error("Failed to launch container %s on %s: %s", cname, host, result.stderr[:200])
-                    return 1
-
+        rc = launch_containers_parallel(ctx, all_containers, self.executor, nccl_env)
+        if rc != 0:
+            return rc
         logger.info("Step 3/6: All containers launched (%.1fs)", time.monotonic() - t0)
 
         # Step 4: Pre-serve hooks (pre_exec)
         t0 = time.monotonic()
-        logger.info("Step 4/6: Running pre-serve hooks...")
-        config_chain = recipe.build_config_chain(overrides) if recipe else None
-        self._pre_serve(all_containers, ssh_kwargs, dry_run, recipe=recipe, config_chain=config_chain)
+        if progress:
+            progress.step("Running pre-serve hooks")
+        else:
+            logger.info("Step 4/6: Running pre-serve hooks...")
+        run_pre_serve_hooks(self, ctx, all_containers, recipe, overrides)
         logger.info("Step 4/6: Pre-serve hooks done (%.1fs)", time.monotonic() - t0)
 
         # Step 5: Exec RPC workers and wait for RPC ports
         t0 = time.monotonic()
-        if worker_hosts:
-            logger.info(
-                "Step 5/6: Executing RPC server on %d worker(s) on %s...",
-                len(worker_hosts),
-                ", ".join(worker_hosts),
-            )
+        config_chain = recipe.build_config_chain(overrides) if recipe else None
+        if ctx.worker_hosts:
+            if progress:
+                progress.step("Starting RPC workers")
+            else:
+                logger.info(
+                    "Step 5/6: Executing RPC server on %d worker(s) on %s...",
+                    len(ctx.worker_hosts),
+                    ", ".join(ctx.worker_hosts),
+                )
             rpc_worker_command = self._build_rpc_worker_command(rpc_port)
 
-            with ThreadPoolExecutor(max_workers=len(worker_hosts)) as pool:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            with ThreadPoolExecutor(max_workers=len(ctx.worker_hosts)) as pool:
                 futures = {}
-                for host in worker_hosts:
+                for host in ctx.worker_hosts:
                     exec_script = self.executor.generate_exec_serve_script(
                         container_name=worker_container_name,
                         serve_command=rpc_worker_command,
-                        env=all_env,
+                        env=ctx.all_env,
                         detached=True,
                     )
                     future = pool.submit(
@@ -557,7 +519,7 @@ class LlamaCppRuntime(RuntimePlugin):
                         exec_script,
                         timeout=60,
                         dry_run=dry_run,
-                        **ssh_kwargs,
+                        **ctx.ssh_kwargs,
                     )
                     futures[future] = host
 
@@ -576,13 +538,13 @@ class LlamaCppRuntime(RuntimePlugin):
             # actual RPC data path in step 6)
             if not dry_run:
                 logger.info("  Waiting for RPC workers to be ready...")
-                for host in worker_hosts:
+                for host in ctx.worker_hosts:
                     ready = wait_for_port(
                         host,
                         rpc_port,
                         max_retries=30,
                         retry_interval=2,
-                        ssh_kwargs=ssh_kwargs,
+                        ssh_kwargs=ctx.ssh_kwargs,
                         dry_run=dry_run,
                         container_name=worker_container_name,
                     )
@@ -595,9 +557,14 @@ class LlamaCppRuntime(RuntimePlugin):
                         )
                         return 1
 
-            logger.info("Step 5/6: RPC workers ready (%.1fs)", time.monotonic() - t0)
+            if not progress:
+                logger.info("Step 5/6: RPC workers ready (%.1fs)", time.monotonic() - t0)
         else:
-            logger.info("Step 5/6: No worker hosts, skipping")
+            if progress:
+                progress.step("Starting RPC workers")
+                progress.detail("  No worker hosts, skipping")
+            else:
+                logger.info("Step 5/6: No worker hosts, skipping")
 
         # Step 6: Exec llama-server on head with --rpc (uses IB IPs when available)
         t0 = time.monotonic()
@@ -608,26 +575,22 @@ class LlamaCppRuntime(RuntimePlugin):
             rpc_port,
             skip_keys=skip_keys,
         )
-        logger.info("Step 6/6: Executing llama-server on head %s...", head_host)
+        if progress:
+            progress.step("Executing llama-server on head")
+        else:
+            logger.info("Step 6/6: Executing llama-server on head %s...", ctx.head_host)
         logger.info("  Command: %s", head_command[:120])
 
-        head_exec_script = self.executor.generate_exec_serve_script(
-            container_name=head_container,
-            serve_command=head_command,
-            env=all_env,
-            detached=True,
-        )
-        head_result = run_remote_script(
-            head_host,
-            head_exec_script,
-            timeout=60,
-            dry_run=dry_run,
-            **ssh_kwargs,
-        )
-        if not head_result.success and not dry_run:
-            logger.error("Failed to exec serve on head: %s", head_result.stderr[:200])
-            return 1
+        rc = exec_serve_on_container(ctx, self.executor, ctx.head_host, head_container, head_command)
+        if rc != 0:
+            return rc
         logger.info("Step 6/6: Head launched (%.1fs)", time.monotonic() - t0)
 
         self._print_connection_info(hosts, cluster_id)
+
+        if not detached and not dry_run:
+            from sparkrun.runtimes._cluster_ops import _attach_foreground
+
+            _attach_foreground(self, ctx, kwargs.get("follow", True))
+
         return 0

@@ -298,7 +298,7 @@ def cluster_set_default(ctx, name):
     mgr = _get_cluster_manager()
     try:
         mgr.set_default(name)
-        # click.echo(f"Default cluster set to '{name}'.")
+        click.echo("Default cluster set to '%s'." % name)
     except ClusterError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)

@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from unittest import mock
 
+import pytest
+
 from sparkrun.orchestration.ssh import (
     RemoteResult,
     build_ssh_opts_string,
@@ -1283,15 +1285,16 @@ class TestDistributeResourcesTransferMode:
     @mock.patch("sparkrun.orchestration.infiniband.detect_ib_for_hosts")
     @mock.patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={})
     def test_explicit_delegated_no_fallback_to_push(self, mock_ssh, mock_ib, mock_head, mock_push):
-        """User-explicit delegated does NOT fall back to push on failure."""
+        """User-explicit delegated does NOT fall back to push on failure — raises instead."""
         mock_ib.return_value = mock.MagicMock(nccl_env={}, mgmt_ip_map={}, ib_ip_map={})
         mock_head.return_value = ["h1", "h2"]  # delegated fails
         from sparkrun.orchestration.distribution import distribute_resources
-        distribute_resources(
-            "img:latest", "", ["h1", "h2"], "/cache",
-            self._make_config(), dry_run=True,
-            transfer_mode="delegated",
-        )
+        with pytest.raises(RuntimeError, match="Image distribution failed"):
+            distribute_resources(
+                "img:latest", "", ["h1", "h2"], "/cache",
+                self._make_config(), dry_run=True,
+                transfer_mode="delegated",
+            )
         mock_head.assert_called_once()
         mock_push.assert_not_called()
 

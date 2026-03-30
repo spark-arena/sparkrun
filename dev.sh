@@ -34,7 +34,7 @@ source "$VENV_DIR/bin/activate"
 
 # Install in editable mode with dev extras
 echo "Installing sparkrun in editable mode with dev dependencies ..."
-if ! uv pip install -e "$SCRIPT_DIR[dev]"; then
+if ! uv pip install -e "${SCRIPT_DIR}[dev]"; then
     echo "Error: failed to install sparkrun"
     return 1 2>/dev/null || exit 1
 fi

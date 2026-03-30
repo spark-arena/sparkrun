@@ -45,12 +45,26 @@ def _get_context(ctx) -> "SparkrunContext":
     v = init_sparkrun()
     config_path = obj.get("config_path")
     config = SparkrunConfig(config_path) if config_path else SparkrunConfig()
-    sctx = SparkrunContext(variables=v, config=config, verbose=obj.get("verbose", False))
+
+    from sparkrun.core.progress import LaunchProgress, Verbosity
+
+    verbose_count = obj.get("verbose", 0)
+    # Backward compat: bool True → 1
+    if isinstance(verbose_count, bool):
+        verbose_count = 1 if verbose_count else 0
+    progress = LaunchProgress(verbosity=Verbosity(min(verbose_count, Verbosity.DEBUG)))
+
+    sctx = SparkrunContext(
+        variables=v,
+        config=config,
+        verbose=verbose_count > 0,
+        progress=progress,
+    )
     obj["sparkrun_ctx"] = sctx
     return sctx
 
 
-def _setup_logging(verbose: bool):
+def _setup_logging(verbose: int | bool):
     """Configure logging based on verbosity.
 
     Called once from the ``main()`` Click group callback.  No re-call
@@ -58,12 +72,38 @@ def _setup_logging(verbose: bool):
     ``fixed_logger`` to SAF's ``init_framework_desktop``, which skips
     SAF's own logging setup entirely (see SAF ``core.py:376``).
 
+    Verbosity tiers::
+
+        0 (default)  → PROGRESS (25): phase/step output only
+        1 (-v)       → INFO (20): adds detail lines
+        2 (-vv)      → VERBOSE (15): adds timestamps + logger names
+        3+ (-vvv)    → DEBUG (10): full SSH/script diagnostics
+
     Uses explicit handler setup instead of ``logging.basicConfig`` which
     is silently a no-op when the root logger already has handlers (common
     when libraries like ``huggingface_hub`` configure logging on import).
     """
-    level = logging.DEBUG if verbose else logging.INFO
-    fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s" if verbose else "%(message)s"
+    from sparkrun.core.progress import PROGRESS, VERBOSE
+
+    # Backward compat: bool True → 1, False → 0
+    if isinstance(verbose, bool):
+        verbose = 1 if verbose else 0
+
+    if verbose < 0:
+        level = logging.WARNING      # --quiet: errors/warnings only
+        fmt = "%(message)s"
+    elif verbose >= 3:
+        level = logging.DEBUG
+        fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    elif verbose >= 2:
+        level = VERBOSE
+        fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    elif verbose >= 1:
+        level = logging.INFO
+        fmt = "%(message)s"
+    else:
+        level = PROGRESS
+        fmt = "%(message)s"
 
     root = logging.getLogger()
     root.setLevel(level)
