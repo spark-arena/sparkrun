@@ -875,6 +875,81 @@ class TestPlanRingCX7:
         plan = plan_ring_cx7(detections, topo, subnets)
         assert len(plan.errors) > 0
 
+    def test_ring_plan_idempotent(self):
+        """Already-configured ring hosts should have needs_change=False."""
+        # IPs match what planner assigns: link0 h1<->h2 on 10/11, link1 h2<->h3 on 12/13, link2 h3<->h1 on 14/15
+        # Partners via sorted-pair grouping: (enp1a,enp1b), (enp1c,enp1d), etc.
+        detections = {
+            "h1": _make_detection("h1", "10.0.0.1", [
+                ("enp1a", "192.168.10.1", "192.168.10.0/24", 9000, "aa:00:00:00:01:01"),
+                ("enp1b", "192.168.11.1", "192.168.11.0/24", 9000, "aa:00:00:00:01:02"),
+                ("enp1c", "192.168.15.2", "192.168.15.0/24", 9000, "aa:00:00:00:01:03"),
+                ("enp1d", "192.168.14.2", "192.168.14.0/24", 9000, "aa:00:00:00:01:04"),
+            ]),
+            "h2": _make_detection("h2", "10.0.0.2", [
+                ("enp2a", "192.168.11.2", "192.168.11.0/24", 9000, "aa:00:00:00:02:01"),
+                ("enp2b", "192.168.10.2", "192.168.10.0/24", 9000, "aa:00:00:00:02:02"),
+                ("enp2c", "192.168.12.1", "192.168.12.0/24", 9000, "aa:00:00:00:02:03"),
+                ("enp2d", "192.168.13.1", "192.168.13.0/24", 9000, "aa:00:00:00:02:04"),
+            ]),
+            "h3": _make_detection("h3", "10.0.0.3", [
+                ("enp3a", "192.168.13.2", "192.168.13.0/24", 9000, "aa:00:00:00:03:01"),
+                ("enp3b", "192.168.12.2", "192.168.12.0/24", 9000, "aa:00:00:00:03:02"),
+                ("enp3c", "192.168.14.1", "192.168.14.0/24", 9000, "aa:00:00:00:03:03"),
+                ("enp3d", "192.168.15.1", "192.168.15.0/24", 9000, "aa:00:00:00:03:04"),
+            ]),
+        }
+        topo = CX7TopologyResult(
+            topology=CX7Topology.RING,
+            links=[
+                ("h1", "enp1a", "h2", "enp2b"),
+                ("h2", "enp2c", "h3", "enp3b"),
+                ("h3", "enp3c", "h1", "enp1d"),
+            ],
+        )
+        subnets = [ipaddress.IPv4Network("192.168.%d.0/24" % i) for i in range(10, 16)]
+        plan = plan_ring_cx7(detections, topo, subnets, mtu=9000)
+
+        # All hosts should be valid — no changes needed
+        assert plan.all_valid is True
+        assert all(not hp.needs_change for hp in plan.host_plans)
+
+    def test_ring_plan_force_overrides_valid(self):
+        """--force should reconfigure even when ring is already valid."""
+        detections = {
+            "h1": _make_detection("h1", "10.0.0.1", [
+                ("enp1a", "192.168.10.1", "192.168.10.0/24", 9000, "aa:00:00:00:01:01"),
+                ("enp1b", "192.168.11.1", "192.168.11.0/24", 9000, "aa:00:00:00:01:02"),
+                ("enp1c", "192.168.15.2", "192.168.15.0/24", 9000, "aa:00:00:00:01:03"),
+                ("enp1d", "192.168.14.2", "192.168.14.0/24", 9000, "aa:00:00:00:01:04"),
+            ]),
+            "h2": _make_detection("h2", "10.0.0.2", [
+                ("enp2a", "192.168.11.2", "192.168.11.0/24", 9000, "aa:00:00:00:02:01"),
+                ("enp2b", "192.168.10.2", "192.168.10.0/24", 9000, "aa:00:00:00:02:02"),
+                ("enp2c", "192.168.12.1", "192.168.12.0/24", 9000, "aa:00:00:00:02:03"),
+                ("enp2d", "192.168.13.1", "192.168.13.0/24", 9000, "aa:00:00:00:02:04"),
+            ]),
+            "h3": _make_detection("h3", "10.0.0.3", [
+                ("enp3a", "192.168.13.2", "192.168.13.0/24", 9000, "aa:00:00:00:03:01"),
+                ("enp3b", "192.168.12.2", "192.168.12.0/24", 9000, "aa:00:00:00:03:02"),
+                ("enp3c", "192.168.14.1", "192.168.14.0/24", 9000, "aa:00:00:00:03:03"),
+                ("enp3d", "192.168.15.1", "192.168.15.0/24", 9000, "aa:00:00:00:03:04"),
+            ]),
+        }
+        topo = CX7TopologyResult(
+            topology=CX7Topology.RING,
+            links=[
+                ("h1", "enp1a", "h2", "enp2b"),
+                ("h2", "enp2c", "h3", "enp3b"),
+                ("h3", "enp3c", "h1", "enp1d"),
+            ],
+        )
+        subnets = [ipaddress.IPv4Network("192.168.%d.0/24" % i) for i in range(10, 16)]
+        plan = plan_ring_cx7(detections, topo, subnets, mtu=9000, force=True)
+
+        assert plan.all_valid is False
+        assert all(hp.needs_change for hp in plan.host_plans)
+
     def test_ring_plan_insufficient_ports(self):
         """Hosts with only 1 port (2 interfaces) can't do ring."""
         detections = {
