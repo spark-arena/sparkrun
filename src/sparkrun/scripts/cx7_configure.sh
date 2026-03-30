@@ -22,13 +22,13 @@ network:
     $ADAPTER1:
       dhcp4: no
       dhcp6: no
-      link-local: [ ipv4 ]
+      link-local: []
       mtu: $MTU
       addresses: [$IP1/$PREFIX]
     $ADAPTER2:
       dhcp4: no
       dhcp6: no
-      link-local: [ ipv4 ]
+      link-local: []
       mtu: $MTU
       addresses: [$IP2/$PREFIX]
 EOF

@@ -150,6 +150,7 @@ def detect_infiniband(
     head_host: str | None = None,
     ssh_kwargs: dict | None = None,
     dry_run: bool = False,
+    topology: str | None = None,
 ) -> dict[str, str]:
     """Run InfiniBand detection on *hosts* and return NCCL env vars.
 
@@ -185,7 +186,7 @@ def detect_infiniband(
     for result in ib_results:
         if result.host == target_host and result.success:
             ib_info = parse_ib_detect_output(result.stdout)
-            nccl_env = generate_nccl_env(ib_info)
+            nccl_env = generate_nccl_env(ib_info, topology=topology)
             if nccl_env:
                 logger.info("  InfiniBand detected on %s, NCCL configured", target_host)
             break
@@ -223,6 +224,7 @@ def resolve_nccl_env(
     head_host: str | None = None,
     ssh_kwargs: dict | None = None,
     dry_run: bool = False,
+    topology: str | None = None,
 ) -> dict[str, str]:
     """Resolve NCCL environment: reuse pre-detected or detect.
 
@@ -247,6 +249,7 @@ def resolve_nccl_env(
         head_host=head_host,
         ssh_kwargs=ssh_kwargs,
         dry_run=dry_run,
+        topology=topology,
     )
 
 

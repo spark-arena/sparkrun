@@ -166,9 +166,9 @@ def build_host_detection(host: str, raw: dict[str, str]) -> CX7HostDetection:
 
 
 def detect_cx7_for_hosts(
-    hosts: list[str],
-    ssh_kwargs: dict | None = None,
-    dry_run: bool = False,
+        hosts: list[str],
+        ssh_kwargs: dict | None = None,
+        dry_run: bool = False,
 ) -> dict[str, CX7HostDetection]:
     """Run CX7 detection on all hosts in parallel.
 
@@ -214,7 +214,7 @@ def detect_cx7_for_hosts(
 
 
 def _generate_candidate_subnets(
-    used: set[ipaddress.IPv4Network],
+        used: set[ipaddress.IPv4Network],
 ) -> list[ipaddress.IPv4Network]:
     """Generate candidate /24 subnets from RFC 1918 ranges, skipping conflicts."""
     candidates: list[ipaddress.IPv4Network] = []
@@ -230,9 +230,9 @@ def _generate_candidate_subnets(
 
 
 def select_subnets(
-    detections: dict[str, CX7HostDetection],
-    override1: str | None = None,
-    override2: str | None = None,
+        detections: dict[str, CX7HostDetection],
+        override1: str | None = None,
+        override2: str | None = None,
 ) -> tuple[ipaddress.IPv4Network, ipaddress.IPv4Network]:
     """Select two /24 subnets for CX7 interfaces.
 
@@ -342,10 +342,10 @@ def _find_available_octet(taken: set[int], preferred: int) -> int:
 
 
 def _is_host_valid(
-    det: CX7HostDetection,
-    subnet1: ipaddress.IPv4Network,
-    subnet2: ipaddress.IPv4Network,
-    target_mtu: int,
+        det: CX7HostDetection,
+        subnet1: ipaddress.IPv4Network,
+        subnet2: ipaddress.IPv4Network,
+        target_mtu: int,
 ) -> tuple[bool, str]:
     """Check if a host's existing CX7 config is valid for the cluster.
 
@@ -375,11 +375,11 @@ def _is_host_valid(
 
 
 def plan_cluster_cx7(
-    detections: dict[str, CX7HostDetection],
-    subnet1: ipaddress.IPv4Network,
-    subnet2: ipaddress.IPv4Network,
-    mtu: int = DEFAULT_MTU,
-    force: bool = False,
+        detections: dict[str, CX7HostDetection],
+        subnet1: ipaddress.IPv4Network,
+        subnet2: ipaddress.IPv4Network,
+        mtu: int = DEFAULT_MTU,
+        force: bool = False,
 ) -> CX7ClusterPlan:
     """Build a complete CX7 configuration plan for all hosts.
 
@@ -554,18 +554,138 @@ def _parse_arping_output(output: str) -> list[tuple[str, str]]:
     return neighbors
 
 
+def detect_switch(
+        detections: dict[str, CX7HostDetection],
+        hosts: list[str],
+        ssh_kwargs: dict | None = None,
+        dry_run: bool = False,
+        sudo_password: str | None = None,
+) -> bool | None:
+    """Detect whether CX7 interfaces are connected through a switch.
+
+    Primary method: cross-subnet L2 arping.  In a direct connection each
+    cable is its own L2 segment — an interface on subnet1 cannot reach
+    interfaces on subnet2 at L2.  Through a switch, all interfaces share
+    the same L2 fabric and CAN reach across subnets via ARP.
+
+    Fallback: listens for STP BPDUs / LLDP frames (less reliable — some
+    switches don't send these).
+
+    Args:
+        detections: Per-host CX7 detection results.
+        hosts: List of host identifiers.
+        ssh_kwargs: SSH connection parameters.
+        dry_run: Log without executing.
+        sudo_password: Password for hosts requiring interactive sudo.
+
+    Returns:
+        True if switch detected, False if no switch frames seen,
+        None if detection was not possible (dry-run, no sudo, etc.).
+    """
+    from sparkrun.orchestration.ssh import run_remote_script, run_remote_sudo_script
+
+    kw = ssh_kwargs or {}
+
+    # Pick first host with CX7 interfaces that we can sudo on
+    target_host = None
+    target_det: CX7HostDetection | None = None
+    needs_sudo_pw = False
+    for host in hosts:
+        det = detections.get(host)
+        if det and det.detected and det.interfaces:
+            if det.sudo_ok:
+                target_host = host
+                target_det = det
+                break
+            elif sudo_password:
+                target_host = host
+                target_det = det
+                needs_sudo_pw = True
+                break
+
+    if not target_host or not target_det:
+        logger.debug("No host available for switch detection (no sudo access)")
+        return None
+
+    if dry_run:
+        logger.info("[dry-run] Would detect switch topology on %s", target_host)
+        return None
+
+    # Build cross-subnet test parameters:
+    # Pick a local interface on subnet1, and a remote IP on subnet2.
+    # If the arping succeeds, the L2 segments are shared (= switch).
+    local_iface = ""
+    remote_ip = ""
+
+    # Find a remote host with configured CX7 interfaces on different subnets
+    local_subnets: dict[str, str] = {}  # subnet -> iface_name
+    for iface in target_det.interfaces:
+        if iface.ip and iface.subnet:
+            local_subnets[iface.subnet] = iface.name
+
+    if len(local_subnets) >= 2:
+        # Pick the first subnet's interface as local
+        subnets = sorted(local_subnets.keys())
+        local_iface = local_subnets[subnets[0]]
+        target_subnet = subnets[1]  # We want a remote IP on this subnet
+
+        # Find a remote host's IP on target_subnet
+        for other_host in hosts:
+            if other_host == target_host:
+                continue
+            other_det = detections.get(other_host)
+            if not other_det or not other_det.detected:
+                continue
+            for iface in other_det.interfaces:
+                if iface.ip and iface.subnet == target_subnet:
+                    remote_ip = iface.ip
+                    break
+            if remote_ip:
+                break
+
+    # Build script with env vars
+    script = read_script("cx7_switch_detect.sh")
+    env_lines = []
+    if local_iface:
+        env_lines.append("export CX7_LOCAL_IFACE='%s'" % local_iface)
+    if remote_ip:
+        env_lines.append("export CX7_REMOTE_IP='%s'" % remote_ip)
+    # Fallback interfaces for BPDU detection
+    ifaces_str = " ".join(iface.name for iface in target_det.interfaces[:2])
+    env_lines.append("export CX7_IFACES='%s'" % ifaces_str)
+
+    full_script = "\n".join(env_lines) + "\n" + script
+
+    logger.info("Checking for switch on %s (local=%s, remote_target=%s)...", target_host, local_iface, remote_ip)
+    if needs_sudo_pw:
+        r = run_remote_sudo_script(target_host, full_script, sudo_password, timeout=30, dry_run=dry_run, **kw)
+    else:
+        r = run_remote_script(target_host, full_script, timeout=30, dry_run=dry_run, **kw)
+
+    if not r.success:
+        logger.warning("Switch detection failed on %s: %s", target_host, r.stderr[:200])
+        return None
+
+    raw = parse_kv_output(r.stdout)
+    val = raw.get("CX7_SWITCH_DETECTED", "")
+    if val == "1":
+        return True
+    elif val == "0":
+        return False
+    else:
+        return None  # tools not available or other issue
+
+
 def classify_topology(
-    links: list[tuple[str, str, str, str]],
-    hosts: list[str],
+        links: list[tuple[str, str, str, str]],
+        hosts: list[str],
 ) -> CX7Topology:
     """Classify topology from discovered links.
 
     Detection logic:
     - 1 host: UNKNOWN
-    - 2 hosts with link data: DIRECT if each local interface maps to
-      exactly 1 remote interface (point-to-point cables); SWITCH if any
-      local interface reaches multiple remote interfaces (fan-out via switch).
-    - 2 hosts without link data: SWITCH (can't confirm direct).
+    - 2 hosts: SWITCH (cannot reliably distinguish direct vs switch
+      with only 2 hosts — neighbor discovery shows the same pattern).
     - 3 hosts where each host connects to exactly 2 others: RING.
     - Otherwise: SWITCH.
 
@@ -581,24 +701,7 @@ def classify_topology(
         return CX7Topology.UNKNOWN
 
     if n_hosts == 2:
-        if not links:
-            return CX7Topology.SWITCH  # No link data — can't confirm direct
-
-        # Check fan-out: in a direct connection each local interface
-        # reaches exactly 1 remote interface.  Through a switch a single
-        # interface may see multiple remote interfaces.
-        iface_peers: dict[str, set[str]] = {}  # (host, iface) -> set of remote ifaces
-        for hostA, ifA, hostB, ifB in links:
-            key_a = "%s/%s" % (hostA, ifA)
-            key_b = "%s/%s" % (hostB, ifB)
-            iface_peers.setdefault(key_a, set()).add(key_b)
-            iface_peers.setdefault(key_b, set()).add(key_a)
-
-        # If any interface connects to more than 1 remote interface → switch
-        if any(len(peers) > 1 for peers in iface_peers.values()):
-            return CX7Topology.SWITCH
-
-        return CX7Topology.DIRECT
+        return CX7Topology.SWITCH
 
     if n_hosts == 3:
         # Check if each host connects to exactly 2 other hosts
@@ -615,10 +718,10 @@ def classify_topology(
 
 
 def detect_topology(
-    detections: dict[str, CX7HostDetection],
-    hosts: list[str],
-    ssh_kwargs: dict | None = None,
-    dry_run: bool = False,
+        detections: dict[str, CX7HostDetection],
+        hosts: list[str],
+        ssh_kwargs: dict | None = None,
+        dry_run: bool = False,
 ) -> CX7TopologyResult:
     """Detect CX7 topology via MAC/ARP neighbor discovery.
 
@@ -722,11 +825,11 @@ def detect_topology(
 
 
 def select_subnets_for_topology(
-    detections: dict[str, CX7HostDetection],
-    topology: CX7Topology,
-    count: int = 2,
-    override1: str | None = None,
-    override2: str | None = None,
+        detections: dict[str, CX7HostDetection],
+        topology: CX7Topology,
+        count: int = 2,
+        override1: str | None = None,
+        override2: str | None = None,
 ) -> list[ipaddress.IPv4Network]:
     """Select subnets based on topology requirements.
 
@@ -778,32 +881,49 @@ def select_subnets_for_topology(
 def _group_interfaces_by_port(interfaces: list[CX7Interface]) -> list[list[CX7Interface]]:
     """Group CX7 interfaces by physical port.
 
-    Interfaces sharing the same PCI device path (inferred from naming)
-    belong to the same port. On DGX Spark, each CX7 has 2 physical ports,
-    each with 2 partitions (total 4 interfaces). Interfaces from the same
-    port share a common PCI domain prefix in their sysfs name.
+    DGX Spark interface names end with ``npN`` where *N* identifies
+    the physical network port.  For example ``enp1s0f0np0`` and
+    ``enP2p1s0f0np0`` both end with ``np0`` and share physical port 0.
 
-    Falls back to grouping in sorted pairs if naming pattern isn't clear.
+    Falls back to grouping in sorted pairs if the ``npN`` suffix is
+    not present on any interface.
     """
+    import re
+
     if len(interfaces) <= 2:
         return [interfaces]
 
-    # Sort by name for determinism
-    sorted_ifaces = sorted(interfaces, key=lambda i: i.name.lower())
+    np_pattern = re.compile(r"np(\d+)$")
 
-    # Group in pairs (first two = port 0, next two = port 1)
-    groups: list[list[CX7Interface]] = []
-    for i in range(0, len(sorted_ifaces), 2):
-        groups.append(sorted_ifaces[i : i + 2])
-    return groups
+    groups_by_port: dict[str, list[CX7Interface]] = {}
+    ungrouped: list[CX7Interface] = []
+    for iface in interfaces:
+        match = np_pattern.search(iface.name)
+        if match:
+            port = match.group(1)
+            groups_by_port.setdefault(port, []).append(iface)
+        else:
+            ungrouped.append(iface)
+
+    if groups_by_port:
+        result: list[list[CX7Interface]] = []
+        for port in sorted(groups_by_port.keys()):
+            result.append(sorted(groups_by_port[port], key=lambda i: i.name.lower()))
+        for iface in ungrouped:
+            result.append([iface])
+        return result
+
+    # Fallback: sorted pairs
+    sorted_ifaces = sorted(interfaces, key=lambda i: i.name.lower())
+    return [sorted_ifaces[i: i + 2] for i in range(0, len(sorted_ifaces), 2)]
 
 
 def plan_ring_cx7(
-    detections: dict[str, CX7HostDetection],
-    topology_result: CX7TopologyResult,
-    subnets: list[ipaddress.IPv4Network],
-    mtu: int = DEFAULT_MTU,
-    force: bool = False,
+        detections: dict[str, CX7HostDetection],
+        topology_result: CX7TopologyResult,
+        subnets: list[ipaddress.IPv4Network],
+        mtu: int = DEFAULT_MTU,
+        force: bool = False,
 ) -> CX7ClusterPlan:
     """Build CX7 configuration plan for a 3-node ring topology.
 
@@ -850,6 +970,19 @@ def plan_ring_cx7(
 
     if len(hosts_with_cx7) != 3:
         plan.errors.append("Ring topology requires exactly 3 hosts with CX7, found %d" % len(hosts_with_cx7))
+        return plan
+
+    # Ring requires 2 physical ports per host (4 interfaces) — one port per peer
+    for host in hosts_with_cx7:
+        det = detections[host]
+        port_groups = _group_interfaces_by_port(det.interfaces)
+        if len(port_groups) < 2:
+            plan.errors.append(
+                "%s: ring topology requires 2 physical ports (4 interfaces), "
+                "but only %d port group(s) found (%d interfaces)"
+                % (host, len(port_groups), len(det.interfaces))
+            )
+    if plan.errors:
         return plan
 
     # Order hosts into a ring: A -> B -> C -> A
@@ -1037,7 +1170,7 @@ def _generate_dynamic_configure_script(host_plan: CX7HostPlan, mtu: int, prefix_
             "    %s:\n"
             "      dhcp4: no\n"
             "      dhcp6: no\n"
-            "      link-local: [ ipv4 ]\n"
+            "      link-local: []\n"
             "      mtu: %d\n"
             "      addresses: [%s/%d]" % (a.iface_name, mtu, a.ip, prefix_len)
         )
@@ -1050,22 +1183,22 @@ def _generate_dynamic_configure_script(host_plan: CX7HostPlan, mtu: int, prefix_
         summary_lines.append('echo "  %s -> %s/%d (MTU %d)" >&2' % (a.iface_name, a.ip, prefix_len, mtu))
 
     script = (
-        "#!/bin/bash\n"
-        "set -euo pipefail\n"
-        "\n"
-        'echo "Configuring %d CX7 interfaces:" >&2\n'
-        "%s\n"
-        "\n"
-        "sudo tee /etc/netplan/40-cx7.yaml > /dev/null <<'NETPLAN_EOF'\n"
-        "%s"
-        "NETPLAN_EOF\n"
-        "\n"
-        "sudo chmod 600 /etc/netplan/40-cx7.yaml\n"
-        'echo "Applying netplan configuration..." >&2\n'
-        "sudo netplan apply\n"
-        "\n"
-        'echo "Verifying configuration..." >&2\n'
-    ) % (len(host_plan.assignments), "\n".join(summary_lines), netplan_content)
+                 "#!/bin/bash\n"
+                 "set -euo pipefail\n"
+                 "\n"
+                 'echo "Configuring %d CX7 interfaces:" >&2\n'
+                 "%s\n"
+                 "\n"
+                 "sudo tee /etc/netplan/40-cx7.yaml > /dev/null <<'NETPLAN_EOF'\n"
+                 "%s"
+                 "NETPLAN_EOF\n"
+                 "\n"
+                 "sudo chmod 600 /etc/netplan/40-cx7.yaml\n"
+                 'echo "Applying netplan configuration..." >&2\n'
+                 "sudo netplan apply\n"
+                 "\n"
+                 'echo "Verifying configuration..." >&2\n'
+             ) % (len(host_plan.assignments), "\n".join(summary_lines), netplan_content)
 
     # Add verification for each interface
     for a in host_plan.assignments:
@@ -1076,12 +1209,12 @@ def _generate_dynamic_configure_script(host_plan: CX7HostPlan, mtu: int, prefix_
 
 
 def configure_cx7_host(
-    host_plan: CX7HostPlan,
-    mtu: int,
-    prefix_len: int,
-    ssh_kwargs: dict | None = None,
-    dry_run: bool = False,
-    sudo_password: str | None = None,
+        host_plan: CX7HostPlan,
+        mtu: int,
+        prefix_len: int,
+        ssh_kwargs: dict | None = None,
+        dry_run: bool = False,
+        sudo_password: str | None = None,
 ):
     """Apply CX7 netplan configuration to a single host.
 
@@ -1117,11 +1250,11 @@ def configure_cx7_host(
 
 
 def apply_cx7_plan(
-    plan: CX7ClusterPlan,
-    ssh_kwargs: dict | None = None,
-    dry_run: bool = False,
-    sudo_password: str | None = None,
-    sudo_hosts: set[str] | None = None,
+        plan: CX7ClusterPlan,
+        ssh_kwargs: dict | None = None,
+        dry_run: bool = False,
+        sudo_password: str | None = None,
+        sudo_hosts: set[str] | None = None,
 ) -> list:
     """Apply CX7 configuration to all hosts that need changes.
 
@@ -1167,9 +1300,9 @@ def apply_cx7_plan(
 
 
 def verify_cx7_config(
-    hosts: list[str],
-    ssh_kwargs: dict | None = None,
-    dry_run: bool = False,
+        hosts: list[str],
+        ssh_kwargs: dict | None = None,
+        dry_run: bool = False,
 ) -> dict[str, CX7HostDetection]:
     """Re-run CX7 detection to verify configuration was applied."""
     return detect_cx7_for_hosts(hosts, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
@@ -1181,9 +1314,9 @@ def verify_cx7_config(
 
 
 def discover_host_network_ips(
-    hosts: list[str],
-    ssh_kwargs: dict | None = None,
-    dry_run: bool = False,
+        hosts: list[str],
+        ssh_kwargs: dict | None = None,
+        dry_run: bool = False,
 ) -> dict[str, list[str]]:
     """Discover additional network IPs (IB/CX7) for a set of hosts.
 
@@ -1236,10 +1369,10 @@ def discover_host_network_ips(
 
 
 def distribute_host_keys(
-    ips: list[str],
-    hosts: list[str],
-    ssh_kwargs: dict | None = None,
-    dry_run: bool = False,
+        ips: list[str],
+        hosts: list[str],
+        ssh_kwargs: dict | None = None,
+        dry_run: bool = False,
 ) -> list:
     """Scan IPs and add to ``known_hosts`` on control machine and all hosts.
 
@@ -1266,21 +1399,21 @@ def distribute_host_keys(
 
     ip_list = " ".join(ips)
     script = (
-        "#!/bin/bash\n"
-        "set -uo pipefail\n"
-        "mkdir -p ~/.ssh\n"
-        "touch ~/.ssh/known_hosts\n"
-        "ADDED=0\n"
-        "for ip in %s; do\n"
-        '    keys=$(ssh-keyscan -H "$ip" 2>/dev/null)\n'
-        '    if [ -n "$keys" ]; then\n'
-        '        echo "$keys" >> ~/.ssh/known_hosts\n'
-        "        ADDED=$((ADDED + 1))\n"
-        "    fi\n"
-        "done\n"
-        "sort -u ~/.ssh/known_hosts -o ~/.ssh/known_hosts\n"
-        'echo "KEYSCAN_ADDED=$ADDED"\n'
-    ) % ip_list
+                 "#!/bin/bash\n"
+                 "set -uo pipefail\n"
+                 "mkdir -p ~/.ssh\n"
+                 "touch ~/.ssh/known_hosts\n"
+                 "ADDED=0\n"
+                 "for ip in %s; do\n"
+                 '    keys=$(ssh-keyscan -H "$ip" 2>/dev/null)\n'
+                 '    if [ -n "$keys" ]; then\n'
+                 '        echo "$keys" >> ~/.ssh/known_hosts\n'
+                 "        ADDED=$((ADDED + 1))\n"
+                 "    fi\n"
+                 "done\n"
+                 "sort -u ~/.ssh/known_hosts -o ~/.ssh/known_hosts\n"
+                 'echo "KEYSCAN_ADDED=$ADDED"\n'
+             ) % ip_list
 
     # Local keyscan (control machine)
     if not dry_run:
@@ -1320,9 +1453,9 @@ distribute_cx7_host_keys = distribute_host_keys
 
 
 def discover_cx7_peers(
-    subnets: list[str],
-    exclude_ips: list[str] | None = None,
-    timeout: int = 15,
+        subnets: list[str],
+        exclude_ips: list[str] | None = None,
+        timeout: int = 15,
 ) -> list[str]:
     """Discover peer hosts on CX7 subnets via ARP table + ping sweep.
 

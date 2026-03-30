@@ -286,9 +286,8 @@ class RuntimePlugin(Plugin):
     def compute_required_nodes(self, recipe: Recipe, overrides: dict[str, Any] | None = None) -> int | None:
         """Compute the number of nodes required to run this recipe.
 
-        The base implementation reads ``tensor_parallel`` from the
-        recipe config chain.  Subclasses override to account for
-        additional parallelism dimensions (e.g. pipeline parallelism).
+        On DGX Spark (1 GPU per node), the total node count is the
+        product of tensor and pipeline parallelism: ``tp * pp``.
 
         Args:
             recipe: The loaded recipe.
@@ -300,9 +299,12 @@ class RuntimePlugin(Plugin):
         """
         config = recipe.build_config_chain(overrides or {})
         tp_val = config.get("tensor_parallel")
-        if tp_val is None:
+        pp_val = config.get("pipeline_parallel")
+        if tp_val is None and pp_val is None:
             return None
-        return int(tp_val)
+        tp = int(tp_val) if tp_val is not None else 1
+        pp = int(pp_val) if pp_val is not None else 1
+        return tp * pp
 
     @staticmethod
     def _augment_served_model_name(
@@ -1063,6 +1065,7 @@ class RuntimePlugin(Plugin):
         """
         from sparkrun.runtimes._cluster_ops import ClusterContext, run_native_cluster
 
+        topology = kwargs.pop("topology", None)
         ctx = ClusterContext.build(
             runtime=self,
             hosts=hosts,
@@ -1072,6 +1075,7 @@ class RuntimePlugin(Plugin):
             cache_dir=cache_dir,
             config=config,
             dry_run=dry_run,
+            topology=topology,
         )
         return run_native_cluster(
             runtime=self,

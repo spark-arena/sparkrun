@@ -242,25 +242,6 @@ class SglangRuntime(RuntimePlugin):
 
         return issues
 
-    def compute_required_nodes(self, recipe, overrides=None):
-        """Compute required nodes as ``tp * pp``.
-
-        SGLang supports pipeline parallelism via ``--pp-size``.  On
-        DGX Spark (1 GPU per node), the total node count is the product
-        of tensor and pipeline parallelism.
-
-        Returns ``None`` when neither dimension is configured (meaning
-        "use all provided hosts, no trimming").
-        """
-        config = recipe.build_config_chain(overrides or {})
-        tp_val = config.get("tensor_parallel")
-        pp_val = config.get("pipeline_parallel")
-        if tp_val is None and pp_val is None:
-            return None
-        tp = int(tp_val) if tp_val is not None else 1
-        pp = int(pp_val) if pp_val is not None else 1
-        return tp * pp
-
     # --- Tuning config auto-mount ---
 
     def get_extra_volumes(self) -> dict[str, str]:

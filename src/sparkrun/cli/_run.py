@@ -295,6 +295,7 @@ def run(
             dashboard_port=dashboard_port,
             dashboard=dashboard,
             init_port=init_port,
+            topology=cluster_cfg.topology,
             executor_config=cli_executor_opts,
             rootless=not rootful,
             auto_user=not rootful,

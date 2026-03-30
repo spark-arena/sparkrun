@@ -15,10 +15,12 @@ from sparkrun.orchestration.networking import (
     CX7InterfaceAssignment,
     CX7Topology,
     CX7TopologyResult,
+    _group_interfaces_by_port,
     _parse_arping_output,
     build_host_detection,
     classify_topology,
     detect_cx7_for_hosts,
+    detect_switch,
     generate_cx7_configure_script,
     parse_cx7_detect_output,
     plan_cluster_cx7,
@@ -643,24 +645,13 @@ class TestClassifyTopology:
     def test_single_host_unknown(self):
         assert classify_topology([], ["h1"]) == CX7Topology.UNKNOWN
 
-    def test_two_hosts_direct_point_to_point(self):
-        """2 hosts where each interface maps to exactly 1 remote -> DIRECT."""
-        links = [
-            ("h1", "enp1", "h2", "enp2"),
-            ("h1", "enp3", "h2", "enp4"),
-        ]
-        assert classify_topology(links, ["h1", "h2"]) == CX7Topology.DIRECT
-
-    def test_two_hosts_switch_fan_out(self):
-        """2 hosts where an interface sees multiple remotes -> SWITCH."""
-        links = [
-            ("h1", "enp1", "h2", "enp2"),
-            ("h1", "enp1", "h2", "enp4"),  # same local, different remote = fan-out
-        ]
+    def test_two_hosts_always_switch(self):
+        """2 hosts always classified as SWITCH (can't distinguish direct vs switch)."""
+        links = [("h1", "enp1", "h2", "enp2")]
         assert classify_topology(links, ["h1", "h2"]) == CX7Topology.SWITCH
 
     def test_two_hosts_no_links_switch(self):
-        """With 2 hosts and no link data, can't confirm direct -> SWITCH."""
+        """With 2 hosts and no link data -> SWITCH."""
         assert classify_topology([], ["h1", "h2"]) == CX7Topology.SWITCH
 
     def test_three_hosts_ring(self):
@@ -689,6 +680,86 @@ class TestClassifyTopology:
             ("h4", "e7", "h1", "e8"),
         ]
         assert classify_topology(links, ["h1", "h2", "h3", "h4"]) == CX7Topology.SWITCH
+
+
+# ---------------------------------------------------------------------------
+# detect_switch
+# ---------------------------------------------------------------------------
+
+
+class TestDetectSwitch:
+    def test_switch_detected(self):
+        from sparkrun.orchestration.ssh import RemoteResult
+
+        det = _make_detection("h1", "10.0.0.1", [
+            ("enp1", "", "", 1500, "aa:00:00:00:01:01"),
+            ("enp2", "", "", 1500, "aa:00:00:00:01:02"),
+        ])
+        mock_result = RemoteResult(host="h1", returncode=0, stdout="CX7_SWITCH_DETECTED=1\n", stderr="")
+
+        with mock.patch("sparkrun.orchestration.ssh.run_remote_script", return_value=mock_result):
+            result = detect_switch({"h1": det}, ["h1"])
+
+        assert result is True
+
+    def test_no_switch(self):
+        from sparkrun.orchestration.ssh import RemoteResult
+
+        det = _make_detection("h1", "10.0.0.1", [
+            ("enp1", "", "", 1500, "aa:00:00:00:01:01"),
+            ("enp2", "", "", 1500, "aa:00:00:00:01:02"),
+        ])
+        mock_result = RemoteResult(host="h1", returncode=0, stdout="CX7_SWITCH_DETECTED=0\n", stderr="")
+
+        with mock.patch("sparkrun.orchestration.ssh.run_remote_script", return_value=mock_result):
+            result = detect_switch({"h1": det}, ["h1"])
+
+        assert result is False
+
+    def test_tcpdump_unavailable(self):
+        from sparkrun.orchestration.ssh import RemoteResult
+
+        det = _make_detection("h1", "10.0.0.1", [
+            ("enp1", "", "", 1500, "aa:00:00:00:01:01"),
+        ])
+        mock_result = RemoteResult(host="h1", returncode=0, stdout="CX7_SWITCH_DETECTED=-1\n", stderr="")
+
+        with mock.patch("sparkrun.orchestration.ssh.run_remote_script", return_value=mock_result):
+            result = detect_switch({"h1": det}, ["h1"])
+
+        assert result is None
+
+    def test_dry_run(self):
+        det = _make_detection("h1", "10.0.0.1", [
+            ("enp1", "", "", 1500, "aa:00:00:00:01:01"),
+        ])
+        result = detect_switch({"h1": det}, ["h1"], dry_run=True)
+        assert result is None
+
+    def test_no_hosts(self):
+        result = detect_switch({}, [])
+        assert result is None
+
+    def test_no_sudo_skips(self):
+        """Without passwordless sudo, switch detection is skipped."""
+        det = _make_detection("h1", "10.0.0.1", [
+            ("enp1", "", "", 1500, "aa:00:00:00:01:01"),
+        ], sudo_ok=False)
+        result = detect_switch({"h1": det}, ["h1"])
+        assert result is None
+
+    def test_ssh_failure(self):
+        from sparkrun.orchestration.ssh import RemoteResult
+
+        det = _make_detection("h1", "10.0.0.1", [
+            ("enp1", "", "", 1500, "aa:00:00:00:01:01"),
+        ])
+        mock_result = RemoteResult(host="h1", returncode=1, stdout="", stderr="connection refused")
+
+        with mock.patch("sparkrun.orchestration.ssh.run_remote_script", return_value=mock_result):
+            result = detect_switch({"h1": det}, ["h1"])
+
+        assert result is None
 
 
 # ---------------------------------------------------------------------------
@@ -804,6 +875,29 @@ class TestPlanRingCX7:
         plan = plan_ring_cx7(detections, topo, subnets)
         assert len(plan.errors) > 0
 
+    def test_ring_plan_insufficient_ports(self):
+        """Hosts with only 1 port (2 interfaces) can't do ring."""
+        detections = {
+            "h1": _make_detection("h1", "10.0.0.1", [
+                ("enp1s0f0np0", "", "", 1500, "aa:00:00:00:01:01"),
+                ("enP2p1s0f0np0", "", "", 1500, "aa:00:00:00:01:02"),
+            ]),
+            "h2": _make_detection("h2", "10.0.0.2", [
+                ("enp1s0f0np0", "", "", 1500, "aa:00:00:00:02:01"),
+                ("enP2p1s0f0np0", "", "", 1500, "aa:00:00:00:02:02"),
+            ]),
+            "h3": _make_detection("h3", "10.0.0.3", [
+                ("enp1s0f0np0", "", "", 1500, "aa:00:00:00:03:01"),
+                ("enP2p1s0f0np0", "", "", 1500, "aa:00:00:00:03:02"),
+            ]),
+        }
+        topo = CX7TopologyResult(topology=CX7Topology.RING, links=[])
+        subnets = [ipaddress.IPv4Network("192.168.%d.0/24" % i) for i in range(10, 16)]
+
+        plan = plan_ring_cx7(detections, topo, subnets)
+        assert len(plan.errors) > 0
+        assert any("2 physical ports" in e for e in plan.errors)
+
     def test_ring_plan_wrong_host_count(self):
         detections = {
             "h1": _make_detection("h1", "10.0.0.1", [
@@ -876,6 +970,104 @@ class TestGenerateCX7ConfigureScriptRing:
 # ---------------------------------------------------------------------------
 # CX7ClusterPlan topology field
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# _group_interfaces_by_port
+# ---------------------------------------------------------------------------
+
+
+class TestGroupInterfacesByPort:
+    def _iface(self, name):
+        return CX7Interface(name=name, ip="", prefix=0, subnet="", mtu=1500, state="up", hca="")
+
+    def test_dgx_spark_names(self):
+        """DGX Spark names: npN suffix determines port grouping."""
+        ifaces = [
+            self._iface("enp1s0f0np0"),
+            self._iface("enP2p1s0f0np0"),
+            self._iface("enp1s0f1np1"),
+            self._iface("enP2p1s0f1np1"),
+        ]
+        groups = _group_interfaces_by_port(ifaces)
+        assert len(groups) == 2
+        # Port 0: both np0 interfaces
+        port0_names = {i.name for i in groups[0]}
+        assert port0_names == {"enp1s0f0np0", "enP2p1s0f0np0"}
+        # Port 1: both np1 interfaces
+        port1_names = {i.name for i in groups[1]}
+        assert port1_names == {"enp1s0f1np1", "enP2p1s0f1np1"}
+
+    def test_two_interfaces_single_group(self):
+        """2 or fewer interfaces → single group."""
+        ifaces = [self._iface("enp1"), self._iface("enp2")]
+        groups = _group_interfaces_by_port(ifaces)
+        assert len(groups) == 1
+        assert len(groups[0]) == 2
+
+    def test_fallback_no_np_suffix(self):
+        """Without npN suffix, falls back to sorted pairs."""
+        ifaces = [
+            self._iface("enp1a"),
+            self._iface("enp1b"),
+            self._iface("enp1c"),
+            self._iface("enp1d"),
+        ]
+        groups = _group_interfaces_by_port(ifaces)
+        assert len(groups) == 2
+        assert len(groups[0]) == 2
+        assert len(groups[1]) == 2
+
+    def test_mixed_np_and_non_np(self):
+        """Interfaces with npN grouped by port; others appended individually."""
+        ifaces = [
+            self._iface("enp1s0f0np0"),
+            self._iface("enP2p1s0f0np0"),
+            self._iface("eth0"),
+        ]
+        groups = _group_interfaces_by_port(ifaces)
+        # 1 port group (np0) + 1 ungrouped
+        assert len(groups) == 2
+        port0_names = {i.name for i in groups[0]}
+        assert port0_names == {"enp1s0f0np0", "enP2p1s0f0np0"}
+        assert groups[1][0].name == "eth0"
+
+
+# ---------------------------------------------------------------------------
+# Netplan link-local
+# ---------------------------------------------------------------------------
+
+
+class TestNetplanLinkLocal:
+    def test_static_script_has_empty_link_local(self):
+        """The 2-interface template script uses link-local: []."""
+        hp = CX7HostPlan(
+            host="h1",
+            needs_change=True,
+            assignments=[
+                CX7InterfaceAssignment("enp1s0f0np0", "192.168.11.13", "192.168.11.0/24"),
+                CX7InterfaceAssignment("enP2p1s0f0np0", "192.168.12.13", "192.168.12.0/24"),
+            ],
+        )
+        script = generate_cx7_configure_script(hp, mtu=9000, prefix_len=24)
+        assert "link-local: []" in script
+        assert "link-local: [ ipv4 ]" not in script
+
+    def test_dynamic_script_has_empty_link_local(self):
+        """The dynamic N-interface script uses link-local: []."""
+        hp = CX7HostPlan(
+            host="h1",
+            needs_change=True,
+            assignments=[
+                CX7InterfaceAssignment("enp1a", "192.168.10.1", "192.168.10.0/24"),
+                CX7InterfaceAssignment("enp1b", "192.168.11.1", "192.168.11.0/24"),
+                CX7InterfaceAssignment("enp1c", "192.168.14.1", "192.168.14.0/24"),
+                CX7InterfaceAssignment("enp1d", "192.168.15.1", "192.168.15.0/24"),
+            ],
+        )
+        script = generate_cx7_configure_script(hp, mtu=9000, prefix_len=24)
+        assert "link-local: []" in script
+        assert "link-local: [ ipv4 ]" not in script
 
 
 class TestCX7ClusterPlanTopology:

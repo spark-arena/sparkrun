@@ -7,6 +7,7 @@ from sparkrun.orchestration.infiniband import (
     generate_ib_detect_script,
     parse_ib_detect_output,
     generate_nccl_env,
+    generate_ring_nccl_overrides,
     validate_ib_connectivity,
 )
 from sparkrun.orchestration.ssh import RemoteResult
@@ -204,6 +205,56 @@ class TestValidateIbConnectivity:
         result = validate_ib_connectivity(ib_map)
 
         assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# generate_ring_nccl_overrides tests
+# ---------------------------------------------------------------------------
+
+def test_ring_nccl_overrides_keys():
+    """Ring overrides contain the expected NCCL variables."""
+    overrides = generate_ring_nccl_overrides()
+    assert overrides["NCCL_NET_PLUGIN"] == "none"
+    assert overrides["NCCL_IB_SUBNET_AWARE_ROUTING"] == "1"
+    assert overrides["NCCL_IB_MERGE_NICS"] == "0"
+    assert len(overrides) == 3
+
+
+def test_generate_nccl_env_ring_topology():
+    """Ring topology adds ring-specific overrides."""
+    ib_info = {
+        "IB_DETECTED": "1",
+        "DETECTED_GID_INDEX": "3",
+        "DETECTED_HCA_LIST": "mlx5_0,mlx5_1",
+    }
+    env = generate_nccl_env(ib_info, topology="ring")
+    assert env["NCCL_NET_PLUGIN"] == "none"
+    assert env["NCCL_IB_SUBNET_AWARE_ROUTING"] == "1"
+    assert env["NCCL_IB_MERGE_NICS"] == "0"
+    # Standard IB vars still present
+    assert env["NCCL_NET"] == "IB"
+    assert env["NCCL_IB_HCA"] == "mlx5_0,mlx5_1"
+
+
+def test_generate_nccl_env_no_ring_topology():
+    """Non-ring topology does NOT add ring overrides."""
+    ib_info = {
+        "IB_DETECTED": "1",
+        "DETECTED_GID_INDEX": "3",
+        "DETECTED_HCA_LIST": "mlx5_0,mlx5_1",
+    }
+    env = generate_nccl_env(ib_info, topology=None)
+    assert "NCCL_NET_PLUGIN" not in env
+    assert "NCCL_IB_SUBNET_AWARE_ROUTING" not in env
+    assert "NCCL_IB_MERGE_NICS" not in env
+
+    env_switch = generate_nccl_env(ib_info, topology="switch")
+    assert "NCCL_NET_PLUGIN" not in env_switch
+
+
+# ---------------------------------------------------------------------------
+# validate_ib_connectivity tests
+# ---------------------------------------------------------------------------
 
     @patch("sparkrun.orchestration.ssh.run_remote_command")
     def test_ssh_kwargs_passed_through(self, mock_cmd):

@@ -43,6 +43,7 @@ class ClusterContext:
     image: str
     dry_run: bool
     config: SparkrunConfig | None
+    topology: str | None = None
 
     @classmethod
     def build(
@@ -55,6 +56,7 @@ class ClusterContext:
             cache_dir: str | None,
             config: SparkrunConfig | None,
             dry_run: bool,
+            topology: str | None = None,
     ) -> ClusterContext:
         """Build context from runtime hooks and config.
 
@@ -86,6 +88,7 @@ class ClusterContext:
             image=image,
             dry_run=dry_run,
             config=config,
+            topology=topology,
         )
 
 
@@ -128,6 +131,7 @@ def resolve_ib_env(ctx: ClusterContext, nccl_env: dict[str, str] | None) -> dict
     return resolve_nccl_env(
         nccl_env, ctx.hosts, head_host=ctx.head_host,
         ssh_kwargs=ctx.ssh_kwargs, dry_run=ctx.dry_run,
+        topology=ctx.topology,
     )
 
 
@@ -151,7 +155,7 @@ def detect_ib_with_ips(
         return nccl_env, ib_ip_map
 
     logger.info("Detecting InfiniBand on all hosts...")
-    ib_result = detect_ib_for_hosts(ctx.hosts, ssh_kwargs=ctx.ssh_kwargs, dry_run=ctx.dry_run)
+    ib_result = detect_ib_for_hosts(ctx.hosts, ssh_kwargs=ctx.ssh_kwargs, dry_run=ctx.dry_run, topology=ctx.topology)
     return ib_result.nccl_env, ib_result.ib_ip_map
 
 

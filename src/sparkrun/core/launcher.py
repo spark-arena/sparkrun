@@ -74,6 +74,7 @@ def launch_inference(
     dashboard_port: int | None = None,
     dashboard: bool = False,
     init_port: int | None = None,
+    topology: str | None = None,
     # Executor config (dict for config chain layering)
     executor_config: dict | None = None,
     # note: transition to rootless by default
@@ -369,6 +370,8 @@ def launch_inference(
         run_kwargs["dashboard"] = dashboard
     if init_port is not None:
         run_kwargs["init_port"] = init_port
+    if topology is not None:
+        run_kwargs["topology"] = topology
 
     # Build executor from layered config: CLI → recipe → defaults
     from scitrera_app_framework.api import Variables, EnvPlacement

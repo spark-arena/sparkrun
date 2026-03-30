@@ -75,11 +75,27 @@ def parse_ib_detect_output(output: str) -> dict[str, str]:
     return parse_kv_output(output)
 
 
-def generate_nccl_env(ib_info: dict[str, str]) -> dict[str, str]:
+def generate_ring_nccl_overrides() -> dict[str, str]:
+    """NCCL overrides required for 3-node ring/mesh topology.
+
+    Ring topologies use direct CX7 links without a switch, so the
+    standard IB transport plugin cannot be used.  These variables
+    force socket-based NCCL transport with subnet-aware routing.
+    """
+    return {
+        "NCCL_NET_PLUGIN": "none",
+        "NCCL_IB_SUBNET_AWARE_ROUTING": "1",
+        "NCCL_IB_MERGE_NICS": "0",
+    }
+
+
+def generate_nccl_env(ib_info: dict[str, str], topology: str | None = None) -> dict[str, str]:
     """Generate NCCL environment variables from IB detection results.
 
     Args:
         ib_info: Parsed output from :func:`parse_ib_detect_output`.
+        topology: CX7 topology (e.g. ``"ring"``).  When ``"ring"``,
+            additional overrides are applied for mesh networking.
 
     Returns:
         Dictionary of NCCL/network environment variables.
@@ -110,6 +126,9 @@ def generate_nccl_env(ib_info: dict[str, str]) -> dict[str, str]:
         env["TP_SOCKET_IFNAME"] = net_list
     if ib_info.get("DETECTED_UCX_LIST"):
         env["UCX_NET_DEVICES"] = ib_info["DETECTED_UCX_LIST"]
+
+    if topology == "ring":
+        env.update(generate_ring_nccl_overrides())
 
     return env
 
@@ -187,6 +206,7 @@ def detect_ib_for_hosts(
     hosts: list[str],
     ssh_kwargs: dict | None = None,
     dry_run: bool = False,
+    topology: str | None = None,
 ) -> IBDetectionResult:
     """Run IB detection on all hosts and return aggregated results.
 
@@ -231,7 +251,7 @@ def detect_ib_for_hosts(
 
         # NCCL env from head host
         if result.host == head_host and not nccl_env:
-            nccl_env = generate_nccl_env(ib_info)
+            nccl_env = generate_nccl_env(ib_info, topology=topology)
             if nccl_env:
                 logger.info("  InfiniBand detected on %s, NCCL configured", head_host)
 

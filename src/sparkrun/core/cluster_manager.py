@@ -507,6 +507,7 @@ class ResolvedClusterConfig:
     cache_dir: str | None = None
     transfer_mode: str | None = None
     transfer_interface: str | None = None
+    topology: str | None = None
 
     def resolve_transfer_config(self, config, transfer_mode_override: str | None = None):
         """Resolve transfer configuration against defaults.
@@ -581,5 +582,6 @@ def resolve_cluster_config(
         cfg.transfer_mode = cluster_def.transfer_mode
         cfg.transfer_interface = cluster_def.transfer_interface
         cfg.cache_dir = cluster_def.cache_dir
+        cfg.topology = cluster_def.topology
 
     return cfg
