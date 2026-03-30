@@ -219,6 +219,240 @@ def setup_update(ctx, no_update_registries):
             click.echo("Warning: registry update failed (non-fatal).", err=True)
 
 
+def _run_ssh_diagnose(host_list, user, local_user):
+    """Run comprehensive SSH diagnostics on each host.
+
+    Uses interactive password-based SSH (ControlMaster) to connect, then
+    collects permission info, sshd settings, and tests pubkey auth
+    independently.  Prints structured pass/fail results with remediation.
+    """
+    import subprocess
+    import tempfile
+
+    cross_user = user != local_user
+
+    click.echo("=== SSH Diagnostics ===")
+    click.echo("SSH user: %s" % user)
+    click.echo("Local user: %s" % local_user)
+    click.echo("Cross-user: %s" % ("yes" if cross_user else "no"))
+    click.echo("Hosts: %s" % ", ".join(host_list))
+    click.echo()
+
+    # Find local public key
+    import os
+
+    local_pubkey = None
+    for kf in ("id_ed25519.pub", "id_rsa.pub", "id_ecdsa.pub"):
+        path = os.path.join(os.path.expanduser("~"), ".ssh", kf)
+        if os.path.isfile(path):
+            with open(path) as f:
+                local_pubkey = f.read().strip()
+            break
+
+    if local_pubkey:
+        click.echo("Local public key: %s ...%s" % (local_pubkey[:30], local_pubkey[-20:]))
+    else:
+        click.echo("WARNING: No local SSH public key found!")
+    click.echo()
+
+    ssh_opts = [
+        "-o", "StrictHostKeyChecking=accept-new",
+        "-o", "ServerAliveInterval=10",
+        "-o", "ServerAliveCountMax=3",
+    ]
+
+    control_dir = tempfile.mkdtemp(prefix="sparkrun-diag-")
+    os.chmod(control_dir, 0o700)
+
+    all_passed = True
+
+    for h in host_list:
+        click.echo("--- Diagnosing %s@%s ---" % (user, h))
+        control_path = os.path.join(control_dir, "cm-%%r@%%h:%%p")
+
+        # Step 1: Test pubkey auth (no password, no ControlMaster)
+        click.echo("  [1/4] Testing pubkey authentication (BatchMode)...")
+        pubkey_result = subprocess.run(
+            ["ssh"] + ssh_opts + [
+                "-o", "ControlPath=none",
+                "-o", "BatchMode=yes",
+                "-o", "ConnectTimeout=5",
+                "%s@%s" % (user, h), "true",
+            ],
+            capture_output=True, text=True, timeout=15,
+        )
+        pubkey_ok = pubkey_result.returncode == 0
+        click.echo("        %s" % ("PASS" if pubkey_ok else "FAIL"))
+        if not pubkey_ok:
+            all_passed = False
+
+        # Step 2: Establish ControlMaster (interactive — may prompt for password)
+        click.echo("  [2/4] Establishing authenticated connection (may prompt for password)...")
+        cm_result = subprocess.run(
+            ["ssh"] + ssh_opts + [
+                "-o", "ControlMaster=auto",
+                "-o", "ControlPersist=2m",
+                "-o", "ControlPath=%s" % control_path,
+                "%s@%s" % (user, h), "true",
+            ],
+            timeout=60,
+        )
+        if cm_result.returncode != 0:
+            click.echo("        FAIL — cannot connect to %s (even with password)" % h)
+            click.echo()
+            all_passed = False
+            continue
+
+        cm_ssh = [
+            "ssh"] + ssh_opts + [
+            "-o", "ControlMaster=auto",
+            "-o", "ControlPersist=2m",
+            "-o", "ControlPath=%s" % control_path,
+            "%s@%s" % (user, h),
+        ]
+
+        # Step 3: Collect remote diagnostics
+        click.echo("  [3/4] Collecting remote diagnostics...")
+        diag_script = r"""set -eu
+printf 'home_dir=%s\n' "$(eval echo ~)"
+printf 'home_perms=%s\n' "$(stat -c '%a' ~ 2>/dev/null || echo unknown)"
+printf 'home_owner=%s\n' "$(stat -c '%U' ~ 2>/dev/null || echo unknown)"
+printf 'ssh_dir_exists=%s\n' "$(test -d ~/.ssh && echo yes || echo no)"
+printf 'ssh_perms=%s\n' "$(stat -c '%a' ~/.ssh 2>/dev/null || echo missing)"
+printf 'ak_exists=%s\n' "$(test -f ~/.ssh/authorized_keys && echo yes || echo no)"
+printf 'ak_perms=%s\n' "$(stat -c '%a' ~/.ssh/authorized_keys 2>/dev/null || echo missing)"
+printf 'ak_lines=%s\n' "$(wc -l < ~/.ssh/authorized_keys 2>/dev/null || echo 0)"
+printf 'sshd_ak_file=%s\n' "$(grep -i '^AuthorizedKeysFile' /etc/ssh/sshd_config 2>/dev/null || echo default)"
+printf 'sshd_pubkey=%s\n' "$(grep -i '^PubkeyAuthentication' /etc/ssh/sshd_config 2>/dev/null || echo default)"
+printf 'sshd_strict=%s\n' "$(grep -i '^StrictModes' /etc/ssh/sshd_config 2>/dev/null || echo default)"
+printf 'sshd_allow_users=%s\n' "$(grep -i '^AllowUsers' /etc/ssh/sshd_config 2>/dev/null || echo none)"
+printf 'sshd_allow_groups=%s\n' "$(grep -i '^AllowGroups' /etc/ssh/sshd_config 2>/dev/null || echo none)"
+"""
+        diag_result = subprocess.run(
+            cm_ssh + [diag_script],
+            capture_output=True, text=True, timeout=15,
+        )
+
+        diag = {}
+        if diag_result.returncode == 0:
+            for line in diag_result.stdout.strip().splitlines():
+                if "=" in line:
+                    k, _, v = line.partition("=")
+                    diag[k.strip()] = v.strip()
+
+        # Step 4: Check if local pubkey is in authorized_keys
+        key_installed = False
+        if local_pubkey and cross_user:
+            click.echo("  [4/4] Checking if local pubkey is in authorized_keys...")
+            # Extract just the key type + key data (no comment) for matching
+            key_parts = local_pubkey.split()
+            if len(key_parts) >= 2:
+                key_match = "%s %s" % (key_parts[0], key_parts[1])
+                grep_result = subprocess.run(
+                    cm_ssh + ["grep -cF '%s' ~/.ssh/authorized_keys 2>/dev/null || echo 0" % key_match],
+                    capture_output=True, text=True, timeout=10,
+                )
+                count = grep_result.stdout.strip()
+                key_installed = count != "0"
+                click.echo("        Key present: %s" % ("yes" if key_installed else "NO"))
+        else:
+            click.echo("  [4/4] Key check: %s" % ("skipped (same user)" if not cross_user else "skipped (no local key)"))
+
+        # Print structured results
+        click.echo()
+        click.echo("  Results for %s@%s:" % (user, h))
+
+        home_perms = diag.get("home_perms", "unknown")
+        home_ok = home_perms in ("700", "750", "755")
+        click.echo("    Home dir:           %s (perms: %s) %s" % (
+            diag.get("home_dir", "?"),
+            home_perms,
+            "PASS" if home_ok else "FAIL — must not be group/world-writable",
+        ))
+
+        ssh_perms = diag.get("ssh_perms", "missing")
+        ssh_ok = ssh_perms == "700"
+        click.echo("    .ssh/ dir:          perms %s %s" % (
+            ssh_perms,
+            "PASS" if ssh_ok else ("FAIL" if ssh_perms != "missing" else "MISSING"),
+        ))
+
+        ak_perms = diag.get("ak_perms", "missing")
+        ak_ok = ak_perms == "600"
+        click.echo("    authorized_keys:    perms %s, %s line(s) %s" % (
+            ak_perms,
+            diag.get("ak_lines", "0"),
+            "PASS" if ak_ok else ("FAIL" if ak_perms != "missing" else "MISSING"),
+        ))
+
+        ak_file = diag.get("sshd_ak_file", "default")
+        ak_file_ok = ak_file == "default"
+        click.echo("    AuthorizedKeysFile: %s %s" % (
+            ak_file,
+            "PASS" if ak_file_ok else "NOTE — non-default location",
+        ))
+
+        sshd_strict = diag.get("sshd_strict", "default")
+        click.echo("    StrictModes:        %s" % sshd_strict)
+
+        sshd_pubkey = diag.get("sshd_pubkey", "default")
+        pubkey_setting_ok = sshd_pubkey == "default" or "yes" in sshd_pubkey.lower()
+        click.echo("    PubkeyAuth:         %s %s" % (
+            sshd_pubkey,
+            "PASS" if pubkey_setting_ok else "FAIL — pubkey auth disabled!",
+        ))
+
+        allow_users = diag.get("sshd_allow_users", "none")
+        allow_groups = diag.get("sshd_allow_groups", "none")
+        if allow_users != "none":
+            click.echo("    AllowUsers:         %s — verify '%s' is listed" % (allow_users, user))
+        if allow_groups != "none":
+            click.echo("    AllowGroups:        %s — verify '%s' is in a listed group" % (allow_groups, user))
+
+        click.echo("    Pubkey auth test:   %s" % ("PASS" if pubkey_ok else "FAIL"))
+        if cross_user:
+            click.echo("    Local key installed: %s" % ("PASS" if key_installed else "FAIL"))
+        click.echo()
+
+        # Remediation suggestions
+        if not pubkey_ok:
+            click.echo("  Suggested fixes for %s:" % h)
+            if not home_ok and home_perms != "unknown":
+                click.echo("    chmod go-w ~%s    # Fix home dir permissions (most likely cause)" % user)
+            if not ak_ok and ak_perms != "missing":
+                click.echo("    chmod 600 ~%s/.ssh/authorized_keys" % user)
+            if not ssh_ok and ssh_perms != "missing":
+                click.echo("    chmod 700 ~%s/.ssh" % user)
+            if not ak_file_ok:
+                click.echo("    Check sshd_config: keys may need to go in %s" % ak_file)
+            if not pubkey_setting_ok:
+                click.echo("    Enable PubkeyAuthentication in /etc/ssh/sshd_config and restart sshd")
+            if cross_user and not key_installed:
+                click.echo("    Re-run 'sparkrun setup ssh' to install your public key")
+            click.echo()
+
+        # Clean up ControlMaster
+        subprocess.run(
+            ["ssh"] + ssh_opts + [
+                "-o", "ControlPath=%s" % control_path,
+                "-O", "exit",
+                "%s@%s" % (user, h),
+            ],
+            capture_output=True, timeout=5,
+        )
+
+    # Summary
+    click.echo("=== Diagnostics Complete ===")
+    if all_passed:
+        click.echo("All hosts passed pubkey authentication.")
+    else:
+        click.echo("Some hosts failed. See remediation suggestions above.")
+
+    # Cleanup
+    import shutil
+    shutil.rmtree(control_dir, ignore_errors=True)
+
+
 @setup.command("ssh")
 @host_options
 @click.option("--extra-hosts", default=None, help="Additional comma-separated hosts to include (e.g. control machine)")
@@ -227,9 +461,10 @@ def setup_update(ctx, no_update_registries):
 @click.option(
     "--discover-ips/--no-discover-ips", default=True, show_default=True, help="After meshing, discover IB/CX7 IPs and distribute host keys"
 )
+@click.option("--diagnose", is_flag=True, default=False, help="Run SSH diagnostics instead of mesh setup")
 @dry_run_option
 @click.pass_context
-def setup_ssh(ctx, hosts, hosts_file, cluster_name, extra_hosts, include_self, user, discover_ips, dry_run):
+def setup_ssh(ctx, hosts, hosts_file, cluster_name, extra_hosts, include_self, user, discover_ips, diagnose, dry_run):
     """Set up passwordless SSH mesh across cluster hosts.
 
     Ensures every host can SSH to every other host without password prompts.
@@ -254,6 +489,8 @@ def setup_ssh(ctx, hosts, hosts_file, cluster_name, extra_hosts, include_self, u
       sparkrun setup ssh --cluster mylab --extra-hosts 10.0.0.1
 
       sparkrun setup ssh --hosts 10.0.0.1,10.0.0.2 --no-discover-ips
+
+      sparkrun setup ssh --cluster mylab --diagnose
     """
     import os
 
@@ -300,6 +537,14 @@ def setup_ssh(ctx, hosts, hosts_file, cluster_name, extra_hosts, include_self, u
     local_user = os.environ.get("USER", "root")
     if user is None:
         user = cluster_user or config.ssh_user or local_user
+
+    # --diagnose: run SSH diagnostics instead of the mesh
+    if diagnose:
+        if not host_list:
+            click.echo("Error: No hosts specified. Use --hosts, --hosts-file, or --cluster.", err=True)
+            sys.exit(1)
+        _run_ssh_diagnose(host_list, user, local_user)
+        sys.exit(0)
 
     # Track original cluster hosts before extras/self are appended
     cluster_hosts = list(host_list)

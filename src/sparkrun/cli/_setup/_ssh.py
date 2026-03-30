@@ -179,6 +179,31 @@ def _run_ssh_mesh(mesh_hosts, user, cluster_hosts=None, ssh_key=None, discover_i
 
     from sparkrun.orchestration.networking import discover_host_network_ips, distribute_host_keys
     from sparkrun.orchestration.primitives import check_tcp_reachability
+    from sparkrun.orchestration.ssh import run_remote_scripts_parallel
+
+    # Quick SSH connectivity check before Phase 2 — catch cross-user auth
+    # failures early with actionable output instead of opaque errors.
+    click.echo("Verifying SSH connectivity to cluster hosts...")
+    _verify_results = run_remote_scripts_parallel(
+        cluster_hosts, "true", timeout=10, quiet=True, **ssh_kwargs,
+    )
+    _failed = [r for r in _verify_results if not r.success]
+    if _failed:
+        click.echo()
+        click.echo("WARNING: SSH authentication failed for %d host(s):" % len(_failed), err=True)
+        for r in _failed:
+            click.echo("  %s: %s" % (r.host, r.stderr.strip() if r.stderr else "unknown error"), err=True)
+        click.echo(err=True)
+        click.echo("Common causes when SSH user differs from local user:", err=True)
+        click.echo("  1. Home directory permissions: chmod go-w ~%s" % user, err=True)
+        click.echo("  2. sshd AuthorizedKeysFile points to a non-default location", err=True)
+        click.echo("  3. AllowUsers/AllowGroups in sshd_config restricts the user", err=True)
+        click.echo(err=True)
+        click.echo("Run 'sparkrun setup ssh --diagnose' for detailed diagnostics.", err=True)
+        click.echo("Continuing with Phase 2 (some operations may fail)...", err=True)
+        click.echo()
+    else:
+        click.echo("  All %d host(s) reachable." % len(cluster_hosts))
 
     # Start with cluster host management IPs — these must be in every
     # node's known_hosts so inter-node SSH/rsync works without prompts.
