@@ -238,19 +238,43 @@ def _run_ssh_diagnose(host_list, user, local_user):
     click.echo("Hosts: %s" % ", ".join(host_list))
     click.echo()
 
-    # Find local public key
+    # Find local public key — use ssh -G to respect ~/.ssh/config IdentityFile
     import os
 
     local_pubkey = None
-    for kf in ("id_ed25519.pub", "id_rsa.pub", "id_ecdsa.pub"):
-        path = os.path.join(os.path.expanduser("~"), ".ssh", kf)
-        if os.path.isfile(path):
-            with open(path) as f:
-                local_pubkey = f.read().strip()
-            break
+    local_pubkey_source = None
+
+    # Ask SSH which identity files it would use for the first host
+    try:
+        ssh_g_result = subprocess.run(
+            ["ssh", "-G", "%s@%s" % (user, host_list[0])],
+            capture_output=True, text=True, timeout=5,
+        )
+        if ssh_g_result.returncode == 0:
+            for line in ssh_g_result.stdout.splitlines():
+                if line.startswith("identityfile "):
+                    idf = os.path.expanduser(line.split(None, 1)[1])
+                    pub = idf + ".pub"
+                    if os.path.isfile(pub):
+                        with open(pub) as f:
+                            local_pubkey = f.read().strip()
+                        local_pubkey_source = pub
+                        break
+    except Exception:
+        pass
+
+    # Fallback: check standard key filenames
+    if not local_pubkey:
+        for kf in ("id_ed25519.pub", "id_rsa.pub", "id_ecdsa.pub"):
+            path = os.path.join(os.path.expanduser("~"), ".ssh", kf)
+            if os.path.isfile(path):
+                with open(path) as f:
+                    local_pubkey = f.read().strip()
+                local_pubkey_source = path
+                break
 
     if local_pubkey:
-        click.echo("Local public key: %s ...%s" % (local_pubkey[:30], local_pubkey[-20:]))
+        click.echo("Local public key (%s): %s ...%s" % (local_pubkey_source, local_pubkey[:30], local_pubkey[-20:]))
     else:
         click.echo("WARNING: No local SSH public key found!")
     click.echo()
@@ -533,6 +557,26 @@ printf 'ak_key_types=%s\n' "$(awk '{print $1}' ~/.ssh/authorized_keys 2>/dev/nul
             if dropin_allow_groups != "none":
                 click.echo("    ** Drop-in restricts AllowGroups: %s — verify '%s' is in a listed group" % (dropin_allow_groups, user))
 
+            # Check for key mismatch: SSH verbose output shows which key was offered
+            if not pubkey_ok and ssh_verbose_lines and local_pubkey_source:
+                offered_key_path = None
+                for vl in ssh_verbose_lines:
+                    if "offering public key:" in vl.lower() or "will attempt key:" in vl.lower():
+                        # Extract path from lines like "debug1: Offering public key: /home/me/.ssh/id_ed25519_shared ..."
+                        parts = vl.split(":", 2)
+                        if len(parts) >= 3:
+                            tokens = parts[2].strip().split()
+                            if tokens:
+                                offered_key_path = tokens[0]
+                                break
+                if offered_key_path:
+                    # Compare the key SSH tried with what we'd install
+                    expected_private = local_pubkey_source.removesuffix(".pub") if local_pubkey_source else None
+                    if expected_private and offered_key_path != expected_private:
+                        click.echo("    ** KEY MISMATCH: SSH is offering '%s'" % offered_key_path)
+                        click.echo("       but sparkrun detected '%s' as the local key." % local_pubkey_source)
+                        click.echo("       Check your ~/.ssh/config IdentityFile settings.")
+
             # If everything looks correct but still fails, point to verbose output
             if (home_ok and ssh_ok and ak_ok and ak_file_ok and pubkey_setting_ok
                     and (not cross_user or key_installed)
@@ -540,6 +584,8 @@ printf 'ak_key_types=%s\n' "$(awk '{print $1}' ~/.ssh/authorized_keys 2>/dev/nul
                 click.echo("    All standard checks passed but pubkey auth still fails.")
                 click.echo("    The SSH debug output above may reveal the cause.")
                 click.echo("    Common hidden causes:")
+                click.echo("      - ~/.ssh/config IdentityFile points to a non-standard key")
+                click.echo("        (the mesh may have installed a different key than SSH uses)")
                 click.echo("      - sshd_config 'Include' loading a drop-in that overrides settings")
                 click.echo("      - SELinux/AppArmor blocking access to authorized_keys")
                 click.echo("      - authorized_keys owned by wrong user (must be owned by %s)" % user)

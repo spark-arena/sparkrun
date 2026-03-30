@@ -83,22 +83,44 @@ echo
 CALLER="$(whoami)"
 if [[ "$CALLER" != "$USER_NAME" ]]; then
   LOCAL_PUBKEY=""
-  for kf in "$HOME/.ssh/id_ed25519.pub" "$HOME/.ssh/id_rsa.pub" "$HOME/.ssh/id_ecdsa.pub"; do
-    if [[ -f "$kf" ]]; then
-      LOCAL_PUBKEY="$(cat "$kf")"
-      break
-    fi
-  done
+  LOCAL_PUBKEY_SOURCE=""
+
+  # Use ssh -G to discover which identity file SSH would actually use
+  # (respects ~/.ssh/config Host/Match blocks, IdentityFile directives, etc.)
+  _ssh_g_identities="$(ssh -G "$USER_NAME@${HOSTS[0]}" 2>/dev/null | awk '/^identityfile /{print $2}' || true)"
+  if [[ -n "$_ssh_g_identities" ]]; then
+    while IFS= read -r _idf; do
+      # Expand ~ and other shell constructs
+      _idf_expanded="$(eval echo "$_idf" 2>/dev/null || echo "$_idf")"
+      if [[ -f "${_idf_expanded}.pub" ]]; then
+        LOCAL_PUBKEY="$(cat "${_idf_expanded}.pub")"
+        LOCAL_PUBKEY_SOURCE="${_idf_expanded}.pub"
+        break
+      fi
+    done <<< "$_ssh_g_identities"
+  fi
+
+  # Fallback: check standard key filenames
+  if [[ -z "$LOCAL_PUBKEY" ]]; then
+    for kf in "$HOME/.ssh/id_ed25519.pub" "$HOME/.ssh/id_rsa.pub" "$HOME/.ssh/id_ecdsa.pub"; do
+      if [[ -f "$kf" ]]; then
+        LOCAL_PUBKEY="$(cat "$kf")"
+        LOCAL_PUBKEY_SOURCE="$kf"
+        break
+      fi
+    done
+  fi
   if [[ -z "$LOCAL_PUBKEY" ]]; then
     echo "[*] No SSH key found for local user '$CALLER'. Generating ed25519 key..."
     mkdir -p "$HOME/.ssh"
     chmod 700 "$HOME/.ssh"
     ssh-keygen -t ed25519 -N '' -f "$HOME/.ssh/id_ed25519" >/dev/null
     LOCAL_PUBKEY="$(cat "$HOME/.ssh/id_ed25519.pub")"
+    LOCAL_PUBKEY_SOURCE="$HOME/.ssh/id_ed25519.pub"
   fi
   echo "=== Installing control machine key for remote access ==="
   echo "Caller '$CALLER' differs from mesh user '$USER_NAME'."
-  echo "Installing caller's public key so the control machine can SSH as '$USER_NAME'..."
+  echo "Installing caller's public key ($LOCAL_PUBKEY_SOURCE) so the control machine can SSH as '$USER_NAME'..."
   for h in "${HOSTS[@]}"; do
     echo "[*] Installing caller key on $h ..."
     printf '%s\n' "$LOCAL_PUBKEY" | ssh_stdin_cmd "$h" "set -eu
