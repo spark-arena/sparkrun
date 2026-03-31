@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import click
 
@@ -28,10 +28,23 @@ json_option = click.option(
     help="Output result as JSON",
 )
 
-def print_json(data) -> None:
-    """Print an object as formatted JSON."""
+def print_json(data: Any) -> None:
+    """Print an object as formatted JSON.
+
+    Automatically handles dataclasses and objects implementing `to_dict()`.
+    """
+    import dataclasses
     import json
-    click.echo(json.dumps(data, indent=2))
+
+    class _SparkrunJSONEncoder(json.JSONEncoder):
+        def default(self, obj: Any) -> Any:
+            if hasattr(obj, "to_dict") and callable(obj.to_dict):
+                return obj.to_dict()
+            if dataclasses.is_dataclass(obj):
+                return dataclasses.asdict(obj)
+            return super().default(obj)
+
+    click.echo(json.dumps(data, indent=2, cls=_SparkrunJSONEncoder))
 
 
 def _get_context(ctx) -> "SparkrunContext":

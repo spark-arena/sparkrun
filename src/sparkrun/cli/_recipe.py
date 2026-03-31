@@ -195,11 +195,12 @@ def recipe_vram(ctx, recipe_name, tensor_parallel, max_model_len, gpu_mem, no_au
 
     if output_json:
         est = recipe.estimate_vram(cli_overrides=cli_overrides, auto_detect=not no_auto_detect)
-        result = est.to_dict()
-        result["recipe"] = recipe.qualified_name
-        result["model"] = recipe.model
-        result["runtime"] = recipe.runtime
-        print_json(result)
+        print_json({
+            "recipe": recipe.qualified_name,
+            "model": recipe.model,
+            "runtime": recipe.runtime,
+            **est.to_dict()
+        })
     else:
         _display_vram_estimate(recipe, cli_overrides=cli_overrides, auto_detect=not no_auto_detect)
 
