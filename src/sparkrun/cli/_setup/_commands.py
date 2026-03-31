@@ -824,7 +824,6 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
         configure_cx7_host,
         detect_cx7_for_hosts,
         detect_topology,
-        distribute_cx7_host_keys,
         select_subnets,
         select_subnets_for_topology,
         plan_cluster_cx7,
@@ -1082,28 +1081,6 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
         parts.append("%d skipped (errors)" % has_errors)
     click.echo("Results: %s." % ", ".join(parts))
 
-    # Step 7: Distribute CX7 host keys to known_hosts
-    all_cx7_ips = []
-    for hp in plan.host_plans:
-        for a in hp.assignments:
-            if a.ip:
-                all_cx7_ips.append(a.ip)
-
-    if all_cx7_ips and not dry_run:
-        click.echo()
-        click.echo("Distributing CX7 host keys to known_hosts...")
-        ks_results = distribute_cx7_host_keys(
-            all_cx7_ips,
-            host_list,
-            ssh_kwargs=ssh_kwargs,
-            dry_run=dry_run,
-        )
-        ks_ok = sum(1 for r in ks_results if r.success)
-        ks_fail = sum(1 for r in ks_results if not r.success)
-        if ks_fail:
-            click.echo("  Warning: keyscan failed on %d host(s)." % ks_fail, err=True)
-        click.echo("  Host keys for %d CX7 IPs distributed to %d host(s) + local." % (len(all_cx7_ips), ks_ok))
-
     # Persist topology to cluster YAML (explicit --cluster or default cluster)
     effective_cluster = cluster_name
     if not effective_cluster:
@@ -1123,9 +1100,10 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
 
     subnet_strs = [str(s) for s in all_subnets]
     if configured and not dry_run:
+        cx7_ips = [a.ip for hp in plan.host_plans for a in hp.assignments if a.ip]
         _record_setup_phase(
             cluster_name, user, host_list, "cx7",
-            subnets=subnet_strs, cx7_ips=all_cx7_ips,
+            subnets=subnet_strs, cx7_ips=cx7_ips,
             netplan_file="/etc/netplan/40-cx7.yaml",
         )
 

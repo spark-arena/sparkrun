@@ -472,17 +472,25 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                 return None
 
             # Try NOPASSWD on all hosts using the current sudo user
-            from sparkrun.orchestration.ssh import run_remote_scripts_parallel
+            from sparkrun.orchestration.primitives import run_local_script, should_run_locally
+            from sparkrun.orchestration.ssh import RemoteResult, run_remote_scripts_parallel
 
             sudo_user = sudo_ssh_kwargs.get("ssh_user", user)
+            local_hosts = [h for h in host_list if should_run_locally(h, sudo_user)]
+            remote_hosts = [h for h in host_list if not should_run_locally(h, sudo_user)]
             try:
-                test_results = run_remote_scripts_parallel(
-                    host_list,
-                    "sudo -n true",
-                    quiet=True,
-                    timeout=10,
-                    **sudo_ssh_kwargs,
-                )
+                test_results = []
+                for h in local_hosts:
+                    lr = run_local_script("sudo -n true", dry_run=False)
+                    test_results.append(RemoteResult(host=h, returncode=lr.returncode, stdout=lr.stdout, stderr=lr.stderr))
+                if remote_hosts:
+                    test_results.extend(run_remote_scripts_parallel(
+                        remote_hosts,
+                        "sudo -n true",
+                        quiet=True,
+                        timeout=10,
+                        **sudo_ssh_kwargs,
+                    ))
                 if all(r.success for r in test_results):
                     return None
             except Exception:
@@ -493,13 +501,19 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
 
             # Verify sudo works with this password on at least one host
             test_host = host_list[0]
-            test_r = run_sudo_script_on_host(
-                test_host,
-                "true",
-                sudo_password,
-                ssh_kwargs=sudo_ssh_kwargs,
-                timeout=10,
-            )
+            if should_run_locally(test_host, sudo_user):
+                import subprocess as _sp
+
+                _proc = _sp.run(["sudo", "-S", "true"], input=sudo_password + "\n", capture_output=True, text=True, timeout=10)
+                test_r = RemoteResult(host=test_host, returncode=_proc.returncode, stdout=_proc.stdout, stderr=_proc.stderr)
+            else:
+                test_r = run_sudo_script_on_host(
+                    test_host,
+                    "true",
+                    sudo_password,
+                    ssh_kwargs=sudo_ssh_kwargs,
+                    timeout=10,
+                )
             if not test_r.success:
                 # Sudo failed for cluster user — offer alternate user
                 alt_default = default_user if sudo_user != default_user else ""
