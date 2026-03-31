@@ -978,6 +978,69 @@ def _group_interfaces_by_port(interfaces: list[CX7Interface]) -> list[list[CX7In
     return [sorted_ifaces[i: i + 2] for i in range(0, len(sorted_ifaces), 2)]
 
 
+def _is_existing_ring_valid(
+        detections: dict[str, CX7HostDetection],
+        topology_result: CX7TopologyResult,
+        target_mtu: int,
+) -> bool:
+    """Check if the existing CX7 config is already a valid ring.
+
+    A ring is valid when:
+    - All interfaces on all hosts have IPs with the correct MTU.
+    - Each physical link's interface pair shares at least one common subnet.
+    - Each link uses its own unique subnet(s) (no cross-link subnet reuse).
+
+    This checks the *existing* state against the *detected* topology links,
+    without reference to the planner's subnet assignment.  This avoids
+    false positives from the planner assigning subnets to links in a
+    different order than the existing configuration.
+    """
+    if not topology_result.links:
+        return False
+
+    # Build interface -> (ip, subnet, mtu) lookup per host
+    iface_state: dict[str, dict[str, tuple[str, str, int]]] = {}
+    for host, det in detections.items():
+        if not det.detected:
+            return False
+        state: dict[str, tuple[str, str, int]] = {}
+        for iface in det.interfaces:
+            if not iface.ip or not iface.subnet:
+                return False  # unconfigured interface
+            if iface.mtu != target_mtu:
+                return False
+            state[iface.name] = (iface.ip, iface.subnet, iface.mtu)
+        iface_state[host] = state
+
+    # Deduplicate links (A→B and B→A are the same physical link)
+    seen_links: set[tuple[str, str]] = set()
+    unique_links: list[tuple[str, str, str, str]] = []
+    for hostA, ifA, hostB, ifB in topology_result.links:
+        key = (min(hostA, hostB), max(hostA, hostB))
+        if key not in seen_links:
+            seen_links.add(key)
+            unique_links.append((hostA, ifA, hostB, ifB))
+
+    # Check each link: both interfaces must have IPs on a common subnet
+    link_subnets: list[str] = []
+    for hostA, ifA, hostB, ifB in unique_links:
+        stateA = iface_state.get(hostA, {})
+        stateB = iface_state.get(hostB, {})
+        if ifA not in stateA or ifB not in stateB:
+            return False
+        _, subnetA, _ = stateA[ifA]
+        _, subnetB, _ = stateB[ifB]
+        if subnetA != subnetB:
+            return False  # link endpoints on different subnets
+        link_subnets.append(subnetA)
+
+    # All link subnets should be unique (no reuse across links)
+    if len(link_subnets) != len(set(link_subnets)):
+        return False
+
+    return True
+
+
 def _is_ring_host_valid(
         det: CX7HostDetection,
         assignments: list[CX7InterfaceAssignment],
@@ -1084,6 +1147,23 @@ def plan_ring_cx7(
                 % (host, len(port_groups), len(det.interfaces))
             )
     if plan.errors:
+        return plan
+
+    # Pre-check: is the existing config already a valid ring?
+    if not force and _is_existing_ring_valid(detections, topology_result, mtu):
+        logger.info("Existing ring configuration is valid, no changes needed")
+        for host in sorted(detections.keys()):
+            det = detections[host]
+            existing_assignments = [
+                CX7InterfaceAssignment(iface_name=iface.name, ip=iface.ip, subnet=iface.subnet)
+                for iface in det.interfaces if iface.ip and iface.subnet
+            ]
+            plan.host_plans.append(CX7HostPlan(
+                host=host,
+                needs_change=False,
+                assignments=existing_assignments,
+            ))
+        plan.all_valid = True
         return plan
 
     # Order hosts into a ring: A -> B -> C -> A
