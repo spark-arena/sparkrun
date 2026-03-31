@@ -567,6 +567,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                             click.echo("  Detecting topology via neighbor discovery...")
                             topology_result = detect_topology(
                                 detections, host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run,
+                                sudo_password=_ensure_sudo_password(),
                             )
                             effective_topology = topology_result.topology
                             click.echo("  Detected topology: %s" % effective_topology.value)
@@ -585,6 +586,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                             click.echo("  Running topology detection for ring...")
                             topology_result = detect_topology(
                                 detections, host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run,
+                                sudo_password=_ensure_sudo_password(),
                             )
                         else:
                             from sparkrun.orchestration.networking import CX7TopologyResult

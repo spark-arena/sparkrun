@@ -316,11 +316,11 @@ def _run_ssh_diagnose(host_list, user, local_user):
                 line_lower = line.lower()
                 # Capture lines about key offers, rejections, auth methods, and errors
                 if any(kw in line_lower for kw in (
-                    "offering", "trying", "authentications that can continue",
-                    "no more authentication", "permission denied",
-                    "key_load", "identity file", "will attempt",
-                    "server accepts key", "authentication refused",
-                    "pubkey_prepare", "sign_and_send",
+                        "offering", "trying", "authentications that can continue",
+                        "no more authentication", "permission denied",
+                        "key_load", "identity file", "will attempt",
+                        "server accepts key", "authentication refused",
+                        "pubkey_prepare", "sign_and_send",
                 )):
                     ssh_verbose_lines.append(line.strip())
             if ssh_verbose_lines:
@@ -338,7 +338,7 @@ def _run_ssh_diagnose(host_list, user, local_user):
                 "-o", "ControlMaster=auto",
                 "-o", "ControlPersist=2m",
                 "-o", "ControlPath=%s" % control_path,
-                "%s@%s" % (user, h), "true",
+                      "%s@%s" % (user, h), "true",
             ],
             timeout=60,
         )
@@ -349,12 +349,12 @@ def _run_ssh_diagnose(host_list, user, local_user):
             continue
 
         cm_ssh = [
-            "ssh"] + ssh_opts + [
-            "-o", "ControlMaster=auto",
-            "-o", "ControlPersist=2m",
-            "-o", "ControlPath=%s" % control_path,
-            "%s@%s" % (user, h),
-        ]
+                     "ssh"] + ssh_opts + [
+                     "-o", "ControlMaster=auto",
+                     "-o", "ControlPersist=2m",
+                     "-o", "ControlPath=%s" % control_path,
+                           "%s@%s" % (user, h),
+                 ]
 
         # Step 3: Collect remote diagnostics
         click.echo("  [3/4] Collecting remote diagnostics...")
@@ -597,7 +597,7 @@ printf 'ak_key_types=%s\n' "$(awk '{print $1}' ~/.ssh/authorized_keys 2>/dev/nul
             ["ssh"] + ssh_opts + [
                 "-o", "ControlPath=%s" % control_path,
                 "-O", "exit",
-                "%s@%s" % (user, h),
+                      "%s@%s" % (user, h),
             ],
             capture_output=True, timeout=5,
         )
@@ -932,7 +932,7 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
         if n_hosts == 3 and has_4_ifaces:
             # Run topology detection via MAC/ARP — ring candidate
             click.echo("Detecting topology via neighbor discovery...")
-            topology_result = detect_topology(detections, host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
+            topology_result = detect_topology(detections, host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run, sudo_password=_ensure_sudo())
             effective_topology = topology_result.topology
             click.echo("Detected topology: %s" % effective_topology.value)
         else:
@@ -944,7 +944,7 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
     if effective_topology == CX7Topology.RING and topology_result is None:
         if not dry_run:
             click.echo("Running topology detection for ring configuration...")
-            topology_result = detect_topology(detections, host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
+            topology_result = detect_topology(detections, host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run, sudo_password=_ensure_sudo())
         else:
             from sparkrun.orchestration.networking import CX7TopologyResult
             topology_result = CX7TopologyResult(topology=CX7Topology.RING)

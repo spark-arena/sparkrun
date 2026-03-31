@@ -751,6 +751,7 @@ def detect_topology(
         hosts: list[str],
         ssh_kwargs: dict | None = None,
         dry_run: bool = False,
+        sudo_password: str | None = None,
 ) -> CX7TopologyResult:
     """Detect CX7 topology via MAC/ARP neighbor discovery.
 
@@ -765,14 +766,46 @@ def detect_topology(
         hosts: List of host identifiers.
         ssh_kwargs: SSH connection parameters.
         dry_run: Log without executing.
+        sudo_password: Password for hosts without NOPASSWD sudo.
 
     Returns:
         CX7TopologyResult with topology classification and link list.
     """
     from sparkrun.orchestration.primitives import run_script_on_host
+    from sparkrun.utils import is_local_host
 
     kw = ssh_kwargs or {}
     result = CX7TopologyResult()
+
+    def _run_on_host(host: str, script: str) -> "RemoteResult":
+        """Dispatch script to a host with sudo support."""
+        if is_local_host(host):
+            import os
+            import subprocess
+
+            from sparkrun.orchestration.ssh import RemoteResult
+
+            ssh_user = kw.get("ssh_user")
+            os_user = os.environ.get("USER", "root")
+            local_sudo_safe = sudo_password and (ssh_user is None or ssh_user == os_user)
+            if local_sudo_safe:
+                proc = subprocess.run(
+                    ["sudo", "-S", "bash", "-s"],
+                    input=sudo_password + "\n" + script,
+                    capture_output=True, text=True, timeout=30,
+                )
+                return RemoteResult(host=host, returncode=proc.returncode, stdout=proc.stdout, stderr=proc.stderr)
+            else:
+                from sparkrun.orchestration.primitives import run_local_script
+
+                lr = run_local_script(script, dry_run=dry_run)
+                return RemoteResult(host=host, returncode=lr.returncode, stdout=lr.stdout, stderr=lr.stderr)
+        elif sudo_password:
+            from sparkrun.orchestration.ssh import run_remote_sudo_script
+
+            return run_remote_sudo_script(host, script, sudo_password, timeout=30, dry_run=dry_run, **kw)
+        else:
+            return run_script_on_host(host, script, ssh_kwargs=kw or None, timeout=30, dry_run=dry_run)
 
     # Phase 1 — Bringup: ensure all CX7 interfaces are link-up
     all_iface_names: dict[str, list[str]] = {}
@@ -794,7 +827,7 @@ def detect_topology(
     if not dry_run:
         logger.info("Bringing up CX7 interfaces on %d host(s)...", len(bringup_hosts))
         for i, host in enumerate(bringup_hosts):
-            run_script_on_host(host, bringup_scripts[i], ssh_kwargs=kw or None, timeout=30, dry_run=dry_run)
+            _run_on_host(host, bringup_scripts[i])
 
     # Phase 2 — Build MAC lookup: mac -> (host, iface_name)
     mac_lookup: dict[str, tuple[str, str]] = {}
@@ -822,7 +855,7 @@ def detect_topology(
     if not dry_run:
         logger.info("Running neighbor discovery on %d host(s)...", len(arping_hosts))
         for i, host in enumerate(arping_hosts):
-            r = run_script_on_host(host, arping_scripts[i], ssh_kwargs=kw or None, timeout=30, dry_run=dry_run)
+            r = _run_on_host(host, arping_scripts[i])
             if r.success:
                 host_neighbors[host] = _parse_arping_output(r.stdout)
             else:
