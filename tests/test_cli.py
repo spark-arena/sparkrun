@@ -959,6 +959,26 @@ class TestClusterCommands:
         assert result.exit_code == 0
         assert "created" in result.output.lower()
 
+    def test_cluster_create_with_default(self, runner, tmp_path, monkeypatch):
+        """Test creating a cluster with --default sets it as default."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.core.config
+
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+
+        result = runner.invoke(
+            main,
+            ["cluster", "create", "my-cluster", "--hosts", "host1,host2", "--default"],
+        )
+        assert result.exit_code == 0
+        assert "created" in result.output.lower()
+        assert "default cluster set to" in result.output.lower()
+
+        # Verify it's actually the default
+        result = runner.invoke(main, ["cluster", "default"])
+        assert "my-cluster" in result.output
+
     def test_cluster_create_duplicate(self, runner, cluster_setup):
         """Test that creating a duplicate cluster fails."""
         result = runner.invoke(

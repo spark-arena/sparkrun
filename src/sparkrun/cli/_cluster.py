@@ -45,8 +45,9 @@ def cluster(ctx):
     type=click.Choice(["auto", "cx7", "mgmt"], case_sensitive=False),
     help="Network interface for transfers (auto=default, cx7=InfiniBand, mgmt=management)",
 )
+@click.option("--default", "set_default", is_flag=True, default=False, help="Set as the default cluster")
 @click.pass_context
-def cluster_create(ctx, name, hosts, hosts_file, description, user, cache_dir, transfer_mode, transfer_interface):
+def cluster_create(ctx, name, hosts, hosts_file, description, user, cache_dir, transfer_mode, transfer_interface, set_default):
     """Create a new named cluster."""
     from sparkrun.core.cluster_manager import ClusterError
     from sparkrun.core.hosts import parse_hosts_file
@@ -69,6 +70,9 @@ def cluster_create(ctx, name, hosts, hosts_file, description, user, cache_dir, t
             name, host_list, description, user=user, cache_dir=cache_dir, transfer_mode=transfer_mode, transfer_interface=transfer_interface
         )
         click.echo(f"Cluster '{name}' created with {len(host_list)} host(s).")
+        if set_default:
+            mgr.set_default(name)
+            click.echo(f"Default cluster set to '{name}'.")
     except ClusterError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
