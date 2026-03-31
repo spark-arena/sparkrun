@@ -95,8 +95,15 @@ def cluster_create(ctx, name, hosts, hosts_file, description, user, cache_dir, t
     type=click.Choice(["auto", "cx7", "mgmt"], case_sensitive=False),
     help="Network interface for transfers (auto=default, cx7=InfiniBand, mgmt=management)",
 )
+@click.option(
+    "--topology",
+    default=None,
+    type=click.Choice(["none", "direct", "switch", "ring"], case_sensitive=False),
+    help="CX7 topology (none=remove, direct/switch=switched fabric, ring=3-node mesh/ring)",
+)
 @click.pass_context
-def cluster_update(ctx, name, hosts, hosts_file, add_host, remove_host, description, user, cache_dir, transfer_mode, transfer_interface):
+def cluster_update(ctx, name, hosts, hosts_file, add_host, remove_host,
+                   description, user, cache_dir, transfer_mode, transfer_interface, topology):
     """Update an existing cluster.
 
     \b
@@ -131,6 +138,7 @@ def cluster_update(ctx, name, hosts, hosts_file, add_host, remove_host, descript
     cache_dir_provided = ctx.get_parameter_source("cache_dir") == ParameterSource.COMMANDLINE
     transfer_mode_provided = ctx.get_parameter_source("transfer_mode") == ParameterSource.COMMANDLINE
     transfer_interface_provided = ctx.get_parameter_source("transfer_interface") == ParameterSource.COMMANDLINE
+    topology_provided = ctx.get_parameter_source("topology") == ParameterSource.COMMANDLINE
 
     has_host_change = host_list is not None or add_host or remove_host
     if (
@@ -140,11 +148,12 @@ def cluster_update(ctx, name, hosts, hosts_file, add_host, remove_host, descript
             and not cache_dir_provided
             and not transfer_mode_provided
             and not transfer_interface_provided
+            and not topology_provided
     ):
         click.echo(
             "Error: Nothing to update. Provide --hosts, --hosts-file, --add-host, "
             "--remove-host, -d, --user, --cache-dir, --transfer-mode, "
-            "or --transfer-interface.",
+            "--transfer-interface, or --topology.",
             err=True,
         )
         sys.exit(1)
@@ -194,6 +203,14 @@ def cluster_update(ctx, name, hosts, hosts_file, add_host, remove_host, descript
     if transfer_interface_provided:
         # "auto" means unset (use default behavior)
         update_kwargs["transfer_interface"] = None if transfer_interface == "auto" else transfer_interface
+    if topology_provided:
+        # none=remove, direct/switch both map to "switch", ring=ring
+        if topology == "none":
+            update_kwargs["topology"] = None
+        elif topology in ("direct", "switch"):
+            update_kwargs["topology"] = "switch"
+        else:
+            update_kwargs["topology"] = topology
 
     try:
         mgr.update(name, hosts=host_list, description=description, **update_kwargs)
@@ -261,6 +278,8 @@ def cluster_show(ctx, name):
         click.echo(f"Transfer:    {c.transfer_mode}")
     if c.transfer_interface:
         click.echo(f"Xfer iface:  {c.transfer_interface}")
+    if c.topology:
+        click.echo(f"Topology:    {c.topology}")
     click.echo(f"Default:     {'yes' if c.name == default_name else 'no'}")
     click.echo(f"Hosts ({len(c.hosts)}):")
     for h in c.hosts:
