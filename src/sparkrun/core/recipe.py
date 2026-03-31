@@ -1083,7 +1083,7 @@ class Recipe:
         ordered = self.to_dict(overrides=overrides, container_image=container_image)
 
         text = (
-            json_dumps(ordered, indent=2, sort_keys=False)
+            json_dumps(ordered, sort_keys=False)
             if json
             else yaml.dump(ordered, Dumper=LiteralBlockDumper, indent=2, sort_keys=False, default_flow_style=False)
         )

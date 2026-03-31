@@ -44,7 +44,7 @@ def print_json(data: Any) -> None:
                 return dataclasses.asdict(obj)
             return super().default(obj)
 
-    click.echo(json.dumps(data, indent=2, cls=_SparkrunJSONEncoder))
+    click.echo(json.dumps(data, cls=_SparkrunJSONEncoder))
 
 
 def _get_context(ctx) -> "SparkrunContext":
