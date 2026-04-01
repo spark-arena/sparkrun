@@ -75,7 +75,7 @@ def parse_ib_detect_output(output: str) -> dict[str, str]:
     return parse_kv_output(output)
 
 
-def generate_ring_nccl_overrides() -> dict[str, str]:
+def generate_ring_nccl_overrides(ib_info: dict[str, str]) -> dict[str, str]:
     """NCCL overrides required for 3-node ring/mesh topology.
 
     Ring topologies use direct CX7 links without a switch, so the
@@ -111,22 +111,28 @@ def generate_nccl_env(ib_info: dict[str, str], topology: str | None = None) -> d
         "NCCL_CROSS_NIC": "1",
     }
 
-    if ib_info.get("DETECTED_HCA_LIST"):
-        env["NCCL_IB_HCA"] = ib_info["DETECTED_HCA_LIST"]
-    if ib_info.get("DETECTED_NET_LIST"):
-        net_list = ib_info["DETECTED_NET_LIST"]
+    def _set_eth_interfaces(target):
+        net_list = ib_info[target]
         # NCCL_SOCKET_IFNAME uses '=' prefix per interface to pin exact devices (refer to NCCL docs for details)
-        nccl_socket = ",".join("=" + if_ for if_ in net_list.split(","))
-        env["NCCL_SOCKET_IFNAME"] = nccl_socket
+        # nccl_socket = ",".join("=" + if_ for if_ in net_list.split(","))
+        env["NCCL_SOCKET_IFNAME"] = net_list  # nccl_socket
         env["MN_IF_NAME"] = net_list
         env["OMPI_MCA_btl_tcp_if_include"] = net_list
         env["GLOO_SOCKET_IFNAME"] = net_list
         env["TP_SOCKET_IFNAME"] = net_list
+        # env["UCX_NET_DEVICES"] = net_list
+
+    if ib_info.get("DETECTED_HCA_LIST"):
+        env["NCCL_IB_HCA"] = ib_info["DETECTED_HCA_LIST"]
+    if ib_info.get('DETECTED_SOCKET_IFNAME'):  # prefer MGMT/default interface for non-IB HCA adapters since it works for mesh or non-mesh
+        _set_eth_interfaces('DETECTED_SOCKET_IFNAME')
+    elif ib_info.get("DETECTED_NET_LIST"):  # fallback to specifying CX7 interfaces
+        _set_eth_interfaces('DETECTED_NET_LIST')
     if ib_info.get("DETECTED_UCX_LIST"):
         env["UCX_NET_DEVICES"] = ib_info["DETECTED_UCX_LIST"]
 
     if topology == "ring":
-        env.update(generate_ring_nccl_overrides())
+        env.update(generate_ring_nccl_overrides(ib_info))
     elif ib_info.get("DETECTED_GID_INDEX"):  # only do group ID for non-mesh topologies
         env["NCCL_IB_GID_INDEX"] = ib_info["DETECTED_GID_INDEX"]
 
