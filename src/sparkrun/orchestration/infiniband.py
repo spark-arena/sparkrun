@@ -111,8 +111,6 @@ def generate_nccl_env(ib_info: dict[str, str], topology: str | None = None) -> d
         "NCCL_CROSS_NIC": "1",
     }
 
-    if ib_info.get("DETECTED_GID_INDEX"):
-        env["NCCL_IB_GID_INDEX"] = ib_info["DETECTED_GID_INDEX"]
     if ib_info.get("DETECTED_HCA_LIST"):
         env["NCCL_IB_HCA"] = ib_info["DETECTED_HCA_LIST"]
     if ib_info.get("DETECTED_NET_LIST"):
@@ -129,6 +127,8 @@ def generate_nccl_env(ib_info: dict[str, str], topology: str | None = None) -> d
 
     if topology == "ring":
         env.update(generate_ring_nccl_overrides())
+    elif ib_info.get("DETECTED_GID_INDEX"):  # only do group ID for non-mesh topologies
+        env["NCCL_IB_GID_INDEX"] = ib_info["DETECTED_GID_INDEX"]
 
     return env
 
@@ -149,9 +149,9 @@ def extract_ib_ips(ib_info: dict[str, str]) -> list[str]:
 
 
 def validate_ib_connectivity(
-    ib_ip_map: dict[str, str],
-    ssh_kwargs: dict | None = None,
-    dry_run: bool = False,
+        ib_ip_map: dict[str, str],
+        ssh_kwargs: dict | None = None,
+        dry_run: bool = False,
 ) -> dict[str, str]:
     """Validate that the control machine can reach detected IB IPs.
 
@@ -203,10 +203,10 @@ def validate_ib_connectivity(
 
 
 def detect_ib_for_hosts(
-    hosts: list[str],
-    ssh_kwargs: dict | None = None,
-    dry_run: bool = False,
-    topology: str | None = None,
+        hosts: list[str],
+        ssh_kwargs: dict | None = None,
+        dry_run: bool = False,
+        topology: str | None = None,
 ) -> IBDetectionResult:
     """Run IB detection on all hosts and return aggregated results.
 
