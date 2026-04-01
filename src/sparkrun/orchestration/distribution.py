@@ -386,6 +386,8 @@ def distribute_resources(
     transfer_hosts: list[str] | None = None
     worker_transfer_hosts: list[str] | None = None
 
+    _cross_user = _is_cross_user(ssh_kwargs)
+
     # Step 1: Detect InfiniBand for NCCL env + transfer routing
     # Reuse pre-computed results from resolve_auto_transfer_mode() when available.
     if pre_ib is not None and pre_ib.ib_result is not None:
@@ -408,7 +410,6 @@ def distribute_resources(
                 dry_run=dry_run,
             )
         _auto_delegated = False
-        _cross_user = _is_cross_user(ssh_kwargs)
         if transfer_mode == "auto":
             _in_cluster = is_control_in_cluster(host_list)
             if _in_cluster and not _cross_user:
