@@ -3,7 +3,7 @@
 from unittest.mock import patch, MagicMock
 
 from sparkrun.orchestration.ssh import RemoteResult
-from sparkrun.orchestration.distribution import _is_cross_user, resolve_auto_transfer_mode
+from sparkrun.orchestration.distribution import _is_cross_user, resolve_auto_transfer_mode, TransferModeResult
 from sparkrun.orchestration.primitives import check_tcp_reachability, find_available_port, should_run_locally
 
 
@@ -299,7 +299,9 @@ def test_is_cross_user_none():
 def test_resolve_auto_cross_user_returns_delegated(mock_in_cluster):
     """Auto + control in cluster + cross-user → delegated."""
     result = resolve_auto_transfer_mode("auto", ["10.0.0.5"], ssh_kwargs={"ssh_user": "dgxuser"})
-    assert result == "delegated"
+    assert isinstance(result, TransferModeResult)
+    assert result.mode == "delegated"
+    assert result.ib_result is None
 
 
 @patch("sparkrun.orchestration.distribution.is_control_in_cluster", return_value=True)
@@ -307,22 +309,68 @@ def test_resolve_auto_cross_user_returns_delegated(mock_in_cluster):
 def test_resolve_auto_same_user_returns_local(mock_in_cluster):
     """Auto + control in cluster + same user → local."""
     result = resolve_auto_transfer_mode("auto", ["10.0.0.5"], ssh_kwargs={"ssh_user": "drew"})
-    assert result == "local"
+    assert result.mode == "local"
+    assert result.ib_result is None
 
 
 def test_resolve_explicit_mode_passthrough():
     """Explicit modes are returned unchanged."""
-    assert resolve_auto_transfer_mode("local", ["10.0.0.5"]) == "local"
-    assert resolve_auto_transfer_mode("delegated", ["10.0.0.5"]) == "delegated"
-    assert resolve_auto_transfer_mode("push", ["10.0.0.5"]) == "push"
+    assert resolve_auto_transfer_mode("local", ["10.0.0.5"]).mode == "local"
+    assert resolve_auto_transfer_mode("delegated", ["10.0.0.5"]).mode == "delegated"
+    assert resolve_auto_transfer_mode("push", ["10.0.0.5"]).mode == "push"
 
 
 @patch("sparkrun.orchestration.distribution.is_control_in_cluster", return_value=False)
+@patch("sparkrun.orchestration.distribution._has_local_ib", return_value=False)
 @patch.dict("os.environ", {"USER": "drew"})
-def test_resolve_auto_external_control_same_user_defers(mock_in_cluster):
-    """Auto + not in cluster + same user → auto (deferred to IB probe)."""
+def test_resolve_auto_external_no_local_ib_returns_delegated(mock_ib, mock_in_cluster):
+    """Auto + external + same user + no local IB → delegated."""
     result = resolve_auto_transfer_mode("auto", ["10.0.0.5"], ssh_kwargs={"ssh_user": "drew"})
-    assert result == "auto"
+    assert result.mode == "delegated"
+    assert result.ib_result is None
+
+
+@patch("sparkrun.orchestration.distribution.is_control_in_cluster", return_value=False)
+@patch("sparkrun.orchestration.distribution._has_local_ib", return_value=True)
+@patch("sparkrun.orchestration.infiniband.detect_ib_for_hosts")
+@patch("sparkrun.orchestration.infiniband.validate_ib_connectivity")
+@patch.dict("os.environ", {"USER": "drew"})
+def test_resolve_auto_external_with_local_ib_reachable(mock_validate, mock_detect, mock_ib, mock_in_cluster):
+    """Auto + external + same user + has local IB + IB reachable → local with IB results."""
+    from sparkrun.orchestration.infiniband import IBDetectionResult
+
+    mock_detect.return_value = IBDetectionResult(
+        nccl_env={"NCCL_IB_HCA": "mlx5_0"},
+        ib_ip_map={"10.0.0.5": "192.168.1.5"},
+        mgmt_ip_map={"10.0.0.5": "10.0.0.5"},
+    )
+    mock_validate.return_value = {"10.0.0.5": "192.168.1.5"}
+    result = resolve_auto_transfer_mode("auto", ["10.0.0.5"], ssh_kwargs={"ssh_user": "drew"})
+    assert result.mode == "local"
+    assert result.ib_result is not None
+    assert result.ib_validated == {"10.0.0.5": "192.168.1.5"}
+    assert not result.auto_delegated
+
+
+@patch("sparkrun.orchestration.distribution.is_control_in_cluster", return_value=False)
+@patch("sparkrun.orchestration.distribution._has_local_ib", return_value=True)
+@patch("sparkrun.orchestration.infiniband.detect_ib_for_hosts")
+@patch("sparkrun.orchestration.infiniband.validate_ib_connectivity", return_value={})
+@patch.dict("os.environ", {"USER": "drew"})
+def test_resolve_auto_external_with_local_ib_unreachable(mock_validate, mock_detect, mock_ib, mock_in_cluster):
+    """Auto + external + same user + has local IB + IB unreachable → delegated with IB results."""
+    from sparkrun.orchestration.infiniband import IBDetectionResult
+
+    mock_detect.return_value = IBDetectionResult(
+        nccl_env={"NCCL_IB_HCA": "mlx5_0"},
+        ib_ip_map={"10.0.0.5": "192.168.1.5"},
+        mgmt_ip_map={"10.0.0.5": "10.0.0.5"},
+    )
+    result = resolve_auto_transfer_mode("auto", ["10.0.0.5"], ssh_kwargs={"ssh_user": "drew"})
+    assert result.mode == "delegated"
+    assert result.ib_result is not None
+    assert result.ib_validated == {}
+    assert result.auto_delegated
 
 
 @patch("sparkrun.orchestration.distribution.is_control_in_cluster", return_value=False)
@@ -330,7 +378,7 @@ def test_resolve_auto_external_control_same_user_defers(mock_in_cluster):
 def test_resolve_auto_external_control_cross_user_returns_delegated(mock_in_cluster):
     """Auto + not in cluster + cross-user → delegated."""
     result = resolve_auto_transfer_mode("auto", ["10.0.0.5"], ssh_kwargs={"ssh_user": "dgxuser"})
-    assert result == "delegated"
+    assert result.mode == "delegated"
 
 
 # ---------------------------------------------------------------------------

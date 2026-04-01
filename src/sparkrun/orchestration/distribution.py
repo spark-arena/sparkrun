@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from sparkrun.core.hosts import is_control_in_cluster
@@ -11,8 +12,26 @@ from sparkrun.utils import is_local_host
 
 if TYPE_CHECKING:
     from sparkrun.core.config import SparkrunConfig
+    from sparkrun.orchestration.infiniband import IBDetectionResult
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class TransferModeResult:
+    """Result of :func:`resolve_auto_transfer_mode`.
+
+    Always contains a concrete *mode* (never ``"auto"``).  When IB
+    detection was performed during resolution, *ib_result* and
+    *ib_validated* are populated so ``distribute_resources()`` can
+    skip redundant detection.
+    """
+
+    mode: str
+    ib_result: IBDetectionResult | None = None
+    ib_validated: dict[str, str] | None = None
+    auto_delegated: bool = False
+    """True when auto resolved to delegated (enables push fallback)."""
 
 
 def _is_cross_user(ssh_kwargs: dict | None) -> bool:
@@ -25,43 +44,71 @@ def _is_cross_user(ssh_kwargs: dict | None) -> bool:
     return ssh_user != os.environ.get("USER", "root")
 
 
+def _has_local_ib() -> bool:
+    """True when the control machine has InfiniBand interfaces."""
+    from pathlib import Path
+
+    ib_dir = Path("/sys/class/infiniband")
+    return ib_dir.is_dir() and any(ib_dir.iterdir())
+
+
 def resolve_auto_transfer_mode(
     transfer_mode: str,
     host_list: list[str],
     ssh_kwargs: dict | None = None,
-) -> str:
-    """Resolve ``"auto"`` transfer mode where definitively determinable.
+    dry_run: bool = False,
+) -> TransferModeResult:
+    """Resolve ``"auto"`` transfer mode to a concrete strategy.
 
     Call this early (before builder and distribution phases) so
-    downstream consumers receive a concrete mode when possible.
+    downstream consumers always receive a concrete mode — ``"auto"``
+    is never returned.
+
     Explicit modes (``"local"``, ``"push"``, ``"delegated"``) are
     returned unchanged.
 
-    Returns ``"auto"`` when the control node is external with the same
-    SSH user — ``distribute_resources()`` will probe IB connectivity
-    and make the final call.
+    When the control machine is external with the same SSH user and
+    has local InfiniBand, IB detection and connectivity validation
+    are performed here.  The results are stored in the returned
+    :class:`TransferModeResult` so ``distribute_resources()`` can
+    reuse them without redundant remote calls.
     """
     if transfer_mode != "auto":
-        return transfer_mode
+        return TransferModeResult(mode=transfer_mode)
 
     _cross_user = _is_cross_user(ssh_kwargs)
     _in_cluster = is_control_in_cluster(host_list)
 
     if _in_cluster and not _cross_user:
         logger.info("Auto-detected transfer mode: local (control is cluster member)")
-        return "local"
+        return TransferModeResult(mode="local")
 
     if _cross_user:
         logger.info(
             "Auto-detected transfer mode: delegated (cluster user '%s' differs from OS user)",
             ssh_kwargs.get("ssh_user") if ssh_kwargs else None,
         )
-        return "delegated"
+        return TransferModeResult(mode="delegated")
 
-    # External control + same user: defer to distribute_resources() which
-    # probes IB connectivity and may upgrade to "local"
-    logger.info("Transfer mode: auto (external control, pending IB connectivity check)")
-    return "auto"
+    # External control + same user: check if local machine has IB.
+    # If no local IB, control can never reach cluster IB → delegated.
+    if not _has_local_ib():
+        logger.info("Auto-detected transfer mode: delegated (external control, no local IB)")
+        return TransferModeResult(mode="delegated")
+
+    # Local IB exists — run IB detection + connectivity validation to
+    # resolve definitively and cache results for distribute_resources().
+    from sparkrun.orchestration.infiniband import detect_ib_for_hosts, validate_ib_connectivity
+
+    ib_result = detect_ib_for_hosts(host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
+    ib_validated = validate_ib_connectivity(ib_result.ib_ip_map, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
+
+    if ib_validated:
+        logger.info("Auto-detected transfer mode: local (external control, IB reachable)")
+        return TransferModeResult(mode="local", ib_result=ib_result, ib_validated=ib_validated)
+
+    logger.info("Auto-detected transfer mode: delegated (external control, no IB connectivity)")
+    return TransferModeResult(mode="delegated", ib_result=ib_result, ib_validated={}, auto_delegated=True)
 
 
 def _distribute_from_head(
@@ -252,6 +299,7 @@ def distribute_resources(
     transfer_mode: str = "auto",
     transfer_interface: str | None = None,
     local_cache_dir: str | None = None,
+    pre_ib: TransferModeResult | None = None,
 ) -> tuple[dict[str, str] | None, dict[str, str], dict[str, str]]:
     """Detect IB, distribute container image and model to target hosts.
 
@@ -339,43 +387,49 @@ def distribute_resources(
     worker_transfer_hosts: list[str] | None = None
 
     # Step 1: Detect InfiniBand for NCCL env + transfer routing
-    ib_result = detect_ib_for_hosts(
-        host_list,
-        ssh_kwargs=ssh_kwargs,
-        dry_run=dry_run,
-    )
-    nccl_env = ib_result.nccl_env
-    mgmt_ip_map = ib_result.mgmt_ip_map
-
-    # Auto-detect or validate IB connectivity
-    _ib_validated: dict[str, str] | None = None
-    if transfer_mode in ("auto", "local"):
-        _ib_validated = validate_ib_connectivity(
-            ib_result.ib_ip_map,
+    # Reuse pre-computed results from resolve_auto_transfer_mode() when available.
+    if pre_ib is not None and pre_ib.ib_result is not None:
+        ib_result = pre_ib.ib_result
+        _ib_validated = pre_ib.ib_validated
+        _auto_delegated = pre_ib.auto_delegated
+        logger.debug("Reusing pre-computed IB detection results from resolve_auto_transfer_mode()")
+    else:
+        ib_result = detect_ib_for_hosts(
+            host_list,
             ssh_kwargs=ssh_kwargs,
             dry_run=dry_run,
         )
-
-    _auto_delegated = False
-    _cross_user = _is_cross_user(ssh_kwargs)
-    if transfer_mode == "auto":
-        _in_cluster = is_control_in_cluster(host_list)
-        if _in_cluster and not _cross_user:
-            transfer_mode = "local"
-            logger.info("Auto-detected transfer mode: local (control is cluster member)")
-        elif _ib_validated and not _cross_user:
-            transfer_mode = "local"
-            logger.info("Auto-detected transfer mode: local (IB reachable from control node)")
-        else:
-            transfer_mode = "delegated"
-            _auto_delegated = True
-            if _cross_user:
-                logger.info(
-                    "Auto-detected transfer mode: delegated (cluster user '%s' differs from OS user)",
-                    ssh_kwargs.get("ssh_user"),
-                )
+        # Validate IB connectivity for auto/local modes
+        _ib_validated: dict[str, str] | None = None
+        if transfer_mode in ("auto", "local"):
+            _ib_validated = validate_ib_connectivity(
+                ib_result.ib_ip_map,
+                ssh_kwargs=ssh_kwargs,
+                dry_run=dry_run,
+            )
+        _auto_delegated = False
+        _cross_user = _is_cross_user(ssh_kwargs)
+        if transfer_mode == "auto":
+            _in_cluster = is_control_in_cluster(host_list)
+            if _in_cluster and not _cross_user:
+                transfer_mode = "local"
+                logger.info("Auto-detected transfer mode: local (control is cluster member)")
+            elif _ib_validated and not _cross_user:
+                transfer_mode = "local"
+                logger.info("Auto-detected transfer mode: local (IB reachable from control node)")
             else:
-                logger.info("Auto-detected transfer mode: delegated (external control, no IB connectivity)")
+                transfer_mode = "delegated"
+                _auto_delegated = True
+                if _cross_user:
+                    logger.info(
+                        "Auto-detected transfer mode: delegated (cluster user '%s' differs from OS user)",
+                        ssh_kwargs.get("ssh_user"),
+                    )
+                else:
+                    logger.info("Auto-detected transfer mode: delegated (external control, no IB connectivity)")
+
+    nccl_env = ib_result.nccl_env
+    mgmt_ip_map = ib_result.mgmt_ip_map
 
     # Determine effective transfer interface (default: cx7)
     _use_mgmt = transfer_interface == "mgmt"

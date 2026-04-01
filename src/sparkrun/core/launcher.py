@@ -151,11 +151,13 @@ def launch_inference(
     effective_cache_dir = cache_dir or str(config.hf_cache_dir)
     effective_local_cache = local_cache_dir or effective_cache_dir
     ssh_kwargs = build_ssh_kwargs(config)
-    effective_transfer_mode = resolve_auto_transfer_mode(
+    transfer_result = resolve_auto_transfer_mode(
         transfer_mode or "auto",
         host_list,
         ssh_kwargs=ssh_kwargs,
+        dry_run=dry_run,
     )
+    effective_transfer_mode = transfer_result.mode
 
     # -- Port resolution --
     if auto_port:
@@ -254,6 +256,7 @@ def launch_inference(
             transfer_mode=effective_transfer_mode,
             transfer_interface=transfer_interface,
             local_cache_dir=effective_local_cache,
+            pre_ib=transfer_result,
         )
         # Re-save job metadata with IP maps from IB detection
         if not dry_run and (ib_ip_map or mgmt_ip_map):
