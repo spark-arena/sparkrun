@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from sparkrun.core.cluster_manager import ClusterManager, ClusterError
+from sparkrun.core.cluster_manager import ClusterManager, ClusterError, ResolvedClusterConfig
 
 
 def test_create_cluster(tmp_path: Path):
@@ -562,6 +563,85 @@ def test_existing_yaml_without_topology_loads(tmp_path: Path):
     cluster = manager.get("old-cluster")
     assert cluster.topology is None
     assert cluster.hosts == ["host1", "host2"]
+
+
+# ---------------------------------------------------------------------------
+# resolve_transfer_config tests
+# ---------------------------------------------------------------------------
+
+
+class _FakeConfig:
+    """Minimal stand-in for SparkrunConfig with hf_cache_dir."""
+    def __init__(self, hf_cache_dir: str = "/home/testuser/.cache/huggingface"):
+        self.hf_cache_dir = Path(hf_cache_dir)
+
+
+class TestResolveTransferConfig:
+    """Tests for ResolvedClusterConfig.resolve_transfer_config."""
+
+    def test_explicit_cache_dir_always_used(self):
+        """When the cluster defines cache_dir, it's always used as remote_cache_dir."""
+        cfg = ResolvedClusterConfig(cache_dir="/mnt/shared/models")
+        config = _FakeConfig()
+        _, remote, _, _ = cfg.resolve_transfer_config(config)
+        assert remote == "/mnt/shared/models"
+
+    def test_cross_user_derives_remote_from_ssh_user(self):
+        """Different SSH user → remote cache derived from that user's home."""
+        cfg = ResolvedClusterConfig(user="gpuadmin")
+        config = _FakeConfig()
+        with patch.dict("os.environ", {"USER": "localuser"}):
+            _, remote, _, _ = cfg.resolve_transfer_config(config)
+        assert remote == "/home/gpuadmin/.cache/huggingface"
+
+    def test_non_linux_control_uses_linux_path(self):
+        """macOS (or other non-Linux) control machine → remote path is Linux-safe."""
+        cfg = ResolvedClusterConfig()
+        config = _FakeConfig("/Users/drew/.cache/huggingface")
+        with patch("sys.platform", "darwin"), \
+             patch.dict("os.environ", {"USER": "drew"}):
+            _, remote, _, _ = cfg.resolve_transfer_config(config)
+        assert remote == "/home/drew/.cache/huggingface"
+
+    def test_non_linux_control_with_ssh_user(self):
+        """macOS control + cluster SSH user → remote path uses SSH user."""
+        cfg = ResolvedClusterConfig(user="drew")
+        config = _FakeConfig("/Users/drew/.cache/huggingface")
+        # Same username on both sides, so cross-user branch doesn't fire
+        with patch("sys.platform", "darwin"), \
+             patch.dict("os.environ", {"USER": "drew"}):
+            _, remote, _, _ = cfg.resolve_transfer_config(config)
+        assert remote == "/home/drew/.cache/huggingface"
+
+    def test_linux_control_uses_local_path(self):
+        """Linux control machine → remote path matches local (same platform)."""
+        cfg = ResolvedClusterConfig()
+        config = _FakeConfig("/home/drew/.cache/huggingface")
+        with patch("sys.platform", "linux"), \
+             patch.dict("os.environ", {"USER": "drew"}):
+            _, remote, _, _ = cfg.resolve_transfer_config(config)
+        assert remote == "/home/drew/.cache/huggingface"
+
+    def test_transfer_mode_override(self):
+        """CLI transfer_mode_override takes precedence over cluster setting."""
+        cfg = ResolvedClusterConfig(transfer_mode="push")
+        config = _FakeConfig()
+        _, _, mode, _ = cfg.resolve_transfer_config(config, transfer_mode_override="delegated")
+        assert mode == "delegated"
+
+    def test_transfer_mode_from_cluster(self):
+        """Cluster transfer_mode used when no CLI override."""
+        cfg = ResolvedClusterConfig(transfer_mode="push")
+        config = _FakeConfig()
+        _, _, mode, _ = cfg.resolve_transfer_config(config)
+        assert mode == "push"
+
+    def test_transfer_mode_defaults_to_auto(self):
+        """No override and no cluster setting → defaults to 'auto'."""
+        cfg = ResolvedClusterConfig()
+        config = _FakeConfig()
+        _, _, mode, _ = cfg.resolve_transfer_config(config)
+        assert mode == "auto"
 
 
 # ---------------------------------------------------------------------------

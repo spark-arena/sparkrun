@@ -526,6 +526,7 @@ class ResolvedClusterConfig:
             Tuple of ``(local_cache_dir, remote_cache_dir, effective_transfer_mode, effective_transfer_interface)``.
         """
         import os
+        import sys
 
         local_cache_dir = str(config.hf_cache_dir)
         if self.cache_dir:
@@ -535,6 +536,12 @@ class ResolvedClusterConfig:
             # Use absolute path (not ~user) because tilde isn't expanded
             # inside quoted strings in bash scripts.
             remote_cache_dir = "/home/%s/.cache/huggingface" % self.user
+        elif sys.platform != "linux":
+            # Control machine is non-Linux (e.g. macOS) but targets are
+            # Linux — derive remote cache from the SSH user if configured,
+            # otherwise fall back to the OS username.
+            _user = self.user or os.environ.get("USER", "user")
+            remote_cache_dir = "/home/%s/.cache/huggingface" % _user
         else:
             remote_cache_dir = local_cache_dir
         effective_transfer_mode = transfer_mode_override or self.transfer_mode or "auto"
