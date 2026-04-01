@@ -116,18 +116,19 @@ class TestEugrPrepareImage:
     """Test EugrBuilder.prepare_image() — build and mod injection."""
 
     def test_eugr_prepare_with_build_args(self, eugr_builder_with_repo):
-        """prepare_image() calls build-and-copy.sh when build_args are present."""
+        """prepare_image() calls build-and-copy.sh when build_args are present and image missing."""
         builder, repo_dir = eugr_builder_with_repo
         recipe = Recipe.from_dict({
             "name": "test", "model": "some/model", "runtime": "eugr-vllm",
             "container": "my-image",
             "runtime_config": {"build_args": ["--some-flag"]},
         })
-        with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
-            with mock.patch("subprocess.run") as mock_run:
-                mock_run.return_value = mock.Mock(returncode=0)
-                with mock.patch.object(builder, "_save_build_metadata"):
-                    result = builder.prepare_image("my-image", recipe, ["10.0.0.1"])
+        with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
+            with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
+                with mock.patch("subprocess.run") as mock_run:
+                    mock_run.return_value = mock.Mock(returncode=0)
+                    with mock.patch.object(builder, "_save_build_metadata"):
+                        result = builder.prepare_image("my-image", recipe, ["10.0.0.1"])
 
         assert result == "my-image"
         mock_run.assert_called_once()
@@ -172,15 +173,16 @@ class TestEugrPrepareImage:
         assert result == "my-image"
 
     def test_eugr_prepare_dry_run(self, eugr_builder_with_repo):
-        """prepare_image() in dry-run does not execute subprocess."""
+        """prepare_image() in dry-run does not execute subprocess (build script)."""
         builder, repo_dir = eugr_builder_with_repo
         recipe = Recipe.from_dict({
             "name": "test", "model": "some/model", "runtime": "eugr-vllm",
             "runtime_config": {"build_args": ["--flag"]},
         })
-        with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
-            with mock.patch("subprocess.run") as mock_run:
-                builder.prepare_image("vllm-node", recipe, ["10.0.0.1"], dry_run=True)
+        with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
+            with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
+                with mock.patch("subprocess.run") as mock_run:
+                    builder.prepare_image("vllm-node", recipe, ["10.0.0.1"], dry_run=True)
 
         mock_run.assert_not_called()
 
@@ -547,3 +549,35 @@ class TestEugrDelegatedMode:
             result = builder._ensure_repo_remote("head", ssh_kwargs={}, dry_run=True)
         mock_run.assert_not_called()
         assert result == "~/.cache/sparkrun/eugr-spark-vllm-docker"
+
+    def test_eugr_prepare_delegated_skips_build_when_image_exists_with_build_args(self, eugr_builder_with_repo):
+        """When build_args are present but the image already exists on head, skip the build."""
+        builder, repo_dir = eugr_builder_with_repo
+        recipe = Recipe.from_dict({
+            "name": "test", "model": "some/model", "runtime": "eugr-vllm",
+            "container": "my-image",
+            "runtime_config": {"build_args": ["--tf5"]},
+        })
+        with mock.patch.object(builder, "_image_exists_on_host", return_value=True) as mock_check:
+            with mock.patch.object(builder, "_build_image_remote") as mock_build:
+                result = builder.prepare_image(
+                    "my-image", recipe, ["head-host"],
+                    transfer_mode="delegated", ssh_kwargs={"ssh_user": "user"},
+                )
+        mock_check.assert_called_once_with("my-image", "head-host", {"ssh_user": "user"})
+        mock_build.assert_not_called()
+        assert result == "my-image"
+
+    def test_eugr_prepare_local_skips_build_when_image_exists_with_build_args(self, eugr_builder_with_repo):
+        """When build_args are present but the image already exists locally, skip the build."""
+        builder, repo_dir = eugr_builder_with_repo
+        recipe = Recipe.from_dict({
+            "name": "test", "model": "some/model", "runtime": "eugr-vllm",
+            "container": "my-image",
+            "runtime_config": {"build_args": ["--tf5"]},
+        })
+        with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=True):
+            with mock.patch("subprocess.run") as mock_run:
+                result = builder.prepare_image("my-image", recipe, ["10.0.0.1"])
+        mock_run.assert_not_called()
+        assert result == "my-image"

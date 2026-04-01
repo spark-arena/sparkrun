@@ -672,18 +672,19 @@ class TestEugrPrepare:
             "container": "my-image",
             "runtime_config": {"build_args": ["--some-flag"]},
         })
-        with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
-            with mock.patch("subprocess.run") as mock_run:
-                mock_run.return_value = mock.Mock(returncode=0)
-                with mock.patch.object(builder, "_save_build_metadata"):
-                    builder.prepare_image("my-image", recipe, ["10.0.0.1"])
+        with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
+            with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
+                with mock.patch("subprocess.run") as mock_run:
+                    mock_run.return_value = mock.Mock(returncode=0)
+                    with mock.patch.object(builder, "_save_build_metadata"):
+                        builder.prepare_image("my-image", recipe, ["10.0.0.1"])
 
-                # Should call build-and-copy.sh with -t and build_args
-                cmd = mock_run.call_args[0][0]
-                assert str(repo_dir / "build-and-copy.sh") in cmd[0]
-                assert "-t" in cmd
-                assert "my-image" in cmd
-                assert "--some-flag" in cmd
+                    # Should call build-and-copy.sh with -t and build_args
+                    cmd = mock_run.call_args[0][0]
+                    assert str(repo_dir / "build-and-copy.sh") in cmd[0]
+                    assert "-t" in cmd
+                    assert "my-image" in cmd
+                    assert "--some-flag" in cmd
 
     def test_prepare_without_build_args_or_mods_image_exists(self, eugr_builder):
         """prepare_image() is a no-op when no build_args/mods and image exists."""
@@ -723,11 +724,12 @@ class TestEugrPrepare:
             "name": "test", "model": "some-model", "runtime": "eugr-vllm",
             "runtime_config": {"build_args": ["--flag"]},
         })
-        with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
-            with mock.patch("subprocess.run") as mock_run:
-                builder.prepare_image("vllm-node", recipe, ["10.0.0.1"], dry_run=True)
-                # subprocess.run should not be called in dry-run
-                mock_run.assert_not_called()
+        with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
+            with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
+                with mock.patch("subprocess.run") as mock_run:
+                    builder.prepare_image("vllm-node", recipe, ["10.0.0.1"], dry_run=True)
+                    # subprocess.run should not be called in dry-run
+                    mock_run.assert_not_called()
 
     def test_prepare_injects_mod_pre_exec(self, eugr_builder):
         """prepare_image() injects mod entries into recipe.pre_exec."""

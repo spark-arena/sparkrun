@@ -172,7 +172,7 @@ class EugrBuilder(BuilderPlugin):
             image = LOCAL_EUGR_NIGHTLY_TF5
             build_args = ["--tf5"]
             needs_build = True
-            logger.info("Mapped eugr nightly tf5 image to use direct build via container name '%s' (build_args cleared)", image)
+            logger.info("Mapped eugr nightly tf5 image to use direct build via container name '%s' (build_args managed)", image)
         elif image.strip() == GHCR_EUGR_NIGHTLY + ":latest" and not build_args:
             # use sparkrun prefixed names to avoid collisions with other user images
             image = LOCAL_EUGR_NIGHTLY
@@ -184,21 +184,23 @@ class EugrBuilder(BuilderPlugin):
         # If the image references a known public registry, it's pullable — never build it.
         is_pullable = any(image.startswith(prefix) for prefix in PULLABLE_REGISTRY_PREFIXES)
         if is_pullable and not needs_build:
-            logger.info("eugr image '%s' is from a known registry; skipping build (will be pulled at runtime)", image)
+            logger.info("image '%s' is from a known registry; skipping build (will be pulled at runtime)", image)
             needs_build = False
-        else:
-            needs_build = needs_build or bool(build_args)
-            if not needs_build:
-                if delegated:
-                    if not self._image_exists_on_host(image, head, ssh_kwargs):
-                        logger.info("eugr image '%s' not found on head '%s'; will build remotely", image, head)
-                        needs_build = True
-                else:
-                    from sparkrun.containers.registry import image_exists_locally
+        elif not needs_build:
+            # Check if image already exists — skip build if specifically named and already present
+            if delegated:
+                image_found = self._image_exists_on_host(image, head, ssh_kwargs)
+            else:
+                from sparkrun.containers.registry import image_exists_locally
 
-                    if not image_exists_locally(image):
-                        logger.info("eugr image '%s' not found locally; will build", image)
-                        needs_build = True
+                image_found = image_exists_locally(image)
+
+            if not image_found:
+                needs_build = True
+                if delegated:
+                    logger.info("image '%s' not found on head '%s'; will build remotely", image, head)
+                else:
+                    logger.info("image '%s' not found locally; will build", image)
 
         # nothing eugr-specific to prepare -- no build, no mods
         if not needs_build and not has_mods:
