@@ -121,32 +121,40 @@ def check_job_running(
     )
 
 
+def _resolve_override(key: str, overrides: dict | None, defaults: dict | None):
+    """Resolve a value from overrides -> recipe defaults."""
+    val = overrides.get(key) if overrides else None
+    if val is None and defaults:
+        val = defaults.get(key)
+    return val
+
+
 def generate_cluster_id(recipe: "Recipe", hosts: list[str], overrides: dict | None = None) -> str:
     """Deterministic cluster identifier from recipe, host set, and overrides.
 
-    Hashes: runtime + model + sorted hosts + port + served_model_name.
-    Port and served_model_name are resolved from overrides -> recipe defaults
-    so that two instances of the same model on different ports get distinct IDs.
+    Hashes: runtime + model + sorted hosts + port + served_model_name +
+    non-default parallelism (tp, pp).
+    Port, served_model_name, and parallelism are resolved from
+    overrides -> recipe defaults so that two instances of the same model
+    on different ports or parallelism configs get distinct IDs.
     """
-    # Resolve effective port
-    port = None
-    if overrides:
-        port = overrides.get("port")
-    if port is None and recipe.defaults:
-        port = recipe.defaults.get("port")
+    port = _resolve_override("port", overrides, recipe.defaults)
+    served_name = _resolve_override("served_model_name", overrides, recipe.defaults)
 
-    # Resolve effective served_model_name
-    served_name = None
-    if overrides:
-        served_name = overrides.get("served_model_name")
-    if served_name is None and recipe.defaults:
-        served_name = recipe.defaults.get("served_model_name")
+    # Include non-default parallelism in the hash so different TP/PP
+    # configs on the same recipe+hosts get distinct cluster IDs.
+    tp_val = _resolve_override("tensor_parallel", overrides, recipe.defaults)
+    pp_val = _resolve_override("pipeline_parallel", overrides, recipe.defaults)
 
     parts = [recipe.runtime, recipe.model] + sorted(hosts)
     if port is not None:
         parts.append("port=%s" % port)
     if served_name is not None:
         parts.append("name=%s" % served_name)
+    if tp_val is not None and int(tp_val) != 1:
+        parts.append("tp=%s" % int(tp_val))
+    if pp_val is not None and int(pp_val) != 1:
+        parts.append("pp=%s" % int(pp_val))
     key = "\0".join(parts)
     digest = hashlib.sha256(key.encode()).hexdigest()[:12]
     return "sparkrun_%s" % digest
@@ -178,11 +186,7 @@ def save_job_metadata(
     jobs_dir = Path(cache_dir) / "jobs"
     jobs_dir.mkdir(parents=True, exist_ok=True)
 
-    tp = None
-    if overrides:
-        tp = overrides.get("tensor_parallel")
-    if tp is None and recipe.defaults:
-        tp = recipe.defaults.get("tensor_parallel")
+    from sparkrun.core.parallelism import PARALLELISM_KEYS
 
     meta: dict = {
         "cluster_id": cluster_id,
@@ -193,8 +197,12 @@ def save_job_metadata(
     }
     if recipe_ref:
         meta["recipe_ref"] = recipe_ref
-    if tp is not None:
-        meta["tensor_parallel"] = int(tp)
+
+    # Store all parallelism values (not just tensor_parallel)
+    for long_key, _ in PARALLELISM_KEYS:
+        val = _resolve_override(long_key, overrides, recipe.defaults)
+        if val is not None:
+            meta[long_key] = int(val)
     # Persist port for proxy discovery
     port = None
     if overrides:

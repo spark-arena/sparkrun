@@ -87,8 +87,14 @@ def format_job_label(meta: dict[str, Any], cluster_id: str) -> str:
     short_id = cluster_id.removeprefix("sparkrun_")  # [:8]
     label = meta.get("recipe", cluster_id)
     tp = meta.get("tensor_parallel")
-    if tp:
-        label += f"  (tp={tp})"
+    pp = meta.get("pipeline_parallel")
+    if tp or pp:
+        parts = []
+        if tp:
+            parts.append("tp=%s" % tp)
+        if pp:
+            parts.append("pp=%s" % pp)
+        label += "  (%s)" % ", ".join(parts)
     label += f"  [{short_id}]"
     return label
 
@@ -197,6 +203,8 @@ def display_vram_estimate(recipe, cli_overrides=None, auto_detect=True, cache_di
     if est.kv_cache_total_gb is not None:
         click.echo(f"  KV cache:         {est.kv_cache_total_gb:.2f} GB (max_model_len={est.max_model_len:,})")
     click.echo(f"  Tensor parallel:  {est.tensor_parallel}")
+    if est.pipeline_parallel > 1:
+        click.echo(f"  Pipeline parallel: {est.pipeline_parallel}")
     click.echo(f"  Per-GPU total:    {est.total_per_gpu_gb:.2f} GB")
     fit_str = "YES" if est.fits_dgx_spark else "EXCEEDS %.0f GB" % DGX_SPARK_VRAM_GB
     click.echo(f"  DGX Spark fit:    {fit_str}")

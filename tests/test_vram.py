@@ -160,6 +160,79 @@ class TestEstimateVram:
         assert est2.total_per_gpu_gb < est1.total_per_gpu_gb
         assert abs(est2.total_per_gpu_gb - est1.total_per_gpu_gb / 2) < 0.01
 
+    def test_pp2_halves_per_gpu(self):
+        """With pp=2, per-GPU VRAM should be half of pp=1."""
+        kwargs = dict(
+            model_params=7_000_000_000,
+            model_dtype="float16",
+            num_layers=32,
+            num_kv_heads=32,
+            head_dim=128,
+            max_model_len=4096,
+        )
+        est1 = estimate_vram(**kwargs, tensor_parallel=1, pipeline_parallel=1)
+        est2 = estimate_vram(**kwargs, tensor_parallel=1, pipeline_parallel=2)
+
+        assert est2.total_per_gpu_gb < est1.total_per_gpu_gb
+        assert abs(est2.total_per_gpu_gb - est1.total_per_gpu_gb / 2) < 0.01
+        assert est2.pipeline_parallel == 2
+
+    def test_tp2_pp2_quarters_per_gpu(self):
+        """With tp=2 and pp=2, per-GPU VRAM should be 1/4 of single GPU."""
+        kwargs = dict(
+            model_params=7_000_000_000,
+            model_dtype="float16",
+            num_layers=32,
+            num_kv_heads=32,
+            head_dim=128,
+            max_model_len=4096,
+        )
+        est1 = estimate_vram(**kwargs, tensor_parallel=1, pipeline_parallel=1)
+        est4 = estimate_vram(**kwargs, tensor_parallel=2, pipeline_parallel=2)
+
+        assert abs(est4.total_per_gpu_gb - est1.total_per_gpu_gb / 4) < 0.01
+
+    def test_pp_default_is_one(self):
+        """Default pipeline_parallel should be 1."""
+        est = estimate_vram(model_vram=10.0)
+        assert est.pipeline_parallel == 1
+
+    def test_model_vram_override_with_pp(self):
+        """model_vram is divided by tp * pp."""
+        est = estimate_vram(model_vram=12.0, tensor_parallel=2, pipeline_parallel=3)
+        # 12 GB / (2 * 3) = 2 GB per GPU
+        assert abs(est.total_per_gpu_gb - 2.0) < 0.01
+
+    def test_kv_vram_per_token_with_tp_and_pp(self):
+        """kv_vram_per_token is divided by tp * pp."""
+        est = estimate_vram(
+            model_vram=12.0,
+            kv_vram_per_token=0.0001,
+            max_model_len=10000,
+            tensor_parallel=2,
+            pipeline_parallel=3,
+        )
+        # model: 12/(2*3) = 2, KV: 0.0001*10000/(2*3) = 0.1667, total ≈ 2.1667
+        assert abs(est.total_per_gpu_gb - (12.0 / 6 + 0.0001 * 10000 / 6)) < 0.01
+
+    def test_gpu_memory_utilization_with_tp_and_pp(self):
+        """Budget analysis should work with tensor and pipeline parallel."""
+        from sparkrun.models.vram import DGX_SPARK_VRAM_GB
+
+        est = estimate_vram(
+            model_vram=24.0,
+            num_layers=32,
+            num_kv_heads=32,
+            head_dim=128,
+            max_model_len=4096,
+            tensor_parallel=2,
+            pipeline_parallel=3,
+            gpu_memory_utilization=0.9,
+        )
+        usable = DGX_SPARK_VRAM_GB * 0.9
+        per_gpu_weights = 24.0 / 6
+        assert est.available_kv_gb == pytest.approx(usable - per_gpu_weights, abs=0.01)
+
     def test_missing_params_warns(self):
         est = estimate_vram(model_dtype="float16")
         assert len(est.warnings) > 0

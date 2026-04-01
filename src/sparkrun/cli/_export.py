@@ -36,9 +36,15 @@ def _apply_spark_arena_benchmarks(recipe, recipe_name: str):
         return  # already set
 
     if recipe_name.startswith(SPARK_ARENA_PREFIX):
+        from sparkrun.core.parallelism import extract_parallelism_meta
+
         uuid = recipe_name[len(SPARK_ARENA_PREFIX):]
-        tp = recipe.defaults.get("tensor_parallel", 1)  # TODO: should resolve all cluster_meta parallelism possibilities
-        recipe.metadata["spark_arena_benchmarks"] = [{"tp": tp, "uuid": uuid}]
+        parallelism_meta = extract_parallelism_meta(recipe.defaults or {})
+        entry: dict = {"uuid": uuid}
+        entry.update(parallelism_meta)
+        if not parallelism_meta:
+            entry["tp"] = 1
+        recipe.metadata["spark_arena_benchmarks"] = [entry]
 
 
 @click.group()

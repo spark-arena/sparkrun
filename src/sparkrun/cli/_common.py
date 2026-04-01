@@ -855,6 +855,7 @@ def build_cluster_id_overrides(
         port: int | None = None,
         served_model_name: str | None = None,
         tp_override: int | None = None,
+        pp_override: int | None = None,
 ) -> dict | None:
     """Build overrides dict for cluster_id generation from CLI flags.
 
@@ -867,6 +868,8 @@ def build_cluster_id_overrides(
         overrides["served_model_name"] = served_model_name
     if tp_override is not None:
         overrides["tensor_parallel"] = tp_override
+    if pp_override is not None:
+        overrides["pipeline_parallel"] = pp_override
     return overrides or None
 
 

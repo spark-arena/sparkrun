@@ -297,14 +297,16 @@ class RuntimePlugin(Plugin):
             Required node count, or ``None`` if no parallelism config
             is set (meaning "use all provided hosts, no trimming").
         """
+        from sparkrun.core.parallelism import extract_parallelism
+
         config = recipe.build_config_chain(overrides or {})
+        # Check raw values first — return None when nothing is configured
         tp_val = config.get("tensor_parallel")
         pp_val = config.get("pipeline_parallel")
         if tp_val is None and pp_val is None:
             return None
-        tp = int(tp_val) if tp_val is not None else 1
-        pp = int(pp_val) if pp_val is not None else 1
-        return tp * pp
+        p = extract_parallelism(config)
+        return p.total_gpus
 
     @staticmethod
     def _augment_served_model_name(

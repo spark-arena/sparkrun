@@ -92,6 +92,7 @@ class VRAMEstimate:
     total_per_gpu_gb: float
     max_model_len: int | None
     tensor_parallel: int
+    pipeline_parallel: int = 1
     warnings: list[str] = field(default_factory=list)
 
     # Input parameters used (for display)
@@ -366,6 +367,7 @@ def estimate_vram(
     head_dim: int | None = None,
     max_model_len: int | None = None,
     tensor_parallel: int = 1,
+    pipeline_parallel: int = 1,
     model_vram: float | None = None,
     kv_vram_per_token: float | None = None,
     gpu_memory_utilization: float | None = None,
@@ -381,8 +383,9 @@ def estimate_vram(
         head_dim: Dimension per attention head.
         max_model_len: Maximum sequence length for KV cache sizing.
         tensor_parallel: Tensor parallelism degree.
-        model_vram: Direct override for model weight VRAM in GB (not scaled by TP).
-        kv_vram_per_token: Direct override for KV cache in GB per token (scaled by max_model_len and TP).
+        pipeline_parallel: Pipeline parallelism degree.
+        model_vram: Direct override for model weight VRAM in GB (not scaled by TP/PP).
+        kv_vram_per_token: Direct override for KV cache in GB per token (scaled by max_model_len and TP*PP).
         gpu_memory_utilization: Fraction of GPU memory the runtime is allowed to use (e.g. 0.9).
 
     Returns:
@@ -391,6 +394,8 @@ def estimate_vram(
     warnings: list[str] = []
     kv_dtype = kv_dtype or "bfloat16"
     tp = max(tensor_parallel, 1)
+    pp = max(pipeline_parallel, 1)
+    shard_factor = tp * pp
 
     # --- Model weight VRAM ---
     model_weights_gb = 0.0
@@ -437,11 +442,11 @@ def estimate_vram(
         warnings.append("Missing architecture info (%s); KV cache estimate unavailable" % ", ".join(missing))
 
     # --- Per-GPU total ---
-    # Model weights split across TP GPUs
-    per_gpu_weights_gb = model_weights_gb / tp
+    # Model weights split across TP * PP GPUs
+    per_gpu_weights_gb = model_weights_gb / shard_factor
 
-    # KV heads also split across TP GPUs (each GPU handles num_kv_heads/tp heads)
-    per_gpu_kv_gb = (kv_cache_total_gb / tp) if kv_cache_total_gb else 0.0
+    # KV heads also split across TP * PP GPUs
+    per_gpu_kv_gb = (kv_cache_total_gb / shard_factor) if kv_cache_total_gb else 0.0
 
     total_per_gpu_gb = per_gpu_weights_gb + per_gpu_kv_gb
 
@@ -466,7 +471,7 @@ def estimate_vram(
 
         # Estimate max context tokens that fit in available KV space
         if kv_cache_per_token_bytes and kv_cache_per_token_bytes > 0:
-            per_gpu_kv_per_token_gb = (kv_cache_per_token_bytes / tp) / (1024**3)
+            per_gpu_kv_per_token_gb = (kv_cache_per_token_bytes / shard_factor) / (1024**3)
             if per_gpu_kv_per_token_gb > 0:
                 max_context_tokens = int(available_kv_gb / per_gpu_kv_per_token_gb)
 
@@ -480,6 +485,7 @@ def estimate_vram(
         total_per_gpu_gb=total_per_gpu_gb,
         max_model_len=max_model_len,
         tensor_parallel=tp,
+        pipeline_parallel=pp,
         warnings=warnings,
         model_params=model_params,
         model_dtype=model_dtype,

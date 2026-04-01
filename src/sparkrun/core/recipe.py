@@ -750,6 +750,9 @@ class Recipe:
         tp_val = config.get("tensor_parallel")
         tensor_parallel = int(tp_val) if tp_val is not None else 1
 
+        pp_val = config.get("pipeline_parallel")
+        pipeline_parallel = int(pp_val) if pp_val is not None else 1
+
         # Check for kv_cache_dtype in defaults (runtime-specific)
         if not kv_dtype:
             kv_cache_default = config.get("kv_cache_dtype")
@@ -769,6 +772,7 @@ class Recipe:
             head_dim=int(head_dim) if head_dim is not None else None,
             max_model_len=max_model_len,
             tensor_parallel=tensor_parallel,
+            pipeline_parallel=pipeline_parallel,
             model_vram=float(model_vram) if model_vram is not None else None,
             kv_vram_per_token=float(kv_vram_per_token) if kv_vram_per_token is not None else None,
             gpu_memory_utilization=gpu_memory_utilization,

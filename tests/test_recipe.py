@@ -775,6 +775,32 @@ class TestRecipeMetadata:
         assert est.tensor_parallel == 2
         assert abs(est.total_per_gpu_gb - 5.0) < 0.01
 
+    def test_estimate_vram_cli_override_pp(self):
+        """Test that CLI pipeline_parallel override is respected."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "metadata": {"model_vram": 12.0},
+            "defaults": {"tensor_parallel": 1},
+        })
+        est = recipe.estimate_vram(cli_overrides={"pipeline_parallel": 2}, auto_detect=False)
+        assert est.pipeline_parallel == 2
+        assert abs(est.total_per_gpu_gb - 6.0) < 0.01
+
+    def test_estimate_vram_tp_and_pp(self):
+        """Test VRAM estimation with both TP and PP from defaults."""
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "test-model",
+            "metadata": {"model_vram": 12.0},
+            "defaults": {"tensor_parallel": 2, "pipeline_parallel": 3},
+        })
+        est = recipe.estimate_vram(auto_detect=False)
+        assert est.tensor_parallel == 2
+        assert est.pipeline_parallel == 3
+        # 12 / (2 * 3) = 2.0
+        assert abs(est.total_per_gpu_gb - 2.0) < 0.01
+
     def test_estimate_vram_cli_override_max_model_len(self):
         """Test that CLI max_model_len override is respected."""
         recipe = Recipe.from_dict({

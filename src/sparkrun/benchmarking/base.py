@@ -146,28 +146,16 @@ class BenchmarkingPlugin(Plugin):
         return "%s(framework_name=%r)" % (self.__class__.__name__, self.framework_name)
 
 
-# TODO: _build_cluster_meta and _PARALLELISM_KEYS should perhaps
-#       be somewhere more central because useful to use for any parallelism checks
-_PARALLELISM_KEYS = [
-    ("tensor_parallel", "tp"),
-    ("pipeline_parallel", "pp"),
-    ("data_parallel", "dp"),
-    ("expert_parallel", "ep"),
-    ("context_parallel", "cp"),
-]
-
-
 def _build_cluster_meta(recipe, overrides, cluster_id, host_list):
     """Build cluster metadata dict with only non-default parallelism values."""
+    from sparkrun.core.parallelism import extract_parallelism_meta
+
     config_chain = recipe.build_config_chain(overrides)
     meta = {
         "cluster_id": cluster_id,
         "node_count": len(host_list),
     }
-    for key, short in _PARALLELISM_KEYS:
-        val = config_chain.get(key)
-        if val is not None:
-            meta[short] = int(val)
+    meta.update(extract_parallelism_meta(config_chain))
     return meta
 
 

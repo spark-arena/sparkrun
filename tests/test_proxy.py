@@ -168,6 +168,73 @@ class TestGenerateClusterId:
         id_same = generate_cluster_id(recipe, hosts, overrides={"port": 8000})
         assert id_default == id_same
 
+    def test_tp1_does_not_change_id(self):
+        """tp=1 (default) should not change the cluster ID."""
+        from sparkrun.orchestration.job_metadata import generate_cluster_id
+
+        recipe = _make_recipe()
+        hosts = ["10.0.0.1"]
+
+        id_no_tp = generate_cluster_id(recipe, hosts)
+        id_tp1 = generate_cluster_id(recipe, hosts, overrides={"tensor_parallel": 1})
+        assert id_no_tp == id_tp1
+
+    def test_different_tp_different_ids(self):
+        """Different non-default TP values produce different IDs."""
+        from sparkrun.orchestration.job_metadata import generate_cluster_id
+
+        recipe = _make_recipe()
+        hosts = ["10.0.0.1"]
+
+        id_tp2 = generate_cluster_id(recipe, hosts, overrides={"tensor_parallel": 2})
+        id_tp4 = generate_cluster_id(recipe, hosts, overrides={"tensor_parallel": 4})
+        assert id_tp2 != id_tp4
+
+    def test_tp_changes_id_vs_default(self):
+        """Non-default TP should produce different ID than no TP."""
+        from sparkrun.orchestration.job_metadata import generate_cluster_id
+
+        recipe = _make_recipe()
+        hosts = ["10.0.0.1"]
+
+        id_default = generate_cluster_id(recipe, hosts)
+        id_tp2 = generate_cluster_id(recipe, hosts, overrides={"tensor_parallel": 2})
+        assert id_default != id_tp2
+
+    def test_pp_changes_id(self):
+        """Non-default PP should produce different ID than no PP."""
+        from sparkrun.orchestration.job_metadata import generate_cluster_id
+
+        recipe = _make_recipe()
+        hosts = ["10.0.0.1"]
+
+        id_default = generate_cluster_id(recipe, hosts)
+        id_pp2 = generate_cluster_id(recipe, hosts, overrides={"pipeline_parallel": 2})
+        assert id_default != id_pp2
+
+    def test_pp1_does_not_change_id(self):
+        """pp=1 (default) should not change the cluster ID."""
+        from sparkrun.orchestration.job_metadata import generate_cluster_id
+
+        recipe = _make_recipe()
+        hosts = ["10.0.0.1"]
+
+        id_no_pp = generate_cluster_id(recipe, hosts)
+        id_pp1 = generate_cluster_id(recipe, hosts, overrides={"pipeline_parallel": 1})
+        assert id_no_pp == id_pp1
+
+    def test_tp_and_pp_from_defaults(self):
+        """TP and PP from recipe defaults should affect cluster ID."""
+        from sparkrun.orchestration.job_metadata import generate_cluster_id
+
+        recipe_plain = _make_recipe()
+        recipe_parallel = _make_recipe(defaults={"tensor_parallel": 2, "pipeline_parallel": 2})
+        hosts = ["10.0.0.1"]
+
+        id_plain = generate_cluster_id(recipe_plain, hosts)
+        id_parallel = generate_cluster_id(recipe_parallel, hosts)
+        assert id_plain != id_parallel
+
 
 # =====================================================================
 # Tests: save_job_metadata with port/served_model_name
