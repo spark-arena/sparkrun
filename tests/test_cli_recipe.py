@@ -233,7 +233,10 @@ class TestRegistryRevertToDefault:
 
     def test_revert_to_defaults(self, runner, registry_setup):
         """Test reverting registries to defaults."""
-        result = runner.invoke(main, ["registry", "revert-to-defaults"])
+        # Mock subprocess.run to prevent real git clones during manifest discovery
+        # (reset_to_defaults resets _manifest_discovery_attempted and re-runs discovery)
+        with mock.patch("subprocess.run", return_value=mock.Mock(returncode=1, stderr="mocked")):
+            result = runner.invoke(main, ["registry", "revert-to-defaults"])
         assert result.exit_code == 0
         assert "reset to defaults" in result.output.lower()
 

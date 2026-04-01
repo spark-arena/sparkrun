@@ -892,6 +892,8 @@ class TestStopCommand:
         import sparkrun.core.config
 
         monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+        # Prevent real git clones when ensure_initialized sees empty cache
+        monkeypatch.setattr("subprocess.run", lambda *a, **kw: mock.Mock(returncode=1, stderr="mocked"))
 
         result = runner.invoke(
             main,
@@ -3547,6 +3549,8 @@ class TestLogCommand:
         import sparkrun.core.config
 
         monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+        # Prevent real git clones when ensure_initialized sees empty cache
+        monkeypatch.setattr("subprocess.run", lambda *a, **kw: mock.Mock(returncode=1, stderr="mocked"))
 
         result = runner.invoke(
             main,
@@ -4322,6 +4326,8 @@ class TestClusterUserInCLICommands:
             "sparkrun.orchestration.primitives.cleanup_containers",
             mock_cleanup,
         )
+        # Prevent real git clones when ensure_initialized sees empty cache
+        monkeypatch.setattr("subprocess.run", lambda *a, **kw: mock.Mock(returncode=1, stderr="mocked"))
 
         result = runner.invoke(
             main,
@@ -4345,6 +4351,8 @@ class TestClusterUserInCLICommands:
             captured_config["ssh_user"] = config.ssh_user if config else None
 
         monkeypatch.setattr(SglangRuntime, "follow_logs", mock_follow_logs)
+        # Prevent real git clones when ensure_initialized sees empty cache
+        monkeypatch.setattr("subprocess.run", lambda *a, **kw: mock.Mock(returncode=1, stderr="mocked"))
 
         result = runner.invoke(
             main,
@@ -4392,6 +4400,8 @@ class TestClusterUserInCLICommands:
             "sparkrun.orchestration.primitives.try_clear_page_cache",
             lambda *a, **kw: None,
         )
+        # Prevent real git clones when ensure_initialized sees empty cache
+        monkeypatch.setattr("subprocess.run", lambda *a, **kw: mock.Mock(returncode=1, stderr="mocked"))
 
         result = runner.invoke(
             main,
@@ -4682,6 +4692,7 @@ class TestStopLogsClusterIdAndOverrides:
         with (
             mock.patch("sparkrun.orchestration.primitives.cleanup_containers"),
             mock.patch("sparkrun.orchestration.job_metadata.generate_cluster_id", return_value="sparkrun_aabbccdd1122") as mock_gen,
+            mock.patch("subprocess.run", return_value=mock.Mock(returncode=1, stderr="mocked")),
         ):
             result = runner.invoke(
                 main,
@@ -4706,6 +4717,7 @@ class TestStopLogsClusterIdAndOverrides:
         with (
             mock.patch("sparkrun.orchestration.primitives.cleanup_containers"),
             mock.patch("sparkrun.orchestration.job_metadata.generate_cluster_id", return_value="sparkrun_aabbccdd1122") as mock_gen,
+            mock.patch("subprocess.run", return_value=mock.Mock(returncode=1, stderr="mocked")),
         ):
             result = runner.invoke(
                 main,
@@ -4759,6 +4771,7 @@ class TestStopLogsClusterIdAndOverrides:
         with (
             mock.patch("sparkrun.core.bootstrap.get_runtime", return_value=mock_runtime),
             mock.patch("sparkrun.orchestration.job_metadata.generate_cluster_id", return_value="sparkrun_aabbccdd1122") as mock_gen,
+            mock.patch("subprocess.run", return_value=mock.Mock(returncode=1, stderr="mocked")),
         ):
             result = runner.invoke(
                 main,

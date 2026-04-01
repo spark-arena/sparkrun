@@ -1425,14 +1425,20 @@ class TestInitDefaultsFromManifests:
 
 
 class TestResetToDefaults:
-    """Test reset_to_defaults method."""
+    """Test reset_to_defaults method.
+
+    reset_to_defaults() clears _manifest_discovery_attempted and re-runs
+    _default_registries(), which would attempt real git clones via
+    _init_defaults_from_manifests().  Mock that method to avoid network calls.
+    """
 
     def test_deletes_config_and_returns_defaults(self, mgr, sample_entry):
         """reset_to_defaults removes registries.yaml and returns fresh defaults."""
         mgr._save_registries([sample_entry])
         assert mgr._registries_path.exists()
 
-        entries = mgr.reset_to_defaults()
+        with mock.patch.object(mgr, "_init_defaults_from_manifests", return_value=[]):
+            entries = mgr.reset_to_defaults()
         # Config file should be recreated with defaults
         assert mgr._registries_path.exists()
         names = [e.name for e in entries]
@@ -1442,14 +1448,16 @@ class TestResetToDefaults:
     def test_works_when_no_config_exists(self, mgr):
         """reset_to_defaults works even if registries.yaml doesn't exist."""
         assert not mgr._registries_path.exists()
-        entries = mgr.reset_to_defaults()
+        with mock.patch.object(mgr, "_init_defaults_from_manifests", return_value=[]):
+            entries = mgr.reset_to_defaults()
         assert len(entries) > 0
         assert mgr._registries_path.exists()
 
     def test_saves_defaults_to_file(self, mgr, sample_entry):
         """After reset, the saved file contains the default entries."""
         mgr._save_registries([sample_entry])
-        entries = mgr.reset_to_defaults()
+        with mock.patch.object(mgr, "_init_defaults_from_manifests", return_value=[]):
+            entries = mgr.reset_to_defaults()
         # Load from file directly to verify persistence
         loaded = mgr._load_registries_from_file()
         assert len(loaded) == len(entries)
@@ -1467,7 +1475,8 @@ class TestResetToDefaults:
         assert (mgr.cache_root / "fake-registry").exists()
         assert link.is_symlink()
 
-        mgr.reset_to_defaults()
+        with mock.patch.object(mgr, "_init_defaults_from_manifests", return_value=[]):
+            mgr.reset_to_defaults()
 
         # All cache entries should be gone
         remaining = [p.name for p in mgr.cache_root.iterdir()]
