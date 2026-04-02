@@ -104,6 +104,7 @@ class BaseTuner:
         self.model = model
         self.config = config
         self.cache_dir = cache_dir
+        self._custom_output_dir = output_dir is not None
         self.output_dir = output_dir or str(self._default_output_dir())
         self.skip_clone = skip_clone
         self.dry_run = dry_run
@@ -112,12 +113,51 @@ class BaseTuner:
 
         self.ssh_kwargs = build_ssh_kwargs(config)
 
+        # Compute remote output dir: on cross-OS or cross-user setups the
+        # remote host path differs from the local one.
+        self.remote_output_dir = self._resolve_remote_output_dir()
+
     def _default_output_dir(self) -> Path:
         """Return the default host-side output directory.
 
         Subclasses override to return their ``get_*_tuning_dir()`` result.
         """
         raise NotImplementedError
+
+    def _resolve_remote_output_dir(self) -> str:
+        """Derive the remote-host output directory.
+
+        When the control machine is non-Linux (e.g. macOS) or the SSH user
+        differs from the local user, the local ``DEFAULT_CACHE_DIR`` path
+        won't exist on remote Linux hosts.  This method replaces the local
+        cache prefix with a Linux-appropriate path derived from the SSH user.
+
+        If a custom ``output_dir`` was provided explicitly, it is assumed
+        to be valid on the remote host and returned as-is.
+        """
+        import os
+        import sys
+
+        # If the user gave an explicit output_dir, trust it for remote too
+        if self.__dict__.get("_custom_output_dir"):
+            return self.output_dir
+
+        ssh_user = self.ssh_kwargs.get("ssh_user")
+        local_user = os.environ.get("USER")
+
+        if (ssh_user and ssh_user != local_user) or sys.platform != "linux":
+            _user = ssh_user or local_user or "user"
+            # Replace the local cache prefix with the remote user's cache dir.
+            # output_dir is always under DEFAULT_CACHE_DIR/<subdir>.
+            local_prefix = str(DEFAULT_CACHE_DIR)
+            if self.output_dir.startswith(local_prefix):
+                suffix = self.output_dir[len(local_prefix):]
+                return "/home/%s/.cache/sparkrun%s" % (_user, suffix)
+            # Fallback: if output_dir doesn't start with DEFAULT_CACHE_DIR
+            # (shouldn't happen in normal use), return as-is.
+            return self.output_dir
+
+        return self.output_dir
 
     # ----- public entry point -----
 
@@ -302,7 +342,7 @@ class BaseTuner:
         logger.info("Step 1/5: Launching tuning container on %s...", self.host)
 
         # Ensure output directory exists on the remote host (as the SSH user, not root)
-        mkdir_script = "#!/bin/bash\nset -uo pipefail\nmkdir -p %s\n" % self.output_dir
+        mkdir_script = "#!/bin/bash\nset -uo pipefail\nmkdir -p %s\n" % self.remote_output_dir
         mkdir_result = run_script_on_host(
             self.host,
             mkdir_script,
@@ -313,14 +353,14 @@ class BaseTuner:
         if not mkdir_result.success and not self.dry_run:
             logger.error(
                 "Failed to create output directory %s: %s",
-                self.output_dir,
+                self.remote_output_dir,
                 mkdir_result.stderr,
             )
             return 1
 
         volumes = build_volumes(self.cache_dir)
-        # Mount tuning output directory
-        volumes[self.output_dir] = self.output_path
+        # Mount tuning output directory (use remote path for volume mount)
+        volumes[self.remote_output_dir] = self.output_path
 
         launch_script = DockerExecutor().generate_launch_script(
             image=self.image,
@@ -562,7 +602,7 @@ class BaseTuner:
             return
 
         if self.dry_run:
-            logger.info("  [dry-run] Would sync configs back from %s:%s", self.host, self.output_dir)
+            logger.info("  [dry-run] Would sync configs back from %s:%s", self.host, self.remote_output_dir)
             return
 
         from sparkrun.orchestration.ssh import run_rsync_from_remote
@@ -570,7 +610,7 @@ class BaseTuner:
         logger.info("  Syncing tuning configs back from %s...", self.host)
         result = run_rsync_from_remote(
             host=self.host,
-            source_path=self.output_dir,
+            source_path=self.remote_output_dir,
             dest_path=self.output_dir,
             ssh_user=self.ssh_kwargs.get("ssh_user"),
             ssh_key=self.ssh_kwargs.get("ssh_key"),

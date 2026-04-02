@@ -107,10 +107,10 @@ class TestDistributesToRemoteHosts:
             )
             mock_rsync.assert_called_once()
             call_kwargs = mock_rsync.call_args
-            # source and dest are both the tuning dir path
             assert call_kwargs[0][0] == str(tuning_dir)  # source_path
             assert call_kwargs[0][1] == ["10.0.0.1", "10.0.0.2"]  # hosts
-            assert call_kwargs[0][2] == str(tuning_dir)  # dest_path
+            # dest_path uses remote dir derived from ssh_user
+            assert call_kwargs[0][2] == "/home/testuser/.cache/sparkrun/tuning/sglang"
             assert "--delete" in call_kwargs[1]["rsync_options"]
             assert "-az" in call_kwargs[1]["rsync_options"]
             assert "--partial" in call_kwargs[1]["rsync_options"]

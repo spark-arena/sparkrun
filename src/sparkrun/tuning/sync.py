@@ -44,6 +44,48 @@ def _get_local_tuning_dir(runtime: str) -> Path:
         return _get_tuning_dir("tuning/%s" % tuning_runtime)
 
 
+def _resolve_tuning_cache_subdir(runtime: str) -> str:
+    """Return the cache subdirectory for a runtime's tuning configs.
+
+    Maps runtime names to their ``tuning/<name>`` subdirectory, e.g.
+    ``"sglang"`` → ``"tuning/sglang"``, ``"vllm-ray"`` → ``"tuning/vllm"``.
+    """
+    from sparkrun.tuning.sglang import TUNING_CACHE_SUBDIR
+    from sparkrun.tuning.vllm import VLLM_TUNING_CACHE_SUBDIR
+
+    tuning_runtime = _resolve_tuning_runtime(runtime)
+    if tuning_runtime == "sglang":
+        return TUNING_CACHE_SUBDIR
+    elif tuning_runtime == "vllm":
+        return VLLM_TUNING_CACHE_SUBDIR
+    else:
+        return "tuning/%s" % tuning_runtime
+
+
+def _get_remote_tuning_dir(runtime: str, ssh_user: str | None = None) -> str:
+    """Return the remote host path for tuning configs.
+
+    Mirrors the cross-OS / cross-user logic from
+    :meth:`ResolvedClusterConfig.resolve_transfer_config`: when the control
+    machine is non-Linux or the SSH user differs from the local user, the
+    remote path is derived from the SSH user's home directory instead of
+    the local ``DEFAULT_CACHE_DIR``.
+    """
+    import os
+    import sys
+
+    cache_subdir = _resolve_tuning_cache_subdir(runtime)
+
+    local_user = os.environ.get("USER")
+    if ssh_user and ssh_user != local_user:
+        return "/home/%s/.cache/sparkrun/%s" % (ssh_user, cache_subdir)
+    elif sys.platform != "linux":
+        _user = ssh_user or local_user or "user"
+        return "/home/%s/.cache/sparkrun/%s" % (_user, cache_subdir)
+    else:
+        return str(_get_local_tuning_dir(runtime))
+
+
 def sync_registry_tuning(
     registry_manager: RegistryManager,
     runtime: str,

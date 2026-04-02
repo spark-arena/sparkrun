@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from sparkrun.utils import is_local_host
-from sparkrun.tuning.sync import _get_local_tuning_dir
+from sparkrun.tuning.sync import _get_local_tuning_dir, _get_remote_tuning_dir
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +59,7 @@ def distribute_tuning_to_hosts(
     from sparkrun.orchestration.ssh import run_rsync_parallel, build_ssh_opts_string, run_remote_script
 
     source = str(tuning_dir)
+    remote_dest = _get_remote_tuning_dir(runtime, ssh_user=ssh_user)
 
     if transfer_mode in ("push", "delegated") and len(remote_hosts) > 1:
         # Two-hop: rsync to head, then head distributes to workers
@@ -77,7 +78,7 @@ def distribute_tuning_to_hosts(
         head_results = run_rsync_parallel(
             source,
             [head],
-            source,
+            remote_dest,
             ssh_user=ssh_user,
             ssh_key=ssh_key,
             ssh_options=ssh_options,
@@ -105,7 +106,7 @@ def distribute_tuning_to_hosts(
             '"$SOURCE/" {user_prefix}$TARGET:"$SOURCE/"\n'
             "done\n"
         ).format(
-            source=source,
+            source=remote_dest,
             targets=targets_str,
             ssh_opts=ssh_opts,
             user_prefix=user_prefix,
@@ -137,7 +138,7 @@ def distribute_tuning_to_hosts(
     results = run_rsync_parallel(
         source,
         remote_hosts,
-        source,
+        remote_dest,
         ssh_user=ssh_user,
         ssh_key=ssh_key,
         ssh_options=ssh_options,
