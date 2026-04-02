@@ -574,17 +574,18 @@ def load_cmd(
 @click.argument("recipe_name")
 @host_options
 @dry_run_option
-def unload_cmd(recipe_name, hosts, hosts_file, cluster_name, dry_run):
+@click.pass_context
+def unload_cmd(ctx, recipe_name, hosts, hosts_file, cluster_name, dry_run):
     """Unload a model via sparkrun stop and remove from proxy.
 
     Example:
 
       sparkrun proxy unload qwen3-1.7b-vllm --cluster mylab
     """
-    from sparkrun.core.config import SparkrunConfig
     from sparkrun.cli._stop_logs import _stop_recipe
+    from ._common import _get_context
 
-    config = SparkrunConfig()
+    config = _get_context(ctx).config
     _stop_recipe(recipe_name, hosts, hosts_file, cluster_name, config, tp_override=None, dry_run=dry_run)
 
     if not dry_run:

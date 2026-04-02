@@ -53,6 +53,8 @@ class DockerExecutor(Executor):
         if cfg.devices:
             for dev in cfg.devices:
                 opts.extend(["--device", dev])
+        if cfg.memory_limit:
+            opts.append("--memory=%s" % cfg.memory_limit)
 
         return opts
 

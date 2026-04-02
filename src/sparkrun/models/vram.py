@@ -115,6 +115,13 @@ class VRAMEstimate:
         """Whether the estimated VRAM fits within DGX Spark GPU memory."""
         return self.total_per_gpu_gb <= DGX_SPARK_VRAM_GB
 
+    def to_dict(self) -> dict[str, Any]:
+        """Convert the estimate to a JSON-serializable dictionary."""
+        from dataclasses import asdict
+        result = asdict(self)
+        result["fits_dgx_spark"] = self.fits_dgx_spark
+        return result
+
 
 _DTYPE_CANONICAL: dict[str, str] = {
     "fp32": "float32",

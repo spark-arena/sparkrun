@@ -110,6 +110,15 @@ class TestExecutorConfig:
         cfg = ExecutorConfig.from_chain(chain)
         assert cfg.user is None
 
+    def test_memory_limit_field(self):
+        cfg = ExecutorConfig(memory_limit="32G")
+        assert cfg.memory_limit == "32G"
+
+    def test_from_chain_memory_limit(self):
+        chain = {"memory_limit": "16G"}
+        cfg = ExecutorConfig.from_chain(chain)
+        assert cfg.memory_limit == "16G"
+
     def test_config_chain_layering(self):
         """Verify config chain resolution: CLI > recipe > defaults."""
         from scitrera_app_framework.api import Variables, EnvPlacement
@@ -211,6 +220,12 @@ class TestDockerExecutorConfig:
         executor = DockerExecutor(cfg)
         cmd = executor.run_cmd("img:latest")
         assert "--network bridge" in cmd
+
+    def test_memory_limit(self):
+        cfg = ExecutorConfig(memory_limit="64G")
+        executor = DockerExecutor(cfg)
+        cmd = executor.run_cmd("img:latest")
+        assert "--memory=64G" in cmd
 
     def test_no_privileged(self):
         cfg = ExecutorConfig(privileged=False)

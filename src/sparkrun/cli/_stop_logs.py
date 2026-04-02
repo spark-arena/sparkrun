@@ -56,9 +56,7 @@ def stop(ctx, target, hosts, hosts_file, cluster_name, stop_all, tp_override, po
         click.echo("Error: Must specify TARGET or --all.", err=True)
         sys.exit(1)
 
-    from sparkrun.core.config import SparkrunConfig
-
-    config = SparkrunConfig(config_path) if config_path else SparkrunConfig()
+    config = _get_context(ctx).config
 
     if stop_all:
         _stop_all(hosts, hosts_file, cluster_name, config, dry_run)

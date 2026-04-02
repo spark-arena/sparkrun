@@ -17,8 +17,8 @@ set -euo pipefail
 # - Requires: bash, ssh, ssh-keygen (standard on Ubuntu w/ OpenSSH client)
 # - Assumes the same username exists on all hosts.
 
-if [[ $# -lt 3 ]]; then
-  echo "Usage: $0 <username> <host1> <host2> <host3> [more hosts...]"
+if [[ $# -lt 2 ]]; then
+  echo "Usage: $0 <username> <host1> [host2] [host3] [more hosts...]"
   exit 1
 fi
 
@@ -87,18 +87,22 @@ if [[ "$CALLER" != "$USER_NAME" ]]; then
 
   # Use ssh -G to discover which identity file SSH would actually use
   # (respects ~/.ssh/config Host/Match blocks, IdentityFile directives, etc.)
-  _ssh_g_identities="$(ssh -G "$USER_NAME@${HOSTS[0]}" 2>/dev/null | awk '/^identityfile /{print $2}' || true)"
-  if [[ -n "$_ssh_g_identities" ]]; then
-    while IFS= read -r _idf; do
-      # Expand ~ and other shell constructs
-      _idf_expanded="$(eval echo "$_idf" 2>/dev/null || echo "$_idf")"
-      if [[ -f "${_idf_expanded}.pub" ]]; then
-        LOCAL_PUBKEY="$(cat "${_idf_expanded}.pub")"
-        LOCAL_PUBKEY_SOURCE="${_idf_expanded}.pub"
-        break
-      fi
-    done <<< "$_ssh_g_identities"
-  fi
+  # Two-pass strategy: first try bare host (matches SSH aliases like "Host dgx"),
+  # then fall back to user@host (covers non-alias scenarios / Match User blocks).
+  for _ssh_g_target in "${HOSTS[0]}" "$USER_NAME@${HOSTS[0]}"; do
+    _ssh_g_identities="$(ssh -G "$_ssh_g_target" 2>/dev/null | awk '/^identityfile /{print $2}' || true)"
+    if [[ -n "$_ssh_g_identities" ]]; then
+      while IFS= read -r _idf; do
+        # Expand ~ and other shell constructs
+        _idf_expanded="$(eval echo "$_idf" 2>/dev/null || echo "$_idf")"
+        if [[ -f "${_idf_expanded}.pub" ]]; then
+          LOCAL_PUBKEY="$(cat "${_idf_expanded}.pub")"
+          LOCAL_PUBKEY_SOURCE="${_idf_expanded}.pub"
+          break 2
+        fi
+      done <<< "$_ssh_g_identities"
+    fi
+  done
 
   # Fallback: check standard key filenames
   if [[ -z "$LOCAL_PUBKEY" ]]; then
@@ -180,6 +184,15 @@ if [[ "$CALLER" != "$USER_NAME" ]]; then
     echo "    Run: sparkrun setup ssh --cluster <name> --diagnose"
     echo
   fi
+fi
+
+# Single-host: Phase 1 connectivity + Phase 0.5 cross-user are done;
+# Phases 2-4 (inter-node key exchange) are meaningless with one host.
+if [[ ${#HOSTS[@]} -lt 2 ]]; then
+  echo
+  echo "=== Done (single host) ==="
+  echo "SSH setup complete for '$USER_NAME' on ${HOSTS[0]}."
+  exit 0
 fi
 
 echo "=== Phase 2: Ensure SSH key exists on each host ==="

@@ -45,6 +45,21 @@ class ClusterDefinition:
     transfer_interface: str | None = None
     topology: str | None = None
 
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to a JSON-serializable dictionary (omits None optional fields)."""
+        d: dict[str, Any] = {"name": self.name, "hosts": self.hosts, "description": self.description}
+        if self.user:
+            d["user"] = self.user
+        if self.cache_dir:
+            d["cache_dir"] = self.cache_dir
+        if self.transfer_mode:
+            d["transfer_mode"] = self.transfer_mode
+        if self.transfer_interface:
+            d["transfer_interface"] = self.transfer_interface
+        if self.topology:
+            d["topology"] = self.topology
+        return d
+
 
 @dataclass
 class ClusterGroup:
@@ -56,16 +71,60 @@ class ClusterGroup:
 
 
 @dataclass
+class ClusterSoloEntry:
+    """A standalone container forming a sparkrun job."""
+
+    cluster_id: str
+    host: str
+    name: str
+    status: str
+    image: str
+    meta: dict[str, Any]
+
+
+@dataclass
 class ClusterStatusResult:
     """Result of querying sparkrun container status across hosts."""
 
     groups: dict[str, ClusterGroup]  # cluster_id -> group
-    solo_entries: list[tuple[str, str, str, str]]  # (host, name, status, image)
+    solo_entries: list[ClusterSoloEntry]
     errors: dict[str, str]  # host -> error message
     idle_hosts: list[str]  # hosts with no containers and no errors
     pending_ops: list[dict[str, Any]]  # relevant pending operations
     total_containers: int
     host_count: int
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert the result to a JSON-serializable dictionary."""
+        out = {
+            "groups": {},
+            "solo_entries": [],
+            "idle_hosts": self.idle_hosts,
+            "pending_ops": self.pending_ops,
+            "errors": self.errors,
+            "total_containers": self.total_containers,
+            "host_count": self.host_count,
+        }
+
+        for cid, group in self.groups.items():
+            out["groups"][cid] = {
+                "meta": group.meta,
+                "containers": [
+                    {"host": h, "role": r, "status": s, "image": i}
+                    for h, r, s, i in group.members
+                ]
+            }
+
+        for entry in self.solo_entries:
+            out["solo_entries"].append({
+                "cluster_id": entry.cluster_id,
+                "meta": entry.meta,
+                "host": entry.host,
+                "status": entry.status,
+                "image": entry.image
+            })
+
+        return out
 
 
 class ClusterManager:
@@ -106,15 +165,15 @@ class ClusterManager:
         return self.clusters_dir / f"{name}.yaml"
 
     def create(
-        self,
-        name: str,
-        hosts: list[str],
-        description: str = "",
-        user: str | None = None,
-        cache_dir: str | None = None,
-        transfer_mode: str | None = None,
-        transfer_interface: str | None = None,
-        topology: str | None = None,
+            self,
+            name: str,
+            hosts: list[str],
+            description: str = "",
+            user: str | None = None,
+            cache_dir: str | None = None,
+            transfer_mode: str | None = None,
+            transfer_interface: str | None = None,
+            topology: str | None = None,
     ) -> None:
         """Create a new named cluster.
 
@@ -177,15 +236,15 @@ class ClusterManager:
         return self._read_cluster(cluster_path)
 
     def update(
-        self,
-        name: str,
-        hosts: list[str] | None = None,
-        description: str | None = None,
-        user: str | None = _UNSET,
-        cache_dir: str | None = _UNSET,
-        transfer_mode: str | None = _UNSET,
-        transfer_interface: str | None = _UNSET,
-        topology: str | None = _UNSET,
+            self,
+            name: str,
+            hosts: list[str] | None = None,
+            description: str | None = None,
+            user: str | None = _UNSET,
+            cache_dir: str | None = _UNSET,
+            transfer_mode: str | None = _UNSET,
+            transfer_interface: str | None = _UNSET,
+            topology: str | None = _UNSET,
     ) -> None:
         """Update existing cluster definition.
 
@@ -252,6 +311,8 @@ class ClusterManager:
         """
         clusters = []
         for yaml_file in self.clusters_dir.glob("*.yaml"):
+            if yaml_file.name.endswith('.manifest.yaml'):  # skip install manifests
+                continue
             try:
                 cluster_def = self._read_cluster(yaml_file)
                 clusters.append(cluster_def)
@@ -364,7 +425,7 @@ class ClusterManager:
             raise ClusterError(f"Invalid cluster file format: {cluster_path}")
 
         return ClusterDefinition(
-            name=data.get("name", ""),
+            name=data.get("name", cluster_path.stem),
             hosts=data.get("hosts", []),
             description=data.get("description", ""),
             user=data.get("user"),
@@ -381,9 +442,9 @@ class ClusterManager:
 
 
 def query_cluster_status(
-    host_list: list[str],
-    ssh_kwargs: dict[str, Any],
-    cache_dir: str,
+        host_list: list[str],
+        ssh_kwargs: dict[str, Any],
+        cache_dir: str,
 ) -> ClusterStatusResult:
     """Query sparkrun containers on hosts and classify them.
 
@@ -446,14 +507,14 @@ def query_cluster_status(
     # Anything ending in _solo is standalone; everything else is grouped
     # by cluster_id (name up to last underscore-delimited role suffix).
     groups: dict[str, list[tuple[str, str, str, str]]] = {}
-    solo_entries: list[tuple[str, str, str, str]] = []
+    raw_solo_entries: list[tuple[str, str, str, str]] = []
     total_containers = 0
 
     for host in host_list:
         for name, status, image in host_containers.get(host, []):
             total_containers += 1
             if name.endswith("_solo"):
-                solo_entries.append((host, name, status, image))
+                raw_solo_entries.append((host, name, status, image))
             else:
                 # Extract cluster_id by stripping the role suffix.
                 # Patterns: sparkrun_hash_head, sparkrun_hash_worker,
@@ -463,7 +524,7 @@ def query_cluster_status(
                 prefix_end = name.find("_", len("sparkrun_"))
                 if 0 < prefix_end < len(name) - 1:
                     cluster_id = name[:prefix_end]
-                    role = name[prefix_end + 1 :]
+                    role = name[prefix_end + 1:]
                 else:
                     cluster_id = name
                     role = "?"
@@ -474,6 +535,19 @@ def query_cluster_status(
     for cid, members in groups.items():
         meta = load_job_metadata(cid, cache_dir=cache_dir) or {}
         cluster_groups[cid] = ClusterGroup(cluster_id=cid, members=members, meta=meta)
+
+    solo_entries: list[ClusterSoloEntry] = []
+    for host, name, status, image in raw_solo_entries:
+        cid = name.removesuffix("_solo")
+        meta = load_job_metadata(cid, cache_dir=cache_dir) or {}
+        solo_entries.append(ClusterSoloEntry(
+            cluster_id=cid,
+            host=host,
+            name=name,
+            status=status,
+            image=image,
+            meta=meta
+        ))
 
     # Idle hosts: no containers and no errors
     idle_hosts = [h for h in host_list if h not in errors and not host_containers.get(h)]
@@ -550,10 +624,10 @@ class ResolvedClusterConfig:
 
 
 def resolve_cluster_config(
-    cluster_name: str | None,
-    hosts: str | None,
-    hosts_file: str | None,
-    cluster_mgr,
+        cluster_name: str | None,
+        hosts: str | None,
+        hosts_file: str | None,
+        cluster_mgr,
 ) -> ResolvedClusterConfig:
     """Resolve cluster configuration properties in a single pass.
 

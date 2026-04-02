@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sparkrun"
-version = "0.2.17"
+version = "0.2.18"
 description = "Launch and manage Docker-based inference workloads on NVIDIA DGX Spark systems"
 readme = "README.md"
 license = "Apache-2.0"

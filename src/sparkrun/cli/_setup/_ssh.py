@@ -145,8 +145,8 @@ def _run_ssh_mesh(mesh_hosts, user, cluster_hosts=None, ssh_key=None, discover_i
     import subprocess
     from sparkrun.scripts import get_script_path
 
-    if len(mesh_hosts) < 2:
-        click.echo("SSH mesh requires at least 2 hosts (got %d)." % len(mesh_hosts), err=True)
+    if len(mesh_hosts) < 1:
+        click.echo("SSH mesh requires at least 1 host (got 0).", err=True)
         return False
 
     cluster_hosts = cluster_hosts or list(mesh_hosts)
@@ -168,7 +168,7 @@ def _run_ssh_mesh(mesh_hosts, user, cluster_hosts=None, ssh_key=None, discover_i
             return False
 
     # Phase 2: Distribute host keys for management IPs and discovered IPs
-    if not discover_ips or len(cluster_hosts) < 2:
+    if not discover_ips:
         return True
 
     click.echo()
@@ -177,7 +177,7 @@ def _run_ssh_mesh(mesh_hosts, user, cluster_hosts=None, ssh_key=None, discover_i
     if ssh_key:
         ssh_kwargs["ssh_key"] = ssh_key
 
-    from sparkrun.orchestration.networking import discover_host_network_ips, distribute_host_keys
+    from sparkrun.orchestration.networking import distribute_host_keys
     from sparkrun.orchestration.primitives import check_tcp_reachability
     from sparkrun.orchestration.ssh import run_remote_scripts_parallel
 
@@ -221,19 +221,23 @@ def _run_ssh_mesh(mesh_hosts, user, cluster_hosts=None, ssh_key=None, discover_i
             all_discovered_ips.append(h)
             seen_ips.add(h)
 
-    # Discover additional network IPs (CX7, InfiniBand, etc.)
-    click.echo("Discovering additional network IPs on cluster hosts...")
-    discovered = discover_host_network_ips(cluster_hosts, ssh_kwargs=ssh_kwargs)
+    # Discover additional network IPs (CX7, InfiniBand, etc.) — only for
+    # multi-host clusters where inter-node discovery is meaningful.
+    if len(cluster_hosts) >= 2:
+        from sparkrun.orchestration.networking import discover_host_network_ips
 
-    if discovered:
-        for host, ips in sorted(discovered.items()):
-            click.echo("  %s: %s" % (host, ", ".join(ips)))
-            for ip in ips:
-                if ip not in seen_ips:
-                    all_discovered_ips.append(ip)
-                    seen_ips.add(ip)
-    else:
-        click.echo("  No additional network IPs found.")
+        click.echo("Discovering additional network IPs on cluster hosts...")
+        discovered = discover_host_network_ips(cluster_hosts, ssh_kwargs=ssh_kwargs)
+
+        if discovered:
+            for host, ips in sorted(discovered.items()):
+                click.echo("  %s: %s" % (host, ", ".join(ips)))
+                for ip in ips:
+                    if ip not in seen_ips:
+                        all_discovered_ips.append(ip)
+                        seen_ips.add(ip)
+        else:
+            click.echo("  No additional network IPs found.")
 
     # When the SSH user differs from the OS user and the control machine is
     # a cluster member, cross-user SSH to 127.0.0.1 needs a known_hosts

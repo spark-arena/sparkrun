@@ -165,6 +165,49 @@ class TestListCommand:
         # Check for separator line
         assert "-" * 10 in result.output
 
+    def test_list_json(self, runner):
+        """Test that sparkrun recipe list --json outputs a valid JSON list."""
+        import json
+        result = runner.invoke(main, ["recipe", "list", "--json"])
+        assert result.exit_code == 0
+
+        data = json.loads(result.output)
+        assert isinstance(data, list)
+
+        # Verify it found at least our test recipe
+        names = [item.get("name") for item in data]
+        assert _TEST_RECIPE_NAME in names
+
+
+class TestSearchCommand:
+    """Test the search command."""
+
+    def test_search_shows_recipes(self, runner):
+        """Test that sparkrun search finds matching recipes."""
+        result = runner.invoke(main, ["search", "llama-cpp"])
+        assert result.exit_code == 0
+        assert "llama-cpp" in result.output.lower()
+        assert "No recipes found" not in result.output
+
+    def test_search_no_results(self, runner):
+        """Test that sparkrun search behaves correctly when no recipes match."""
+        result = runner.invoke(main, ["search", "definitely-not-a-real-recipe-name-12345"])
+        assert result.exit_code == 0
+        assert "No recipes found matching" in result.output
+
+    def test_search_json(self, runner):
+        """Test that sparkrun recipe search --json outputs a valid JSON list."""
+        import json
+        result = runner.invoke(main, ["recipe", "search", "llama-cpp", "--json"])
+        assert result.exit_code == 0
+
+        data = json.loads(result.output)
+        assert isinstance(data, list)
+        assert len(data) > 0
+
+        runtimes = [item.get("runtime", "") for item in data]
+        assert any("llama-cpp" in rt for rt in runtimes)
+
 
 class TestShowCommand:
     """Test the show command."""
@@ -195,6 +238,16 @@ class TestShowCommand:
         result = runner.invoke(main, ["show", "--help"])
         assert result.exit_code == 0
         assert "--save" not in result.output
+
+    def test_show_json(self, runner):
+        """Test that sparkrun recipe show --json outputs valid JSON."""
+        import json
+        result = runner.invoke(main, ["recipe", "show", _TEST_RECIPE_NAME, "--json"])
+        assert result.exit_code == 0
+
+        data = json.loads(result.output)
+        assert "model" in data
+        assert "runtime" in data
 
 
 class TestExportCommand:
@@ -278,7 +331,7 @@ class TestExportCommand:
 
     def test_export_running_json(self, runner, tmp_path, monkeypatch):
         """Test export running --json outputs valid JSON."""
-        import json as json_mod
+        import json
 
         from sparkrun.core.recipe import Recipe
 
@@ -304,7 +357,7 @@ class TestExportCommand:
 
         result = runner.invoke(main, ["export", "running-recipe", "aabbccddee22", "--json"])
         assert result.exit_code == 0
-        data = json_mod.loads(result.output)
+        data = json.loads(result.output)
         assert "model" in data
         assert "runtime" in data
 
@@ -780,6 +833,18 @@ class TestVramCommand:
         assert result.exit_code == 0
         assert "Tensor parallel:  4" in result.output
 
+    def test_vram_json(self, runner):
+        """Test that sparkrun recipe vram --json outputs valid JSON."""
+        import json
+        result = runner.invoke(main, ["recipe", "vram", _TEST_RECIPE_NAME, "--no-auto-detect", "--json"])
+        assert result.exit_code == 0
+
+        data = json.loads(result.output)
+        assert _TEST_RECIPE_NAME in data["recipe"]
+        assert "model_weights_gb" in data
+        assert "total_per_gpu_gb" in data
+        assert "fits_dgx_spark" in data
+
     def test_vram_nonexistent_recipe(self, runner):
         """Test sparkrun recipe vram on nonexistent recipe exits with error."""
         result = runner.invoke(main, ["recipe", "vram", "nonexistent-recipe"])
@@ -807,6 +872,25 @@ class TestValidateCommand:
         result = runner.invoke(main, ["recipe", "validate", "nonexistent-recipe"])
         assert result.exit_code != 0
         assert "Error" in result.output
+
+    def test_validate_json_valid(self, runner, reset_bootstrap):
+        """Test that recipe validate --json outputs structured JSON for valid recipe."""
+        import json
+
+        result = runner.invoke(main, ["recipe", "validate", _TEST_RECIPE_NAME, "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["valid"] is True
+        assert data["issues"] == []
+        assert "recipe" in data
+
+    def test_validate_json_invalid(self, runner, reset_bootstrap):
+        """Test that recipe validate --json exits 1 for invalid recipe with issues."""
+        import json
+
+        result = runner.invoke(main, ["recipe", "validate", "nonexistent-recipe", "--json"])
+        # nonexistent recipe errors before JSON output, so just check exit code
+        assert result.exit_code != 0
 
 
 class TestRunCommand:
@@ -938,6 +1022,33 @@ class TestClusterCommands:
         assert "set-default" in result.output
         assert "unset-default" in result.output
         assert "update" in result.output
+        assert "status" in result.output
+
+    def test_cluster_status_json(self, runner, cluster_setup):
+        """Test cluster status --json outputs valid JSON."""
+        import json
+        from sparkrun.core.cluster_manager import ClusterStatusResult, ClusterGroup, ClusterSoloEntry
+        with (
+            mock.patch(
+                "sparkrun.core.cluster_manager.query_cluster_status",
+                return_value=ClusterStatusResult(
+                    groups={},
+                    solo_entries=[ClusterSoloEntry("cid1", "10.0.0.1", "name", "running", "img", {"recipe": "test"})],
+                    errors={},
+                    idle_hosts=[],
+                    pending_ops=[],
+                    total_containers=1,
+                    host_count=1
+                ),
+            ),
+        ):
+            result = runner.invoke(main, ["cluster", "status", "--cluster", "test-cluster", "--json"])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "solo_entries" in data
+        assert "groups" in data
+        assert data["solo_entries"][0]["cluster_id"] == "cid1"
 
     def test_cluster_create(self, runner, tmp_path, monkeypatch):
         """Test creating a cluster."""
@@ -1426,6 +1537,65 @@ class TestClusterCommands:
         result = runner.invoke(main, ["cluster", "update", "test-cluster", "--topology", "mesh"])
         assert result.exit_code != 0
 
+    def test_cluster_list_json(self, runner, cluster_setup):
+        """Test that cluster list --json outputs a valid JSON array."""
+        import json
+
+        result = runner.invoke(main, ["cluster", "list", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert isinstance(data, list)
+        assert len(data) == 1
+        assert data[0]["name"] == "test-cluster"
+        assert data[0]["hosts"] == ["10.0.0.1", "10.0.0.2"]
+        assert "default" in data[0]
+
+    def test_cluster_list_json_empty(self, runner, tmp_path, monkeypatch):
+        """Test that cluster list --json with no clusters outputs empty array."""
+        import json
+
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.core.config
+
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+
+        result = runner.invoke(main, ["cluster", "list", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data == []
+
+    def test_cluster_show_json(self, runner, cluster_setup):
+        """Test that cluster show --json outputs a valid JSON object."""
+        import json
+
+        result = runner.invoke(main, ["cluster", "show", "test-cluster", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["name"] == "test-cluster"
+        assert data["hosts"] == ["10.0.0.1", "10.0.0.2"]
+        assert "default" in data
+
+    def test_cluster_default_json_none(self, runner, cluster_setup):
+        """Test that cluster default --json with no default outputs null."""
+        import json
+
+        result = runner.invoke(main, ["cluster", "default", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data is None
+
+    def test_cluster_default_json_set(self, runner, cluster_setup):
+        """Test that cluster default --json with a default outputs cluster data."""
+        import json
+
+        runner.invoke(main, ["cluster", "set-default", "test-cluster"])
+        result = runner.invoke(main, ["cluster", "default", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["name"] == "test-cluster"
+        assert data["default"] is True
+
 
 class TestClusterMonitor:
     """Test cluster monitor subcommand."""
@@ -1587,8 +1757,8 @@ class TestClusterMonitor:
             # Host with sample data should have monitor fields
             assert obj["hosts"]["10.0.0.1"]["hostname"] == "host1"
             assert obj["hosts"]["10.0.0.1"]["cpu_usage_pct"] == "12.3"
-            # Host with error and no sample should report error status
-            assert obj["hosts"]["10.0.0.2"]["status"] == "error"
+            # Host with error and no sample should report error
+            assert obj["hosts"]["10.0.0.2"]["error"] == "connection refused"
 
     def test_cluster_monitor_tui_fallback_on_import_error(self, runner, cluster_setup, monkeypatch):
         """Falls back to simple mode when Textual is not importable."""
@@ -2245,13 +2415,14 @@ class TestSetupSshCommand:
         assert result.exit_code != 0
         assert "No hosts" in result.output
 
-    def test_setup_ssh_requires_two_hosts(self, runner, tmp_path, monkeypatch):
-        """Test that setup ssh with a single host exits with error."""
+    def test_setup_ssh_single_host_same_user_exits_cleanly(self, runner, tmp_path, monkeypatch):
+        """Test that setup ssh with a single host and same user exits with informational message."""
         config_root = tmp_path / "config"
         config_root.mkdir()
         import sparkrun.core.config
 
         monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+        monkeypatch.setenv("USER", "testuser")
 
         result = runner.invoke(
             main,
@@ -2260,11 +2431,13 @@ class TestSetupSshCommand:
                 "ssh",
                 "--hosts",
                 "10.0.0.1",
+                "--user",
+                "testuser",
                 "--no-include-self",
             ],
         )
-        assert result.exit_code != 0
-        assert "at least 2 hosts" in result.output
+        assert result.exit_code == 0
+        assert "no SSH setup needed" in result.output
 
     def test_setup_ssh_dry_run(self, runner, tmp_path, monkeypatch):
         """Test that --dry-run shows the command without executing."""
@@ -2784,6 +2957,78 @@ class TestSetupSshCommand:
         assert local_ip in cmd_line
         assert "10.0.0.1" in cmd_line
 
+    def test_setup_ssh_single_host_cross_user_dry_run(self, runner, tmp_path, monkeypatch):
+        """Test that single-host cross-user dry-run shows expected output."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.core.config
+
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+        monkeypatch.setenv("USER", "localuser")
+
+        result = runner.invoke(
+            main,
+            [
+                "setup",
+                "ssh",
+                "--hosts",
+                "192.168.1.6",
+                "--user",
+                "ubuntu",
+                "--no-include-self",
+                "--dry-run",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Would run SSH mesh:" in result.output
+        assert "mesh_ssh_keys.sh" in result.output
+        assert "ubuntu" in result.output
+        assert "192.168.1.6" in result.output
+
+    def test_setup_ssh_single_host_cross_user_calls_mesh(self, runner, tmp_path, monkeypatch):
+        """Test that single-host cross-user calls _run_ssh_mesh with 1 host."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.core.config
+
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+        monkeypatch.setenv("USER", "localuser")
+
+        import subprocess
+        from unittest.mock import MagicMock, patch
+
+        mock_rrs = MagicMock()
+        from sparkrun.orchestration.ssh import RemoteResult
+
+        mock_rrs.return_value = [RemoteResult(host="192.168.1.6", stdout="", stderr="", returncode=0)]
+        mock_dk = MagicMock()
+        mock_dk.return_value = [RemoteResult(host="192.168.1.6", stdout="", stderr="", returncode=0)]
+        mock_tcp = MagicMock(return_value={"192.168.1.6": True})
+
+        with patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as mock_run:
+            with patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel", mock_rrs):
+                with patch("sparkrun.orchestration.networking.distribute_host_keys", mock_dk):
+                    with patch("sparkrun.orchestration.primitives.check_tcp_reachability", mock_tcp):
+                        result = runner.invoke(
+                            main,
+                            [
+                                "setup",
+                                "ssh",
+                                "--hosts",
+                                "192.168.1.6",
+                                "--user",
+                                "ubuntu",
+                                "--no-include-self",
+                            ],
+                        )
+
+        assert result.exit_code == 0, result.output
+        # The bash script should have been called with just 1 host
+        assert mock_run.called
+        call_args = mock_run.call_args[0][0]
+        assert "ubuntu" in call_args
+        assert "192.168.1.6" in call_args
+
 
 class TestSetupFixPermissions:
     """Test the setup fix-permissions command."""
@@ -2942,7 +3187,7 @@ class TestSetupFixPermissions:
         )
 
         with mock.patch(
-            "sparkrun.orchestration.ssh.run_remote_scripts_parallel", return_value=[mock_result_1, mock_result_2]
+                "sparkrun.orchestration.ssh.run_remote_scripts_parallel", return_value=[mock_result_1, mock_result_2]
         ) as mock_parallel:
             result = runner.invoke(
                 main,
@@ -4373,18 +4618,18 @@ class TestClusterUserInCLICommands:
         original_run = SglangRuntime.run
 
         def mock_run(
-            self,
-            hosts=None,
-            image=None,
-            serve_command=None,
-            recipe=None,
-            overrides=None,
-            cluster_id=None,
-            env=None,
-            cache_dir=None,
-            config=None,
-            dry_run=False,
-            **kw,
+                self,
+                hosts=None,
+                image=None,
+                serve_command=None,
+                recipe=None,
+                overrides=None,
+                cluster_id=None,
+                env=None,
+                cache_dir=None,
+                config=None,
+                dry_run=False,
+                **kw,
         ):
             captured_config["ssh_user"] = config.ssh_user if config else None
             return 0
@@ -5134,3 +5379,21 @@ class TestRunEnsureFlag:
         assert result.exit_code == 0
         # Should proceed to launch — shows runtime info
         assert "Runtime:" in result.output
+
+
+class TestRegistryListJson:
+    """Test registry list --json output."""
+
+    def test_registry_list_json(self, runner):
+        """Test that registry list --json outputs a valid JSON array."""
+        import json
+
+        result = runner.invoke(main, ["registry", "list", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert isinstance(data, list)
+        # Each entry should have name, url, enabled fields
+        if data:
+            assert "name" in data[0]
+            assert "url" in data[0]
+            assert "enabled" in data[0]

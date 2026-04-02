@@ -13,6 +13,7 @@ from ._common import (
     dry_run_option,
     host_options,
 )
+from ._adv import adv
 from ._arena import arena
 from ._benchmark import benchmark
 from ._cluster import cluster, cluster_status
@@ -47,6 +48,7 @@ main.add_command(logs_cmd)
 main.add_command(setup)
 main.add_command(tune)
 main.add_command(cluster)
+main.add_command(adv)
 main.add_command(recipe)
 main.add_command(registry)
 main.add_command(benchmark)
