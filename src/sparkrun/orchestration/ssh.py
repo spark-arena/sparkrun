@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_RSYNC_OPTIONS = ["-az", "--mkpath", "--partial", "--links"]
+_DEFAULT_RSYNC_OPTIONS = ["-az", "--no-times", "--mkpath", "--partial", "--links"]
 
 
 @dataclass
@@ -815,7 +815,7 @@ def run_rsync(
     """Rsync a local path to a remote host.
 
     Runs ``rsync {rsync_options} -e "ssh {opts}" source user@host:dest``.
-    Default *rsync_options* are ``["-az", "--mkpath", "--partial", "--links"]``
+    Default *rsync_options* are ``["-az", "--no-times", "--mkpath", "--partial", "--links"]``
     which create the destination path and preserve symlinks (important for
     HuggingFace cache layout).
     """

@@ -19,6 +19,8 @@ from sparkrun.orchestration.ssh import (
 )
 from sparkrun.scripts import read_script
 
+from sparkrun.core.progress import PROGRESS
+
 logger = logging.getLogger(__name__)
 
 
@@ -116,7 +118,7 @@ def distribute_model_from_local(
     """
     local_cache = resolve_hf_cache_home(local_cache_dir or cache_dir)
     remote_cache = resolve_hf_cache_home(cache_dir)
-    logger.info("Distributing model '%s' from local to %d host(s)", model_id, len(hosts))
+    logger.debug("Distributing model '%s' from local to %d host(s)", model_id, len(hosts))
 
     # Step 1: download model locally
     rc = download_model(model_id, cache_dir=local_cache, token=token, revision=revision, dry_run=dry_run)
@@ -158,7 +160,7 @@ def distribute_model_from_local(
     if failed:
         logger.warning("Model distribution failed on hosts: %s", failed)
     else:
-        logger.info("Model '%s' distributed to all %d host(s)", model_id, len(hosts))
+        logger.log(PROGRESS, "  Model synced to %d host(s)", len(hosts))
 
     return failed
 
@@ -205,7 +207,7 @@ def distribute_model_from_head(
 
     cache = resolve_hf_cache_home(cache_dir)
     head = hosts[0]
-    logger.info("Distributing model '%s' from head (%s) to %d host(s)", model_id, head, len(hosts))
+    logger.debug("Distributing model '%s' from head (%s) to %d host(s)", model_id, head, len(hosts))
 
     # Build ensure script (download model on head)
     from sparkrun.models.download import is_gguf_model, parse_gguf_model_spec

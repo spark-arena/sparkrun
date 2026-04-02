@@ -615,7 +615,7 @@ class BaseTuner:
             ssh_user=self.ssh_kwargs.get("ssh_user"),
             ssh_key=self.ssh_kwargs.get("ssh_key"),
             ssh_options=self.ssh_kwargs.get("ssh_options"),
-            rsync_options=["-az", "--mkpath", "--partial", "--links"],
+            rsync_options=["-az", "--no-times", "--mkpath", "--partial", "--links"],
             timeout=120,
         )
         if result.success:

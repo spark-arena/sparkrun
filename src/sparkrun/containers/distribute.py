@@ -23,6 +23,8 @@ from sparkrun.orchestration.ssh import (
 )
 from sparkrun.scripts import read_script
 
+from sparkrun.core.progress import PROGRESS
+
 logger = logging.getLogger(__name__)
 
 # Command to get a Docker image ID on a remote host (empty output = not present)
@@ -135,7 +137,9 @@ def _filter_hosts_needing_image(
             needs_transfer.append(host)
 
     if not needs_transfer:
-        logger.info("All %d host(s) already have the correct image", len(hosts))
+        logger.log(PROGRESS, "  Container image up-to-date on all %d host(s)", len(hosts))
+    else:
+        logger.log(PROGRESS, "  Container image stale on %d of %d host(s), syncing", len(needs_transfer), len(hosts))
 
     return needs_transfer
 
@@ -176,7 +180,7 @@ def distribute_image_from_local(
         List of hostnames (from *hosts*) where distribution failed
         (empty = full success).
     """
-    logger.info("Distributing image '%s' from local to %d host(s)", image, len(hosts))
+    logger.debug("Distributing image '%s' from local to %d host(s)", image, len(hosts))
 
     # Step 1: ensure image exists locally
     rc = ensure_image(image, dry_run=dry_run)
@@ -225,7 +229,7 @@ def distribute_image_from_local(
     if failed:
         logger.warning("Image distribution failed on hosts: %s", failed)
     else:
-        logger.info("Image '%s' distributed to %d host(s)", image, len(needs_transfer))
+        logger.debug("Image '%s' distributed to %d host(s)", image, len(needs_transfer))
 
     return failed
 
@@ -267,7 +271,40 @@ def distribute_image_from_head(
         return []
 
     head = hosts[0]
-    logger.info("Distributing image '%s' from head (%s) to %d host(s)", image, head, len(hosts))
+    logger.debug("Distributing image '%s' from head (%s) to %d host(s)", image, head, len(hosts))
+
+    # Pre-check image status on all hosts to avoid unnecessary work
+    if not dry_run:
+        remote_ids = _check_remote_image_ids(
+            image, hosts, ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options,
+        )
+        ref_id = remote_ids.get(head)
+        if ref_id:
+            # Head already has the image — check which workers need it
+            needs_transfer = [h for h in hosts if remote_ids.get(h) != ref_id]
+            if not needs_transfer:
+                logger.log(PROGRESS, "  Container image up-to-date on all %d host(s)", len(hosts))
+                return []
+
+            if len(hosts) > 1:
+                logger.log(PROGRESS, "  Container image needs sync on %d of %d host(s)",
+                           len(needs_transfer), len(hosts))
+
+            # Filter workers list and corresponding transfer hosts
+            workers = hosts[1:]
+            wt = worker_transfer_hosts or workers
+            filtered = [
+                (w, t) for w, t in zip(workers, wt)
+                if w in needs_transfer
+            ]
+            if filtered:
+                hosts = [head] + [w for w, _ in filtered]
+                worker_transfer_hosts = [t for _, t in filtered]
+            else:
+                # Only head needed the image (rare: head stale, workers current)
+                # Fall through — ensure script will pull on head
+                hosts = [head]
+                worker_transfer_hosts = None
 
     # Build ensure script (pull image on head)
     ensure_script = read_script("image_sync.sh").format(image=shlex.quote(image))

@@ -906,12 +906,12 @@ def cluster_inspect(ctx, hosts, hosts_file, cluster_name, dry_run, output_json):
         remote_sparkrun = "$HOME/.cache/sparkrun"
 
     check_cmd = (
-        'sr_dir="%s"; hf_dir="%s"; '
-        'sr_exists="no"; hf_exists="no"; sr_du="-"; hf_du="-"; '
-        'if [ -d "$sr_dir" ]; then sr_exists="yes"; sr_du=$(du -sh "$sr_dir" 2>/dev/null | cut -f1); fi; '
-        'if [ -d "$hf_dir" ]; then hf_exists="yes"; hf_du=$(du -sh "$hf_dir" 2>/dev/null | cut -f1); fi; '
-        'echo "sr_exists=$sr_exists|sr_du=$sr_du|hf_exists=$hf_exists|hf_du=$hf_du|sr_dir=$sr_dir|hf_dir=$hf_dir"'
-    ) % (remote_sparkrun, remote_hf)
+                    'sr_dir="%s"; hf_dir="%s"; '
+                    'sr_exists="no"; hf_exists="no"; sr_du="-"; hf_du="-"; '
+                    'if [ -d "$sr_dir" ]; then sr_exists="yes"; sr_du=$(du -sh "$sr_dir" 2>/dev/null | cut -f1); fi; '
+                    'if [ -d "$hf_dir" ]; then hf_exists="yes"; hf_du=$(du -sh "$hf_dir" 2>/dev/null | cut -f1); fi; '
+                    'echo "sr_exists=$sr_exists|sr_du=$sr_du|hf_exists=$hf_exists|hf_du=$hf_du|sr_dir=$sr_dir|hf_dir=$hf_dir"'
+                ) % (remote_sparkrun, remote_hf)
 
     # Query all hosts in parallel
     host_info: dict[str, dict] = {}
@@ -984,7 +984,8 @@ def cluster_inspect(ctx, hosts, hosts_file, cluster_name, dry_run, output_json):
                 data["remote"][h] = {"error": info["error"]}
             else:
                 data["remote"][h] = {
-                    "sparkrun_cache": {"path": info.get("sr_dir", "?"), "exists": info.get("sr_exists") == "yes", "size": info.get("sr_du", "-")},
+                    "sparkrun_cache": {"path": info.get("sr_dir", "?"), "exists": info.get("sr_exists") == "yes",
+                                       "size": info.get("sr_du", "-")},
                     "hf_cache": {"path": info.get("hf_dir", "?"), "exists": info.get("hf_exists") == "yes", "size": info.get("hf_du", "-")},
                 }
         click.echo(json_mod.dumps(data, indent=2))

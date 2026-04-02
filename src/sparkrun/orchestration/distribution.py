@@ -17,6 +17,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class DistributionError(Exception):
+    """Raised when resource distribution (image or model sync) fails."""
+
+
 @dataclass
 class TransferModeResult:
     """Result of :func:`resolve_auto_transfer_mode`.
@@ -177,7 +181,9 @@ def _distribute_from_head(
     )
 
     if dist_result.success:
-        logger.info("%s distributed from head to all targets", resource_label)
+        from sparkrun.core.progress import PROGRESS
+
+        logger.log(PROGRESS, "  %s synced from head to %d worker(s)", resource_label, len(hosts) - 1)
         return []
 
     # Report failure using management hostnames
@@ -471,7 +477,7 @@ def distribute_resources(
     from sparkrun.core.progress import PROGRESS as _PROGRESS_LEVEL
 
     logger.info("Distribution mode: %s (image=%s, model=%s, hosts=%d)", transfer_mode, image, model or "(none)", len(host_list))
-    logger.log(_PROGRESS_LEVEL, "  Syncing container image to %d host(s) (this may take a moment)", len(host_list))
+    logger.log(_PROGRESS_LEVEL, "  Checking container image on %d host(s)", len(host_list))
     with pending_op(_lock_id, "image_distribute", **_pop_kw):
         if transfer_mode == "local":
             img_failed = distribute_image_from_local(
@@ -517,7 +523,7 @@ def distribute_resources(
             )
 
     if img_failed:
-        raise RuntimeError("Image distribution failed on: %s" % ", ".join(img_failed))
+        raise DistributionError("Image distribution failed on: %s" % ", ".join(img_failed))
 
     # Step 3: Distribute model
     if model:
@@ -580,7 +586,7 @@ def distribute_resources(
                 )
 
         if mdl_failed:
-            raise RuntimeError("Model distribution failed on: %s" % ", ".join(mdl_failed))
+            raise DistributionError("Model distribution failed on: %s" % ", ".join(mdl_failed))
 
     logger.info("Distribution complete.")
     return nccl_env, ib_ip_map, mgmt_ip_map

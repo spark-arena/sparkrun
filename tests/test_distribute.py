@@ -583,6 +583,63 @@ class TestDistributeImageFromHead:
         assert "10.0.0.1" in dist_script
         assert "10.0.0.2" in dist_script
 
+    @mock.patch("sparkrun.containers.distribute._check_remote_image_ids")
+    @mock.patch("sparkrun.orchestration.distribution._distribute_from_head")
+    def test_all_hosts_up_to_date_early_return(self, mock_dist, mock_check):
+        """All hosts have matching image → early return, no distribution."""
+        mock_check.return_value = {
+            "head": "sha256:abc123", "w1": "sha256:abc123", "w2": "sha256:abc123",
+        }
+        from sparkrun.containers.distribute import distribute_image_from_head
+        failed = distribute_image_from_head("img:latest", ["head", "w1", "w2"])
+        assert failed == []
+        mock_dist.assert_not_called()
+
+    @mock.patch("sparkrun.containers.distribute._check_remote_image_ids")
+    @mock.patch("sparkrun.orchestration.distribution._distribute_from_head")
+    def test_partial_workers_stale(self, mock_dist, mock_check):
+        """Head has image, 1 of 2 workers stale → distribute only to stale worker."""
+        mock_check.return_value = {
+            "head": "sha256:abc123", "w1": "sha256:abc123", "w2": "sha256:old999",
+        }
+        mock_dist.return_value = []
+        from sparkrun.containers.distribute import distribute_image_from_head
+        failed = distribute_image_from_head(
+            "img:latest", ["head", "w1", "w2"],
+            worker_transfer_hosts=["10.0.0.1", "10.0.0.2"],
+        )
+        assert failed == []
+        # _distribute_from_head should be called with filtered hosts
+        call_kwargs = mock_dist.call_args[1]
+        assert call_kwargs["hosts"] == ["head", "w2"]
+        # Distribution script should only target the stale worker's transfer host
+        assert "10.0.0.2" in call_kwargs["distribute_script"]
+        assert "10.0.0.1" not in call_kwargs["distribute_script"]
+
+    @mock.patch("sparkrun.containers.distribute._check_remote_image_ids")
+    @mock.patch("sparkrun.orchestration.distribution._distribute_from_head")
+    def test_head_missing_image_falls_through(self, mock_dist, mock_check):
+        """Head missing image (not in remote_ids) → all hosts passed through."""
+        mock_check.return_value = {"w1": "sha256:abc123"}
+        mock_dist.return_value = []
+        from sparkrun.containers.distribute import distribute_image_from_head
+        failed = distribute_image_from_head("img:latest", ["head", "w1", "w2"])
+        assert failed == []
+        # All hosts should be passed through since head doesn't have the image
+        call_kwargs = mock_dist.call_args[1]
+        assert call_kwargs["hosts"] == ["head", "w1", "w2"]
+
+    @mock.patch("sparkrun.containers.distribute._check_remote_image_ids")
+    @mock.patch("sparkrun.orchestration.ssh.run_remote_script")
+    def test_dry_run_skips_precheck(self, mock_run, mock_check):
+        """dry_run skips the pre-check entirely."""
+        mock_run.return_value = RemoteResult(
+            host="head", returncode=0, stdout="ok", stderr="",
+        )
+        from sparkrun.containers.distribute import distribute_image_from_head
+        distribute_image_from_head("img:latest", ["head"], dry_run=True)
+        mock_check.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Model distribution
@@ -1288,8 +1345,8 @@ class TestDistributeResourcesTransferMode:
         """User-explicit delegated does NOT fall back to push on failure — raises instead."""
         mock_ib.return_value = mock.MagicMock(nccl_env={}, mgmt_ip_map={}, ib_ip_map={})
         mock_head.return_value = ["h1", "h2"]  # delegated fails
-        from sparkrun.orchestration.distribution import distribute_resources
-        with pytest.raises(RuntimeError, match="Image distribution failed"):
+        from sparkrun.orchestration.distribution import DistributionError, distribute_resources
+        with pytest.raises(DistributionError, match="Image distribution failed"):
             distribute_resources(
                 "img:latest", "", ["h1", "h2"], "/cache",
                 self._make_config(), dry_run=True,

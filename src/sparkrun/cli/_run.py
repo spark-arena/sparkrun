@@ -8,6 +8,8 @@ from typing import Any
 
 import click
 
+from sparkrun.orchestration.distribution import DistributionError
+
 from ._common import (
     RECIPE_NAME,
     _apply_recipe_overrides,
@@ -300,6 +302,14 @@ def run(
             rootless=not rootful,
             auto_user=not rootful,
         )
+    except DistributionError as e:
+        if diag:
+            diag.phase_end("launch", error=str(e))
+            diag.emit_error("launch", e)
+            diag.emit_summary()
+            diag.close()
+        click.echo("Error: %s" % e, err=True)
+        sys.exit(1)
     except Exception as e:
         if diag:
             diag.phase_end("launch", error=str(e))

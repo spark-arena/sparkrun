@@ -157,7 +157,7 @@ def ensure_nv_monitor(
                 ssh_user=ssh_kwargs.get("ssh_user"),
                 ssh_key=ssh_kwargs.get("ssh_key"),
                 ssh_options=ssh_kwargs.get("ssh_options"),
-                rsync_options=["-az", "--mkpath", "--partial", "--links", "--chmod=F755"],
+                rsync_options=["-az", "--no-times", "--mkpath", "--partial", "--links", "--chmod=F755"],
                 timeout=60,
             )
 
