@@ -75,6 +75,7 @@ def _check_remote_image_ids(
         for future in as_completed(futures):
             result: RemoteResult = future.result()
             remote_id = result.stdout.strip()
+            logger.debug("  %s: remote image ID = %s", result.host, remote_id or "(empty)")
             if result.success and remote_id:
                 result_map[result.host] = remote_id
 
@@ -126,6 +127,7 @@ def _filter_hosts_needing_image(
         else:
             if remote_id:
                 logger.info("  %s: image ID mismatch, will transfer", host)
+                logger.debug("    local_id=%s  remote_id=%s", local_image_id, remote_id)
             else:
                 logger.info("  %s: image not present, will transfer", host)
             needs_transfer.append(host)
