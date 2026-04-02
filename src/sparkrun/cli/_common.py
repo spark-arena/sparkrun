@@ -20,31 +20,26 @@ from sparkrun.core.recipe import (
 
 logger = logging.getLogger(__name__)
 
-json_option = click.option(
-    "--json",
-    "output_json",
-    is_flag=True,
-    default=False,
-    help="Output result as JSON",
-)
+
+# noinspection PyShadowingBuiltins
+def json_option(help: str = None):
+    return click.option(
+        "--json",
+        "output_json",
+        is_flag=True,
+        default=False,
+        help=help or "Output result as JSON",
+    )
+
 
 def print_json(data: Any) -> None:
     """Print an object as formatted JSON.
 
     Automatically handles dataclasses and objects implementing `to_dict()`.
     """
-    import dataclasses
-    import json
+    from sparkrun.utils.json_helpers import dumps_json
 
-    class _SparkrunJSONEncoder(json.JSONEncoder):
-        def default(self, obj: Any) -> Any:
-            if hasattr(obj, "to_dict") and callable(obj.to_dict):
-                return obj.to_dict()
-            if dataclasses.is_dataclass(obj):
-                return dataclasses.asdict(obj)
-            return super().default(obj)
-
-    click.echo(json.dumps(data, cls=_SparkrunJSONEncoder))
+    click.echo(dumps_json(data))
 
 
 def _get_context(ctx) -> "SparkrunContext":
@@ -116,7 +111,7 @@ def _setup_logging(verbose: int | bool):
         verbose = 1 if verbose else 0
 
     if verbose < 0:
-        level = logging.WARNING      # --quiet: errors/warnings only
+        level = logging.WARNING  # --quiet: errors/warnings only
         fmt = "%(message)s"
     elif verbose >= 3:
         level = logging.DEBUG

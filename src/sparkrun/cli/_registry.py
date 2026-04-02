@@ -11,6 +11,8 @@ from ._common import (
     PROFILE_NAME,
     REGISTRY_NAME,
     _get_config_and_registry,
+    json_option,
+    print_json,
 )
 from sparkrun.utils.cli_formatters import RUNTIME_DISPLAY as _RUNTIME_DISPLAY
 
@@ -25,8 +27,9 @@ def registry(ctx):
 @registry.command("list")
 @click.option("--show-disabled", is_flag=True, help="Also show disabled registries")
 @click.option("--only-show-visible", is_flag=True, help="Only show visible registries")
+@json_option()
 @click.pass_context
-def registry_list(ctx, show_disabled, only_show_visible, config_path=None):
+def registry_list(ctx, show_disabled, only_show_visible, output_json, config_path=None):
     """List configured recipe registries.
 
     By default, shows all enabled registries (including hidden ones).
@@ -35,6 +38,9 @@ def registry_list(ctx, show_disabled, only_show_visible, config_path=None):
     registries = registry_mgr.list_registries()
 
     if not registries:
+        if output_json:
+            print_json([])
+            return
         click.echo("No registries configured.")
         return
 
@@ -47,6 +53,10 @@ def registry_list(ctx, show_disabled, only_show_visible, config_path=None):
 
     # Sort: enabled first, then visible first, then by name
     display_registries.sort(key=lambda r: (not r.enabled, not r.visible, r.name))
+
+    if output_json:
+        print_json(display_registries)
+        return
 
     if not display_registries:
         click.echo("No matching registries found.")

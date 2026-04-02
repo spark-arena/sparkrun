@@ -8,7 +8,7 @@ from ._common import (
     _get_context,
     _resolve_hosts_or_exit,
     dry_run_option,
-    host_options,
+    host_options, json_option, print_json,
 )
 
 
@@ -23,7 +23,7 @@ def adv(ctx):
 @click.argument("image")
 @host_options
 @dry_run_option
-@click.option("--json", "output_json", is_flag=True, default=False, help="Output as JSON")
+@json_option()
 @click.pass_context
 def adv_compare_images(ctx, image, hosts, hosts_file, cluster_name, dry_run, output_json):
     """Compare a container image ID across local machine and cluster hosts.
@@ -62,14 +62,11 @@ def adv_compare_images(ctx, image, hosts, hosts_file, cluster_name, dry_run, out
     )
 
     if output_json:
-        import json as json_mod
-
-        result = {
+        print_json({
             "image": image,
             "local": local_id,
             "hosts": {h: remote_ids.get(h) for h in host_list},
-        }
-        click.echo(json_mod.dumps(result, indent=2))
+        })
         return
 
     # Table output

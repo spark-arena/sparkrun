@@ -31,7 +31,7 @@ def recipe(ctx):
 @click.option("--registry", type=REGISTRY_NAME, default=None, help="Filter by registry name")
 @click.option("--runtime", type=RUNTIME_NAME, default=None, help="Filter by runtime (e.g. vllm, sglang, llama-cpp)")
 @click.option("--all", "-a", "show_all", is_flag=True, help="Include hidden registry recipes")
-@json_option
+@json_option()
 @click.argument("query", required=False)
 # @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
@@ -67,7 +67,7 @@ def recipe_list(ctx, registry, runtime, show_all, output_json, query, config_pat
 @click.option("--registry", type=REGISTRY_NAME, default=None, help="Filter by registry name")
 @click.option("--runtime", type=RUNTIME_NAME, default=None, help="Filter by runtime (e.g. vllm, sglang, llama-cpp)")
 @click.option("--all", "-a", "show_all", is_flag=True, help="Include hidden registry recipes")
-@json_option
+@json_option()
 @click.argument("query")
 # @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
@@ -99,7 +99,7 @@ def recipe_search(ctx, registry, runtime, show_all, output_json, query, config_p
 @click.option("--no-vram", is_flag=True, help="Skip VRAM estimation")
 @click.option("--tp", "--tensor-parallel", "tensor_parallel", type=int, default=None, help="Override tensor parallelism")
 @click.option("--gpu-mem", type=float, default=None, help="Override GPU memory utilization (0.0-1.0)")
-@json_option
+@json_option()
 # @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
 def recipe_show(ctx, recipe_name, no_vram, tensor_parallel, gpu_mem, output_json, config_path=None):
@@ -126,9 +126,10 @@ def recipe_show(ctx, recipe_name, no_vram, tensor_parallel, gpu_mem, output_json
 
 @recipe.command("validate")
 @click.argument("recipe_name", type=RECIPE_NAME)
+@json_option()
 # @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
-def recipe_validate(ctx, recipe_name, config_path=None):
+def recipe_validate(ctx, recipe_name, output_json, config_path=None):
     """Validate a recipe file."""
     from sparkrun.core.bootstrap import get_runtime
 
@@ -145,6 +146,12 @@ def recipe_validate(ctx, recipe_name, config_path=None):
     except ValueError:
         issues.append(f"Unknown runtime: {recipe.runtime}")
 
+    if output_json:
+        print_json({"recipe": recipe.qualified_name, "valid": len(issues) == 0, "issues": issues})
+        if issues:
+            sys.exit(1)
+        return
+
     if issues:
         click.echo(f"Recipe '{recipe.qualified_name}' has {len(issues)} issue(s):")
         for issue in issues:
@@ -160,7 +167,7 @@ def recipe_validate(ctx, recipe_name, config_path=None):
 @click.option("--max-model-len", type=int, default=None, help="Override max sequence length")
 @click.option("--gpu-mem", type=float, default=None, help="Override gpu_memory_utilization (0.0-1.0)")
 @click.option("--no-auto-detect", is_flag=True, help="Skip HuggingFace model auto-detection")
-@json_option
+@json_option()
 # @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
 def recipe_vram(ctx, recipe_name, tensor_parallel, max_model_len, gpu_mem, no_auto_detect, output_json, config_path=None):

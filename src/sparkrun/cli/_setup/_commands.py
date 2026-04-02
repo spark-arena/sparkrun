@@ -14,7 +14,7 @@ from .._common import (
     _resolve_setup_context,
     _shell_rc_file,
     dry_run_option,
-    host_options,
+    host_options, json_option,
 )
 from . import setup
 from ._phases import (
@@ -1725,10 +1725,10 @@ def setup_earlyoom(ctx, hosts, hosts_file, cluster_name, user, extra_prefer, ext
     type=click.Path(),
     help="Output NDJSON file path (default: spark_diag_<timestamp>.ndjson)",
 )
-@click.option("--json", "json_stdout", is_flag=True, help="Also print summary to stdout as JSON")
+@json_option(help="Also print summary to stdout as JSON")
 @click.option("--sudo", "use_sudo", is_flag=True, default=False, help="Also collect sudo-only diagnostics (dmidecode)")
 @click.pass_context
-def setup_diagnose(ctx, hosts, hosts_file, cluster_name, dry_run, output_file, json_stdout, use_sudo):
+def setup_diagnose(ctx, hosts, hosts_file, cluster_name, dry_run, output_file, output_json, use_sudo):
     """Collect hardware, firmware, network, and Docker diagnostics from hosts.
 
     Collects OS, kernel, CPU, memory, disk, GPU, network, Docker, and
@@ -1737,7 +1737,6 @@ def setup_diagnose(ctx, hosts, hosts_file, cluster_name, dry_run, output_file, j
     Use --sudo to also collect dmidecode data (BIOS, system, baseboard,
     memory details) which requires a sudo password.
     """
-    import json as _json
     from datetime import datetime, timezone
 
     from sparkrun.diagnostics import (
@@ -1820,7 +1819,9 @@ def setup_diagnose(ctx, hosts, hosts_file, cluster_name, dry_run, output_file, j
     if fail:
         click.echo("  %d host(s) failed — see %s for details" % (fail, output_file), err=True)
 
-    if json_stdout:
+    if output_json:
+        from .._common import print_json
+
         summary = {
             "output_file": output_file,
             "total_hosts": len(host_list),
@@ -1828,7 +1829,7 @@ def setup_diagnose(ctx, hosts, hosts_file, cluster_name, dry_run, output_file, j
             "failed": fail,
             "hosts": {h: bool(d.get("DIAG_COMPLETE") == "1") for h, d in host_data.items()},
         }
-        click.echo(_json.dumps(summary, indent=2))
+        print_json(summary)
 
     if fail:
         sys.exit(1)

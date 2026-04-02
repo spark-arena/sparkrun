@@ -230,12 +230,22 @@ def cluster_update(ctx, name, hosts, hosts_file, add_host, remove_host,
 
 
 @cluster.command("list")
+@json_option()
 @click.pass_context
-def cluster_list(ctx):
+def cluster_list(ctx, output_json):
     """List all saved clusters."""
     mgr = _get_cluster_manager()
     clusters = mgr.list_clusters()
     default_name = mgr.get_default()
+
+    if output_json:
+        data = []
+        for c in clusters:
+            entry = c.to_dict()
+            entry["default"] = (c.name == default_name)
+            data.append(entry)
+        print_json(data)
+        return
 
     if not clusters:
         click.echo("No saved clusters.")
@@ -261,8 +271,9 @@ def cluster_list(ctx):
 
 @cluster.command("show")
 @click.argument("name", type=CLUSTER_NAME)
+@json_option()
 @click.pass_context
-def cluster_show(ctx, name):
+def cluster_show(ctx, name, output_json):
     """Show details of a saved cluster."""
     from sparkrun.core.cluster_manager import ClusterError
 
@@ -274,6 +285,13 @@ def cluster_show(ctx, name):
         sys.exit(1)
 
     default_name = mgr.get_default()
+
+    if output_json:
+        data = c.to_dict()
+        data["default"] = (c.name == default_name)
+        print_json(data)
+        return
+
     click.echo(f"Name:        {c.name}")
     click.echo(f"Description: {c.description or '(none)'}")
     if c.user:
@@ -339,11 +357,23 @@ def cluster_unset_default(ctx):
 
 
 @cluster.command("default")
+@json_option()
 @click.pass_context
-def cluster_default(ctx):
+def cluster_default(ctx, output_json):
     """Show the current default cluster."""
     mgr = _get_cluster_manager()
     default_name = mgr.get_default()
+
+    if output_json:
+        if not default_name:
+            print_json(None)
+        else:
+            c = mgr.get(default_name)
+            data = c.to_dict()
+            data["default"] = True
+            print_json(data)
+        return
+
     if not default_name:
         click.echo("No default cluster set.")
         return
@@ -361,7 +391,7 @@ def cluster_default(ctx):
 @dry_run_option
 @click.option("--interval", "-i", default=2, type=int, help="Sampling interval in seconds")
 @click.option("--simple", is_flag=True, default=False, help="Use plain-text output instead of TUI")
-@click.option("--json", "output_json", is_flag=True, default=False, help="Stream updates as newline-delimited JSON objects")
+@json_option(help="Stream updates as newline-delimited JSON objects")
 @click.option(
     "--backend",
     type=click.Choice(["bash", "nv-monitor"], case_sensitive=False),
@@ -414,9 +444,7 @@ def cluster_monitor(ctx, hosts, hosts_file, cluster_name, dry_run, interval, sim
 
     # ---- JSON streaming mode ----
     if output_json:
-        import json as json_mod
         import time
-        from dataclasses import asdict
 
         def _render_json(states):
             """Emit one JSON object per update tick with all host data."""
@@ -425,14 +453,11 @@ def cluster_monitor(ctx, hosts, hosts_file, cluster_name, dry_run, interval, sim
                 state = states.get(host)
                 if state is None or state.latest is None:
                     snapshot["hosts"][host] = (
-                        {"status": "error", "error": state.error} if (state and state.error) else {"status": "connecting"}
+                        {"error": state.error} if (state and state.error) else {"connecting": True}
                     )
                     continue
-                entry = asdict(state.latest)
-                if state.error:
-                    entry["_warning"] = state.error
-                snapshot["hosts"][host] = entry
-            click.echo(json_mod.dumps(snapshot))
+                snapshot["hosts"][host] = state.latest
+            print_json(snapshot)
 
         if backend == "nv-monitor":
             from sparkrun.core.monitoring import NvMonitorClusterMonitor
@@ -520,7 +545,7 @@ def cluster_monitor(ctx, hosts, hosts_file, cluster_name, dry_run, interval, sim
 @cluster.command("status")
 @host_options
 @dry_run_option
-@json_option
+@json_option()
 # @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
 def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, output_json, config_path=None):
@@ -649,7 +674,7 @@ def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, output_json, c
 @click.option(
     "--check-http-models", is_flag=True, default=False, help="Also verify the inference server responds to health checks at /v1/models"
 )
-@json_option
+@json_option()
 @click.pass_context
 def cluster_check_job(ctx, target, hosts, hosts_file, cluster_name, tp_override, port, served_model_name, check_http_models, output_json):
     """Check if a sparkrun job is running.
@@ -668,8 +693,6 @@ def cluster_check_job(ctx, target, hosts, hosts_file, cluster_name, tp_override,
 
       sparkrun cluster check-job my-recipe --cluster mylab --json
     """
-    import json as json_mod
-
     from sparkrun.orchestration.job_metadata import check_job_running
     from sparkrun.orchestration.primitives import build_ssh_kwargs
 
@@ -766,7 +789,7 @@ def cluster_check_job(ctx, target, hosts, hosts_file, cluster_name, tp_override,
 @click.argument("name", type=CLUSTER_NAME, required=False, default=None)
 @host_options
 @dry_run_option
-@click.option("--json", "output_json", is_flag=True, default=False, help="Output as JSON")
+@json_option()
 @click.pass_context
 def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_json):
     """Inspect effective cluster configuration and cache directories.
@@ -907,8 +930,6 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
     }
 
     if output_json:
-        import json as json_mod
-
         data = {
             "config": effective_config,
             "hosts": list(host_list),
@@ -928,7 +949,7 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
                                        "size": info.get("sr_du", "-")},
                     "hf_cache": {"path": info.get("hf_dir", "?"), "exists": info.get("hf_exists") == "yes", "size": info.get("hf_du", "-")},
                 }
-        click.echo(json_mod.dumps(data, indent=2))
+        print_json(data)
         return
 
     # --- Text output ---

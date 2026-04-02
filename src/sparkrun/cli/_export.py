@@ -58,7 +58,7 @@ def export(ctx):
 
 @export.command("recipe")
 @click.argument("recipe_name", type=RECIPE_NAME)
-@json_option
+@json_option()
 @click.option("--save", "save_path", type=click.Path(), help="Save a copy of the recipe to a file")
 @click.pass_context
 def export_recipe(ctx, recipe_name, output_json=False, save_path=None):
@@ -82,7 +82,7 @@ def export_recipe(ctx, recipe_name, output_json=False, save_path=None):
 @export.command("running-recipe")
 @click.argument("target", type=TARGET)
 @host_options
-@json_option
+@json_option()
 @click.option("--save", "save_path", type=click.Path(), help="Save to a file")
 @click.pass_context
 def export_running(ctx, target, hosts, hosts_file, cluster_name, output_json, save_path):
