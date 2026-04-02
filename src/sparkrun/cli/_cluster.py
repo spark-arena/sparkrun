@@ -762,3 +762,69 @@ def cluster_check_job(ctx, target, hosts, hosts_file, cluster_name, tp_override,
         sys.exit(1)
     if check_http_models and status.healthy is False:
         sys.exit(1)
+
+
+@cluster.command("compare-images", hidden=True)
+@click.argument("image")
+@host_options
+@dry_run_option
+@click.option("--json", "output_json", is_flag=True, default=False, help="Output as JSON")
+@click.pass_context
+def cluster_compare_images(ctx, image, hosts, hosts_file, cluster_name, dry_run, output_json):
+    """Compare a container image ID across local machine and cluster hosts.
+
+    Useful for debugging image distribution mismatches — shows the Docker
+    image ID for IMAGE on the local machine and on every host.
+
+    \b
+    Examples:
+      sparkrun cluster compare-images myimage:latest --cluster mylab
+      sparkrun cluster compare-images sparkrun-eugr-vllm-tf5 --hosts 192.168.11.13
+    """
+    from sparkrun.containers.distribute import _check_remote_image_ids
+    from sparkrun.containers.registry import get_image_id
+    from sparkrun.core.config import SparkrunConfig
+    from sparkrun.orchestration.primitives import build_ssh_kwargs
+
+    config = SparkrunConfig()
+    host_list, _ = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config)
+    ssh_kwargs = build_ssh_kwargs(config)
+
+    if dry_run:
+        click.echo("[dry-run] Would compare image '%s' across local + %d host(s)" % (image, len(host_list)))
+        return
+
+    # Local image ID
+    local_id = get_image_id(image)
+
+    # Remote image IDs
+    remote_ids = _check_remote_image_ids(
+        image,
+        host_list,
+        ssh_user=ssh_kwargs.get("ssh_user"),
+        ssh_key=ssh_kwargs.get("ssh_key"),
+        ssh_options=ssh_kwargs.get("ssh_options"),
+    )
+
+    if output_json:
+        import json as json_mod
+
+        result = {
+            "image": image,
+            "local": local_id,
+            "hosts": {h: remote_ids.get(h) for h in host_list},
+        }
+        click.echo(json_mod.dumps(result, indent=2))
+        return
+
+    # Table output
+    click.echo("Image: %s\n" % image)
+    click.echo("  %-40s %s" % ("Host", "Image ID"))
+    click.echo("  " + "-" * 110)
+    click.echo("  %-40s %s" % ("(local)", local_id or "(not found)"))
+    for h in host_list:
+        rid = remote_ids.get(h)
+        match = ""
+        if rid and local_id:
+            match = "  ✓ match" if rid == local_id else "  ✗ MISMATCH"
+        click.echo("  %-40s %s%s" % (h, rid or "(not found)", match))
