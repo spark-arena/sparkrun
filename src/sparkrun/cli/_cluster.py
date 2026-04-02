@@ -871,16 +871,27 @@ def cluster_inspect(ctx, hosts, hosts_file, cluster_name, dry_run, output_json):
     xfer_result = resolve_auto_transfer_mode(xfer_mode, host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
     resolved_mode = xfer_result.mode
 
+    # Detect IB / NCCL env — reuse from transfer mode resolution if available,
+    # otherwise run detection explicitly.
+    ib_result = xfer_result.ib_result
+    if ib_result is None and not dry_run:
+        from sparkrun.orchestration.infiniband import detect_ib_for_hosts
+
+        ib_result = detect_ib_for_hosts(host_list, ssh_kwargs=ssh_kwargs, topology=cluster_cfg.topology)
+
+    nccl_env = ib_result.nccl_env if ib_result else {}
+
     # Resolve effective transfer interface
     # auto (None) → cx7 if IB is available and validated, else mgmt
     if xfer_iface == "mgmt":
         resolved_iface = "mgmt"
-    elif xfer_result.ib_result and xfer_result.ib_validated:
+    elif xfer_result.ib_validated:
         resolved_iface = "cx7"
-    elif xfer_result.ib_result and not xfer_result.ib_validated:
+    elif ib_result and ib_result.ib_ip_map:
+        resolved_iface = "cx7"
+    elif ib_result:
         resolved_iface = "mgmt"
     else:
-        # No IB detection was done (explicit mode or dry-run) — can't resolve further
         resolved_iface = None
 
     if dry_run:
@@ -952,6 +963,7 @@ def cluster_inspect(ctx, hosts, hosts_file, cluster_name, dry_run, output_json):
         "hf_cache_local": local_hf,
         "hf_cache_remote": remote_hf,
         "sparkrun_cache": local_sparkrun,
+        "nccl_env": nccl_env,
     }
 
     if output_json:
@@ -998,6 +1010,15 @@ def cluster_inspect(ctx, hosts, hosts_file, cluster_name, dry_run, output_json):
     click.echo("  transfer_interface: %s" % _fmt_resolved(cfg_iface, resolved_iface))
     click.echo("  topology:           %s" % (cluster_cfg.topology or "(none)"))
     click.echo("  hosts:              %s" % ", ".join(host_list))
+    click.echo()
+
+    # NCCL env section
+    if nccl_env:
+        click.echo("NCCL Environment (head: %s):" % host_list[0])
+        for k, v in sorted(nccl_env.items()):
+            click.echo("  %s=%s" % (k, v))
+    else:
+        click.echo("NCCL Environment: (no InfiniBand detected)")
     click.echo()
 
     # Cache paths section
