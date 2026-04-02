@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import click
 
@@ -19,6 +19,32 @@ from sparkrun.core.recipe import (
 )
 
 logger = logging.getLogger(__name__)
+
+json_option = click.option(
+    "--json",
+    "output_json",
+    is_flag=True,
+    default=False,
+    help="Output result as JSON",
+)
+
+def print_json(data: Any) -> None:
+    """Print an object as formatted JSON.
+
+    Automatically handles dataclasses and objects implementing `to_dict()`.
+    """
+    import dataclasses
+    import json
+
+    class _SparkrunJSONEncoder(json.JSONEncoder):
+        def default(self, obj: Any) -> Any:
+            if hasattr(obj, "to_dict") and callable(obj.to_dict):
+                return obj.to_dict()
+            if dataclasses.is_dataclass(obj):
+                return dataclasses.asdict(obj)
+            return super().default(obj)
+
+    click.echo(json.dumps(data, cls=_SparkrunJSONEncoder))
 
 
 def _get_context(ctx) -> "SparkrunContext":

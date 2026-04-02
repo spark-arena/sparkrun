@@ -55,6 +55,7 @@ class ExecutorConfig:
     cap_add: list[str] | None = None
     ulimit: list[str] | None = None
     devices: list[str] | None = None
+    memory_limit: str | None = None
 
     @classmethod
     def from_chain(cls, chain) -> ExecutorConfig:
@@ -92,6 +93,7 @@ class ExecutorConfig:
             cap_add=raw_cap or None,
             ulimit=raw_ulimit or None,
             devices=raw_devices or None,
+            memory_limit=chain.get("memory_limit") or None,
         )
 
     def __post_init__(self):

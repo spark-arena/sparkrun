@@ -1024,6 +1024,44 @@ class Recipe:
 
         return d
 
+    def to_dict(
+            self,
+            overrides: Optional[dict] = None,
+            container_image: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Convert the recipe to a canonical dictionary.
+
+        Builds a clean dict from resolved attributes (not raw input),
+        applies overrides, filters ephemeral fields, and sorts keys.
+        """
+        export_dict = self._build_export_dict()
+
+        # Bake overrides into defaults so the export is self-contained
+        if overrides:
+            defaults = dict(export_dict.get("defaults") or {})
+            defaults.update(overrides)
+            export_dict["defaults"] = defaults
+
+        # Override container with effective image (post-builder)
+        if container_image:
+            export_dict["container"] = container_image
+
+        # filter out pre-/post- commands that were added by
+        # runtime, builder, etc. because those should be reproducible
+        # implicitly by relying on the runtime & builder in the future as well
+        for key in ("pre_exec", "post_exec", "post_commands"):
+            val = self._raw.get(key, [])
+            if val:
+                export_dict[key] = val
+            else:
+                export_dict.pop(key, None)
+
+        # ensure that `stop_after_post` is excluded if False
+        if not export_dict.get("stop_after_post", False):
+            export_dict.pop("stop_after_post", None)
+
+        return _sort_dict_by_patterns(export_dict, self.EXPORT_KEY_ORDER)
+
     def export(
             self,
             path: Optional[str | Path] = None,
@@ -1046,42 +1084,7 @@ class Recipe:
         """
         from sparkrun.utils.yaml_helpers import LiteralBlockDumper
 
-        export_dict = self._build_export_dict()
-
-        # Bake overrides into defaults so the export is self-contained
-        if overrides:
-            defaults = dict(export_dict.get("defaults") or {})
-            defaults.update(overrides)
-            export_dict["defaults"] = defaults
-
-        # Override container with effective image (post-builder)
-        if container_image:
-            export_dict["container"] = container_image
-
-        # filter out pre-/post- commands that were added by
-        # runtime, builder, etc. because those should be reproducible
-        # implicitly by relying on the runtime & builder in the future as well
-
-        # ensure that pre_exec is excluded if raw is empty
-        export_dict["pre_exec"] = self._raw.get("pre_exec", [])
-        if not export_dict["pre_exec"]:
-            del export_dict["pre_exec"]
-
-        # ensure that post_exec is excluded if raw is empty
-        export_dict["post_exec"] = self._raw.get("post_exec", [])
-        if not export_dict["post_exec"]:
-            del export_dict["post_exec"]
-
-        # ensure that post_commands are excluded if raw is empty
-        export_dict["post_commands"] = self._raw.get("post_commands", [])
-        if not export_dict["post_commands"]:
-            del export_dict["post_commands"]
-
-        # ensure that `stop_after_post` is excluded if False
-        if not export_dict.get("stop_after_post", False):
-            export_dict.pop("stop_after_post", None)
-
-        ordered = _sort_dict_by_patterns(export_dict, self.EXPORT_KEY_ORDER)
+        ordered = self.to_dict(overrides=overrides, container_image=container_image)
 
         text = (
             json_dumps(ordered, sort_keys=False)

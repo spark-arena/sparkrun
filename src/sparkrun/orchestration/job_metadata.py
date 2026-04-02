@@ -32,6 +32,14 @@ class JobStatus:
     container_statuses: dict[str, bool] = field(default_factory=dict)
     hosts: list[str] = field(default_factory=list)
 
+    def to_dict(self) -> dict[str, Any]:
+        """Convert the job status to a JSON-serializable dictionary."""
+        from dataclasses import asdict
+        result = asdict(self)
+        if self.metadata:
+            result["recipe"] = self.metadata.get("recipe")
+        return result
+
 
 def check_job_running(
     *,

@@ -16,6 +16,8 @@ from ._common import (
     build_cluster_id_overrides,
     dry_run_option,
     host_options,
+    json_option,
+    print_json,
 )
 
 
@@ -518,9 +520,10 @@ def cluster_monitor(ctx, hosts, hosts_file, cluster_name, dry_run, interval, sim
 @cluster.command("status")
 @host_options
 @dry_run_option
+@json_option
 # @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
-def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, config_path=None):
+def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, output_json, config_path=None):
     """Show sparkrun containers running on cluster hosts.
 
     Lists all Docker containers whose names start with sparkrun_ on each
@@ -553,6 +556,16 @@ def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, config_path=No
         cache_dir=str(config.cache_dir),
     )
 
+    if output_json:
+        out = result.to_dict()
+        for cid, group_data in out["groups"].items():
+            group_data["label"] = format_job_label(group_data["meta"], cid)
+        for entry_data in out["solo_entries"]:
+            entry_data["label"] = format_job_label(entry_data["meta"], entry_data["cluster_id"])
+
+        print_json(out)
+        return
+
     # --- Display rendering ---
 
     # Display grouped clusters
@@ -575,15 +588,11 @@ def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, config_path=No
 
     # Display solo / ungrouped containers (same format as cluster jobs)
     if result.solo_entries:
-        from sparkrun.orchestration.job_metadata import load_job_metadata
-
-        for host, name, status, image in result.solo_entries:
-            cid = name.removesuffix("_solo")
-            meta = load_job_metadata(cid, cache_dir=str(config.cache_dir)) or {}
-            click.echo(f"Job: {format_job_label(meta, cid)}  (1 container(s))")
-            hdisp = format_host_display(host, meta)
-            click.echo(f"  {'solo':<10s} {hdisp:<40s} {status:<25s} {image}")
-            logs_cmd, stop_cmd = format_job_commands(meta, cluster_id=cid)
+        for entry in result.solo_entries:
+            click.echo(f"Job: {format_job_label(entry.meta, entry.cluster_id)}  (1 container(s))")
+            hdisp = format_host_display(entry.host, entry.meta)
+            click.echo(f"  {'solo':<10s} {hdisp:<40s} {entry.status:<25s} {entry.image}")
+            logs_cmd, stop_cmd = format_job_commands(entry.meta, cluster_id=entry.cluster_id)
             if logs_cmd:
                 click.echo(f"  logs: {logs_cmd}")
                 click.echo(f"  stop: {stop_cmd}")
@@ -640,7 +649,7 @@ def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, config_path=No
 @click.option(
     "--check-http-models", is_flag=True, default=False, help="Also verify the inference server responds to health checks at /v1/models"
 )
-@click.option("--json", "output_json", is_flag=True, default=False, help="Output result as JSON")
+@json_option
 @click.pass_context
 def cluster_check_job(ctx, target, hosts, hosts_file, cluster_name, tp_override, port, served_model_name, check_http_models, output_json):
     """Check if a sparkrun job is running.
@@ -733,15 +742,7 @@ def cluster_check_job(ctx, target, hosts, hosts_file, cluster_name, tp_override,
 
     # --- Output ---
     if output_json:
-        result = {
-            "running": status.running,
-            "cluster_id": status.cluster_id,
-            "hosts": status.hosts,
-            "healthy": status.healthy,
-        }
-        if status.metadata:
-            result["recipe"] = status.metadata.get("recipe")
-        click.echo(json_mod.dumps(result))
+        print_json(status.to_dict())
     else:
         recipe_name = status.metadata.get("recipe", "unknown") if status.metadata else "unknown"
         if status.running:

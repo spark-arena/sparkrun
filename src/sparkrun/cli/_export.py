@@ -23,6 +23,8 @@ from ._common import (
     host_options,
     recipe_override_options,
     resolve_cluster_config,
+    json_option,
+    print_json,
 )
 
 logger = logging.getLogger(__name__)
@@ -56,7 +58,7 @@ def export(ctx):
 
 @export.command("recipe")
 @click.argument("recipe_name", type=RECIPE_NAME)
-@click.option("--json", "output_json", is_flag=True, help="Output normalized recipe as JSON to stdout")
+@json_option
 @click.option("--save", "save_path", type=click.Path(), help="Save a copy of the recipe to a file")
 @click.pass_context
 def export_recipe(ctx, recipe_name, output_json=False, save_path=None):
@@ -68,7 +70,10 @@ def export_recipe(ctx, recipe_name, output_json=False, save_path=None):
     _apply_spark_arena_benchmarks(recipe, recipe_name)
 
     if save_path is None:
-        click.echo(recipe.export(json=output_json))
+        if output_json:
+            print_json(recipe.to_dict())
+        else:
+            click.echo(recipe.export(json=False))
         return
 
     click.echo("Recipe saved to %s" % recipe.export(path=save_path, json=output_json))
@@ -77,7 +82,7 @@ def export_recipe(ctx, recipe_name, output_json=False, save_path=None):
 @export.command("running-recipe")
 @click.argument("target", type=TARGET)
 @host_options
-@click.option("--json", "output_json", is_flag=True, help="Output as JSON")
+@json_option
 @click.option("--save", "save_path", type=click.Path(), help="Save to a file")
 @click.pass_context
 def export_running(ctx, target, hosts, hosts_file, cluster_name, output_json, save_path):
@@ -164,7 +169,10 @@ def export_running(ctx, target, hosts, hosts_file, cluster_name, output_json, sa
 def _output_export(recipe, output_json, save_path, overrides=None, container_image=None):
     """Export recipe to stdout or file with optional overrides baked in."""
     if save_path is None:
-        click.echo(recipe.export(json=output_json, overrides=overrides, container_image=container_image))
+        if output_json:
+            print_json(recipe.to_dict(overrides=overrides, container_image=container_image))
+        else:
+            click.echo(recipe.export(json=False, overrides=overrides, container_image=container_image))
     else:
         click.echo(
             "Recipe saved to %s" % recipe.export(path=save_path, json=output_json, overrides=overrides, container_image=container_image)

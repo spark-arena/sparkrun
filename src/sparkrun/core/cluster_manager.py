@@ -56,16 +56,60 @@ class ClusterGroup:
 
 
 @dataclass
+class ClusterSoloEntry:
+    """A standalone container forming a sparkrun job."""
+
+    cluster_id: str
+    host: str
+    name: str
+    status: str
+    image: str
+    meta: dict[str, Any]
+
+
+@dataclass
 class ClusterStatusResult:
     """Result of querying sparkrun container status across hosts."""
 
     groups: dict[str, ClusterGroup]  # cluster_id -> group
-    solo_entries: list[tuple[str, str, str, str]]  # (host, name, status, image)
+    solo_entries: list[ClusterSoloEntry]
     errors: dict[str, str]  # host -> error message
     idle_hosts: list[str]  # hosts with no containers and no errors
     pending_ops: list[dict[str, Any]]  # relevant pending operations
     total_containers: int
     host_count: int
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert the result to a JSON-serializable dictionary."""
+        out = {
+            "groups": {},
+            "solo_entries": [],
+            "idle_hosts": self.idle_hosts,
+            "pending_ops": self.pending_ops,
+            "errors": self.errors,
+            "total_containers": self.total_containers,
+            "host_count": self.host_count,
+        }
+
+        for cid, group in self.groups.items():
+            out["groups"][cid] = {
+                "meta": group.meta,
+                "containers": [
+                    {"host": h, "role": r, "status": s, "image": i}
+                    for h, r, s, i in group.members
+                ]
+            }
+
+        for entry in self.solo_entries:
+            out["solo_entries"].append({
+                "cluster_id": entry.cluster_id,
+                "meta": entry.meta,
+                "host": entry.host,
+                "status": entry.status,
+                "image": entry.image
+            })
+
+        return out
 
 
 class ClusterManager:
@@ -446,14 +490,14 @@ def query_cluster_status(
     # Anything ending in _solo is standalone; everything else is grouped
     # by cluster_id (name up to last underscore-delimited role suffix).
     groups: dict[str, list[tuple[str, str, str, str]]] = {}
-    solo_entries: list[tuple[str, str, str, str]] = []
+    raw_solo_entries: list[tuple[str, str, str, str]] = []
     total_containers = 0
 
     for host in host_list:
         for name, status, image in host_containers.get(host, []):
             total_containers += 1
             if name.endswith("_solo"):
-                solo_entries.append((host, name, status, image))
+                raw_solo_entries.append((host, name, status, image))
             else:
                 # Extract cluster_id by stripping the role suffix.
                 # Patterns: sparkrun_hash_head, sparkrun_hash_worker,
@@ -474,6 +518,19 @@ def query_cluster_status(
     for cid, members in groups.items():
         meta = load_job_metadata(cid, cache_dir=cache_dir) or {}
         cluster_groups[cid] = ClusterGroup(cluster_id=cid, members=members, meta=meta)
+
+    solo_entries: list[ClusterSoloEntry] = []
+    for host, name, status, image in raw_solo_entries:
+        cid = name.removesuffix("_solo")
+        meta = load_job_metadata(cid, cache_dir=cache_dir) or {}
+        solo_entries.append(ClusterSoloEntry(
+            cluster_id=cid,
+            host=host,
+            name=name,
+            status=status,
+            image=image,
+            meta=meta
+        ))
 
     # Idle hosts: no containers and no errors
     idle_hosts = [h for h in host_list if h not in errors and not host_containers.get(h)]

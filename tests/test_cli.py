@@ -165,6 +165,49 @@ class TestListCommand:
         # Check for separator line
         assert "-" * 10 in result.output
 
+    def test_list_json(self, runner):
+        """Test that sparkrun recipe list --json outputs a valid JSON list."""
+        import json
+        result = runner.invoke(main, ["recipe", "list", "--json"])
+        assert result.exit_code == 0
+        
+        data = json.loads(result.output)
+        assert isinstance(data, list)
+        
+        # Verify it found at least our test recipe
+        names = [item.get("name") for item in data]
+        assert _TEST_RECIPE_NAME in names
+
+
+class TestSearchCommand:
+    """Test the search command."""
+
+    def test_search_shows_recipes(self, runner):
+        """Test that sparkrun search finds matching recipes."""
+        result = runner.invoke(main, ["search", "llama-cpp"])
+        assert result.exit_code == 0
+        assert "llama-cpp" in result.output.lower()
+        assert "No recipes found" not in result.output
+
+    def test_search_no_results(self, runner):
+        """Test that sparkrun search behaves correctly when no recipes match."""
+        result = runner.invoke(main, ["search", "definitely-not-a-real-recipe-name-12345"])
+        assert result.exit_code == 0
+        assert "No recipes found matching" in result.output
+
+    def test_search_json(self, runner):
+        """Test that sparkrun recipe search --json outputs a valid JSON list."""
+        import json
+        result = runner.invoke(main, ["recipe", "search", "llama-cpp", "--json"])
+        assert result.exit_code == 0
+        
+        data = json.loads(result.output)
+        assert isinstance(data, list)
+        assert len(data) > 0
+        
+        runtimes = [item.get("runtime", "") for item in data]
+        assert any("llama-cpp" in rt for rt in runtimes)
+
 
 class TestShowCommand:
     """Test the show command."""
@@ -195,6 +238,16 @@ class TestShowCommand:
         result = runner.invoke(main, ["show", "--help"])
         assert result.exit_code == 0
         assert "--save" not in result.output
+
+    def test_show_json(self, runner):
+        """Test that sparkrun recipe show --json outputs valid JSON."""
+        import json
+        result = runner.invoke(main, ["recipe", "show", _TEST_RECIPE_NAME, "--json"])
+        assert result.exit_code == 0
+        
+        data = json.loads(result.output)
+        assert "model" in data
+        assert "runtime" in data
 
 
 class TestExportCommand:
@@ -780,6 +833,18 @@ class TestVramCommand:
         assert result.exit_code == 0
         assert "Tensor parallel:  4" in result.output
 
+    def test_vram_json(self, runner):
+        """Test that sparkrun recipe vram --json outputs valid JSON."""
+        import json
+        result = runner.invoke(main, ["recipe", "vram", _TEST_RECIPE_NAME, "--no-auto-detect", "--json"])
+        assert result.exit_code == 0
+        
+        data = json.loads(result.output)
+        assert _TEST_RECIPE_NAME in data["recipe"]
+        assert "model_weights_gb" in data
+        assert "total_per_gpu_gb" in data
+        assert "fits_dgx_spark" in data
+
     def test_vram_nonexistent_recipe(self, runner):
         """Test sparkrun recipe vram on nonexistent recipe exits with error."""
         result = runner.invoke(main, ["recipe", "vram", "nonexistent-recipe"])
@@ -938,6 +1003,33 @@ class TestClusterCommands:
         assert "set-default" in result.output
         assert "unset-default" in result.output
         assert "update" in result.output
+        assert "status" in result.output
+
+    def test_cluster_status_json(self, runner, cluster_setup):
+        """Test cluster status --json outputs valid JSON."""
+        import json
+        from sparkrun.core.cluster_manager import ClusterStatusResult, ClusterGroup, ClusterSoloEntry
+        with (
+            mock.patch(
+                "sparkrun.core.cluster_manager.query_cluster_status",
+                return_value=ClusterStatusResult(
+                    groups={},
+                    solo_entries=[ClusterSoloEntry("cid1", "10.0.0.1", "name", "running", "img", {"recipe": "test"})],
+                    errors={},
+                    idle_hosts=[],
+                    pending_ops=[],
+                    total_containers=1,
+                    host_count=1
+                ),
+            ),
+        ):
+            result = runner.invoke(main, ["cluster", "status", "--cluster", "test-cluster", "--json"])
+        
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "solo_entries" in data
+        assert "groups" in data
+        assert data["solo_entries"][0]["cluster_id"] == "cid1"
 
     def test_cluster_create(self, runner, tmp_path, monkeypatch):
         """Test creating a cluster."""
