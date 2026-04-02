@@ -830,23 +830,24 @@ def cluster_compare_images(ctx, image, hosts, hosts_file, cluster_name, dry_run,
         click.echo("  %-40s %s%s" % (h, rid or "(not found)", match))
 
 
-@cluster.command("inspect-dirs", hidden=True)
+@cluster.command("inspect", hidden=True)
 @host_options
 @dry_run_option
 @click.option("--json", "output_json", is_flag=True, default=False, help="Output as JSON")
 @click.pass_context
-def cluster_inspect_dirs(ctx, hosts, hosts_file, cluster_name, dry_run, output_json):
-    """Show effective sparkrun and HuggingFace cache directories.
+def cluster_inspect(ctx, hosts, hosts_file, cluster_name, dry_run, output_json):
+    """Inspect effective cluster configuration and cache directories.
 
-    Displays the local and remote cache paths that sparkrun would use,
-    and checks whether each directory exists on the remote hosts.
-    Useful for diagnosing model sync or permission issues.
+    Shows resolved cluster settings (transfer mode, interface, topology,
+    SSH user, cache dirs) and checks whether cache directories exist on
+    each remote host.  Useful for diagnosing configuration, transfer, or
+    permission issues without running a job.
 
     \b
     Examples:
-      sparkrun cluster inspect-dirs --cluster mylab
-      sparkrun cluster inspect-dirs --hosts 192.168.11.13,192.168.11.14
-      sparkrun cluster inspect-dirs --cluster mylab --json
+      sparkrun cluster inspect --cluster mylab
+      sparkrun cluster inspect --hosts 192.168.11.13,192.168.11.14
+      sparkrun cluster inspect --cluster mylab --json
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -859,22 +860,35 @@ def cluster_inspect_dirs(ctx, hosts, hosts_file, cluster_name, dry_run, output_j
     host_list, cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config)
     ssh_kwargs = build_ssh_kwargs(config)
 
-    # Resolve effective directories
+    # Resolve effective cluster configuration
     cluster_cfg = resolve_cluster_config(cluster_name, hosts, hosts_file, cluster_mgr)
     local_hf, remote_hf, xfer_mode, xfer_iface = cluster_cfg.resolve_transfer_config(config)
     local_sparkrun = str(config.cache_dir)
 
+    # Resolve auto transfer mode to a concrete value
+    from sparkrun.orchestration.distribution import resolve_auto_transfer_mode
+
+    xfer_result = resolve_auto_transfer_mode(xfer_mode, host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
+    resolved_mode = xfer_result.mode
+
+    # Resolve effective transfer interface
+    # auto (None) → cx7 if IB is available and validated, else mgmt
+    if xfer_iface == "mgmt":
+        resolved_iface = "mgmt"
+    elif xfer_result.ib_result and xfer_result.ib_validated:
+        resolved_iface = "cx7"
+    elif xfer_result.ib_result and not xfer_result.ib_validated:
+        resolved_iface = "mgmt"
+    else:
+        # No IB detection was done (explicit mode or dry-run) — can't resolve further
+        resolved_iface = None
+
     if dry_run:
-        click.echo("[dry-run] Would inspect cache dirs on %d host(s)" % len(host_list))
-        click.echo("  local sparkrun cache: %s" % local_sparkrun)
-        click.echo("  local HF cache:       %s" % local_hf)
-        click.echo("  remote HF cache:      %s" % remote_hf)
+        click.echo("[dry-run] Would inspect cluster config and cache dirs on %d host(s)" % len(host_list))
         return
 
     # Build a script that checks existence and disk usage for both dirs.
-    # Output format: sparkrun_exists:yes/no|sparkrun_du:<size>|hf_exists:yes/no|hf_du:<size>
     # We derive remote sparkrun cache the same way: ~/.cache/sparkrun on the remote user.
-    # If cluster has a different SSH user, their home differs.
     if cluster_cfg.user:
         remote_sparkrun = "/home/%s/.cache/sparkrun" % cluster_cfg.user
     else:
@@ -912,45 +926,94 @@ def cluster_inspect_dirs(ctx, hosts, hosts_file, cluster_name, dry_run, output_j
             else:
                 host_info[host] = {"error": result.stderr.strip() or "SSH failed"}
 
+    # Check local directories
+    import os
+    import subprocess as _sp
+
+    def _local_dir_info(path: str) -> tuple[str, str]:
+        if not os.path.isdir(path):
+            return "no", "-"
+        du_result = _sp.run(["du", "-sh", path], capture_output=True, text=True)
+        size = du_result.stdout.split()[0] if du_result.returncode == 0 and du_result.stdout.strip() else "-"
+        return "yes", size
+
+    local_sr_exists, local_sr_du = _local_dir_info(local_sparkrun)
+    local_hf_exists, local_hf_du = _local_dir_info(local_hf)
+
+    # Collect effective config summary
+    effective_config = {
+        "cluster": cluster_cfg.name,
+        "ssh_user": config.ssh_user,
+        "transfer_mode": xfer_mode,
+        "transfer_mode_resolved": resolved_mode,
+        "transfer_interface": xfer_iface or "auto",
+        "transfer_interface_resolved": resolved_iface,
+        "topology": cluster_cfg.topology,
+        "hf_cache_local": local_hf,
+        "hf_cache_remote": remote_hf,
+        "sparkrun_cache": local_sparkrun,
+    }
+
     if output_json:
         import json as json_mod
 
         data = {
+            "config": effective_config,
+            "hosts": list(host_list),
             "local": {
-                "sparkrun_cache": local_sparkrun,
-                "hf_cache": local_hf,
+                "sparkrun_cache": {"path": local_sparkrun, "exists": local_sr_exists == "yes", "size": local_sr_du},
+                "hf_cache": {"path": local_hf, "exists": local_hf_exists == "yes", "size": local_hf_du},
             },
-            "effective_remote": {
-                "hf_cache": remote_hf,
-            },
-            "transfer_mode": xfer_mode,
-            "cluster": cluster_cfg.name,
-            "hosts": {},
+            "remote": {},
         }
         for h in host_list:
             info = host_info.get(h, {})
             if "error" in info:
-                data["hosts"][h] = {"error": info["error"]}
+                data["remote"][h] = {"error": info["error"]}
             else:
-                data["hosts"][h] = {
+                data["remote"][h] = {
                     "sparkrun_cache": {"path": info.get("sr_dir", "?"), "exists": info.get("sr_exists") == "yes", "size": info.get("sr_du", "-")},
                     "hf_cache": {"path": info.get("hf_dir", "?"), "exists": info.get("hf_exists") == "yes", "size": info.get("hf_du", "-")},
                 }
         click.echo(json_mod.dumps(data, indent=2))
         return
 
-    # Table output
-    click.echo("Local:")
-    click.echo("  sparkrun cache: %s" % local_sparkrun)
-    click.echo("  HF cache:       %s" % local_hf)
-    click.echo()
+    # --- Text output ---
+
+    # Cluster config section
+    click.echo("Cluster Configuration:")
     if cluster_cfg.name:
-        click.echo("Cluster: %s  (transfer_mode=%s)" % (cluster_cfg.name, xfer_mode))
-    click.echo("Remote HF cache (effective): %s" % remote_hf)
+        click.echo("  cluster:            %s" % cluster_cfg.name)
+    else:
+        click.echo("  cluster:            (none — using explicit hosts)")
+    click.echo("  ssh_user:           %s" % (config.ssh_user or "(default)"))
+
+    def _fmt_resolved(configured: str, resolved: str | None) -> str:
+        if resolved and configured != resolved:
+            return "%s (resolved to: %s)" % (configured, resolved)
+        return configured
+
+    click.echo("  transfer_mode:      %s" % _fmt_resolved(xfer_mode, resolved_mode))
+    cfg_iface = xfer_iface or "auto"
+    click.echo("  transfer_interface: %s" % _fmt_resolved(cfg_iface, resolved_iface))
+    click.echo("  topology:           %s" % (cluster_cfg.topology or "(none)"))
+    click.echo("  hosts:              %s" % ", ".join(host_list))
     click.echo()
 
+    # Cache paths section
+    click.echo("Cache Paths:")
+    click.echo("  sparkrun (local):   %s" % local_sparkrun)
+    click.echo("  HF cache (local):   %s" % local_hf)
+    click.echo("  HF cache (remote):  %s" % remote_hf)
+    if local_hf != remote_hf:
+        click.echo("  ⚠ local and remote HF cache paths differ")
+    click.echo()
+
+    # Directory status table
+    click.echo("Directory Status:")
     click.echo("  %-30s %-10s %-10s %-10s %-10s %s" % ("Host", "SR exists", "SR size", "HF exists", "HF size", "HF path"))
     click.echo("  " + "-" * 100)
+    click.echo("  %-30s %-10s %-10s %-10s %-10s %s" % ("(local)", local_sr_exists, local_sr_du, local_hf_exists, local_hf_du, local_hf))
     for h in host_list:
         info = host_info.get(h, {})
         if "error" in info:
