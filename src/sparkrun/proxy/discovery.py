@@ -113,10 +113,10 @@ def _discover_live(
         if ep:
             endpoints.append(ep)
 
-    for host, name, _status, _image in result.solo_entries:
-        cid = name.removesuffix("_solo")
+    for entry in result.solo_entries:
+        cid = entry.name.removesuffix("_solo")
         meta = load_job_metadata(cid, cache_dir=cache_dir) or {}
-        ep = _endpoint_from_meta(cid, meta, fallback_host=host)
+        ep = _endpoint_from_meta(cid, meta, fallback_host=entry.host)
         if ep:
             endpoints.append(ep)
 

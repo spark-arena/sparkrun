@@ -91,8 +91,8 @@ def _stop_all(hosts, hosts_file, cluster_name, config, dry_run):
     for cid, group in result.groups.items():
         recipe_label = group.meta.get("recipe", "unknown")
         click.echo("  %s (%s) — %d container(s)" % (cid, recipe_label, len(group.members)))
-    for host, name, status, image in result.solo_entries:
-        click.echo("  %s on %s" % (name, host))
+    for entry in result.solo_entries:
+        click.echo("  %s on %s" % (entry.name, entry.host))
 
     # Build per-host container name mapping
     host_containers: dict[str, list[str]] = {}
@@ -100,8 +100,8 @@ def _stop_all(hosts, hosts_file, cluster_name, config, dry_run):
         for host, role, status, image in group.members:
             container_name = "%s_%s" % (cid, role)
             host_containers.setdefault(host, []).append(container_name)
-    for host, name, status, image in result.solo_entries:
-        host_containers.setdefault(host, []).append(name)
+    for entry in result.solo_entries:
+        host_containers.setdefault(entry.host, []).append(entry.name)
 
     # Stop containers per host
     click.echo("Stopping all containers...")
@@ -115,8 +115,8 @@ def _stop_all(hosts, hosts_file, cluster_name, config, dry_run):
     if not dry_run:
         for cid in result.groups:
             remove_job_metadata(cid, cache_dir=str(config.cache_dir))
-        for _host, name, _status, _image in result.solo_entries:
-            solo_cid = name.removesuffix("_solo") if name.endswith("_solo") else name
+        for entry in result.solo_entries:
+            solo_cid = entry.name.removesuffix("_solo") if entry.name.endswith("_solo") else entry.name
             remove_job_metadata(solo_cid, cache_dir=str(config.cache_dir))
 
     hosts_touched = len(host_containers)
