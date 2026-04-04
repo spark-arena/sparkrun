@@ -244,6 +244,30 @@ def fetch_safetensors_size(
         if cache_dir:
             hub_kwargs["cache_dir"] = _hub_cache(cache_dir)
 
+        # Try 0: lightweight API call — no file download needed
+        try:
+            from huggingface_hub import model_info as _model_info
+
+            mi_kwargs: dict[str, Any] = {"repo_id": model_id}
+            if revision:
+                mi_kwargs["revision"] = revision
+            mi = _model_info(**mi_kwargs)
+            if mi.safetensors is not None:
+                _api_dtype_bytes = {
+                    "F64": 8, "F32": 4, "F16": 2, "BF16": 2,
+                    "F8_E4M3": 1, "F8_E5M2": 1,
+                    "I64": 8, "I32": 4, "I16": 2, "I8": 1, "U8": 1, "BOOL": 1,
+                }
+                total_bytes = 0
+                for dtype_name, count in mi.safetensors.parameters.items():
+                    elem_size = _api_dtype_bytes.get(dtype_name, 2)
+                    total_bytes += count * elem_size
+                if total_bytes > 0:
+                    logger.debug("Got %d bytes from model_info API for %s", total_bytes, model_id)
+                    return total_bytes
+        except Exception as e:
+            logger.debug("model_info API failed for %s: %s", model_id, e)
+
         # Try 1: sharded model with index file
         try:
             disable_progress_bars()
@@ -258,8 +282,8 @@ def fetch_safetensors_size(
             total_size = index.get("metadata", {}).get("total_size")
             if total_size is not None:
                 return int(total_size)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("safetensors index failed for %s: %s", model_id, e)
 
         # Try 2: single-file model — read safetensors header for total param size
         try:
@@ -297,8 +321,8 @@ def fetch_safetensors_size(
                 total_bytes += num_elements * elem_size
             if total_bytes > 0:
                 return total_bytes
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("safetensors header parse failed for %s: %s", model_id, e)
 
         # Try 3: fall back to file size as rough approximation
         try:
@@ -315,11 +339,47 @@ def fetch_safetensors_size(
             if size > 0:
                 logger.debug("Using file size as param size estimate for %s", model_id)
                 return size
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("safetensors file size fallback failed for %s: %s", model_id, e)
 
     except Exception as e:
         logger.debug("Could not fetch safetensors size for %s: %s", model_id, e)
+    return None
+
+
+def fetch_safetensors_params(
+    model_id: str,
+    revision: str | None = None,
+) -> int | None:
+    """Fetch total parameter count from HuggingFace model safetensors metadata.
+
+    Uses the HuggingFace Hub API (``model_info``) which returns parameter counts
+    per dtype without downloading any model files.  This is the preferred method
+    for single-file safetensors models that lack an index file.
+
+    Args:
+        model_id: HuggingFace model identifier.
+        revision: Optional revision (branch, tag, or commit hash).
+
+    Returns:
+        Total parameter count, or ``None`` if unavailable.
+    """
+    try:
+        from huggingface_hub import model_info as _model_info
+
+        kwargs: dict[str, Any] = {"repo_id": model_id}
+        if revision:
+            kwargs["revision"] = revision
+        info = _model_info(**kwargs)
+        if info.safetensors is not None:
+            total = info.safetensors.total
+            if total and total > 0:
+                logger.debug(
+                    "Got %d params from safetensors metadata for %s", total, model_id
+                )
+                return int(total)
+    except Exception as e:
+        logger.debug("Could not fetch safetensors params for %s: %s", model_id, e)
     return None
 
 

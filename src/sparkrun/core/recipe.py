@@ -659,6 +659,7 @@ class Recipe:
             estimate_vram as _estimate_vram,
             extract_model_info,
             fetch_model_config,
+            fetch_safetensors_params,
             fetch_safetensors_size,
             parse_param_count,
         )
@@ -732,15 +733,18 @@ class Recipe:
         # Parse model_params
         model_params = parse_param_count(model_params_raw) if model_params_raw is not None else None
 
-        # Fallback: derive model_params from safetensors index when metadata
-        # doesn't provide it.  The index file records total_size in bytes;
-        # dividing by bytes-per-element gives an approximate parameter count.
-        if model_params is None and model_vram is None and auto_detect and self.model and model_dtype:
-            bpe = bytes_per_element(str(model_dtype))
-            if bpe is not None and bpe > 0:
-                total_size = fetch_safetensors_size(self.model, revision=self.model_revision, cache_dir=cache_dir)
-                if total_size is not None:
-                    model_params = int(total_size / bpe)
+        # Fallback: derive model_params from HF API or safetensors index when
+        # metadata doesn't provide it.  Prefer the lightweight API call
+        # (fetch_safetensors_params) which returns param count directly and
+        # handles mixed-dtype quantized models correctly.
+        if model_params is None and model_vram is None and auto_detect and self.model:
+            model_params = fetch_safetensors_params(self.model, revision=self.model_revision)
+            if model_params is None and model_dtype:
+                bpe = bytes_per_element(str(model_dtype))
+                if bpe is not None and bpe > 0:
+                    total_size = fetch_safetensors_size(self.model, revision=self.model_revision, cache_dir=cache_dir)
+                    if total_size is not None:
+                        model_params = int(total_size / bpe)
 
         # Get effective max_model_len and tensor_parallel from config chain
         max_model_len = config.get("max_model_len")

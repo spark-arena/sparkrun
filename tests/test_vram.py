@@ -12,6 +12,8 @@ from sparkrun.models.vram import (
     bytes_per_element,
     estimate_vram,
     extract_model_info,
+    fetch_safetensors_params,
+    fetch_safetensors_size,
     parse_param_count,
 )
 
@@ -674,3 +676,109 @@ class TestResolveQuantDtype:
 
     def test_no_method(self):
         assert _resolve_quant_dtype({}) is None
+
+
+class _FakeSafeTensorsInfo:
+    """Minimal stand-in for huggingface_hub SafeTensorsInfo."""
+
+    def __init__(self, parameters: dict[str, int], total: int):
+        self.parameters = parameters
+        self.total = total
+
+
+class _FakeModelInfo:
+    """Minimal stand-in for huggingface_hub ModelInfo."""
+
+    def __init__(self, safetensors=None):
+        self.safetensors = safetensors
+
+
+class TestFetchSafetensorsParams:
+    """Tests for fetch_safetensors_params (HF API-based param count)."""
+
+    def test_returns_total_from_model_info(self):
+        """Should return total param count from model_info API."""
+        st_info = _FakeSafeTensorsInfo(
+            parameters={"BF16": 5_000_000_000, "F32": 100_000},
+            total=5_000_100_000,
+        )
+        mi = _FakeModelInfo(safetensors=st_info)
+        with mock.patch("huggingface_hub.model_info", return_value=mi):
+            result = fetch_safetensors_params("org/test-model")
+        assert result == 5_000_100_000
+
+    def test_returns_none_when_no_safetensors(self):
+        """Should return None for models without safetensors (e.g. GGUF)."""
+        mi = _FakeModelInfo(safetensors=None)
+        with mock.patch("huggingface_hub.model_info", return_value=mi):
+            result = fetch_safetensors_params("org/gguf-model")
+        assert result is None
+
+    def test_returns_none_on_api_error(self):
+        """Should return None when API call fails."""
+        with mock.patch("huggingface_hub.model_info", side_effect=Exception("network error")):
+            result = fetch_safetensors_params("org/missing-model")
+        assert result is None
+
+    def test_passes_revision(self):
+        """Should forward revision kwarg to model_info."""
+        st_info = _FakeSafeTensorsInfo(parameters={"BF16": 1000}, total=1000)
+        mi = _FakeModelInfo(safetensors=st_info)
+        captured = {}
+
+        def _capture(**kwargs):
+            captured.update(kwargs)
+            return mi
+
+        with mock.patch("huggingface_hub.model_info", side_effect=_capture):
+            fetch_safetensors_params("org/model", revision="v2")
+        assert captured.get("revision") == "v2"
+
+    def test_returns_none_when_total_zero(self):
+        """Should return None when total is 0."""
+        st_info = _FakeSafeTensorsInfo(parameters={}, total=0)
+        mi = _FakeModelInfo(safetensors=st_info)
+        with mock.patch("huggingface_hub.model_info", return_value=mi):
+            result = fetch_safetensors_params("org/empty-model")
+        assert result is None
+
+
+class TestFetchSafetensorsSizeTry0:
+    """Tests for model_info API Try 0 in fetch_safetensors_size."""
+
+    def test_model_info_api_used_first(self, monkeypatch):
+        """API try should succeed without downloading any files."""
+        st_info = _FakeSafeTensorsInfo(
+            parameters={"BF16": 7_000_000_000},
+            total=7_000_000_000,
+        )
+        mi = _FakeModelInfo(safetensors=st_info)
+        download_called = []
+
+        with mock.patch("huggingface_hub.model_info", return_value=mi), \
+             mock.patch("huggingface_hub.hf_hub_download", side_effect=lambda **kw: download_called.append(1)):
+            result = fetch_safetensors_size("org/test-model")
+
+        # BF16 = 2 bytes per element → 7B * 2 = 14B bytes
+        assert result == 14_000_000_000
+        assert download_called == []  # no file download attempted
+
+    def test_falls_through_when_api_fails(self, monkeypatch, tmp_path):
+        """When API fails, should fall through to index file (Try 1)."""
+        import json
+
+        index_file = tmp_path / "model.safetensors.index.json"
+        index_file.write_text(json.dumps({"metadata": {"total_size": 20_000_000_000}}))
+
+        def _fake_download(**kwargs):
+            if kwargs.get("filename") == "model.safetensors.index.json":
+                return str(index_file)
+            raise FileNotFoundError("no such file")
+
+        with mock.patch("huggingface_hub.model_info", side_effect=Exception("offline")), \
+             mock.patch("huggingface_hub.hf_hub_download", side_effect=_fake_download), \
+             mock.patch("huggingface_hub.utils.disable_progress_bars"), \
+             mock.patch("huggingface_hub.utils.enable_progress_bars"):
+            result = fetch_safetensors_size("org/sharded-model")
+
+        assert result == 20_000_000_000
