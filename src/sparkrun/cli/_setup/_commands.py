@@ -1710,6 +1710,197 @@ def setup_earlyoom(ctx, hosts, hosts_file, cluster_name, user, extra_prefer, ext
 
 
 # ---------------------------------------------------------------------------
+# Founders Edition System Update
+# ---------------------------------------------------------------------------
+
+
+_FE_UPDATE_STEPS = [
+    ("Updating package lists", "apt update"),
+    ("Upgrading packages", "DEBIAN_FRONTEND=noninteractive apt dist-upgrade -y"),
+    ("Refreshing firmware metadata", "fwupdmgr refresh --force"),
+    ("Upgrading firmware", "fwupdmgr upgrade -y --no-reboot-check"),
+]
+
+
+@setup.command("fe-system-update", hidden=True)
+@host_options
+@click.option("--user", default=None, help="SSH user (default: cluster user or $USER)")
+@dry_run_option
+@click.pass_context
+def setup_fe_system_update(ctx, hosts, hosts_file, cluster_name, user, dry_run):
+    """Run a full system update on DGX Spark Founders Edition hosts.
+
+    Updates system packages (apt), firmware (fwupdmgr), and reboots.
+    Can target the local machine, cluster hosts, or both.
+
+    \b
+    Steps performed (as root):
+      1. apt update
+      2. apt dist-upgrade
+      3. fwupdmgr refresh
+      4. fwupdmgr upgrade
+      5. reboot
+    """
+    from sparkrun.core.config import SparkrunConfig
+
+    from .._common import _resolve_setup_context
+    from ._sudo import ensure_sudo_password
+
+    # TODO: should use same sctx init as we typically use
+    config = SparkrunConfig()
+
+    # --- Step 1: Determine target hosts ---
+    # If explicit hosts/cluster provided, use those directly
+    explicit_hosts = hosts or hosts_file or cluster_name
+    if explicit_hosts:
+        host_list, user, ssh_kwargs = _resolve_setup_context(hosts, hosts_file, cluster_name, config, user)
+    else:
+        # Interactive: ask local vs cluster
+        click.echo("Where would you like to run the system update?")
+        click.echo()
+        click.echo("  1) Local machine only")
+
+        # Try to list cluster hosts
+        mgr = _get_cluster_manager()
+        default_cluster = mgr.get_default()
+        cluster_hosts = []
+        if default_cluster:
+            try:
+                cdata = mgr.get_cluster(default_cluster)
+                cluster_hosts = cdata.get("hosts", [])
+            except Exception:
+                pass
+
+        if cluster_hosts:
+            click.echo("  2) Cluster hosts (%s): %s" % (default_cluster, ", ".join(cluster_hosts)))
+            click.echo("  3) All (local + cluster hosts)")
+            choice = click.prompt("Selection", type=click.IntRange(1, 3), default=2)
+        else:
+            click.echo("  (No default cluster configured — cluster option unavailable)")
+            choice = click.prompt("Selection", type=click.IntRange(1, 1), default=1)
+
+        click.echo()
+
+        import socket
+
+        if choice == 1:
+            host_list = [socket.gethostname()]
+        elif choice == 2:
+            host_list = list(cluster_hosts)
+        else:
+            local = socket.gethostname()
+            host_list = [local] + [h for h in cluster_hosts if h != local]
+
+        import os
+
+        if user is None:
+            user = config.ssh_user or os.environ.get("USER", "root")
+        from sparkrun.orchestration.primitives import build_ssh_kwargs
+
+        ssh_kwargs = build_ssh_kwargs(config)
+        if user:
+            ssh_kwargs["ssh_user"] = user
+
+    # TODO: guard to detect non-founders edition hosts and block them
+
+    # --- Step 2: Confirm the activity ---
+    click.echo("Founders Edition System Update")
+    click.echo("=" * 40)
+    click.echo("Target hosts: %s" % ", ".join(host_list))
+    click.echo()
+    click.echo("The following will be executed as root:")
+    for desc, cmd in _FE_UPDATE_STEPS:
+        click.echo("  - %s  (%s)" % (desc, cmd))
+    click.echo("  - Reboot")
+    click.echo()
+
+    if not dry_run:
+        if not click.confirm("Proceed?", default=False):
+            click.echo("Aborted.")
+            return
+
+    # --- Step 3: Get sudo access ---
+    sudo_password, indirect_user = ensure_sudo_password(
+        host_list,
+        user,
+        ssh_kwargs,
+        dry_run=dry_run,
+        allow_indirect=True,
+        default_user=user,
+    )
+    sudo_ssh_kwargs = dict(ssh_kwargs)
+    if indirect_user:
+        sudo_ssh_kwargs["ssh_user"] = indirect_user
+
+    # --- Step 4: Run update steps ---
+    from sparkrun.orchestration.sudo import run_sudo_script_on_host
+
+    failed_hosts: set[str] = set()
+    for desc, cmd in _FE_UPDATE_STEPS:
+        active_hosts = [h for h in host_list if h not in failed_hosts]
+        if not active_hosts:
+            click.echo("All hosts failed — aborting remaining steps.")
+            break
+
+        click.echo()
+        click.echo("[%s]" % desc)
+        for h in active_hosts:
+            click.echo("  %-30s ..." % h, nl=False)
+            r = run_sudo_script_on_host(
+                h,
+                cmd,
+                password=sudo_password,
+                ssh_kwargs=sudo_ssh_kwargs,
+                timeout=600,
+                dry_run=dry_run,
+            )
+            if r.success:
+                click.echo(" OK")
+                if r.stdout.strip():
+                    # Show last few lines of output for visibility
+                    for line in r.stdout.strip().splitlines()[-3:]:
+                        click.echo("    %s" % line)
+            else:
+                click.echo(" FAILED")
+                click.echo("    %s" % r.stderr.strip()[:200], err=True)
+                failed_hosts.add(h)
+
+    # --- Step 5: Reboot ---
+    reboot_hosts = [h for h in host_list if h not in failed_hosts]
+    if reboot_hosts:
+        click.echo()
+        click.echo("[Reboot]")
+        if dry_run:
+            click.echo("  [dry-run] Would reboot: %s" % ", ".join(reboot_hosts))
+        else:
+            if not click.confirm("Updates complete. Reboot %d host(s) now?" % len(reboot_hosts), default=True):
+                click.echo("Skipping reboot. Remember to reboot manually for updates to take effect.")
+            else:
+                for h in reboot_hosts:
+                    click.echo("  %-30s rebooting..." % h)
+                    run_sudo_script_on_host(
+                        h,
+                        "nohup bash -c 'sleep 2 && reboot' &>/dev/null &",
+                        password=sudo_password,
+                        ssh_kwargs=sudo_ssh_kwargs,
+                        timeout=10,
+                        dry_run=dry_run,
+                    )
+                click.echo()
+                click.echo("Reboot initiated on %d host(s)." % len(reboot_hosts))
+
+    # --- Summary ---
+    click.echo()
+    ok = len([h for h in host_list if h not in failed_hosts])
+    fail = len(failed_hosts)
+    if fail:
+        click.echo("Results: %d updated, %d failed (%s)" % (ok, fail, ", ".join(sorted(failed_hosts))))
+        sys.exit(1)
+    else:
+        click.echo("Results: %d host(s) updated successfully." % ok)
+
+
+# ---------------------------------------------------------------------------
 # Diagnose
 # ---------------------------------------------------------------------------
 

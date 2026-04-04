@@ -220,14 +220,14 @@ def arena_benchmark(
         export_results_files=False,
     )
 
-    # require result, success, and launch result data (cannot benchmark what we didn't start)
-    if not bench_result or not bench_result.success or not bench_result.launch_result:
+    # require result and success; launch_result may be absent with --skip-run
+    if not bench_result or not bench_result.success:
         click.echo("Benchmark did not complete successfully. Skipping upload.", err=True)
         return
 
-    # gather recipe/metadata/runtime info
-    recipe = bench_result.launch_result.recipe
-    overrides = bench_result.launch_result.overrides
+    # gather recipe/metadata/runtime info (works with or without launch_result)
+    recipe = bench_result.launch_result.recipe if bench_result.launch_result else bench_result.recipe
+    overrides = bench_result.launch_result.overrides if bench_result.launch_result else (bench_result.overrides or {})
     metadata = bench_result.generate_metadata()
     effective_recipe = recipe.export(
         overrides=overrides,

@@ -366,6 +366,14 @@ def _run_benchmark(
 
     cluster_id = _gen_cid(recipe, host_list, overrides=overrides)
 
+    # Store recipe/cluster context on bench_result so callers (e.g. arena
+    # benchmark) can generate metadata even when --skip-run skips the launch.
+    bench_result.recipe = recipe
+    bench_result.overrides = overrides
+    bench_result.cluster_id = cluster_id
+    bench_result.host_list = host_list
+    bench_result.container_image = container_image
+
     try:
         # ---------------------------------------------------------------
         # 6. Launch inference (unless --skip-run)

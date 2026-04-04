@@ -238,26 +238,88 @@ def fetch_safetensors_size(
 
         from sparkrun.models.download import _hub_cache
 
-        kwargs: dict[str, Any] = {
-            "repo_id": model_id,
-            "filename": "model.safetensors.index.json",
-        }
+        hub_kwargs: dict[str, Any] = {"repo_id": model_id}
         if revision:
-            kwargs["revision"] = revision
+            hub_kwargs["revision"] = revision
         if cache_dir:
-            kwargs["cache_dir"] = _hub_cache(cache_dir)
-        disable_progress_bars()
+            hub_kwargs["cache_dir"] = _hub_cache(cache_dir)
+
+        # Try 1: sharded model with index file
         try:
-            index_path = hf_hub_download(**kwargs)
-        finally:
-            enable_progress_bars()
-        with open(index_path) as f:
-            index = json.load(f)
-        total_size = index.get("metadata", {}).get("total_size")
-        if total_size is not None:
-            return int(total_size)
+            disable_progress_bars()
+            try:
+                index_path = hf_hub_download(
+                    **hub_kwargs, filename="model.safetensors.index.json"
+                )
+            finally:
+                enable_progress_bars()
+            with open(index_path) as f:
+                index = json.load(f)
+            total_size = index.get("metadata", {}).get("total_size")
+            if total_size is not None:
+                return int(total_size)
+        except Exception:
+            pass
+
+        # Try 2: single-file model — read safetensors header for total param size
+        try:
+            import os
+
+            disable_progress_bars()
+            try:
+                sf_path = hf_hub_download(
+                    **hub_kwargs, filename="model.safetensors"
+                )
+            finally:
+                enable_progress_bars()
+            # safetensors header: first 8 bytes = header size (u64 LE),
+            # then JSON header with tensor metadata including shape/dtype
+            import struct
+
+            with open(sf_path, "rb") as f:
+                header_size = struct.unpack("<Q", f.read(8))[0]
+                header = json.loads(f.read(header_size))
+
+            total_bytes = 0
+            dtype_sizes = {
+                "F32": 4, "F16": 2, "BF16": 2, "F8_E4M3": 1, "F8_E5M2": 1,
+                "I64": 8, "I32": 4, "I16": 2, "I8": 1, "U8": 1, "BOOL": 1,
+            }
+            for key, info in header.items():
+                if key == "__metadata__":
+                    continue
+                shape = info.get("shape", [])
+                dtype = info.get("dtype", "")
+                elem_size = dtype_sizes.get(dtype, 2)  # default to 2 bytes
+                num_elements = 1
+                for dim in shape:
+                    num_elements *= dim
+                total_bytes += num_elements * elem_size
+            if total_bytes > 0:
+                return total_bytes
+        except Exception:
+            pass
+
+        # Try 3: fall back to file size as rough approximation
+        try:
+            import os
+
+            disable_progress_bars()
+            try:
+                sf_path = hf_hub_download(
+                    **hub_kwargs, filename="model.safetensors"
+                )
+            finally:
+                enable_progress_bars()
+            size = os.path.getsize(sf_path)
+            if size > 0:
+                logger.debug("Using file size as param size estimate for %s", model_id)
+                return size
+        except Exception:
+            pass
+
     except Exception as e:
-        logger.debug("Could not fetch safetensors index for %s: %s", model_id, e)
+        logger.debug("Could not fetch safetensors size for %s: %s", model_id, e)
     return None
 
 

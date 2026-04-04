@@ -174,6 +174,13 @@ class BenchmarkResult:
     recipe_name: Optional[str] = None
     launch_result: Optional["LaunchResult"] = None
 
+    # store detailed recipe info for "non-launch" scenarios
+    recipe: Optional["Recipe"] = None
+    overrides: Optional[dict[str, Any]] = None
+    cluster_id: Optional[str] = None
+    host_list: Optional[list[str]] = None
+    container_image: Optional[str] = None
+
     # benchmark info
     framework: Optional["BenchmarkingPlugin"] = None
     profile: Optional[str] = None
@@ -213,17 +220,31 @@ class BenchmarkResult:
         from sparkrun.models.download import parse_gguf_model_spec
         from sparkrun.utils.cli_formatters import RUNTIME_DISPLAY as _RUNTIME_DISPLAY
 
-        launch_result = self.launch_result
-        recipe = launch_result.recipe
-        overrides = launch_result.overrides
+        # Use launch_result fields when available, fall back to direct fields
+        # (e.g. when --skip-run was used and no launch occurred).
+        if launch_result := self.launch_result:
+            recipe = launch_result.recipe
+            overrides = launch_result.overrides
+            cluster_id = launch_result.cluster_id
+            host_list = launch_result.host_list
+            container_image = launch_result.container_image
+            runtime_info = launch_result.runtime_info
+        else:
+            recipe = self.recipe
+            overrides = self.overrides or {}
+            cluster_id = self.cluster_id
+            host_list = self.host_list or []
+            container_image = self.container_image
+            runtime_info = {}
+
         framework = self.framework
         profile = self.profile
         benchmark_args = self.benchmark_args
 
         # Resolve container image to a pinned long-term reference when possible
         container_pinned = False
-        recipe_container = launch_result.container_image
-        if launch_result.builder:
+        recipe_container = container_image or recipe.container
+        if launch_result and launch_result.builder:
             try:
                 resolved_image, pinned = launch_result.builder.resolve_long_term_image(
                     container_image=launch_result.container_image,
@@ -238,7 +259,6 @@ class BenchmarkResult:
                 logger.debug("Long-term image resolution failed", exc_info=True)
 
         recipe_hash = hashlib.sha256(recipe.export(overrides=None).encode("utf-8")).hexdigest()
-        # effective_recipe = recipe.export(overrides=overrides, container_image=recipe_container, )
 
         hf_model = parse_gguf_model_spec(recipe.model)[0]
         model_meta: dict[str, Any] = {}
@@ -282,14 +302,14 @@ class BenchmarkResult:
                 "end": self.end_time.isoformat(),
                 "duration": (self.end_time - self.start_time).total_seconds(),
             },
-            "cluster": _build_cluster_meta(recipe, overrides, launch_result.cluster_id, launch_result.host_list),
+            "cluster": _build_cluster_meta(recipe, overrides, cluster_id, host_list),
             "benchmark": {
                 "framework": framework.framework_name if framework else "unknown",
                 "profile": profile,
                 "args": benchmark_args,
             },
             "model": model_meta,
-            "runtime_info": launch_result.runtime_info,
+            "runtime_info": runtime_info,
         }
 
         # TODO: more care for sparkrun version and/or other metadata
