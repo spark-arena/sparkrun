@@ -889,6 +889,14 @@ class TestRecipeMetadata:
         monkeypatch.setattr("sparkrun.models.vram.fetch_model_config", _fake_fetch)
 
     @pytest.fixture()
+    def _mock_safetensors_params_none(self, monkeypatch):
+        """Mock fetch_safetensors_params to return None so size fallback is tested."""
+        monkeypatch.setattr(
+            "sparkrun.models.vram.fetch_safetensors_params",
+            lambda model_id, revision=None: None,
+        )
+
+    @pytest.fixture()
     def _mock_safetensors(self, monkeypatch):
         """Mock fetch_safetensors_size to return a known total_size."""
         # 35B params * 2 bytes (bfloat16) = 70_000_000_000 bytes
@@ -897,7 +905,7 @@ class TestRecipeMetadata:
             lambda model_id, revision=None, cache_dir=None: 70_000_000_000,
         )
 
-    @pytest.mark.usefixtures("_mock_hf_config", "_mock_safetensors")
+    @pytest.mark.usefixtures("_mock_hf_config", "_mock_safetensors_params_none", "_mock_safetensors")
     def test_estimate_vram_safetensors_fallback(self):
         """model_params derived from safetensors index when metadata omits it."""
         recipe = Recipe.from_dict({
@@ -923,8 +931,12 @@ class TestRecipeMetadata:
         """Safetensors fallback should NOT fire when metadata provides model_params."""
         called = []
         monkeypatch.setattr(
+            "sparkrun.models.vram.fetch_safetensors_params",
+            lambda model_id, revision=None: called.append("params") or 99_999_999_999,
+        )
+        monkeypatch.setattr(
             "sparkrun.models.vram.fetch_safetensors_size",
-            lambda model_id, revision=None, cache_dir=None: called.append(1) or 99_999_999_999,
+            lambda model_id, revision=None, cache_dir=None: called.append("size") or 99_999_999_999,
         )
         recipe = Recipe.from_dict({
             "name": "Test",
@@ -941,8 +953,12 @@ class TestRecipeMetadata:
         """Safetensors fallback should NOT fire when model_vram override is set."""
         called = []
         monkeypatch.setattr(
+            "sparkrun.models.vram.fetch_safetensors_params",
+            lambda model_id, revision=None: called.append("params") or 99_999_999_999,
+        )
+        monkeypatch.setattr(
             "sparkrun.models.vram.fetch_safetensors_size",
-            lambda model_id, revision=None, cache_dir=None: called.append(1) or 99_999_999_999,
+            lambda model_id, revision=None, cache_dir=None: called.append("size") or 99_999_999_999,
         )
         recipe = Recipe.from_dict({
             "name": "Test",
@@ -956,7 +972,11 @@ class TestRecipeMetadata:
 
     @pytest.mark.usefixtures("_mock_hf_config")
     def test_estimate_vram_safetensors_returns_none(self, monkeypatch):
-        """When safetensors index unavailable, model_params stays None."""
+        """When both safetensors API and index unavailable, model_params stays None."""
+        monkeypatch.setattr(
+            "sparkrun.models.vram.fetch_safetensors_params",
+            lambda model_id, revision=None: None,
+        )
         monkeypatch.setattr(
             "sparkrun.models.vram.fetch_safetensors_size",
             lambda model_id, revision=None, cache_dir=None: None,
@@ -1000,6 +1020,29 @@ class TestRecipeMetadata:
         # 35B * 1 byte (fp8) / 1024^3 ≈ 32.6 GiB
         assert est.model_weights_gb < 35
         assert est.model_weights_gb > 30
+
+    @pytest.mark.usefixtures("_mock_hf_config")
+    def test_estimate_vram_safetensors_params_api_preferred(self, monkeypatch):
+        """fetch_safetensors_params should be used first, skipping fetch_safetensors_size."""
+        size_called = []
+        monkeypatch.setattr(
+            "sparkrun.models.vram.fetch_safetensors_params",
+            lambda model_id, revision=None: 9_400_000_000,
+        )
+        monkeypatch.setattr(
+            "sparkrun.models.vram.fetch_safetensors_size",
+            lambda model_id, revision=None, cache_dir=None: size_called.append(1) or 99_999_999_999,
+        )
+        recipe = Recipe.from_dict({
+            "name": "Test",
+            "model": "org/model-9b-awq",
+            "metadata": {},
+            "defaults": {"tensor_parallel": 1},
+        })
+        est = recipe.estimate_vram(auto_detect=True)
+        assert size_called == []  # fetch_safetensors_size never called
+        assert est.model_params == 9_400_000_000
+        assert est.model_weights_gb > 0
 
     def test_estimate_vram_recipe_quantization_default_overrides_hf(self, monkeypatch):
         """Recipe defaults quantization key should take priority over HF torch_dtype."""
