@@ -38,9 +38,7 @@ def _check_running_containers(host_list, ssh_kwargs):
 
     script = "docker ps --filter 'name=sparkrun_' --format '{{.Names}}' 2>/dev/null || true"
     try:
-        results = run_remote_scripts_parallel(
-            host_list, script, timeout=15, quiet=True, **ssh_kwargs
-        )
+        results = run_remote_scripts_parallel(host_list, script, timeout=15, quiet=True, **ssh_kwargs)
     except Exception:
         return []
 
@@ -65,8 +63,7 @@ def _teardown_earlyoom(host_list, manifest_phase, ssh_kwargs, sudo_fn, dry_run):
     results = {}
     for h in host_list:
         if dry_run:
-            click.echo("    [dry-run] %s: would remove earlyoom config%s" % (
-                h, " and package" if installed_pkg else ""))
+            click.echo("    [dry-run] %s: would remove earlyoom config%s" % (h, " and package" if installed_pkg else ""))
             continue
         r = sudo_fn(h, script)
         results[h] = r
@@ -116,7 +113,10 @@ def _teardown_docker_group(host_list, user, ssh_kwargs, sudo_fn, dry_run):
 
     validate_unix_username(user)
 
-    script = '#!/bin/bash\nset -euo pipefail\ngpasswd -d "%s" docker 2>/dev/null && echo "REMOVED: %s from docker group" || echo "SKIPPED: %s not in docker group"\n' % (user, user, user)
+    script = (
+        '#!/bin/bash\nset -euo pipefail\ngpasswd -d "%s" docker 2>/dev/null && echo "REMOVED: %s from docker group" || echo "SKIPPED: %s not in docker group"\n'
+        % (user, user, user)
+    )
 
     results = {}
     for h in host_list:
@@ -177,9 +177,7 @@ def _teardown_ssh_mesh(host_list, manifest_phase, user, ssh_kwargs, dry_run):
     click.echo("    Collecting public keys from mesh hosts...")
     collect_script = "cat ~/.ssh/id_ed25519.pub 2>/dev/null || cat ~/.ssh/id_rsa.pub 2>/dev/null || echo ''"
     try:
-        key_results = run_remote_scripts_parallel(
-            host_list, collect_script, timeout=15, quiet=True, **ssh_kwargs
-        )
+        key_results = run_remote_scripts_parallel(host_list, collect_script, timeout=15, quiet=True, **ssh_kwargs)
     except Exception as e:
         click.echo("    [FAIL] Could not collect keys: %s" % e)
         return {}
@@ -209,9 +207,7 @@ def _teardown_ssh_mesh(host_list, manifest_phase, user, ssh_kwargs, dry_run):
 
     click.echo("    Removing %d key(s) from authorized_keys on %d host(s)..." % (len(pubkeys), len(host_list)))
     try:
-        results = run_remote_scripts_parallel(
-            host_list, removal_script, timeout=30, quiet=True, **ssh_kwargs
-        )
+        results = run_remote_scripts_parallel(host_list, removal_script, timeout=30, quiet=True, **ssh_kwargs)
         result_map = {}
         for r in results:
             result_map[r.host] = r
@@ -305,9 +301,7 @@ def setup_uninstall(ctx, cluster_name, yes, dry_run, keep_cluster, phases, force
                 click.echo("  %s: %s" % (host, name))
             click.echo()
             if not force:
-                if not yes and not click.confirm(
-                    "Continue with uninstall? (use --force to suppress)", default=False
-                ):
+                if not yes and not click.confirm("Continue with uninstall? (use --force to suppress)", default=False):
                     click.echo("Aborted.")
                     return
                 elif yes:
@@ -329,9 +323,7 @@ def setup_uninstall(ctx, cluster_name, yes, dry_run, keep_cluster, phases, force
         from sparkrun.orchestration.ssh import run_remote_scripts_parallel
 
         try:
-            test_results = run_remote_scripts_parallel(
-                host_list, "sudo -n true", quiet=True, timeout=10, **ssh_kwargs
-            )
+            test_results = run_remote_scripts_parallel(host_list, "sudo -n true", quiet=True, timeout=10, **ssh_kwargs)
             if all(r.success for r in test_results):
                 return None
         except Exception:
@@ -342,9 +334,7 @@ def setup_uninstall(ctx, cluster_name, yes, dry_run, keep_cluster, phases, force
 
     def _sudo_on_host(host, script, timeout=300):
         pw = _ensure_sudo_password()
-        return run_sudo_script_on_host(
-            host, script, pw or "", ssh_kwargs=ssh_kwargs, timeout=timeout, dry_run=dry_run
-        )
+        return run_sudo_script_on_host(host, script, pw or "", ssh_kwargs=ssh_kwargs, timeout=timeout, dry_run=dry_run)
 
     # ── Filter phases ────────────────────────────────────────────
     phase_filter = set(phases) if phases else None

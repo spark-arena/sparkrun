@@ -23,7 +23,7 @@ _DTYPE_BYTES: dict[str, float] = {
     "int4": 0.5,
     "nvfp4": 0.5,
     "awq4": 0.5,
-    'w4a16_awq': 0.5,
+    "w4a16_awq": 0.5,
     "awq8": 1.0,
     "gptq": 0.5,
     "mxfp4": 0.5,
@@ -119,6 +119,7 @@ class VRAMEstimate:
     def to_dict(self) -> dict[str, Any]:
         """Convert the estimate to a JSON-serializable dictionary."""
         from dataclasses import asdict
+
         result = asdict(self)
         result["fits_dgx_spark"] = self.fits_dgx_spark
         return result
@@ -176,9 +177,9 @@ def parse_param_count(value: int | float | str) -> int | None:
 
 
 def fetch_model_config(
-        model_id: str,
-        revision: str | None = None,
-        cache_dir: str | None = None,
+    model_id: str,
+    revision: str | None = None,
+    cache_dir: str | None = None,
 ) -> dict[str, Any] | None:
     """Fetch model config.json from HuggingFace Hub without downloading weights.
 
@@ -214,9 +215,9 @@ def fetch_model_config(
 
 
 def fetch_safetensors_size(
-        model_id: str,
-        revision: str | None = None,
-        cache_dir: str | None = None,
+    model_id: str,
+    revision: str | None = None,
+    cache_dir: str | None = None,
 ) -> int | None:
     """Fetch total parameter storage size from safetensors index metadata.
 
@@ -255,9 +256,18 @@ def fetch_safetensors_size(
             mi = _model_info(**mi_kwargs)
             if mi.safetensors is not None:
                 _api_dtype_bytes = {
-                    "F64": 8, "F32": 4, "F16": 2, "BF16": 2,
-                    "F8_E4M3": 1, "F8_E5M2": 1,
-                    "I64": 8, "I32": 4, "I16": 2, "I8": 1, "U8": 1, "BOOL": 1,
+                    "F64": 8,
+                    "F32": 4,
+                    "F16": 2,
+                    "BF16": 2,
+                    "F8_E4M3": 1,
+                    "F8_E5M2": 1,
+                    "I64": 8,
+                    "I32": 4,
+                    "I16": 2,
+                    "I8": 1,
+                    "U8": 1,
+                    "BOOL": 1,
                 }
                 total_bytes = 0
                 for dtype_name, count in mi.safetensors.parameters.items():
@@ -273,9 +283,7 @@ def fetch_safetensors_size(
         try:
             disable_progress_bars()
             try:
-                index_path = hf_hub_download(
-                    **hub_kwargs, filename="model.safetensors.index.json"
-                )
+                index_path = hf_hub_download(**hub_kwargs, filename="model.safetensors.index.json")
             finally:
                 enable_progress_bars()
             with open(index_path) as f:
@@ -292,9 +300,7 @@ def fetch_safetensors_size(
 
             disable_progress_bars()
             try:
-                sf_path = hf_hub_download(
-                    **hub_kwargs, filename="model.safetensors"
-                )
+                sf_path = hf_hub_download(**hub_kwargs, filename="model.safetensors")
             finally:
                 enable_progress_bars()
             # safetensors header: first 8 bytes = header size (u64 LE),
@@ -307,8 +313,17 @@ def fetch_safetensors_size(
 
             total_bytes = 0
             dtype_sizes = {
-                "F32": 4, "F16": 2, "BF16": 2, "F8_E4M3": 1, "F8_E5M2": 1,
-                "I64": 8, "I32": 4, "I16": 2, "I8": 1, "U8": 1, "BOOL": 1,
+                "F32": 4,
+                "F16": 2,
+                "BF16": 2,
+                "F8_E4M3": 1,
+                "F8_E5M2": 1,
+                "I64": 8,
+                "I32": 4,
+                "I16": 2,
+                "I8": 1,
+                "U8": 1,
+                "BOOL": 1,
             }
             for key, info in header.items():
                 if key == "__metadata__":
@@ -331,9 +346,7 @@ def fetch_safetensors_size(
 
             disable_progress_bars()
             try:
-                sf_path = hf_hub_download(
-                    **hub_kwargs, filename="model.safetensors"
-                )
+                sf_path = hf_hub_download(**hub_kwargs, filename="model.safetensors")
             finally:
                 enable_progress_bars()
             size = os.path.getsize(sf_path)
@@ -349,8 +362,8 @@ def fetch_safetensors_size(
 
 
 def fetch_safetensors_params(
-        model_id: str,
-        revision: str | None = None,
+    model_id: str,
+    revision: str | None = None,
 ) -> int | None:
     """Fetch total parameter count from HuggingFace model safetensors metadata.
 
@@ -375,9 +388,7 @@ def fetch_safetensors_params(
         if info.safetensors is not None:
             total = info.safetensors.total
             if total and total > 0:
-                logger.debug(
-                    "Got %d params from safetensors metadata for %s", total, model_id
-                )
+                logger.debug("Got %d params from safetensors metadata for %s", total, model_id)
                 return int(total)
     except Exception as e:
         logger.debug("Could not fetch safetensors params for %s: %s", model_id, e)
@@ -488,19 +499,19 @@ def extract_model_info(hf_config: dict[str, Any]) -> dict[str, Any]:
 
 
 def estimate_vram(
-        *,
-        model_params: int | None = None,
-        model_dtype: str | None = None,
-        kv_dtype: str | None = None,
-        num_layers: int | None = None,
-        num_kv_heads: int | None = None,
-        head_dim: int | None = None,
-        max_model_len: int | None = None,
-        tensor_parallel: int = 1,
-        pipeline_parallel: int = 1,
-        model_vram: float | None = None,
-        kv_vram_per_token: float | None = None,
-        gpu_memory_utilization: float | None = None,
+    *,
+    model_params: int | None = None,
+    model_dtype: str | None = None,
+    kv_dtype: str | None = None,
+    num_layers: int | None = None,
+    num_kv_heads: int | None = None,
+    head_dim: int | None = None,
+    max_model_len: int | None = None,
+    tensor_parallel: int = 1,
+    pipeline_parallel: int = 1,
+    model_vram: float | None = None,
+    kv_vram_per_token: float | None = None,
+    gpu_memory_utilization: float | None = None,
 ) -> VRAMEstimate:
     """Estimate VRAM usage for an inference workload.
 
@@ -535,7 +546,7 @@ def estimate_vram(
     elif model_params and model_dtype:
         bpe = bytes_per_element(model_dtype)
         if bpe is not None:
-            model_weights_gb = model_params * bpe / (1024 ** 3)
+            model_weights_gb = model_params * bpe / (1024**3)
         else:
             warnings.append("Unknown dtype %r; cannot estimate model weight VRAM" % model_dtype)
     elif not model_params:
@@ -549,7 +560,7 @@ def estimate_vram(
 
     if kv_vram_per_token is not None:
         # Direct override: user provides GB per token
-        kv_cache_per_token_bytes = kv_vram_per_token * (1024 ** 3)  # convert to bytes for display
+        kv_cache_per_token_bytes = kv_vram_per_token * (1024**3)  # convert to bytes for display
         if max_model_len:
             kv_cache_total_gb = kv_vram_per_token * max_model_len
     elif num_layers and num_kv_heads and head_dim:
@@ -558,7 +569,7 @@ def estimate_vram(
             # Per token: 2 (K+V) * num_layers * num_kv_heads * head_dim * bytes
             kv_cache_per_token_bytes = 2.0 * num_layers * num_kv_heads * head_dim * kv_bpe
             if max_model_len:
-                kv_cache_total_gb = kv_cache_per_token_bytes * max_model_len / (1024 ** 3)
+                kv_cache_total_gb = kv_cache_per_token_bytes * max_model_len / (1024**3)
         else:
             warnings.append("Unknown KV cache dtype %r" % kv_dtype)
     else:
@@ -601,7 +612,7 @@ def estimate_vram(
 
         # Estimate max context tokens that fit in available KV space
         if kv_cache_per_token_bytes and kv_cache_per_token_bytes > 0:
-            per_gpu_kv_per_token_gb = (kv_cache_per_token_bytes / shard_factor) / (1024 ** 3)
+            per_gpu_kv_per_token_gb = (kv_cache_per_token_bytes / shard_factor) / (1024**3)
             if per_gpu_kv_per_token_gb > 0:
                 max_context_tokens = int(available_kv_gb / per_gpu_kv_per_token_gb)
 

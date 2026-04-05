@@ -106,6 +106,7 @@ def test_run_command_on_host_local_different_user_uses_ssh(mock_local, mock_remo
 
 def test_check_tcp_reachability_all_reachable():
     """All IPs reachable returns all True."""
+
     def mock_connect(addr):
         pass  # success
 
@@ -179,7 +180,7 @@ def test_find_available_port_first_free(mock_cmd):
 def test_find_available_port_second_free(mock_cmd):
     """Port occupied on first try, free on second returns port+1."""
     mock_cmd.side_effect = [
-        _make_result(success=True),   # 46379 occupied
+        _make_result(success=True),  # 46379 occupied
         _make_result(success=False),  # 46380 free
     ]
 
@@ -193,8 +194,8 @@ def test_find_available_port_second_free(mock_cmd):
 def test_find_available_port_third_free(mock_cmd):
     """Two ports occupied, third free returns port+2."""
     mock_cmd.side_effect = [
-        _make_result(success=True),   # 46379 occupied
-        _make_result(success=True),   # 46380 occupied
+        _make_result(success=True),  # 46379 occupied
+        _make_result(success=True),  # 46380 occupied
         _make_result(success=False),  # 46381 free
     ]
 
@@ -251,8 +252,8 @@ def test_find_available_port_custom_max_attempts(mock_cmd):
 def test_find_available_port_checks_correct_ports(mock_cmd):
     """Verify the correct port numbers are checked in sequence."""
     mock_cmd.side_effect = [
-        _make_result(success=True),   # 25000 occupied
-        _make_result(success=True),   # 25001 occupied
+        _make_result(success=True),  # 25000 occupied
+        _make_result(success=True),  # 25001 occupied
         _make_result(success=False),  # 25002 free
     ]
 
@@ -269,6 +270,7 @@ def test_find_available_port_checks_correct_ports(mock_cmd):
 # ---------------------------------------------------------------------------
 # _is_cross_user tests (distribution module)
 # ---------------------------------------------------------------------------
+
 
 @patch.dict("os.environ", {"USER": "drew"})
 def test_is_cross_user_same_user():
@@ -393,9 +395,7 @@ def test_resolve_auto_external_control_cross_user_returns_delegated(mock_in_clus
 @patch("sparkrun.containers.distribute.distribute_image_from_head")
 @patch("sparkrun.core.pending_ops.pending_op")
 @patch.dict("os.environ", {"USER": "drew"})
-def test_auto_detection_cross_user_forces_delegated(
-    mock_pop, mock_dist_head, mock_ssh_kw, mock_detect, mock_validate, mock_in_cluster
-):
+def test_auto_detection_cross_user_forces_delegated(mock_pop, mock_dist_head, mock_ssh_kw, mock_detect, mock_validate, mock_in_cluster):
     """Control in cluster + cross-user → auto-detects 'delegated', not 'local'."""
     from sparkrun.orchestration.distribution import distribute_resources
 
@@ -434,9 +434,7 @@ def test_auto_detection_cross_user_forces_delegated(
 @patch("sparkrun.containers.distribute.distribute_image_from_local")
 @patch("sparkrun.core.pending_ops.pending_op")
 @patch.dict("os.environ", {"USER": "drew"})
-def test_auto_detection_same_user_stays_local(
-    mock_pop, mock_dist_local, mock_ssh_kw, mock_detect, mock_validate, mock_in_cluster
-):
+def test_auto_detection_same_user_stays_local(mock_pop, mock_dist_local, mock_ssh_kw, mock_detect, mock_validate, mock_in_cluster):
     """Control in cluster + same user → auto-detects 'local'."""
     from sparkrun.orchestration.distribution import distribute_resources
 
@@ -474,9 +472,7 @@ def test_auto_detection_same_user_stays_local(
 @patch("sparkrun.containers.distribute.distribute_image_from_local")
 @patch("sparkrun.core.pending_ops.pending_op")
 @patch.dict("os.environ", {"USER": "drew"})
-def test_explicit_local_cross_user_warns(
-    mock_pop, mock_dist_local, mock_ssh_kw, mock_detect, mock_validate, mock_in_cluster, caplog
-):
+def test_explicit_local_cross_user_warns(mock_pop, mock_dist_local, mock_ssh_kw, mock_detect, mock_validate, mock_in_cluster, caplog):
     """Explicit transfer_mode='local' + cross-user → warning logged."""
     import logging
     from sparkrun.orchestration.distribution import distribute_resources

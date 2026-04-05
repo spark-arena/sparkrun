@@ -14,11 +14,6 @@ from sparkrun.orchestration.executor import (
 )
 from sparkrun.orchestration.executor_docker import DockerExecutor
 from sparkrun.orchestration.docker import (
-    docker_exec_cmd,
-    docker_stop_cmd,
-    docker_inspect_exists_cmd,
-    docker_pull_cmd,
-    docker_logs_cmd,
     generate_container_name,
     generate_node_container_name,
     enumerate_cluster_containers,
@@ -138,7 +133,8 @@ class TestExecutorConfig:
         from scitrera_app_framework.api import Variables, EnvPlacement
 
         cli_opts = {
-            "privileged": False, "user": "$SHELL_USER",
+            "privileged": False,
+            "user": "$SHELL_USER",
             "security_opt": ["no-new-privileges"],
             "cap_add": ["IPC_LOCK", "SYS_PTRACE"],
             "ulimit": ["memlock=-1:-1"],
@@ -267,7 +263,8 @@ class TestDockerExecutorConfig:
     def test_rootless_config(self):
         """Verify the combination of settings that --rootless would produce."""
         cfg = ExecutorConfig(
-            privileged=False, user="$SHELL_USER",
+            privileged=False,
+            user="$SHELL_USER",
             security_opt=["no-new-privileges"],
             cap_add=["IPC_LOCK", "SYS_PTRACE", "SYS_NICE", "NET_ADMIN"],
             ulimit=["memlock=-1:-1"],
@@ -403,4 +400,3 @@ class TestScriptGenerators:
         )
         assert "--restart always" in script
         assert "--rm" not in script
-

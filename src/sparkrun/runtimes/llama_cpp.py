@@ -172,13 +172,13 @@ class LlamaCppRuntime(RuntimePlugin):
     # --- Command generation ---
 
     def generate_command(
-            self,
-            recipe: Recipe,
-            overrides: dict[str, Any],
-            is_cluster: bool,
-            num_nodes: int = 1,
-            head_ip: str | None = None,
-            skip_keys: set[str] | frozenset[str] = frozenset(),
+        self,
+        recipe: Recipe,
+        overrides: dict[str, Any],
+        is_cluster: bool,
+        num_nodes: int = 1,
+        head_ip: str | None = None,
+        skip_keys: set[str] | frozenset[str] = frozenset(),
     ) -> str:
         """Generate the llama-server command.
 
@@ -242,7 +242,7 @@ class LlamaCppRuntime(RuntimePlugin):
         return self._build_command(recipe, config, skip_keys=skip_keys, split_mode_override=split_mode)
 
     def _build_command(
-            self, recipe: Recipe, config, skip_keys: set[str] | frozenset[str] = frozenset(), split_mode_override: str | None = None
+        self, recipe: Recipe, config, skip_keys: set[str] | frozenset[str] = frozenset(), split_mode_override: str | None = None
     ) -> str:
         """Build the llama-server command from structured config."""
         from scitrera_app_framework.api import Variables, EnvPlacement
@@ -287,7 +287,7 @@ class LlamaCppRuntime(RuntimePlugin):
         return " ".join(parts)
 
     def _build_rpc_head_command(
-            self, recipe: Recipe, config, worker_hosts: list[str], rpc_port: int, skip_keys: set[str] | frozenset[str] = frozenset()
+        self, recipe: Recipe, config, worker_hosts: list[str], rpc_port: int, skip_keys: set[str] | frozenset[str] = frozenset()
     ) -> str:
         """Build the llama-server head command with --rpc for worker nodes."""
         base = self._build_command(recipe, config, skip_keys=skip_keys)
@@ -326,11 +326,11 @@ class LlamaCppRuntime(RuntimePlugin):
     # --- Cluster stop ---
 
     def _stop_cluster(
-            self,
-            hosts: list[str],
-            cluster_id: str,
-            config=None,
-            dry_run: bool = False,
+        self,
+        hosts: list[str],
+        cluster_id: str,
+        config=None,
+        dry_run: bool = False,
     ) -> int:
         """Stop a llama.cpp RPC cluster."""
         from sparkrun.orchestration.primitives import build_ssh_kwargs
@@ -370,24 +370,24 @@ class LlamaCppRuntime(RuntimePlugin):
     # --- Cluster launch ---
 
     def _run_cluster(
-            self,
-            hosts: list[str],
-            image: str,
-            serve_command: str = "",
-            recipe=None,
-            overrides=None,
-            *,
-            cluster_id: str = "sparkrun0",
-            env: dict[str, str] | None = None,
-            cache_dir: str | None = None,
-            config=None,
-            dry_run: bool = False,
-            detached: bool = True,
-            nccl_env: dict[str, str] | None = None,
-            ib_ip_map: dict[str, str] | None = None,
-            rpc_port: int = _DEFAULT_RPC_PORT,
-            skip_keys: set[str] | frozenset[str] = frozenset(),
-            **kwargs,
+        self,
+        hosts: list[str],
+        image: str,
+        serve_command: str = "",
+        recipe=None,
+        overrides=None,
+        *,
+        cluster_id: str = "sparkrun0",
+        env: dict[str, str] | None = None,
+        cache_dir: str | None = None,
+        config=None,
+        dry_run: bool = False,
+        detached: bool = True,
+        nccl_env: dict[str, str] | None = None,
+        ib_ip_map: dict[str, str] | None = None,
+        rpc_port: int = _DEFAULT_RPC_PORT,
+        skip_keys: set[str] | frozenset[str] = frozenset(),
+        **kwargs,
     ) -> int:
         """Orchestrate a multi-node llama.cpp cluster using RPC.
 
@@ -407,8 +407,11 @@ class LlamaCppRuntime(RuntimePlugin):
         """
         import time
         from sparkrun.runtimes._cluster_ops import (
-            ClusterContext, cleanup_named_containers, detect_ib_with_ips,
-            launch_containers_parallel, run_pre_serve_hooks,
+            ClusterContext,
+            cleanup_named_containers,
+            detect_ib_with_ips,
+            launch_containers_parallel,
+            run_pre_serve_hooks,
             exec_serve_on_container,
         )
         from sparkrun.orchestration.primitives import wait_for_port

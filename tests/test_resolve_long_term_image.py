@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from unittest import mock
 
-import pytest
 
 from sparkrun.builders.base import BuilderPlugin
 from sparkrun.builders.eugr import (
@@ -27,8 +26,8 @@ def _make_recipe(**kwargs):
 # BuilderPlugin base — default returns (image, False)
 # ---------------------------------------------------------------------------
 
-class TestBuilderPluginResolveLongTermImage:
 
+class TestBuilderPluginResolveLongTermImage:
     def test_base_returns_unchanged(self):
         plugin = BuilderPlugin()
         recipe = _make_recipe()
@@ -41,8 +40,8 @@ class TestBuilderPluginResolveLongTermImage:
 # EugrBuilder._resolve_ghcr_target
 # ---------------------------------------------------------------------------
 
-class TestResolveGhcrTarget:
 
+class TestResolveGhcrTarget:
     def test_local_nightly_maps_to_ghcr(self):
         builder = EugrBuilder()
         recipe = _make_recipe()
@@ -61,7 +60,8 @@ class TestResolveGhcrTarget:
         builder = EugrBuilder()
         recipe = _make_recipe()
         ghcr, pkg = builder._resolve_ghcr_target(
-            "ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest", recipe,
+            "ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest",
+            recipe,
         )
         assert ghcr == GHCR_EUGR_NIGHTLY
 
@@ -69,7 +69,8 @@ class TestResolveGhcrTarget:
         builder = EugrBuilder()
         recipe = _make_recipe(runtime_config={"build_args": ["--tf5"]})
         ghcr, pkg = builder._resolve_ghcr_target(
-            "ghcr.io/spark-arena/dgx-vllm-eugr-nightly-tf5:latest", recipe,
+            "ghcr.io/spark-arena/dgx-vllm-eugr-nightly-tf5:latest",
+            recipe,
         )
         assert ghcr == GHCR_EUGR_NIGHTLY_TF5
 
@@ -99,13 +100,15 @@ class TestResolveGhcrTarget:
 # EugrBuilder.resolve_long_term_image — full flow
 # ---------------------------------------------------------------------------
 
-class TestResolveLongTermImage:
 
+class TestResolveLongTermImage:
     def test_no_git_commit_returns_unpinned(self):
         builder = EugrBuilder()
         recipe = _make_recipe()
         image, pinned = builder.resolve_long_term_image(
-            "sparkrun-eugr-vllm", {}, recipe,
+            "sparkrun-eugr-vllm",
+            {},
+            recipe,
         )
         assert image == "sparkrun-eugr-vllm"
         assert pinned is False
@@ -115,7 +118,9 @@ class TestResolveLongTermImage:
         recipe = _make_recipe(runtime_config={"build_args": ["--custom"]})
         runtime_info = {"build_build_script_commit": "abc123"}
         image, pinned = builder.resolve_long_term_image(
-            "sparkrun-eugr-vllm", runtime_info, recipe,
+            "sparkrun-eugr-vllm",
+            runtime_info,
+            recipe,
         )
         assert pinned is False
 
@@ -135,7 +140,9 @@ class TestResolveLongTermImage:
         recipe = _make_recipe()
         runtime_info = {"build_build_script_commit": "abc123def456"}
         image, pinned = builder.resolve_long_term_image(
-            "sparkrun-eugr-vllm", runtime_info, recipe,
+            "sparkrun-eugr-vllm",
+            runtime_info,
+            recipe,
         )
         assert pinned is True
         assert image == "ghcr.io/spark-arena/dgx-vllm-eugr-nightly:2025032501"
@@ -151,7 +158,9 @@ class TestResolveLongTermImage:
         recipe = _make_recipe(runtime_config={"build_args": ["--tf5"]})
         runtime_info = {"build_build_script_commit": "abc123def456"}
         image, pinned = builder.resolve_long_term_image(
-            "sparkrun-eugr-vllm-tf5", runtime_info, recipe,
+            "sparkrun-eugr-vllm-tf5",
+            runtime_info,
+            recipe,
         )
         assert pinned is True
         assert image == "ghcr.io/spark-arena/dgx-vllm-eugr-nightly-tf5:2025032501"
@@ -167,7 +176,9 @@ class TestResolveLongTermImage:
         recipe = _make_recipe()  # no --tf5
         runtime_info = {"build_build_script_commit": "abc123def456"}
         image, pinned = builder.resolve_long_term_image(
-            "sparkrun-eugr-vllm", runtime_info, recipe,
+            "sparkrun-eugr-vllm",
+            runtime_info,
+            recipe,
         )
         assert pinned is False
 
@@ -183,7 +194,9 @@ class TestResolveLongTermImage:
         recipe = _make_recipe()
         runtime_info = {"build_build_script_commit": "abc123def456"}
         image, pinned = builder.resolve_long_term_image(
-            "sparkrun-eugr-vllm", runtime_info, recipe,
+            "sparkrun-eugr-vllm",
+            runtime_info,
+            recipe,
         )
         assert pinned is True
         assert image == "ghcr.io/spark-arena/dgx-vllm-eugr-nightly:2025032501"
@@ -195,7 +208,9 @@ class TestResolveLongTermImage:
         recipe = _make_recipe()
         runtime_info = {"build_build_script_commit": "abc123def456"}
         image, pinned = builder.resolve_long_term_image(
-            "sparkrun-eugr-vllm", runtime_info, recipe,
+            "sparkrun-eugr-vllm",
+            runtime_info,
+            recipe,
         )
         assert pinned is False
         assert image == "sparkrun-eugr-vllm"
@@ -219,7 +234,9 @@ class TestResolveLongTermImage:
             "build_vllm_commit": "correct_hash_val",
         }
         image, pinned = builder.resolve_long_term_image(
-            "sparkrun-eugr-vllm", runtime_info, recipe,
+            "sparkrun-eugr-vllm",
+            runtime_info,
+            recipe,
         )
         assert pinned is False
 
@@ -240,7 +257,9 @@ class TestResolveLongTermImage:
             "build_vllm_commit": "correct_hash_val",
         }
         image, pinned = builder.resolve_long_term_image(
-            "sparkrun-eugr-vllm", runtime_info, recipe,
+            "sparkrun-eugr-vllm",
+            runtime_info,
+            recipe,
         )
         assert pinned is False
 
@@ -259,6 +278,8 @@ class TestResolveLongTermImage:
         recipe = _make_recipe()
         runtime_info = {"build_build_script_commit": "abc123def456different_suffix"}
         image, pinned = builder.resolve_long_term_image(
-            "sparkrun-eugr-vllm", runtime_info, recipe,
+            "sparkrun-eugr-vllm",
+            runtime_info,
+            recipe,
         )
         assert pinned is True

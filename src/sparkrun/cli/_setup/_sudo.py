@@ -17,11 +17,13 @@ def _record_setup_phase(cluster_name, user, host_list, phase, **extra):
         if not resolved:
             return
         from sparkrun.core.setup_manifest import ManifestManager
+
         mgr = _get_cluster_manager()
         manifest_mgr = ManifestManager(mgr.clusters_dir)
         manifest_mgr.record_phase(resolved, user, host_list, phase, **extra)
     except Exception:
         import logging
+
         logging.getLogger(__name__).debug("Failed to record manifest phase '%s'", phase, exc_info=True)
 
 
@@ -71,13 +73,15 @@ def ensure_sudo_password(
             lr = run_local_script("sudo -n true", dry_run=False)
             test_results.append(RemoteResult(host=h, returncode=lr.returncode, stdout=lr.stdout, stderr=lr.stderr))
         if remote_hosts:
-            test_results.extend(run_remote_scripts_parallel(
-                remote_hosts,
-                "sudo -n true",
-                quiet=True,
-                timeout=10,
-                **sudo_ssh_kwargs,
-            ))
+            test_results.extend(
+                run_remote_scripts_parallel(
+                    remote_hosts,
+                    "sudo -n true",
+                    quiet=True,
+                    timeout=10,
+                    **sudo_ssh_kwargs,
+                )
+            )
         if all(r.success for r in test_results):
             return None, None
     except Exception:

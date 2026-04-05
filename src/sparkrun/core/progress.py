@@ -60,9 +60,9 @@ class Verbosity(IntEnum):
     """CLI verbosity tiers."""
 
     DEFAULT = 0  # PROGRESS level (25)
-    DETAIL = 1   # INFO level (20)  — ``-v``
+    DETAIL = 1  # INFO level (20)  — ``-v``
     VERBOSE = 2  # VERBOSE level (15) — ``-vv``
-    DEBUG = 3    # DEBUG level (10)  — ``-vvv``
+    DEBUG = 3  # DEBUG level (10)  — ``-vvv``
 
 
 # ---------------------------------------------------------------------------

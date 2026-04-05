@@ -14,10 +14,10 @@ logger = logging.getLogger(__name__)
 
 
 def docker_exec_cmd(
-        container_name: str,
-        command: str,
-        detach: bool = False,
-        env: dict[str, str] | None = None,
+    container_name: str,
+    command: str,
+    detach: bool = False,
+    env: dict[str, str] | None = None,
 ) -> str:
     """Generate a ``docker exec`` command string.
 
@@ -82,9 +82,9 @@ def docker_pull_cmd(image: str) -> str:
 
 
 def docker_logs_cmd(
-        container_name: str,
-        follow: bool = False,
-        tail: int | None = None,
+    container_name: str,
+    follow: bool = False,
+    tail: int | None = None,
 ) -> str:
     """Generate a ``docker logs`` command.
 

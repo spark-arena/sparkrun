@@ -561,8 +561,12 @@ class TestRegistryEntryNewFields:
 
     def test_all_new_fields(self):
         entry = RegistryEntry(
-            name="test", url="https://example.com", subpath="recipes",
-            visible=False, tuning_subpath="tuning", benchmark_subpath="benchmarks",
+            name="test",
+            url="https://example.com",
+            subpath="recipes",
+            visible=False,
+            tuning_subpath="tuning",
+            benchmark_subpath="benchmarks",
         )
         assert entry.visible is False
         assert entry.tuning_subpath == "tuning"
@@ -577,6 +581,7 @@ class TestRegistrySaveLoadNewFields:
         entry = RegistryEntry(name="test", url="https://example.com", subpath="r")
         mgr._save_registries([entry])
         import yaml
+
         data = yaml.safe_load(mgr._registries_path.read_text())
         assert "visible" not in data["registries"][0]
 
@@ -585,6 +590,7 @@ class TestRegistrySaveLoadNewFields:
         entry = RegistryEntry(name="test", url="https://example.com", subpath="r", visible=False)
         mgr._save_registries([entry])
         import yaml
+
         data = yaml.safe_load(mgr._registries_path.read_text())
         assert data["registries"][0]["visible"] is False
 
@@ -592,6 +598,7 @@ class TestRegistrySaveLoadNewFields:
         entry = RegistryEntry(name="test", url="https://example.com", subpath="r")
         mgr._save_registries([entry])
         import yaml
+
         data = yaml.safe_load(mgr._registries_path.read_text())
         assert "tuning_subpath" not in data["registries"][0]
 
@@ -599,13 +606,18 @@ class TestRegistrySaveLoadNewFields:
         entry = RegistryEntry(name="test", url="https://example.com", subpath="r", tuning_subpath="tuning")
         mgr._save_registries([entry])
         import yaml
+
         data = yaml.safe_load(mgr._registries_path.read_text())
         assert data["registries"][0]["tuning_subpath"] == "tuning"
 
     def test_roundtrip_new_fields(self, mgr):
         entry = RegistryEntry(
-            name="test", url="https://example.com", subpath="r",
-            visible=False, tuning_subpath="t", benchmark_subpath="b",
+            name="test",
+            url="https://example.com",
+            subpath="r",
+            visible=False,
+            tuning_subpath="t",
+            benchmark_subpath="b",
         )
         mgr._save_registries([entry])
         loaded = mgr._load_registries()
@@ -616,6 +628,7 @@ class TestRegistrySaveLoadNewFields:
     def test_load_missing_visible_defaults_true(self, mgr):
         """Old YAML without visible field should default to True."""
         import yaml
+
         data = {"registries": [{"name": "old", "url": "https://example.com", "subpath": "r"}]}
         mgr._registries_path.write_text(yaml.dump(data))
         loaded = mgr._load_registries()
@@ -654,10 +667,16 @@ class TestVisibilityFiltering:
         config, cache = reg_dirs
         mgr = RegistryManager(config, cache)
         hidden = RegistryEntry(
-            name="hidden", url="https://example.com", subpath="recipes", visible=False,
+            name="hidden",
+            url="https://example.com",
+            subpath="recipes",
+            visible=False,
         )
         visible = RegistryEntry(
-            name="visible", url="https://example.com/2", subpath="recipes", visible=True,
+            name="visible",
+            url="https://example.com/2",
+            subpath="recipes",
+            visible=True,
         )
         mgr._save_registries([hidden, visible])
 
@@ -676,7 +695,10 @@ class TestVisibilityFiltering:
         config, cache = reg_dirs
         mgr = RegistryManager(config, cache)
         hidden = RegistryEntry(
-            name="hidden-reg", url="https://example.com", subpath="recipes", visible=False,
+            name="hidden-reg",
+            url="https://example.com",
+            subpath="recipes",
+            visible=False,
         )
         mgr._save_registries([hidden])
         recipe_dir = cache / "hidden-reg" / "recipes"
@@ -690,7 +712,10 @@ class TestVisibilityFiltering:
         config, cache = reg_dirs
         mgr = RegistryManager(config, cache)
         hidden = RegistryEntry(
-            name="hidden-search", url="https://example.com", subpath="recipes", visible=False,
+            name="hidden-search",
+            url="https://example.com",
+            subpath="recipes",
+            visible=False,
         )
         mgr._save_registries([hidden])
 
@@ -698,6 +723,7 @@ class TestVisibilityFiltering:
         recipe_dir.mkdir(parents=True)
         (cache / "hidden-search" / ".git").mkdir(exist_ok=True)
         import yaml
+
         with open(recipe_dir / "my-recipe.yaml", "w") as f:
             yaml.dump({"name": "Hidden Recipe", "model": "test-model", "runtime": "vllm"}, f)
 
@@ -708,7 +734,10 @@ class TestVisibilityFiltering:
         config, cache = reg_dirs
         mgr = RegistryManager(config, cache)
         hidden = RegistryEntry(
-            name="hidden-search2", url="https://example.com", subpath="recipes", visible=False,
+            name="hidden-search2",
+            url="https://example.com",
+            subpath="recipes",
+            visible=False,
         )
         mgr._save_registries([hidden])
 
@@ -716,6 +745,7 @@ class TestVisibilityFiltering:
         recipe_dir.mkdir(parents=True)
         (cache / "hidden-search2" / ".git").mkdir(exist_ok=True)
         import yaml
+
         with open(recipe_dir / "my-recipe2.yaml", "w") as f:
             yaml.dump({"name": "Hidden Recipe 2", "model": "test-model-2", "runtime": "vllm"}, f)
 
@@ -726,7 +756,10 @@ class TestVisibilityFiltering:
         config, cache = reg_dirs
         mgr = RegistryManager(config, cache)
         hidden = RegistryEntry(
-            name="hidden-find", url="https://example.com", subpath="recipes", visible=False,
+            name="hidden-find",
+            url="https://example.com",
+            subpath="recipes",
+            visible=False,
         )
         mgr._save_registries([hidden])
 
@@ -734,6 +767,7 @@ class TestVisibilityFiltering:
         recipe_dir.mkdir(parents=True)
         (cache / "hidden-find" / ".git").mkdir(exist_ok=True)
         import yaml
+
         with open(recipe_dir / "find-me.yaml", "w") as f:
             yaml.dump({"name": "Find Me", "model": "test"}, f)
 
@@ -744,7 +778,10 @@ class TestVisibilityFiltering:
         config, cache = reg_dirs
         mgr = RegistryManager(config, cache)
         hidden = RegistryEntry(
-            name="hidden-find2", url="https://example.com", subpath="recipes", visible=False,
+            name="hidden-find2",
+            url="https://example.com",
+            subpath="recipes",
+            visible=False,
         )
         mgr._save_registries([hidden])
 
@@ -752,6 +789,7 @@ class TestVisibilityFiltering:
         recipe_dir.mkdir(parents=True)
         (cache / "hidden-find2" / ".git").mkdir(exist_ok=True)
         import yaml
+
         with open(recipe_dir / "find-me2.yaml", "w") as f:
             yaml.dump({"name": "Find Me 2", "model": "test"}, f)
 
@@ -874,6 +912,7 @@ class TestDeprecatedRegistries:
 
         # Temporarily patch DEPRECATED_REGISTRIES with a URL
         from sparkrun.core import registry as reg_module
+
         original = reg_module.DEPRECATED_REGISTRIES
         try:
             reg_module.DEPRECATED_REGISTRIES = ["https://example.com/old/repo"]
@@ -890,6 +929,7 @@ class TestDeprecatedRegistries:
         mgr.add_registry(entry)
 
         from sparkrun.core import registry as reg_module
+
         original = reg_module.DEPRECATED_REGISTRIES
         try:
             # Deprecated list has URL without .git, entry has .git
@@ -905,6 +945,7 @@ class TestDeprecatedRegistries:
         mgr.add_registry(entry)
 
         from sparkrun.core import registry as reg_module
+
         original = reg_module.DEPRECATED_REGISTRIES
         try:
             # Put the name in DEPRECATED_REGISTRIES — should NOT match
@@ -1063,16 +1104,16 @@ class TestReservedNamePrefixesIntegrity:
 
     def test_sparkrun_is_separate_entry(self):
         """Guard against implicit string concatenation merging 'sparkrun' with the next entry."""
-        assert 'sparkrun' in RESERVED_NAME_PREFIXES
+        assert "sparkrun" in RESERVED_NAME_PREFIXES
 
     def test_official_is_separate_entry(self):
         """Guard against implicit string concatenation merging 'official' with the previous entry."""
-        assert 'official' in RESERVED_NAME_PREFIXES
+        assert "official" in RESERVED_NAME_PREFIXES
 
     def test_no_concatenated_entries(self):
         """No entry should contain a comma (sign of implicit string concatenation bug)."""
         for prefix in RESERVED_NAME_PREFIXES:
-            assert ',' not in prefix, "Found comma in prefix %r — likely implicit string concatenation" % prefix
+            assert "," not in prefix, "Found comma in prefix %r — likely implicit string concatenation" % prefix
 
 
 class TestLoadRegistriesFiltersDeprecated:
@@ -1087,6 +1128,7 @@ class TestLoadRegistriesFiltersDeprecated:
         mgr._save_registries(entries)
 
         from sparkrun.core import registry as reg_module
+
         original = reg_module.DEPRECATED_REGISTRIES
         try:
             reg_module.DEPRECATED_REGISTRIES = ["https://example.com/old/repo"]
@@ -1105,6 +1147,7 @@ class TestLoadRegistriesFiltersDeprecated:
         mgr._save_registries(entries)
 
         from sparkrun.core import registry as reg_module
+
         original = reg_module.DEPRECATED_REGISTRIES
         try:
             reg_module.DEPRECATED_REGISTRIES = ["https://example.com/other/repo"]
@@ -1169,12 +1212,14 @@ class TestDiscoverManifestEntries:
 
     def test_returns_entries_from_manifest_canonical_keys(self, mgr):
         """Successful clone with canonical keys (subpath, tuning_subpath) returns parsed entries."""
-        manifest_yaml = yaml.dump({
-            "registries": [
-                {"name": "reg-a", "subpath": "recipes-a", "description": "Registry A"},
-                {"name": "reg-b", "subpath": "recipes-b", "tuning_subpath": "tuning"},
-            ]
-        })
+        manifest_yaml = yaml.dump(
+            {
+                "registries": [
+                    {"name": "reg-a", "subpath": "recipes-a", "description": "Registry A"},
+                    {"name": "reg-b", "subpath": "recipes-b", "tuning_subpath": "tuning"},
+                ]
+            }
+        )
 
         def fake_run(cmd, **kwargs):
             if "clone" in cmd:
@@ -1200,24 +1245,26 @@ class TestDiscoverManifestEntries:
 
     def test_returns_entries_from_manifest_short_keys(self, mgr):
         """Manifest using short keys (recipes, tuning, benchmarks) is parsed correctly."""
-        manifest_yaml = yaml.dump({
-            "registries": [
-                {
-                    "name": "testing-reg",
-                    "description": "Testing registry",
-                    "recipes": "testing/recipes",
-                    "tuning": "testing/tuning",
-                    "benchmarks": "testing/benchmarking",
-                    "visible": False,
-                },
-                {
-                    "name": "transitional-reg",
-                    "description": "Transitional registry",
-                    "recipes": "transitional/recipes",
-                    "visible": True,
-                },
-            ]
-        })
+        manifest_yaml = yaml.dump(
+            {
+                "registries": [
+                    {
+                        "name": "testing-reg",
+                        "description": "Testing registry",
+                        "recipes": "testing/recipes",
+                        "tuning": "testing/tuning",
+                        "benchmarks": "testing/benchmarking",
+                        "visible": False,
+                    },
+                    {
+                        "name": "transitional-reg",
+                        "description": "Transitional registry",
+                        "recipes": "transitional/recipes",
+                        "visible": True,
+                    },
+                ]
+            }
+        )
 
         def fake_run(cmd, **kwargs):
             if "clone" in cmd:
@@ -1247,15 +1294,19 @@ class TestDiscoverManifestEntries:
 
     def test_canonical_keys_take_precedence_over_short_keys(self, mgr):
         """When both canonical and short keys are present, canonical wins."""
-        manifest_yaml = yaml.dump({
-            "registries": [{
-                "name": "both-keys",
-                "subpath": "canonical-path",
-                "recipes": "short-path",
-                "tuning_subpath": "canonical-tuning",
-                "tuning": "short-tuning",
-            }]
-        })
+        manifest_yaml = yaml.dump(
+            {
+                "registries": [
+                    {
+                        "name": "both-keys",
+                        "subpath": "canonical-path",
+                        "recipes": "short-path",
+                        "tuning_subpath": "canonical-tuning",
+                        "tuning": "short-tuning",
+                    }
+                ]
+            }
+        )
 
         def fake_run(cmd, **kwargs):
             if "clone" in cmd:
@@ -1350,6 +1401,7 @@ class TestInitDefaultsFromManifests:
             return good_entries
 
         from sparkrun.core import registry as reg_module
+
         original = reg_module.DEFAULT_REGISTRIES_GIT
         try:
             reg_module.DEFAULT_REGISTRIES_GIT = [
@@ -1392,9 +1444,7 @@ class TestInitDefaultsFromManifests:
 
     def test_all_urls_fail_returns_empty(self, mgr):
         """When every URL fails, returns [] for fallback."""
-        with mock.patch.object(
-            mgr, "_discover_manifest_entries", side_effect=RegistryError("fail")
-        ):
+        with mock.patch.object(mgr, "_discover_manifest_entries", side_effect=RegistryError("fail")):
             result = mgr._init_defaults_from_manifests()
         assert result == []
         # No file should have been saved

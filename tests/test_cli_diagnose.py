@@ -61,6 +61,7 @@ def _make_diag_stdout() -> str:
 # sparkrun setup diagnose
 # ---------------------------------------------------------------------------
 
+
 class TestSetupDiagnose:
     @mock.patch("sparkrun.diagnostics.spark_collector.run_remote_scripts_parallel")
     @mock.patch("sparkrun.diagnostics.spark_collector.read_script", return_value="#!/bin/bash\necho ok")
@@ -70,11 +71,18 @@ class TestSetupDiagnose:
         ]
 
         output = tmp_path / "test.ndjson"
-        result = runner.invoke(main, [
-            "setup", "diagnose",
-            "--hosts", "10.0.0.1",
-            "-o", str(output),
-        ], catch_exceptions=False)
+        result = runner.invoke(
+            main,
+            [
+                "setup",
+                "diagnose",
+                "--hosts",
+                "10.0.0.1",
+                "-o",
+                str(output),
+            ],
+            catch_exceptions=False,
+        )
 
         assert result.exit_code == 0
         assert output.exists()
@@ -94,12 +102,19 @@ class TestSetupDiagnose:
         ]
 
         output = tmp_path / "test.ndjson"
-        result = runner.invoke(main, [
-            "setup", "diagnose",
-            "--hosts", "10.0.0.1",
-            "-o", str(output),
-            "--json",
-        ], catch_exceptions=False)
+        result = runner.invoke(
+            main,
+            [
+                "setup",
+                "diagnose",
+                "--hosts",
+                "10.0.0.1",
+                "-o",
+                str(output),
+                "--json",
+            ],
+            catch_exceptions=False,
+        )
 
         assert result.exit_code == 0
         # The JSON summary should be in stdout
@@ -113,11 +128,17 @@ class TestSetupDiagnose:
         ]
 
         output = tmp_path / "test.ndjson"
-        result = runner.invoke(main, [
-            "setup", "diagnose",
-            "--hosts", "10.0.0.1",
-            "-o", str(output),
-        ])
+        result = runner.invoke(
+            main,
+            [
+                "setup",
+                "diagnose",
+                "--hosts",
+                "10.0.0.1",
+                "-o",
+                str(output),
+            ],
+        )
 
         assert result.exit_code == 1
 
@@ -129,12 +150,18 @@ class TestSetupDiagnose:
         ]
 
         output = tmp_path / "test.ndjson"
-        runner.invoke(main, [
-            "setup", "diagnose",
-            "--hosts", "10.0.0.1",
-            "-o", str(output),
-            "--dry-run",
-        ])
+        runner.invoke(
+            main,
+            [
+                "setup",
+                "diagnose",
+                "--hosts",
+                "10.0.0.1",
+                "-o",
+                str(output),
+                "--dry-run",
+            ],
+        )
 
         # dry-run mode may produce incomplete output; just check it runs
         assert output.exists()

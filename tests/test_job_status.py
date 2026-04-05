@@ -6,7 +6,7 @@ from unittest import mock
 
 import pytest
 
-from sparkrun.orchestration.job_metadata import JobStatus, check_job_running
+from sparkrun.orchestration.job_metadata import check_job_running
 
 
 @pytest.fixture
@@ -25,12 +25,15 @@ class TestCheckJobRunning:
 
     def test_check_running_solo_up(self):
         """Solo container running on head host."""
-        with mock.patch(
-            "sparkrun.orchestration.primitives.is_container_running",
-            side_effect=lambda host, name, **kw: name.endswith("_solo"),
-        ), mock.patch(
-            "sparkrun.orchestration.job_metadata.load_job_metadata",
-            return_value={"recipe": "test", "hosts": ["10.0.0.1"]},
+        with (
+            mock.patch(
+                "sparkrun.orchestration.primitives.is_container_running",
+                side_effect=lambda host, name, **kw: name.endswith("_solo"),
+            ),
+            mock.patch(
+                "sparkrun.orchestration.job_metadata.load_job_metadata",
+                return_value={"recipe": "test", "hosts": ["10.0.0.1"]},
+            ),
         ):
             status = check_job_running(
                 cluster_id="sparkrun_aabbccdd0011",
@@ -42,12 +45,15 @@ class TestCheckJobRunning:
 
     def test_check_running_solo_down(self):
         """Solo container not running."""
-        with mock.patch(
-            "sparkrun.orchestration.primitives.is_container_running",
-            return_value=False,
-        ), mock.patch(
-            "sparkrun.orchestration.job_metadata.load_job_metadata",
-            return_value=None,
+        with (
+            mock.patch(
+                "sparkrun.orchestration.primitives.is_container_running",
+                return_value=False,
+            ),
+            mock.patch(
+                "sparkrun.orchestration.job_metadata.load_job_metadata",
+                return_value=None,
+            ),
         ):
             status = check_job_running(
                 cluster_id="sparkrun_aabbccdd0011",
@@ -57,15 +63,19 @@ class TestCheckJobRunning:
 
     def test_check_running_multinode_native(self):
         """Multi-node native: _node_0 running on head."""
+
         def _is_running(host, name, **kw):
             return name.endswith("_node_0")
 
-        with mock.patch(
-            "sparkrun.orchestration.primitives.is_container_running",
-            side_effect=_is_running,
-        ), mock.patch(
-            "sparkrun.orchestration.job_metadata.load_job_metadata",
-            return_value=None,
+        with (
+            mock.patch(
+                "sparkrun.orchestration.primitives.is_container_running",
+                side_effect=_is_running,
+            ),
+            mock.patch(
+                "sparkrun.orchestration.job_metadata.load_job_metadata",
+                return_value=None,
+            ),
         ):
             status = check_job_running(
                 cluster_id="sparkrun_aabbccdd0011",
@@ -77,15 +87,19 @@ class TestCheckJobRunning:
 
     def test_check_running_multinode_ray(self):
         """Multi-node Ray: _head running (not _node_0)."""
+
         def _is_running(host, name, **kw):
             return name.endswith("_head")
 
-        with mock.patch(
-            "sparkrun.orchestration.primitives.is_container_running",
-            side_effect=_is_running,
-        ), mock.patch(
-            "sparkrun.orchestration.job_metadata.load_job_metadata",
-            return_value=None,
+        with (
+            mock.patch(
+                "sparkrun.orchestration.primitives.is_container_running",
+                side_effect=_is_running,
+            ),
+            mock.patch(
+                "sparkrun.orchestration.job_metadata.load_job_metadata",
+                return_value=None,
+            ),
         ):
             status = check_job_running(
                 cluster_id="sparkrun_aabbccdd0011",
@@ -96,12 +110,15 @@ class TestCheckJobRunning:
 
     def test_check_running_no_hosts_loads_metadata(self):
         """When hosts not provided, loads them from job metadata."""
-        with mock.patch(
-            "sparkrun.orchestration.primitives.is_container_running",
-            return_value=True,
-        ), mock.patch(
-            "sparkrun.orchestration.job_metadata.load_job_metadata",
-            return_value={"recipe": "test", "hosts": ["10.0.0.1"]},
+        with (
+            mock.patch(
+                "sparkrun.orchestration.primitives.is_container_running",
+                return_value=True,
+            ),
+            mock.patch(
+                "sparkrun.orchestration.job_metadata.load_job_metadata",
+                return_value={"recipe": "test", "hosts": ["10.0.0.1"]},
+            ),
         ):
             status = check_job_running(cluster_id="sparkrun_aabbccdd0011")
         assert status.running is True
@@ -124,12 +141,15 @@ class TestCheckJobRunning:
         hosts = ["10.0.0.1", "10.0.0.2"]
         expected_cid = generate_cluster_id(mock_recipe, hosts)
 
-        with mock.patch(
-            "sparkrun.orchestration.primitives.is_container_running",
-            return_value=True,
-        ), mock.patch(
-            "sparkrun.orchestration.job_metadata.load_job_metadata",
-            return_value=None,
+        with (
+            mock.patch(
+                "sparkrun.orchestration.primitives.is_container_running",
+                return_value=True,
+            ),
+            mock.patch(
+                "sparkrun.orchestration.job_metadata.load_job_metadata",
+                return_value=None,
+            ),
         ):
             status = check_job_running(recipe=mock_recipe, hosts=hosts)
         assert status.cluster_id == expected_cid
@@ -137,16 +157,20 @@ class TestCheckJobRunning:
 
     def test_check_running_health_check_healthy(self):
         """Container running + health check passes."""
-        with mock.patch(
-            "sparkrun.orchestration.primitives.is_container_running",
-            return_value=True,
-        ), mock.patch(
-            "sparkrun.orchestration.job_metadata.load_job_metadata",
-            return_value={"port": 9000},
-        ), mock.patch(
-            "sparkrun.orchestration.primitives.wait_for_healthy",
-            return_value=True,
-        ) as mock_health:
+        with (
+            mock.patch(
+                "sparkrun.orchestration.primitives.is_container_running",
+                return_value=True,
+            ),
+            mock.patch(
+                "sparkrun.orchestration.job_metadata.load_job_metadata",
+                return_value={"port": 9000},
+            ),
+            mock.patch(
+                "sparkrun.orchestration.primitives.wait_for_healthy",
+                return_value=True,
+            ) as mock_health,
+        ):
             status = check_job_running(
                 cluster_id="sparkrun_aabbccdd0011",
                 hosts=["10.0.0.1"],
@@ -161,15 +185,19 @@ class TestCheckJobRunning:
 
     def test_check_running_health_check_unhealthy(self):
         """Container running but health check fails."""
-        with mock.patch(
-            "sparkrun.orchestration.primitives.is_container_running",
-            return_value=True,
-        ), mock.patch(
-            "sparkrun.orchestration.job_metadata.load_job_metadata",
-            return_value=None,
-        ), mock.patch(
-            "sparkrun.orchestration.primitives.wait_for_healthy",
-            return_value=False,
+        with (
+            mock.patch(
+                "sparkrun.orchestration.primitives.is_container_running",
+                return_value=True,
+            ),
+            mock.patch(
+                "sparkrun.orchestration.job_metadata.load_job_metadata",
+                return_value=None,
+            ),
+            mock.patch(
+                "sparkrun.orchestration.primitives.wait_for_healthy",
+                return_value=False,
+            ),
         ):
             status = check_job_running(
                 cluster_id="sparkrun_aabbccdd0011",
@@ -181,12 +209,15 @@ class TestCheckJobRunning:
 
     def test_check_running_health_check_not_running(self):
         """Container down — health check not attempted, healthy stays None."""
-        with mock.patch(
-            "sparkrun.orchestration.primitives.is_container_running",
-            return_value=False,
-        ), mock.patch(
-            "sparkrun.orchestration.job_metadata.load_job_metadata",
-            return_value=None,
+        with (
+            mock.patch(
+                "sparkrun.orchestration.primitives.is_container_running",
+                return_value=False,
+            ),
+            mock.patch(
+                "sparkrun.orchestration.job_metadata.load_job_metadata",
+                return_value=None,
+            ),
         ):
             status = check_job_running(
                 cluster_id="sparkrun_aabbccdd0011",
@@ -198,16 +229,20 @@ class TestCheckJobRunning:
 
     def test_check_running_explicit_port_overrides_metadata(self):
         """Explicit port param takes priority over metadata port."""
-        with mock.patch(
-            "sparkrun.orchestration.primitives.is_container_running",
-            return_value=True,
-        ), mock.patch(
-            "sparkrun.orchestration.job_metadata.load_job_metadata",
-            return_value={"port": 9000},
-        ), mock.patch(
-            "sparkrun.orchestration.primitives.wait_for_healthy",
-            return_value=True,
-        ) as mock_health:
+        with (
+            mock.patch(
+                "sparkrun.orchestration.primitives.is_container_running",
+                return_value=True,
+            ),
+            mock.patch(
+                "sparkrun.orchestration.job_metadata.load_job_metadata",
+                return_value={"port": 9000},
+            ),
+            mock.patch(
+                "sparkrun.orchestration.primitives.wait_for_healthy",
+                return_value=True,
+            ) as mock_health,
+        ):
             check_job_running(
                 cluster_id="sparkrun_aabbccdd0011",
                 hosts=["10.0.0.1"],

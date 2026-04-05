@@ -168,6 +168,7 @@ class TestListCommand:
     def test_list_json(self, runner):
         """Test that sparkrun recipe list --json outputs a valid JSON list."""
         import json
+
         result = runner.invoke(main, ["recipe", "list", "--json"])
         assert result.exit_code == 0
 
@@ -198,6 +199,7 @@ class TestSearchCommand:
     def test_search_json(self, runner):
         """Test that sparkrun recipe search --json outputs a valid JSON list."""
         import json
+
         result = runner.invoke(main, ["recipe", "search", "llama-cpp", "--json"])
         assert result.exit_code == 0
 
@@ -242,6 +244,7 @@ class TestShowCommand:
     def test_show_json(self, runner):
         """Test that sparkrun recipe show --json outputs valid JSON."""
         import json
+
         result = runner.invoke(main, ["recipe", "show", _TEST_RECIPE_NAME, "--json"])
         assert result.exit_code == 0
 
@@ -519,9 +522,7 @@ class TestExportSystemdCommand:
         """Test that --install and --uninstall cannot be used together."""
         result = runner.invoke(
             main,
-            ["export", "systemd", _TEST_RECIPE_NAME,
-             "--hosts", "10.0.0.1",
-             "--install", "--uninstall"],
+            ["export", "systemd", _TEST_RECIPE_NAME, "--hosts", "10.0.0.1", "--install", "--uninstall"],
         )
         assert result.exit_code != 0
         assert "mutually exclusive" in result.output
@@ -534,6 +535,7 @@ class TestExportSystemdCommand:
         recipe_file_data = yaml.safe_dump(_TEST_RECIPE_DATA)
         import os
         import tempfile
+
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write(recipe_file_data)
             f.flush()
@@ -622,6 +624,7 @@ class TestExportSystemdCommand:
         recipe_file_data = yaml.safe_dump(recipe_data)
         import os
         import tempfile
+
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write(recipe_file_data)
             f.flush()
@@ -631,6 +634,7 @@ class TestExportSystemdCommand:
         slug = recipe.slug
         # Should only contain lowercase alphanumeric and hyphens
         import re
+
         assert re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", slug), "slug '%s' is not valid" % slug
 
     def test_service_name_override(self, runner, monkeypatch):
@@ -643,9 +647,7 @@ class TestExportSystemdCommand:
 
         result = runner.invoke(
             main,
-            ["export", "systemd", _TEST_RECIPE_NAME,
-             "--hosts", "10.0.0.1",
-             "--service-name", "my-custom-name"],
+            ["export", "systemd", _TEST_RECIPE_NAME, "--hosts", "10.0.0.1", "--service-name", "my-custom-name"],
         )
         assert result.exit_code == 0
         assert "sparkrun-my-custom-name" in result.output
@@ -659,8 +661,7 @@ class TestExportSystemdCommand:
 
         result = runner.invoke(
             main,
-            ["export", "systemd", _TEST_RECIPE_NAME,
-             "--hosts", "10.0.0.1,10.0.0.2"],
+            ["export", "systemd", _TEST_RECIPE_NAME, "--hosts", "10.0.0.1,10.0.0.2"],
         )
         assert result.exit_code == 0
         assert "Unit file" in result.output
@@ -729,9 +730,7 @@ class TestExportSystemdCommand:
 
         result = runner.invoke(
             main,
-            ["export", "systemd", _TEST_RECIPE_NAME,
-             "--hosts", "10.0.0.1",
-             "--install"],
+            ["export", "systemd", _TEST_RECIPE_NAME, "--hosts", "10.0.0.1", "--install"],
             input="testpassword\n",
         )
         assert result.exit_code == 0
@@ -746,22 +745,22 @@ class TestExportSystemdCommand:
         monkeypatch.setattr(
             "sparkrun.orchestration.ssh.run_remote_script",
             lambda host, script, **kwargs: RemoteResult(
-                host=host, returncode=1, stdout="",
+                host=host,
+                returncode=1,
+                stdout="",
                 stderr="ERROR: uv not found",
             ),
         )
 
         result = runner.invoke(
             main,
-            ["export", "systemd", _TEST_RECIPE_NAME,
-             "--hosts", "10.0.0.1"],
+            ["export", "systemd", _TEST_RECIPE_NAME, "--hosts", "10.0.0.1"],
         )
         assert result.exit_code != 0
         assert "Failed to install sparkrun" in result.output
 
     def test_export_systemd_sparkrun_auto_install_success(self, runner, monkeypatch):
         """Test detection fails → auto-install succeeds → re-detect succeeds."""
-        from sparkrun.orchestration.ssh import RemoteResult
 
         call_count = {"detect": 0}
 
@@ -779,8 +778,7 @@ class TestExportSystemdCommand:
 
         result = runner.invoke(
             main,
-            ["export", "systemd", _TEST_RECIPE_NAME,
-             "--hosts", "10.0.0.1"],
+            ["export", "systemd", _TEST_RECIPE_NAME, "--hosts", "10.0.0.1"],
         )
         assert result.exit_code == 0
         assert "sparkrun not found" in result.output
@@ -836,6 +834,7 @@ class TestVramCommand:
     def test_vram_json(self, runner):
         """Test that sparkrun recipe vram --json outputs valid JSON."""
         import json
+
         result = runner.invoke(main, ["recipe", "vram", _TEST_RECIPE_NAME, "--no-auto-detect", "--json"])
         assert result.exit_code == 0
 
@@ -886,7 +885,6 @@ class TestValidateCommand:
 
     def test_validate_json_invalid(self, runner, reset_bootstrap):
         """Test that recipe validate --json exits 1 for invalid recipe with issues."""
-        import json
 
         result = runner.invoke(main, ["recipe", "validate", "nonexistent-recipe", "--json"])
         # nonexistent recipe errors before JSON output, so just check exit code
@@ -1027,7 +1025,8 @@ class TestClusterCommands:
     def test_cluster_status_json(self, runner, cluster_setup):
         """Test cluster status --json outputs valid JSON."""
         import json
-        from sparkrun.core.cluster_manager import ClusterStatusResult, ClusterGroup, ClusterSoloEntry
+        from sparkrun.core.cluster_manager import ClusterStatusResult, ClusterSoloEntry
+
         with (
             mock.patch(
                 "sparkrun.core.cluster_manager.query_cluster_status",
@@ -1038,7 +1037,7 @@ class TestClusterCommands:
                     idle_hosts=[],
                     pending_ops=[],
                     total_containers=1,
-                    host_count=1
+                    host_count=1,
                 ),
             ),
         ):
@@ -3187,7 +3186,7 @@ class TestSetupFixPermissions:
         )
 
         with mock.patch(
-                "sparkrun.orchestration.ssh.run_remote_scripts_parallel", return_value=[mock_result_1, mock_result_2]
+            "sparkrun.orchestration.ssh.run_remote_scripts_parallel", return_value=[mock_result_1, mock_result_2]
         ) as mock_parallel:
             result = runner.invoke(
                 main,
@@ -3906,9 +3905,11 @@ class TestUrlRecipe:
         recipe.qualified_name = "test-recipe"
         recipe.description = "A test"
         recipe.maintainer = "tester"
-        recipe.metadata = {"spark_arena_benchmarks": [
-            {"tp": 1, "uuid": "076136cd-260a-4e77-b6e2-309d8f64619b"},
-        ]}
+        recipe.metadata = {
+            "spark_arena_benchmarks": [
+                {"tp": 1, "uuid": "076136cd-260a-4e77-b6e2-309d8f64619b"},
+            ]
+        }
         recipe.runtime = "vllm"
         recipe.model = "test-model"
         recipe.container = "test:latest"
@@ -3938,10 +3939,12 @@ class TestUrlRecipe:
         recipe.qualified_name = "test-recipe"
         recipe.description = "A test"
         recipe.maintainer = "tester"
-        recipe.metadata = {"spark_arena_benchmarks": [
-            {"tp": 1, "uuid": "uuid-tp1"},
-            {"tp": 2, "uuid": "uuid-tp2"},
-        ]}
+        recipe.metadata = {
+            "spark_arena_benchmarks": [
+                {"tp": 1, "uuid": "uuid-tp1"},
+                {"tp": 2, "uuid": "uuid-tp2"},
+            ]
+        }
         recipe.runtime = "vllm"
         recipe.model = "test-model"
         recipe.container = "test:latest"
@@ -4590,8 +4593,6 @@ class TestClusterUserInCLICommands:
         """logs with --cluster should use the cluster's SSH user."""
         captured_config = {}
 
-        original_follow_logs = SglangRuntime.follow_logs
-
         def mock_follow_logs(self, hosts=None, cluster_id=None, config=None, **kw):
             captured_config["ssh_user"] = config.ssh_user if config else None
 
@@ -4615,21 +4616,19 @@ class TestClusterUserInCLICommands:
         """run --dry-run with --cluster should use the cluster's SSH user."""
         captured_config = {}
 
-        original_run = SglangRuntime.run
-
         def mock_run(
-                self,
-                hosts=None,
-                image=None,
-                serve_command=None,
-                recipe=None,
-                overrides=None,
-                cluster_id=None,
-                env=None,
-                cache_dir=None,
-                config=None,
-                dry_run=False,
-                **kw,
+            self,
+            hosts=None,
+            image=None,
+            serve_command=None,
+            recipe=None,
+            overrides=None,
+            cluster_id=None,
+            env=None,
+            cache_dir=None,
+            config=None,
+            dry_run=False,
+            **kw,
         ):
             captured_config["ssh_user"] = config.ssh_user if config else None
             return 0
@@ -5327,7 +5326,7 @@ class TestRunEnsureFlag:
             mock.patch(
                 "sparkrun.orchestration.job_metadata.check_job_running",
                 return_value=status,
-            ) as mock_check,
+            ),
             mock.patch(
                 "sparkrun.core.launcher.launch_inference",
             ) as mock_launch,

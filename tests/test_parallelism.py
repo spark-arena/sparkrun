@@ -116,11 +116,13 @@ class TestExtractParallelismMeta:
         assert "tensor_parallel" not in meta
 
     def test_mixed_default_and_non_default(self):
-        meta = extract_parallelism_meta({
-            "tensor_parallel": 2,
-            "pipeline_parallel": 1,
-            "data_parallel": 4,
-        })
+        meta = extract_parallelism_meta(
+            {
+                "tensor_parallel": 2,
+                "pipeline_parallel": 1,
+                "data_parallel": 4,
+            }
+        )
         assert meta == {"tp": 2, "dp": 4}
 
     def test_none_values_omitted(self):
@@ -148,6 +150,7 @@ class TestParallelismKeys:
 
     def test_keys_match_dataclass_fields(self):
         import dataclasses
+
         field_names = {f.name for f in dataclasses.fields(ParallelismConfig)}
         for long_key, _ in PARALLELISM_KEYS:
             assert long_key in field_names

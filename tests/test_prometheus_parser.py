@@ -118,6 +118,7 @@ class TestParsePrometheusText:
         text = "nan_metric NaN\n"
         metrics = parse_prometheus_text(text)
         import math
+
         assert math.isnan(metrics["nan_metric"])
 
     def test_plain_inf(self):

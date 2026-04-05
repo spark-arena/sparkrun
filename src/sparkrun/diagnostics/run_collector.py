@@ -30,12 +30,15 @@ class _DiagnosticsLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            self._writer.emit("log", {
-                "level": record.levelname,
-                "logger": record.name,
-                "message": self.format(record),
-                "timestamp": record.created,
-            })
+            self._writer.emit(
+                "log",
+                {
+                    "level": record.levelname,
+                    "logger": record.name,
+                    "message": self.format(record),
+                    "timestamp": record.created,
+                },
+            )
         except Exception:
             pass  # never let diagnostics logging break the run
 

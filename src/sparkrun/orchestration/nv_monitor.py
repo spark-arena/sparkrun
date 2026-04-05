@@ -31,11 +31,7 @@ NV_MONITOR_VERSION = "1.0.0"
 
 def _checksum_script(remote_path: str) -> str:
     """Return a bash script that outputs the SHA-256 of a remote file."""
-    return (
-        'if [ -x "%(path)s" ]; then '
-        'sha256sum "%(path)s" | cut -d" " -f1; '
-        "else echo MISSING; fi"
-    ) % {"path": remote_path}
+    return ('if [ -x "%(path)s" ]; then sha256sum "%(path)s" | cut -d" " -f1; else echo MISSING; fi') % {"path": remote_path}
 
 
 def ensure_nv_monitor(
@@ -67,11 +63,10 @@ def ensure_nv_monitor(
 
     # Check both binaries exist on remote — if either is missing, redeploy
     prom2json_remote = "$HOME/%s/prom2json" % NV_MONITOR_REMOTE_DIR
-    check_script = (
-        'NV=$(%s); P2J=$(%s); '
-        'if [ "$NV" = "MISSING" ] || [ "$P2J" = "MISSING" ]; then echo MISSING; '
-        'else echo "$NV"; fi'
-    ) % (_checksum_script(NV_MONITOR_REMOTE_PATH), _checksum_script(prom2json_remote))
+    check_script = ('NV=$(%s); P2J=$(%s); if [ "$NV" = "MISSING" ] || [ "$P2J" = "MISSING" ]; then echo MISSING; else echo "$NV"; fi') % (
+        _checksum_script(NV_MONITOR_REMOTE_PATH),
+        _checksum_script(prom2json_remote),
+    )
     results = run_remote_scripts_parallel(
         hosts,
         check_script,
@@ -106,9 +101,9 @@ def ensure_nv_monitor(
         '  if [ -d "$p" ] && [ ! -w "$p" ]; then '
         '    echo "Fixing permissions on $p" >&2; '
         '    sudo chown "$(id -u):$(id -g)" "$p" 2>/dev/null || true; '
-        '  fi; '
+        "  fi; "
         '  mkdir -p "$p" 2>/dev/null || true; '
-        'done; '
+        "done; "
         '[ -d "$dir" ] && [ -w "$dir" ] && echo OK || echo FAIL'
     ) % {"d": NV_MONITOR_REMOTE_DIR}
 
@@ -129,15 +124,15 @@ def ensure_nv_monitor(
         else:
             logger.warning(
                 "Cannot create deploy directory on %s: %s",
-                r.host, r.stderr.strip()[:200] or r.stdout.strip()[:200],
+                r.host,
+                r.stderr.strip()[:200] or r.stdout.strip()[:200],
             )
             status[r.host] = False
 
     if not rsync_hosts:
         return status
 
-    with get_binary_resource("nv-monitor") as nv_path, \
-         get_binary_resource("prom2json") as p2j_path:
+    with get_binary_resource("nv-monitor") as nv_path, get_binary_resource("prom2json") as p2j_path:
         import shutil
         import tempfile
 
@@ -207,11 +202,13 @@ def start_nv_monitor_ssh(
     # Wrap nv-monitor in a bash trap so it auto-cleans on SSH disconnect.
     # When the SSH connection drops, bash receives SIGHUP and the EXIT trap
     # kills the nv-monitor child — preventing orphaned processes.
-    cmd.extend([
-        "bash", "-c",
-        "trap 'kill %%1 2>/dev/null' EXIT HUP TERM INT; "
-        "%s -n -p %d & wait" % (NV_MONITOR_REMOTE_PATH, port),
-    ])
+    cmd.extend(
+        [
+            "bash",
+            "-c",
+            "trap 'kill %%1 2>/dev/null' EXIT HUP TERM INT; %s -n -p %d & wait" % (NV_MONITOR_REMOTE_PATH, port),
+        ]
+    )
 
     try:
         proc = subprocess.Popen(
@@ -323,7 +320,7 @@ def scrape_metrics(url: str, timeout: float = 5.0) -> dict[str, float]:
         raw = b"".join(chunks).decode("utf-8", errors="replace")
         # Split off HTTP headers
         header_end = raw.find("\r\n\r\n")
-        body = raw[header_end + 4:] if header_end >= 0 else raw
+        body = raw[header_end + 4 :] if header_end >= 0 else raw
         return parse_prometheus_text(body)
     except Exception as e:
         logger.debug("Failed to scrape %s: %s", url, e)

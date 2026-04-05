@@ -40,7 +40,7 @@ def _apply_spark_arena_benchmarks(recipe, recipe_name: str):
     if recipe_name.startswith(SPARK_ARENA_PREFIX):
         from sparkrun.core.parallelism import extract_parallelism_meta
 
-        uuid = recipe_name[len(SPARK_ARENA_PREFIX):]
+        uuid = recipe_name[len(SPARK_ARENA_PREFIX) :]
         parallelism_meta = extract_parallelism_meta(recipe.defaults or {})
         entry: dict = {"uuid": uuid}
         entry.update(parallelism_meta)
@@ -397,19 +397,19 @@ def _install_remote_sparkrun(host, ssh_kwargs, dry_run=False):
 
 
 def _resolve_recipe_for_systemd(
-        target,
-        config,
-        hosts,
-        hosts_file,
-        cluster_name,
-        options,
-        tensor_parallel,
-        pipeline_parallel,
-        gpu_mem,
-        max_model_len,
-        image,
-        port,
-        served_model_name,
+    target,
+    config,
+    hosts,
+    hosts_file,
+    cluster_name,
+    options,
+    tensor_parallel,
+    pipeline_parallel,
+    gpu_mem,
+    max_model_len,
+    image,
+    port,
+    served_model_name,
 ):
     """Resolve recipe, hosts, and overrides for the systemd command.
 
@@ -502,24 +502,24 @@ def _build_cluster_yaml(cluster_name, hosts, ssh_user=None):
 @dry_run_option
 @click.pass_context
 def export_systemd(
-        ctx,
-        target,
-        hosts,
-        hosts_file,
-        cluster_name,
-        tensor_parallel,
-        pipeline_parallel,
-        gpu_mem,
-        max_model_len,
-        options,
-        image,
-        port,
-        served_model_name,
-        do_install,
-        do_uninstall,
-        start,
-        service_name,
-        dry_run,
+    ctx,
+    target,
+    hosts,
+    hosts_file,
+    cluster_name,
+    tensor_parallel,
+    pipeline_parallel,
+    gpu_mem,
+    max_model_len,
+    options,
+    image,
+    port,
+    served_model_name,
+    do_install,
+    do_uninstall,
+    start,
+    service_name,
+    dry_run,
 ):
     """Generate a systemd service for a sparkrun inference workload.
 

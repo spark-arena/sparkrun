@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from unittest import mock
 
-import pytest
 
 from sparkrun.models.download import (
     CONTAINER_HF_CACHE,
@@ -24,8 +22,8 @@ from sparkrun.models.download import model_cache_path
 # parse_gguf_model_spec
 # ---------------------------------------------------------------------------
 
-class TestParseGgufModelSpec:
 
+class TestParseGgufModelSpec:
     def test_repo_with_quant(self):
         repo, quant = parse_gguf_model_spec("Qwen/Qwen3-1.7B-GGUF:Q4_K_M")
         assert repo == "Qwen/Qwen3-1.7B-GGUF"
@@ -52,8 +50,8 @@ class TestParseGgufModelSpec:
 # is_gguf_model
 # ---------------------------------------------------------------------------
 
-class TestIsGgufModel:
 
+class TestIsGgufModel:
     def test_repo_with_quant(self):
         assert is_gguf_model("Qwen/Qwen3-1.7B-GGUF:Q4_K_M") is True
 
@@ -75,8 +73,8 @@ class TestIsGgufModel:
 # resolve_gguf_path (filesystem-based tests with tmp_path)
 # ---------------------------------------------------------------------------
 
-class TestResolveGgufPath:
 
+class TestResolveGgufPath:
     def _create_cached_gguf(self, cache_dir: Path, repo: str, filename: str):
         """Create a fake GGUF file in the HF cache structure."""
         safe_name = repo.replace("/", "--")
@@ -88,14 +86,18 @@ class TestResolveGgufPath:
 
     def test_finds_matching_quant(self, tmp_path):
         gguf = self._create_cached_gguf(
-            tmp_path, "Qwen/Qwen3-1.7B-GGUF", "qwen3-1.7b-q4_k_m.gguf",
+            tmp_path,
+            "Qwen/Qwen3-1.7B-GGUF",
+            "qwen3-1.7b-q4_k_m.gguf",
         )
         result = resolve_gguf_path("Qwen/Qwen3-1.7B-GGUF:Q4_K_M", str(tmp_path))
         assert result == str(gguf)
 
     def test_no_match_returns_none(self, tmp_path):
         self._create_cached_gguf(
-            tmp_path, "Qwen/Qwen3-1.7B-GGUF", "qwen3-1.7b-q8_0.gguf",
+            tmp_path,
+            "Qwen/Qwen3-1.7B-GGUF",
+            "qwen3-1.7b-q8_0.gguf",
         )
         result = resolve_gguf_path("Qwen/Qwen3-1.7B-GGUF:Q4_K_M", str(tmp_path))
         assert result is None
@@ -106,14 +108,18 @@ class TestResolveGgufPath:
 
     def test_no_quant_returns_first_gguf(self, tmp_path):
         gguf = self._create_cached_gguf(
-            tmp_path, "Qwen/Qwen3-1.7B-GGUF", "some-model.gguf",
+            tmp_path,
+            "Qwen/Qwen3-1.7B-GGUF",
+            "some-model.gguf",
         )
         result = resolve_gguf_path("Qwen/Qwen3-1.7B-GGUF", str(tmp_path))
         assert result == str(gguf)
 
     def test_case_insensitive_quant_match(self, tmp_path):
         gguf = self._create_cached_gguf(
-            tmp_path, "Qwen/Qwen3-1.7B-GGUF", "Qwen3-1.7B-Q4_K_M.gguf",
+            tmp_path,
+            "Qwen/Qwen3-1.7B-GGUF",
+            "Qwen3-1.7B-Q4_K_M.gguf",
         )
         result = resolve_gguf_path("Qwen/Qwen3-1.7B-GGUF:q4_k_m", str(tmp_path))
         assert result == str(gguf)
@@ -123,8 +129,8 @@ class TestResolveGgufPath:
 # resolve_gguf_container_path
 # ---------------------------------------------------------------------------
 
-class TestResolveGgufContainerPath:
 
+class TestResolveGgufContainerPath:
     def _create_cached_gguf(self, cache_dir: Path, repo: str, filename: str):
         safe_name = repo.replace("/", "--")
         snapshot = cache_dir / "hub" / f"models--{safe_name}" / "snapshots" / "abc123"
@@ -135,10 +141,13 @@ class TestResolveGgufContainerPath:
 
     def test_translates_host_to_container_path(self, tmp_path):
         self._create_cached_gguf(
-            tmp_path, "Qwen/Qwen3-1.7B-GGUF", "qwen3-1.7b-q4_k_m.gguf",
+            tmp_path,
+            "Qwen/Qwen3-1.7B-GGUF",
+            "qwen3-1.7b-q4_k_m.gguf",
         )
         result = resolve_gguf_container_path(
-            "Qwen/Qwen3-1.7B-GGUF:Q4_K_M", str(tmp_path),
+            "Qwen/Qwen3-1.7B-GGUF:Q4_K_M",
+            str(tmp_path),
         )
         assert result is not None
         assert result.startswith(CONTAINER_HF_CACHE)
@@ -146,7 +155,8 @@ class TestResolveGgufContainerPath:
 
     def test_none_when_not_cached(self, tmp_path):
         result = resolve_gguf_container_path(
-            "Qwen/Qwen3-1.7B-GGUF:Q4_K_M", str(tmp_path),
+            "Qwen/Qwen3-1.7B-GGUF:Q4_K_M",
+            str(tmp_path),
         )
         assert result is None
 
@@ -155,8 +165,8 @@ class TestResolveGgufContainerPath:
 # is_model_cached (GGUF-aware)
 # ---------------------------------------------------------------------------
 
-class TestIsModelCachedGguf:
 
+class TestIsModelCachedGguf:
     def _create_cached_gguf(self, cache_dir: Path, repo: str, filename: str):
         safe_name = repo.replace("/", "--")
         snapshot = cache_dir / "hub" / f"models--{safe_name}" / "snapshots" / "abc123"
@@ -165,13 +175,17 @@ class TestIsModelCachedGguf:
 
     def test_cached_gguf_returns_true(self, tmp_path):
         self._create_cached_gguf(
-            tmp_path, "Qwen/Qwen3-1.7B-GGUF", "qwen3-1.7b-q4_k_m.gguf",
+            tmp_path,
+            "Qwen/Qwen3-1.7B-GGUF",
+            "qwen3-1.7b-q4_k_m.gguf",
         )
         assert is_model_cached("Qwen/Qwen3-1.7B-GGUF:Q4_K_M", str(tmp_path)) is True
 
     def test_wrong_quant_returns_false(self, tmp_path):
         self._create_cached_gguf(
-            tmp_path, "Qwen/Qwen3-1.7B-GGUF", "qwen3-1.7b-q8_0.gguf",
+            tmp_path,
+            "Qwen/Qwen3-1.7B-GGUF",
+            "qwen3-1.7b-q8_0.gguf",
         )
         assert is_model_cached("Qwen/Qwen3-1.7B-GGUF:Q4_K_M", str(tmp_path)) is False
 
@@ -183,8 +197,8 @@ class TestIsModelCachedGguf:
 # model_cache_path (GGUF-aware)
 # ---------------------------------------------------------------------------
 
-class TestModelCachePathGguf:
 
+class TestModelCachePathGguf:
     def test_strips_quant_variant(self):
         path = model_cache_path("Qwen/Qwen3-1.7B-GGUF:Q4_K_M", "/hf/cache")
         assert path == "/hf/cache/hub/models--Qwen--Qwen3-1.7B-GGUF"
@@ -199,8 +213,8 @@ class TestModelCachePathGguf:
 # download_model GGUF dispatch
 # ---------------------------------------------------------------------------
 
-class TestDownloadModelGguf:
 
+class TestDownloadModelGguf:
     @mock.patch("sparkrun.models.download.resolve_gguf_path", return_value="/cached/q4.gguf")
     def test_gguf_already_cached_still_verifies(self, mock_resolve):
         """GGUF model already cached still calls snapshot_download to verify completeness."""
@@ -218,11 +232,9 @@ class TestDownloadModelGguf:
         """GGUF download uses allow_patterns for the quant variant."""
         # Mock the import inside _download_gguf
         with mock.patch.dict("sys.modules", {"huggingface_hub": mock.MagicMock()}) as _:
-            from huggingface_hub import snapshot_download as sd
             with mock.patch("sparkrun.models.download.resolve_gguf_path", return_value=None):
                 # Use the actual function but patch the inner import
                 import sparkrun.models.download as dl_mod
-                orig = dl_mod._download_gguf
 
                 def patched_download(model_id, cache_dir=None, token=None, revision=None, dry_run=False):
                     # Just verify it's called with the right model
@@ -251,11 +263,11 @@ class TestDownloadModelGguf:
 # Revision-aware cache checking
 # ---------------------------------------------------------------------------
 
+
 class TestIsModelCachedRevision:
     """Test revision-aware is_model_cached behaviour."""
 
-    def _create_snapshot(self, cache_dir: Path, model_id: str, commit_hash: str,
-                         files: list[str], ref: str | None = None):
+    def _create_snapshot(self, cache_dir: Path, model_id: str, commit_hash: str, files: list[str], ref: str | None = None):
         """Create a fake HF cache snapshot with optional ref."""
         safe_name = model_id.replace("/", "--")
         model_cache = cache_dir / "hub" / f"models--{safe_name}"
@@ -271,16 +283,22 @@ class TestIsModelCachedRevision:
     def test_no_revision_defaults_to_main_ref(self, tmp_path):
         """Without revision, checks refs/main first."""
         self._create_snapshot(
-            tmp_path, "org/model", "abc123",
-            ["model.safetensors"], ref="main",
+            tmp_path,
+            "org/model",
+            "abc123",
+            ["model.safetensors"],
+            ref="main",
         )
         assert is_model_cached("org/model", str(tmp_path)) is True
 
     def test_no_revision_config_only_returns_false(self, tmp_path):
         """refs/main snapshot with only config.json is not cached."""
         self._create_snapshot(
-            tmp_path, "org/model", "abc123",
-            ["config.json"], ref="main",
+            tmp_path,
+            "org/model",
+            "abc123",
+            ["config.json"],
+            ref="main",
         )
         assert is_model_cached("org/model", str(tmp_path)) is False
 
@@ -288,12 +306,18 @@ class TestIsModelCachedRevision:
         """Checks only the snapshot for the requested ref."""
         # v1 has only config, v2 has weights
         self._create_snapshot(
-            tmp_path, "org/model", "aaa111",
-            ["config.json"], ref="v1",
+            tmp_path,
+            "org/model",
+            "aaa111",
+            ["config.json"],
+            ref="v1",
         )
         self._create_snapshot(
-            tmp_path, "org/model", "bbb222",
-            ["model.safetensors"], ref="v2",
+            tmp_path,
+            "org/model",
+            "bbb222",
+            ["model.safetensors"],
+            ref="v2",
         )
         assert is_model_cached("org/model", str(tmp_path), revision="v1") is False
         assert is_model_cached("org/model", str(tmp_path), revision="v2") is True
@@ -301,7 +325,9 @@ class TestIsModelCachedRevision:
     def test_revision_by_commit_hash(self, tmp_path):
         """Revision can be a direct commit hash (no ref file needed)."""
         self._create_snapshot(
-            tmp_path, "org/model", "deadbeef",
+            tmp_path,
+            "org/model",
+            "deadbeef",
             ["model-00001.safetensors"],
         )
         assert is_model_cached("org/model", str(tmp_path), revision="deadbeef") is True
@@ -310,7 +336,9 @@ class TestIsModelCachedRevision:
     def test_fallback_to_all_snapshots(self, tmp_path):
         """Falls back to any snapshot when refs/main does not exist."""
         self._create_snapshot(
-            tmp_path, "org/model", "abc123",
+            tmp_path,
+            "org/model",
+            "abc123",
             ["model.bin"],
             # No ref — simulates manually placed cache
         )

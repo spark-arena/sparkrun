@@ -16,13 +16,18 @@ from sparkrun.runtimes.base import RuntimePlugin
 
 # --- generate_cluster_id Tests ---
 
+
 class TestGenerateClusterId:
     """Test deterministic cluster ID generation."""
 
     def _make_recipe(self, runtime="vllm", model="meta-llama/Llama-2-7b-hf"):
-        return Recipe.from_dict({
-            "name": "test", "runtime": runtime, "model": model,
-        })
+        return Recipe.from_dict(
+            {
+                "name": "test",
+                "runtime": runtime,
+                "model": model,
+            }
+        )
 
     def test_deterministic(self):
         """Same inputs produce the same cluster ID."""
@@ -52,6 +57,7 @@ class TestGenerateClusterId:
 
 
 # --- VllmRuntime Tests ---
+
 
 def test_vllm_runtime_name():
     """VllmRayRuntime.runtime_name == 'vllm-ray'."""
@@ -200,6 +206,7 @@ def test_vllm_cluster_env():
 
 # --- SglangRuntime Tests ---
 
+
 def test_sglang_runtime_name():
     """SglangRuntime.runtime_name == 'sglang'."""
     runtime = SglangRuntime()
@@ -252,9 +259,7 @@ def test_sglang_generate_command_cluster():
     recipe = Recipe.from_dict(recipe_data)
     runtime = SglangRuntime()
 
-    cmd = runtime.generate_command(
-        recipe, {}, is_cluster=True, num_nodes=2, head_ip="192.168.1.100"
-    )
+    cmd = runtime.generate_command(recipe, {}, is_cluster=True, num_nodes=2, head_ip="192.168.1.100")
     assert "--dist-init-addr 192.168.1.100:25000" in cmd
     assert "--nnodes 2" in cmd
     assert "--tp-size 4" in cmd
@@ -297,6 +302,7 @@ def test_sglang_validate_recipe_no_model():
 
 
 # --- VllmDistributedRuntime Tests ---
+
 
 def test_vllm_distributed_runtime_name():
     """VllmDistributedRuntime.runtime_name == 'vllm-distributed'."""
@@ -357,9 +363,7 @@ def test_vllm_distributed_generate_command_no_ray():
     recipe = Recipe.from_dict(recipe_data)
     runtime = VllmDistributedRuntime()
 
-    cmd = runtime.generate_command(
-        recipe, {}, is_cluster=True, num_nodes=2, head_ip="192.168.1.100"
-    )
+    cmd = runtime.generate_command(recipe, {}, is_cluster=True, num_nodes=2, head_ip="192.168.1.100")
     assert "--distributed-executor-backend" not in cmd
 
 
@@ -374,9 +378,7 @@ def test_vllm_distributed_generate_command_cluster():
     recipe = Recipe.from_dict(recipe_data)
     runtime = VllmDistributedRuntime()
 
-    cmd = runtime.generate_command(
-        recipe, {}, is_cluster=True, num_nodes=2, head_ip="192.168.1.100"
-    )
+    cmd = runtime.generate_command(recipe, {}, is_cluster=True, num_nodes=2, head_ip="192.168.1.100")
     assert "--nnodes 2" in cmd
     assert "--master-addr 192.168.1.100" in cmd
     assert "--master-port 25000" in cmd
@@ -395,9 +397,12 @@ def test_vllm_distributed_generate_node_command_head():
     runtime = VllmDistributedRuntime()
 
     cmd = runtime.generate_node_command(
-        recipe=recipe, overrides={},
-        head_ip="192.168.1.100", num_nodes=2,
-        node_rank=0, init_port=25000,
+        recipe=recipe,
+        overrides={},
+        head_ip="192.168.1.100",
+        num_nodes=2,
+        node_rank=0,
+        init_port=25000,
     )
     assert cmd.startswith("vllm serve meta-llama/Llama-2-70b-hf")
     assert "-tp 2" in cmd
@@ -420,9 +425,12 @@ def test_vllm_distributed_generate_node_command_worker():
     runtime = VllmDistributedRuntime()
 
     cmd = runtime.generate_node_command(
-        recipe=recipe, overrides={},
-        head_ip="192.168.1.100", num_nodes=2,
-        node_rank=1, init_port=25000,
+        recipe=recipe,
+        overrides={},
+        head_ip="192.168.1.100",
+        num_nodes=2,
+        node_rank=1,
+        init_port=25000,
     )
     assert cmd.startswith("vllm serve meta-llama/Llama-2-70b-hf")
     assert "-tp 2" in cmd
@@ -550,6 +558,7 @@ def test_vllm_distributed_overrides_in_command():
 
 # --- EugrVllmRuntime Tests ---
 
+
 def test_eugr_inherits_vllm():
     """EugrVllmRuntime extends VllmRuntime."""
     runtime = EugrVllmRayRuntime()
@@ -653,6 +662,7 @@ class TestEugrPrepare:
     def eugr_builder(self, tmp_path):
         """Create builder with a fake repo containing build-and-copy.sh."""
         from sparkrun.builders.eugr import EugrBuilder
+
         builder = EugrBuilder()
         repo_dir = tmp_path / "eugr-repo"
         repo_dir.mkdir()
@@ -667,11 +677,15 @@ class TestEugrPrepare:
     def test_prepare_with_build_args(self, eugr_builder):
         """prepare_image() calls build-and-copy.sh when build_args present."""
         builder, repo_dir = eugr_builder
-        recipe = Recipe.from_dict({
-            "name": "test", "model": "some-model", "runtime": "eugr-vllm",
-            "container": "my-image",
-            "runtime_config": {"build_args": ["--some-flag"]},
-        })
+        recipe = Recipe.from_dict(
+            {
+                "name": "test",
+                "model": "some-model",
+                "runtime": "eugr-vllm",
+                "container": "my-image",
+                "runtime_config": {"build_args": ["--some-flag"]},
+            }
+        )
         with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
             with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
                 with mock.patch("subprocess.run") as mock_run:
@@ -689,9 +703,13 @@ class TestEugrPrepare:
     def test_prepare_without_build_args_or_mods_image_exists(self, eugr_builder):
         """prepare_image() is a no-op when no build_args/mods and image exists."""
         builder, repo_dir = eugr_builder
-        recipe = Recipe.from_dict({
-            "name": "test", "model": "some-model", "runtime": "eugr-vllm",
-        })
+        recipe = Recipe.from_dict(
+            {
+                "name": "test",
+                "model": "some-model",
+                "runtime": "eugr-vllm",
+            }
+        )
         with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=True):
             with mock.patch.object(builder, "ensure_repo") as mock_ensure:
                 builder.prepare_image("vllm-node", recipe, ["10.0.0.1"])
@@ -701,10 +719,14 @@ class TestEugrPrepare:
     def test_prepare_builds_when_image_missing(self, eugr_builder):
         """prepare_image() triggers a build when image is missing locally."""
         builder, repo_dir = eugr_builder
-        recipe = Recipe.from_dict({
-            "name": "test", "model": "some-model", "runtime": "eugr-vllm",
-            "container": "my-image",
-        })
+        recipe = Recipe.from_dict(
+            {
+                "name": "test",
+                "model": "some-model",
+                "runtime": "eugr-vllm",
+                "container": "my-image",
+            }
+        )
         with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
             with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
                 with mock.patch("subprocess.run") as mock_run:
@@ -720,10 +742,14 @@ class TestEugrPrepare:
     def test_prepare_dry_run(self, eugr_builder):
         """prepare_image() in dry-run does not execute the build."""
         builder, repo_dir = eugr_builder
-        recipe = Recipe.from_dict({
-            "name": "test", "model": "some-model", "runtime": "eugr-vllm",
-            "runtime_config": {"build_args": ["--flag"]},
-        })
+        recipe = Recipe.from_dict(
+            {
+                "name": "test",
+                "model": "some-model",
+                "runtime": "eugr-vllm",
+                "runtime_config": {"build_args": ["--flag"]},
+            }
+        )
         with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
             with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
                 with mock.patch("subprocess.run") as mock_run:
@@ -734,10 +760,14 @@ class TestEugrPrepare:
     def test_prepare_injects_mod_pre_exec(self, eugr_builder):
         """prepare_image() injects mod entries into recipe.pre_exec."""
         builder, repo_dir = eugr_builder
-        recipe = Recipe.from_dict({
-            "name": "test", "model": "some-model", "runtime": "eugr-vllm",
-            "runtime_config": {"mods": ["mods/flash-attn"]},
-        })
+        recipe = Recipe.from_dict(
+            {
+                "name": "test",
+                "model": "some-model",
+                "runtime": "eugr-vllm",
+                "runtime_config": {"mods": ["mods/flash-attn"]},
+            }
+        )
         with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=True):
             with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
                 builder.prepare_image("vllm-node", recipe, ["10.0.0.1"])
@@ -750,10 +780,14 @@ class TestEugrPrepare:
     def test_prepare_build_failure_raises(self, eugr_builder):
         """prepare_image() raises RuntimeError on build failure."""
         builder, repo_dir = eugr_builder
-        recipe = Recipe.from_dict({
-            "name": "test", "model": "some-model", "runtime": "eugr-vllm",
-            "runtime_config": {"build_args": ["--flag"]},
-        })
+        recipe = Recipe.from_dict(
+            {
+                "name": "test",
+                "model": "some-model",
+                "runtime": "eugr-vllm",
+                "runtime_config": {"build_args": ["--flag"]},
+            }
+        )
         with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
             with mock.patch("subprocess.run") as mock_run:
                 mock_run.return_value = mock.Mock(returncode=1)
@@ -767,29 +801,41 @@ class TestEugrPreServe:
     def test_pre_serve_with_pre_exec(self):
         """_pre_serve() runs pre_exec commands from recipe."""
         from sparkrun.runtimes.base import RuntimePlugin
+
         runtime = RuntimePlugin()
-        recipe = Recipe.from_dict({
-            "name": "test", "model": "some-model", "runtime": "vllm",
-            "pre_exec": ["echo hello"],
-        })
+        recipe = Recipe.from_dict(
+            {
+                "name": "test",
+                "model": "some-model",
+                "runtime": "vllm",
+                "pre_exec": ["echo hello"],
+            }
+        )
         with mock.patch("sparkrun.orchestration.hooks.run_pre_exec") as mock_hook:
             runtime._pre_serve(
                 [("localhost", "sparkrun_abc_solo")],
-                ssh_kwargs={}, dry_run=False,
-                recipe=recipe, config_chain=None,
+                ssh_kwargs={},
+                dry_run=False,
+                recipe=recipe,
+                config_chain=None,
             )
             mock_hook.assert_called_once()
 
     def test_pre_serve_without_pre_exec(self):
         """_pre_serve() is a no-op when recipe has no pre_exec."""
         runtime = EugrVllmRayRuntime()
-        recipe = Recipe.from_dict({
-            "name": "test", "model": "some-model", "runtime": "eugr-vllm",
-        })
+        recipe = Recipe.from_dict(
+            {
+                "name": "test",
+                "model": "some-model",
+                "runtime": "eugr-vllm",
+            }
+        )
         with mock.patch("sparkrun.orchestration.hooks.run_pre_exec") as mock_hook:
             runtime._pre_serve(
                 [("localhost", "sparkrun_abc_solo")],
-                ssh_kwargs={}, dry_run=False,
+                ssh_kwargs={},
+                dry_run=False,
                 recipe=recipe,
             )
             mock_hook.assert_not_called()
@@ -797,16 +843,22 @@ class TestEugrPreServe:
     def test_pre_serve_dry_run(self):
         """_pre_serve() passes dry_run through to hooks."""
         from sparkrun.runtimes.base import RuntimePlugin
+
         runtime = RuntimePlugin()
-        recipe = Recipe.from_dict({
-            "name": "test", "model": "some-model",
-            "pre_exec": ["echo hello"],
-        })
+        recipe = Recipe.from_dict(
+            {
+                "name": "test",
+                "model": "some-model",
+                "pre_exec": ["echo hello"],
+            }
+        )
         with mock.patch("sparkrun.orchestration.hooks.run_pre_exec") as mock_hook:
             runtime._pre_serve(
                 [("localhost", "sparkrun_abc_solo")],
-                ssh_kwargs={}, dry_run=True,
-                recipe=recipe, config_chain=None,
+                ssh_kwargs={},
+                dry_run=True,
+                recipe=recipe,
+                config_chain=None,
             )
             mock_hook.assert_called_once()
             # Verify dry_run was passed through
@@ -818,12 +870,14 @@ class TestEugrPreServe:
         with mock.patch("sparkrun.orchestration.hooks.run_pre_exec") as mock_hook:
             runtime._pre_serve(
                 [("localhost", "sparkrun_abc_solo")],
-                ssh_kwargs={}, dry_run=False,
+                ssh_kwargs={},
+                dry_run=False,
             )
             mock_hook.assert_not_called()
 
 
 # --- Base RuntimePlugin Tests ---
+
 
 def test_base_runtime_is_enabled_false():
     """RuntimePlugin.is_enabled() returns False (critical for multi-extension)."""
@@ -924,6 +978,7 @@ def test_sglang_overrides_in_command():
 
 # --- follow_logs() Tests ---
 
+
 class _StubRuntime(RuntimePlugin):
     """Minimal concrete runtime for testing base class behaviour."""
 
@@ -952,8 +1007,10 @@ class TestBaseFollowLogs:
         )
 
         mock_stream.assert_called_once_with(
-            "10.0.0.1", "mytest0_solo",
-            tail=50, dry_run=False,
+            "10.0.0.1",
+            "mytest0_solo",
+            tail=50,
+            dry_run=False,
         )
 
     @mock.patch("sparkrun.orchestration.ssh.stream_container_file_logs")
@@ -1075,6 +1132,7 @@ class TestEugrFollowLogs:
 
 
 # --- LlamaCppRuntime Tests ---
+
 
 def test_llama_cpp_runtime_name():
     """LlamaCppRuntime.runtime_name == 'llama-cpp'."""
@@ -1252,7 +1310,8 @@ def test_llama_cpp_build_rpc_head_command():
     config = recipe.build_config_chain({})
 
     cmd = runtime._build_rpc_head_command(
-        recipe, config,
+        recipe,
+        config,
         worker_hosts=["10.0.0.2", "10.0.0.3"],
         rpc_port=50052,
     )
@@ -1390,12 +1449,14 @@ class TestLlamaCppFollowLogs:
 
 # --- compute_required_nodes Tests ---
 
+
 class TestComputeRequiredNodes:
     """Test base RuntimePlugin.compute_required_nodes()."""
 
     def _make_recipe(self, defaults=None):
         data = {
-            "name": "test", "runtime": "vllm",
+            "name": "test",
+            "runtime": "vllm",
             "model": "meta-llama/Llama-2-7b-hf",
         }
         if defaults:
@@ -1428,9 +1489,12 @@ class TestComputeRequiredNodes:
 
     def test_tp_times_pp(self):
         """TP=2, PP=2 → 4 nodes."""
-        recipe = self._make_recipe(defaults={
-            "tensor_parallel": 2, "pipeline_parallel": 2,
-        })
+        recipe = self._make_recipe(
+            defaults={
+                "tensor_parallel": 2,
+                "pipeline_parallel": 2,
+            }
+        )
         runtime = _StubRuntime()
         assert runtime.compute_required_nodes(recipe) == 4
 
@@ -1452,7 +1516,8 @@ class TestSglangComputeRequiredNodes:
 
     def _make_recipe(self, defaults=None):
         data = {
-            "name": "test", "runtime": "sglang",
+            "name": "test",
+            "runtime": "sglang",
             "model": "meta-llama/Llama-2-7b-hf",
         }
         if defaults:
@@ -1467,9 +1532,12 @@ class TestSglangComputeRequiredNodes:
 
     def test_tp_times_pp(self):
         """TP=2, PP=2 → requires 4 nodes."""
-        recipe = self._make_recipe(defaults={
-            "tensor_parallel": 2, "pipeline_parallel": 2,
-        })
+        recipe = self._make_recipe(
+            defaults={
+                "tensor_parallel": 2,
+                "pipeline_parallel": 2,
+            }
+        )
         runtime = SglangRuntime()
         assert runtime.compute_required_nodes(recipe) == 4
 
@@ -1489,19 +1557,18 @@ class TestSglangComputeRequiredNodes:
         """CLI overrides PP value."""
         recipe = self._make_recipe(defaults={"tensor_parallel": 2})
         runtime = SglangRuntime()
-        assert runtime.compute_required_nodes(
-            recipe, {"pipeline_parallel": 3}
-        ) == 6
+        assert runtime.compute_required_nodes(recipe, {"pipeline_parallel": 3}) == 6
 
     def test_overrides_both(self):
         """CLI overrides both TP and PP."""
-        recipe = self._make_recipe(defaults={
-            "tensor_parallel": 2, "pipeline_parallel": 2,
-        })
+        recipe = self._make_recipe(
+            defaults={
+                "tensor_parallel": 2,
+                "pipeline_parallel": 2,
+            }
+        )
         runtime = SglangRuntime()
-        assert runtime.compute_required_nodes(
-            recipe, {"tensor_parallel": 4, "pipeline_parallel": 3}
-        ) == 12
+        assert runtime.compute_required_nodes(recipe, {"tensor_parallel": 4, "pipeline_parallel": 3}) == 12
 
 
 class TestTrtllmComputeRequiredNodes:
@@ -1509,7 +1576,8 @@ class TestTrtllmComputeRequiredNodes:
 
     def _make_recipe(self, defaults=None):
         data = {
-            "name": "test", "runtime": "trtllm",
+            "name": "test",
+            "runtime": "trtllm",
             "model": "meta-llama/Llama-2-7b-hf",
         }
         if defaults:
@@ -1519,15 +1587,20 @@ class TestTrtllmComputeRequiredNodes:
     def test_tp_times_pp(self):
         """TRT-LLM inherits base class tp*pp."""
         from sparkrun.runtimes.trtllm import TrtllmRuntime
-        recipe = self._make_recipe(defaults={
-            "tensor_parallel": 2, "pipeline_parallel": 2,
-        })
+
+        recipe = self._make_recipe(
+            defaults={
+                "tensor_parallel": 2,
+                "pipeline_parallel": 2,
+            }
+        )
         runtime = TrtllmRuntime()
         assert runtime.compute_required_nodes(recipe) == 4
 
     def test_pp_only(self):
         """PP=2 with no TP → 2 nodes."""
         from sparkrun.runtimes.trtllm import TrtllmRuntime
+
         recipe = self._make_recipe(defaults={"pipeline_parallel": 2})
         runtime = TrtllmRuntime()
         assert runtime.compute_required_nodes(recipe) == 2
@@ -1535,6 +1608,7 @@ class TestTrtllmComputeRequiredNodes:
     def test_returns_none_when_neither(self):
         """No TP or PP → None."""
         from sparkrun.runtimes.trtllm import TrtllmRuntime
+
         recipe = self._make_recipe()
         runtime = TrtllmRuntime()
         assert runtime.compute_required_nodes(recipe) is None
@@ -1577,12 +1651,14 @@ def test_sglang_pp_size_override_in_command():
 
 # --- llama.cpp TP/PP split-mode tests ---
 
+
 class TestLlamaCppComputeRequiredNodes:
     """Test LlamaCppRuntime.compute_required_nodes() — TP/PP are mutually exclusive."""
 
     def _make_recipe(self, defaults=None):
         data = {
-            "name": "test", "runtime": "llama-cpp",
+            "name": "test",
+            "runtime": "llama-cpp",
             "model": "Qwen/Qwen3-1.7B-GGUF:Q4_K_M",
         }
         if defaults:
@@ -1609,9 +1685,12 @@ class TestLlamaCppComputeRequiredNodes:
 
     def test_both_raises_value_error(self):
         """TP + PP simultaneously → ValueError."""
-        recipe = self._make_recipe(defaults={
-            "tensor_parallel": 2, "pipeline_parallel": 2,
-        })
+        recipe = self._make_recipe(
+            defaults={
+                "tensor_parallel": 2,
+                "pipeline_parallel": 2,
+            }
+        )
         runtime = LlamaCppRuntime()
         with pytest.raises(ValueError, match="simultaneously"):
             runtime.compute_required_nodes(recipe)
@@ -1641,7 +1720,8 @@ class TestLlamaCppSplitModeCommand:
 
     def _make_recipe(self, defaults=None, command=None):
         data = {
-            "name": "test", "runtime": "llama-cpp",
+            "name": "test",
+            "runtime": "llama-cpp",
             "model": "Qwen/Qwen3-1.7B-GGUF:Q4_K_M",
         }
         if defaults:
@@ -1689,9 +1769,12 @@ class TestLlamaCppSplitModeCommand:
 
     def test_tp_overrides_recipe_split_mode(self):
         """TP takes precedence over recipe split_mode=layer."""
-        recipe = self._make_recipe(defaults={
-            "tensor_parallel": 2, "split_mode": "layer",
-        })
+        recipe = self._make_recipe(
+            defaults={
+                "tensor_parallel": 2,
+                "split_mode": "layer",
+            }
+        )
         runtime = LlamaCppRuntime()
         cmd = runtime.generate_command(recipe, {}, is_cluster=False)
         assert "--split-mode row" in cmd
@@ -1699,9 +1782,12 @@ class TestLlamaCppSplitModeCommand:
 
     def test_both_tp_pp_raises_in_generate(self):
         """Both TP and PP raises ValueError in generate_command too."""
-        recipe = self._make_recipe(defaults={
-            "tensor_parallel": 2, "pipeline_parallel": 2,
-        })
+        recipe = self._make_recipe(
+            defaults={
+                "tensor_parallel": 2,
+                "pipeline_parallel": 2,
+            }
+        )
         runtime = LlamaCppRuntime()
         with pytest.raises(ValueError, match="simultaneously"):
             runtime.generate_command(recipe, {}, is_cluster=False)
@@ -1743,7 +1829,8 @@ class TestLlamaCppValidateRecipe:
 
     def test_both_tp_pp_in_defaults_warns(self):
         recipe_data = {
-            "name": "test", "runtime": "llama-cpp",
+            "name": "test",
+            "runtime": "llama-cpp",
             "model": "Qwen/Qwen3-1.7B-GGUF:Q4_K_M",
             "defaults": {"tensor_parallel": 2, "pipeline_parallel": 2},
         }
@@ -1754,7 +1841,8 @@ class TestLlamaCppValidateRecipe:
 
     def test_tp_only_no_warning(self):
         recipe_data = {
-            "name": "test", "runtime": "llama-cpp",
+            "name": "test",
+            "runtime": "llama-cpp",
             "model": "Qwen/Qwen3-1.7B-GGUF:Q4_K_M",
             "defaults": {"tensor_parallel": 2},
         }
@@ -1766,12 +1854,14 @@ class TestLlamaCppValidateRecipe:
 
 # --- _augment_served_model_name tests ---
 
+
 class TestAugmentServedModelName:
     """Test that served_model_name from overrides is appended to rendered template commands."""
 
     def _make_recipe(self, runtime="vllm", command=None, defaults=None):
         data = {
-            "name": "test", "runtime": runtime,
+            "name": "test",
+            "runtime": runtime,
             "model": "org/some-model",
         }
         if command:
@@ -1833,7 +1923,10 @@ class TestAugmentServedModelName:
         )
         runtime = VllmRayRuntime()
         cmd = runtime.generate_command(
-            recipe, {}, is_cluster=False, skip_keys={"served_model_name"},
+            recipe,
+            {},
+            is_cluster=False,
+            skip_keys={"served_model_name"},
         )
         assert "--served-model-name" not in cmd
 
@@ -1859,7 +1952,11 @@ class TestAugmentServedModelName:
         )
         runtime = VllmDistributedRuntime()
         cmd = runtime.generate_node_command(
-            recipe, {}, head_ip="10.0.0.1", num_nodes=2, node_rank=0,
+            recipe,
+            {},
+            head_ip="10.0.0.1",
+            num_nodes=2,
+            node_rank=0,
         )
         assert "--served-model-name dist-model" in cmd
         assert "--nnodes 2" in cmd
@@ -1873,7 +1970,11 @@ class TestAugmentServedModelName:
         )
         runtime = VllmDistributedRuntime()
         cmd = runtime.generate_node_command(
-            recipe, {}, head_ip="10.0.0.1", num_nodes=2, node_rank=1,
+            recipe,
+            {},
+            head_ip="10.0.0.1",
+            num_nodes=2,
+            node_rank=1,
         )
         assert cmd.count("--served-model-name") == 1
 
@@ -1899,7 +2000,11 @@ class TestAugmentServedModelName:
         )
         runtime = SglangRuntime()
         cmd = runtime.generate_node_command(
-            recipe, {}, head_ip="10.0.0.1", num_nodes=2, node_rank=0,
+            recipe,
+            {},
+            head_ip="10.0.0.1",
+            num_nodes=2,
+            node_rank=0,
         )
         assert "--served-model-name sg-model" in cmd
         assert "--nnodes 2" in cmd
@@ -1913,7 +2018,11 @@ class TestAugmentServedModelName:
         )
         runtime = SglangRuntime()
         cmd = runtime.generate_node_command(
-            recipe, {}, head_ip="10.0.0.1", num_nodes=2, node_rank=1,
+            recipe,
+            {},
+            head_ip="10.0.0.1",
+            num_nodes=2,
+            node_rank=1,
         )
         assert cmd.count("--served-model-name") == 1
 
@@ -1926,7 +2035,10 @@ class TestAugmentServedModelName:
         )
         runtime = SglangRuntime()
         cmd = runtime.generate_command(
-            recipe, {}, is_cluster=False, skip_keys={"served_model_name"},
+            recipe,
+            {},
+            is_cluster=False,
+            skip_keys={"served_model_name"},
         )
         assert "--served-model-name" not in cmd
 
@@ -1978,6 +2090,9 @@ class TestAugmentServedModelName:
         )
         runtime = LlamaCppRuntime()
         cmd = runtime.generate_command(
-            recipe, {}, is_cluster=False, skip_keys={"served_model_name"},
+            recipe,
+            {},
+            is_cluster=False,
+            skip_keys={"served_model_name"},
         )
         assert "--alias" not in cmd

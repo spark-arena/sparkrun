@@ -17,6 +17,7 @@ from sparkrun.runtimes.trtllm import TrtllmRuntime
 
 # --- version_commands() tests ---
 
+
 class TestVersionCommands:
     """Test version_commands() returns expected keys for base and subclasses."""
 
@@ -55,18 +56,17 @@ class TestVersionCommands:
 
 # --- _collect_runtime_info() tests ---
 
+
 class TestCollectRuntimeInfo:
     """Test _collect_runtime_info parses output and handles failures."""
 
     def test_parses_key_value_output(self):
-        stdout = (
-            "SPARKRUN_VER_CUDA=12.9\n"
-            "SPARKRUN_VER_PYTHON=3.12.3\n"
-            "SPARKRUN_VER_TORCH=2.7.0\n"
-            "SPARKRUN_VER_VLLM=0.8.5\n"
-        )
+        stdout = "SPARKRUN_VER_CUDA=12.9\nSPARKRUN_VER_PYTHON=3.12.3\nSPARKRUN_VER_TORCH=2.7.0\nSPARKRUN_VER_VLLM=0.8.5\n"
         fake_result = RemoteResult(
-            host="host1", stdout=stdout, stderr="", returncode=0,
+            host="host1",
+            stdout=stdout,
+            stderr="",
+            returncode=0,
         )
 
         runtime = VllmRayRuntime()
@@ -81,12 +81,12 @@ class TestCollectRuntimeInfo:
         }
 
     def test_skips_unknown_values(self):
-        stdout = (
-            "SPARKRUN_VER_CUDA=12.9\n"
-            "SPARKRUN_VER_TORCH=unknown\n"
-        )
+        stdout = "SPARKRUN_VER_CUDA=12.9\nSPARKRUN_VER_TORCH=unknown\n"
         fake_result = RemoteResult(
-            host="host1", stdout=stdout, stderr="", returncode=0,
+            host="host1",
+            stdout=stdout,
+            stderr="",
+            returncode=0,
         )
 
         runtime = VllmRayRuntime()
@@ -98,7 +98,10 @@ class TestCollectRuntimeInfo:
 
     def test_returns_empty_on_failure(self):
         fake_result = RemoteResult(
-            host="host1", stdout="", stderr="error", returncode=1,
+            host="host1",
+            stdout="",
+            stderr="error",
+            returncode=1,
         )
 
         runtime = VllmRayRuntime()
@@ -120,16 +123,12 @@ class TestCollectRuntimeInfo:
         assert info == {}
 
     def test_handles_empty_lines_and_noise(self):
-        stdout = (
-            "some noise before\n"
-            "SPARKRUN_VER_CUDA=12.9\n"
-            "\n"
-            "SPARKRUN_VER_PYTHON=\n"
-            "more noise\n"
-            "SPARKRUN_VER_SGLANG=0.4.6.post1\n"
-        )
+        stdout = "some noise before\nSPARKRUN_VER_CUDA=12.9\n\nSPARKRUN_VER_PYTHON=\nmore noise\nSPARKRUN_VER_SGLANG=0.4.6.post1\n"
         fake_result = RemoteResult(
-            host="host1", stdout=stdout, stderr="", returncode=0,
+            host="host1",
+            stdout=stdout,
+            stderr="",
+            returncode=0,
         )
 
         runtime = SglangRuntime()
@@ -142,13 +141,18 @@ class TestCollectRuntimeInfo:
 
 # --- job_metadata runtime_info persistence tests ---
 
+
 class TestJobMetadataRuntimeInfo:
     """Test save/load of runtime_info in job metadata."""
 
     def _make_recipe(self):
-        return Recipe.from_dict({
-            "name": "test", "runtime": "vllm", "model": "test/model",
-        })
+        return Recipe.from_dict(
+            {
+                "name": "test",
+                "runtime": "vllm",
+                "model": "test/model",
+            }
+        )
 
     def test_save_and_load_with_runtime_info(self, tmp_path):
         recipe = self._make_recipe()
@@ -197,6 +201,7 @@ class TestJobMetadataRuntimeInfo:
 
 
 # --- _flatten_dict tests ---
+
 
 class TestFlattenDict:
     """Test the _flatten_dict helper used by builders."""
@@ -264,6 +269,7 @@ class TestFlattenDict:
 
 # --- EugrBuilder version info tests ---
 
+
 class TestEugrBuilderVersionInfo:
     """Test EugrBuilder.version_info_commands and process_version_info."""
 
@@ -304,6 +310,7 @@ class TestEugrBuilderVersionInfo:
 
 # --- collect_container_labels tests ---
 
+
 class TestCollectContainerLabels:
     """Test BuilderPlugin.collect_container_labels default docker inspect implementation."""
 
@@ -312,9 +319,11 @@ class TestCollectContainerLabels:
         fake_result = RemoteResult(
             host="host1",
             stdout='{"org.opencontainers.image.version":"1.0","maintainer":"test@example.com"}\n',
-            stderr="", returncode=0,
+            stderr="",
+            returncode=0,
         )
         from sparkrun.builders.base import BuilderPlugin
+
         builder = BuilderPlugin()
         with mock.patch("sparkrun.orchestration.primitives.run_script_on_host", return_value=fake_result):
             labels = builder.collect_container_labels("container1", "host1", {})
@@ -326,9 +335,13 @@ class TestCollectContainerLabels:
 
     def test_empty_labels_returns_empty(self):
         fake_result = RemoteResult(
-            host="host1", stdout="{}\n", stderr="", returncode=0,
+            host="host1",
+            stdout="{}\n",
+            stderr="",
+            returncode=0,
         )
         from sparkrun.builders.base import BuilderPlugin
+
         builder = BuilderPlugin()
         with mock.patch("sparkrun.orchestration.primitives.run_script_on_host", return_value=fake_result):
             labels = builder.collect_container_labels("container1", "host1", {})
@@ -337,9 +350,13 @@ class TestCollectContainerLabels:
 
     def test_inspect_failure_returns_empty(self):
         fake_result = RemoteResult(
-            host="host1", stdout="", stderr="Error", returncode=1,
+            host="host1",
+            stdout="",
+            stderr="Error",
+            returncode=1,
         )
         from sparkrun.builders.base import BuilderPlugin
+
         builder = BuilderPlugin()
         with mock.patch("sparkrun.orchestration.primitives.run_script_on_host", return_value=fake_result):
             labels = builder.collect_container_labels("container1", "host1", {})
@@ -348,9 +365,13 @@ class TestCollectContainerLabels:
 
     def test_invalid_json_returns_empty(self):
         fake_result = RemoteResult(
-            host="host1", stdout="not json at all\n", stderr="", returncode=0,
+            host="host1",
+            stdout="not json at all\n",
+            stderr="",
+            returncode=0,
         )
         from sparkrun.builders.base import BuilderPlugin
+
         builder = BuilderPlugin()
         with mock.patch("sparkrun.orchestration.primitives.run_script_on_host", return_value=fake_result):
             labels = builder.collect_container_labels("container1", "host1", {})
@@ -359,6 +380,7 @@ class TestCollectContainerLabels:
 
     def test_exception_returns_empty(self):
         from sparkrun.builders.base import BuilderPlugin
+
         builder = BuilderPlugin()
         with mock.patch("sparkrun.orchestration.primitives.run_script_on_host", side_effect=OSError("ssh failed")):
             labels = builder.collect_container_labels("container1", "host1", {})
@@ -368,9 +390,13 @@ class TestCollectContainerLabels:
     def test_null_json_returns_empty(self):
         """docker inspect returns 'null' when no labels are set."""
         fake_result = RemoteResult(
-            host="host1", stdout="null\n", stderr="", returncode=0,
+            host="host1",
+            stdout="null\n",
+            stderr="",
+            returncode=0,
         )
         from sparkrun.builders.base import BuilderPlugin
+
         builder = BuilderPlugin()
         with mock.patch("sparkrun.orchestration.primitives.run_script_on_host", return_value=fake_result):
             labels = builder.collect_container_labels("container1", "host1", {})
@@ -382,9 +408,11 @@ class TestCollectContainerLabels:
         fake_result = RemoteResult(
             host="host1",
             stdout='{"org.opencontainers.image.source":"https://github.com/example","vcs-ref":"abc123"}\n',
-            stderr="", returncode=0,
+            stderr="",
+            returncode=0,
         )
         from sparkrun.builders.base import BuilderPlugin
+
         builder = BuilderPlugin()
         with mock.patch("sparkrun.orchestration.primitives.run_script_on_host", return_value=fake_result):
             labels = builder.collect_container_labels("container1", "host1", {})
@@ -394,6 +422,7 @@ class TestCollectContainerLabels:
 
 
 # --- _collect_runtime_info with builder tests ---
+
 
 class TestCollectRuntimeInfoWithBuilder:
     """Test _collect_runtime_info merges builder version data."""
@@ -409,14 +438,21 @@ class TestCollectRuntimeInfoWithBuilder:
             "SPARKRUN_BUILDER_END_build_metadata\n"
         ) % yaml_content
         fake_result = RemoteResult(
-            host="host1", stdout=stdout, stderr="", returncode=0,
+            host="host1",
+            stdout=stdout,
+            stderr="",
+            returncode=0,
         )
 
         runtime = VllmRayRuntime()
         builder = EugrBuilder()
         with mock.patch("sparkrun.orchestration.primitives.run_script_on_host", return_value=fake_result):
             info = runtime._collect_runtime_info(
-                "host1", "container1", {}, dry_run=False, builder=builder,
+                "host1",
+                "container1",
+                {},
+                dry_run=False,
+                builder=builder,
             )
 
         assert info["cuda"] == "12.9"
@@ -427,21 +463,23 @@ class TestCollectRuntimeInfoWithBuilder:
     def test_builder_keys_dont_overwrite_runtime_keys(self):
         """If builder and runtime produce the same key, runtime wins."""
         # Contrived: builder YAML has a "cuda" key at top level
-        stdout = (
-            "SPARKRUN_VER_CUDA=12.9\n"
-            "SPARKRUN_BUILDER_START_build_metadata\n"
-            "cuda: '11.0'\n"
-            "SPARKRUN_BUILDER_END_build_metadata\n"
-        )
+        stdout = "SPARKRUN_VER_CUDA=12.9\nSPARKRUN_BUILDER_START_build_metadata\ncuda: '11.0'\nSPARKRUN_BUILDER_END_build_metadata\n"
         fake_result = RemoteResult(
-            host="host1", stdout=stdout, stderr="", returncode=0,
+            host="host1",
+            stdout=stdout,
+            stderr="",
+            returncode=0,
         )
 
         runtime = VllmRayRuntime()
         builder = EugrBuilder()
         with mock.patch("sparkrun.orchestration.primitives.run_script_on_host", return_value=fake_result):
             info = runtime._collect_runtime_info(
-                "host1", "container1", {}, dry_run=False, builder=builder,
+                "host1",
+                "container1",
+                {},
+                dry_run=False,
+                builder=builder,
             )
 
         # Runtime's cuda wins; builder's gets prefixed as build_cuda
@@ -450,42 +488,46 @@ class TestCollectRuntimeInfoWithBuilder:
 
     def test_builder_fails_silently_on_empty_file(self):
         """Empty builder block produces no builder keys."""
-        stdout = (
-            "SPARKRUN_VER_CUDA=12.9\n"
-            "SPARKRUN_BUILDER_START_build_metadata\n"
-            "\n"
-            "SPARKRUN_BUILDER_END_build_metadata\n"
-        )
+        stdout = "SPARKRUN_VER_CUDA=12.9\nSPARKRUN_BUILDER_START_build_metadata\n\nSPARKRUN_BUILDER_END_build_metadata\n"
         fake_result = RemoteResult(
-            host="host1", stdout=stdout, stderr="", returncode=0,
+            host="host1",
+            stdout=stdout,
+            stderr="",
+            returncode=0,
         )
 
         runtime = VllmRayRuntime()
         builder = EugrBuilder()
         with mock.patch("sparkrun.orchestration.primitives.run_script_on_host", return_value=fake_result):
             info = runtime._collect_runtime_info(
-                "host1", "container1", {}, dry_run=False, builder=builder,
+                "host1",
+                "container1",
+                {},
+                dry_run=False,
+                builder=builder,
             )
 
         assert info == {"cuda": "12.9"}
 
     def test_builder_fails_silently_on_parse_error(self):
         """Invalid YAML in builder block produces no builder keys."""
-        stdout = (
-            "SPARKRUN_VER_CUDA=12.9\n"
-            "SPARKRUN_BUILDER_START_build_metadata\n"
-            "{{not valid yaml\n"
-            "SPARKRUN_BUILDER_END_build_metadata\n"
-        )
+        stdout = "SPARKRUN_VER_CUDA=12.9\nSPARKRUN_BUILDER_START_build_metadata\n{{not valid yaml\nSPARKRUN_BUILDER_END_build_metadata\n"
         fake_result = RemoteResult(
-            host="host1", stdout=stdout, stderr="", returncode=0,
+            host="host1",
+            stdout=stdout,
+            stderr="",
+            returncode=0,
         )
 
         runtime = VllmRayRuntime()
         builder = EugrBuilder()
         with mock.patch("sparkrun.orchestration.primitives.run_script_on_host", return_value=fake_result):
             info = runtime._collect_runtime_info(
-                "host1", "container1", {}, dry_run=False, builder=builder,
+                "host1",
+                "container1",
+                {},
+                dry_run=False,
+                builder=builder,
             )
 
         assert info == {"cuda": "12.9"}
@@ -494,19 +536,26 @@ class TestCollectRuntimeInfoWithBuilder:
         """Without a builder, behavior is unchanged."""
         stdout = "SPARKRUN_VER_CUDA=12.9\nSPARKRUN_VER_VLLM=0.8.5\n"
         fake_result = RemoteResult(
-            host="host1", stdout=stdout, stderr="", returncode=0,
+            host="host1",
+            stdout=stdout,
+            stderr="",
+            returncode=0,
         )
 
         runtime = VllmRayRuntime()
         with mock.patch("sparkrun.orchestration.primitives.run_script_on_host", return_value=fake_result):
             info = runtime._collect_runtime_info(
-                "host1", "container1", {}, dry_run=False,
+                "host1",
+                "container1",
+                {},
+                dry_run=False,
             )
 
         assert info == {"cuda": "12.9", "vllm": "0.8.5"}
 
 
 # --- Full launcher flow: labels + build-metadata + runtime versions ---
+
 
 class TestLauncherLabelIntegration:
     """Test that launcher merges labels, build-metadata, and runtime versions correctly."""
@@ -523,14 +572,18 @@ class TestLauncherLabelIntegration:
             "SPARKRUN_BUILDER_END_build_metadata\n"
         ) % yaml_content
         version_result = RemoteResult(
-            host="host1", stdout=version_stdout, stderr="", returncode=0,
+            host="host1",
+            stdout=version_stdout,
+            stderr="",
+            returncode=0,
         )
 
         # Simulate docker inspect label output
         label_result = RemoteResult(
             host="host1",
             stdout='{"org.opencontainers.image.version":"3.0","maintainer":"dev@example.com"}\n',
-            stderr="", returncode=0,
+            stderr="",
+            returncode=0,
         )
 
         runtime = VllmRayRuntime()
@@ -547,7 +600,11 @@ class TestLauncherLabelIntegration:
         with mock.patch("sparkrun.orchestration.primitives.run_script_on_host", side_effect=mock_run_script):
             # Step 1: runtime version collection (includes builder blocks)
             runtime_info = runtime._collect_runtime_info(
-                "host1", "container1", {}, dry_run=False, builder=builder,
+                "host1",
+                "container1",
+                {},
+                dry_run=False,
+                builder=builder,
             )
             # Step 2: container label collection
             label_info = builder.collect_container_labels("container1", "host1", {})

@@ -8,7 +8,9 @@ from ._common import (
     _get_context,
     _resolve_hosts_or_exit,
     dry_run_option,
-    host_options, json_option, print_json,
+    host_options,
+    json_option,
+    print_json,
 )
 
 
@@ -62,11 +64,13 @@ def adv_compare_images(ctx, image, hosts, hosts_file, cluster_name, dry_run, out
     )
 
     if output_json:
-        print_json({
-            "image": image,
-            "local": local_id,
-            "hosts": {h: remote_ids.get(h) for h in host_list},
-        })
+        print_json(
+            {
+                "image": image,
+                "local": local_id,
+                "hosts": {h: remote_ids.get(h) for h in host_list},
+            }
+        )
         return
 
     # Table output

@@ -1,4 +1,5 @@
 """Tests for sparkrun.utils.json_helpers."""
+
 from __future__ import annotations
 
 import dataclasses

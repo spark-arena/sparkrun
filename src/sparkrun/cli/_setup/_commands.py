@@ -14,7 +14,8 @@ from .._common import (
     _resolve_setup_context,
     _shell_rc_file,
     dry_run_option,
-    host_options, json_option,
+    host_options,
+    json_option,
 )
 from . import setup
 from ._phases import (
@@ -248,7 +249,9 @@ def _run_ssh_diagnose(host_list, user, local_user):
     try:
         ssh_g_result = subprocess.run(
             ["ssh", "-G", "%s@%s" % (user, host_list[0])],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if ssh_g_result.returncode == 0:
             for line in ssh_g_result.stdout.splitlines():
@@ -280,9 +283,12 @@ def _run_ssh_diagnose(host_list, user, local_user):
     click.echo()
 
     ssh_opts = [
-        "-o", "StrictHostKeyChecking=accept-new",
-        "-o", "ServerAliveInterval=10",
-        "-o", "ServerAliveCountMax=3",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        "ServerAliveInterval=10",
+        "-o",
+        "ServerAliveCountMax=3",
     ]
 
     control_dir = tempfile.mkdtemp(prefix="sparkrun-diag-")
@@ -298,13 +304,21 @@ def _run_ssh_diagnose(host_list, user, local_user):
         # Use -v (verbose) so we can show WHY the key was rejected on failure.
         click.echo("  [1/4] Testing pubkey authentication (BatchMode)...")
         pubkey_result = subprocess.run(
-            ["ssh", "-v"] + ssh_opts + [
-                "-o", "ControlPath=none",
-                "-o", "BatchMode=yes",
-                "-o", "ConnectTimeout=5",
-                "%s@%s" % (user, h), "true",
+            ["ssh", "-v"]
+            + ssh_opts
+            + [
+                "-o",
+                "ControlPath=none",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=5",
+                "%s@%s" % (user, h),
+                "true",
             ],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
         pubkey_ok = pubkey_result.returncode == 0
         click.echo("        %s" % ("PASS" if pubkey_ok else "FAIL"))
@@ -315,13 +329,23 @@ def _run_ssh_diagnose(host_list, user, local_user):
             for line in pubkey_result.stderr.splitlines():
                 line_lower = line.lower()
                 # Capture lines about key offers, rejections, auth methods, and errors
-                if any(kw in line_lower for kw in (
-                        "offering", "trying", "authentications that can continue",
-                        "no more authentication", "permission denied",
-                        "key_load", "identity file", "will attempt",
-                        "server accepts key", "authentication refused",
-                        "pubkey_prepare", "sign_and_send",
-                )):
+                if any(
+                    kw in line_lower
+                    for kw in (
+                        "offering",
+                        "trying",
+                        "authentications that can continue",
+                        "no more authentication",
+                        "permission denied",
+                        "key_load",
+                        "identity file",
+                        "will attempt",
+                        "server accepts key",
+                        "authentication refused",
+                        "pubkey_prepare",
+                        "sign_and_send",
+                    )
+                ):
                     ssh_verbose_lines.append(line.strip())
             if ssh_verbose_lines:
                 click.echo("        SSH debug (key-related):")
@@ -334,11 +358,17 @@ def _run_ssh_diagnose(host_list, user, local_user):
         # Step 2: Establish ControlMaster (interactive — may prompt for password)
         click.echo("  [2/4] Establishing authenticated connection (may prompt for password)...")
         cm_result = subprocess.run(
-            ["ssh"] + ssh_opts + [
-                "-o", "ControlMaster=auto",
-                "-o", "ControlPersist=2m",
-                "-o", "ControlPath=%s" % control_path,
-                      "%s@%s" % (user, h), "true",
+            ["ssh"]
+            + ssh_opts
+            + [
+                "-o",
+                "ControlMaster=auto",
+                "-o",
+                "ControlPersist=2m",
+                "-o",
+                "ControlPath=%s" % control_path,
+                "%s@%s" % (user, h),
+                "true",
             ],
             timeout=60,
         )
@@ -348,13 +378,19 @@ def _run_ssh_diagnose(host_list, user, local_user):
             all_passed = False
             continue
 
-        cm_ssh = [
-                     "ssh"] + ssh_opts + [
-                     "-o", "ControlMaster=auto",
-                     "-o", "ControlPersist=2m",
-                     "-o", "ControlPath=%s" % control_path,
-                           "%s@%s" % (user, h),
-                 ]
+        cm_ssh = (
+            ["ssh"]
+            + ssh_opts
+            + [
+                "-o",
+                "ControlMaster=auto",
+                "-o",
+                "ControlPersist=2m",
+                "-o",
+                "ControlPath=%s" % control_path,
+                "%s@%s" % (user, h),
+            ]
+        )
 
         # Step 3: Collect remote diagnostics
         click.echo("  [3/4] Collecting remote diagnostics...")
@@ -407,7 +443,9 @@ printf 'ak_key_types=%s\n' "$(awk '{print $1}' ~/.ssh/authorized_keys 2>/dev/nul
 """
         diag_result = subprocess.run(
             cm_ssh + [diag_script],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
 
         diag = {}
@@ -427,7 +465,9 @@ printf 'ak_key_types=%s\n' "$(awk '{print $1}' ~/.ssh/authorized_keys 2>/dev/nul
                 key_match = "%s %s" % (key_parts[0], key_parts[1])
                 grep_result = subprocess.run(
                     cm_ssh + ["grep -cF '%s' ~/.ssh/authorized_keys 2>/dev/null || echo 0" % key_match],
-                    capture_output=True, text=True, timeout=10,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
                 )
                 count = grep_result.stdout.strip()
                 key_installed = count != "0"
@@ -441,43 +481,58 @@ printf 'ak_key_types=%s\n' "$(awk '{print $1}' ~/.ssh/authorized_keys 2>/dev/nul
 
         home_perms = diag.get("home_perms", "unknown")
         home_ok = home_perms in ("700", "750", "755")
-        click.echo("    Home dir:           %s (perms: %s) %s" % (
-            diag.get("home_dir", "?"),
-            home_perms,
-            "PASS" if home_ok else "FAIL — must not be group/world-writable",
-        ))
+        click.echo(
+            "    Home dir:           %s (perms: %s) %s"
+            % (
+                diag.get("home_dir", "?"),
+                home_perms,
+                "PASS" if home_ok else "FAIL — must not be group/world-writable",
+            )
+        )
 
         ssh_perms = diag.get("ssh_perms", "missing")
         ssh_ok = ssh_perms == "700"
-        click.echo("    .ssh/ dir:          perms %s %s" % (
-            ssh_perms,
-            "PASS" if ssh_ok else ("FAIL" if ssh_perms != "missing" else "MISSING"),
-        ))
+        click.echo(
+            "    .ssh/ dir:          perms %s %s"
+            % (
+                ssh_perms,
+                "PASS" if ssh_ok else ("FAIL" if ssh_perms != "missing" else "MISSING"),
+            )
+        )
 
         ak_perms = diag.get("ak_perms", "missing")
         ak_ok = ak_perms == "600"
-        click.echo("    authorized_keys:    perms %s, %s line(s) %s" % (
-            ak_perms,
-            diag.get("ak_lines", "0"),
-            "PASS" if ak_ok else ("FAIL" if ak_perms != "missing" else "MISSING"),
-        ))
+        click.echo(
+            "    authorized_keys:    perms %s, %s line(s) %s"
+            % (
+                ak_perms,
+                diag.get("ak_lines", "0"),
+                "PASS" if ak_ok else ("FAIL" if ak_perms != "missing" else "MISSING"),
+            )
+        )
 
         ak_file = diag.get("sshd_ak_file", "default")
         ak_file_ok = ak_file == "default"
-        click.echo("    AuthorizedKeysFile: %s %s" % (
-            ak_file,
-            "PASS" if ak_file_ok else "NOTE — non-default location",
-        ))
+        click.echo(
+            "    AuthorizedKeysFile: %s %s"
+            % (
+                ak_file,
+                "PASS" if ak_file_ok else "NOTE — non-default location",
+            )
+        )
 
         sshd_strict = diag.get("sshd_strict", "default")
         click.echo("    StrictModes:        %s" % sshd_strict)
 
         sshd_pubkey = diag.get("sshd_pubkey", "default")
         pubkey_setting_ok = sshd_pubkey == "default" or "yes" in sshd_pubkey.lower()
-        click.echo("    PubkeyAuth:         %s %s" % (
-            sshd_pubkey,
-            "PASS" if pubkey_setting_ok else "FAIL — pubkey auth disabled!",
-        ))
+        click.echo(
+            "    PubkeyAuth:         %s %s"
+            % (
+                sshd_pubkey,
+                "PASS" if pubkey_setting_ok else "FAIL — pubkey auth disabled!",
+            )
+        )
 
         allow_users = diag.get("sshd_allow_users", "none")
         allow_groups = diag.get("sshd_allow_groups", "none")
@@ -578,9 +633,16 @@ printf 'ak_key_types=%s\n' "$(awk '{print $1}' ~/.ssh/authorized_keys 2>/dev/nul
                         click.echo("       Check your ~/.ssh/config IdentityFile settings.")
 
             # If everything looks correct but still fails, point to verbose output
-            if (home_ok and ssh_ok and ak_ok and ak_file_ok and pubkey_setting_ok
-                    and (not cross_user or key_installed)
-                    and dropin_ak == "none" and dropin_pubkey == "none"):
+            if (
+                home_ok
+                and ssh_ok
+                and ak_ok
+                and ak_file_ok
+                and pubkey_setting_ok
+                and (not cross_user or key_installed)
+                and dropin_ak == "none"
+                and dropin_pubkey == "none"
+            ):
                 click.echo("    All standard checks passed but pubkey auth still fails.")
                 click.echo("    The SSH debug output above may reveal the cause.")
                 click.echo("    Common hidden causes:")
@@ -594,12 +656,17 @@ printf 'ak_key_types=%s\n' "$(awk '{print $1}' ~/.ssh/authorized_keys 2>/dev/nul
 
         # Clean up ControlMaster
         subprocess.run(
-            ["ssh"] + ssh_opts + [
-                "-o", "ControlPath=%s" % control_path,
-                "-O", "exit",
-                      "%s@%s" % (user, h),
+            ["ssh"]
+            + ssh_opts
+            + [
+                "-o",
+                "ControlPath=%s" % control_path,
+                "-O",
+                "exit",
+                "%s@%s" % (user, h),
             ],
-            capture_output=True, timeout=5,
+            capture_output=True,
+            timeout=5,
         )
 
     # Summary
@@ -611,6 +678,7 @@ printf 'ak_key_types=%s\n' "$(awk '{print $1}' ~/.ssh/authorized_keys 2>/dev/nul
 
     # Cleanup
     import shutil
+
     shutil.rmtree(control_dir, ignore_errors=True)
 
 
@@ -887,10 +955,7 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
             sudo_ssh_kwargs = dict(ssh_kwargs, ssh_user=indirect_user)
 
         # Mark which hosts actually need the password
-        sudo_hosts_needing_pw.update(
-            h for h, d in detections.items()
-            if d.detected and not d.sudo_ok
-        )
+        sudo_hosts_needing_pw.update(h for h, d in detections.items() if d.detected and not d.sudo_ok)
         return sudo_password
 
     # Step 2: Topology determination
@@ -907,13 +972,13 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
             )
             sys.exit(1)
         from sparkrun.orchestration.networking import _group_interfaces_by_port
+
         for h, det in hosts_with_cx7.items():
             port_groups = _group_interfaces_by_port(det.interfaces)
             if len(port_groups) < 2:
                 click.echo(
                     "Error: %s: ring topology requires 2 physical ports (4 interfaces), "
-                    "but only %d port group(s) found (%d interfaces)"
-                    % (h, len(port_groups), len(det.interfaces)),
+                    "but only %d port group(s) found (%d interfaces)" % (h, len(port_groups), len(det.interfaces)),
                     err=True,
                 )
                 sys.exit(1)
@@ -944,6 +1009,7 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
             topology_result = detect_topology(detections, host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
         else:
             from sparkrun.orchestration.networking import CX7TopologyResult
+
             topology_result = CX7TopologyResult(topology=CX7Topology.RING)
 
     click.echo()
@@ -1104,8 +1170,12 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
     if configured and not dry_run:
         cx7_ips = [a.ip for hp in plan.host_plans for a in hp.assignments if a.ip]
         _record_setup_phase(
-            cluster_name, user, host_list, "cx7",
-            subnets=subnet_strs, cx7_ips=cx7_ips,
+            cluster_name,
+            user,
+            host_list,
+            "cx7",
+            subnets=subnet_strs,
+            cx7_ips=cx7_ips,
             netplan_file="/etc/netplan/40-cx7.yaml",
         )
 
@@ -1299,7 +1369,10 @@ def setup_fix_permissions(ctx, hosts, hosts_file, cluster_name, user, cache_dir,
             click.echo("Sudoers install: %d OK, %d failed." % (sudoers_ok, sudoers_fail))
             if sudoers_ok:
                 _record_setup_phase(
-                    cluster_name, user, host_list, "sudoers",
+                    cluster_name,
+                    user,
+                    host_list,
+                    "sudoers",
                     files=["/etc/sudoers.d/sparkrun-chown-%s" % user],
                 )
             click.echo()
@@ -1468,7 +1541,10 @@ def setup_clear_cache(ctx, hosts, hosts_file, cluster_name, user, save_sudo, dry
             click.echo("Sudoers install: %d OK, %d failed." % (sudoers_ok, sudoers_fail))
             if sudoers_ok:
                 _record_setup_phase(
-                    cluster_name, user, host_list, "sudoers",
+                    cluster_name,
+                    user,
+                    host_list,
+                    "sudoers",
                     files=["/etc/sudoers.d/sparkrun-dropcaches-%s" % user],
                 )
             click.echo()
@@ -1692,12 +1768,12 @@ def setup_earlyoom(ctx, hosts, hosts_file, cluster_name, user, extra_prefer, ext
     click.echo("Results: %s." % ", ".join(parts) if parts else "No hosts processed.")
 
     if ok_count and not dry_run:
-        installed_pkg = any(
-            "INSTALLING:" in (result_map.get(h) and result_map[h].stdout or "")
-            for h in host_list
-        )
+        installed_pkg = any("INSTALLING:" in (result_map.get(h) and result_map[h].stdout or "") for h in host_list)
         _record_setup_phase(
-            cluster_name, user, host_list, "earlyoom",
+            cluster_name,
+            user,
+            host_list,
+            "earlyoom",
             installed_package=installed_pkg,
         )
 

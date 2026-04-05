@@ -7,7 +7,6 @@ from unittest import mock
 import pytest
 
 from sparkrun.models.vram import (
-    VRAMEstimate,
     _resolve_quant_dtype,
     bytes_per_element,
     estimate_vram,
@@ -404,9 +403,7 @@ class TestEstimateVram:
         assert est.context_multiplier is not None
         assert est.context_multiplier > 0
         # max_context_tokens / max_model_len
-        assert est.context_multiplier == pytest.approx(
-            est.max_context_tokens / 4096, abs=0.01
-        )
+        assert est.context_multiplier == pytest.approx(est.max_context_tokens / 4096, abs=0.01)
 
     def test_gpu_memory_utilization_none_skips_budget(self):
         """Without gpu_memory_utilization, budget fields should be None."""
@@ -755,8 +752,10 @@ class TestFetchSafetensorsSizeTry0:
         mi = _FakeModelInfo(safetensors=st_info)
         download_called = []
 
-        with mock.patch("huggingface_hub.model_info", return_value=mi), \
-             mock.patch("huggingface_hub.hf_hub_download", side_effect=lambda **kw: download_called.append(1)):
+        with (
+            mock.patch("huggingface_hub.model_info", return_value=mi),
+            mock.patch("huggingface_hub.hf_hub_download", side_effect=lambda **kw: download_called.append(1)),
+        ):
             result = fetch_safetensors_size("org/test-model")
 
         # BF16 = 2 bytes per element → 7B * 2 = 14B bytes
@@ -775,10 +774,12 @@ class TestFetchSafetensorsSizeTry0:
                 return str(index_file)
             raise FileNotFoundError("no such file")
 
-        with mock.patch("huggingface_hub.model_info", side_effect=Exception("offline")), \
-             mock.patch("huggingface_hub.hf_hub_download", side_effect=_fake_download), \
-             mock.patch("huggingface_hub.utils.disable_progress_bars"), \
-             mock.patch("huggingface_hub.utils.enable_progress_bars"):
+        with (
+            mock.patch("huggingface_hub.model_info", side_effect=Exception("offline")),
+            mock.patch("huggingface_hub.hf_hub_download", side_effect=_fake_download),
+            mock.patch("huggingface_hub.utils.disable_progress_bars"),
+            mock.patch("huggingface_hub.utils.enable_progress_bars"),
+        ):
             result = fetch_safetensors_size("org/sharded-model")
 
         assert result == 20_000_000_000

@@ -21,6 +21,7 @@ def test_init_sparkrun_returns_variables():
     Tests that the initialization function properly returns the SAF Variables object.
     """
     import sparkrun.core.bootstrap
+
     sparkrun.core.bootstrap._variables = None
 
     v = init_sparkrun(log_level="WARNING")
@@ -35,6 +36,7 @@ def test_init_sparkrun_idempotent():
     Tests that the module-level singleton pattern works correctly.
     """
     import sparkrun.core.bootstrap
+
     sparkrun.core.bootstrap._variables = None
 
     v1 = init_sparkrun(log_level="WARNING")
@@ -49,6 +51,7 @@ def test_list_runtimes_discovers_all():
     Tests the runtime plugin discovery mechanism.
     """
     import sparkrun.core.bootstrap
+
     sparkrun.core.bootstrap._variables = None
 
     v = init_sparkrun(log_level="WARNING")
@@ -69,6 +72,7 @@ def test_get_runtime_vllm_ray():
     Tests retrieval of the vLLM Ray runtime plugin.
     """
     import sparkrun.core.bootstrap
+
     sparkrun.core.bootstrap._variables = None
 
     v = init_sparkrun(log_level="WARNING")
@@ -84,6 +88,7 @@ def test_get_runtime_sglang():
     Tests retrieval of the SGLang runtime plugin.
     """
     import sparkrun.core.bootstrap
+
     sparkrun.core.bootstrap._variables = None
 
     v = init_sparkrun(log_level="WARNING")
@@ -99,6 +104,7 @@ def test_get_runtime_eugr_vllm():
     Tests retrieval of the EUGR vLLM delegating runtime plugin.
     """
     import sparkrun.core.bootstrap
+
     sparkrun.core.bootstrap._variables = None
 
     v = init_sparkrun(log_level="WARNING")
@@ -114,6 +120,7 @@ def test_get_runtime_unknown_raises():
     Tests error handling for invalid runtime requests.
     """
     import sparkrun.core.bootstrap
+
     sparkrun.core.bootstrap._variables = None
 
     v = init_sparkrun(log_level="WARNING")
@@ -131,6 +138,7 @@ def test_runtime_classes_are_distinct():
     Tests that each runtime plugin is a distinct type.
     """
     import sparkrun.core.bootstrap
+
     sparkrun.core.bootstrap._variables = None
 
     v = init_sparkrun(log_level="WARNING")
@@ -139,9 +147,9 @@ def test_runtime_classes_are_distinct():
     sglang_rt = get_runtime("sglang", v=v)
     eugr_rt = get_runtime("eugr-vllm", v=v)
 
-    assert type(vllm_rt) != type(sglang_rt)
-    assert type(vllm_rt) != type(eugr_rt)
-    assert type(sglang_rt) != type(eugr_rt)
+    assert type(vllm_rt) is not type(sglang_rt)
+    assert type(vllm_rt) is not type(eugr_rt)
+    assert type(sglang_rt) is not type(eugr_rt)
 
 
 def test_get_variables_uses_singleton():
@@ -150,6 +158,7 @@ def test_get_variables_uses_singleton():
     Tests that get_variables properly retrieves or initializes the singleton.
     """
     import sparkrun.core.bootstrap
+
     sparkrun.core.bootstrap._variables = None
 
     # First call should initialize
@@ -167,6 +176,7 @@ def test_runtime_is_multi_extension():
     Tests the SAF multi-extension plugin pattern for runtime plugins.
     """
     import sparkrun.core.bootstrap
+
     sparkrun.core.bootstrap._variables = None
 
     v = init_sparkrun(log_level="WARNING")
@@ -182,6 +192,7 @@ def test_runtime_extension_point_name():
     Tests that runtime plugins register under 'sparkrun.runtime'.
     """
     import sparkrun.core.bootstrap
+
     sparkrun.core.bootstrap._variables = None
 
     v = init_sparkrun(log_level="WARNING")
@@ -203,6 +214,7 @@ def test_list_runtimes_sorted():
     Tests the alphabetical ordering of runtime names.
     """
     import sparkrun.core.bootstrap
+
     sparkrun.core.bootstrap._variables = None
 
     v = init_sparkrun(log_level="WARNING")
@@ -217,6 +229,7 @@ def test_init_with_custom_log_level():
     Verifies that custom log levels are properly passed through.
     """
     import sparkrun.core.bootstrap
+
     sparkrun.core.bootstrap._variables = None
 
     # Should not raise an error

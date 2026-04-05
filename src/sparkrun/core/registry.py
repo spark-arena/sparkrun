@@ -993,9 +993,9 @@ class RegistryManager:
         raise RegistryError(f"Registry {name!r} not found")
 
     def update(
-            self,
-            name: str | None = None,
-            progress: Callable[[str, bool], None] | None = None,
+        self,
+        name: str | None = None,
+        progress: Callable[[str, bool], None] | None = None,
     ) -> dict[str, bool]:
         """Update one or all registries.
 
@@ -1292,9 +1292,9 @@ class RegistryManager:
         return benchmark_path if benchmark_path.exists() else None
 
     def find_benchmark_profile_in_registries(
-            self,
-            name: str,
-            include_hidden: bool = False,
+        self,
+        name: str,
+        include_hidden: bool = False,
     ) -> list[tuple[str, Path]]:
         """Find benchmark profile by file stem across registries.
 
@@ -1321,9 +1321,9 @@ class RegistryManager:
         return matches
 
     def list_benchmark_profiles(
-            self,
-            registry_name: str | None = None,
-            include_hidden: bool = False,
+        self,
+        registry_name: str | None = None,
+        include_hidden: bool = False,
     ) -> list[dict[str, Any]]:
         """List all benchmark profiles across registries.
 

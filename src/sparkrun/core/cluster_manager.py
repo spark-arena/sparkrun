@@ -109,20 +109,13 @@ class ClusterStatusResult:
         for cid, group in self.groups.items():
             out["groups"][cid] = {
                 "meta": group.meta,
-                "containers": [
-                    {"host": h, "role": r, "status": s, "image": i}
-                    for h, r, s, i in group.members
-                ]
+                "containers": [{"host": h, "role": r, "status": s, "image": i} for h, r, s, i in group.members],
             }
 
         for entry in self.solo_entries:
-            out["solo_entries"].append({
-                "cluster_id": entry.cluster_id,
-                "meta": entry.meta,
-                "host": entry.host,
-                "status": entry.status,
-                "image": entry.image
-            })
+            out["solo_entries"].append(
+                {"cluster_id": entry.cluster_id, "meta": entry.meta, "host": entry.host, "status": entry.status, "image": entry.image}
+            )
 
         return out
 
@@ -165,15 +158,15 @@ class ClusterManager:
         return self.clusters_dir / f"{name}.yaml"
 
     def create(
-            self,
-            name: str,
-            hosts: list[str],
-            description: str = "",
-            user: str | None = None,
-            cache_dir: str | None = None,
-            transfer_mode: str | None = None,
-            transfer_interface: str | None = None,
-            topology: str | None = None,
+        self,
+        name: str,
+        hosts: list[str],
+        description: str = "",
+        user: str | None = None,
+        cache_dir: str | None = None,
+        transfer_mode: str | None = None,
+        transfer_interface: str | None = None,
+        topology: str | None = None,
     ) -> None:
         """Create a new named cluster.
 
@@ -236,15 +229,15 @@ class ClusterManager:
         return self._read_cluster(cluster_path)
 
     def update(
-            self,
-            name: str,
-            hosts: list[str] | None = None,
-            description: str | None = None,
-            user: str | None = _UNSET,
-            cache_dir: str | None = _UNSET,
-            transfer_mode: str | None = _UNSET,
-            transfer_interface: str | None = _UNSET,
-            topology: str | None = _UNSET,
+        self,
+        name: str,
+        hosts: list[str] | None = None,
+        description: str | None = None,
+        user: str | None = _UNSET,
+        cache_dir: str | None = _UNSET,
+        transfer_mode: str | None = _UNSET,
+        transfer_interface: str | None = _UNSET,
+        topology: str | None = _UNSET,
     ) -> None:
         """Update existing cluster definition.
 
@@ -311,7 +304,7 @@ class ClusterManager:
         """
         clusters = []
         for yaml_file in self.clusters_dir.glob("*.yaml"):
-            if yaml_file.name.endswith('.manifest.yaml'):  # skip install manifests
+            if yaml_file.name.endswith(".manifest.yaml"):  # skip install manifests
                 continue
             try:
                 cluster_def = self._read_cluster(yaml_file)
@@ -442,9 +435,9 @@ class ClusterManager:
 
 
 def query_cluster_status(
-        host_list: list[str],
-        ssh_kwargs: dict[str, Any],
-        cache_dir: str,
+    host_list: list[str],
+    ssh_kwargs: dict[str, Any],
+    cache_dir: str,
 ) -> ClusterStatusResult:
     """Query sparkrun containers on hosts and classify them.
 
@@ -524,7 +517,7 @@ def query_cluster_status(
                 prefix_end = name.find("_", len("sparkrun_"))
                 if 0 < prefix_end < len(name) - 1:
                     cluster_id = name[:prefix_end]
-                    role = name[prefix_end + 1:]
+                    role = name[prefix_end + 1 :]
                 else:
                     cluster_id = name
                     role = "?"
@@ -540,14 +533,7 @@ def query_cluster_status(
     for host, name, status, image in raw_solo_entries:
         cid = name.removesuffix("_solo")
         meta = load_job_metadata(cid, cache_dir=cache_dir) or {}
-        solo_entries.append(ClusterSoloEntry(
-            cluster_id=cid,
-            host=host,
-            name=name,
-            status=status,
-            image=image,
-            meta=meta
-        ))
+        solo_entries.append(ClusterSoloEntry(cluster_id=cid, host=host, name=name, status=status, image=image, meta=meta))
 
     # Idle hosts: no containers and no errors
     idle_hosts = [h for h in host_list if h not in errors and not host_containers.get(h)]
@@ -624,10 +610,10 @@ class ResolvedClusterConfig:
 
 
 def resolve_cluster_config(
-        cluster_name: str | None,
-        hosts: str | None,
-        hosts_file: str | None,
-        cluster_mgr,
+    cluster_name: str | None,
+    hosts: str | None,
+    hosts_file: str | None,
+    cluster_mgr,
 ) -> ResolvedClusterConfig:
     """Resolve cluster configuration properties in a single pass.
 

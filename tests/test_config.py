@@ -194,6 +194,7 @@ def test_config_recipe_search_paths(tmp_path: Path):
 
     # Temporarily change to the cwd directory
     import os
+
     original_cwd = os.getcwd()
     try:
         os.chdir(tmp_path / "cwd")
@@ -333,6 +334,7 @@ def test_config_empty_defaults_section(tmp_path: Path):
 def test_get_config_root_without_variables():
     """get_config_root without Variables returns DEFAULT_CONFIG_DIR."""
     from sparkrun.core.config import get_config_root, DEFAULT_CONFIG_DIR
+
     result = get_config_root()
     assert result == DEFAULT_CONFIG_DIR
 
@@ -340,6 +342,7 @@ def test_get_config_root_without_variables():
 def test_get_config_root_with_variables(v):
     """get_config_root with initialized Variables returns SAF stateful root."""
     from sparkrun.core.config import get_config_root
+
     result = get_config_root(v)
     # Should be a Path (either SAF root or default)
     assert isinstance(result, Path)
@@ -348,6 +351,7 @@ def test_get_config_root_with_variables(v):
 def test_get_config_root_none_variables():
     """get_config_root(None) returns DEFAULT_CONFIG_DIR."""
     from sparkrun.core.config import get_config_root, DEFAULT_CONFIG_DIR
+
     result = get_config_root(None)
     assert result == DEFAULT_CONFIG_DIR
 
@@ -412,13 +416,17 @@ class TestSshUserOverride:
     def test_override_does_not_affect_other_ssh_fields(self, tmp_path: Path):
         """Setting ssh_user does not change ssh_key or ssh_options."""
         config_file = tmp_path / "config.yaml"
-        config_file.write_text(yaml.dump({
-            "ssh": {
-                "user": "yaml_user",
-                "key": "~/.ssh/test_key",
-                "options": ["-o StrictHostKeyChecking=no"],
-            },
-        }))
+        config_file.write_text(
+            yaml.dump(
+                {
+                    "ssh": {
+                        "user": "yaml_user",
+                        "key": "~/.ssh/test_key",
+                        "options": ["-o StrictHostKeyChecking=no"],
+                    },
+                }
+            )
+        )
         config = SparkrunConfig(config_path=config_file)
         config.ssh_user = "cluster_user"
 

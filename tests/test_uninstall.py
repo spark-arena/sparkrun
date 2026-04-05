@@ -23,8 +23,13 @@ def setup_env(tmp_path: Path):
 
     manifest_mgr = ManifestManager(cluster_mgr.clusters_dir)
     manifest_mgr.record_phase("test-cluster", "testuser", ["10.0.0.1", "10.0.0.2"], "earlyoom", installed_package=True)
-    manifest_mgr.record_phase("test-cluster", "testuser", ["10.0.0.1", "10.0.0.2"], "sudoers",
-                              files=["/etc/sudoers.d/sparkrun-chown-testuser", "/etc/sudoers.d/sparkrun-dropcaches-testuser"])
+    manifest_mgr.record_phase(
+        "test-cluster",
+        "testuser",
+        ["10.0.0.1", "10.0.0.2"],
+        "sudoers",
+        files=["/etc/sudoers.d/sparkrun-chown-testuser", "/etc/sudoers.d/sparkrun-dropcaches-testuser"],
+    )
     manifest_mgr.record_phase("test-cluster", "testuser", ["10.0.0.1", "10.0.0.2"], "docker_group")
 
     return config_root, cluster_mgr, manifest_mgr
@@ -122,6 +127,7 @@ def test_uninstall_deletes_cluster_and_manifest(setup_env):
     # We need to mock the sudo functions for actual execution
     with patch("sparkrun.orchestration.sudo.run_sudo_script_on_host") as mock_sudo:
         from sparkrun.orchestration.ssh import RemoteResult
+
         mock_sudo.return_value = RemoteResult(host="10.0.0.1", returncode=0, stdout="OK", stderr="")
 
         # Just test with dry-run to avoid complex mocking

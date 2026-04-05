@@ -28,6 +28,7 @@ def registry_setup(tmp_path: Path, monkeypatch):
 
     # Point SparkrunConfig to our temp dirs
     import sparkrun.core.config
+
     monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
     monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CACHE_DIR", tmp_path / "cache")
 
@@ -204,26 +205,41 @@ class TestRegistryAddRemove:
         """Test adding registries from a URL (manifest-based discovery)."""
         with mock.patch("subprocess.run") as mock_run:
             mock_run.return_value = mock.Mock(returncode=1, stderr="clone fail")
-            result = runner.invoke(main, [
-                "registry", "add", "https://github.com/test/repo",
-            ])
+            result = runner.invoke(
+                main,
+                [
+                    "registry",
+                    "add",
+                    "https://github.com/test/repo",
+                ],
+            )
             # Clone failure → error exit
             assert result.exit_code != 0
             assert "Error" in result.output
 
     def test_remove_registry(self, runner, registry_setup):
         """Test removing a registry."""
-        result = runner.invoke(main, [
-            "registry", "remove", "test-registry",
-        ])
+        result = runner.invoke(
+            main,
+            [
+                "registry",
+                "remove",
+                "test-registry",
+            ],
+        )
         assert result.exit_code == 0
         assert "removed" in result.output.lower()
 
     def test_remove_nonexistent_registry(self, runner, registry_setup):
         """Test removing a nonexistent registry fails."""
-        result = runner.invoke(main, [
-            "registry", "remove", "nonexistent",
-        ])
+        result = runner.invoke(
+            main,
+            [
+                "registry",
+                "remove",
+                "nonexistent",
+            ],
+        )
         assert result.exit_code != 0
         assert "Error" in result.output
 

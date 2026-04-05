@@ -19,6 +19,7 @@ from click.testing import CliRunner
 # Fixtures
 # =====================================================================
 
+
 @pytest.fixture
 def jobs_dir(tmp_path: Path) -> Path:
     """Create a temporary jobs directory with sample metadata."""
@@ -83,18 +84,22 @@ def state_dir(tmp_path: Path) -> Path:
 def _make_recipe(name="test", model="Qwen/Qwen3-1.7B", runtime="vllm", defaults=None):
     """Create a real Recipe object for testing."""
     from sparkrun.core.recipe import Recipe
-    return Recipe.from_dict({
-        "name": name,
-        "model": model,
-        "runtime": runtime,
-        "container": "test-image:latest",
-        "defaults": defaults or {},
-    })
+
+    return Recipe.from_dict(
+        {
+            "name": name,
+            "model": model,
+            "runtime": runtime,
+            "container": "test-image:latest",
+            "defaults": defaults or {},
+        }
+    )
 
 
 # =====================================================================
 # Tests: generate_cluster_id with port/served_model_name
 # =====================================================================
+
 
 class TestGenerateClusterId:
     """Test generate_cluster_id() with port and served_model_name."""
@@ -240,6 +245,7 @@ class TestGenerateClusterId:
 # Tests: save_job_metadata with port/served_model_name
 # =====================================================================
 
+
 class TestSaveJobMetadata:
     """Test port and served_model_name persistence in job metadata."""
 
@@ -249,7 +255,9 @@ class TestSaveJobMetadata:
 
         recipe = _make_recipe()
         save_job_metadata(
-            "sparkrun_test123", recipe, ["10.0.0.1"],
+            "sparkrun_test123",
+            recipe,
+            ["10.0.0.1"],
             overrides={"port": 9000},
             cache_dir=str(tmp_path),
         )
@@ -264,7 +272,9 @@ class TestSaveJobMetadata:
 
         recipe = _make_recipe()
         save_job_metadata(
-            "sparkrun_test456", recipe, ["10.0.0.1"],
+            "sparkrun_test456",
+            recipe,
+            ["10.0.0.1"],
             overrides={"served_model_name": "my-model"},
             cache_dir=str(tmp_path),
         )
@@ -279,7 +289,9 @@ class TestSaveJobMetadata:
 
         recipe = _make_recipe(defaults={"port": 8080})
         save_job_metadata(
-            "sparkrun_test789", recipe, ["10.0.0.1"],
+            "sparkrun_test789",
+            recipe,
+            ["10.0.0.1"],
             cache_dir=str(tmp_path),
         )
 
@@ -293,7 +305,9 @@ class TestSaveJobMetadata:
 
         recipe = _make_recipe()
         save_job_metadata(
-            "sparkrun_noport", recipe, ["10.0.0.1"],
+            "sparkrun_noport",
+            recipe,
+            ["10.0.0.1"],
             cache_dir=str(tmp_path),
         )
 
@@ -306,6 +320,7 @@ class TestSaveJobMetadata:
 # =====================================================================
 # Tests: Discovery
 # =====================================================================
+
 
 class TestDiscovery:
     """Test endpoint discovery from job metadata."""
@@ -392,9 +407,11 @@ class TestDiscovery:
 
         mock_response = MagicMock()
         mock_response.status = 200
-        mock_response.read.return_value = json.dumps({
-            "data": [{"id": "Qwen/Qwen3-1.7B"}],
-        }).encode()
+        mock_response.read.return_value = json.dumps(
+            {
+                "data": [{"id": "Qwen/Qwen3-1.7B"}],
+            }
+        ).encode()
         mock_response.__enter__ = lambda s: s
         mock_response.__exit__ = MagicMock(return_value=False)
 
@@ -453,6 +470,7 @@ class TestDiscovery:
         }
 
         import time
+
         # Older metadata file
         with open(jobs_dir / "old.yaml", "w") as f:
             yaml.safe_dump(meta_old, f)
@@ -464,9 +482,11 @@ class TestDiscovery:
         cache_dir = str(jobs_dir.parent)
 
         # Mock health checks — both return same models
-        models_response = json.dumps({
-            "data": [{"id": "qwen3.5-35b"}],
-        }).encode()
+        models_response = json.dumps(
+            {
+                "data": [{"id": "qwen3.5-35b"}],
+            }
+        ).encode()
 
         mock_resp = MagicMock()
         mock_resp.status = 200
@@ -513,6 +533,7 @@ class TestDiscovery:
         }
 
         import time
+
         with open(jobs_dir / "stale.yaml", "w") as f:
             yaml.safe_dump(meta_stale, f)
         time.sleep(0.05)
@@ -631,6 +652,7 @@ class TestDiscovery:
 # Tests: ProxyConfig
 # =====================================================================
 
+
 class TestProxyConfig:
     """Test ProxyConfig load/save and alias management."""
 
@@ -691,6 +713,7 @@ class TestProxyConfig:
 # =====================================================================
 # Tests: Engine — config generation
 # =====================================================================
+
 
 class TestEngineConfig:
     """Test litellm config generation."""
@@ -814,6 +837,7 @@ class TestEngineConfig:
 # Tests: Engine — subprocess lifecycle
 # =====================================================================
 
+
 class TestEngineLifecycle:
     """Test ProxyEngine start/stop/is_running."""
 
@@ -848,9 +872,7 @@ class TestEngineLifecycle:
         mock_proc.pid = 12345
         mock_proc.poll.return_value = None  # Process still running
 
-        with patch("shutil.which", return_value="/usr/bin/uvx"), \
-             patch("subprocess.Popen", return_value=mock_proc), \
-             patch("time.sleep"):
+        with patch("shutil.which", return_value="/usr/bin/uvx"), patch("subprocess.Popen", return_value=mock_proc), patch("time.sleep"):
             rc = engine.start(config_path=state_dir / "fake.yaml")
 
         assert rc == 0
@@ -929,6 +951,7 @@ class TestEngineLifecycle:
 # =====================================================================
 # Tests: Engine — management API
 # =====================================================================
+
 
 class TestEngineManagementAPI:
     """Test management API client methods."""
@@ -1051,8 +1074,10 @@ class TestEngineManagementAPI:
         )
 
         # No models registered yet
-        with patch.object(engine, "list_models_via_api", return_value=[]), \
-             patch.object(engine, "add_model_via_api", return_value=True) as mock_add:
+        with (
+            patch.object(engine, "list_models_via_api", return_value=[]),
+            patch.object(engine, "add_model_via_api", return_value=True) as mock_add,
+        ):
             added, removed = engine.sync_models([ep])
 
         assert added == 1
@@ -1074,8 +1099,10 @@ class TestEngineManagementAPI:
         ]
 
         # No healthy endpoints — the old model should be removed
-        with patch.object(engine, "list_models_via_api", return_value=registered), \
-             patch.object(engine, "remove_model_via_api", return_value=True) as mock_rm:
+        with (
+            patch.object(engine, "list_models_via_api", return_value=registered),
+            patch.object(engine, "remove_model_via_api", return_value=True) as mock_rm,
+        ):
             added, removed = engine.sync_models([])
 
         assert added == 0
@@ -1108,9 +1135,11 @@ class TestEngineManagementAPI:
             },
         ]
 
-        with patch.object(engine, "list_models_via_api", return_value=registered), \
-             patch.object(engine, "remove_model_via_api") as mock_rm, \
-             patch.object(engine, "add_model_via_api") as mock_add:
+        with (
+            patch.object(engine, "list_models_via_api", return_value=registered),
+            patch.object(engine, "remove_model_via_api") as mock_rm,
+            patch.object(engine, "add_model_via_api") as mock_add,
+        ):
             added, removed = engine.sync_models([ep])
 
         assert added == 0
@@ -1122,6 +1151,7 @@ class TestEngineManagementAPI:
 # =====================================================================
 # Tests: Engine — alias API
 # =====================================================================
+
 
 class TestEngineAliasAPI:
     """Test API-based alias management methods."""
@@ -1148,14 +1178,17 @@ class TestEngineAliasAPI:
         mock_response.__enter__ = lambda s: s
         mock_response.__exit__ = MagicMock(return_value=False)
 
-        with patch.object(engine, "list_models_via_api", return_value=registered), \
-             patch("urllib.request.urlopen", return_value=mock_response) as mock_urlopen:
+        with (
+            patch.object(engine, "list_models_via_api", return_value=registered),
+            patch("urllib.request.urlopen", return_value=mock_response) as mock_urlopen,
+        ):
             result = engine.add_alias_via_api("my-model", "Qwen/Qwen3-1.7B")
 
         assert result is True
         call_args = mock_urlopen.call_args
         req = call_args[0][0]
         import json
+
         body = json.loads(req.data)
         assert body["model_name"] == "my-model"
         assert body["litellm_params"]["api_base"] == "http://10.0.0.1:8000/v1"
@@ -1190,8 +1223,10 @@ class TestEngineAliasAPI:
             },
         ]
 
-        with patch.object(engine, "list_models_via_api", return_value=registered), \
-             patch.object(engine, "remove_model_via_api", return_value=True) as mock_rm:
+        with (
+            patch.object(engine, "list_models_via_api", return_value=registered),
+            patch.object(engine, "remove_model_via_api", return_value=True) as mock_rm,
+        ):
             removed = engine.remove_alias_via_api("my-model")
 
         assert removed == 1
@@ -1213,8 +1248,10 @@ class TestEngineAliasAPI:
             },
         ]
 
-        with patch.object(engine, "list_models_via_api", return_value=registered), \
-             patch.object(engine, "add_alias_via_api", return_value=True) as mock_add:
+        with (
+            patch.object(engine, "list_models_via_api", return_value=registered),
+            patch.object(engine, "add_alias_via_api", return_value=True) as mock_add,
+        ):
             added, removed = engine.sync_aliases({"my-model": "Qwen/Qwen3-1.7B"})
 
         assert added == 1
@@ -1244,8 +1281,7 @@ class TestEngineAliasAPI:
             },
         ]
 
-        with patch.object(engine, "list_models_via_api", return_value=registered), \
-             patch.object(engine, "add_alias_via_api") as mock_add:
+        with patch.object(engine, "list_models_via_api", return_value=registered), patch.object(engine, "add_alias_via_api") as mock_add:
             added, removed = engine.sync_aliases({"my-model": "Qwen/Qwen3-1.7B"})
 
         assert added == 0
@@ -1256,6 +1292,7 @@ class TestEngineAliasAPI:
 # =====================================================================
 # Tests: launch_inference auto_port (port conflict avoidance)
 # =====================================================================
+
 
 class TestLaunchInferenceAutoPort:
     """Test auto_port behavior in launch_inference (used by proxy load and benchmark)."""
@@ -1290,14 +1327,21 @@ class TestLaunchInferenceAutoPort:
 
         mock_recipe, mock_runtime, mock_config = self._make_mocks()
 
-        with patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={}), \
-             patch("sparkrun.orchestration.primitives.find_available_port", return_value=8000) as mock_fap, \
-             patch("sparkrun.orchestration.job_metadata.generate_cluster_id", return_value="test_id"), \
-             patch("sparkrun.orchestration.job_metadata.save_job_metadata"):
+        with (
+            patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={}),
+            patch("sparkrun.orchestration.primitives.find_available_port", return_value=8000) as mock_fap,
+            patch("sparkrun.orchestration.job_metadata.generate_cluster_id", return_value="test_id"),
+            patch("sparkrun.orchestration.job_metadata.save_job_metadata"),
+        ):
             result = launch_inference(
-                recipe=mock_recipe, runtime=mock_runtime,
-                host_list=["10.0.0.1"], overrides={}, config=mock_config,
-                is_solo=True, auto_port=True, dry_run=True,
+                recipe=mock_recipe,
+                runtime=mock_runtime,
+                host_list=["10.0.0.1"],
+                overrides={},
+                config=mock_config,
+                is_solo=True,
+                auto_port=True,
+                dry_run=True,
             )
 
         assert result.serve_port == 8000
@@ -1309,14 +1353,21 @@ class TestLaunchInferenceAutoPort:
 
         mock_recipe, mock_runtime, mock_config = self._make_mocks()
 
-        with patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={}), \
-             patch("sparkrun.orchestration.primitives.find_available_port", return_value=8002), \
-             patch("sparkrun.orchestration.job_metadata.generate_cluster_id", return_value="test_id"), \
-             patch("sparkrun.orchestration.job_metadata.save_job_metadata"):
+        with (
+            patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={}),
+            patch("sparkrun.orchestration.primitives.find_available_port", return_value=8002),
+            patch("sparkrun.orchestration.job_metadata.generate_cluster_id", return_value="test_id"),
+            patch("sparkrun.orchestration.job_metadata.save_job_metadata"),
+        ):
             result = launch_inference(
-                recipe=mock_recipe, runtime=mock_runtime,
-                host_list=["10.0.0.1"], overrides={}, config=mock_config,
-                is_solo=True, auto_port=True, dry_run=True,
+                recipe=mock_recipe,
+                runtime=mock_runtime,
+                host_list=["10.0.0.1"],
+                overrides={},
+                config=mock_config,
+                is_solo=True,
+                auto_port=True,
+                dry_run=True,
             )
 
         assert result.serve_port == 8002
@@ -1328,14 +1379,21 @@ class TestLaunchInferenceAutoPort:
         mock_recipe, mock_runtime, mock_config = self._make_mocks()
         mock_recipe.build_config_chain.return_value = {"port": 9000}
 
-        with patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={}), \
-             patch("sparkrun.orchestration.primitives.find_available_port", return_value=9000) as mock_fap, \
-             patch("sparkrun.orchestration.job_metadata.generate_cluster_id", return_value="test_id"), \
-             patch("sparkrun.orchestration.job_metadata.save_job_metadata"):
+        with (
+            patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={}),
+            patch("sparkrun.orchestration.primitives.find_available_port", return_value=9000) as mock_fap,
+            patch("sparkrun.orchestration.job_metadata.generate_cluster_id", return_value="test_id"),
+            patch("sparkrun.orchestration.job_metadata.save_job_metadata"),
+        ):
             result = launch_inference(
-                recipe=mock_recipe, runtime=mock_runtime,
-                host_list=["10.0.0.1"], overrides={}, config=mock_config,
-                is_solo=True, auto_port=True, dry_run=True,
+                recipe=mock_recipe,
+                runtime=mock_runtime,
+                host_list=["10.0.0.1"],
+                overrides={},
+                config=mock_config,
+                is_solo=True,
+                auto_port=True,
+                dry_run=True,
             )
 
         assert result.serve_port == 9000
@@ -1348,13 +1406,20 @@ class TestLaunchInferenceAutoPort:
         mock_recipe, mock_runtime, mock_config = self._make_mocks()
         mock_recipe.build_config_chain.return_value = {"port": 9000}
 
-        with patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={}), \
-             patch("sparkrun.orchestration.job_metadata.generate_cluster_id", return_value="test_id"), \
-             patch("sparkrun.orchestration.job_metadata.save_job_metadata"):
+        with (
+            patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={}),
+            patch("sparkrun.orchestration.job_metadata.generate_cluster_id", return_value="test_id"),
+            patch("sparkrun.orchestration.job_metadata.save_job_metadata"),
+        ):
             result = launch_inference(
-                recipe=mock_recipe, runtime=mock_runtime,
-                host_list=["10.0.0.1"], overrides={}, config=mock_config,
-                is_solo=True, auto_port=False, dry_run=True,
+                recipe=mock_recipe,
+                runtime=mock_runtime,
+                host_list=["10.0.0.1"],
+                overrides={},
+                config=mock_config,
+                is_solo=True,
+                auto_port=False,
+                dry_run=True,
             )
 
         assert result.serve_port == 9000
@@ -1365,14 +1430,21 @@ class TestLaunchInferenceAutoPort:
 
         mock_recipe, mock_runtime, mock_config = self._make_mocks()
 
-        with patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={}), \
-             patch("sparkrun.orchestration.primitives.find_available_port", return_value=8000) as mock_fap, \
-             patch("sparkrun.orchestration.job_metadata.generate_cluster_id", return_value="test_id"), \
-             patch("sparkrun.orchestration.job_metadata.save_job_metadata"):
+        with (
+            patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={}),
+            patch("sparkrun.orchestration.primitives.find_available_port", return_value=8000) as mock_fap,
+            patch("sparkrun.orchestration.job_metadata.generate_cluster_id", return_value="test_id"),
+            patch("sparkrun.orchestration.job_metadata.save_job_metadata"),
+        ):
             launch_inference(
-                recipe=mock_recipe, runtime=mock_runtime,
-                host_list=["10.0.0.1"], overrides={}, config=mock_config,
-                is_solo=True, auto_port=True, dry_run=True,
+                recipe=mock_recipe,
+                runtime=mock_runtime,
+                host_list=["10.0.0.1"],
+                overrides={},
+                config=mock_config,
+                is_solo=True,
+                auto_port=True,
+                dry_run=True,
             )
 
         mock_fap.assert_called_once_with("10.0.0.1", 8000, ssh_kwargs={}, dry_run=True)
@@ -1381,6 +1453,7 @@ class TestLaunchInferenceAutoPort:
 # =====================================================================
 # Tests: CLI commands
 # =====================================================================
+
 
 class TestCLI:
     """Test Click CLI commands via CliRunner."""
@@ -1401,8 +1474,10 @@ class TestCLI:
         from sparkrun.cli._proxy import proxy
 
         runner = CliRunner()
-        with patch("sparkrun.proxy.config.ProxyConfig.__init__", return_value=None), \
-             patch("sparkrun.proxy.config.ProxyConfig.list_aliases", return_value=[]):
+        with (
+            patch("sparkrun.proxy.config.ProxyConfig.__init__", return_value=None),
+            patch("sparkrun.proxy.config.ProxyConfig.list_aliases", return_value=[]),
+        ):
             result = runner.invoke(proxy, ["alias", "list"])
 
         assert result.exit_code == 0
@@ -1450,12 +1525,14 @@ class TestCLI:
         ]
 
         runner = CliRunner()
-        with patch("sparkrun.proxy.discovery.discover_endpoints", return_value=endpoints), \
-             patch("sparkrun.proxy.config.ProxyConfig.__init__", return_value=None), \
-             patch("sparkrun.proxy.config.ProxyConfig.port", new_callable=lambda: property(lambda s: 4000)), \
-             patch("sparkrun.proxy.config.ProxyConfig.host", new_callable=lambda: property(lambda s: "0.0.0.0")), \
-             patch("sparkrun.proxy.config.ProxyConfig.master_key", new_callable=lambda: property(lambda s: "sk-test")), \
-             patch("sparkrun.proxy.config.ProxyConfig.aliases", new_callable=lambda: property(lambda s: {})):
+        with (
+            patch("sparkrun.proxy.discovery.discover_endpoints", return_value=endpoints),
+            patch("sparkrun.proxy.config.ProxyConfig.__init__", return_value=None),
+            patch("sparkrun.proxy.config.ProxyConfig.port", new_callable=lambda: property(lambda s: 4000)),
+            patch("sparkrun.proxy.config.ProxyConfig.host", new_callable=lambda: property(lambda s: "0.0.0.0")),
+            patch("sparkrun.proxy.config.ProxyConfig.master_key", new_callable=lambda: property(lambda s: "sk-test")),
+            patch("sparkrun.proxy.config.ProxyConfig.aliases", new_callable=lambda: property(lambda s: {})),
+        ):
             result = runner.invoke(proxy, ["start", "--dry-run"])
 
         assert result.exit_code == 0
@@ -1476,6 +1553,7 @@ class TestCLI:
 # =====================================================================
 # Tests: Auto-discover
 # =====================================================================
+
 
 class TestAutodiscover:
     """Test auto-discovery background process."""

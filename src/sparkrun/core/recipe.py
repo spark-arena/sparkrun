@@ -223,9 +223,9 @@ def resolve_builder(data: dict[str, Any]) -> str:
     runtime_config = data.get("runtime_config") or {}
     runtime = data.get("runtime", "")
     if runtime in ("vllm", "") and (
-            data.get("build_args")
-            or data.get("mods")
-            or (isinstance(runtime_config, dict) and (runtime_config.get("build_args") or runtime_config.get("mods")))
+        data.get("build_args")
+        or data.get("mods")
+        or (isinstance(runtime_config, dict) and (runtime_config.get("build_args") or runtime_config.get("mods")))
     ):
         return "eugr"
     return ""
@@ -274,7 +274,7 @@ def expand_recipe_shortcut(name: str) -> str:
         @spark-arena/UUID  ->  https://spark-arena.com/api/recipes/UUID/raw
     """
     if name.startswith(SPARK_ARENA_PREFIX):
-        recipe_id = name[len(SPARK_ARENA_PREFIX):]
+        recipe_id = name[len(SPARK_ARENA_PREFIX) :]
         return SPARK_ARENA_API_URL % recipe_id
     return name
 
@@ -636,10 +636,10 @@ class Recipe:
         return recipe
 
     def estimate_vram(
-            self,
-            cli_overrides: dict[str, Any] | None = None,
-            auto_detect: bool = True,
-            cache_dir: str | None = None,
+        self,
+        cli_overrides: dict[str, Any] | None = None,
+        auto_detect: bool = True,
+        cache_dir: str | None = None,
     ) -> VRAMEstimate:
         """Estimate VRAM usage for this recipe.
 
@@ -689,7 +689,7 @@ class Recipe:
         # Auto-detect from HF if fields are missing and model is specified
         if auto_detect and self.model:
             needs_detection = (model_vram is None and (not model_dtype or model_params_raw is None)) or (
-                    kv_vram_per_token is None and (not num_layers or not num_kv_heads or not head_dim)
+                kv_vram_per_token is None and (not num_layers or not num_kv_heads or not head_dim)
             )
             if needs_detection:
                 hf_config = fetch_model_config(self.model, revision=self.model_revision, cache_dir=cache_dir)
@@ -928,7 +928,7 @@ class Recipe:
         "cluster_only",
         "metadata",
         "build_args",
-        'mods',
+        "mods",
         "defaults",
         "env",
         "pre_exec",
@@ -1029,9 +1029,9 @@ class Recipe:
         return d
 
     def to_dict(
-            self,
-            overrides: Optional[dict] = None,
-            container_image: Optional[str] = None,
+        self,
+        overrides: Optional[dict] = None,
+        container_image: Optional[str] = None,
     ) -> dict[str, Any]:
         """Convert the recipe to a canonical dictionary.
 
@@ -1067,11 +1067,11 @@ class Recipe:
         return _sort_dict_by_patterns(export_dict, self.EXPORT_KEY_ORDER)
 
     def export(
-            self,
-            path: Optional[str | Path] = None,
-            json: bool = False,
-            overrides: Optional[dict] = None,
-            container_image: Optional[str] = None,
+        self,
+        path: Optional[str | Path] = None,
+        json: bool = False,
+        overrides: Optional[dict] = None,
+        container_image: Optional[str] = None,
     ) -> Optional[str | Path]:
         """Export the recipe as canonical YAML.
 
@@ -1105,10 +1105,10 @@ class Recipe:
 
 
 def find_recipe(
-        name: str,
-        search_paths: list[Path] | None = None,
-        registry_manager: RegistryManager | None = None,
-        local_files: list[Path] | None = None,
+    name: str,
+    search_paths: list[Path] | None = None,
+    registry_manager: RegistryManager | None = None,
+    local_files: list[Path] | None = None,
 ) -> Path:
     """Find a recipe by name across search paths.
 
@@ -1251,10 +1251,10 @@ def recipe_summary(path: Path, registry_name: str | None = None) -> dict[str, An
 
 
 def list_recipes(
-        search_paths: list[Path] | None = None,
-        registry_manager: RegistryManager | None = None,
-        include_hidden: bool = False,
-        local_files: list[Path] | None = None,
+    search_paths: list[Path] | None = None,
+    registry_manager: RegistryManager | None = None,
+    include_hidden: bool = False,
+    local_files: list[Path] | None = None,
 ) -> list[dict[str, Any]]:
     """List all available recipes with name and path."""
     recipes: list[dict[str, Any]] = []
@@ -1300,10 +1300,10 @@ def list_recipes(
 
 
 def filter_recipes(
-        recipes: list[dict[str, Any]],
-        *,
-        runtime: str | None = None,
-        registry: str | None = None,
+    recipes: list[dict[str, Any]],
+    *,
+    runtime: str | None = None,
+    registry: str | None = None,
 ) -> list[dict[str, Any]]:
     """Filter a recipe list by runtime and/or registry.
 
