@@ -245,31 +245,38 @@ def fetch_safetensors_size(
         if cache_dir:
             hub_kwargs["cache_dir"] = _hub_cache(cache_dir)
 
-        # Try 0: lightweight API call — no file download needed
-        try:
-            from huggingface_hub import model_info as _model_info
+        _SAFETENSORS_DTYPE_BYTES: dict[str, int] = {
+            "F64": 8, "F32": 4, "F16": 2, "BF16": 2,
+            "F8_E4M3": 1, "F8_E5M2": 1,
+            "I64": 8, "I32": 4, "I16": 2, "I8": 1, "U8": 1, "BOOL": 1,
+        }
 
-            mi_kwargs: dict[str, Any] = {"repo_id": model_id}
-            if revision:
-                mi_kwargs["revision"] = revision
-            mi = _model_info(**mi_kwargs)
-            if mi.safetensors is not None:
-                _api_dtype_bytes = {
-                    "F64": 8, "F32": 4, "F16": 2, "BF16": 2,
-                    "F8_E4M3": 1, "F8_E5M2": 1,
-                    "I64": 8, "I32": 4, "I16": 2, "I8": 1, "U8": 1, "BOOL": 1,
-                }
-                total_bytes = 0
-                for dtype_name, count in mi.safetensors.parameters.items():
-                    elem_size = _api_dtype_bytes.get(dtype_name, 2)
-                    total_bytes += count * elem_size
-                if total_bytes > 0:
-                    logger.debug("Got %d bytes from model_info API for %s", total_bytes, model_id)
-                    return total_bytes
-        except Exception as e:
-            logger.debug("model_info API failed for %s: %s", model_id, e)
+        def _compute_api_bytes() -> int | None:
+            """Compute total bytes from HF model_info per-dtype param counts."""
+            try:
+                from huggingface_hub import model_info as _model_info
 
-        # Try 1: sharded model with index file
+                mi_kwargs: dict[str, Any] = {"repo_id": model_id}
+                if revision:
+                    mi_kwargs["revision"] = revision
+                mi = _model_info(**mi_kwargs)
+                if mi.safetensors is not None:
+                    total = 0
+                    for dtype_name, count in mi.safetensors.parameters.items():
+                        elem_size = _SAFETENSORS_DTYPE_BYTES.get(dtype_name, 2)
+                        total += count * elem_size
+                    if total > 0:
+                        return total
+            except Exception as e:
+                logger.debug("model_info API failed for %s: %s", model_id, e)
+            return None
+
+        # Try 1: sharded model with index file.
+        # Use the index weight_map to identify model files, then sum
+        # actual file sizes from list_repo_tree (LFS metadata).  This
+        # handles both stale total_size (e.g. copied from pre-quantized)
+        # and repos with extra safetensors (e.g. original/ copies).
+        # Falls back to index total_size if list_repo_tree is unavailable.
         try:
             disable_progress_bars()
             try:
@@ -280,8 +287,36 @@ def fetch_safetensors_size(
                 enable_progress_bars()
             with open(index_path) as f:
                 index = json.load(f)
+
+            # Try to compute actual file sizes from repo tree
+            model_files = set(index.get("weight_map", {}).values())
+            if model_files:
+                try:
+                    from huggingface_hub import list_repo_tree
+
+                    tree_kwargs: dict[str, Any] = {"repo_id": model_id}
+                    if revision:
+                        tree_kwargs["revision"] = revision
+                    file_total = 0
+                    matched = 0
+                    for entry in list_repo_tree(**tree_kwargs):
+                        if hasattr(entry, "rfilename") and entry.rfilename in model_files:
+                            if entry.size and entry.size > 0:
+                                file_total += entry.size
+                                matched += 1
+                    if matched > 0 and file_total > 0:
+                        logger.debug(
+                            "Got %d bytes from file sizes (%d/%d files) for %s",
+                            file_total, matched, len(model_files), model_id,
+                        )
+                        return file_total
+                except Exception as e:
+                    logger.debug("list_repo_tree failed for %s: %s", model_id, e)
+
+            # Fall back to index total_size
             total_size = index.get("metadata", {}).get("total_size")
             if total_size is not None:
+                logger.debug("Using index total_size %d for %s", total_size, model_id)
                 return int(total_size)
         except Exception as e:
             logger.debug("safetensors index failed for %s: %s", model_id, e)
@@ -306,16 +341,12 @@ def fetch_safetensors_size(
                 header = json.loads(f.read(header_size))
 
             total_bytes = 0
-            dtype_sizes = {
-                "F32": 4, "F16": 2, "BF16": 2, "F8_E4M3": 1, "F8_E5M2": 1,
-                "I64": 8, "I32": 4, "I16": 2, "I8": 1, "U8": 1, "BOOL": 1,
-            }
             for key, info in header.items():
                 if key == "__metadata__":
                     continue
                 shape = info.get("shape", [])
                 dtype = info.get("dtype", "")
-                elem_size = dtype_sizes.get(dtype, 2)  # default to 2 bytes
+                elem_size = _SAFETENSORS_DTYPE_BYTES.get(dtype, 2)
                 num_elements = 1
                 for dim in shape:
                     num_elements *= dim
@@ -325,7 +356,13 @@ def fetch_safetensors_size(
         except Exception as e:
             logger.debug("safetensors header parse failed for %s: %s", model_id, e)
 
-        # Try 3: fall back to file size as rough approximation
+        # Try 3: API per-dtype for models without index or header
+        api_bytes = _compute_api_bytes()
+        if api_bytes is not None:
+            logger.debug("Got %d bytes from model_info API for %s", api_bytes, model_id)
+            return api_bytes
+
+        # Try 4: fall back to file size as rough approximation
         try:
             import os
 
