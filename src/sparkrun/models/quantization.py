@@ -234,12 +234,36 @@ def _resolve_compressed_tensors(qc: dict[str, Any]) -> QuantizationInfo:
     Inspects ``config_groups.*.weights`` to derive the actual format/bits.
     The packing format is resolved from multiple locations (first match wins):
     ``weights.strategy``, ``group.format``, top-level ``qc.format``.
+
+    For mixed-precision configs (multiple groups), groups that use a broad
+    catch-all target (e.g. ``"Linear"``) are preferred over groups that
+    target specific layers, since the catch-all typically represents the
+    dominant quantization (e.g. int4 for language weights vs fp8 for a
+    smaller vision encoder).
+
     Falls back to ``"compressed-tensors"`` as method if unrecognizable.
     """
     top_format = str(qc.get("format", "")).lower()
     config_groups = qc.get("config_groups")
     if isinstance(config_groups, dict):
-        for _group_name, group in config_groups.items():
+        # Sort groups so broad catch-all targets (e.g. "Linear") come first.
+        # A group whose targets list contains a short non-dotted name is
+        # likely a catch-all; groups targeting "model.visual.blocks.0.attn.qkv"
+        # are layer-specific.  This ensures mixed-precision configs resolve to
+        # the dominant quantization.
+        def _group_sort_key(item: tuple[str, Any]) -> tuple[int, str]:
+            _name, grp = item
+            if not isinstance(grp, dict):
+                return (1, _name)
+            targets = grp.get("targets", [])
+            has_catchall = any(
+                isinstance(t, str) and "." not in t
+                for t in targets
+            )
+            return (0 if has_catchall else 1, _name)
+
+        sorted_groups = sorted(config_groups.items(), key=_group_sort_key)
+        for _group_name, group in sorted_groups:
             if not isinstance(group, dict):
                 continue
             weights = group.get("weights")
