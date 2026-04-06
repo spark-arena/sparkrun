@@ -19,24 +19,21 @@ if ! command -v uv &>/dev/null; then
     return 1 2>/dev/null || exit 1
 fi
 
-# Create venv if it doesn't exist
-if [ ! -d "$VENV_DIR" ]; then
-    echo "Creating virtual environment at $VENV_DIR ..."
-    if ! uv venv "$VENV_DIR" --python 3.12; then
-        echo "Error: failed to create virtual environment"
-        return 1 2>/dev/null || exit 1
-    fi
+# Sync the environment (creates venv and installs project + dev dependencies)
+echo "Syncing environment with uv ..."
+if ! uv sync; then
+    echo "Error: failed to sync environment"
+    return 1 2>/dev/null || exit 1
 fi
 
 # Activate the venv
 # shellcheck disable=SC1091
 source "$VENV_DIR/bin/activate"
 
-# Install in editable mode with dev extras
-echo "Installing sparkrun in editable mode with dev dependencies ..."
-if ! uv pip install -e "${SCRIPT_DIR}[dev]"; then
-    echo "Error: failed to install sparkrun"
-    return 1 2>/dev/null || exit 1
+# Install pre-commit hooks using uv run
+echo "Installing pre-commit hooks ..."
+if ! uv run pre-commit install; then
+    echo "Warning: failed to install pre-commit hooks"
 fi
 
 echo ""

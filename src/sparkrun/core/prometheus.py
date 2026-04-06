@@ -10,10 +10,10 @@ logger = logging.getLogger(__name__)
 # Matches: metric_name{label="val",label2="val2"} value
 # or:      metric_name value
 _METRIC_RE = re.compile(
-    r'^([a-zA-Z_:][a-zA-Z0-9_:]*)'   # metric name
-    r'(\{[^}]*\})?'                     # optional labels
-    r'\s+'                               # whitespace
-    r'([0-9eE.+\-]+|NaN|Inf|\+Inf|-Inf)' # value
+    r"^([a-zA-Z_:][a-zA-Z0-9_:]*)"  # metric name
+    r"(\{[^}]*\})?"  # optional labels
+    r"\s+"  # whitespace
+    r"([0-9eE.+\-]+|NaN|Inf|\+Inf|-Inf)"  # value
 )
 
 

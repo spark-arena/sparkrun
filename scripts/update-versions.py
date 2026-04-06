@@ -25,11 +25,7 @@ from pathlib import Path
 try:
     import yaml
 except ImportError:
-    sys.exit(
-        "PyYAML is required.  Install it with:\n"
-        "  pip install pyyaml\n"
-        "  uv pip install pyyaml"
-    )
+    sys.exit("PyYAML is required.  Install it with:\n  pip install pyyaml\n  uv pip install pyyaml")
 
 logger = logging.getLogger("update-versions")
 
@@ -37,8 +33,8 @@ logger = logging.getLogger("update-versions")
 # Resolve paths
 # ---------------------------------------------------------------------------
 
-SCRIPT_DIR = Path(__file__).resolve().parent        # scripts/
-PROJECT_ROOT = SCRIPT_DIR.parent                    # oss-sparkrun/
+SCRIPT_DIR = Path(__file__).resolve().parent  # scripts/
+PROJECT_ROOT = SCRIPT_DIR.parent  # oss-sparkrun/
 VERSIONS_YAML = PROJECT_ROOT / "versions.yaml"
 
 # ---------------------------------------------------------------------------
@@ -75,14 +71,10 @@ PROJECT_RULES: dict[str, list[UpdateRule]] = {
 # ---------------------------------------------------------------------------
 
 # Matches: version = "1.2.3"  (with optional surrounding whitespace)
-_RE_PYPROJECT_VERSION = re.compile(
-    r'^(\s*version\s*=\s*")[^"]*(")', re.MULTILINE
-)
+_RE_PYPROJECT_VERSION = re.compile(r'^(\s*version\s*=\s*")[^"]*(")', re.MULTILINE)
 
 # Matches: __version__ = "1.2.3"  (single or double quotes)
-_RE_INIT_VERSION = re.compile(
-    r'''^(\s*__version__\s*=\s*['"])[^'"]*(['"])''', re.MULTILINE
-)
+_RE_INIT_VERSION = re.compile(r"""^(\s*__version__\s*=\s*['"])[^'"]*(['"])""", re.MULTILINE)
 
 
 def _read_text(path: Path) -> str:
@@ -101,7 +93,7 @@ def update_pyproject(path: Path, version: str, dry_run: bool) -> tuple[bool, str
         logger.warning("No version field found in %s", path)
         return False, None
 
-    old = text[m.start(1) + len(m.group(1)):m.end(2) - len(m.group(2))]
+    old = text[m.start(1) + len(m.group(1)) : m.end(2) - len(m.group(2))]
     if old == version:
         return False, old
 
@@ -119,7 +111,7 @@ def update_init_py(path: Path, version: str, dry_run: bool) -> tuple[bool, str |
         logger.warning("No __version__ found in %s", path)
         return False, None
 
-    old = text[m.start(1) + len(m.group(1)):m.end(2) - len(m.group(2))]
+    old = text[m.start(1) + len(m.group(1)) : m.end(2) - len(m.group(2))]
     if old == version:
         return False, old
 
@@ -146,7 +138,10 @@ def update_json_version(path: Path, version: str, dry_run: bool) -> tuple[bool, 
 
 
 def update_marketplace(
-        path: Path, version: str, dry_run: bool, project_dir: str,
+    path: Path,
+    version: str,
+    dry_run: bool,
+    project_dir: str,
 ) -> tuple[bool, str | None]:
     """Update a plugin's version inside a marketplace.json plugins array.
 
@@ -170,7 +165,9 @@ def update_marketplace(
 
     if target is None:
         logger.warning(
-            "No plugin with source containing '%s' in %s", project_dir, path,
+            "No plugin with source containing '%s' in %s",
+            project_dir,
+            path,
         )
         return False, None
 
@@ -198,8 +195,8 @@ STRATEGY_MAP = {
 # ---------------------------------------------------------------------------
 
 _RE_SEMVER = re.compile(
-    r"^\d+\.\d+\.\d+"          # major.minor.patch
-    r"(?:-[0-9A-Za-z.-]+)?"    # optional pre-release
+    r"^\d+\.\d+\.\d+"  # major.minor.patch
+    r"(?:-[0-9A-Za-z.-]+)?"  # optional pre-release
     r"(?:\+[0-9A-Za-z.-]+)?$"  # optional build metadata
 )
 
@@ -245,10 +242,7 @@ def run(*, check: bool = False, verbose: bool = False) -> int:
     for project, target_version in sorted(versions.items()):
         rules = PROJECT_RULES.get(project)
         if rules is None:
-            errors.append(
-                f"'{project}' is in versions.yaml but has no rules in "
-                f"update-versions.py — add an entry to PROJECT_RULES"
-            )
+            errors.append(f"'{project}' is in versions.yaml but has no rules in update-versions.py — add an entry to PROJECT_RULES")
             continue
 
         for rule in rules:
@@ -278,9 +272,7 @@ def run(*, check: bool = False, verbose: bool = False) -> int:
 
     if check:
         if changes:
-            logger.error(
-                "Version drift detected (%d file(s) out of sync):", len(changes)
-            )
+            logger.error("Version drift detected (%d file(s) out of sync):", len(changes))
             for c in changes:
                 logger.error(c)
             return 1
@@ -310,7 +302,8 @@ def main() -> None:
         help="Dry-run: report drift and exit 1 if any file is out of sync",
     )
     parser.add_argument(
-        "--verbose", "-v",
+        "--verbose",
+        "-v",
         action="store_true",
         help="Show every file inspected, not just changes",
     )

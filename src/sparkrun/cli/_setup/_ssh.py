@@ -185,7 +185,11 @@ def _run_ssh_mesh(mesh_hosts, user, cluster_hosts=None, ssh_key=None, discover_i
     # failures early with actionable output instead of opaque errors.
     click.echo("Verifying SSH connectivity to cluster hosts...")
     _verify_results = run_remote_scripts_parallel(
-        cluster_hosts, "true", timeout=10, quiet=True, **ssh_kwargs,
+        cluster_hosts,
+        "true",
+        timeout=10,
+        quiet=True,
+        **ssh_kwargs,
     )
     _failed = [r for r in _verify_results if not r.success]
     if _failed:

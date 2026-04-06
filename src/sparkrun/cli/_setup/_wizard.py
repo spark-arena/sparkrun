@@ -385,8 +385,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                         # Control machine was explicitly listed — keep it.
                         click.echo(
                             "Note: SSH user '%s' differs from local user '%s'. "
-                            "The mesh script will handle cross-user key exchange for %s automatically."
-                            % (user, local_user, self_ip)
+                            "The mesh script will handle cross-user key exchange for %s automatically." % (user, local_user, self_ip)
                         )
                     elif self_ip and self_ip not in seen and not cross_user:
                         mesh_hosts.append(self_ip)
@@ -394,8 +393,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                     elif self_ip and self_ip not in seen and cross_user:
                         click.echo(
                             "Note: Skipping control machine (%s) in mesh — user '%s' differs from "
-                            "local user '%s'. Control→cluster SSH is handled automatically."
-                            % (self_ip, user, local_user)
+                            "local user '%s'. Control→cluster SSH is handled automatically." % (self_ip, user, local_user)
                         )
 
                     ok = _run_ssh_mesh(
@@ -410,8 +408,12 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                     results["ssh"] = "OK" if ok else "failed"
                     if ok and not dry_run and cluster_name:
                         manifest_mgr.record_phase(
-                            cluster_name, user, mesh_hosts, "ssh_mesh",
-                            mesh_hosts=mesh_hosts, cross_user=cross_user,
+                            cluster_name,
+                            user,
+                            mesh_hosts,
+                            "ssh_mesh",
+                            mesh_hosts=mesh_hosts,
+                            cross_user=cross_user,
                         )
                 except Exception as e:
                     results["ssh"] = "failed"
@@ -484,13 +486,15 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                     lr = run_local_script("sudo -n true", dry_run=False)
                     test_results.append(RemoteResult(host=h, returncode=lr.returncode, stdout=lr.stdout, stderr=lr.stderr))
                 if remote_hosts:
-                    test_results.extend(run_remote_scripts_parallel(
-                        remote_hosts,
-                        "sudo -n true",
-                        quiet=True,
-                        timeout=10,
-                        **sudo_ssh_kwargs,
-                    ))
+                    test_results.extend(
+                        run_remote_scripts_parallel(
+                            remote_hosts,
+                            "sudo -n true",
+                            quiet=True,
+                            timeout=10,
+                            **sudo_ssh_kwargs,
+                        )
+                    )
                 if all(r.success for r in test_results):
                     return None
             except Exception:
@@ -546,10 +550,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                     # Determine topology
                     hosts_with_cx7 = {h: d for h, d in detections.items() if d.detected}
                     n_hosts = len(hosts_with_cx7)
-                    has_2_ports = all(
-                        len(_group_interfaces_by_port(d.interfaces)) >= 2
-                        for d in hosts_with_cx7.values()
-                    )
+                    has_2_ports = all(len(_group_interfaces_by_port(d.interfaces)) >= 2 for d in hosts_with_cx7.values())
                     ring_eligible = n_hosts == 3 and has_2_ports
 
                     effective_topology = CX7Topology.SWITCH
@@ -566,7 +567,10 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                         elif topo_choice == "auto":
                             click.echo("  Detecting topology via neighbor discovery...")
                             topology_result = detect_topology(
-                                detections, host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run,
+                                detections,
+                                host_list,
+                                ssh_kwargs=ssh_kwargs,
+                                dry_run=dry_run,
                             )
                             effective_topology = topology_result.topology
                             click.echo("  Detected topology: %s" % effective_topology.value)
@@ -574,7 +578,10 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                         # --yes with ring-eligible: auto-detect
                         click.echo("  Detecting topology via neighbor discovery...")
                         topology_result = detect_topology(
-                            detections, host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run,
+                            detections,
+                            host_list,
+                            ssh_kwargs=ssh_kwargs,
+                            dry_run=dry_run,
                         )
                         effective_topology = topology_result.topology
                         click.echo("  Detected topology: %s" % effective_topology.value)
@@ -584,10 +591,14 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                         if not dry_run:
                             click.echo("  Running topology detection for ring...")
                             topology_result = detect_topology(
-                                detections, host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run,
+                                detections,
+                                host_list,
+                                ssh_kwargs=ssh_kwargs,
+                                dry_run=dry_run,
                             )
                         else:
                             from sparkrun.orchestration.networking import CX7TopologyResult
+
                             topology_result = CX7TopologyResult(topology=CX7Topology.RING)
 
                     click.echo("  Topology: %s" % effective_topology.value)
@@ -644,7 +655,10 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                                 cx7_changed_ips = True
                             if ok_count and not dry_run and cluster_name:
                                 manifest_mgr.record_phase(
-                                    cluster_name, user, host_list, "cx7",
+                                    cluster_name,
+                                    user,
+                                    host_list,
+                                    "cx7",
                                     subnets=[str(s) for s in all_subnets],
                                     cx7_ips=all_cx7_ips,
                                     netplan_file="/etc/netplan/40-cx7.yaml",
@@ -700,8 +714,12 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                 results["ssh_remesh"] = "OK" if ok else "failed"
                 if ok and not dry_run and cluster_name:
                     manifest_mgr.record_phase(
-                        cluster_name, user, mesh_hosts, "ssh_mesh_post_cx7",
-                        mesh_hosts=mesh_hosts, cross_user=cross_user_remesh,
+                        cluster_name,
+                        user,
+                        mesh_hosts,
+                        "ssh_mesh_post_cx7",
+                        mesh_hosts=mesh_hosts,
+                        cross_user=cross_user_remesh,
                     )
             except Exception as e:
                 results["ssh_remesh"] = "failed"
@@ -830,7 +848,10 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                         results["sudoers"] = "installed (fix-permissions, clear-cache)" if not failed_any else "partial"
                         if not dry_run and cluster_name:
                             manifest_mgr.record_phase(
-                                cluster_name, user, host_list, "sudoers",
+                                cluster_name,
+                                user,
+                                host_list,
+                                "sudoers",
                                 files=[
                                     "/etc/sudoers.d/sparkrun-chown-%s" % user,
                                     "/etc/sudoers.d/sparkrun-dropcaches-%s" % user,
@@ -897,12 +918,12 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                         results["earlyoom"] = "installed" if ok_count > 0 else "failed"
                         click.echo("  earlyoom configured on %d/%d host(s)." % (ok_count, len(host_list)))
                         if ok_count and cluster_name:
-                            installed_pkg = any(
-                                "INSTALLING:" in (result_map.get(h) and result_map[h].stdout or "")
-                                for h in host_list
-                            )
+                            installed_pkg = any("INSTALLING:" in (result_map.get(h) and result_map[h].stdout or "") for h in host_list)
                             manifest_mgr.record_phase(
-                                cluster_name, user, host_list, "earlyoom",
+                                cluster_name,
+                                user,
+                                host_list,
+                                "earlyoom",
                                 installed_package=installed_pkg,
                             )
                 except Exception as e:

@@ -21,6 +21,7 @@ from sparkrun.orchestration.ssh import RemoteResult
 # build_hook_context
 # ---------------------------------------------------------------------------
 
+
 class TestBuildHookContext:
     """Tests for build_hook_context()."""
 
@@ -98,6 +99,7 @@ class TestBuildHookContext:
 # render_hook_command
 # ---------------------------------------------------------------------------
 
+
 class TestRenderHookCommand:
     """Tests for render_hook_command()."""
 
@@ -136,6 +138,7 @@ class TestRenderHookCommand:
 # ---------------------------------------------------------------------------
 # render_hook_commands
 # ---------------------------------------------------------------------------
+
 
 class TestRenderHookCommands:
     """Tests for render_hook_commands()."""
@@ -189,6 +192,7 @@ class TestRenderHookCommands:
 # ---------------------------------------------------------------------------
 # run_pre_exec
 # ---------------------------------------------------------------------------
+
 
 class TestRunPreExec:
     """Tests for run_pre_exec()."""
@@ -312,6 +316,7 @@ class TestRunPreExec:
 # run_post_exec
 # ---------------------------------------------------------------------------
 
+
 class TestRunPostExec:
     """Tests for run_post_exec()."""
 
@@ -406,6 +411,7 @@ class TestRunPostExec:
 # ---------------------------------------------------------------------------
 # run_post_commands
 # ---------------------------------------------------------------------------
+
 
 class TestRunPostCommands:
     """Tests for run_post_commands()."""
@@ -510,6 +516,7 @@ class TestRunPostCommands:
 # _run_copy_command — delegated source_host support
 # ---------------------------------------------------------------------------
 
+
 class TestRunCopyCommandDelegated:
     """Tests for _run_copy_command with source_host (delegated mode)."""
 
@@ -523,6 +530,7 @@ class TestRunCopyCommandDelegated:
     def test_copy_source_host_same_as_target(self, mock_run):
         """When source_host == target host, docker cp runs directly (no rsync)."""
         from sparkrun.orchestration.hooks import _run_copy_command
+
         mock_run.return_value = self._make_success()
         cmd = {"copy": "/home/user/mods/patch", "dest": "/workspace/mods/patch", "source_host": "spark-01"}
         _run_copy_command("spark-01", "container1", cmd, ssh_kwargs={})
@@ -536,6 +544,7 @@ class TestRunCopyCommandDelegated:
     def test_copy_source_host_different_from_target(self, mock_run):
         """When source_host != target host, rsync from source then docker cp."""
         from sparkrun.orchestration.hooks import _run_copy_command
+
         mock_run.return_value = self._make_success()
         cmd = {"copy": "/home/user/mods/patch", "dest": "/workspace/mods/patch", "source_host": "head-node"}
         _run_copy_command("worker-node", "container1", cmd, ssh_kwargs={"ssh_user": "user"})
@@ -549,6 +558,7 @@ class TestRunCopyCommandDelegated:
     def test_copy_source_host_with_ssh_key(self, mock_run):
         """rsync ssh options include the SSH key when provided."""
         from sparkrun.orchestration.hooks import _run_copy_command
+
         mock_run.return_value = self._make_success()
         cmd = {"copy": "/mods/patch", "dest": "/workspace/mods/patch", "source_host": "head"}
         _run_copy_command("worker", "container1", cmd, ssh_kwargs={"ssh_user": "u", "ssh_key": "/path/key"})
@@ -559,6 +569,7 @@ class TestRunCopyCommandDelegated:
     def test_copy_source_host_failure_raises(self, mock_run):
         """RuntimeError raised when delegated copy fails."""
         from sparkrun.orchestration.hooks import _run_copy_command
+
         mock_run.return_value = self._make_failure()
         cmd = {"copy": "/mods/patch", "dest": "/workspace/mods/patch", "source_host": "head"}
         with pytest.raises(RuntimeError, match="copy failed"):
@@ -567,6 +578,7 @@ class TestRunCopyCommandDelegated:
     def test_copy_source_host_dry_run(self):
         """In dry_run mode, no SSH calls are made for delegated copy."""
         from sparkrun.orchestration.hooks import _run_copy_command
+
         cmd = {"copy": "/mods/patch", "dest": "/workspace/mods/patch", "source_host": "head"}
         with mock.patch("sparkrun.orchestration.primitives.run_script_on_host") as mock_run:
             _run_copy_command("head", "container1", cmd, ssh_kwargs={}, dry_run=True)

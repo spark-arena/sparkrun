@@ -12,6 +12,7 @@ from sparkrun.runtimes.trtllm import TrtllmRuntime
 
 # --- Basic properties ---
 
+
 def test_runtime_name():
     """TrtllmRuntime.runtime_name == 'trtllm'."""
     runtime = TrtllmRuntime()
@@ -26,39 +27,49 @@ def test_cluster_strategy():
 
 def test_resolve_container_from_recipe():
     """Recipe with container field uses it directly."""
-    recipe = Recipe.from_dict({
-        "name": "test", "model": "nvidia/model",
-        "runtime": "trtllm",
-        "container": "nvcr.io/nvidia/tensorrt-llm/release:1.2.0rc6",
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "nvidia/model",
+            "runtime": "trtllm",
+            "container": "nvcr.io/nvidia/tensorrt-llm/release:1.2.0rc6",
+        }
+    )
     runtime = TrtllmRuntime()
     assert runtime.resolve_container(recipe) == "nvcr.io/nvidia/tensorrt-llm/release:1.2.0rc6"
 
 
 def test_resolve_container_default():
     """Recipe without container falls back to default prefix."""
-    recipe = Recipe.from_dict({
-        "name": "test", "model": "nvidia/model", "runtime": "trtllm",
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "nvidia/model",
+            "runtime": "trtllm",
+        }
+    )
     runtime = TrtllmRuntime()
     assert runtime.resolve_container(recipe) == "nvcr.io/nvidia/tensorrt-llm/release:latest"
 
 
 # --- Command generation ---
 
+
 def test_generate_command_structured():
     """Generates trtllm-serve command with flags from defaults."""
-    recipe = Recipe.from_dict({
-        "name": "test",
-        "model": "nvidia/Qwen3-235B-A22B-FP4",
-        "runtime": "trtllm",
-        "defaults": {
-            "port": 8355,
-            "tensor_parallel": 2,
-            "backend": "pytorch",
-            "max_num_tokens": 32768,
-        },
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "nvidia/Qwen3-235B-A22B-FP4",
+            "runtime": "trtllm",
+            "defaults": {
+                "port": 8355,
+                "tensor_parallel": 2,
+                "backend": "pytorch",
+                "max_num_tokens": 32768,
+            },
+        }
+    )
     runtime = TrtllmRuntime()
 
     cmd = runtime.generate_command(recipe, {}, is_cluster=False)
@@ -71,12 +82,14 @@ def test_generate_command_structured():
 
 def test_generate_command_default_backend():
     """When no backend specified, defaults to pytorch."""
-    recipe = Recipe.from_dict({
-        "name": "test",
-        "model": "nvidia/model",
-        "runtime": "trtllm",
-        "defaults": {"port": 8000},
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "nvidia/model",
+            "runtime": "trtllm",
+            "defaults": {"port": 8000},
+        }
+    )
     runtime = TrtllmRuntime()
 
     cmd = runtime.generate_command(recipe, {}, is_cluster=False)
@@ -85,13 +98,15 @@ def test_generate_command_default_backend():
 
 def test_generate_command_template():
     """Recipe with command template renders it."""
-    recipe = Recipe.from_dict({
-        "name": "test",
-        "model": "nvidia/model",
-        "runtime": "trtllm",
-        "command": "trtllm-serve {model} --port {port} --tp_size {tensor_parallel}",
-        "defaults": {"port": 8355, "tensor_parallel": 2},
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "nvidia/model",
+            "runtime": "trtllm",
+            "command": "trtllm-serve {model} --port {port} --tp_size {tensor_parallel}",
+            "defaults": {"port": 8355, "tensor_parallel": 2},
+        }
+    )
     runtime = TrtllmRuntime()
 
     cmd = runtime.generate_command(recipe, {}, is_cluster=False)
@@ -100,12 +115,14 @@ def test_generate_command_template():
 
 def test_generate_command_overrides():
     """CLI overrides take precedence over recipe defaults."""
-    recipe = Recipe.from_dict({
-        "name": "test",
-        "model": "nvidia/model",
-        "runtime": "trtllm",
-        "defaults": {"port": 8355, "tensor_parallel": 2},
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "nvidia/model",
+            "runtime": "trtllm",
+            "defaults": {"port": 8355, "tensor_parallel": 2},
+        }
+    )
     runtime = TrtllmRuntime()
 
     cmd = runtime.generate_command(recipe, {"port": 9000}, is_cluster=False)
@@ -115,12 +132,14 @@ def test_generate_command_overrides():
 
 def test_generate_command_bool_flags():
     """Boolean flags are handled correctly."""
-    recipe = Recipe.from_dict({
-        "name": "test",
-        "model": "nvidia/model",
-        "runtime": "trtllm",
-        "defaults": {"trust_remote_code": True},
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "nvidia/model",
+            "runtime": "trtllm",
+            "defaults": {"trust_remote_code": True},
+        }
+    )
     runtime = TrtllmRuntime()
 
     cmd = runtime.generate_command(recipe, {}, is_cluster=False)
@@ -129,16 +148,21 @@ def test_generate_command_bool_flags():
 
 def test_generate_command_skip_keys():
     """skip_keys omits specified flags from generated command."""
-    recipe = Recipe.from_dict({
-        "name": "test",
-        "model": "nvidia/model",
-        "runtime": "trtllm",
-        "defaults": {"port": 8355, "tensor_parallel": 2},
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "nvidia/model",
+            "runtime": "trtllm",
+            "defaults": {"port": 8355, "tensor_parallel": 2},
+        }
+    )
     runtime = TrtllmRuntime()
 
     cmd = runtime.generate_command(
-        recipe, {}, is_cluster=False, skip_keys={"port"},
+        recipe,
+        {},
+        is_cluster=False,
+        skip_keys={"port"},
     )
     assert "--port" not in cmd
     assert "--tp_size 2" in cmd
@@ -146,14 +170,17 @@ def test_generate_command_skip_keys():
 
 # --- extra config flag auto-augmentation ---
 
+
 def test_generate_command_appends_extra_config_flag_structured():
     """Structured command auto-appends --extra_llm_api_options when extra config keys present."""
-    recipe = Recipe.from_dict({
-        "name": "test",
-        "model": "nvidia/model",
-        "runtime": "trtllm",
-        "defaults": {"moe_backend": "CUTLASS"},
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "nvidia/model",
+            "runtime": "trtllm",
+            "defaults": {"moe_backend": "CUTLASS"},
+        }
+    )
     runtime = TrtllmRuntime()
     cmd = runtime.generate_command(recipe, {}, is_cluster=False)
     assert "--extra_llm_api_options /tmp/extra-llm-api-config.yml" in cmd
@@ -161,13 +188,15 @@ def test_generate_command_appends_extra_config_flag_structured():
 
 def test_generate_command_appends_extra_config_flag_template():
     """Template command auto-appends --extra_llm_api_options when extra config keys present."""
-    recipe = Recipe.from_dict({
-        "name": "test",
-        "model": "nvidia/model",
-        "runtime": "trtllm",
-        "defaults": {"cuda_graph_padding": True},
-        "command": "trtllm-serve {model} --port 8000",
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "nvidia/model",
+            "runtime": "trtllm",
+            "defaults": {"cuda_graph_padding": True},
+            "command": "trtllm-serve {model} --port 8000",
+        }
+    )
     runtime = TrtllmRuntime()
     cmd = runtime.generate_command(recipe, {}, is_cluster=False)
     assert "--extra_llm_api_options /tmp/extra-llm-api-config.yml" in cmd
@@ -175,13 +204,15 @@ def test_generate_command_appends_extra_config_flag_template():
 
 def test_generate_command_no_duplicate_extra_config_flag():
     """Template already has --extra_llm_api_options → no duplicate."""
-    recipe = Recipe.from_dict({
-        "name": "test",
-        "model": "nvidia/model",
-        "runtime": "trtllm",
-        "defaults": {"moe_backend": "CUTLASS"},
-        "command": "trtllm-serve {model} --extra_llm_api_options /custom/path.yml",
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "nvidia/model",
+            "runtime": "trtllm",
+            "defaults": {"moe_backend": "CUTLASS"},
+            "command": "trtllm-serve {model} --extra_llm_api_options /custom/path.yml",
+        }
+    )
     runtime = TrtllmRuntime()
     cmd = runtime.generate_command(recipe, {}, is_cluster=False)
     assert cmd.count("--extra_llm_api_options") == 1
@@ -190,18 +221,21 @@ def test_generate_command_no_duplicate_extra_config_flag():
 
 def test_generate_command_no_extra_config_flag_when_no_keys():
     """No extra config keys → no --extra_llm_api_options appended."""
-    recipe = Recipe.from_dict({
-        "name": "test",
-        "model": "nvidia/model",
-        "runtime": "trtllm",
-        "defaults": {"port": 8000},
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "nvidia/model",
+            "runtime": "trtllm",
+            "defaults": {"port": 8000},
+        }
+    )
     runtime = TrtllmRuntime()
     cmd = runtime.generate_command(recipe, {}, is_cluster=False)
     assert "--extra_llm_api_options" not in cmd
 
 
 # --- mpirun command ---
+
 
 def test_build_mpirun_command():
     """Verify mpirun wrapping with rsh agent, host list, env passthrough."""
@@ -241,6 +275,7 @@ def test_build_mpirun_command_no_nccl():
 
 # --- rsh wrapper ---
 
+
 def test_generate_rsh_wrapper():
     """Verify case mapping, SSH key path, docker exec invocation."""
     host_ip_map = {
@@ -248,23 +283,25 @@ def test_generate_rsh_wrapper():
         "192.168.1.11": "sparkrun0_node_1",
     }
     wrapper = TrtllmRuntime._generate_rsh_wrapper(
-        host_ip_map, "sparkrun0",
+        host_ip_map,
+        "sparkrun0",
         ssh_key_path="/tmp/.ssh/id_ed25519",
     )
 
     assert "#!/bin/bash" in wrapper
     assert "HOST=$1; shift" in wrapper
-    assert 'case $HOST in' in wrapper
+    assert "case $HOST in" in wrapper
     assert '192.168.1.10) CONTAINER="sparkrun0_node_0"' in wrapper
     assert '192.168.1.11) CONTAINER="sparkrun0_node_1"' in wrapper
-    assert '-i /tmp/.ssh/id_ed25519' in wrapper
+    assert "-i /tmp/.ssh/id_ed25519" in wrapper
     assert 'docker exec "$CONTAINER" "$@"' in wrapper
 
 
 def test_generate_rsh_wrapper_custom_key():
     """Wrapper uses custom SSH key path."""
     wrapper = TrtllmRuntime._generate_rsh_wrapper(
-        {"10.0.0.1": "c0_node_0"}, "c0",
+        {"10.0.0.1": "c0_node_0"},
+        "c0",
         ssh_key_path="/tmp/.ssh/id_rsa",
     )
     assert "-i /tmp/.ssh/id_rsa" in wrapper
@@ -272,19 +309,22 @@ def test_generate_rsh_wrapper_custom_key():
 
 # --- Extra config YAML ---
 
+
 def test_build_extra_config():
     """Verify YAML generation from recipe defaults."""
-    recipe = Recipe.from_dict({
-        "name": "test",
-        "model": "nvidia/model",
-        "runtime": "trtllm",
-        "defaults": {
-            "free_gpu_memory_fraction": 0.9,
-            "kv_cache_dtype": "auto",
-            "cuda_graph_padding": True,
-            "print_iter_log": False,
-        },
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "nvidia/model",
+            "runtime": "trtllm",
+            "defaults": {
+                "free_gpu_memory_fraction": 0.9,
+                "kv_cache_dtype": "auto",
+                "cuda_graph_padding": True,
+                "print_iter_log": False,
+            },
+        }
+    )
     runtime = TrtllmRuntime()
     config_yaml = runtime._build_extra_config(recipe)
 
@@ -298,24 +338,28 @@ def test_build_extra_config():
 
 def test_build_extra_config_empty():
     """Returns None when no extra config keys present."""
-    recipe = Recipe.from_dict({
-        "name": "test",
-        "model": "nvidia/model",
-        "runtime": "trtllm",
-        "defaults": {"port": 8355},
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "nvidia/model",
+            "runtime": "trtllm",
+            "defaults": {"port": 8355},
+        }
+    )
     runtime = TrtllmRuntime()
     assert runtime._build_extra_config(recipe) is None
 
 
 def test_build_extra_config_partial():
     """Only present keys are included."""
-    recipe = Recipe.from_dict({
-        "name": "test",
-        "model": "nvidia/model",
-        "runtime": "trtllm",
-        "defaults": {"free_gpu_memory_fraction": 0.85},
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "nvidia/model",
+            "runtime": "trtllm",
+            "defaults": {"free_gpu_memory_fraction": 0.85},
+        }
+    )
     runtime = TrtllmRuntime()
     config_yaml = runtime._build_extra_config(recipe)
 
@@ -329,12 +373,14 @@ def test_build_extra_config_partial():
 
 def test_build_extra_config_kv_cache_block_reuse():
     """kv_cache_enable_block_reuse maps to kv_cache_config.enable_block_reuse."""
-    recipe = Recipe.from_dict({
-        "name": "test",
-        "model": "nvidia/model",
-        "runtime": "trtllm",
-        "defaults": {"kv_cache_enable_block_reuse": False},
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "nvidia/model",
+            "runtime": "trtllm",
+            "defaults": {"kv_cache_enable_block_reuse": False},
+        }
+    )
     runtime = TrtllmRuntime()
     config_yaml = runtime._build_extra_config(recipe)
 
@@ -345,12 +391,14 @@ def test_build_extra_config_kv_cache_block_reuse():
 
 def test_build_extra_config_cuda_graph_max_batch_size():
     """cuda_graph_max_batch_size maps to cuda_graph_config.max_batch_size."""
-    recipe = Recipe.from_dict({
-        "name": "test",
-        "model": "nvidia/model",
-        "runtime": "trtllm",
-        "defaults": {"cuda_graph_max_batch_size": 32},
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "nvidia/model",
+            "runtime": "trtllm",
+            "defaults": {"cuda_graph_max_batch_size": 32},
+        }
+    )
     runtime = TrtllmRuntime()
     config_yaml = runtime._build_extra_config(recipe)
 
@@ -361,12 +409,14 @@ def test_build_extra_config_cuda_graph_max_batch_size():
 
 def test_build_extra_config_moe_backend():
     """moe_backend maps to moe_config.backend."""
-    recipe = Recipe.from_dict({
-        "name": "test",
-        "model": "nvidia/model",
-        "runtime": "trtllm",
-        "defaults": {"moe_backend": "CUTLASS"},
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "nvidia/model",
+            "runtime": "trtllm",
+            "defaults": {"moe_backend": "CUTLASS"},
+        }
+    )
     runtime = TrtllmRuntime()
     config_yaml = runtime._build_extra_config(recipe)
 
@@ -377,17 +427,19 @@ def test_build_extra_config_moe_backend():
 
 def test_build_extra_config_all_new_keys():
     """All new extra config keys together produce correct YAML."""
-    recipe = Recipe.from_dict({
-        "name": "test",
-        "model": "nvidia/model",
-        "runtime": "trtllm",
-        "defaults": {
-            "kv_cache_enable_block_reuse": False,
-            "cuda_graph_max_batch_size": 32,
-            "cuda_graph_padding": True,
-            "moe_backend": "CUTLASS",
-        },
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "nvidia/model",
+            "runtime": "trtllm",
+            "defaults": {
+                "kv_cache_enable_block_reuse": False,
+                "cuda_graph_max_batch_size": 32,
+                "cuda_graph_padding": True,
+                "moe_backend": "CUTLASS",
+            },
+        }
+    )
     runtime = TrtllmRuntime()
     config_yaml = runtime._build_extra_config(recipe)
 
@@ -402,17 +454,22 @@ def test_build_extra_config_all_new_keys():
 def test_pre_serve_writes_extra_config():
     """_pre_serve writes extra-llm-api-config.yml into containers."""
     from unittest import mock
-    recipe = Recipe.from_dict({
-        "name": "test",
-        "model": "nvidia/model",
-        "runtime": "trtllm",
-        "defaults": {"moe_backend": "CUTLASS"},
-    })
+
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "nvidia/model",
+            "runtime": "trtllm",
+            "defaults": {"moe_backend": "CUTLASS"},
+        }
+    )
     runtime = TrtllmRuntime()
     hosts_containers = [("10.0.0.1", "sparkrun_node_0")]
 
-    with mock.patch("sparkrun.orchestration.ssh.run_remote_command") as mock_cmd, \
-         mock.patch("sparkrun.orchestration.docker.docker_exec_cmd", side_effect=lambda c, cmd: cmd):
+    with (
+        mock.patch("sparkrun.orchestration.ssh.run_remote_command") as mock_cmd,
+        mock.patch("sparkrun.orchestration.docker.docker_exec_cmd", side_effect=lambda c, cmd: cmd),
+    ):
         mock_cmd.return_value = mock.Mock(success=True)
         runtime._pre_serve(hosts_containers, {}, dry_run=False, recipe=recipe)
         mock_cmd.assert_called_once()
@@ -426,12 +483,15 @@ def test_pre_serve_writes_extra_config():
 def test_pre_serve_skips_when_no_extra_config():
     """_pre_serve does not write config when no extra keys are present."""
     from unittest import mock
-    recipe = Recipe.from_dict({
-        "name": "test",
-        "model": "nvidia/model",
-        "runtime": "trtllm",
-        "defaults": {"port": 8000},
-    })
+
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "nvidia/model",
+            "runtime": "trtllm",
+            "defaults": {"port": 8000},
+        }
+    )
     runtime = TrtllmRuntime()
     hosts_containers = [("10.0.0.1", "sparkrun_node_0")]
 
@@ -441,6 +501,7 @@ def test_pre_serve_skips_when_no_extra_config():
 
 
 # --- Environment and Docker opts ---
+
 
 def test_cluster_env():
     """Returns OMPI and NCCL vars."""
@@ -474,6 +535,7 @@ def test_extra_docker_opts_returns_copy():
 
 # --- Volumes ---
 
+
 def test_extra_volumes_with_ssh_dir(tmp_path):
     """Returns SSH key mount when ~/.ssh exists."""
     runtime = TrtllmRuntime()
@@ -499,13 +561,16 @@ def test_extra_volumes_no_ssh_dir(tmp_path):
 
 # --- Validation ---
 
+
 def test_validate_recipe_valid():
     """Valid recipe returns no issues."""
-    recipe = Recipe.from_dict({
-        "name": "test",
-        "model": "nvidia/model",
-        "runtime": "trtllm",
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "nvidia/model",
+            "runtime": "trtllm",
+        }
+    )
     runtime = TrtllmRuntime()
     issues = runtime.validate_recipe(recipe)
     assert issues == []
@@ -513,10 +578,12 @@ def test_validate_recipe_valid():
 
 def test_validate_recipe_no_model():
     """Missing model returns issue."""
-    recipe = Recipe.from_dict({
-        "name": "test",
-        "runtime": "trtllm",
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "runtime": "trtllm",
+        }
+    )
     runtime = TrtllmRuntime()
     issues = runtime.validate_recipe(recipe)
     assert len(issues) == 1
@@ -525,12 +592,14 @@ def test_validate_recipe_no_model():
 
 def test_validate_recipe_multinode_no_ssh(tmp_path):
     """Multi-node recipe warns about missing SSH keys."""
-    recipe = Recipe.from_dict({
-        "name": "test",
-        "model": "nvidia/model",
-        "runtime": "trtllm",
-        "min_nodes": 2,
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "nvidia/model",
+            "runtime": "trtllm",
+            "min_nodes": 2,
+        }
+    )
     runtime = TrtllmRuntime()
 
     with mock.patch("sparkrun.runtimes.trtllm.Path.home", return_value=tmp_path):
@@ -542,12 +611,14 @@ def test_validate_recipe_multinode_no_ssh(tmp_path):
 def test_validate_recipe_multinode_with_ssh(tmp_path):
     """Multi-node recipe with SSH keys returns no SSH warning."""
     (tmp_path / ".ssh").mkdir()
-    recipe = Recipe.from_dict({
-        "name": "test",
-        "model": "nvidia/model",
-        "runtime": "trtllm",
-        "min_nodes": 2,
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "nvidia/model",
+            "runtime": "trtllm",
+            "min_nodes": 2,
+        }
+    )
     runtime = TrtllmRuntime()
 
     with mock.patch("sparkrun.runtimes.trtllm.Path.home", return_value=tmp_path):
@@ -557,6 +628,7 @@ def test_validate_recipe_multinode_with_ssh(tmp_path):
 
 
 # --- Container naming ---
+
 
 def test_head_container_name():
     """Head container uses {cluster_id}_node_0 pattern."""
@@ -572,6 +644,7 @@ def test_cluster_log_mode():
 
 
 # --- Follow logs ---
+
 
 class TestTrtllmFollowLogs:
     """Test TrtllmRuntime.follow_logs()."""
@@ -602,41 +675,49 @@ class TestTrtllmFollowLogs:
 
 # --- Command-hint detection ---
 
+
 def test_command_hint_trtllm_serve():
     """Recipe with 'trtllm-serve' command is detected as trtllm runtime."""
-    recipe = Recipe.from_dict({
-        "name": "test",
-        "model": "nvidia/model",
-        "container": "nvcr.io/nvidia/tensorrt-llm/release:latest",
-        "command": "trtllm-serve nvidia/model --tp_size 2",
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "nvidia/model",
+            "container": "nvcr.io/nvidia/tensorrt-llm/release:latest",
+            "command": "trtllm-serve nvidia/model --tp_size 2",
+        }
+    )
     assert recipe.runtime == "trtllm"
 
 
 def test_command_hint_mpirun_trtllm():
     """Recipe with 'mpirun ... trtllm' command is detected as trtllm runtime."""
-    recipe = Recipe.from_dict({
-        "name": "test",
-        "model": "nvidia/model",
-        "container": "nvcr.io/nvidia/tensorrt-llm/release:latest",
-        "command": "mpirun --allow-run-as-root trtllm-llmapi-launch trtllm-serve nvidia/model",
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "nvidia/model",
+            "container": "nvcr.io/nvidia/tensorrt-llm/release:latest",
+            "command": "mpirun --allow-run-as-root trtllm-llmapi-launch trtllm-serve nvidia/model",
+        }
+    )
     assert recipe.runtime == "trtllm"
 
 
 def test_command_hint_explicit_runtime_not_overridden():
     """Explicit runtime is not overridden by command hints."""
-    recipe = Recipe.from_dict({
-        "name": "test",
-        "model": "nvidia/model",
-        "runtime": "trtllm",
-        "container": "custom:latest",
-        "command": "custom-launcher --model nvidia/model",
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "nvidia/model",
+            "runtime": "trtllm",
+            "container": "custom:latest",
+            "command": "custom-launcher --model nvidia/model",
+        }
+    )
     assert recipe.runtime == "trtllm"
 
 
 # --- Stop cluster ---
+
 
 def test_stop_cluster_delegates_to_native():
     """_stop_cluster delegates to _stop_native_cluster."""
@@ -650,16 +731,20 @@ def test_stop_cluster_delegates_to_native():
         )
         assert rc == 0
         m.assert_called_once_with(
-            ["10.0.0.1", "10.0.0.2"], "spark0",
-            config=None, dry_run=True,
+            ["10.0.0.1", "10.0.0.2"],
+            "spark0",
+            config=None,
+            dry_run=True,
         )
 
 
 # --- Base class extra_docker_opts integration ---
 
+
 def test_base_get_extra_docker_opts_default():
     """Base RuntimePlugin.get_extra_docker_opts() returns empty list."""
     from sparkrun.runtimes.base import RuntimePlugin
+
     runtime = RuntimePlugin()
     assert runtime.get_extra_docker_opts() == []
 

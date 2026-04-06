@@ -124,10 +124,10 @@ def generate_nccl_env(ib_info: dict[str, str], topology: str | None = None) -> d
 
     if ib_info.get("DETECTED_HCA_LIST"):
         env["NCCL_IB_HCA"] = ib_info["DETECTED_HCA_LIST"]
-    if ib_info.get('DETECTED_SOCKET_IFNAME'):  # prefer MGMT/default interface for non-IB HCA adapters since it works for mesh or non-mesh
-        _set_eth_interfaces('DETECTED_SOCKET_IFNAME')
+    if ib_info.get("DETECTED_SOCKET_IFNAME"):  # prefer MGMT/default interface for non-IB HCA adapters since it works for mesh or non-mesh
+        _set_eth_interfaces("DETECTED_SOCKET_IFNAME")
     elif ib_info.get("DETECTED_NET_LIST"):  # fallback to specifying CX7 interfaces
-        _set_eth_interfaces('DETECTED_NET_LIST')
+        _set_eth_interfaces("DETECTED_NET_LIST")
     if ib_info.get("DETECTED_UCX_LIST"):
         env["UCX_NET_DEVICES"] = ib_info["DETECTED_UCX_LIST"]
 
@@ -155,9 +155,9 @@ def extract_ib_ips(ib_info: dict[str, str]) -> list[str]:
 
 
 def validate_ib_connectivity(
-        ib_ip_map: dict[str, str],
-        ssh_kwargs: dict | None = None,
-        dry_run: bool = False,
+    ib_ip_map: dict[str, str],
+    ssh_kwargs: dict | None = None,
+    dry_run: bool = False,
 ) -> dict[str, str]:
     """Validate that the control machine can reach detected IB IPs.
 
@@ -209,10 +209,10 @@ def validate_ib_connectivity(
 
 
 def detect_ib_for_hosts(
-        hosts: list[str],
-        ssh_kwargs: dict | None = None,
-        dry_run: bool = False,
-        topology: str | None = None,
+    hosts: list[str],
+    ssh_kwargs: dict | None = None,
+    dry_run: bool = False,
+    topology: str | None = None,
 ) -> IBDetectionResult:
     """Run IB detection on all hosts and return aggregated results.
 

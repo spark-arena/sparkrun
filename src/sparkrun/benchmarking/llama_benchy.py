@@ -166,7 +166,7 @@ class LlamaBenchyFramework(BenchmarkingPlugin):
         try:
             combos = _len(pp) * _len(tg) * _len(depth) * _len(concurrency)
             return combos * int(runs) if combos > 0 else None
-        except:
+        except Exception:
             return None
 
     def parse_results(self, stdout: str, stderr: str, result_file: str | None = None) -> dict[str, Any]:

@@ -108,8 +108,9 @@ def cluster_create(ctx, name, hosts, hosts_file, description, user, cache_dir, t
     help="CX7 topology (none=remove, direct/switch=switched fabric, ring=3-node mesh/ring)",
 )
 @click.pass_context
-def cluster_update(ctx, name, hosts, hosts_file, add_host, remove_host,
-                   description, user, cache_dir, transfer_mode, transfer_interface, topology):
+def cluster_update(
+    ctx, name, hosts, hosts_file, add_host, remove_host, description, user, cache_dir, transfer_mode, transfer_interface, topology
+):
     """Update an existing cluster.
 
     \b
@@ -148,13 +149,13 @@ def cluster_update(ctx, name, hosts, hosts_file, add_host, remove_host,
 
     has_host_change = host_list is not None or add_host or remove_host
     if (
-            not has_host_change
-            and description is None
-            and not user_provided
-            and not cache_dir_provided
-            and not transfer_mode_provided
-            and not transfer_interface_provided
-            and not topology_provided
+        not has_host_change
+        and description is None
+        and not user_provided
+        and not cache_dir_provided
+        and not transfer_mode_provided
+        and not transfer_interface_provided
+        and not topology_provided
     ):
         click.echo(
             "Error: Nothing to update. Provide --hosts, --hosts-file, --add-host, "
@@ -242,7 +243,7 @@ def cluster_list(ctx, output_json):
         data = []
         for c in clusters:
             entry = c.to_dict()
-            entry["default"] = (c.name == default_name)
+            entry["default"] = c.name == default_name
             data.append(entry)
         print_json(data)
         return
@@ -259,7 +260,7 @@ def cluster_list(ctx, output_json):
         # Break hosts into lines of 2 addresses each
         host_lines = []
         for i in range(0, len(c.hosts), 2):
-            host_lines.append(", ".join(c.hosts[i: i + 2]))
+            host_lines.append(", ".join(c.hosts[i : i + 2]))
         first_hosts = host_lines[0] if host_lines else ""
         click.echo(f"{marker}{c.name:<20} {first_hosts:<40} {desc:<30}")
         for extra in host_lines[1:]:
@@ -288,7 +289,7 @@ def cluster_show(ctx, name, output_json):
 
     if output_json:
         data = c.to_dict()
-        data["default"] = (c.name == default_name)
+        data["default"] = c.name == default_name
         print_json(data)
         return
 
@@ -452,9 +453,7 @@ def cluster_monitor(ctx, hosts, hosts_file, cluster_name, dry_run, interval, sim
             for host in host_list:
                 state = states.get(host)
                 if state is None or state.latest is None:
-                    snapshot["hosts"][host] = (
-                        {"error": state.error} if (state and state.error) else {"connecting": True}
-                    )
+                    snapshot["hosts"][host] = {"error": state.error} if (state and state.error) else {"connecting": True}
                     continue
                 snapshot["hosts"][host] = state.latest
             print_json(snapshot)
@@ -488,6 +487,7 @@ def cluster_monitor(ctx, hosts, hosts_file, cluster_name, dry_run, interval, sim
 
             if backend == "nv-monitor":
                 from sparkrun.core.monitoring import NvMonitorClusterMonitor
+
                 monitor = NvMonitorClusterMonitor(host_list, ssh_kwargs, interval)
             else:
                 monitor = ClusterMonitor(host_list, ssh_kwargs, interval)
@@ -869,12 +869,12 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
         remote_sparkrun = "$HOME/.cache/sparkrun"
 
     check_cmd = (
-                    'sr_dir="%s"; hf_dir="%s"; '
-                    'sr_exists="no"; hf_exists="no"; sr_du="-"; hf_du="-"; '
-                    'if [ -d "$sr_dir" ]; then sr_exists="yes"; sr_du=$(du -sh "$sr_dir" 2>/dev/null | cut -f1); fi; '
-                    'if [ -d "$hf_dir" ]; then hf_exists="yes"; hf_du=$(du -sh "$hf_dir" 2>/dev/null | cut -f1); fi; '
-                    'echo "sr_exists=$sr_exists|sr_du=$sr_du|hf_exists=$hf_exists|hf_du=$hf_du|sr_dir=$sr_dir|hf_dir=$hf_dir"'
-                ) % (remote_sparkrun, remote_hf)
+        'sr_dir="%s"; hf_dir="%s"; '
+        'sr_exists="no"; hf_exists="no"; sr_du="-"; hf_du="-"; '
+        'if [ -d "$sr_dir" ]; then sr_exists="yes"; sr_du=$(du -sh "$sr_dir" 2>/dev/null | cut -f1); fi; '
+        'if [ -d "$hf_dir" ]; then hf_exists="yes"; hf_du=$(du -sh "$hf_dir" 2>/dev/null | cut -f1); fi; '
+        'echo "sr_exists=$sr_exists|sr_du=$sr_du|hf_exists=$hf_exists|hf_du=$hf_du|sr_dir=$sr_dir|hf_dir=$hf_dir"'
+    ) % (remote_sparkrun, remote_hf)
 
     # Query all hosts in parallel
     host_info: dict[str, dict] = {}
@@ -945,8 +945,11 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
                 data["remote"][h] = {"error": info["error"]}
             else:
                 data["remote"][h] = {
-                    "sparkrun_cache": {"path": info.get("sr_dir", "?"), "exists": info.get("sr_exists") == "yes",
-                                       "size": info.get("sr_du", "-")},
+                    "sparkrun_cache": {
+                        "path": info.get("sr_dir", "?"),
+                        "exists": info.get("sr_exists") == "yes",
+                        "size": info.get("sr_du", "-"),
+                    },
                     "hf_cache": {"path": info.get("hf_dir", "?"), "exists": info.get("hf_exists") == "yes", "size": info.get("hf_du", "-")},
                 }
         print_json(data)

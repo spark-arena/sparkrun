@@ -23,12 +23,7 @@ def test_parse_hosts_file_basic(tmp_path: Path):
 def test_parse_hosts_file_with_comments(tmp_path: Path):
     """Lines starting with # are skipped."""
     hosts_file = tmp_path / "hosts.txt"
-    hosts_file.write_text(
-        "# This is a comment\n"
-        "host1\n"
-        "# Another comment\n"
-        "host2\n"
-    )
+    hosts_file.write_text("# This is a comment\nhost1\n# Another comment\nhost2\n")
 
     result = parse_hosts_file(hosts_file)
     assert result == ["host1", "host2"]
@@ -37,11 +32,7 @@ def test_parse_hosts_file_with_comments(tmp_path: Path):
 def test_parse_hosts_file_inline_comments(tmp_path: Path):
     """host # comment strips comment portion."""
     hosts_file = tmp_path / "hosts.txt"
-    hosts_file.write_text(
-        "host1  # production server\n"
-        "host2# dev server\n"
-        "host3\n"
-    )
+    hosts_file.write_text("host1  # production server\nhost2# dev server\nhost3\n")
 
     result = parse_hosts_file(hosts_file)
     assert result == ["host1", "host2", "host3"]
@@ -50,16 +41,7 @@ def test_parse_hosts_file_inline_comments(tmp_path: Path):
 def test_parse_hosts_file_blank_lines(tmp_path: Path):
     """Blank lines are skipped."""
     hosts_file = tmp_path / "hosts.txt"
-    hosts_file.write_text(
-        "\n"
-        "host1\n"
-        "\n"
-        "\n"
-        "host2\n"
-        "   \n"
-        "host3\n"
-        "\n"
-    )
+    hosts_file.write_text("\nhost1\n\n\nhost2\n   \nhost3\n\n")
 
     result = parse_hosts_file(hosts_file)
     assert result == ["host1", "host2", "host3"]
@@ -252,6 +234,7 @@ def test_resolve_hosts_whitespace_only_string_returns_empty():
 # ---------------------------------------------------------------------------
 # is_control_in_cluster
 # ---------------------------------------------------------------------------
+
 
 class TestIsControlInCluster:
     """Tests for is_control_in_cluster() local membership detection."""

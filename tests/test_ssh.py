@@ -288,7 +288,10 @@ def test_run_remote_sudo_script_timeout(mock_run):
     mock_run.side_effect = subprocess.TimeoutExpired(cmd=["ssh"], timeout=60)
 
     result = run_remote_sudo_script(
-        "192.168.1.100", "chown -R user /cache", "password", timeout=60,
+        "192.168.1.100",
+        "chown -R user /cache",
+        "password",
+        timeout=60,
     )
 
     assert not result.success
@@ -306,7 +309,10 @@ def test_run_remote_sudo_script_failure(mock_run):
     mock_run.return_value = mock_proc
 
     result = run_remote_sudo_script(
-        "192.168.1.100", "chown -R user /cache", "wrongpassword", ssh_user="user",
+        "192.168.1.100",
+        "chown -R user /cache",
+        "wrongpassword",
+        ssh_user="user",
     )
 
     assert not result.success
@@ -321,6 +327,7 @@ def test_run_remote_sudo_script_failure(mock_run):
 @patch("sparkrun.orchestration.ssh.subprocess.run")
 def test_detect_sudo_on_hosts_mixed(mock_run):
     """Test detection with mixed NOPASSWD/password hosts."""
+
     def side_effect(cmd, **kwargs):
         proc = MagicMock()
         proc.returncode = 0

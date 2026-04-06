@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from unittest import mock
 
-import pytest
 
 from sparkrun.builders._ghcr import (
     _ghcr_anonymous_token,
@@ -37,8 +35,8 @@ def _mock_resp(data: dict | list | bytes):
 # fetch_build_index
 # ---------------------------------------------------------------------------
 
-class TestFetchBuildIndex:
 
+class TestFetchBuildIndex:
     def test_returns_list_from_network(self):
         entries = [{"tag": "2025032501", "variant": "nightly", "repo_commit": "abc"}]
         body = json.dumps(entries).encode()
@@ -99,7 +97,10 @@ class TestFetchBuildIndex:
 
         with mock.patch("urllib.request.urlopen", return_value=mock_resp):
             result = fetch_build_index(
-                _TEST_URL, cache_dir=tmp_path, cache_name=_TEST_CACHE_NAME, force_refresh=True,
+                _TEST_URL,
+                cache_dir=tmp_path,
+                cache_name=_TEST_CACHE_NAME,
+                force_refresh=True,
             )
         assert result == new
 
@@ -121,8 +122,8 @@ class TestFetchBuildIndex:
 # _ghcr_anonymous_token
 # ---------------------------------------------------------------------------
 
-class TestGhcrAnonymousToken:
 
+class TestGhcrAnonymousToken:
     def test_returns_token_on_success(self):
         with mock.patch("urllib.request.urlopen", return_value=_mock_resp(_TOKEN_RESPONSE)):
             token = _ghcr_anonymous_token("spark-arena/dgx-vllm-eugr-nightly")
@@ -141,8 +142,8 @@ class TestGhcrAnonymousToken:
 # ghcr_list_tags
 # ---------------------------------------------------------------------------
 
-class TestGhcrListTags:
 
+class TestGhcrListTags:
     def test_returns_yyyymmddnn_tags(self):
         """Token is acquired first, then tags are listed with auth."""
         data = {"tags": ["latest", "2025032501", "2025032502", "v1.0", "2025032601"]}
@@ -160,7 +161,6 @@ class TestGhcrListTags:
         """If token acquisition fails, the API call proceeds without auth."""
         data = {"tags": ["2025032501"]}
         # First call (token) fails, second call (tags) succeeds
-        responses = [OSError("token fail"), _mock_resp(data)]
         # _ghcr_anonymous_token catches the exception internally, so we mock it
         with mock.patch("sparkrun.builders._ghcr._ghcr_anonymous_token", return_value=None):
             with mock.patch("urllib.request.urlopen", return_value=_mock_resp(data)):
@@ -172,8 +172,8 @@ class TestGhcrListTags:
 # ghcr_get_labels
 # ---------------------------------------------------------------------------
 
-class TestGhcrGetLabels:
 
+class TestGhcrGetLabels:
     def _mock_urlopen_sequence(self, responses):
         """Create a side_effect that returns different responses per call.
 

@@ -322,7 +322,6 @@ def run_device_code_login() -> str | None:
         try:
             with urlopen(poll_req, timeout=15) as resp:
                 poll_data = json.loads(resp.read())
-                status_code = resp.status
         except HTTPError as e:
             if e.code == 202:
                 # Still pending

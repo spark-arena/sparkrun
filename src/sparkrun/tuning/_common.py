@@ -151,7 +151,7 @@ class BaseTuner:
             # output_dir is always under DEFAULT_CACHE_DIR/<subdir>.
             local_prefix = str(DEFAULT_CACHE_DIR)
             if self.output_dir.startswith(local_prefix):
-                suffix = self.output_dir[len(local_prefix):]
+                suffix = self.output_dir[len(local_prefix) :]
                 return "/home/%s/.cache/sparkrun%s" % (_user, suffix)
             # Fallback: if output_dir doesn't start with DEFAULT_CACHE_DIR
             # (shouldn't happen in normal use), return as-is.

@@ -2,7 +2,6 @@
 
 from unittest.mock import patch
 
-import pytest
 from sparkrun.orchestration.infiniband import (
     generate_ib_detect_script,
     parse_ib_detect_output,
@@ -164,6 +163,7 @@ DETECTED_HCA_LIST=mlx5_0
 # validate_ib_connectivity tests
 # ---------------------------------------------------------------------------
 
+
 class TestValidateIbConnectivity:
     """Tests for validate_ib_connectivity."""
 
@@ -182,15 +182,20 @@ class TestValidateIbConnectivity:
     def test_reachable_returns_original_map(self, mock_cmd):
         """When IB IP is reachable, returns the original map."""
         mock_cmd.return_value = RemoteResult(
-            host="10.0.0.1", returncode=0, stdout="", stderr="",
+            host="10.0.0.1",
+            returncode=0,
+            stdout="",
+            stderr="",
         )
         ib_map = {"spark1": "10.0.0.1", "spark2": "10.0.0.2"}
         result = validate_ib_connectivity(ib_map, ssh_kwargs={"ssh_user": "user"})
 
         assert result == ib_map
         mock_cmd.assert_called_once_with(
-            "10.0.0.1", "true",
-            connect_timeout=5, timeout=10,
+            "10.0.0.1",
+            "true",
+            connect_timeout=5,
+            timeout=10,
             ssh_user="user",
         )
 
@@ -198,8 +203,10 @@ class TestValidateIbConnectivity:
     def test_unreachable_returns_empty(self, mock_cmd):
         """When IB IP is unreachable, returns empty dict (fallback)."""
         mock_cmd.return_value = RemoteResult(
-            host="10.0.0.1", returncode=255,
-            stdout="", stderr="Connection timed out",
+            host="10.0.0.1",
+            returncode=255,
+            stdout="",
+            stderr="Connection timed out",
         )
         ib_map = {"spark1": "10.0.0.1", "spark2": "10.0.0.2"}
         result = validate_ib_connectivity(ib_map)
@@ -210,6 +217,7 @@ class TestValidateIbConnectivity:
 # ---------------------------------------------------------------------------
 # generate_ring_nccl_overrides tests
 # ---------------------------------------------------------------------------
+
 
 def test_ring_nccl_overrides_keys():
     """Ring overrides contain the expected NCCL variables."""
@@ -256,18 +264,26 @@ def test_generate_nccl_env_no_ring_topology():
 # validate_ib_connectivity — ssh_kwargs forwarding
 # ---------------------------------------------------------------------------
 
+
 @patch("sparkrun.orchestration.ssh.run_remote_command")
 def test_ssh_kwargs_passed_through(mock_cmd):
     """SSH kwargs are forwarded to the connectivity check."""
     mock_cmd.return_value = RemoteResult(
-        host="10.0.0.1", returncode=0, stdout="", stderr="",
+        host="10.0.0.1",
+        returncode=0,
+        stdout="",
+        stderr="",
     )
     ssh_kw = {"ssh_user": "drew", "ssh_key": "/path/to/key", "ssh_options": ["-o", "Foo=bar"]}
     ib_map = {"spark1": "10.0.0.1"}
     validate_ib_connectivity(ib_map, ssh_kwargs=ssh_kw)
 
     mock_cmd.assert_called_once_with(
-        "10.0.0.1", "true",
-        connect_timeout=5, timeout=10,
-        ssh_user="drew", ssh_key="/path/to/key", ssh_options=["-o", "Foo=bar"],
+        "10.0.0.1",
+        "true",
+        connect_timeout=5,
+        timeout=10,
+        ssh_user="drew",
+        ssh_key="/path/to/key",
+        ssh_options=["-o", "Foo=bar"],
     )

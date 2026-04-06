@@ -29,13 +29,13 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
         return "vllm"
 
     def generate_command(
-            self,
-            recipe: Recipe,
-            overrides: dict[str, Any],
-            is_cluster: bool,
-            num_nodes: int = 1,
-            head_ip: str | None = None,
-            skip_keys: set[str] | frozenset[str] = frozenset(),
+        self,
+        recipe: Recipe,
+        overrides: dict[str, Any],
+        is_cluster: bool,
+        num_nodes: int = 1,
+        head_ip: str | None = None,
+        skip_keys: set[str] | frozenset[str] = frozenset(),
     ) -> str:
         """Generate the vllm serve command."""
         config = recipe.build_config_chain(overrides)
@@ -65,7 +65,7 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
         return self._build_command(recipe, config, is_cluster, num_nodes, skip_keys=skip_keys)
 
     def _build_command(
-            self, recipe: Recipe, config, is_cluster: bool, num_nodes: int, skip_keys: set[str] | frozenset[str] = frozenset()
+        self, recipe: Recipe, config, is_cluster: bool, num_nodes: int, skip_keys: set[str] | frozenset[str] = frozenset()
     ) -> str:
         """Build the vllm serve command from structured config."""
         parts = ["vllm", "serve", recipe.model]
@@ -114,11 +114,11 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
     # --- Cluster launch / stop ---
 
     def _stop_cluster(
-            self,
-            hosts: list[str],
-            cluster_id: str,
-            config=None,
-            dry_run: bool = False,
+        self,
+        hosts: list[str],
+        cluster_id: str,
+        config=None,
+        dry_run: bool = False,
     ) -> int:
         """Stop a vLLM Ray cluster."""
         from sparkrun.orchestration.primitives import build_ssh_kwargs, cleanup_containers
@@ -137,24 +137,24 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
         return 0
 
     def _run_cluster(
-            self,
-            hosts: list[str],
-            image: str,
-            serve_command: str,
-            recipe=None,
-            overrides=None,
-            *,
-            cluster_id: str = "sparkrun0",
-            env: dict[str, str] | None = None,
-            cache_dir: str | None = None,
-            config=None,
-            dry_run: bool = False,
-            detached: bool = True,
-            nccl_env: dict[str, str] | None = None,
-            ray_port: int = 46379,
-            dashboard_port: int = 8265,
-            dashboard: bool = False,
-            **kwargs,
+        self,
+        hosts: list[str],
+        image: str,
+        serve_command: str,
+        recipe=None,
+        overrides=None,
+        *,
+        cluster_id: str = "sparkrun0",
+        env: dict[str, str] | None = None,
+        cache_dir: str | None = None,
+        config=None,
+        dry_run: bool = False,
+        detached: bool = True,
+        nccl_env: dict[str, str] | None = None,
+        ray_port: int = 46379,
+        dashboard_port: int = 8265,
+        dashboard: bool = False,
+        **kwargs,
     ) -> int:
         """Orchestrate a multi-node Ray cluster for vLLM.
 
@@ -167,8 +167,11 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
         """
         import time
         from sparkrun.runtimes._cluster_ops import (
-            ClusterContext, cleanup_named_containers, resolve_ib_env,
-            find_port, run_pre_serve_hooks,
+            ClusterContext,
+            cleanup_named_containers,
+            resolve_ib_env,
+            find_port,
+            run_pre_serve_hooks,
         )
         from sparkrun.orchestration.primitives import is_valid_ip, wait_for_port
         from sparkrun.orchestration.ssh import run_remote_script, run_remote_scripts_parallel

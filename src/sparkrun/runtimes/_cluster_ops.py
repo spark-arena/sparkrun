@@ -47,16 +47,16 @@ class ClusterContext:
 
     @classmethod
     def build(
-            cls,
-            runtime: RuntimePlugin,
-            hosts: list[str],
-            image: str,
-            cluster_id: str,
-            env: dict[str, str] | None,
-            cache_dir: str | None,
-            config: SparkrunConfig | None,
-            dry_run: bool,
-            topology: str | None = None,
+        cls,
+        runtime: RuntimePlugin,
+        hosts: list[str],
+        image: str,
+        cluster_id: str,
+        env: dict[str, str] | None,
+        cache_dir: str | None,
+        config: SparkrunConfig | None,
+        dry_run: bool,
+        topology: str | None = None,
     ) -> ClusterContext:
         """Build context from runtime hooks and config.
 
@@ -129,16 +129,19 @@ def resolve_ib_env(ctx: ClusterContext, nccl_env: dict[str, str] | None) -> dict
     from sparkrun.orchestration.primitives import resolve_nccl_env
 
     return resolve_nccl_env(
-        nccl_env, ctx.hosts, head_host=ctx.head_host,
-        ssh_kwargs=ctx.ssh_kwargs, dry_run=ctx.dry_run,
+        nccl_env,
+        ctx.hosts,
+        head_host=ctx.head_host,
+        ssh_kwargs=ctx.ssh_kwargs,
+        dry_run=ctx.dry_run,
         topology=ctx.topology,
     )
 
 
 def detect_ib_with_ips(
-        ctx: ClusterContext,
-        nccl_env: dict[str, str] | None,
-        ib_ip_map: dict[str, str] | None,
+    ctx: ClusterContext,
+    nccl_env: dict[str, str] | None,
+    ib_ip_map: dict[str, str] | None,
 ) -> tuple[dict[str, str], dict[str, str]]:
     """Detect IB env and IP map (for runtimes needing IB addresses).
 
@@ -188,11 +191,11 @@ def find_port(ctx: ClusterContext, host: str, preferred: int) -> int:
 
 
 def launch_containers_parallel(
-        ctx: ClusterContext,
-        containers: list[tuple[str, str]],
-        executor: Executor,
-        nccl_env: dict[str, str] | None,
-        extra_docker_opts: list[str] | None = None,
+    ctx: ClusterContext,
+    containers: list[tuple[str, str]],
+    executor: Executor,
+    nccl_env: dict[str, str] | None,
+    extra_docker_opts: list[str] | None = None,
 ) -> int:
     """Launch sleep-infinity containers in parallel.
 
@@ -213,8 +216,12 @@ def launch_containers_parallel(
                 extra_docker_opts=extra_docker_opts,
             )
             future = pool.submit(
-                run_remote_script, host, script,
-                timeout=120, dry_run=ctx.dry_run, **ctx.ssh_kwargs,
+                run_remote_script,
+                host,
+                script,
+                timeout=120,
+                dry_run=ctx.dry_run,
+                **ctx.ssh_kwargs,
             )
             futures[future] = (host, cname)
 
@@ -234,11 +241,11 @@ def launch_containers_parallel(
 
 
 def run_pre_serve_hooks(
-        runtime: RuntimePlugin,
-        ctx: ClusterContext,
-        hosts_containers: list[tuple[str, str]],
-        recipe: Recipe | None,
-        overrides: dict[str, Any] | None,
+    runtime: RuntimePlugin,
+    ctx: ClusterContext,
+    hosts_containers: list[tuple[str, str]],
+    recipe: Recipe | None,
+    overrides: dict[str, Any] | None,
 ) -> None:
     """Build config chain and invoke runtime._pre_serve."""
     config_chain = recipe.build_config_chain(overrides) if recipe else None
@@ -251,13 +258,13 @@ def run_pre_serve_hooks(
 
 
 def exec_serve_on_container(
-        ctx: ClusterContext,
-        executor: Executor,
-        host: str,
-        container_name: str,
-        command: str,
-        *,
-        detached: bool = True,
+    ctx: ClusterContext,
+    executor: Executor,
+    host: str,
+    container_name: str,
+    command: str,
+    *,
+    detached: bool = True,
 ) -> int:
     """Generate and run an exec-serve script on a container.
 
@@ -272,8 +279,11 @@ def exec_serve_on_container(
         detached=detached,
     )
     result = run_remote_script(
-        host, script, timeout=60,
-        dry_run=ctx.dry_run, **ctx.ssh_kwargs,
+        host,
+        script,
+        timeout=60,
+        dry_run=ctx.dry_run,
+        **ctx.ssh_kwargs,
     )
     if not result.success and not ctx.dry_run:
         logger.error("Failed to exec serve on %s (%s): %s", host, container_name, result.stderr[:200])
@@ -303,20 +313,20 @@ def _attach_foreground(runtime: RuntimePlugin, ctx: ClusterContext, follow: bool
 
 
 def run_native_cluster(
-        runtime: RuntimePlugin,
-        ctx: ClusterContext,
-        recipe: Recipe | None = None,
-        overrides: dict[str, Any] | None = None,
-        *,
-        nccl_env: dict[str, str] | None = None,
-        init_port: int = 25000,
-        skip_keys: set[str] | frozenset[str] = frozenset(),
-        banner_title: str = "Native Cluster Launcher",
-        port_label: str = "Init Port",
-        node_label: str = "node",
-        detached: bool = True,
-        follow: bool = True,
-        progress=None,
+    runtime: RuntimePlugin,
+    ctx: ClusterContext,
+    recipe: Recipe | None = None,
+    overrides: dict[str, Any] | None = None,
+    *,
+    nccl_env: dict[str, str] | None = None,
+    init_port: int = 25000,
+    skip_keys: set[str] | frozenset[str] = frozenset(),
+    banner_title: str = "Native Cluster Launcher",
+    port_label: str = "Init Port",
+    node_label: str = "node",
+    detached: bool = True,
+    follow: bool = True,
+    progress=None,
 ) -> int:
     """Orchestrate a multi-node native cluster.
 
@@ -382,8 +392,12 @@ def run_native_cluster(
 
     # Print banner after finalizing ports
     runtime._print_cluster_banner(
-        banner_title, ctx.hosts, ctx.image, ctx.cluster_id,
-        {port_label: init_port}, ctx.dry_run,
+        banner_title,
+        ctx.hosts,
+        ctx.image,
+        ctx.cluster_id,
+        {port_label: init_port},
+        ctx.dry_run,
     )
 
     # Generate per-node commands
@@ -413,7 +427,10 @@ def run_native_cluster(
 
     containers = [(host, cname) for host, _rank, cname in all_nodes]
     rc = launch_containers_parallel(
-        ctx, containers, executor, nccl_env,
+        ctx,
+        containers,
+        executor,
+        nccl_env,
         extra_docker_opts=runtime.get_extra_docker_opts() or None,
     )
     if rc != 0:
@@ -444,8 +461,11 @@ def run_native_cluster(
         detached=True,
     )
     head_result = run_remote_script(
-        ctx.head_host, head_exec_script, timeout=60,
-        dry_run=ctx.dry_run, **ctx.ssh_kwargs,
+        ctx.head_host,
+        head_exec_script,
+        timeout=60,
+        dry_run=ctx.dry_run,
+        **ctx.ssh_kwargs,
     )
     if not head_result.success and not ctx.dry_run:
         logger.error("Failed to exec serve on head node: %s", head_result.stderr[:200])
@@ -458,9 +478,12 @@ def run_native_cluster(
         log_proc = start_log_capture(ctx.head_host, head_container, ctx.ssh_kwargs)
         try:
             ready = wait_for_port(
-                ctx.head_host, init_port,
-                max_retries=60, retry_interval=2,
-                ssh_kwargs=ctx.ssh_kwargs, dry_run=ctx.dry_run,
+                ctx.head_host,
+                init_port,
+                max_retries=60,
+                retry_interval=2,
+                ssh_kwargs=ctx.ssh_kwargs,
+                dry_run=ctx.dry_run,
                 container_name=head_container,
             )
         finally:
@@ -475,7 +498,8 @@ def run_native_cluster(
             else:
                 logger.error(
                     "No logs captured. Check manually: ssh %s 'docker logs %s'",
-                    ctx.head_host, head_container,
+                    ctx.head_host,
+                    head_container,
                 )
             return 1
         logger.info("Step 6/7: Head node ready (%.1fs)", time.monotonic() - t0)
@@ -490,7 +514,8 @@ def run_native_cluster(
         else:
             logger.info(
                 "Step 7/7: Executing serve on %d worker node(s) on %s...",
-                len(ctx.worker_hosts), ", ".join(ctx.worker_hosts),
+                len(ctx.worker_hosts),
+                ", ".join(ctx.worker_hosts),
             )
         with ThreadPoolExecutor(max_workers=len(ctx.worker_hosts)) as pool:
             futures = {}
@@ -513,8 +538,12 @@ def run_native_cluster(
                     detached=True,
                 )
                 future = pool.submit(
-                    run_remote_script, host, worker_exec_script,
-                    timeout=60, dry_run=ctx.dry_run, **ctx.ssh_kwargs,
+                    run_remote_script,
+                    host,
+                    worker_exec_script,
+                    timeout=60,
+                    dry_run=ctx.dry_run,
+                    **ctx.ssh_kwargs,
                 )
                 futures[future] = (host, rank)
 
@@ -524,7 +553,9 @@ def run_native_cluster(
                 if not result.success and not ctx.dry_run:
                     logger.warning(
                         "  Worker rank %d on %s may have failed: %s",
-                        rank, host, result.stderr[:100],
+                        rank,
+                        host,
+                        result.stderr[:100],
                     )
 
         if not progress:

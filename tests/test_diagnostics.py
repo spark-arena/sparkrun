@@ -24,6 +24,7 @@ from sparkrun.orchestration.ssh import RemoteResult
 # NDJSONWriter
 # ---------------------------------------------------------------------------
 
+
 class TestNDJSONWriter:
     def test_emit_creates_valid_ndjson(self, tmp_path: Path):
         path = tmp_path / "out.ndjson"
@@ -109,6 +110,7 @@ class TestNDJSONWriter:
 # spark_collector helpers
 # ---------------------------------------------------------------------------
 
+
 class TestSparkCollectorHelpers:
     def test_extract_keys(self):
         kv = {
@@ -179,6 +181,7 @@ class TestSparkCollectorHelpers:
 # ---------------------------------------------------------------------------
 # collect_spark_diagnostics
 # ---------------------------------------------------------------------------
+
 
 def _make_diag_stdout(host: str = "10.0.0.1") -> str:
     """Build realistic spark_diagnose.sh stdout."""
@@ -411,12 +414,16 @@ class TestCollectSparkDiagnostics:
 # collect_sudo_diagnostics
 # ---------------------------------------------------------------------------
 
+
 class TestCollectSudoDiagnostics:
     @mock.patch("sparkrun.orchestration.sudo.run_sudo_script_on_host")
     @mock.patch("sparkrun.diagnostics.spark_collector.read_script", return_value="#!/bin/bash\necho test")
     def test_sudo_collection(self, mock_script, mock_sudo, tmp_path: Path):
         mock_sudo.return_value = RemoteResult(
-            host="10.0.0.1", returncode=0, stdout=_make_sudo_diag_stdout(), stderr="",
+            host="10.0.0.1",
+            returncode=0,
+            stdout=_make_sudo_diag_stdout(),
+            stderr="",
         )
 
         path = tmp_path / "sudo.ndjson"
@@ -442,7 +449,10 @@ class TestCollectSudoDiagnostics:
     @mock.patch("sparkrun.diagnostics.spark_collector.read_script", return_value="#!/bin/bash\necho test")
     def test_sudo_failure(self, mock_script, mock_sudo, tmp_path: Path):
         mock_sudo.return_value = RemoteResult(
-            host="10.0.0.1", returncode=1, stdout="", stderr="auth failed",
+            host="10.0.0.1",
+            returncode=1,
+            stdout="",
+            stderr="auth failed",
         )
 
         path = tmp_path / "sudo.ndjson"
@@ -463,6 +473,7 @@ class TestCollectSudoDiagnostics:
 # ---------------------------------------------------------------------------
 # collect_config_diagnostics
 # ---------------------------------------------------------------------------
+
 
 class TestCollectConfigDiagnostics:
     def test_config_emitted(self, tmp_path: Path):
@@ -550,7 +561,10 @@ class TestCollectConfigDiagnostics:
         path = tmp_path / "all.ndjson"
         with NDJSONWriter(path) as writer:
             collect_config_diagnostics(
-                writer, config=config, cluster_mgr=cluster_mgr, registry_mgr=registry_mgr,
+                writer,
+                config=config,
+                cluster_mgr=cluster_mgr,
+                registry_mgr=registry_mgr,
             )
 
         lines = path.read_text().strip().splitlines()
@@ -564,6 +578,7 @@ class TestCollectConfigDiagnostics:
 # ---------------------------------------------------------------------------
 # RunDiagnosticsCollector
 # ---------------------------------------------------------------------------
+
 
 class TestRunDiagnosticsCollector:
     @mock.patch("sparkrun.diagnostics.spark_collector.run_remote_scripts_parallel")
@@ -685,7 +700,10 @@ class TestRunDiagnosticsCollector:
     @mock.patch("sparkrun.orchestration.ssh.run_remote_script")
     def test_capture_container_logs(self, mock_remote, tmp_path: Path):
         mock_remote.return_value = RemoteResult(
-            host="10.0.0.1", returncode=0, stdout="log line 1\nlog line 2\n", stderr="",
+            host="10.0.0.1",
+            returncode=0,
+            stdout="log line 1\nlog line 2\n",
+            stderr="",
         )
 
         path = tmp_path / "logs.ndjson"

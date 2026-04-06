@@ -472,16 +472,14 @@ class TestDiscoverHostNetworkIps:
         """Mock IB detection, verify IPs collected."""
         from sparkrun.orchestration.ssh import RemoteResult
 
-        ib_output = (
-            "IB_DETECTED=1\n"
-            "DETECTED_IB_IPS=192.168.11.1,192.168.12.1\n"
-        )
+        ib_output = "IB_DETECTED=1\nDETECTED_IB_IPS=192.168.11.1,192.168.12.1\n"
         mock_results = [
             RemoteResult(host="10.0.0.1", returncode=0, stdout=ib_output, stderr=""),
         ]
 
         with mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel", return_value=mock_results):
             from sparkrun.orchestration.networking import discover_host_network_ips
+
             result = discover_host_network_ips(["10.0.0.1"])
 
         assert "10.0.0.1" in result
@@ -492,16 +490,14 @@ class TestDiscoverHostNetworkIps:
         """127.0.0.1 is excluded from discovered IPs."""
         from sparkrun.orchestration.ssh import RemoteResult
 
-        ib_output = (
-            "IB_DETECTED=1\n"
-            "DETECTED_IB_IPS=127.0.0.1,192.168.11.1\n"
-        )
+        ib_output = "IB_DETECTED=1\nDETECTED_IB_IPS=127.0.0.1,192.168.11.1\n"
         mock_results = [
             RemoteResult(host="10.0.0.1", returncode=0, stdout=ib_output, stderr=""),
         ]
 
         with mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel", return_value=mock_results):
             from sparkrun.orchestration.networking import discover_host_network_ips
+
             result = discover_host_network_ips(["10.0.0.1"])
 
         assert "10.0.0.1" in result
@@ -512,16 +508,14 @@ class TestDiscoverHostNetworkIps:
         """Management IPs already in host list are excluded."""
         from sparkrun.orchestration.ssh import RemoteResult
 
-        ib_output = (
-            "IB_DETECTED=1\n"
-            "DETECTED_IB_IPS=10.0.0.1,192.168.11.1\n"
-        )
+        ib_output = "IB_DETECTED=1\nDETECTED_IB_IPS=10.0.0.1,192.168.11.1\n"
         mock_results = [
             RemoteResult(host="10.0.0.1", returncode=0, stdout=ib_output, stderr=""),
         ]
 
         with mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel", return_value=mock_results):
             from sparkrun.orchestration.networking import discover_host_network_ips
+
             result = discover_host_network_ips(["10.0.0.1"])
 
         assert "10.0.0.1" in result
@@ -537,18 +531,21 @@ class TestDiscoverHostNetworkIps:
 
         with mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel", return_value=mock_results):
             from sparkrun.orchestration.networking import discover_host_network_ips
+
             result = discover_host_network_ips(["10.0.0.1"])
 
         assert result == {}
 
     def test_empty_hosts(self):
         from sparkrun.orchestration.networking import discover_host_network_ips
+
         assert discover_host_network_ips([]) == {}
 
 
 class TestDistributeHostKeysAlias:
     def test_alias(self):
         from sparkrun.orchestration.networking import distribute_cx7_host_keys, distribute_host_keys
+
         assert distribute_cx7_host_keys is distribute_host_keys
 
 
@@ -712,10 +709,14 @@ class TestDetectSwitch:
     def test_switch_detected(self):
         from sparkrun.orchestration.ssh import RemoteResult
 
-        det = _make_detection("h1", "10.0.0.1", [
-            ("enp1", "", "", 1500, "aa:00:00:00:01:01"),
-            ("enp2", "", "", 1500, "aa:00:00:00:01:02"),
-        ])
+        det = _make_detection(
+            "h1",
+            "10.0.0.1",
+            [
+                ("enp1", "", "", 1500, "aa:00:00:00:01:01"),
+                ("enp2", "", "", 1500, "aa:00:00:00:01:02"),
+            ],
+        )
         mock_result = RemoteResult(host="h1", returncode=0, stdout="CX7_SWITCH_DETECTED=1\n", stderr="")
 
         with mock.patch("sparkrun.orchestration.ssh.run_remote_script", return_value=mock_result):
@@ -726,10 +727,14 @@ class TestDetectSwitch:
     def test_no_switch(self):
         from sparkrun.orchestration.ssh import RemoteResult
 
-        det = _make_detection("h1", "10.0.0.1", [
-            ("enp1", "", "", 1500, "aa:00:00:00:01:01"),
-            ("enp2", "", "", 1500, "aa:00:00:00:01:02"),
-        ])
+        det = _make_detection(
+            "h1",
+            "10.0.0.1",
+            [
+                ("enp1", "", "", 1500, "aa:00:00:00:01:01"),
+                ("enp2", "", "", 1500, "aa:00:00:00:01:02"),
+            ],
+        )
         mock_result = RemoteResult(host="h1", returncode=0, stdout="CX7_SWITCH_DETECTED=0\n", stderr="")
 
         with mock.patch("sparkrun.orchestration.ssh.run_remote_script", return_value=mock_result):
@@ -740,9 +745,13 @@ class TestDetectSwitch:
     def test_tcpdump_unavailable(self):
         from sparkrun.orchestration.ssh import RemoteResult
 
-        det = _make_detection("h1", "10.0.0.1", [
-            ("enp1", "", "", 1500, "aa:00:00:00:01:01"),
-        ])
+        det = _make_detection(
+            "h1",
+            "10.0.0.1",
+            [
+                ("enp1", "", "", 1500, "aa:00:00:00:01:01"),
+            ],
+        )
         mock_result = RemoteResult(host="h1", returncode=0, stdout="CX7_SWITCH_DETECTED=-1\n", stderr="")
 
         with mock.patch("sparkrun.orchestration.ssh.run_remote_script", return_value=mock_result):
@@ -751,9 +760,13 @@ class TestDetectSwitch:
         assert result is None
 
     def test_dry_run(self):
-        det = _make_detection("h1", "10.0.0.1", [
-            ("enp1", "", "", 1500, "aa:00:00:00:01:01"),
-        ])
+        det = _make_detection(
+            "h1",
+            "10.0.0.1",
+            [
+                ("enp1", "", "", 1500, "aa:00:00:00:01:01"),
+            ],
+        )
         result = detect_switch({"h1": det}, ["h1"], dry_run=True)
         assert result is None
 
@@ -763,18 +776,27 @@ class TestDetectSwitch:
 
     def test_no_sudo_skips(self):
         """Without passwordless sudo, switch detection is skipped."""
-        det = _make_detection("h1", "10.0.0.1", [
-            ("enp1", "", "", 1500, "aa:00:00:00:01:01"),
-        ], sudo_ok=False)
+        det = _make_detection(
+            "h1",
+            "10.0.0.1",
+            [
+                ("enp1", "", "", 1500, "aa:00:00:00:01:01"),
+            ],
+            sudo_ok=False,
+        )
         result = detect_switch({"h1": det}, ["h1"])
         assert result is None
 
     def test_ssh_failure(self):
         from sparkrun.orchestration.ssh import RemoteResult
 
-        det = _make_detection("h1", "10.0.0.1", [
-            ("enp1", "", "", 1500, "aa:00:00:00:01:01"),
-        ])
+        det = _make_detection(
+            "h1",
+            "10.0.0.1",
+            [
+                ("enp1", "", "", 1500, "aa:00:00:00:01:01"),
+            ],
+        )
         mock_result = RemoteResult(host="h1", returncode=1, stdout="", stderr="connection refused")
 
         with mock.patch("sparkrun.orchestration.ssh.run_remote_script", return_value=mock_result):
@@ -860,44 +882,68 @@ class TestPlanRingCX7:
         """
         if configured:
             return {
-                "h1": _make_detection("h1", "10.0.0.1", [
-                    ("enp1s0f0np0", "192.168.177.11", "192.168.177.0/24", mtu, "aa:00:00:00:01:01"),
-                    ("enP2p1s0f0np0", "192.168.178.11", "192.168.178.0/24", mtu, "aa:00:00:00:01:02"),
-                    ("enp1s0f1np1", "192.168.187.11", "192.168.187.0/24", mtu, "aa:00:00:00:01:03"),
-                    ("enP2p1s0f1np1", "192.168.188.11", "192.168.188.0/24", mtu, "aa:00:00:00:01:04"),
-                ]),
-                "h2": _make_detection("h2", "10.0.0.2", [
-                    ("enp1s0f0np0", "192.168.197.12", "192.168.197.0/24", mtu, "aa:00:00:00:02:01"),
-                    ("enP2p1s0f0np0", "192.168.198.12", "192.168.198.0/24", mtu, "aa:00:00:00:02:02"),
-                    ("enp1s0f1np1", "192.168.177.12", "192.168.177.0/24", mtu, "aa:00:00:00:02:03"),
-                    ("enP2p1s0f1np1", "192.168.178.12", "192.168.178.0/24", mtu, "aa:00:00:00:02:04"),
-                ]),
-                "h3": _make_detection("h3", "10.0.0.3", [
-                    ("enp1s0f0np0", "192.168.187.13", "192.168.187.0/24", mtu, "aa:00:00:00:03:01"),
-                    ("enP2p1s0f0np0", "192.168.188.13", "192.168.188.0/24", mtu, "aa:00:00:00:03:02"),
-                    ("enp1s0f1np1", "192.168.197.13", "192.168.197.0/24", mtu, "aa:00:00:00:03:03"),
-                    ("enP2p1s0f1np1", "192.168.198.13", "192.168.198.0/24", mtu, "aa:00:00:00:03:04"),
-                ]),
+                "h1": _make_detection(
+                    "h1",
+                    "10.0.0.1",
+                    [
+                        ("enp1s0f0np0", "192.168.177.11", "192.168.177.0/24", mtu, "aa:00:00:00:01:01"),
+                        ("enP2p1s0f0np0", "192.168.178.11", "192.168.178.0/24", mtu, "aa:00:00:00:01:02"),
+                        ("enp1s0f1np1", "192.168.187.11", "192.168.187.0/24", mtu, "aa:00:00:00:01:03"),
+                        ("enP2p1s0f1np1", "192.168.188.11", "192.168.188.0/24", mtu, "aa:00:00:00:01:04"),
+                    ],
+                ),
+                "h2": _make_detection(
+                    "h2",
+                    "10.0.0.2",
+                    [
+                        ("enp1s0f0np0", "192.168.197.12", "192.168.197.0/24", mtu, "aa:00:00:00:02:01"),
+                        ("enP2p1s0f0np0", "192.168.198.12", "192.168.198.0/24", mtu, "aa:00:00:00:02:02"),
+                        ("enp1s0f1np1", "192.168.177.12", "192.168.177.0/24", mtu, "aa:00:00:00:02:03"),
+                        ("enP2p1s0f1np1", "192.168.178.12", "192.168.178.0/24", mtu, "aa:00:00:00:02:04"),
+                    ],
+                ),
+                "h3": _make_detection(
+                    "h3",
+                    "10.0.0.3",
+                    [
+                        ("enp1s0f0np0", "192.168.187.13", "192.168.187.0/24", mtu, "aa:00:00:00:03:01"),
+                        ("enP2p1s0f0np0", "192.168.188.13", "192.168.188.0/24", mtu, "aa:00:00:00:03:02"),
+                        ("enp1s0f1np1", "192.168.197.13", "192.168.197.0/24", mtu, "aa:00:00:00:03:03"),
+                        ("enP2p1s0f1np1", "192.168.198.13", "192.168.198.0/24", mtu, "aa:00:00:00:03:04"),
+                    ],
+                ),
             }
         return {
-            "h1": _make_detection("h1", "10.0.0.1", [
-                ("enp1s0f0np0", "", "", mtu, "aa:00:00:00:01:01"),
-                ("enP2p1s0f0np0", "", "", mtu, "aa:00:00:00:01:02"),
-                ("enp1s0f1np1", "", "", mtu, "aa:00:00:00:01:03"),
-                ("enP2p1s0f1np1", "", "", mtu, "aa:00:00:00:01:04"),
-            ]),
-            "h2": _make_detection("h2", "10.0.0.2", [
-                ("enp1s0f0np0", "", "", mtu, "aa:00:00:00:02:01"),
-                ("enP2p1s0f0np0", "", "", mtu, "aa:00:00:00:02:02"),
-                ("enp1s0f1np1", "", "", mtu, "aa:00:00:00:02:03"),
-                ("enP2p1s0f1np1", "", "", mtu, "aa:00:00:00:02:04"),
-            ]),
-            "h3": _make_detection("h3", "10.0.0.3", [
-                ("enp1s0f0np0", "", "", mtu, "aa:00:00:00:03:01"),
-                ("enP2p1s0f0np0", "", "", mtu, "aa:00:00:00:03:02"),
-                ("enp1s0f1np1", "", "", mtu, "aa:00:00:00:03:03"),
-                ("enP2p1s0f1np1", "", "", mtu, "aa:00:00:00:03:04"),
-            ]),
+            "h1": _make_detection(
+                "h1",
+                "10.0.0.1",
+                [
+                    ("enp1s0f0np0", "", "", mtu, "aa:00:00:00:01:01"),
+                    ("enP2p1s0f0np0", "", "", mtu, "aa:00:00:00:01:02"),
+                    ("enp1s0f1np1", "", "", mtu, "aa:00:00:00:01:03"),
+                    ("enP2p1s0f1np1", "", "", mtu, "aa:00:00:00:01:04"),
+                ],
+            ),
+            "h2": _make_detection(
+                "h2",
+                "10.0.0.2",
+                [
+                    ("enp1s0f0np0", "", "", mtu, "aa:00:00:00:02:01"),
+                    ("enP2p1s0f0np0", "", "", mtu, "aa:00:00:00:02:02"),
+                    ("enp1s0f1np1", "", "", mtu, "aa:00:00:00:02:03"),
+                    ("enP2p1s0f1np1", "", "", mtu, "aa:00:00:00:02:04"),
+                ],
+            ),
+            "h3": _make_detection(
+                "h3",
+                "10.0.0.3",
+                [
+                    ("enp1s0f0np0", "", "", mtu, "aa:00:00:00:03:01"),
+                    ("enP2p1s0f0np0", "", "", mtu, "aa:00:00:00:03:02"),
+                    ("enp1s0f1np1", "", "", mtu, "aa:00:00:00:03:03"),
+                    ("enP2p1s0f1np1", "", "", mtu, "aa:00:00:00:03:04"),
+                ],
+            ),
         }
 
     def _make_ring_topology(self):
@@ -957,25 +1003,37 @@ class TestPlanRingCX7:
     def test_ring_plan_invalid_mixed_subnets(self):
         """Port groups don't match across cable — subnet mismatch on a link."""
         detections = {
-            "h1": _make_detection("h1", "10.0.0.1", [
-                ("enp1s0f0np0", "192.168.177.11", "192.168.177.0/24", 9000, "aa:00:00:00:01:01"),
-                ("enP2p1s0f0np0", "192.168.178.11", "192.168.178.0/24", 9000, "aa:00:00:00:01:02"),
-                ("enp1s0f1np1", "192.168.187.11", "192.168.187.0/24", 9000, "aa:00:00:00:01:03"),
-                ("enP2p1s0f1np1", "192.168.188.11", "192.168.188.0/24", 9000, "aa:00:00:00:01:04"),
-            ]),
-            "h2": _make_detection("h2", "10.0.0.2", [
-                ("enp1s0f0np0", "192.168.197.12", "192.168.197.0/24", 9000, "aa:00:00:00:02:01"),
-                ("enP2p1s0f0np0", "192.168.198.12", "192.168.198.0/24", 9000, "aa:00:00:00:02:02"),
-                # Wrong! port1 uses {177, 199} instead of {177, 178}
-                ("enp1s0f1np1", "192.168.177.12", "192.168.177.0/24", 9000, "aa:00:00:00:02:03"),
-                ("enP2p1s0f1np1", "192.168.199.12", "192.168.199.0/24", 9000, "aa:00:00:00:02:04"),
-            ]),
-            "h3": _make_detection("h3", "10.0.0.3", [
-                ("enp1s0f0np0", "192.168.187.13", "192.168.187.0/24", 9000, "aa:00:00:00:03:01"),
-                ("enP2p1s0f0np0", "192.168.188.13", "192.168.188.0/24", 9000, "aa:00:00:00:03:02"),
-                ("enp1s0f1np1", "192.168.197.13", "192.168.197.0/24", 9000, "aa:00:00:00:03:03"),
-                ("enP2p1s0f1np1", "192.168.198.13", "192.168.198.0/24", 9000, "aa:00:00:00:03:04"),
-            ]),
+            "h1": _make_detection(
+                "h1",
+                "10.0.0.1",
+                [
+                    ("enp1s0f0np0", "192.168.177.11", "192.168.177.0/24", 9000, "aa:00:00:00:01:01"),
+                    ("enP2p1s0f0np0", "192.168.178.11", "192.168.178.0/24", 9000, "aa:00:00:00:01:02"),
+                    ("enp1s0f1np1", "192.168.187.11", "192.168.187.0/24", 9000, "aa:00:00:00:01:03"),
+                    ("enP2p1s0f1np1", "192.168.188.11", "192.168.188.0/24", 9000, "aa:00:00:00:01:04"),
+                ],
+            ),
+            "h2": _make_detection(
+                "h2",
+                "10.0.0.2",
+                [
+                    ("enp1s0f0np0", "192.168.197.12", "192.168.197.0/24", 9000, "aa:00:00:00:02:01"),
+                    ("enP2p1s0f0np0", "192.168.198.12", "192.168.198.0/24", 9000, "aa:00:00:00:02:02"),
+                    # Wrong! port1 uses {177, 199} instead of {177, 178}
+                    ("enp1s0f1np1", "192.168.177.12", "192.168.177.0/24", 9000, "aa:00:00:00:02:03"),
+                    ("enP2p1s0f1np1", "192.168.199.12", "192.168.199.0/24", 9000, "aa:00:00:00:02:04"),
+                ],
+            ),
+            "h3": _make_detection(
+                "h3",
+                "10.0.0.3",
+                [
+                    ("enp1s0f0np0", "192.168.187.13", "192.168.187.0/24", 9000, "aa:00:00:00:03:01"),
+                    ("enP2p1s0f0np0", "192.168.188.13", "192.168.188.0/24", 9000, "aa:00:00:00:03:02"),
+                    ("enp1s0f1np1", "192.168.197.13", "192.168.197.0/24", 9000, "aa:00:00:00:03:03"),
+                    ("enP2p1s0f1np1", "192.168.198.13", "192.168.198.0/24", 9000, "aa:00:00:00:03:04"),
+                ],
+            ),
         }
         topo = self._make_ring_topology()
 
@@ -999,30 +1057,42 @@ class TestPlanRingCX7:
         cable endpoints don't share matching subnet pairs.
         """
         detections = {
-            "h1": _make_detection("h1", "10.0.0.1", [
-                # port0: {177, 178} — correct
-                ("enp1s0f0np0", "192.168.177.11", "192.168.177.0/24", 9000, "aa:00:00:00:01:01"),
-                ("enP2p1s0f0np0", "192.168.178.11", "192.168.178.0/24", 9000, "aa:00:00:00:01:02"),
-                # port1: {187, 188} — correct
-                ("enp1s0f1np1", "192.168.187.11", "192.168.187.0/24", 9000, "aa:00:00:00:01:03"),
-                ("enP2p1s0f1np1", "192.168.188.11", "192.168.188.0/24", 9000, "aa:00:00:00:01:04"),
-            ]),
-            "h2": _make_detection("h2", "10.0.0.2", [
-                # port0: {197, 198} — correct
-                ("enp1s0f0np0", "192.168.197.12", "192.168.197.0/24", 9000, "aa:00:00:00:02:01"),
-                ("enP2p1s0f0np0", "192.168.198.12", "192.168.198.0/24", 9000, "aa:00:00:00:02:02"),
-                # port1: {187, 188} — WRONG! should be {177, 178} to match h1.port0
-                ("enp1s0f1np1", "192.168.187.12", "192.168.187.0/24", 9000, "aa:00:00:00:02:03"),
-                ("enP2p1s0f1np1", "192.168.188.12", "192.168.188.0/24", 9000, "aa:00:00:00:02:04"),
-            ]),
-            "h3": _make_detection("h3", "10.0.0.3", [
-                # port0: {177, 178} — WRONG! should be {187, 188} to match h1.port1
-                ("enp1s0f0np0", "192.168.177.13", "192.168.177.0/24", 9000, "aa:00:00:00:03:01"),
-                ("enP2p1s0f0np0", "192.168.178.13", "192.168.178.0/24", 9000, "aa:00:00:00:03:02"),
-                # port1: {197, 198} — correct
-                ("enp1s0f1np1", "192.168.197.13", "192.168.197.0/24", 9000, "aa:00:00:00:03:03"),
-                ("enP2p1s0f1np1", "192.168.198.13", "192.168.198.0/24", 9000, "aa:00:00:00:03:04"),
-            ]),
+            "h1": _make_detection(
+                "h1",
+                "10.0.0.1",
+                [
+                    # port0: {177, 178} — correct
+                    ("enp1s0f0np0", "192.168.177.11", "192.168.177.0/24", 9000, "aa:00:00:00:01:01"),
+                    ("enP2p1s0f0np0", "192.168.178.11", "192.168.178.0/24", 9000, "aa:00:00:00:01:02"),
+                    # port1: {187, 188} — correct
+                    ("enp1s0f1np1", "192.168.187.11", "192.168.187.0/24", 9000, "aa:00:00:00:01:03"),
+                    ("enP2p1s0f1np1", "192.168.188.11", "192.168.188.0/24", 9000, "aa:00:00:00:01:04"),
+                ],
+            ),
+            "h2": _make_detection(
+                "h2",
+                "10.0.0.2",
+                [
+                    # port0: {197, 198} — correct
+                    ("enp1s0f0np0", "192.168.197.12", "192.168.197.0/24", 9000, "aa:00:00:00:02:01"),
+                    ("enP2p1s0f0np0", "192.168.198.12", "192.168.198.0/24", 9000, "aa:00:00:00:02:02"),
+                    # port1: {187, 188} — WRONG! should be {177, 178} to match h1.port0
+                    ("enp1s0f1np1", "192.168.187.12", "192.168.187.0/24", 9000, "aa:00:00:00:02:03"),
+                    ("enP2p1s0f1np1", "192.168.188.12", "192.168.188.0/24", 9000, "aa:00:00:00:02:04"),
+                ],
+            ),
+            "h3": _make_detection(
+                "h3",
+                "10.0.0.3",
+                [
+                    # port0: {177, 178} — WRONG! should be {187, 188} to match h1.port1
+                    ("enp1s0f0np0", "192.168.177.13", "192.168.177.0/24", 9000, "aa:00:00:00:03:01"),
+                    ("enP2p1s0f0np0", "192.168.178.13", "192.168.178.0/24", 9000, "aa:00:00:00:03:02"),
+                    # port1: {197, 198} — correct
+                    ("enp1s0f1np1", "192.168.197.13", "192.168.197.0/24", 9000, "aa:00:00:00:03:03"),
+                    ("enP2p1s0f1np1", "192.168.198.13", "192.168.198.0/24", 9000, "aa:00:00:00:03:04"),
+                ],
+            ),
         }
         topo = self._make_ring_topology()
 
@@ -1068,18 +1138,30 @@ class TestPlanRingCX7:
     def test_ring_plan_insufficient_ports(self):
         """Hosts with only 1 port (2 interfaces) can't do ring."""
         detections = {
-            "h1": _make_detection("h1", "10.0.0.1", [
-                ("enp1s0f0np0", "", "", 1500, "aa:00:00:00:01:01"),
-                ("enP2p1s0f0np0", "", "", 1500, "aa:00:00:00:01:02"),
-            ]),
-            "h2": _make_detection("h2", "10.0.0.2", [
-                ("enp1s0f0np0", "", "", 1500, "aa:00:00:00:02:01"),
-                ("enP2p1s0f0np0", "", "", 1500, "aa:00:00:00:02:02"),
-            ]),
-            "h3": _make_detection("h3", "10.0.0.3", [
-                ("enp1s0f0np0", "", "", 1500, "aa:00:00:00:03:01"),
-                ("enP2p1s0f0np0", "", "", 1500, "aa:00:00:00:03:02"),
-            ]),
+            "h1": _make_detection(
+                "h1",
+                "10.0.0.1",
+                [
+                    ("enp1s0f0np0", "", "", 1500, "aa:00:00:00:01:01"),
+                    ("enP2p1s0f0np0", "", "", 1500, "aa:00:00:00:01:02"),
+                ],
+            ),
+            "h2": _make_detection(
+                "h2",
+                "10.0.0.2",
+                [
+                    ("enp1s0f0np0", "", "", 1500, "aa:00:00:00:02:01"),
+                    ("enP2p1s0f0np0", "", "", 1500, "aa:00:00:00:02:02"),
+                ],
+            ),
+            "h3": _make_detection(
+                "h3",
+                "10.0.0.3",
+                [
+                    ("enp1s0f0np0", "", "", 1500, "aa:00:00:00:03:01"),
+                    ("enP2p1s0f0np0", "", "", 1500, "aa:00:00:00:03:02"),
+                ],
+            ),
         }
         topo = CX7TopologyResult(topology=CX7Topology.RING, links=[])
         subnets = [ipaddress.IPv4Network("192.168.%d.0/24" % i) for i in range(10, 16)]
@@ -1090,14 +1172,22 @@ class TestPlanRingCX7:
 
     def test_ring_plan_wrong_host_count(self):
         detections = {
-            "h1": _make_detection("h1", "10.0.0.1", [
-                ("enp1a", "", "", 1500, "aa:00:00:00:01:01"),
-                ("enp1b", "", "", 1500, "aa:00:00:00:01:02"),
-            ]),
-            "h2": _make_detection("h2", "10.0.0.2", [
-                ("enp2a", "", "", 1500, "aa:00:00:00:02:01"),
-                ("enp2b", "", "", 1500, "aa:00:00:00:02:02"),
-            ]),
+            "h1": _make_detection(
+                "h1",
+                "10.0.0.1",
+                [
+                    ("enp1a", "", "", 1500, "aa:00:00:00:01:01"),
+                    ("enp1b", "", "", 1500, "aa:00:00:00:01:02"),
+                ],
+            ),
+            "h2": _make_detection(
+                "h2",
+                "10.0.0.2",
+                [
+                    ("enp2a", "", "", 1500, "aa:00:00:00:02:01"),
+                    ("enp2b", "", "", 1500, "aa:00:00:00:02:02"),
+                ],
+            ),
         }
         topo = CX7TopologyResult(topology=CX7Topology.RING, links=[])
         subnets = [ipaddress.IPv4Network("192.168.%d.0/24" % i) for i in range(10, 16)]
@@ -1150,9 +1240,13 @@ class TestGenerateCX7ConfigureScriptRing:
         assert 'ADAPTER1="enp1s0f0np0"' in script
 
     def test_one_assignment_raises(self):
-        hp = CX7HostPlan(host="h1", needs_change=True, assignments=[
-            CX7InterfaceAssignment("enp1", "192.168.10.1", "192.168.10.0/24"),
-        ])
+        hp = CX7HostPlan(
+            host="h1",
+            needs_change=True,
+            assignments=[
+                CX7InterfaceAssignment("enp1", "192.168.10.1", "192.168.10.0/24"),
+            ],
+        )
         with pytest.raises(ValueError, match="at least 2"):
             generate_cx7_configure_script(hp, mtu=9000, prefix_len=24)
 
@@ -1263,12 +1357,14 @@ class TestNetplanLinkLocal:
 class TestCX7ClusterPlanTopology:
     def test_default_topology(self):
         from sparkrun.orchestration.networking import CX7ClusterPlan
+
         plan = CX7ClusterPlan()
         assert plan.topology == CX7Topology.SWITCH
         assert plan.subnets == []
 
     def test_ring_topology(self):
         from sparkrun.orchestration.networking import CX7ClusterPlan
+
         subnets = [ipaddress.IPv4Network("192.168.%d.0/24" % i) for i in range(10, 16)]
         plan = CX7ClusterPlan(topology=CX7Topology.RING, subnets=subnets)
         assert plan.topology == CX7Topology.RING

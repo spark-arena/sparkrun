@@ -506,9 +506,7 @@ class NvMonitorClusterMonitor:
             self.states[host].process = proc
             self.states[host].error = "waiting for metrics..."
 
-            thread = threading.Thread(
-                target=self._reader, args=(host, proc), daemon=True
-            )
+            thread = threading.Thread(target=self._reader, args=(host, proc), daemon=True)
             thread.start()
         except OSError as e:
             self.states[host].error = "SSH failed: %s" % e

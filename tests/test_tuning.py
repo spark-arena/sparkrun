@@ -40,6 +40,7 @@ from sparkrun.tuning.vllm import (
 # Path helpers
 # ---------------------------------------------------------------------------
 
+
 class TestGetSglangTuningDir:
     def test_returns_path_under_cache(self):
         d = get_sglang_tuning_dir()
@@ -115,6 +116,7 @@ class TestGetSglangTuningEnv:
 # ---------------------------------------------------------------------------
 # build_tuning_command
 # ---------------------------------------------------------------------------
+
 
 class TestFormatDuration:
     def test_under_60_seconds(self):
@@ -192,12 +194,14 @@ class TestBuildTuningCommand:
     def test_model_with_single_quote_is_shell_safe(self):
         """Model names with single quotes must not break shell quoting."""
         import shlex
+
         cmd = build_tuning_command("org/model'name", 1)
         assert shlex.quote("org/model'name") in cmd
 
     def test_model_with_spaces_is_shell_safe(self):
         """Model names with spaces must be shell-quoted."""
         import shlex
+
         cmd = build_tuning_command("org/model name", 1)
         assert shlex.quote("org/model name") in cmd
 
@@ -206,9 +210,11 @@ class TestBuildTuningCommand:
 # CLI smoke tests
 # ---------------------------------------------------------------------------
 
+
 class TestTuneSglangCLI:
     def test_help(self):
         from sparkrun.cli import main
+
         runner = CliRunner()
         result = runner.invoke(main, ["tune", "sglang", "--help"])
         assert result.exit_code == 0
@@ -218,6 +224,7 @@ class TestTuneSglangCLI:
 
     def test_tune_group_help(self):
         from sparkrun.cli import main
+
         runner = CliRunner()
         result = runner.invoke(main, ["tune", "--help"])
         assert result.exit_code == 0
@@ -229,18 +236,30 @@ class TestTuneSglangCLI:
 
         # Create a vllm recipe
         recipe_file = tmp_path / "test-vllm.yaml"
-        recipe_file.write_text(yaml.dump({
-            "sparkrun_version": "2",
-            "name": "Test vLLM",
-            "model": "test/model",
-            "runtime": "vllm",
-            "container": "test:latest",
-        }))
+        recipe_file.write_text(
+            yaml.dump(
+                {
+                    "sparkrun_version": "2",
+                    "name": "Test vLLM",
+                    "model": "test/model",
+                    "runtime": "vllm",
+                    "container": "test:latest",
+                }
+            )
+        )
 
         runner = CliRunner()
-        result = runner.invoke(main, [
-            "tune", "sglang", str(recipe_file), "-H", "10.0.0.1", "-n",
-        ])
+        result = runner.invoke(
+            main,
+            [
+                "tune",
+                "sglang",
+                str(recipe_file),
+                "-H",
+                "10.0.0.1",
+                "-n",
+            ],
+        )
         assert result.exit_code != 0
         assert "requires an SGLang recipe" in result.output
 
@@ -249,18 +268,23 @@ class TestTuneSglangCLI:
 # SglangTuner dry-run
 # ---------------------------------------------------------------------------
 
+
 class TestSglangTunerDryRun:
     @pytest.fixture
     def sglang_recipe_file(self, tmp_path):
         recipe_file = tmp_path / "test-sglang.yaml"
-        recipe_file.write_text(yaml.dump({
-            "sparkrun_version": "2",
-            "name": "Test SGLang",
-            "model": "Qwen/Qwen3-MoE",
-            "runtime": "sglang",
-            "container": "scitrera/dgx-spark-sglang:latest",
-            "defaults": {"tensor_parallel": 2},
-        }))
+        recipe_file.write_text(
+            yaml.dump(
+                {
+                    "sparkrun_version": "2",
+                    "name": "Test SGLang",
+                    "model": "Qwen/Qwen3-MoE",
+                    "runtime": "sglang",
+                    "container": "scitrera/dgx-spark-sglang:latest",
+                    "defaults": {"tensor_parallel": 2},
+                }
+            )
+        )
         return recipe_file
 
     def test_tuner_dry_run_returns_zero(self):
@@ -327,10 +351,12 @@ class TestSglangTunerDryRun:
 # Auto-mount integration
 # ---------------------------------------------------------------------------
 
+
 class TestSglangRuntimeAutoMount:
     def test_get_extra_volumes_empty_when_no_configs(self, v, monkeypatch):
         """SglangRuntime.get_extra_volumes returns {} when no tuning configs."""
         from sparkrun.core.bootstrap import get_runtime
+
         monkeypatch.setattr(
             "sparkrun.tuning.sglang.get_sglang_tuning_volumes",
             lambda: None,
@@ -341,6 +367,7 @@ class TestSglangRuntimeAutoMount:
     def test_get_extra_env_empty_when_no_configs(self, v, monkeypatch):
         """SglangRuntime.get_extra_env returns {} when no tuning configs."""
         from sparkrun.core.bootstrap import get_runtime
+
         monkeypatch.setattr(
             "sparkrun.tuning.sglang.get_sglang_tuning_env",
             lambda: None,
@@ -351,6 +378,7 @@ class TestSglangRuntimeAutoMount:
     def test_get_extra_volumes_returns_mapping(self, v, monkeypatch):
         """SglangRuntime.get_extra_volumes returns mapping when configs exist."""
         from sparkrun.core.bootstrap import get_runtime
+
         expected = {"/cache/tuning/sglang": TUNING_CONTAINER_PATH}
         monkeypatch.setattr(
             "sparkrun.tuning.sglang.get_sglang_tuning_volumes",
@@ -362,6 +390,7 @@ class TestSglangRuntimeAutoMount:
     def test_get_extra_env_returns_env(self, v, monkeypatch):
         """SglangRuntime.get_extra_env returns env when configs exist."""
         from sparkrun.core.bootstrap import get_runtime
+
         expected = {"HF_HOME": "/cache/huggingface", "SGLANG_MOE_CONFIG_DIR": TUNING_ENV_PATH}
         monkeypatch.setattr(
             "sparkrun.tuning.sglang.get_sglang_tuning_env",
@@ -375,10 +404,12 @@ class TestSglangRuntimeAutoMount:
 # Base runtime hooks
 # ---------------------------------------------------------------------------
 
+
 class TestBaseRuntimeHooks:
     def test_default_get_extra_volumes(self, v):
         """Base RuntimePlugin.get_extra_volumes returns empty dict."""
         from sparkrun.core.bootstrap import get_runtime
+
         # llama-cpp doesn't override get_extra_volumes
         runtime = get_runtime("llama-cpp", v)
         assert runtime.get_extra_volumes() == {}
@@ -386,6 +417,7 @@ class TestBaseRuntimeHooks:
     def test_default_get_extra_env(self, v):
         """Base RuntimePlugin.get_extra_env returns HF_HOME."""
         from sparkrun.core.bootstrap import get_runtime
+
         runtime = get_runtime("llama-cpp", v)
         assert runtime.get_extra_env() == {"HF_HOME": "/cache/huggingface"}
 
@@ -397,6 +429,7 @@ class TestBaseRuntimeHooks:
 # ---------------------------------------------------------------------------
 # vLLM path helpers
 # ---------------------------------------------------------------------------
+
 
 class TestGetVllmTuningDir:
     def test_returns_path_under_cache(self):
@@ -474,6 +507,7 @@ class TestGetVllmTuningEnv:
 # build_vllm_tuning_command
 # ---------------------------------------------------------------------------
 
+
 class TestBuildVllmTuningCommand:
     def test_contains_model(self):
         cmd = build_vllm_tuning_command("Qwen/Qwen3-MoE", 4)
@@ -512,12 +546,14 @@ class TestBuildVllmTuningCommand:
     def test_model_with_single_quote_is_shell_safe(self):
         """Model names with single quotes must not break shell quoting."""
         import shlex
+
         cmd = build_vllm_tuning_command("org/model'name", 1)
         assert shlex.quote("org/model'name") in cmd
 
     def test_model_with_spaces_is_shell_safe(self):
         """Model names with spaces must be shell-quoted."""
         import shlex
+
         cmd = build_vllm_tuning_command("org/model name", 1)
         assert shlex.quote("org/model name") in cmd
 
@@ -526,9 +562,11 @@ class TestBuildVllmTuningCommand:
 # vLLM CLI smoke tests
 # ---------------------------------------------------------------------------
 
+
 class TestTuneVllmCLI:
     def test_help(self):
         from sparkrun.cli import main
+
         runner = CliRunner()
         result = runner.invoke(main, ["tune", "vllm", "--help"])
         assert result.exit_code == 0
@@ -538,6 +576,7 @@ class TestTuneVllmCLI:
 
     def test_tune_group_lists_vllm(self):
         from sparkrun.cli import main
+
         runner = CliRunner()
         result = runner.invoke(main, ["tune", "--help"])
         assert result.exit_code == 0
@@ -549,18 +588,30 @@ class TestTuneVllmCLI:
 
         # Create an sglang recipe
         recipe_file = tmp_path / "test-sglang.yaml"
-        recipe_file.write_text(yaml.dump({
-            "sparkrun_version": "2",
-            "name": "Test SGLang",
-            "model": "test/model",
-            "runtime": "sglang",
-            "container": "test:latest",
-        }))
+        recipe_file.write_text(
+            yaml.dump(
+                {
+                    "sparkrun_version": "2",
+                    "name": "Test SGLang",
+                    "model": "test/model",
+                    "runtime": "sglang",
+                    "container": "test:latest",
+                }
+            )
+        )
 
         runner = CliRunner()
-        result = runner.invoke(main, [
-            "tune", "vllm", str(recipe_file), "-H", "10.0.0.1", "-n",
-        ])
+        result = runner.invoke(
+            main,
+            [
+                "tune",
+                "vllm",
+                str(recipe_file),
+                "-H",
+                "10.0.0.1",
+                "-n",
+            ],
+        )
         assert result.exit_code != 0
         assert "requires a vLLM recipe" in result.output
 
@@ -569,18 +620,30 @@ class TestTuneVllmCLI:
         from sparkrun.cli import main
 
         recipe_file = tmp_path / "test-vllm-ray.yaml"
-        recipe_file.write_text(yaml.dump({
-            "sparkrun_version": "2",
-            "name": "Test vLLM Ray",
-            "model": "test/model",
-            "runtime": "vllm-ray",
-            "container": "test:latest",
-        }))
+        recipe_file.write_text(
+            yaml.dump(
+                {
+                    "sparkrun_version": "2",
+                    "name": "Test vLLM Ray",
+                    "model": "test/model",
+                    "runtime": "vllm-ray",
+                    "container": "test:latest",
+                }
+            )
+        )
 
         runner = CliRunner()
-        result = runner.invoke(main, [
-            "tune", "vllm", str(recipe_file), "-H", "10.0.0.1", "-n",
-        ])
+        result = runner.invoke(
+            main,
+            [
+                "tune",
+                "vllm",
+                str(recipe_file),
+                "-H",
+                "10.0.0.1",
+                "-n",
+            ],
+        )
         # Should not fail with runtime validation error
         assert "requires a vLLM recipe" not in (result.output or "")
 
@@ -588,6 +651,7 @@ class TestTuneVllmCLI:
 # ---------------------------------------------------------------------------
 # VllmTuner dry-run
 # ---------------------------------------------------------------------------
+
 
 class TestVllmTunerDryRun:
     def test_tuner_dry_run_returns_zero(self):
@@ -654,10 +718,12 @@ class TestVllmTunerDryRun:
 # vLLM runtime auto-mount integration
 # ---------------------------------------------------------------------------
 
+
 class TestVllmRayRuntimeAutoMount:
     def test_get_extra_volumes_empty_when_no_configs(self, v, monkeypatch):
         """VllmRayRuntime.get_extra_volumes returns {} when no tuning configs."""
         from sparkrun.core.bootstrap import get_runtime
+
         monkeypatch.setattr(
             "sparkrun.tuning.vllm.get_vllm_tuning_volumes",
             lambda: None,
@@ -668,6 +734,7 @@ class TestVllmRayRuntimeAutoMount:
     def test_get_extra_env_empty_when_no_configs(self, v, monkeypatch):
         """VllmRayRuntime.get_extra_env returns base env when no tuning configs."""
         from sparkrun.core.bootstrap import get_runtime
+
         monkeypatch.setattr(
             "sparkrun.tuning.vllm.get_vllm_tuning_env",
             lambda: None,
@@ -678,6 +745,7 @@ class TestVllmRayRuntimeAutoMount:
     def test_get_extra_volumes_returns_mapping(self, v, monkeypatch):
         """VllmRayRuntime.get_extra_volumes returns mapping when configs exist."""
         from sparkrun.core.bootstrap import get_runtime
+
         expected = {"/cache/tuning/vllm": VLLM_TUNING_CONTAINER_PATH}
         monkeypatch.setattr(
             "sparkrun.tuning.vllm.get_vllm_tuning_volumes",
@@ -689,6 +757,7 @@ class TestVllmRayRuntimeAutoMount:
     def test_get_extra_env_returns_env(self, v, monkeypatch):
         """VllmRayRuntime.get_extra_env returns env when configs exist."""
         from sparkrun.core.bootstrap import get_runtime
+
         expected = {"HF_HOME": "/cache/huggingface", "VLLM_TUNED_CONFIG_FOLDER": VLLM_TUNING_CONTAINER_PATH}
         monkeypatch.setattr(
             "sparkrun.tuning.vllm.get_vllm_tuning_env",
@@ -702,6 +771,7 @@ class TestVllmDistributedAutoMount:
     def test_get_extra_volumes_empty_when_no_configs(self, v, monkeypatch):
         """VllmDistributedRuntime.get_extra_volumes returns {} when no configs."""
         from sparkrun.core.bootstrap import get_runtime
+
         monkeypatch.setattr(
             "sparkrun.tuning.vllm.get_vllm_tuning_volumes",
             lambda: None,
@@ -712,6 +782,7 @@ class TestVllmDistributedAutoMount:
     def test_get_extra_env_empty_when_no_configs(self, v, monkeypatch):
         """VllmDistributedRuntime.get_extra_env returns base env when no configs."""
         from sparkrun.core.bootstrap import get_runtime
+
         monkeypatch.setattr(
             "sparkrun.tuning.vllm.get_vllm_tuning_env",
             lambda: None,
@@ -722,6 +793,7 @@ class TestVllmDistributedAutoMount:
     def test_get_extra_volumes_returns_mapping(self, v, monkeypatch):
         """VllmDistributedRuntime.get_extra_volumes returns mapping when configs exist."""
         from sparkrun.core.bootstrap import get_runtime
+
         expected = {"/cache/tuning/vllm": VLLM_TUNING_CONTAINER_PATH}
         monkeypatch.setattr(
             "sparkrun.tuning.vllm.get_vllm_tuning_volumes",
@@ -733,6 +805,7 @@ class TestVllmDistributedAutoMount:
     def test_get_extra_env_returns_env(self, v, monkeypatch):
         """VllmDistributedRuntime.get_extra_env returns env when configs exist."""
         from sparkrun.core.bootstrap import get_runtime
+
         expected = {"HF_HOME": "/cache/huggingface", "VLLM_TUNED_CONFIG_FOLDER": VLLM_TUNING_CONTAINER_PATH}
         monkeypatch.setattr(
             "sparkrun.tuning.vllm.get_vllm_tuning_env",
@@ -746,6 +819,7 @@ class TestEugrVllmAutoMount:
     def test_inherits_vllm_ray_auto_mount(self, v, monkeypatch):
         """EugrVllmRayRuntime inherits get_extra_volumes from VllmRayRuntime."""
         from sparkrun.core.bootstrap import get_runtime
+
         expected = {"/cache/tuning/vllm": VLLM_TUNING_CONTAINER_PATH}
         monkeypatch.setattr(
             "sparkrun.tuning.vllm.get_vllm_tuning_volumes",
@@ -757,6 +831,7 @@ class TestEugrVllmAutoMount:
     def test_inherits_vllm_ray_auto_env(self, v, monkeypatch):
         """EugrVllmRayRuntime inherits get_extra_env from VllmRayRuntime."""
         from sparkrun.core.bootstrap import get_runtime
+
         expected = {"HF_HOME": "/cache/huggingface", "VLLM_TUNED_CONFIG_FOLDER": VLLM_TUNING_CONTAINER_PATH}
         monkeypatch.setattr(
             "sparkrun.tuning.vllm.get_vllm_tuning_env",
@@ -770,12 +845,14 @@ class TestEugrVllmAutoMount:
 # Pre-check tests
 # ===========================================================================
 
+
 class TestPreCheckTp:
     """Test that _pre_check_tp is called and can skip tuning."""
 
     def test_base_pre_check_returns_false_in_dry_run(self):
         """BaseTuner._pre_check_tp returns False in dry-run mode."""
         from sparkrun.tuning._common import BaseTuner
+
         tuner = BaseTuner.__new__(BaseTuner)
         tuner.dry_run = True
         assert tuner._pre_check_tp(1, "3.6.0") is False
@@ -783,78 +860,92 @@ class TestPreCheckTp:
     def test_sglang_pre_check_returns_false_in_dry_run(self):
         """SglangTuner._pre_check_tp returns False in dry-run mode."""
         tuner = SglangTuner(
-            host="10.0.0.1", image="test:latest",
-            model="test-model", dry_run=True,
+            host="10.0.0.1",
+            image="test:latest",
+            model="test-model",
+            dry_run=True,
         )
         assert tuner._pre_check_tp(1, "3.6.0") is False
 
     def test_vllm_pre_check_returns_false_in_dry_run(self):
         """VllmTuner._pre_check_tp returns False in dry-run mode."""
         tuner = VllmTuner(
-            host="10.0.0.1", image="test:latest",
-            model="test-model", dry_run=True,
+            host="10.0.0.1",
+            image="test:latest",
+            model="test-model",
+            dry_run=True,
         )
         assert tuner._pre_check_tp(1, "3.6.0") is False
 
     def test_sglang_pre_check_returns_false_on_error(self):
         """SglangTuner._pre_check_tp returns False on any exception."""
         from unittest.mock import patch
+
         tuner = SglangTuner(
-            host="10.0.0.1", image="test:latest",
-            model="test-model", dry_run=False,
+            host="10.0.0.1",
+            image="test:latest",
+            model="test-model",
+            dry_run=False,
         )
-        with patch("sparkrun.orchestration.primitives.run_command_on_host",
-                    side_effect=RuntimeError("connection refused")):
+        with patch("sparkrun.orchestration.primitives.run_command_on_host", side_effect=RuntimeError("connection refused")):
             assert tuner._pre_check_tp(1, "3.6.0") is False
 
     def test_vllm_pre_check_returns_false_on_error(self):
         """VllmTuner._pre_check_tp returns False on any exception."""
         from unittest.mock import patch
+
         tuner = VllmTuner(
-            host="10.0.0.1", image="test:latest",
-            model="test-model", dry_run=False,
+            host="10.0.0.1",
+            image="test:latest",
+            model="test-model",
+            dry_run=False,
         )
-        with patch("sparkrun.orchestration.primitives.run_command_on_host",
-                    side_effect=RuntimeError("connection refused")):
+        with patch("sparkrun.orchestration.primitives.run_command_on_host", side_effect=RuntimeError("connection refused")):
             assert tuner._pre_check_tp(1, "3.6.0") is False
 
     def test_sglang_pre_check_returns_true_on_success(self):
         """SglangTuner._pre_check_tp returns True when command succeeds."""
         from unittest.mock import patch
         from sparkrun.orchestration.ssh import RemoteResult
+
         tuner = SglangTuner(
-            host="10.0.0.1", image="test:latest",
-            model="test-model", dry_run=False,
+            host="10.0.0.1",
+            image="test:latest",
+            model="test-model",
+            dry_run=False,
         )
         mock_result = RemoteResult(host="10.0.0.1", returncode=0, stdout="", stderr="")
-        with patch("sparkrun.orchestration.primitives.run_command_on_host",
-                    return_value=mock_result):
+        with patch("sparkrun.orchestration.primitives.run_command_on_host", return_value=mock_result):
             assert tuner._pre_check_tp(1, "3.6.0") is True
 
     def test_vllm_pre_check_returns_true_on_success(self):
         """VllmTuner._pre_check_tp returns True when command succeeds."""
         from unittest.mock import patch
         from sparkrun.orchestration.ssh import RemoteResult
+
         tuner = VllmTuner(
-            host="10.0.0.1", image="test:latest",
-            model="test-model", dry_run=False,
+            host="10.0.0.1",
+            image="test:latest",
+            model="test-model",
+            dry_run=False,
         )
         mock_result = RemoteResult(host="10.0.0.1", returncode=0, stdout="", stderr="")
-        with patch("sparkrun.orchestration.primitives.run_command_on_host",
-                    return_value=mock_result):
+        with patch("sparkrun.orchestration.primitives.run_command_on_host", return_value=mock_result):
             assert tuner._pre_check_tp(1, "3.6.0") is True
 
     def test_sglang_pre_check_returns_false_on_failure(self):
         """SglangTuner._pre_check_tp returns False when command fails."""
         from unittest.mock import patch
         from sparkrun.orchestration.ssh import RemoteResult
+
         tuner = SglangTuner(
-            host="10.0.0.1", image="test:latest",
-            model="test-model", dry_run=False,
+            host="10.0.0.1",
+            image="test:latest",
+            model="test-model",
+            dry_run=False,
         )
         mock_result = RemoteResult(host="10.0.0.1", returncode=1, stdout="", stderr="")
-        with patch("sparkrun.orchestration.primitives.run_command_on_host",
-                    return_value=mock_result):
+        with patch("sparkrun.orchestration.primitives.run_command_on_host", return_value=mock_result):
             assert tuner._pre_check_tp(1, "3.6.0") is False
 
 
@@ -862,36 +953,43 @@ class TestPreCheckTp:
 # Sync path tests
 # ===========================================================================
 
+
 class TestSyncGetLocalTuningDir:
     """Test that _get_local_tuning_dir returns correct paths."""
 
     def test_sglang_path(self):
         from sparkrun.tuning.sync import _get_local_tuning_dir
+
         d = _get_local_tuning_dir("sglang")
         assert str(d).endswith("sparkrun/tuning/sglang")
 
     def test_vllm_path(self):
         from sparkrun.tuning.sync import _get_local_tuning_dir
+
         d = _get_local_tuning_dir("vllm")
         assert str(d).endswith("sparkrun/tuning/vllm")
 
     def test_vllm_ray_maps_to_vllm(self):
         from sparkrun.tuning.sync import _get_local_tuning_dir
+
         d = _get_local_tuning_dir("vllm-ray")
         assert str(d).endswith("sparkrun/tuning/vllm")
 
     def test_vllm_distributed_maps_to_vllm(self):
         from sparkrun.tuning.sync import _get_local_tuning_dir
+
         d = _get_local_tuning_dir("vllm-distributed")
         assert str(d).endswith("sparkrun/tuning/vllm")
 
     def test_eugr_vllm_maps_to_vllm(self):
         from sparkrun.tuning.sync import _get_local_tuning_dir
+
         d = _get_local_tuning_dir("eugr-vllm")
         assert str(d).endswith("sparkrun/tuning/vllm")
 
     def test_other_runtime_uses_tuning_prefix(self):
         from sparkrun.tuning.sync import _get_local_tuning_dir
+
         d = _get_local_tuning_dir("llama-cpp")
         assert str(d).endswith("sparkrun/tuning/llama-cpp")
 
@@ -899,6 +997,7 @@ class TestSyncGetLocalTuningDir:
 # ===========================================================================
 # Mount-point constant tests
 # ===========================================================================
+
 
 class TestMountPointConstants:
     """Verify mount-point layout is correct for SGLang config lookup."""

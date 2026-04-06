@@ -58,12 +58,12 @@ class EugrVllmRayRuntime(VllmRayRuntime):
         return issues
 
     def prepare(
-            self,
-            recipe: Recipe,
-            hosts: list[str],
-            config: SparkrunConfig | None = None,
-            dry_run: bool = False,
-            transfer_mode: str = "local",
+        self,
+        recipe: Recipe,
+        hosts: list[str],
+        config: SparkrunConfig | None = None,
+        dry_run: bool = False,
+        transfer_mode: str = "local",
     ) -> None:
         """Delegate to EugrBuilder for image building and mod injection.
 

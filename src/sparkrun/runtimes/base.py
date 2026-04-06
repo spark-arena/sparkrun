@@ -77,13 +77,13 @@ class RuntimePlugin(Plugin):
 
     @abstractmethod
     def generate_command(
-            self,
-            recipe: Recipe,
-            overrides: dict[str, Any],
-            is_cluster: bool,
-            num_nodes: int = 1,
-            head_ip: str | None = None,
-            skip_keys: set[str] | frozenset[str] = frozenset(),
+        self,
+        recipe: Recipe,
+        overrides: dict[str, Any],
+        is_cluster: bool,
+        num_nodes: int = 1,
+        head_ip: str | None = None,
+        skip_keys: set[str] | frozenset[str] = frozenset(),
     ) -> str:
         """Generate the serve command string from recipe + CLI overrides.
 
@@ -154,14 +154,14 @@ class RuntimePlugin(Plugin):
         return self.runtime_name
 
     def generate_node_command(
-            self,
-            recipe: Recipe,
-            overrides: dict[str, Any],
-            head_ip: str,
-            num_nodes: int,
-            node_rank: int,
-            init_port: int = 25000,
-            skip_keys: set[str] | frozenset[str] = frozenset(),
+        self,
+        recipe: Recipe,
+        overrides: dict[str, Any],
+        head_ip: str,
+        num_nodes: int,
+        node_rank: int,
+        init_port: int = 25000,
+        skip_keys: set[str] | frozenset[str] = frozenset(),
     ) -> str:
         """Generate the serve command for a specific node in native clustering.
 
@@ -182,12 +182,12 @@ class RuntimePlugin(Plugin):
         raise NotImplementedError("%s does not implement native clustering" % type(self).__name__)
 
     def prepare(
-            self,
-            recipe: Recipe,
-            hosts: list[str],
-            config: SparkrunConfig | None = None,
-            dry_run: bool = False,
-            transfer_mode: str = "local",
+        self,
+        recipe: Recipe,
+        hosts: list[str],
+        config: SparkrunConfig | None = None,
+        dry_run: bool = False,
+        transfer_mode: str = "local",
     ) -> None:
         """Pre-launch preparation (e.g., building container images).
 
@@ -205,12 +205,12 @@ class RuntimePlugin(Plugin):
         pass
 
     def _pre_serve(
-            self,
-            hosts_containers: list[tuple[str, str]],
-            ssh_kwargs: dict,
-            dry_run: bool,
-            recipe: Recipe | None = None,
-            config_chain=None,
+        self,
+        hosts_containers: list[tuple[str, str]],
+        ssh_kwargs: dict,
+        dry_run: bool,
+        recipe: Recipe | None = None,
+        config_chain=None,
     ) -> None:
         """Hook called after containers are launched but before serve command.
 
@@ -310,10 +310,10 @@ class RuntimePlugin(Plugin):
 
     @staticmethod
     def _augment_served_model_name(
-            command: str,
-            config,
-            flag: str,
-            skip_keys: set[str] | frozenset[str] = frozenset(),
+        command: str,
+        config,
+        flag: str,
+        skip_keys: set[str] | frozenset[str] = frozenset(),
     ) -> str:
         """Append ``served_model_name`` to a rendered command if missing.
 
@@ -344,10 +344,10 @@ class RuntimePlugin(Plugin):
 
     @staticmethod
     def build_flags_from_map(
-            config,
-            flag_map: dict[str, str],
-            bool_keys: set[str] | frozenset[str] = frozenset(),
-            skip_keys: set[str] | frozenset[str] = frozenset(),
+        config,
+        flag_map: dict[str, str],
+        bool_keys: set[str] | frozenset[str] = frozenset(),
+        skip_keys: set[str] | frozenset[str] = frozenset(),
     ) -> list[str]:
         """Build CLI flag list from a config-key to CLI-flag mapping.
 
@@ -381,11 +381,11 @@ class RuntimePlugin(Plugin):
 
     @staticmethod
     def strip_flags_from_command(
-            command: str,
-            skip_keys: set[str] | frozenset[str],
-            flag_map: dict[str, str],
-            bool_keys: set[str] | frozenset[str] = frozenset(),
-            flag_aliases: dict[str, list[str]] | None = None,
+        command: str,
+        skip_keys: set[str] | frozenset[str],
+        flag_map: dict[str, str],
+        bool_keys: set[str] | frozenset[str] = frozenset(),
+        flag_aliases: dict[str, list[str]] | None = None,
     ) -> str:
         """Strip CLI flags for *skip_keys* from a rendered command string.
 
@@ -451,12 +451,12 @@ class RuntimePlugin(Plugin):
     # --- Log following interface ---
 
     def follow_logs(
-            self,
-            hosts: list[str],
-            cluster_id: str = "sparkrun0",
-            config: SparkrunConfig | None = None,
-            dry_run: bool = False,
-            tail: int = 100,
+        self,
+        hosts: list[str],
+        cluster_id: str = "sparkrun0",
+        config: SparkrunConfig | None = None,
+        dry_run: bool = False,
+        tail: int = 100,
     ) -> None:
         """Follow container logs after a successful launch.
 
@@ -486,12 +486,12 @@ class RuntimePlugin(Plugin):
         self._follow_cluster_logs(hosts, cluster_id, config, dry_run, tail)
 
     def _follow_cluster_logs(
-            self,
-            hosts: list[str],
-            cluster_id: str,
-            config: SparkrunConfig | None,
-            dry_run: bool,
-            tail: int,
+        self,
+        hosts: list[str],
+        cluster_id: str,
+        config: SparkrunConfig | None,
+        dry_run: bool,
+        tail: int,
     ) -> None:
         """Follow logs for a multi-node cluster.
 
@@ -572,24 +572,24 @@ class RuntimePlugin(Plugin):
     # primitives.
 
     def run(
-            self,
-            hosts: list[str],
-            image: str,
-            serve_command: str,
-            recipe: Recipe,
-            overrides: dict[str, Any],
-            *,
-            cluster_id: str = "sparkrun0",
-            env: dict[str, str] | None = None,
-            cache_dir: str | None = None,
-            config: SparkrunConfig | None = None,
-            dry_run: bool = False,
-            detached: bool = True,
-            nccl_env: dict[str, str] | None = None,
-            ib_ip_map: dict[str, str] | None = None,
-            skip_keys: set[str] | frozenset[str] = frozenset(),
-            executor: Executor | None = None,
-            **kwargs,
+        self,
+        hosts: list[str],
+        image: str,
+        serve_command: str,
+        recipe: Recipe,
+        overrides: dict[str, Any],
+        *,
+        cluster_id: str = "sparkrun0",
+        env: dict[str, str] | None = None,
+        cache_dir: str | None = None,
+        config: SparkrunConfig | None = None,
+        dry_run: bool = False,
+        detached: bool = True,
+        nccl_env: dict[str, str] | None = None,
+        ib_ip_map: dict[str, str] | None = None,
+        skip_keys: set[str] | frozenset[str] = frozenset(),
+        executor: Executor | None = None,
+        **kwargs,
     ) -> int:
         """Launch a workload -- delegates to solo or cluster implementation.
 
@@ -666,13 +666,13 @@ class RuntimePlugin(Plugin):
         )
 
     def _run_cluster(
-            self,
-            hosts: list[str],
-            image: str,
-            serve_command: str,
-            recipe: Recipe,
-            overrides: dict[str, Any],
-            **kwargs,
+        self,
+        hosts: list[str],
+        image: str,
+        serve_command: str,
+        recipe: Recipe,
+        overrides: dict[str, Any],
+        **kwargs,
     ) -> int:
         """Launch a multi-node cluster workload.
 
@@ -682,11 +682,11 @@ class RuntimePlugin(Plugin):
         raise NotImplementedError("Cluster mode not supported by %s" % self.runtime_name)
 
     def stop(
-            self,
-            hosts: list[str],
-            cluster_id: str = "sparkrun0",
-            config: SparkrunConfig | None = None,
-            dry_run: bool = False,
+        self,
+        hosts: list[str],
+        cluster_id: str = "sparkrun0",
+        config: SparkrunConfig | None = None,
+        dry_run: bool = False,
     ) -> int:
         """Stop a running workload -- delegates to solo or cluster implementation.
 
@@ -714,11 +714,11 @@ class RuntimePlugin(Plugin):
         )
 
     def _stop_cluster(
-            self,
-            hosts: list[str],
-            cluster_id: str,
-            config: SparkrunConfig | None,
-            dry_run: bool,
+        self,
+        hosts: list[str],
+        cluster_id: str,
+        config: SparkrunConfig | None,
+        dry_run: bool,
     ) -> int:
         """Stop a multi-node cluster workload.
 
@@ -730,20 +730,20 @@ class RuntimePlugin(Plugin):
     # --- Default solo implementation (used by base and simple runtimes) ---
 
     def _run_solo(
-            self,
-            host: str,
-            image: str,
-            serve_command: str,
-            cluster_id: str = "sparkrun0",
-            env: dict[str, str] | None = None,
-            cache_dir: str | None = None,
-            config: SparkrunConfig | None = None,
-            dry_run: bool = False,
-            detached: bool = True,
-            nccl_env: dict[str, str] | None = None,
-            recipe: Recipe | None = None,
-            overrides: dict[str, Any] | None = None,
-            progress=None,
+        self,
+        host: str,
+        image: str,
+        serve_command: str,
+        cluster_id: str = "sparkrun0",
+        env: dict[str, str] | None = None,
+        cache_dir: str | None = None,
+        config: SparkrunConfig | None = None,
+        dry_run: bool = False,
+        detached: bool = True,
+        nccl_env: dict[str, str] | None = None,
+        recipe: Recipe | None = None,
+        overrides: dict[str, Any] | None = None,
+        progress=None,
     ) -> int:
         """Launch a single-node inference workload.
 
@@ -771,7 +771,7 @@ class RuntimePlugin(Plugin):
             self.get_common_env(),  # base env
             self.get_solo_env(),  # solo-specific
             env,  # recipe
-            self.get_extra_env()  # tuning/other overrides
+            self.get_extra_env(),  # tuning/other overrides
         )
 
         # Step 1: InfiniBand detection (skip if pre-detected nccl_env provided)
@@ -872,11 +872,11 @@ class RuntimePlugin(Plugin):
         return result.returncode
 
     def _stop_solo(
-            self,
-            host: str,
-            cluster_id: str = "sparkrun0",
-            config: SparkrunConfig | None = None,
-            dry_run: bool = False,
+        self,
+        host: str,
+        cluster_id: str = "sparkrun0",
+        config: SparkrunConfig | None = None,
+        dry_run: bool = False,
     ) -> int:
         """Stop a solo workload by removing the container."""
         from sparkrun.orchestration.primitives import (
@@ -899,15 +899,15 @@ class RuntimePlugin(Plugin):
         return 0
 
     def _generate_node_script(
-            self,
-            image: str,
-            container_name: str,
-            serve_command: str,
-            label: str = "node",
-            env: dict[str, str] | None = None,
-            volumes: dict[str, str] | None = None,
-            nccl_env: dict[str, str] | None = None,
-            extra_docker_opts: list[str] | None = None,
+        self,
+        image: str,
+        container_name: str,
+        serve_command: str,
+        label: str = "node",
+        env: dict[str, str] | None = None,
+        volumes: dict[str, str] | None = None,
+        nccl_env: dict[str, str] | None = None,
+        extra_docker_opts: list[str] | None = None,
     ) -> str:
         """Generate a script that launches a container with a direct entrypoint command.
 
@@ -969,11 +969,11 @@ class RuntimePlugin(Plugin):
         logger.info("=" * 60)
 
     def _stop_native_cluster(
-            self,
-            hosts: list[str],
-            cluster_id: str,
-            config=None,
-            dry_run: bool = False,
+        self,
+        hosts: list[str],
+        cluster_id: str,
+        config=None,
+        dry_run: bool = False,
     ) -> int:
         """Stop a native cluster by iterating ranked node containers.
 
@@ -1008,27 +1008,27 @@ class RuntimePlugin(Plugin):
         return 0
 
     def _run_native_cluster(
-            self,
-            hosts: list[str],
-            image: str,
-            serve_command: str = "",
-            recipe=None,
-            overrides=None,
-            *,
-            cluster_id: str = "sparkrun0",
-            env: dict[str, str] | None = None,
-            cache_dir: str | None = None,
-            config=None,
-            dry_run: bool = False,
-            detached: bool = True,
-            nccl_env: dict[str, str] | None = None,
-            init_port: int = 25000,
-            skip_keys: set[str] | frozenset[str] = frozenset(),
-            banner_title: str = "Native Cluster Launcher",
-            port_label: str = "Init Port",
-            node_label: str = "node",
-            progress=None,
-            **kwargs,
+        self,
+        hosts: list[str],
+        image: str,
+        serve_command: str = "",
+        recipe=None,
+        overrides=None,
+        *,
+        cluster_id: str = "sparkrun0",
+        env: dict[str, str] | None = None,
+        cache_dir: str | None = None,
+        config=None,
+        dry_run: bool = False,
+        detached: bool = True,
+        nccl_env: dict[str, str] | None = None,
+        init_port: int = 25000,
+        skip_keys: set[str] | frozenset[str] = frozenset(),
+        banner_title: str = "Native Cluster Launcher",
+        port_label: str = "Init Port",
+        node_label: str = "node",
+        progress=None,
+        **kwargs,
     ) -> int:
         """Orchestrate a multi-node native cluster (shared by SGLang, vLLM distributed).
 
@@ -1136,12 +1136,12 @@ class RuntimePlugin(Plugin):
         }
 
     def _collect_runtime_info(
-            self,
-            host: str,
-            container_name: str,
-            ssh_kwargs: dict,
-            dry_run: bool = False,
-            builder=None,
+        self,
+        host: str,
+        container_name: str,
+        ssh_kwargs: dict,
+        dry_run: bool = False,
+        builder=None,
     ) -> dict[str, str]:
         """Run version commands inside a container, return {label: version}.
 
@@ -1207,7 +1207,7 @@ class RuntimePlugin(Plugin):
                     start_idx = stdout.find(start_marker)
                     end_idx = stdout.find(end_marker)
                     if start_idx >= 0 and end_idx > start_idx:
-                        block = stdout[start_idx + len(start_marker): end_idx]
+                        block = stdout[start_idx + len(start_marker) : end_idx]
                         # Strip the leading newline from the marker line
                         if block.startswith("\n"):
                             block = block[1:]

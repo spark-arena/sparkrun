@@ -1,4 +1,5 @@
 """JSON serialization helpers for sparkrun."""
+
 from __future__ import annotations
 
 import dataclasses

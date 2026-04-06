@@ -9,7 +9,7 @@ source dev.sh
 sparkrun --help
 ```
 
-`source dev.sh` creates a `.venv`, installs sparkrun in editable mode with dev dependencies, and activates the venv in your current shell. After sourcing, `sparkrun` in that shell runs the code from your checkout — edits take effect immediately.
+`source dev.sh` uses `uv sync` to manage the `.venv` and install sparkrun with dev dependencies, then installs pre-commit hooks using `uv run pre-commit install`. After sourcing, the venv is activated in your current shell and `sparkrun` runs the code from your checkout — edits take effect immediately.
 
 Requires [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`).
 

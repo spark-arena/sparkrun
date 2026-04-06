@@ -276,7 +276,11 @@ def distribute_image_from_head(
     # Pre-check image status on all hosts to avoid unnecessary work
     if not dry_run:
         remote_ids = _check_remote_image_ids(
-            image, hosts, ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options,
+            image,
+            hosts,
+            ssh_user=ssh_user,
+            ssh_key=ssh_key,
+            ssh_options=ssh_options,
         )
         ref_id = remote_ids.get(head)
         if ref_id:
@@ -287,16 +291,12 @@ def distribute_image_from_head(
                 return []
 
             if len(hosts) > 1:
-                logger.log(PROGRESS, "  Container image needs sync on %d of %d host(s)",
-                           len(needs_transfer), len(hosts))
+                logger.log(PROGRESS, "  Container image needs sync on %d of %d host(s)", len(needs_transfer), len(hosts))
 
             # Filter workers list and corresponding transfer hosts
             workers = hosts[1:]
             wt = worker_transfer_hosts or workers
-            filtered = [
-                (w, t) for w, t in zip(workers, wt)
-                if w in needs_transfer
-            ]
+            filtered = [(w, t) for w, t in zip(workers, wt) if w in needs_transfer]
             if filtered:
                 hosts = [head] + [w for w, _ in filtered]
                 worker_transfer_hosts = [t for _, t in filtered]

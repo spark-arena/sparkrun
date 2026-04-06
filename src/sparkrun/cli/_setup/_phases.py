@@ -142,8 +142,11 @@ def apply_docker_group(host_list, user, ssh_kwargs, dry_run, sudo_password=None,
         )
         if still_failed and sudo_password:
             for h in still_failed:
-                r = sudo_dispatch_fn(h, fallback, sudo_password, timeout=30) if sudo_dispatch_fn else \
-                    _sudo_script_on_host(h, fallback, sudo_password, ssh_kwargs, timeout=30, dry_run=dry_run)
+                r = (
+                    sudo_dispatch_fn(h, fallback, sudo_password, timeout=30)
+                    if sudo_dispatch_fn
+                    else _sudo_script_on_host(h, fallback, sudo_password, ssh_kwargs, timeout=30, dry_run=dry_run)
+                )
                 result_map[h] = r
 
     ok_count = sum(1 for h in host_list if result_map.get(h) and result_map[h].success)
@@ -179,10 +182,7 @@ def apply_sudoers(host_list, user, dry_run, sudo_password=None, sudo_dispatch_fn
 
     if dry_run:
         for label, _ in sudoers_scripts:
-            click.echo(
-                "  [dry-run] Would install %s sudoers on %d host(s)."
-                % (label, len(host_list))
-            )
+            click.echo("  [dry-run] Would install %s sudoers on %d host(s)." % (label, len(host_list)))
         return [("fix-permissions", 0), ("clear-cache", 0)], False
 
     failed_any = False
@@ -207,8 +207,7 @@ def apply_sudoers(host_list, user, dry_run, sudo_password=None, sudo_dispatch_fn
     return ok_per_label, failed_any
 
 
-def apply_earlyoom(host_list, ssh_kwargs, prefer_regex, avoid_regex, dry_run,
-                   sudo_password=None, sudo_dispatch_fn=None):
+def apply_earlyoom(host_list, ssh_kwargs, prefer_regex, avoid_regex, dry_run, sudo_password=None, sudo_dispatch_fn=None):
     """Apply earlyoom installation on hosts.
 
     When *sudo_dispatch_fn* is provided (wizard indirect sudo case), it is
@@ -254,14 +253,12 @@ def apply_earlyoom(host_list, ssh_kwargs, prefer_regex, avoid_regex, dry_run,
                 result_map[h] = r
 
     ok_count = sum(1 for h in host_list if result_map.get(h) and result_map[h].success)
-    installed_pkg = any(
-        "INSTALLING:" in (result_map.get(h) and result_map[h].stdout or "")
-        for h in host_list
-    )
+    installed_pkg = any("INSTALLING:" in (result_map.get(h) and result_map[h].stdout or "") for h in host_list)
     return result_map, ok_count, installed_pkg
 
 
 def _sudo_script_on_host(host, script, password, ssh_kwargs, timeout=300, dry_run=False):
     """Helper: run sudo script on a single host (used when no dispatch_fn)."""
     from sparkrun.orchestration.sudo import run_sudo_script_on_host
+
     return run_sudo_script_on_host(host, script, password, ssh_kwargs=ssh_kwargs, timeout=timeout, dry_run=dry_run)

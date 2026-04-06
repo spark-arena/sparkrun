@@ -30,6 +30,7 @@ from sparkrun.orchestration.ssh import (
 # build_ssh_opts_string
 # ---------------------------------------------------------------------------
 
+
 class TestBuildSshOptsString:
     """Test SSH options string builder."""
 
@@ -53,7 +54,9 @@ class TestBuildSshOptsString:
 
     def test_with_all(self):
         result = build_ssh_opts_string(
-            ssh_key="/key", ssh_options=["-v"], connect_timeout=5,
+            ssh_key="/key",
+            ssh_options=["-v"],
+            connect_timeout=5,
         )
         assert "-i /key" in result
         assert "-v" in result
@@ -69,12 +72,15 @@ class TestBuildSshOptsString:
 # run_pipeline_to_remote
 # ---------------------------------------------------------------------------
 
+
 class TestRunPipelineToRemote:
     """Test local-to-remote shell pipeline."""
 
     def test_dry_run(self):
         result = run_pipeline_to_remote(
-            "host1", "echo hello", "cat",
+            "host1",
+            "echo hello",
+            "cat",
             dry_run=True,
         )
         assert result.success
@@ -85,8 +91,11 @@ class TestRunPipelineToRemote:
     def test_constructs_pipeline(self, mock_run):
         mock_run.return_value = mock.Mock(returncode=0, stdout="ok", stderr="")
         run_pipeline_to_remote(
-            "host1", "docker save img | gzip", "gunzip | docker load",
-            ssh_user="user", ssh_key="/key",
+            "host1",
+            "docker save img | gzip",
+            "gunzip | docker load",
+            ssh_user="user",
+            ssh_key="/key",
         )
         mock_run.assert_called_once()
         call_args = mock_run.call_args
@@ -114,6 +123,7 @@ class TestRunPipelineToRemote:
     @mock.patch("sparkrun.orchestration.ssh.subprocess.run")
     def test_timeout(self, mock_run):
         import subprocess
+
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="test", timeout=10)
         result = run_pipeline_to_remote("host1", "echo hi", "cat", timeout=10)
         assert not result.success
@@ -133,6 +143,7 @@ class TestRunPipelineToRemote:
 # run_rsync
 # ---------------------------------------------------------------------------
 
+
 class TestRunRsync:
     """Test rsync wrapper."""
 
@@ -146,8 +157,11 @@ class TestRunRsync:
     def test_constructs_command(self, mock_run):
         mock_run.return_value = mock.Mock(returncode=0, stdout="", stderr="")
         run_rsync(
-            "/src/path", "host1", "/dst/path",
-            ssh_user="user", ssh_key="/key",
+            "/src/path",
+            "host1",
+            "/dst/path",
+            ssh_user="user",
+            ssh_key="/key",
         )
         mock_run.assert_called_once()
         cmd = mock_run.call_args[0][0]
@@ -179,7 +193,9 @@ class TestRunRsync:
     def test_custom_rsync_options(self, mock_run):
         mock_run.return_value = mock.Mock(returncode=0, stdout="", stderr="")
         run_rsync(
-            "/src", "host1", "/dst",
+            "/src",
+            "host1",
+            "/dst",
             rsync_options=["-avz", "--progress"],
         )
         cmd = mock_run.call_args[0][0]
@@ -207,6 +223,7 @@ class TestRunRsync:
     @mock.patch("sparkrun.orchestration.ssh.subprocess.run")
     def test_timeout(self, mock_run):
         import subprocess
+
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="rsync", timeout=10)
         result = run_rsync("/src", "host1", "/dst", timeout=10)
         assert not result.success
@@ -216,6 +233,7 @@ class TestRunRsync:
 # ---------------------------------------------------------------------------
 # Parallel variants
 # ---------------------------------------------------------------------------
+
 
 class TestParallelPipeline:
     """Test run_pipeline_to_remotes_parallel."""
@@ -232,7 +250,10 @@ class TestParallelPipeline:
 
     def test_dry_run(self):
         results = run_pipeline_to_remotes_parallel(
-            ["h1", "h2"], "echo", "cat", dry_run=True,
+            ["h1", "h2"],
+            "echo",
+            "cat",
+            dry_run=True,
         )
         assert len(results) == 2
         assert all(r.success for r in results)
@@ -261,6 +282,7 @@ class TestParallelRsync:
 # Image hash checking
 # ---------------------------------------------------------------------------
 
+
 class TestCheckRemoteImageIds:
     """Test _check_remote_image_ids."""
 
@@ -272,6 +294,7 @@ class TestCheckRemoteImageIds:
             RemoteResult(host="h2", returncode=0, stdout="sha256:def456\n", stderr=""),
         ]
         from sparkrun.containers.distribute import _check_remote_image_ids
+
         result = _check_remote_image_ids("img:latest", ["h1", "h2"])
         assert result == {"h1": "sha256:abc123", "h2": "sha256:def456"}
 
@@ -283,6 +306,7 @@ class TestCheckRemoteImageIds:
             RemoteResult(host="h2", returncode=0, stdout="", stderr=""),
         ]
         from sparkrun.containers.distribute import _check_remote_image_ids
+
         result = _check_remote_image_ids("img:latest", ["h1", "h2"])
         assert result == {"h1": "sha256:abc123"}
 
@@ -294,16 +318,19 @@ class TestCheckRemoteImageIds:
             RemoteResult(host="h2", returncode=1, stdout="", stderr="error"),
         ]
         from sparkrun.containers.distribute import _check_remote_image_ids
+
         result = _check_remote_image_ids("img:latest", ["h1", "h2"])
         assert result == {"h1": "sha256:abc123"}
 
     def test_dry_run_returns_empty(self):
         from sparkrun.containers.distribute import _check_remote_image_ids
+
         result = _check_remote_image_ids("img:latest", ["h1", "h2"], dry_run=True)
         assert result == {}
 
     def test_empty_hosts_returns_empty(self):
         from sparkrun.containers.distribute import _check_remote_image_ids
+
         result = _check_remote_image_ids("img:latest", [])
         assert result == {}
 
@@ -316,6 +343,7 @@ class TestFilterHostsNeedingImage:
         """Hosts with matching image ID are filtered out."""
         mock_check.return_value = {"h1": "sha256:abc", "h2": "sha256:abc"}
         from sparkrun.containers.distribute import _filter_hosts_needing_image
+
         result = _filter_hosts_needing_image("img", ["h1", "h2"], "sha256:abc")
         assert result == []
 
@@ -324,6 +352,7 @@ class TestFilterHostsNeedingImage:
         """Hosts with missing or mismatched IDs are included."""
         mock_check.return_value = {"h1": "sha256:old"}  # h2 not present
         from sparkrun.containers.distribute import _filter_hosts_needing_image
+
         result = _filter_hosts_needing_image("img", ["h1", "h2"], "sha256:new")
         assert result == ["h1", "h2"]
 
@@ -332,18 +361,21 @@ class TestFilterHostsNeedingImage:
         """Only hosts with mismatched IDs are returned."""
         mock_check.return_value = {"h1": "sha256:abc", "h2": "sha256:old"}
         from sparkrun.containers.distribute import _filter_hosts_needing_image
+
         result = _filter_hosts_needing_image("img", ["h1", "h2"], "sha256:abc")
         assert result == ["h2"]
 
     def test_dry_run_returns_all(self):
         """Dry run skips checking and returns all hosts."""
         from sparkrun.containers.distribute import _filter_hosts_needing_image
+
         result = _filter_hosts_needing_image("img", ["h1", "h2"], "sha256:abc", dry_run=True)
         assert result == ["h1", "h2"]
 
     def test_no_local_id_returns_all(self):
         """When local image ID is None, all hosts need transfer."""
         from sparkrun.containers.distribute import _filter_hosts_needing_image
+
         result = _filter_hosts_needing_image("img", ["h1", "h2"], None)
         assert result == ["h1", "h2"]
 
@@ -351,6 +383,7 @@ class TestFilterHostsNeedingImage:
 # ---------------------------------------------------------------------------
 # Container distribution
 # ---------------------------------------------------------------------------
+
 
 class TestDistributeImageFromLocal:
     """Test distribute_image_from_local."""
@@ -364,6 +397,7 @@ class TestDistributeImageFromLocal:
             RemoteResult(host="h1", returncode=0, stdout="[dry-run]", stderr=""),
         ]
         from sparkrun.containers.distribute import distribute_image_from_local
+
         failed = distribute_image_from_local("img:latest", ["h1"], dry_run=True)
         assert failed == []
 
@@ -377,6 +411,7 @@ class TestDistributeImageFromLocal:
             RemoteResult(host="h2", returncode=0, stdout="ok", stderr=""),
         ]
         from sparkrun.containers.distribute import distribute_image_from_local
+
         failed = distribute_image_from_local("img:latest", ["h1", "h2"])
         assert failed == []
         # Verify pipeline commands
@@ -392,6 +427,7 @@ class TestDistributeImageFromLocal:
         """If ensure_image fails, all hosts are returned as failed."""
         mock_ensure.return_value = 1
         from sparkrun.containers.distribute import distribute_image_from_local
+
         failed = distribute_image_from_local("img:latest", ["h1", "h2"])
         assert failed == ["h1", "h2"]
         mock_parallel.assert_not_called()
@@ -407,6 +443,7 @@ class TestDistributeImageFromLocal:
             RemoteResult(host="h2", returncode=1, stdout="", stderr="err"),
         ]
         from sparkrun.containers.distribute import distribute_image_from_local
+
         failed = distribute_image_from_local("img:latest", ["h1", "h2"])
         assert failed == ["h2"]
 
@@ -416,6 +453,7 @@ class TestDistributeImageFromLocal:
     def test_empty_hosts(self, mock_ensure, mock_id, mock_parallel):
         mock_ensure.return_value = 0
         from sparkrun.containers.distribute import distribute_image_from_local
+
         failed = distribute_image_from_local("img:latest", [])
         assert failed == []
         mock_parallel.assert_not_called()
@@ -429,6 +467,7 @@ class TestDistributeImageFromLocal:
         mock_ensure.return_value = 0
         mock_filter.return_value = []  # all hosts already have the image
         from sparkrun.containers.distribute import distribute_image_from_local
+
         failed = distribute_image_from_local("img:latest", ["h1", "h2"])
         assert failed == []
         mock_parallel.assert_not_called()
@@ -445,6 +484,7 @@ class TestDistributeImageFromLocal:
             RemoteResult(host="h2", returncode=0, stdout="ok", stderr=""),
         ]
         from sparkrun.containers.distribute import distribute_image_from_local
+
         failed = distribute_image_from_local("img:latest", ["h1", "h2"])
         assert failed == []
         # Only h2 should be in the transfer list
@@ -466,8 +506,10 @@ class TestDistributeImageTransferHosts:
             RemoteResult(host="10.0.0.2", returncode=0, stdout="ok", stderr=""),
         ]
         from sparkrun.containers.distribute import distribute_image_from_local
+
         failed = distribute_image_from_local(
-            "img:latest", ["h1", "h2"],
+            "img:latest",
+            ["h1", "h2"],
             transfer_hosts=["10.0.0.1", "10.0.0.2"],
         )
         assert failed == []
@@ -487,8 +529,10 @@ class TestDistributeImageTransferHosts:
             RemoteResult(host="10.0.0.2", returncode=1, stdout="", stderr="err"),
         ]
         from sparkrun.containers.distribute import distribute_image_from_local
+
         failed = distribute_image_from_local(
-            "img:latest", ["mgmt1", "mgmt2"],
+            "img:latest",
+            ["mgmt1", "mgmt2"],
             transfer_hosts=["10.0.0.1", "10.0.0.2"],
         )
         # Failure should be reported using management hostname
@@ -502,9 +546,13 @@ class TestDistributeImageFromHead:
     def test_single_host(self, mock_run):
         """Single host: pull only, no distribution."""
         mock_run.return_value = RemoteResult(
-            host="head", returncode=0, stdout="pulled", stderr="",
+            host="head",
+            returncode=0,
+            stdout="pulled",
+            stderr="",
         )
         from sparkrun.containers.distribute import distribute_image_from_head
+
         failed = distribute_image_from_head("img:latest", ["head"])
         assert failed == []
         assert mock_run.call_count == 1
@@ -513,9 +561,13 @@ class TestDistributeImageFromHead:
     def test_multi_host(self, mock_run):
         """Multi host: pull on head, then distribute script."""
         mock_run.return_value = RemoteResult(
-            host="head", returncode=0, stdout="ok", stderr="",
+            host="head",
+            returncode=0,
+            stdout="ok",
+            stderr="",
         )
         from sparkrun.containers.distribute import distribute_image_from_head
+
         failed = distribute_image_from_head("img:latest", ["head", "w1", "w2"])
         assert failed == []
         # Called twice: once for pull, once for distribute
@@ -529,9 +581,13 @@ class TestDistributeImageFromHead:
     def test_pull_fails(self, mock_run):
         """If pull on head fails, all hosts are returned as failed."""
         mock_run.return_value = RemoteResult(
-            host="head", returncode=1, stdout="", stderr="pull failed",
+            host="head",
+            returncode=1,
+            stdout="",
+            stderr="pull failed",
         )
         from sparkrun.containers.distribute import distribute_image_from_head
+
         failed = distribute_image_from_head("img:latest", ["head", "w1"])
         assert failed == ["head", "w1"]
 
@@ -543,11 +599,13 @@ class TestDistributeImageFromHead:
             RemoteResult(host="head", returncode=1, stdout="", stderr="dist failed"),
         ]
         from sparkrun.containers.distribute import distribute_image_from_head
+
         failed = distribute_image_from_head("img:latest", ["head", "w1", "w2"])
         assert set(failed) == {"w1", "w2"}
 
     def test_empty_hosts(self):
         from sparkrun.containers.distribute import distribute_image_from_head
+
         failed = distribute_image_from_head("img:latest", [])
         assert failed == []
 
@@ -555,12 +613,18 @@ class TestDistributeImageFromHead:
     def test_ssh_params_forwarded(self, mock_run):
         """SSH parameters are forwarded to remote script calls."""
         mock_run.return_value = RemoteResult(
-            host="head", returncode=0, stdout="ok", stderr="",
+            host="head",
+            returncode=0,
+            stdout="ok",
+            stderr="",
         )
         from sparkrun.containers.distribute import distribute_image_from_head
+
         distribute_image_from_head(
-            "img:latest", ["head"],
-            ssh_user="admin", ssh_key="/mykey",
+            "img:latest",
+            ["head"],
+            ssh_user="admin",
+            ssh_key="/mykey",
         )
         call_kwargs = mock_run.call_args[1]
         assert call_kwargs["ssh_user"] == "admin"
@@ -570,11 +634,16 @@ class TestDistributeImageFromHead:
     def test_worker_transfer_hosts(self, mock_run):
         """worker_transfer_hosts are used for distribution targets."""
         mock_run.return_value = RemoteResult(
-            host="head", returncode=0, stdout="ok", stderr="",
+            host="head",
+            returncode=0,
+            stdout="ok",
+            stderr="",
         )
         from sparkrun.containers.distribute import distribute_image_from_head
+
         failed = distribute_image_from_head(
-            "img:latest", ["head", "w1", "w2"],
+            "img:latest",
+            ["head", "w1", "w2"],
             worker_transfer_hosts=["10.0.0.1", "10.0.0.2"],
         )
         assert failed == []
@@ -588,9 +657,12 @@ class TestDistributeImageFromHead:
     def test_all_hosts_up_to_date_early_return(self, mock_dist, mock_check):
         """All hosts have matching image → early return, no distribution."""
         mock_check.return_value = {
-            "head": "sha256:abc123", "w1": "sha256:abc123", "w2": "sha256:abc123",
+            "head": "sha256:abc123",
+            "w1": "sha256:abc123",
+            "w2": "sha256:abc123",
         }
         from sparkrun.containers.distribute import distribute_image_from_head
+
         failed = distribute_image_from_head("img:latest", ["head", "w1", "w2"])
         assert failed == []
         mock_dist.assert_not_called()
@@ -600,12 +672,16 @@ class TestDistributeImageFromHead:
     def test_partial_workers_stale(self, mock_dist, mock_check):
         """Head has image, 1 of 2 workers stale → distribute only to stale worker."""
         mock_check.return_value = {
-            "head": "sha256:abc123", "w1": "sha256:abc123", "w2": "sha256:old999",
+            "head": "sha256:abc123",
+            "w1": "sha256:abc123",
+            "w2": "sha256:old999",
         }
         mock_dist.return_value = []
         from sparkrun.containers.distribute import distribute_image_from_head
+
         failed = distribute_image_from_head(
-            "img:latest", ["head", "w1", "w2"],
+            "img:latest",
+            ["head", "w1", "w2"],
             worker_transfer_hosts=["10.0.0.1", "10.0.0.2"],
         )
         assert failed == []
@@ -623,6 +699,7 @@ class TestDistributeImageFromHead:
         mock_check.return_value = {"w1": "sha256:abc123"}
         mock_dist.return_value = []
         from sparkrun.containers.distribute import distribute_image_from_head
+
         failed = distribute_image_from_head("img:latest", ["head", "w1", "w2"])
         assert failed == []
         # All hosts should be passed through since head doesn't have the image
@@ -634,9 +711,13 @@ class TestDistributeImageFromHead:
     def test_dry_run_skips_precheck(self, mock_run, mock_check):
         """dry_run skips the pre-check entirely."""
         mock_run.return_value = RemoteResult(
-            host="head", returncode=0, stdout="ok", stderr="",
+            host="head",
+            returncode=0,
+            stdout="ok",
+            stderr="",
         )
         from sparkrun.containers.distribute import distribute_image_from_head
+
         distribute_image_from_head("img:latest", ["head"], dry_run=True)
         mock_check.assert_not_called()
 
@@ -644,6 +725,7 @@ class TestDistributeImageFromHead:
 # ---------------------------------------------------------------------------
 # Model distribution
 # ---------------------------------------------------------------------------
+
 
 class TestDistributeModelFromLocal:
     """Test distribute_model_from_local."""
@@ -656,6 +738,7 @@ class TestDistributeModelFromLocal:
             RemoteResult(host="h1", returncode=0, stdout="[dry-run]", stderr=""),
         ]
         from sparkrun.models.distribute import distribute_model_from_local
+
         failed = distribute_model_from_local("org/model", ["h1"], dry_run=True)
         assert failed == []
 
@@ -668,6 +751,7 @@ class TestDistributeModelFromLocal:
             RemoteResult(host="h2", returncode=0, stdout="ok", stderr=""),
         ]
         from sparkrun.models.distribute import distribute_model_from_local
+
         failed = distribute_model_from_local("org/model", ["h1", "h2"])
         assert failed == []
         # Verify rsync source path matches HF cache convention
@@ -680,6 +764,7 @@ class TestDistributeModelFromLocal:
         """If download fails, all hosts are returned as failed."""
         mock_dl.return_value = 1
         from sparkrun.models.distribute import distribute_model_from_local
+
         failed = distribute_model_from_local("org/model", ["h1", "h2"])
         assert failed == ["h1", "h2"]
         mock_rsync.assert_not_called()
@@ -693,6 +778,7 @@ class TestDistributeModelFromLocal:
             RemoteResult(host="h2", returncode=1, stdout="", stderr="err"),
         ]
         from sparkrun.models.distribute import distribute_model_from_local
+
         failed = distribute_model_from_local("org/model", ["h1", "h2"])
         assert failed == ["h2"]
 
@@ -704,9 +790,14 @@ class TestDistributeModelFromLocal:
             RemoteResult(host="h1", returncode=0, stdout="ok", stderr=""),
         ]
         from sparkrun.models.distribute import distribute_model_from_local
+
         distribute_model_from_local("org/model", ["h1"], cache_dir="/custom/cache")
         mock_dl.assert_called_once_with(
-            "org/model", cache_dir="/custom/cache", token=None, revision=None, dry_run=False,
+            "org/model",
+            cache_dir="/custom/cache",
+            token=None,
+            revision=None,
+            dry_run=False,
         )
         # Rsync path should use custom cache
         assert "/custom/cache/hub/models--org--model" in mock_rsync.call_args[0][0]
@@ -716,6 +807,7 @@ class TestDistributeModelFromLocal:
     def test_empty_hosts(self, mock_dl, mock_rsync):
         mock_dl.return_value = 0
         from sparkrun.models.distribute import distribute_model_from_local
+
         failed = distribute_model_from_local("org/model", [])
         assert failed == []
         mock_rsync.assert_not_called()
@@ -730,8 +822,10 @@ class TestDistributeModelFromLocal:
             RemoteResult(host="10.0.0.2", returncode=0, stdout="ok", stderr=""),
         ]
         from sparkrun.models.distribute import distribute_model_from_local
+
         failed = distribute_model_from_local(
-            "org/model", ["h1", "h2"],
+            "org/model",
+            ["h1", "h2"],
             transfer_hosts=["10.0.0.1", "10.0.0.2"],
         )
         assert failed == []
@@ -749,8 +843,10 @@ class TestDistributeModelFromLocal:
             RemoteResult(host="10.0.0.2", returncode=1, stdout="", stderr="err"),
         ]
         from sparkrun.models.distribute import distribute_model_from_local
+
         failed = distribute_model_from_local(
-            "org/model", ["mgmt1", "mgmt2"],
+            "org/model",
+            ["mgmt1", "mgmt2"],
             transfer_hosts=["10.0.0.1", "10.0.0.2"],
         )
         assert failed == ["mgmt2"]
@@ -763,9 +859,13 @@ class TestDistributeModelFromHead:
     def test_single_host(self, mock_run):
         """Single host: download only, no distribution."""
         mock_run.return_value = RemoteResult(
-            host="head", returncode=0, stdout="downloaded", stderr="",
+            host="head",
+            returncode=0,
+            stdout="downloaded",
+            stderr="",
         )
         from sparkrun.models.distribute import distribute_model_from_head
+
         failed = distribute_model_from_head("org/model", ["head"])
         assert failed == []
         assert mock_run.call_count == 1
@@ -774,9 +874,13 @@ class TestDistributeModelFromHead:
     def test_multi_host(self, mock_run):
         """Multi host: download on head, then distribute script."""
         mock_run.return_value = RemoteResult(
-            host="head", returncode=0, stdout="ok", stderr="",
+            host="head",
+            returncode=0,
+            stdout="ok",
+            stderr="",
         )
         from sparkrun.models.distribute import distribute_model_from_head
+
         failed = distribute_model_from_head("org/model", ["head", "w1", "w2"])
         assert failed == []
         assert mock_run.call_count == 2
@@ -790,9 +894,13 @@ class TestDistributeModelFromHead:
     def test_download_fails(self, mock_run):
         """If download on head fails, all hosts are returned as failed."""
         mock_run.return_value = RemoteResult(
-            host="head", returncode=1, stdout="", stderr="dl failed",
+            host="head",
+            returncode=1,
+            stdout="",
+            stderr="dl failed",
         )
         from sparkrun.models.distribute import distribute_model_from_head
+
         failed = distribute_model_from_head("org/model", ["head", "w1"])
         assert failed == ["head", "w1"]
 
@@ -804,11 +912,13 @@ class TestDistributeModelFromHead:
             RemoteResult(host="head", returncode=1, stdout="", stderr="rsync failed"),
         ]
         from sparkrun.models.distribute import distribute_model_from_head
+
         failed = distribute_model_from_head("org/model", ["head", "w1", "w2"])
         assert set(failed) == {"w1", "w2"}
 
     def test_empty_hosts(self):
         from sparkrun.models.distribute import distribute_model_from_head
+
         failed = distribute_model_from_head("org/model", [])
         assert failed == []
 
@@ -816,11 +926,16 @@ class TestDistributeModelFromHead:
     def test_worker_transfer_hosts(self, mock_run):
         """worker_transfer_hosts are used for distribution targets."""
         mock_run.return_value = RemoteResult(
-            host="head", returncode=0, stdout="ok", stderr="",
+            host="head",
+            returncode=0,
+            stdout="ok",
+            stderr="",
         )
         from sparkrun.models.distribute import distribute_model_from_head
+
         failed = distribute_model_from_head(
-            "org/model", ["head", "w1", "w2"],
+            "org/model",
+            ["head", "w1", "w2"],
             worker_transfer_hosts=["10.0.0.1", "10.0.0.2"],
         )
         assert failed == []
@@ -834,17 +949,20 @@ class TestDistributeModelFromHead:
 # InfiniBand detection helpers
 # ---------------------------------------------------------------------------
 
+
 class TestIBDetectionResult:
     """Test IBDetectionResult dataclass."""
 
     def test_defaults(self):
         from sparkrun.orchestration.infiniband import IBDetectionResult
+
         result = IBDetectionResult()
         assert result.nccl_env == {}
         assert result.ib_ip_map == {}
 
     def test_with_data(self):
         from sparkrun.orchestration.infiniband import IBDetectionResult
+
         result = IBDetectionResult(
             nccl_env={"NCCL_NET": "IB"},
             ib_ip_map={"h1": "10.0.0.1"},
@@ -858,25 +976,30 @@ class TestExtractIbIps:
 
     def test_multiple_ips(self):
         from sparkrun.orchestration.infiniband import extract_ib_ips
+
         ib_info = {"DETECTED_IB_IPS": "10.0.0.1,10.0.0.2"}
         assert extract_ib_ips(ib_info) == ["10.0.0.1", "10.0.0.2"]
 
     def test_single_ip(self):
         from sparkrun.orchestration.infiniband import extract_ib_ips
+
         ib_info = {"DETECTED_IB_IPS": "10.0.0.1"}
         assert extract_ib_ips(ib_info) == ["10.0.0.1"]
 
     def test_empty_string(self):
         from sparkrun.orchestration.infiniband import extract_ib_ips
+
         ib_info = {"DETECTED_IB_IPS": ""}
         assert extract_ib_ips(ib_info) == []
 
     def test_missing_key(self):
         from sparkrun.orchestration.infiniband import extract_ib_ips
+
         assert extract_ib_ips({}) == []
 
     def test_whitespace_handling(self):
         from sparkrun.orchestration.infiniband import extract_ib_ips
+
         ib_info = {"DETECTED_IB_IPS": " 10.0.0.1 , 10.0.0.2 "}
         assert extract_ib_ips(ib_info) == ["10.0.0.1", "10.0.0.2"]
 
@@ -889,18 +1012,20 @@ class TestDetectIbForHosts:
         """NCCL env is derived from the head host's detection."""
         mock_parallel.return_value = [
             RemoteResult(
-                host="h1", returncode=0,
-                stdout="IB_DETECTED=1\nDETECTED_GID_INDEX=3\nDETECTED_HCA_LIST=mlx5_0\n"
-                       "DETECTED_NET_LIST=ib0\nDETECTED_IB_IPS=10.0.0.1\n",
+                host="h1",
+                returncode=0,
+                stdout="IB_DETECTED=1\nDETECTED_GID_INDEX=3\nDETECTED_HCA_LIST=mlx5_0\nDETECTED_NET_LIST=ib0\nDETECTED_IB_IPS=10.0.0.1\n",
                 stderr="",
             ),
             RemoteResult(
-                host="h2", returncode=0,
+                host="h2",
+                returncode=0,
                 stdout="IB_DETECTED=1\nDETECTED_IB_IPS=10.0.0.2\n",
                 stderr="",
             ),
         ]
         from sparkrun.orchestration.infiniband import detect_ib_for_hosts
+
         result = detect_ib_for_hosts(["h1", "h2"])
         # NCCL env from head
         assert result.nccl_env.get("NCCL_NET") == "IB"
@@ -915,12 +1040,14 @@ class TestDetectIbForHosts:
             RemoteResult(host="h1", returncode=0, stdout="IB_DETECTED=0\n", stderr=""),
         ]
         from sparkrun.orchestration.infiniband import detect_ib_for_hosts
+
         result = detect_ib_for_hosts(["h1"])
         assert result.nccl_env == {}
         assert result.ib_ip_map == {}
 
     def test_empty_hosts(self):
         from sparkrun.orchestration.infiniband import detect_ib_for_hosts
+
         result = detect_ib_for_hosts([])
         assert result.nccl_env == {}
         assert result.ib_ip_map == {}
@@ -930,18 +1057,20 @@ class TestDetectIbForHosts:
         """Only hosts with IB get IPs; all get NCCL from head."""
         mock_parallel.return_value = [
             RemoteResult(
-                host="h1", returncode=0,
-                stdout="IB_DETECTED=1\nDETECTED_HCA_LIST=mlx5_0\n"
-                       "DETECTED_NET_LIST=ib0\nDETECTED_IB_IPS=10.0.0.1\n",
+                host="h1",
+                returncode=0,
+                stdout="IB_DETECTED=1\nDETECTED_HCA_LIST=mlx5_0\nDETECTED_NET_LIST=ib0\nDETECTED_IB_IPS=10.0.0.1\n",
                 stderr="",
             ),
             RemoteResult(
-                host="h2", returncode=0,
+                host="h2",
+                returncode=0,
                 stdout="IB_DETECTED=0\n",
                 stderr="",
             ),
         ]
         from sparkrun.orchestration.infiniband import detect_ib_for_hosts
+
         result = detect_ib_for_hosts(["h1", "h2"])
         assert result.nccl_env.get("NCCL_NET") == "IB"
         assert "h1" in result.ib_ip_map
@@ -953,13 +1082,14 @@ class TestDetectIbForHosts:
         mock_parallel.return_value = [
             RemoteResult(host="h1", returncode=1, stdout="", stderr="ssh error"),
             RemoteResult(
-                host="h2", returncode=0,
-                stdout="IB_DETECTED=1\nDETECTED_HCA_LIST=mlx5_0\n"
-                       "DETECTED_NET_LIST=ib0\nDETECTED_IB_IPS=10.0.0.2\n",
+                host="h2",
+                returncode=0,
+                stdout="IB_DETECTED=1\nDETECTED_HCA_LIST=mlx5_0\nDETECTED_NET_LIST=ib0\nDETECTED_IB_IPS=10.0.0.2\n",
                 stderr="",
             ),
         ]
         from sparkrun.orchestration.infiniband import detect_ib_for_hosts
+
         result = detect_ib_for_hosts(["h1", "h2"])
         # h1 failed, so NCCL env comes from h2 (not the head)
         # But since h1 is the head and failed, we may get empty NCCL
@@ -972,6 +1102,7 @@ class TestDetectIbForHosts:
 # Push-mode distribution helpers
 # ---------------------------------------------------------------------------
 
+
 class TestDistributeImagePush:
     """Test _distribute_image_push helper."""
 
@@ -981,10 +1112,13 @@ class TestDistributeImagePush:
         """Single host: push to head only, no head-to-worker distribution."""
         mock_local.return_value = []
         from sparkrun.orchestration.distribution import _distribute_image_push
+
         failed = _distribute_image_push(
-            "img:latest", ["head"],
+            "img:latest",
+            ["head"],
             worker_transfer_hosts=None,
-            ssh_kwargs={}, dry_run=False,
+            ssh_kwargs={},
+            dry_run=False,
         )
         assert failed == []
         mock_local.assert_called_once()
@@ -997,10 +1131,13 @@ class TestDistributeImagePush:
         mock_local.return_value = []
         mock_head.return_value = []
         from sparkrun.orchestration.distribution import _distribute_image_push
+
         failed = _distribute_image_push(
-            "img:latest", ["head", "w1", "w2"],
+            "img:latest",
+            ["head", "w1", "w2"],
             worker_transfer_hosts=["10.0.0.1", "10.0.0.2"],
-            ssh_kwargs={}, dry_run=False,
+            ssh_kwargs={},
+            dry_run=False,
         )
         assert failed == []
         # Local push should target only the head
@@ -1017,10 +1154,13 @@ class TestDistributeImagePush:
         """If push to head fails, all hosts are returned as failed."""
         mock_local.return_value = ["head"]
         from sparkrun.orchestration.distribution import _distribute_image_push
+
         failed = _distribute_image_push(
-            "img:latest", ["head", "w1"],
+            "img:latest",
+            ["head", "w1"],
             worker_transfer_hosts=None,
-            ssh_kwargs={}, dry_run=False,
+            ssh_kwargs={},
+            dry_run=False,
         )
         assert failed == ["head", "w1"]
         mock_head.assert_not_called()
@@ -1035,11 +1175,14 @@ class TestDistributeModelPush:
         """Single host: push to head only."""
         mock_local.return_value = []
         from sparkrun.orchestration.distribution import _distribute_model_push
+
         failed = _distribute_model_push(
-            "org/model", ["head"],
+            "org/model",
+            ["head"],
             cache_dir="/cache",
             worker_transfer_hosts=None,
-            ssh_kwargs={}, dry_run=False,
+            ssh_kwargs={},
+            dry_run=False,
         )
         assert failed == []
         mock_local.assert_called_once()
@@ -1052,11 +1195,14 @@ class TestDistributeModelPush:
         mock_local.return_value = []
         mock_head.return_value = []
         from sparkrun.orchestration.distribution import _distribute_model_push
+
         failed = _distribute_model_push(
-            "org/model", ["head", "w1", "w2"],
+            "org/model",
+            ["head", "w1", "w2"],
             cache_dir="/cache",
             worker_transfer_hosts=["10.0.0.1", "10.0.0.2"],
-            ssh_kwargs={}, dry_run=False,
+            ssh_kwargs={},
+            dry_run=False,
         )
         assert failed == []
         local_hosts = mock_local.call_args[0][1]
@@ -1069,11 +1215,14 @@ class TestDistributeModelPush:
         """If push to head fails, all hosts are returned as failed."""
         mock_local.return_value = ["head"]
         from sparkrun.orchestration.distribution import _distribute_model_push
+
         failed = _distribute_model_push(
-            "org/model", ["head", "w1"],
+            "org/model",
+            ["head", "w1"],
             cache_dir="/cache",
             worker_transfer_hosts=None,
-            ssh_kwargs={}, dry_run=False,
+            ssh_kwargs={},
+            dry_run=False,
         )
         assert failed == ["head", "w1"]
         mock_head.assert_not_called()
@@ -1082,6 +1231,7 @@ class TestDistributeModelPush:
 # ---------------------------------------------------------------------------
 # distribute_resources transfer_mode routing
 # ---------------------------------------------------------------------------
+
 
 class TestDistributeResourcesTransferMode:
     """Test that distribute_resources routes to the correct distribution
@@ -1105,9 +1255,14 @@ class TestDistributeResourcesTransferMode:
         mock_ib.return_value = mock.MagicMock(nccl_env={}, ib_ip_map={}, mgmt_ip_map={})
         mock_img.return_value = []
         from sparkrun.orchestration.distribution import distribute_resources
+
         distribute_resources(
-            "img:latest", "", ["h1", "h2"], "/cache",
-            self._make_config(), dry_run=True,
+            "img:latest",
+            "",
+            ["h1", "h2"],
+            "/cache",
+            self._make_config(),
+            dry_run=True,
             transfer_mode="local",
         )
         mock_img.assert_called_once()
@@ -1121,9 +1276,14 @@ class TestDistributeResourcesTransferMode:
         mock_ib.return_value = mock.MagicMock(nccl_env={}, ib_ip_map={}, mgmt_ip_map={})
         mock_push.return_value = []
         from sparkrun.orchestration.distribution import distribute_resources
+
         distribute_resources(
-            "img:latest", "", ["h1", "h2"], "/cache",
-            self._make_config(), dry_run=True,
+            "img:latest",
+            "",
+            ["h1", "h2"],
+            "/cache",
+            self._make_config(),
+            dry_run=True,
             transfer_mode="push",
         )
         mock_push.assert_called_once()
@@ -1136,9 +1296,14 @@ class TestDistributeResourcesTransferMode:
         mock_ib.return_value = mock.MagicMock(nccl_env={}, ib_ip_map={}, mgmt_ip_map={})
         mock_head.return_value = []
         from sparkrun.orchestration.distribution import distribute_resources
+
         distribute_resources(
-            "img:latest", "", ["h1", "h2"], "/cache",
-            self._make_config(), dry_run=True,
+            "img:latest",
+            "",
+            ["h1", "h2"],
+            "/cache",
+            self._make_config(),
+            dry_run=True,
             transfer_mode="delegated",
         )
         mock_head.assert_called_once()
@@ -1151,9 +1316,14 @@ class TestDistributeResourcesTransferMode:
         """Push mode does not call validate_ib_connectivity."""
         mock_ib.return_value = mock.MagicMock(nccl_env={}, ib_ip_map={}, mgmt_ip_map={})
         from sparkrun.orchestration.distribution import distribute_resources
+
         distribute_resources(
-            "img:latest", "", ["h1", "h2"], "/cache",
-            self._make_config(), dry_run=True,
+            "img:latest",
+            "",
+            ["h1", "h2"],
+            "/cache",
+            self._make_config(),
+            dry_run=True,
             transfer_mode="push",
         )
         mock_validate.assert_not_called()
@@ -1168,9 +1338,14 @@ class TestDistributeResourcesTransferMode:
         mock_img_push.return_value = []
         mock_mdl_push.return_value = []
         from sparkrun.orchestration.distribution import distribute_resources
+
         distribute_resources(
-            "img:latest", "org/model", ["h1", "h2"], "/cache",
-            self._make_config(), dry_run=True,
+            "img:latest",
+            "org/model",
+            ["h1", "h2"],
+            "/cache",
+            self._make_config(),
+            dry_run=True,
             transfer_mode="push",
         )
         mock_img_push.assert_called_once()
@@ -1186,9 +1361,14 @@ class TestDistributeResourcesTransferMode:
         mock_img_head.return_value = []
         mock_mdl_head.return_value = []
         from sparkrun.orchestration.distribution import distribute_resources
+
         distribute_resources(
-            "img:latest", "org/model", ["h1", "h2"], "/cache",
-            self._make_config(), dry_run=True,
+            "img:latest",
+            "org/model",
+            ["h1", "h2"],
+            "/cache",
+            self._make_config(),
+            dry_run=True,
             transfer_mode="delegated",
         )
         mock_img_head.assert_called_once()
@@ -1200,13 +1380,19 @@ class TestDistributeResourcesTransferMode:
     def test_push_mode_computes_worker_transfer_hosts(self, mock_ssh, mock_ib, mock_push):
         """Push mode builds worker_transfer_hosts from IB IPs for workers."""
         mock_ib.return_value = mock.MagicMock(
-            nccl_env={}, mgmt_ip_map={},
+            nccl_env={},
+            mgmt_ip_map={},
             ib_ip_map={"h1": "10.0.0.1", "h2": "10.0.0.2", "h3": "10.0.0.3"},
         )
         from sparkrun.orchestration.distribution import distribute_resources
+
         distribute_resources(
-            "img:latest", "", ["h1", "h2", "h3"], "/cache",
-            self._make_config(), dry_run=True,
+            "img:latest",
+            "",
+            ["h1", "h2", "h3"],
+            "/cache",
+            self._make_config(),
+            dry_run=True,
             transfer_mode="push",
         )
         call_kwargs = mock_push.call_args[1]
@@ -1219,15 +1405,21 @@ class TestDistributeResourcesTransferMode:
     def test_auto_resolves_to_local_with_ib(self, mock_ssh, mock_ib, mock_validate, mock_img):
         """Auto mode resolves to local when IB is reachable from control node."""
         mock_ib.return_value = mock.MagicMock(
-            nccl_env={}, mgmt_ip_map={},
+            nccl_env={},
+            mgmt_ip_map={},
             ib_ip_map={"h1": "10.0.0.1", "h2": "10.0.0.2"},
         )
         mock_validate.return_value = {"h1": "10.0.0.1", "h2": "10.0.0.2"}
         mock_img.return_value = []
         from sparkrun.orchestration.distribution import distribute_resources
+
         distribute_resources(
-            "img:latest", "", ["h1", "h2"], "/cache",
-            self._make_config(), dry_run=True,
+            "img:latest",
+            "",
+            ["h1", "h2"],
+            "/cache",
+            self._make_config(),
+            dry_run=True,
             transfer_mode="auto",
         )
         mock_validate.assert_called_once()
@@ -1241,15 +1433,21 @@ class TestDistributeResourcesTransferMode:
     def test_auto_resolves_to_delegated_without_ib(self, mock_ssh, mock_ib, mock_validate, mock_membership, mock_head):
         """Auto mode resolves to delegated when external control and no IB."""
         mock_ib.return_value = mock.MagicMock(
-            nccl_env={}, mgmt_ip_map={},
+            nccl_env={},
+            mgmt_ip_map={},
             ib_ip_map={"h1": "10.0.0.1", "h2": "10.0.0.2"},
         )
         mock_validate.return_value = {}
         mock_head.return_value = []
         from sparkrun.orchestration.distribution import distribute_resources
+
         distribute_resources(
-            "img:latest", "", ["h1", "h2"], "/cache",
-            self._make_config(), dry_run=True,
+            "img:latest",
+            "",
+            ["h1", "h2"],
+            "/cache",
+            self._make_config(),
+            dry_run=True,
             transfer_mode="auto",
         )
         mock_validate.assert_called_once()
@@ -1263,14 +1461,21 @@ class TestDistributeResourcesTransferMode:
     def test_auto_resolves_to_delegated_no_ib_hardware(self, mock_ssh, mock_ib, mock_validate, mock_membership, mock_head):
         """Auto mode resolves to delegated when no IB hardware detected."""
         mock_ib.return_value = mock.MagicMock(
-            nccl_env={}, mgmt_ip_map={}, ib_ip_map={},
+            nccl_env={},
+            mgmt_ip_map={},
+            ib_ip_map={},
         )
         mock_validate.return_value = {}
         mock_head.return_value = []
         from sparkrun.orchestration.distribution import distribute_resources
+
         distribute_resources(
-            "img:latest", "", ["h1", "h2"], "/cache",
-            self._make_config(), dry_run=True,
+            "img:latest",
+            "",
+            ["h1", "h2"],
+            "/cache",
+            self._make_config(),
+            dry_run=True,
             transfer_mode="auto",
         )
         mock_validate.assert_called_once()
@@ -1284,14 +1489,21 @@ class TestDistributeResourcesTransferMode:
     def test_auto_cluster_member_no_ib_uses_local(self, mock_ssh, mock_ib, mock_validate, mock_membership, mock_img):
         """Auto mode resolves to local when control is cluster member, even without IB."""
         mock_ib.return_value = mock.MagicMock(
-            nccl_env={}, mgmt_ip_map={}, ib_ip_map={},
+            nccl_env={},
+            mgmt_ip_map={},
+            ib_ip_map={},
         )
         mock_validate.return_value = {}
         mock_img.return_value = []
         from sparkrun.orchestration.distribution import distribute_resources
+
         distribute_resources(
-            "img:latest", "", ["h1", "h2"], "/cache",
-            self._make_config(), dry_run=True,
+            "img:latest",
+            "",
+            ["h1", "h2"],
+            "/cache",
+            self._make_config(),
+            dry_run=True,
             transfer_mode="auto",
         )
         mock_img.assert_called_once()
@@ -1304,15 +1516,21 @@ class TestDistributeResourcesTransferMode:
     def test_auto_cluster_member_with_ib_uses_local(self, mock_ssh, mock_ib, mock_validate, mock_membership, mock_img):
         """Auto mode resolves to local when control is cluster member with IB."""
         mock_ib.return_value = mock.MagicMock(
-            nccl_env={}, mgmt_ip_map={},
+            nccl_env={},
+            mgmt_ip_map={},
             ib_ip_map={"h1": "10.0.0.1", "h2": "10.0.0.2"},
         )
         mock_validate.return_value = {"h1": "10.0.0.1", "h2": "10.0.0.2"}
         mock_img.return_value = []
         from sparkrun.orchestration.distribution import distribute_resources
+
         distribute_resources(
-            "img:latest", "", ["h1", "h2"], "/cache",
-            self._make_config(), dry_run=True,
+            "img:latest",
+            "",
+            ["h1", "h2"],
+            "/cache",
+            self._make_config(),
+            dry_run=True,
             transfer_mode="auto",
         )
         mock_img.assert_called_once()
@@ -1329,9 +1547,14 @@ class TestDistributeResourcesTransferMode:
         mock_head.return_value = ["h1", "h2"]  # delegated fails
         mock_push.return_value = []  # push succeeds
         from sparkrun.orchestration.distribution import distribute_resources
+
         distribute_resources(
-            "img:latest", "", ["h1", "h2"], "/cache",
-            self._make_config(), dry_run=True,
+            "img:latest",
+            "",
+            ["h1", "h2"],
+            "/cache",
+            self._make_config(),
+            dry_run=True,
             transfer_mode="auto",
         )
         mock_head.assert_called_once()
@@ -1346,10 +1569,15 @@ class TestDistributeResourcesTransferMode:
         mock_ib.return_value = mock.MagicMock(nccl_env={}, mgmt_ip_map={}, ib_ip_map={})
         mock_head.return_value = ["h1", "h2"]  # delegated fails
         from sparkrun.orchestration.distribution import DistributionError, distribute_resources
+
         with pytest.raises(DistributionError, match="Image distribution failed"):
             distribute_resources(
-                "img:latest", "", ["h1", "h2"], "/cache",
-                self._make_config(), dry_run=True,
+                "img:latest",
+                "",
+                ["h1", "h2"],
+                "/cache",
+                self._make_config(),
+                dry_run=True,
                 transfer_mode="delegated",
             )
         mock_head.assert_called_once()
@@ -1362,17 +1590,23 @@ class TestDistributeResourcesTransferMode:
     @mock.patch("sparkrun.orchestration.infiniband.validate_ib_connectivity", return_value={})
     @mock.patch("sparkrun.orchestration.infiniband.detect_ib_for_hosts")
     @mock.patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={})
-    def test_auto_delegated_model_fallback_to_push(self, mock_ssh, mock_ib, mock_validate, mock_membership,
-                                                    mock_img_head, mock_mdl_head, mock_mdl_push):
+    def test_auto_delegated_model_fallback_to_push(
+        self, mock_ssh, mock_ib, mock_validate, mock_membership, mock_img_head, mock_mdl_head, mock_mdl_push
+    ):
         """Auto-resolved delegated model distribution falls back to push on failure."""
         mock_ib.return_value = mock.MagicMock(nccl_env={}, mgmt_ip_map={}, ib_ip_map={})
         mock_img_head.return_value = []  # image succeeds
         mock_mdl_head.return_value = ["h1", "h2"]  # model delegated fails
         mock_mdl_push.return_value = []  # model push succeeds
         from sparkrun.orchestration.distribution import distribute_resources
+
         distribute_resources(
-            "img:latest", "org/model", ["h1", "h2"], "/cache",
-            self._make_config(), dry_run=True,
+            "img:latest",
+            "org/model",
+            ["h1", "h2"],
+            "/cache",
+            self._make_config(),
+            dry_run=True,
             transfer_mode="auto",
         )
         mock_mdl_head.assert_called_once()

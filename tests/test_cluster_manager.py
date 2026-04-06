@@ -348,7 +348,8 @@ def test_create_cluster_with_all_fields(tmp_path: Path):
     """Create a cluster with all optional fields including transfer_mode."""
     manager = ClusterManager(tmp_path)
     manager.create(
-        "full", ["host1", "host2"],
+        "full",
+        ["host1", "host2"],
         description="Full cluster",
         user="admin",
         cache_dir="/mnt/models",
@@ -367,6 +368,7 @@ def test_create_cluster_with_all_fields(tmp_path: Path):
 def test_valid_transfer_modes_constant():
     """VALID_TRANSFER_MODES contains the expected values."""
     from sparkrun.core.cluster_manager import VALID_TRANSFER_MODES
+
     assert VALID_TRANSFER_MODES == ("auto", "local", "push", "delegated")
 
 
@@ -449,7 +451,8 @@ def test_create_cluster_with_all_fields_including_interface(tmp_path: Path):
     """Create a cluster with all optional fields including transfer_interface."""
     manager = ClusterManager(tmp_path)
     manager.create(
-        "full", ["host1", "host2"],
+        "full",
+        ["host1", "host2"],
         description="Full cluster",
         user="admin",
         cache_dir="/mnt/models",
@@ -470,6 +473,7 @@ def test_create_cluster_with_all_fields_including_interface(tmp_path: Path):
 def test_valid_transfer_interfaces_constant():
     """VALID_TRANSFER_INTERFACES contains the expected values."""
     from sparkrun.core.cluster_manager import VALID_TRANSFER_INTERFACES
+
     assert VALID_TRANSFER_INTERFACES == ("cx7", "mgmt")
 
 
@@ -526,7 +530,8 @@ def test_create_cluster_with_all_fields_including_topology(tmp_path: Path):
     """Create a cluster with all optional fields including topology."""
     manager = ClusterManager(tmp_path)
     manager.create(
-        "full", ["host1", "host2", "host3"],
+        "full",
+        ["host1", "host2", "host3"],
         description="Full ring cluster",
         user="admin",
         cache_dir="/mnt/models",
@@ -553,11 +558,15 @@ def test_existing_yaml_without_topology_loads(tmp_path: Path):
     clusters_dir = tmp_path / "clusters"
     clusters_dir.mkdir()
     yaml_file = clusters_dir / "old-cluster.yaml"
-    yaml_file.write_text(yaml.dump({
-        "name": "old-cluster",
-        "hosts": ["host1", "host2"],
-        "description": "Old cluster without topology",
-    }))
+    yaml_file.write_text(
+        yaml.dump(
+            {
+                "name": "old-cluster",
+                "hosts": ["host1", "host2"],
+                "description": "Old cluster without topology",
+            }
+        )
+    )
 
     manager = ClusterManager(tmp_path)
     cluster = manager.get("old-cluster")
@@ -572,6 +581,7 @@ def test_existing_yaml_without_topology_loads(tmp_path: Path):
 
 class _FakeConfig:
     """Minimal stand-in for SparkrunConfig with hf_cache_dir."""
+
     def __init__(self, hf_cache_dir: str = "/home/testuser/.cache/huggingface"):
         self.hf_cache_dir = Path(hf_cache_dir)
 
@@ -598,8 +608,7 @@ class TestResolveTransferConfig:
         """macOS (or other non-Linux) control machine → remote path is Linux-safe."""
         cfg = ResolvedClusterConfig()
         config = _FakeConfig("/Users/drew/.cache/huggingface")
-        with patch("sys.platform", "darwin"), \
-             patch.dict("os.environ", {"USER": "drew"}):
+        with patch("sys.platform", "darwin"), patch.dict("os.environ", {"USER": "drew"}):
             _, remote, _, _ = cfg.resolve_transfer_config(config)
         assert remote == "/home/drew/.cache/huggingface"
 
@@ -608,8 +617,7 @@ class TestResolveTransferConfig:
         cfg = ResolvedClusterConfig(user="drew")
         config = _FakeConfig("/Users/drew/.cache/huggingface")
         # Same username on both sides, so cross-user branch doesn't fire
-        with patch("sys.platform", "darwin"), \
-             patch.dict("os.environ", {"USER": "drew"}):
+        with patch("sys.platform", "darwin"), patch.dict("os.environ", {"USER": "drew"}):
             _, remote, _, _ = cfg.resolve_transfer_config(config)
         assert remote == "/home/drew/.cache/huggingface"
 
@@ -617,8 +625,7 @@ class TestResolveTransferConfig:
         """Linux control machine → remote path matches local (same platform)."""
         cfg = ResolvedClusterConfig()
         config = _FakeConfig("/home/drew/.cache/huggingface")
-        with patch("sys.platform", "linux"), \
-             patch.dict("os.environ", {"USER": "drew"}):
+        with patch("sys.platform", "linux"), patch.dict("os.environ", {"USER": "drew"}):
             _, remote, _, _ = cfg.resolve_transfer_config(config)
         assert remote == "/home/drew/.cache/huggingface"
 
@@ -657,14 +664,33 @@ class TestParseMonitorLine:
         from sparkrun.core.monitoring import parse_monitor_line, MONITOR_COLUMNS
 
         fields = [
-            "2026-03-02T10:00:00Z", "spark-01", "12345",
-            "1.2", "0.8", "0.5",
-            "23.4", "2400", "55.0",
-            "128000", "45120", "82880", "35.2",
-            "8192", "100",
-            "NVIDIA GH200", "85.0", "60000", "131072", "45.8",
-            "62", "180.5", "300.0", "1500", "5001",
-            "3", "sparkrun_abc|sparkrun_def|sparkrun_ghi",
+            "2026-03-02T10:00:00Z",
+            "spark-01",
+            "12345",
+            "1.2",
+            "0.8",
+            "0.5",
+            "23.4",
+            "2400",
+            "55.0",
+            "128000",
+            "45120",
+            "82880",
+            "35.2",
+            "8192",
+            "100",
+            "NVIDIA GH200",
+            "85.0",
+            "60000",
+            "131072",
+            "45.8",
+            "62",
+            "180.5",
+            "300.0",
+            "1500",
+            "5001",
+            "3",
+            "sparkrun_abc|sparkrun_def|sparkrun_ghi",
         ]
         assert len(fields) == len(MONITOR_COLUMNS)
         line = ",".join(fields)
@@ -688,14 +714,33 @@ class TestParseMonitorLine:
         from sparkrun.core.monitoring import parse_monitor_line, MONITOR_COLUMNS
 
         fields = [
-            "2026-03-02T10:00:00Z", "spark-02", "12345",
-            "0.5", "0.3", "0.2",
-            "5.1", "2400", "45.0",
-            "64000", "12000", "52000", "18.7",
-            "4096", "0",
-            "", "", "", "", "",
-            "", "", "", "", "",
-            "0", "",
+            "2026-03-02T10:00:00Z",
+            "spark-02",
+            "12345",
+            "0.5",
+            "0.3",
+            "0.2",
+            "5.1",
+            "2400",
+            "45.0",
+            "64000",
+            "12000",
+            "52000",
+            "18.7",
+            "4096",
+            "0",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "0",
+            "",
         ]
         assert len(fields) == len(MONITOR_COLUMNS)
         line = ",".join(fields)

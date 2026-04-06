@@ -15,7 +15,7 @@ hosts).
 
 ```bash
 # Install in development mode (editable)
-uv pip install -e ".[dev]"
+uv sync
 
 # Run full test suite
 .venv/bin/python -m pytest tests/ -v

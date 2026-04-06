@@ -102,7 +102,8 @@ class TestDistributesToRemoteHosts:
             return_value=mock_results,
         ) as mock_rsync:
             result = distribute_tuning_to_hosts(
-                "sglang", ["10.0.0.1", "10.0.0.2"],
+                "sglang",
+                ["10.0.0.1", "10.0.0.2"],
                 ssh_user="testuser",
             )
             mock_rsync.assert_called_once()
@@ -161,7 +162,8 @@ class TestReturnsFailedHosts:
             return_value=mock_results,
         ):
             result = distribute_tuning_to_hosts(
-                "sglang", ["10.0.0.1", "10.0.0.2", "10.0.0.3"],
+                "sglang",
+                ["10.0.0.1", "10.0.0.2", "10.0.0.3"],
             )
         assert result == ["10.0.0.2", "10.0.0.3"]
 
@@ -186,7 +188,9 @@ class TestDryRunPassthrough:
             return_value=mock_results,
         ) as mock_rsync:
             distribute_tuning_to_hosts(
-                "sglang", ["10.0.0.1"], dry_run=True,
+                "sglang",
+                ["10.0.0.1"],
+                dry_run=True,
             )
             assert mock_rsync.call_args[1]["dry_run"] is True
 
@@ -197,16 +201,19 @@ class TestRuntimeNormalization:
     def test_vllm_ray_resolves_to_vllm(self, tmp_path, monkeypatch):
         """Exercises _get_local_tuning_dir indirectly via the real function."""
         from sparkrun.tuning.sync import _get_local_tuning_dir
+
         vllm_dir = _get_local_tuning_dir("vllm-ray")
         assert str(vllm_dir).endswith("sparkrun/tuning/vllm")
 
     def test_vllm_distributed_resolves_to_vllm(self, tmp_path, monkeypatch):
         from sparkrun.tuning.sync import _get_local_tuning_dir
+
         vllm_dir = _get_local_tuning_dir("vllm-distributed")
         assert str(vllm_dir).endswith("sparkrun/tuning/vllm")
 
     def test_eugr_vllm_resolves_to_vllm(self, tmp_path, monkeypatch):
         from sparkrun.tuning.sync import _get_local_tuning_dir
+
         vllm_dir = _get_local_tuning_dir("eugr-vllm")
         assert str(vllm_dir).endswith("sparkrun/tuning/vllm")
 
@@ -229,15 +236,19 @@ class TestTransferModePush:
         ]
         dist_result = RemoteResult(host="10.0.0.1", returncode=0, stdout="", stderr="")
 
-        with patch(
-            "sparkrun.orchestration.ssh.run_rsync_parallel",
-            return_value=rsync_results,
-        ) as mock_rsync, patch(
-            "sparkrun.orchestration.ssh.run_remote_script",
-            return_value=dist_result,
-        ) as mock_script:
+        with (
+            patch(
+                "sparkrun.orchestration.ssh.run_rsync_parallel",
+                return_value=rsync_results,
+            ) as mock_rsync,
+            patch(
+                "sparkrun.orchestration.ssh.run_remote_script",
+                return_value=dist_result,
+            ) as mock_script,
+        ):
             result = distribute_tuning_to_hosts(
-                "sglang", ["10.0.0.1", "10.0.0.2", "10.0.0.3"],
+                "sglang",
+                ["10.0.0.1", "10.0.0.2", "10.0.0.3"],
                 transfer_mode="push",
             )
             # Should rsync to head only
@@ -272,7 +283,8 @@ class TestTransferModePush:
             return_value=mock_results,
         ) as mock_rsync:
             result = distribute_tuning_to_hosts(
-                "sglang", ["10.0.0.1"],
+                "sglang",
+                ["10.0.0.1"],
                 transfer_mode="push",
             )
             # Single host: direct rsync, no distribution script
@@ -297,7 +309,8 @@ class TestTransferModePush:
             return_value=rsync_results,
         ):
             result = distribute_tuning_to_hosts(
-                "sglang", ["10.0.0.1", "10.0.0.2"],
+                "sglang",
+                ["10.0.0.1", "10.0.0.2"],
                 transfer_mode="push",
             )
         assert result == ["10.0.0.1", "10.0.0.2"]
@@ -317,15 +330,19 @@ class TestTransferModePush:
         ]
         dist_result = RemoteResult(host="10.0.0.1", returncode=1, stdout="", stderr="rsync err")
 
-        with patch(
-            "sparkrun.orchestration.ssh.run_rsync_parallel",
-            return_value=rsync_results,
-        ), patch(
-            "sparkrun.orchestration.ssh.run_remote_script",
-            return_value=dist_result,
+        with (
+            patch(
+                "sparkrun.orchestration.ssh.run_rsync_parallel",
+                return_value=rsync_results,
+            ),
+            patch(
+                "sparkrun.orchestration.ssh.run_remote_script",
+                return_value=dist_result,
+            ),
         ):
             result = distribute_tuning_to_hosts(
-                "sglang", ["10.0.0.1", "10.0.0.2", "10.0.0.3"],
+                "sglang",
+                ["10.0.0.1", "10.0.0.2", "10.0.0.3"],
                 transfer_mode="push",
             )
         assert result == ["10.0.0.2", "10.0.0.3"]
@@ -345,15 +362,19 @@ class TestTransferModePush:
         ]
         dist_result = RemoteResult(host="10.0.0.1", returncode=0, stdout="", stderr="")
 
-        with patch(
-            "sparkrun.orchestration.ssh.run_rsync_parallel",
-            return_value=rsync_results,
-        ) as mock_rsync, patch(
-            "sparkrun.orchestration.ssh.run_remote_script",
-            return_value=dist_result,
-        ) as mock_script:
+        with (
+            patch(
+                "sparkrun.orchestration.ssh.run_rsync_parallel",
+                return_value=rsync_results,
+            ) as mock_rsync,
+            patch(
+                "sparkrun.orchestration.ssh.run_remote_script",
+                return_value=dist_result,
+            ) as mock_script,
+        ):
             result = distribute_tuning_to_hosts(
-                "sglang", ["10.0.0.1", "10.0.0.2"],
+                "sglang",
+                ["10.0.0.1", "10.0.0.2"],
                 transfer_mode="delegated",
             )
             mock_rsync.assert_called_once()
@@ -379,7 +400,8 @@ class TestTransferModePush:
             return_value=mock_results,
         ) as mock_rsync:
             result = distribute_tuning_to_hosts(
-                "sglang", ["10.0.0.1", "10.0.0.2"],
+                "sglang",
+                ["10.0.0.1", "10.0.0.2"],
                 transfer_mode="local",
             )
             mock_rsync.assert_called_once()
@@ -409,7 +431,8 @@ class TestFiltersLocalhostFromHosts:
             return_value=mock_results,
         ) as mock_rsync:
             result = distribute_tuning_to_hosts(
-                "sglang", ["localhost", "10.0.0.2", "127.0.0.1", "10.0.0.3"],
+                "sglang",
+                ["localhost", "10.0.0.2", "127.0.0.1", "10.0.0.3"],
             )
             mock_rsync.assert_called_once()
             # Only remote hosts should be passed to rsync

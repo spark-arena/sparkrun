@@ -35,6 +35,7 @@ class JobStatus:
     def to_dict(self) -> dict[str, Any]:
         """Convert the job status to a JSON-serializable dictionary."""
         from dataclasses import asdict
+
         result = asdict(self)
         if self.metadata:
             result["recipe"] = self.metadata.get("recipe")

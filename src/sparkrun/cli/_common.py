@@ -181,12 +181,12 @@ def _get_config_and_registry(config_path=None):
 
 
 def _apply_node_trimming(
-        host_list: list[str],
-        recipe,
-        overrides: dict | None = None,
-        runtime=None,
-        tp_override: int | None = None,
-        quiet: bool = False,
+    host_list: list[str],
+    recipe,
+    overrides: dict | None = None,
+    runtime=None,
+    tp_override: int | None = None,
+    quiet: bool = False,
 ) -> list[str]:
     """Trim host list to match the runtime's required node count.
 
@@ -243,10 +243,10 @@ def _apply_node_trimming(
 
 
 def _apply_tp_trimming(
-        host_list: list[str],
-        recipe,
-        overrides: dict | None = None,
-        tp_override: int | None = None,
+    host_list: list[str],
+    recipe,
+    overrides: dict | None = None,
+    tp_override: int | None = None,
 ) -> list[str]:
     """Trim host list to match tensor_parallel if TP < host count.
 
@@ -760,8 +760,9 @@ def recipe_override_options(f):
     f = click.option("--option", "-o", "options", multiple=True, help="Override any recipe default: -o key=value (repeatable)")(f)
     f = click.option("--image", default=None, help="Override container image")(f)
     f = click.option("--max-model-len", type=int, default=None, help="Override maximum model context length")(f)
-    f = click.option("--gpu-mem", '--gpu-memory-utilization', '--mem-fraction-static',
-                     type=float, default=None, help="Override GPU memory utilization")(f)
+    f = click.option(
+        "--gpu-mem", "--gpu-memory-utilization", "--mem-fraction-static", type=float, default=None, help="Override GPU memory utilization"
+    )(f)
     f = click.option("--pp", "--pipeline-parallel", "pipeline_parallel", type=int, default=None, help="Override pipeline parallelism")(f)
     f = click.option("--tp", "--tensor-parallel", "tensor_parallel", type=int, default=None, help="Override tensor parallelism")(f)
     # TODO: add options for expert parallel and data parallel and context parallel ??? and runtime arg validation
@@ -769,7 +770,7 @@ def recipe_override_options(f):
 
 
 def _apply_recipe_overrides(
-        options, tensor_parallel=None, pipeline_parallel=None, gpu_mem=None, max_model_len=None, image=None, recipe=None, **kwargs
+    options, tensor_parallel=None, pipeline_parallel=None, gpu_mem=None, max_model_len=None, image=None, recipe=None, **kwargs
 ):
     """Build overrides dict, apply to recipe, and resolve runtime.
 
@@ -810,11 +811,11 @@ def dry_run_option(f):
 
 
 def validate_and_prepare_hosts(
-        host_list: list[str],
-        recipe,
-        overrides: dict,
-        runtime,
-        solo: bool = False,
+    host_list: list[str],
+    recipe,
+    overrides: dict,
+    runtime,
+    solo: bool = False,
 ) -> tuple[list[str], bool]:
     """Validate node count, enforce max_nodes, and determine solo mode.
 
@@ -873,10 +874,10 @@ def validate_and_prepare_hosts(
 
 
 def build_cluster_id_overrides(
-        port: int | None = None,
-        served_model_name: str | None = None,
-        tp_override: int | None = None,
-        pp_override: int | None = None,
+    port: int | None = None,
+    served_model_name: str | None = None,
+    tp_override: int | None = None,
+    pp_override: int | None = None,
 ) -> dict | None:
     """Build overrides dict for cluster_id generation from CLI flags.
 
@@ -895,14 +896,14 @@ def build_cluster_id_overrides(
 
 
 def resolve_hosts_with_metadata_fallback(
-        hosts,
-        hosts_file,
-        cluster_name,
-        config,
-        meta,
-        target_label,
-        v=None,
-        sctx: SparkrunContext | None = None,
+    hosts,
+    hosts_file,
+    cluster_name,
+    config,
+    meta,
+    target_label,
+    v=None,
+    sctx: SparkrunContext | None = None,
 ) -> list[str]:
     """Resolve hosts from CLI args, job metadata, or defaults.
 

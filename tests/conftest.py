@@ -20,6 +20,7 @@ def isolate_stateful(tmp_path: Path, monkeypatch):
     """
     monkeypatch.setenv("STATEFUL_ROOT", str(tmp_path / "stateful"))
     import sparkrun.core.bootstrap
+
     sparkrun.core.bootstrap._variables = None
     yield
     sparkrun.core.bootstrap._variables = None
@@ -138,6 +139,7 @@ def v(tmp_path: Path) -> Any:
     """
     # Reset global singleton to ensure test isolation
     import sparkrun.core.bootstrap
+
     sparkrun.core.bootstrap._variables = None
 
     return init_sparkrun(log_level="WARNING")

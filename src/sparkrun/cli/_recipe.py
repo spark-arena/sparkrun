@@ -55,7 +55,7 @@ def recipe_list(ctx, registry, runtime, show_all, output_json, query, config_pat
         recipes = list_recipes(registry_manager=registry_mgr, include_hidden=include_hidden, local_files=discover_cwd_recipes())
 
     recipes = filter_recipes(recipes, runtime=runtime, registry=registry)
-    
+
     if output_json:
         print_json(recipes)
         return
@@ -202,12 +202,7 @@ def recipe_vram(ctx, recipe_name, tensor_parallel, max_model_len, gpu_mem, no_au
 
     if output_json:
         est = recipe.estimate_vram(cli_overrides=cli_overrides, auto_detect=not no_auto_detect)
-        print_json({
-            "recipe": recipe.qualified_name,
-            "model": recipe.model,
-            "runtime": recipe.runtime,
-            **est.to_dict()
-        })
+        print_json({"recipe": recipe.qualified_name, "model": recipe.model, "runtime": recipe.runtime, **est.to_dict()})
     else:
         _display_vram_estimate(recipe, cli_overrides=cli_overrides, auto_detect=not no_auto_detect)
 

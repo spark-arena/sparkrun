@@ -33,16 +33,19 @@ def _write_yaml(path: Path, data: dict):
 def test_benchmark_load_valid(tmp_path: Path):
     """Test loading a valid benchmark YAML with nested args format."""
     p = tmp_path / "bench.yaml"
-    _write_yaml(p, {
-        "benchmark": {
-            "framework": "llama-benchy",
-            "args": {
-                "pp": [2048],
-                "prefix_caching": True,
-                "format": "json",
+    _write_yaml(
+        p,
+        {
+            "benchmark": {
+                "framework": "llama-benchy",
+                "args": {
+                    "pp": [2048],
+                    "prefix_caching": True,
+                    "format": "json",
+                },
             },
         },
-    })
+    )
 
     spec = BenchmarkSpec.load(p)
     assert spec.framework == "llama-benchy"
@@ -61,15 +64,18 @@ def test_benchmark_load_missing_block(tmp_path: Path):
 def test_benchmark_load_standalone_profile(tmp_path: Path):
     """Test loading a standalone profile file (no benchmark: wrapper)."""
     p = tmp_path / "profile.yaml"
-    _write_yaml(p, {
-        "framework": "llama-benchy",
-        "metadata": {"description": "Test profile"},
-        "args": {
-            "pp": [2048],
-            "depth": [0, 4096],
-            "concurrency": [1, 2, 5],
+    _write_yaml(
+        p,
+        {
+            "framework": "llama-benchy",
+            "metadata": {"description": "Test profile"},
+            "args": {
+                "pp": [2048],
+                "depth": [0, 4096],
+                "concurrency": [1, 2, 5],
+            },
         },
-    })
+    )
 
     spec = BenchmarkSpec.load(p)
     assert spec.framework == "llama-benchy"
@@ -83,15 +89,18 @@ def test_benchmark_load_standalone_profile(tmp_path: Path):
 def test_benchmark_load_flat_format(tmp_path: Path):
     """Test sweep-unknown-keys: flat benchmark block sweeps keys into args."""
     p = tmp_path / "bench.yaml"
-    _write_yaml(p, {
-        "recipe": "my-recipe",
-        "benchmark": {
-            "framework": "llama-benchy",
-            "pp": [2048],
-            "depth": [0],
-            "prefix_caching": True,
+    _write_yaml(
+        p,
+        {
+            "recipe": "my-recipe",
+            "benchmark": {
+                "framework": "llama-benchy",
+                "pp": [2048],
+                "depth": [0],
+                "prefix_caching": True,
+            },
         },
-    })
+    )
 
     spec = BenchmarkSpec.load(p)
     assert spec.framework == "llama-benchy"
@@ -103,15 +112,17 @@ def test_benchmark_load_flat_format(tmp_path: Path):
 
 def test_benchmark_from_recipe(tmp_path: Path):
     """Test BenchmarkSpec.from_recipe() with a Recipe that has a benchmark block."""
-    recipe = Recipe.from_dict({
-        "name": "test-recipe",
-        "model": "org/model",
-        "runtime": "vllm",
-        "benchmark": {
-            "framework": "llama-benchy",
-            "args": {"pp": [2048]},
-        },
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test-recipe",
+            "model": "org/model",
+            "runtime": "vllm",
+            "benchmark": {
+                "framework": "llama-benchy",
+                "args": {"pp": [2048]},
+            },
+        }
+    )
 
     spec = BenchmarkSpec.from_recipe(recipe)
     assert spec is not None
@@ -122,13 +133,16 @@ def test_benchmark_from_recipe(tmp_path: Path):
 def test_benchmark_load_with_timeout(tmp_path: Path):
     """Test loading a benchmark profile with a timeout value."""
     p = tmp_path / "bench.yaml"
-    _write_yaml(p, {
-        "benchmark": {
-            "framework": "llama-benchy",
-            "timeout": 7200,
-            "args": {"pp": [2048]},
+    _write_yaml(
+        p,
+        {
+            "benchmark": {
+                "framework": "llama-benchy",
+                "timeout": 7200,
+                "args": {"pp": [2048]},
+            },
         },
-    })
+    )
 
     spec = BenchmarkSpec.load(p)
     assert spec.timeout == 7200
@@ -140,11 +154,14 @@ def test_benchmark_load_with_timeout(tmp_path: Path):
 def test_benchmark_load_standalone_with_timeout(tmp_path: Path):
     """Test loading a standalone profile with timeout."""
     p = tmp_path / "profile.yaml"
-    _write_yaml(p, {
-        "framework": "llama-benchy",
-        "timeout": 1800,
-        "args": {"pp": [4096]},
-    })
+    _write_yaml(
+        p,
+        {
+            "framework": "llama-benchy",
+            "timeout": 1800,
+            "args": {"pp": [4096]},
+        },
+    )
 
     spec = BenchmarkSpec.load(p)
     assert spec.timeout == 1800
@@ -155,12 +172,15 @@ def test_benchmark_load_standalone_with_timeout(tmp_path: Path):
 def test_benchmark_load_no_timeout(tmp_path: Path):
     """Test that timeout defaults to None when not specified."""
     p = tmp_path / "bench.yaml"
-    _write_yaml(p, {
-        "benchmark": {
-            "framework": "llama-benchy",
-            "args": {"pp": [2048]},
+    _write_yaml(
+        p,
+        {
+            "benchmark": {
+                "framework": "llama-benchy",
+                "args": {"pp": [2048]},
+            },
         },
-    })
+    )
 
     spec = BenchmarkSpec.load(p)
     assert spec.timeout is None
@@ -168,16 +188,18 @@ def test_benchmark_load_no_timeout(tmp_path: Path):
 
 def test_benchmark_from_recipe_with_timeout(tmp_path: Path):
     """Test BenchmarkSpec.from_recipe() extracts timeout from recipe benchmark block."""
-    recipe = Recipe.from_dict({
-        "name": "test-recipe",
-        "model": "org/model",
-        "runtime": "vllm",
-        "benchmark": {
-            "framework": "llama-benchy",
-            "timeout": 5400,
-            "args": {"pp": [2048]},
-        },
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test-recipe",
+            "model": "org/model",
+            "runtime": "vllm",
+            "benchmark": {
+                "framework": "llama-benchy",
+                "timeout": 5400,
+                "args": {"pp": [2048]},
+            },
+        }
+    )
 
     spec = BenchmarkSpec.from_recipe(recipe)
     assert spec is not None
@@ -187,11 +209,13 @@ def test_benchmark_from_recipe_with_timeout(tmp_path: Path):
 
 def test_benchmark_from_recipe_no_block(tmp_path: Path):
     """Test that from_recipe returns None when no benchmark block exists."""
-    recipe = Recipe.from_dict({
-        "name": "test-recipe",
-        "model": "org/model",
-        "runtime": "vllm",
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test-recipe",
+            "model": "org/model",
+            "runtime": "vllm",
+        }
+    )
 
     spec = BenchmarkSpec.from_recipe(recipe)
     assert spec is None
@@ -200,17 +224,20 @@ def test_benchmark_from_recipe_no_block(tmp_path: Path):
 def test_benchmark_build_command(tmp_path: Path):
     """Test command building with list args and overrides."""
     p = tmp_path / "bench.yaml"
-    _write_yaml(p, {
-        "benchmark": {
-            "framework": "llama-benchy",
-            "args": {
-                "pp": [2048],
-                "depth": [0, 10],
-                "enable_prefix_caching": True,
-                "format": "csv",
+    _write_yaml(
+        p,
+        {
+            "benchmark": {
+                "framework": "llama-benchy",
+                "args": {
+                    "pp": [2048],
+                    "depth": [0, 10],
+                    "enable_prefix_caching": True,
+                    "format": "csv",
+                },
             },
         },
-    })
+    )
     spec = BenchmarkSpec.load(p)
     cmd = spec.build_command({"format": "json"})
 
@@ -266,7 +293,6 @@ def test_llama_benchy_framework_name():
     """Test framework_name is correct."""
     fw = LlamaBenchyFramework()
     assert fw.framework_name == "llama-benchy"
-
 
 
 def test_llama_benchy_default_args():
@@ -470,6 +496,7 @@ def test_json_to_csv_standard_run():
     # Parse CSV back to verify values
     import csv as csv_mod
     import io
+
     reader = csv_mod.DictReader(io.StringIO(csv_text))
     rows = list(reader)
     assert len(rows) == 2
@@ -513,6 +540,7 @@ def test_json_to_csv_with_depth():
     csv_text = json_to_csv(json_data)
     import csv as csv_mod
     import io
+
     rows = list(csv_mod.DictReader(io.StringIO(csv_text)))
 
     assert rows[0]["test_name"] == "pp2048 @ d4096"
@@ -543,6 +571,7 @@ def test_json_to_csv_with_concurrency():
     csv_text = json_to_csv(json_data)
     import csv as csv_mod
     import io
+
     rows = list(csv_mod.DictReader(io.StringIO(csv_text)))
 
     assert rows[0]["test_name"] == "pp2048 (c2)"
@@ -576,6 +605,7 @@ def test_json_to_csv_context_prefill():
     csv_text = json_to_csv(json_data)
     import csv as csv_mod
     import io
+
     rows = list(csv_mod.DictReader(io.StringIO(csv_text)))
 
     assert len(rows) == 2
@@ -621,6 +651,7 @@ def test_json_to_csv_missing_metrics():
     csv_text = json_to_csv(json_data)
     import csv as csv_mod
     import io
+
     rows = list(csv_mod.DictReader(io.StringIO(csv_text)))
     assert len(rows) == 1
     assert rows[0]["test_name"] == "pp2048"
@@ -630,19 +661,26 @@ def test_llama_benchy_parse_results_json(tmp_path):
     """Test JSON file parsed into structured results with csv output."""
     fw = LlamaBenchyFramework()
     import json
+
     json_data = {
         "version": "0.1.0",
         "model": "org/model",
         "max_concurrency": 1,
         "benchmarks": [
             {
-                "concurrency": 1, "context_size": 2048, "prompt_size": 2048,
-                "response_size": 32, "is_context_prefill_phase": False,
+                "concurrency": 1,
+                "context_size": 2048,
+                "prompt_size": 2048,
+                "response_size": 32,
+                "is_context_prefill_phase": False,
                 "pp_throughput": {"mean": 100.0, "std": 5.0, "values": [95, 100, 105]},
             },
             {
-                "concurrency": 1, "context_size": 4096, "prompt_size": 4096,
-                "response_size": 32, "is_context_prefill_phase": False,
+                "concurrency": 1,
+                "context_size": 4096,
+                "prompt_size": 4096,
+                "response_size": 32,
+                "is_context_prefill_phase": False,
                 "pp_throughput": {"mean": 200.0, "std": 10.0, "values": [190, 200, 210]},
             },
         ],
@@ -706,9 +744,7 @@ def test_strip_valued_flag():
     command = "vllm serve org/model --port 8000 --served-model-name my-alias --tp 2"
     flag_map = {"port": "--port", "served_model_name": "--served-model-name", "tensor_parallel": "--tp"}
 
-    result = RuntimePlugin.strip_flags_from_command(
-        command, skip_keys={"served_model_name"}, flag_map=flag_map, bool_keys=set()
-    )
+    result = RuntimePlugin.strip_flags_from_command(command, skip_keys={"served_model_name"}, flag_map=flag_map, bool_keys=set())
 
     assert "--served-model-name" not in result
     assert "my-alias" not in result
@@ -734,9 +770,7 @@ def test_strip_unknown_key_noop():
     command = "vllm serve org/model --port 8000"
     flag_map = {"port": "--port"}
 
-    result = RuntimePlugin.strip_flags_from_command(
-        command, skip_keys={"unknown_key"}, flag_map=flag_map, bool_keys=set()
-    )
+    result = RuntimePlugin.strip_flags_from_command(command, skip_keys={"unknown_key"}, flag_map=flag_map, bool_keys=set())
 
     # Should be unchanged
     assert result == command
@@ -773,8 +807,11 @@ def test_strip_flag_alias():
     flag_aliases = {"served_model_name": ["-a"]}
 
     result = RuntimePlugin.strip_flags_from_command(
-        command, skip_keys={"served_model_name"}, flag_map=flag_map,
-        bool_keys=set(), flag_aliases=flag_aliases,
+        command,
+        skip_keys={"served_model_name"},
+        flag_map=flag_map,
+        bool_keys=set(),
+        flag_aliases=flag_aliases,
     )
 
     assert "-a" not in result
@@ -790,8 +827,11 @@ def test_strip_flag_canonical_and_alias():
     flag_aliases = {"served_model_name": ["-a"]}
 
     result1 = RuntimePlugin.strip_flags_from_command(
-        command1, skip_keys={"served_model_name"}, flag_map=flag_map,
-        bool_keys=set(), flag_aliases=flag_aliases,
+        command1,
+        skip_keys={"served_model_name"},
+        flag_map=flag_map,
+        bool_keys=set(),
+        flag_aliases=flag_aliases,
     )
     assert "--alias" not in result1
     assert "my-alias" not in result1
@@ -800,8 +840,11 @@ def test_strip_flag_canonical_and_alias():
     # Short form
     command2 = "llama-server -hf org/model -a my-alias --port 8000"
     result2 = RuntimePlugin.strip_flags_from_command(
-        command2, skip_keys={"served_model_name"}, flag_map=flag_map,
-        bool_keys=set(), flag_aliases=flag_aliases,
+        command2,
+        skip_keys={"served_model_name"},
+        flag_map=flag_map,
+        bool_keys=set(),
+        flag_aliases=flag_aliases,
     )
     assert "-a" not in result2
     assert "my-alias" not in result2
@@ -844,14 +887,16 @@ def test_strip_multiline_continuation():
 
 def test_export_results_writes_yaml(tmp_path: Path):
     """Test export_results creates YAML with expected structure."""
-    recipe = Recipe.from_dict({
-        "name": "test-recipe",
-        "model": "org/model",
-        "runtime": "vllm",
-        "metadata": {
-            "model_dtype": "bfloat16",
-        },
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test-recipe",
+            "model": "org/model",
+            "runtime": "vllm",
+            "metadata": {
+                "model_dtype": "bfloat16",
+            },
+        }
+    )
     recipe.source_registry = "test-registry"
     recipe.source_registry_url = "https://github.com/example/recipes.git"
 
@@ -909,19 +954,21 @@ def test_export_results_writes_yaml(tmp_path: Path):
 
 def test_export_results_model_revision(tmp_path: Path):
     """Test export_results includes model_revision when set."""
-    recipe = Recipe.from_dict({
-        "name": "test-recipe",
-        "model": "org/model",
-        "model_revision": "abc123",
-        "runtime": "vllm",
-        "metadata": {
-            "model_dtype": "float16",
-            "num_layers": 32,
-            "num_kv_heads": 8,
-            "head_dim": 128,
-            "model_params": 7000000000,
-        },
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test-recipe",
+            "model": "org/model",
+            "model_revision": "abc123",
+            "runtime": "vllm",
+            "metadata": {
+                "model_dtype": "float16",
+                "num_layers": 32,
+                "num_kv_heads": 8,
+                "head_dim": 128,
+                "model_params": 7000000000,
+            },
+        }
+    )
 
     output_path = tmp_path / "results.yaml"
     export_results(
@@ -951,21 +998,21 @@ def test_export_results_model_revision(tmp_path: Path):
 
 def test_vllm_generate_command_skip_keys():
     """Test VllmRayRuntime with skip_keys removes specified flags."""
-    recipe = Recipe.from_dict({
-        "name": "test",
-        "model": "org/model",
-        "runtime": "vllm",
-        "defaults": {
-            "served_model_name": "my-alias",
-            "port": 8000,
-            "tensor_parallel": 2,
-        },
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "org/model",
+            "runtime": "vllm",
+            "defaults": {
+                "served_model_name": "my-alias",
+                "port": 8000,
+                "tensor_parallel": 2,
+            },
+        }
+    )
 
     runtime = VllmRayRuntime()
-    cmd = runtime.generate_command(
-        recipe, {}, is_cluster=False, skip_keys={"served_model_name"}
-    )
+    cmd = runtime.generate_command(recipe, {}, is_cluster=False, skip_keys={"served_model_name"})
 
     assert "--served-model-name" not in cmd
     assert "my-alias" not in cmd
@@ -977,21 +1024,21 @@ def test_vllm_generate_command_skip_keys():
 
 def test_sglang_generate_command_skip_keys():
     """Test SglangRuntime with skip_keys removes specified flags."""
-    recipe = Recipe.from_dict({
-        "name": "test",
-        "model": "org/model",
-        "runtime": "sglang",
-        "defaults": {
-            "served_model_name": "my-alias",
-            "port": 8000,
-            "tensor_parallel": 2,
-        },
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "org/model",
+            "runtime": "sglang",
+            "defaults": {
+                "served_model_name": "my-alias",
+                "port": 8000,
+                "tensor_parallel": 2,
+            },
+        }
+    )
 
     runtime = SglangRuntime()
-    cmd = runtime.generate_command(
-        recipe, {}, is_cluster=False, skip_keys={"served_model_name"}
-    )
+    cmd = runtime.generate_command(recipe, {}, is_cluster=False, skip_keys={"served_model_name"})
 
     assert "--served-model-name" not in cmd
     assert "my-alias" not in cmd
@@ -1009,19 +1056,25 @@ def test_sglang_generate_command_skip_keys():
 
 def test_sglang_generate_node_command_skip_keys():
     """skip_keys propagates through sglang generate_node_command."""
-    recipe = Recipe.from_dict({
-        "name": "test",
-        "model": "org/model",
-        "runtime": "sglang",
-        "defaults": {
-            "served_model_name": "my-alias",
-            "port": 8000,
-        },
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "org/model",
+            "runtime": "sglang",
+            "defaults": {
+                "served_model_name": "my-alias",
+                "port": 8000,
+            },
+        }
+    )
 
     runtime = SglangRuntime()
     cmd = runtime.generate_node_command(
-        recipe, {}, head_ip="10.0.0.1", num_nodes=2, node_rank=0,
+        recipe,
+        {},
+        head_ip="10.0.0.1",
+        num_nodes=2,
+        node_rank=0,
         skip_keys={"served_model_name"},
     )
 
@@ -1034,19 +1087,25 @@ def test_sglang_generate_node_command_skip_keys():
 
 def test_vllm_distributed_generate_node_command_skip_keys():
     """skip_keys propagates through vllm-distributed generate_node_command."""
-    recipe = Recipe.from_dict({
-        "name": "test",
-        "model": "org/model",
-        "runtime": "vllm-distributed",
-        "defaults": {
-            "served_model_name": "my-alias",
-            "port": 8000,
-        },
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "org/model",
+            "runtime": "vllm-distributed",
+            "defaults": {
+                "served_model_name": "my-alias",
+                "port": 8000,
+            },
+        }
+    )
 
     runtime = VllmDistributedRuntime()
     cmd = runtime.generate_node_command(
-        recipe, {}, head_ip="10.0.0.1", num_nodes=2, node_rank=1,
+        recipe,
+        {},
+        head_ip="10.0.0.1",
+        num_nodes=2,
+        node_rank=1,
         skip_keys={"served_model_name"},
     )
 
@@ -1060,21 +1119,26 @@ def test_vllm_distributed_generate_node_command_skip_keys():
 
 def test_llama_cpp_build_rpc_head_command_skip_keys():
     """skip_keys propagates through llama-cpp _build_rpc_head_command."""
-    recipe = Recipe.from_dict({
-        "name": "test",
-        "model": "org/model",
-        "runtime": "llama-cpp",
-        "defaults": {
-            "served_model_name": "my-alias",
-            "port": 8000,
-        },
-    })
+    recipe = Recipe.from_dict(
+        {
+            "name": "test",
+            "model": "org/model",
+            "runtime": "llama-cpp",
+            "defaults": {
+                "served_model_name": "my-alias",
+                "port": 8000,
+            },
+        }
+    )
 
     runtime = LlamaCppRuntime()
     config = recipe.build_config_chain({})
     cmd = runtime._build_rpc_head_command(
-        recipe, config, worker_hosts=["10.0.0.2"],
-        rpc_port=50052, skip_keys={"served_model_name"},
+        recipe,
+        config,
+        worker_hosts=["10.0.0.2"],
+        rpc_port=50052,
+        skip_keys={"served_model_name"},
     )
 
     assert "--alias" not in cmd
