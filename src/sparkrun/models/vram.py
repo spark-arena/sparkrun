@@ -247,9 +247,18 @@ def fetch_safetensors_size(
             hub_kwargs["cache_dir"] = _hub_cache(cache_dir)
 
         _SAFETENSORS_DTYPE_BYTES: dict[str, int] = {
-            "F64": 8, "F32": 4, "F16": 2, "BF16": 2,
-            "F8_E4M3": 1, "F8_E5M2": 1,
-            "I64": 8, "I32": 4, "I16": 2, "I8": 1, "U8": 1, "BOOL": 1,
+            "F64": 8,
+            "F32": 4,
+            "F16": 2,
+            "BF16": 2,
+            "F8_E4M3": 1,
+            "F8_E5M2": 1,
+            "I64": 8,
+            "I32": 4,
+            "I16": 2,
+            "I8": 1,
+            "U8": 1,
+            "BOOL": 1,
         }
 
         def _compute_api_bytes() -> int | None:
@@ -306,7 +315,10 @@ def fetch_safetensors_size(
                     if matched > 0 and file_total > 0:
                         logger.debug(
                             "Got %d bytes from file sizes (%d/%d files) for %s",
-                            file_total, matched, len(model_files), model_id,
+                            file_total,
+                            matched,
+                            len(model_files),
+                            model_id,
                         )
                         return file_total
                 except Exception as e:

@@ -256,10 +256,7 @@ def _resolve_compressed_tensors(qc: dict[str, Any]) -> QuantizationInfo:
             if not isinstance(grp, dict):
                 return (1, _name)
             targets = grp.get("targets", [])
-            has_catchall = any(
-                isinstance(t, str) and "." not in t
-                for t in targets
-            )
+            has_catchall = any(isinstance(t, str) and "." not in t for t in targets)
             return (0 if has_catchall else 1, _name)
 
         sorted_groups = sorted(config_groups.items(), key=_group_sort_key)

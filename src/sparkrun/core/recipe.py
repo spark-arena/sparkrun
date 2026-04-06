@@ -771,10 +771,10 @@ class Recipe:
                     if _derive_bpe is not None and _derive_bpe > 0:
                         model_params = int(total_size / _derive_bpe)
                     else:
-                        model_vram = total_size / (1024 ** 3)
+                        model_vram = total_size / (1024**3)
                 else:
                     # Pre-quantized or unquantized: bytes = actual VRAM
-                    model_vram = total_size / (1024 ** 3)
+                    model_vram = total_size / (1024**3)
             else:
                 # Last resort: param count from HF API
                 api_params = fetch_safetensors_params(self.model, revision=self.model_revision)
