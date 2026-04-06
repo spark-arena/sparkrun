@@ -75,6 +75,7 @@ def launch_inference(
     dashboard: bool = False,
     init_port: int | None = None,
     topology: str | None = None,
+    cluster_id_override: str | None = None,
     # Executor config (dict for config chain layering)
     executor_config: dict | None = None,
     # note: transition to rootless by default
@@ -178,7 +179,7 @@ def launch_inference(
         serve_port = int(config_chain.get("port") or 8000)
 
     # Derive deterministic cluster_id from recipe + (trimmed) hosts
-    cluster_id = generate_cluster_id(recipe, host_list, overrides=overrides)
+    cluster_id = cluster_id_override or generate_cluster_id(recipe, host_list, overrides=overrides)
 
     # Resolve container image
     container_image = runtime.resolve_container(recipe, overrides)

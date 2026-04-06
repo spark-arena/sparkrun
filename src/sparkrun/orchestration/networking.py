@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import shlex
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -675,12 +676,12 @@ def detect_switch(
     script = read_script("cx7_switch_detect.sh")
     env_lines = []
     if local_iface:
-        env_lines.append("export CX7_LOCAL_IFACE='%s'" % local_iface)
+        env_lines.append("export CX7_LOCAL_IFACE=%s" % shlex.quote(local_iface))
     if remote_ip:
-        env_lines.append("export CX7_REMOTE_IP='%s'" % remote_ip)
+        env_lines.append("export CX7_REMOTE_IP=%s" % shlex.quote(remote_ip))
     # Fallback interfaces for BPDU detection
     ifaces_str = " ".join(iface.name for iface in target_det.interfaces[:2])
-    env_lines.append("export CX7_IFACES='%s'" % ifaces_str)
+    env_lines.append("export CX7_IFACES=%s" % shlex.quote(ifaces_str))
 
     full_script = "\n".join(env_lines) + "\n" + script
 
@@ -809,7 +810,7 @@ def detect_topology(
     bringup_scripts = []
     for host in bringup_hosts:
         ifaces_str = " ".join(all_iface_names[host])
-        bringup_scripts.append("export CX7_IFACES='%s'\n%s" % (ifaces_str, bringup_script))
+        bringup_scripts.append("export CX7_IFACES=%s\n%s" % (shlex.quote(ifaces_str), bringup_script))
 
     if not dry_run:
         logger.info("Bringing up CX7 interfaces on %d host(s)...", len(bringup_hosts))
@@ -836,7 +837,7 @@ def detect_topology(
     arping_scripts = []
     for host in arping_hosts:
         ifaces_str = " ".join(all_iface_names[host])
-        arping_scripts.append("export CX7_IFACES='%s'\n%s" % (ifaces_str, arping_script))
+        arping_scripts.append("export CX7_IFACES=%s\n%s" % (shlex.quote(ifaces_str), arping_script))
 
     host_neighbors: dict[str, list[tuple[str, str]]] = {}
     if not dry_run:
@@ -1683,7 +1684,7 @@ def distribute_host_keys(
         "for ip in %s; do\n"
         '    keys=$(ssh-keyscan -H "$ip" 2>/dev/null)\n'
         '    if [ -n "$keys" ]; then\n'
-        '        echo "$keys" >> ~/.ssh/known_hosts\n'
+        '        printf "%%s\\n" "$keys" >> ~/.ssh/known_hosts\n'
         "        ADDED=$((ADDED + 1))\n"
         "    fi\n"
         "done\n"

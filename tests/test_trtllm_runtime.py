@@ -465,19 +465,28 @@ def test_pre_serve_writes_extra_config():
     )
     runtime = TrtllmRuntime()
     hosts_containers = [("10.0.0.1", "sparkrun_node_0")]
-
-    with (
-        mock.patch("sparkrun.orchestration.ssh.run_remote_command") as mock_cmd,
-        mock.patch("sparkrun.orchestration.docker.docker_exec_cmd", side_effect=lambda c, cmd: cmd),
-    ):
+    with mock.patch("sparkrun.orchestration.ssh.run_remote_command") as mock_cmd:
         mock_cmd.return_value = mock.Mock(success=True)
         runtime._pre_serve(hosts_containers, {}, dry_run=False, recipe=recipe)
         mock_cmd.assert_called_once()
         call_args = mock_cmd.call_args
         assert call_args[0][0] == "10.0.0.1"
+
+        import re
+        import base64
+
+        exec_str = call_args[0][1]
+        # Find the long base64 string which is the encoded command
+        match = re.search(r"([A-Za-z0-9+/=]{40,})", exec_str)
+        if match:
+            decoded = base64.b64decode(match.group(1)).decode("utf-8")
+        else:
+            decoded = exec_str
+
         # The command should contain our config content
-        assert "extra-llm-api-config.yml" in call_args[0][1]
-        assert "CUTLASS" in call_args[0][1]
+        assert "extra-llm-api-config.yml" in decoded
+        assert "moe_config:" in decoded
+        assert "backend: CUTLASS" in decoded
 
 
 def test_pre_serve_skips_when_no_extra_config():

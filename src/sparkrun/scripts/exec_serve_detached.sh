@@ -1,8 +1,12 @@
 #!/bin/bash
 set -uo pipefail
 
-echo "Executing serve command in container {container_name} (detached)..."
-docker exec {container_name} bash -c "nohup bash -c '{full_cmd}' > /tmp/sparkrun_serve.log 2>&1 & echo \$! > /tmp/sparkrun_serve.pid"
+printf "Executing serve command in container '%s' (detached)...\n" "{container_name}"
+echo "--- Command ---"
+printf '%s' '{b64_cmd}' | base64 -d --
+echo -e "\n---------------"
+
+docker exec {container_name} bash -c "printf '%s' '{b64_cmd}' | base64 -d -- > /tmp/sparkrun_serve.sh && nohup bash --noprofile --norc /tmp/sparkrun_serve.sh > /tmp/sparkrun_serve.log 2>&1 & echo \$! > /tmp/sparkrun_serve.pid"
 
 # Watchdog: when serve process exits, kill sleep infinity (PID 1) so container exits
 docker exec -d {container_name} bash -c 'SERVE_PID=$(cat /tmp/sparkrun_serve.pid); while kill -0 $SERVE_PID 2>/dev/null; do sleep 5; done; kill 1'

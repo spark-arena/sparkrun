@@ -2,6 +2,7 @@
 
 from sparkrun.orchestration.scripts import generate_ip_detect_script
 from sparkrun.orchestration.executor_docker import DockerExecutor
+from sparkrun.utils.shell import b64_encode_cmd
 
 _executor = DockerExecutor()
 generate_container_launch_script = _executor.generate_launch_script
@@ -32,7 +33,7 @@ def test_generate_container_launch_script():
     assert "docker rm -f test-container" in script
     assert "docker run" in script
     assert "test-image:latest" in script
-    assert "python app.py" in script
+    assert b64_encode_cmd("python app.py") in script
     assert "--name test-container" in script
 
 
@@ -83,13 +84,9 @@ def test_generate_ray_head_script():
     assert "ip route get 8.8.8.8" in script
     assert "NODE_IP" in script
     assert "docker rm -f ray-head" in script
-    assert "ray start" in script
-    assert "--head" in script
-    assert "--port 46379" in script
-    assert "--dashboard-port" not in script
-    assert "--include-dashboard" not in script
-    assert "--disable-usage-stats" in script
-    assert "--node-ip-address $NODE_IP" in script
+
+    expected_cmd = "ray start --block --head --port 46379 --node-ip-address $NODE_IP --disable-usage-stats"
+    assert b64_encode_cmd(expected_cmd) in script
 
 
 def test_generate_ray_head_script_with_dashboard():
@@ -102,9 +99,8 @@ def test_generate_ray_head_script_with_dashboard():
         dashboard=True,
     )
 
-    assert "--include-dashboard=True" in script
-    assert "--dashboard-port 8265" in script
-    assert "--dashboard-host 0.0.0.0" in script
+    expected_cmd = "ray start --block --head --port 46379 --node-ip-address $NODE_IP --include-dashboard=True --dashboard-host 0.0.0.0 --dashboard-port 8265 --disable-usage-stats"
+    assert b64_encode_cmd(expected_cmd) in script
 
 
 def test_generate_ray_head_script_with_nccl():
@@ -135,10 +131,9 @@ def test_generate_ray_worker_script():
     assert "ip route get 8.8.8.8" in script
     assert "NODE_IP" in script
     assert "docker rm -f ray-worker" in script
-    assert "ray start" in script
-    assert "--address=192.168.1.100:46379" in script
-    assert "--node-ip-address $NODE_IP" in script
-    assert "--head" not in script  # Should not have --head
+
+    expected_cmd = "ray start --block --address=192.168.1.100:46379 --node-ip-address $NODE_IP"
+    assert b64_encode_cmd(expected_cmd) in script
 
 
 def test_generate_ray_worker_script_with_nccl():
@@ -169,7 +164,7 @@ def test_generate_exec_serve_script_detached():
     assert "nohup" in script
     assert "/tmp/sparkrun_serve.log" in script
     assert "tail -f" in script
-    assert "vllm serve model" in script
+    assert b64_encode_cmd("vllm serve model") in script
 
 
 def test_generate_exec_serve_script_foreground():
@@ -184,7 +179,7 @@ def test_generate_exec_serve_script_foreground():
     assert "docker exec my-container" in script
     assert "nohup" not in script
     assert "tail -f" not in script
-    assert "vllm serve model" in script
+    assert b64_encode_cmd("vllm serve model") in script
 
 
 def test_generate_exec_serve_script_with_env():
@@ -198,22 +193,20 @@ def test_generate_exec_serve_script_with_env():
         detached=True,
     )
 
-    # Env vars should be exported in sorted order
-    assert "export CUDA_VISIBLE_DEVICES='0,1'" in script
-    assert "export MODEL_PATH='/models/llama'" in script
+    # Note: shlex.quote is used for values now
+    expected_full_cmd = "export CUDA_VISIBLE_DEVICES=0,1; export MODEL_PATH=/models/llama; vllm serve model"
+    assert b64_encode_cmd(expected_full_cmd) in script
 
 
 def test_generate_exec_serve_script_escapes_quotes():
-    """Test that single quotes in command are properly escaped."""
+    """Test that single quotes in command are properly preserved."""
     script = generate_exec_serve_script(
         container_name="my-container",
         serve_command="echo 'hello world'",
         detached=True,
     )
 
-    # The command should have escaped quotes
-    assert "echo" in script
-    assert "hello world" in script
+    assert b64_encode_cmd("echo 'hello world'") in script
 
 
 def test_generate_ray_head_script_custom_ports():
@@ -226,8 +219,8 @@ def test_generate_ray_head_script_custom_ports():
         dashboard=True,
     )
 
-    assert "--port 10001" in script
-    assert "--dashboard-port 10002" in script
+    expected_cmd = "ray start --block --head --port 10001 --node-ip-address $NODE_IP --include-dashboard=True --dashboard-host 0.0.0.0 --dashboard-port 10002 --disable-usage-stats"
+    assert b64_encode_cmd(expected_cmd) in script
 
 
 def test_generate_container_launch_script_no_detach():
@@ -241,6 +234,5 @@ def test_generate_container_launch_script_no_detach():
 
     # Should not have -d flag
     assert "docker run" in script
-    # The -d flag should not be present (checking the docker command portion)
-    # Note: we can't easily check for absence without parsing, so verify presence of run
-    assert "docker run" in script
+    # Verify command is encoded
+    assert b64_encode_cmd("python app.py") in script

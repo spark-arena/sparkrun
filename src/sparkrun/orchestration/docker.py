@@ -35,9 +35,10 @@ def docker_exec_cmd(
         parts.append("-d")
     if env:
         for key, value in sorted(env.items()):
-            parts.extend(["-e", f"{key}={value}"])
-    escaped_cmd = command.replace("'", "'\\''")
-    parts.extend([shlex.quote(container_name), "bash", "-c", "'%s'" % escaped_cmd])
+            parts.extend(["-e", shlex.quote(f"{key}={value}")])
+    from sparkrun.utils.shell import b64_wrap_bash
+
+    parts.extend([shlex.quote(container_name), "bash", "-c", shlex.quote(b64_wrap_bash(command))])
     return " ".join(parts)
 
 

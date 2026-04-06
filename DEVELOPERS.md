@@ -114,6 +114,37 @@ from sparkrun.orchestration.ssh import run_remote_script
 result = run_remote_script(host, script_string, timeout=120, **ssh_kwargs)
 ```
 
+### Shell Execution & Security
+
+Sparkrun frequently dynamically generates bash scripts and Docker commands that interpolate user-provided inputs (like container names, image names, or environment variables). To prevent shell injection and handle spaces/special characters, you MUST adhere to the following rules:
+
+1. **Python `shlex.quote`**: When building commands in Python (e.g., `docker run` flags), wrap all interpolated values with `shlex.quote`:
+   ```python
+   import shlex
+   cmd = f"docker run --name {shlex.quote(container_name)} {shlex.quote(image)}"
+   ```
+
+2. **Base64 Command Wrapping**: When passing complex commands (especially those with nested quotes or JSON) into `bash -c` or over SSH, use the `b64_encode_cmd` and `b64_wrap_bash` utilities from `sparkrun.utils.shell`:
+   ```python
+   from sparkrun.utils.shell import b64_encode_cmd
+   b64_cmd = b64_encode_cmd("vllm serve --hf-overrides '{\"rope\": \"yarn\"}'")
+   # The bash script should decode and execute this:
+   # printf '%s' '{b64_cmd}' | base64 -d -- | bash --noprofile --norc
+   ```
+
+3. **Use `printf` instead of `echo`**: Inside generated bash scripts (`.sh` files), never use `echo` to output interpolated Python variables. If a variable starts with a hyphen (e.g., `-n`), `echo` may interpret it as a flag. Instead, use `printf` with a format string:
+   ```bash
+   # DANGEROUS: echo "Launching {container_name}"
+   # SAFE:
+   printf "Launching %%s\n" "{container_name}"
+   ```
+   *Note: In Python string formatting (used to populate the scripts), `%` must be escaped as `%%`.*
+
+4. **Environment Variables**: When exporting variables in generated bash scripts, quote the interpolated value using `shlex.quote` in Python and omit quotes in the bash script:
+   ```python
+   env_lines.append(f"export MY_VAR={shlex.quote(val)}")
+   ```
+
 ### Runtime Architecture
 
 All runtimes extend `RuntimePlugin` (`runtimes/base.py`):

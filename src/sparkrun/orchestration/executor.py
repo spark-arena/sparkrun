@@ -10,10 +10,15 @@ directly, making them container-engine-agnostic.
 from __future__ import annotations
 
 import logging
+import shlex
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 from scitrera_app_framework.util import ext_parse_bool
+
+from sparkrun.scripts import read_script
+from sparkrun.utils import merge_env
+from sparkrun.utils.shell import b64_encode_cmd
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +83,9 @@ class ExecutorConfig:
         # still means "not set" and should fall back.
         def _get(key):
             v = chain.get(key)
-            return v if v is not None else EXECUTOR_DEFAULTS.get(key)
+            val = v if v is not None else EXECUTOR_DEFAULTS.get(key)
+            logger.debug("ExecutorConfig resolve: %s=%r (from chain: %r)", key, val, v)
+            return val
 
         return cls(
             auto_remove=ext_parse_bool(_get("auto_remove")),
@@ -209,8 +216,6 @@ class Executor(ABC):
 
         Absorbs ``scripts.py::generate_container_launch_script``.
         """
-        from sparkrun.utils import merge_env
-        from sparkrun.scripts import read_script
 
         all_env = merge_env(nccl_env, env)
         cleanup = self.stop_cmd(container_name)
@@ -243,21 +248,23 @@ class Executor(ABC):
 
         Absorbs ``scripts.py::generate_exec_serve_script``.
         """
-        from sparkrun.scripts import read_script
 
         env_exports = ""
         if env:
             for key, value in sorted(env.items()):
-                env_exports += "export %s='%s'; " % (key, value)
+                env_exports += "export %s=%s; " % (key, shlex.quote(str(value)))
 
-        escaped_cmd = serve_command.replace("'", "'\\''")
-        full_cmd = "%s%s" % (env_exports, escaped_cmd)
+        full_cmd = "%s%s" % (env_exports, serve_command)
+
+        # Base64 encode the command to avoid all bash string-escaping/quoting bugs
+        # when passing it into `docker exec ... bash -c "..."`
+        b64_cmd = b64_encode_cmd(full_cmd)
 
         script_name = "exec_serve_detached.sh" if detached else "exec_serve_foreground.sh"
         template = read_script(script_name)
         return template.format(
-            container_name=container_name,
-            full_cmd=full_cmd,
+            container_name=shlex.quote(container_name),
+            b64_cmd=b64_cmd,
         )
 
     def generate_ray_head_script(
@@ -275,8 +282,6 @@ class Executor(ABC):
 
         Absorbs ``scripts.py::generate_ray_head_script``.
         """
-        from sparkrun.utils import merge_env
-        from sparkrun.scripts import read_script
 
         all_env = merge_env({"RAY_memory_monitor_refresh_ms": "0"}, nccl_env, env)
 
@@ -314,8 +319,6 @@ class Executor(ABC):
 
         Absorbs ``scripts.py::generate_ray_worker_script``.
         """
-        from sparkrun.utils import merge_env
-        from sparkrun.scripts import read_script
 
         all_env = merge_env({"RAY_memory_monitor_refresh_ms": "0"}, nccl_env, env)
 
@@ -356,7 +359,6 @@ class Executor(ABC):
 
         Absorbs ``base.py::_generate_node_script``.
         """
-        from sparkrun.utils import merge_env
 
         all_env = merge_env(nccl_env, env)
         cleanup = self.stop_cmd(container_name)
@@ -374,19 +376,24 @@ class Executor(ABC):
             "#!/bin/bash\n"
             "set -uo pipefail\n"
             "\n"
-            "echo 'Cleaning up existing container: %(name)s'\n"
+            "printf 'Cleaning up existing container: %%s\\n' %(name)s\n"
             "%(cleanup)s\n"
             "\n"
-            "echo 'Launching %(label)s: %(name)s'\n"
+            "printf 'Launching %%s: %%s\\n' %(label)s %(name)s\n"
             "%(run_cmd)s\n"
             "\n"
             "# Verify container started\n"
             "sleep 1\n"
             "if docker ps --format '{{.Names}}' | grep -q '^%(name)s$'; then\n"
-            "    echo 'Container %(name)s launched successfully'\n"
+            "    printf 'Container %%s launched successfully\\n' %(name)s\n"
             "else\n"
-            "    echo 'ERROR: Container %(name)s failed to start' >&2\n"
+            "    printf 'ERROR: Container %%s failed to start\\n' %(name)s >&2\n"
             "    docker logs %(name)s 2>&1 | tail -20 || true\n"
             "    exit 1\n"
             "fi\n"
-        ) % {"name": container_name, "cleanup": cleanup, "run_cmd": run, "label": label}
+        ) % {
+            "name": shlex.quote(container_name),
+            "cleanup": cleanup,
+            "run_cmd": run,
+            "label": shlex.quote(label),
+        }

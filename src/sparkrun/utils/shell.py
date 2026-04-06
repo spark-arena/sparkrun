@@ -5,8 +5,30 @@ Provides helpers for safely interpolating values into shell command strings.
 
 from __future__ import annotations
 
+import base64
 import re
 import shlex
+
+
+def b64_encode_cmd(cmd: str) -> str:
+    """Base64 encode a command string to avoid shell escaping issues.
+
+    Useful when passing complex commands (e.g., with nested quotes or JSON)
+    across SSH boundaries or into ``docker exec``.
+    """
+    return base64.b64encode(cmd.encode("utf-8")).decode("utf-8")
+
+
+def b64_wrap_bash(cmd: str) -> str:
+    """Wrap a command in a base64 pipeline that decodes and executes via bash.
+
+    Produces a string like: ``printf '%s' <b64> | base64 -d -- | bash``
+    """
+    b64_cmd = b64_encode_cmd(cmd)
+    # Using printf instead of echo is safer against strings starting with dashes.
+    # Adding -- to base64 -d prevents interpretation of the b64 string as flags.
+    # Using --noprofile --norc with bash ensures a clean execution environment.
+    return f"printf '%s' '{b64_cmd}' | base64 -d -- | bash --noprofile --norc"
 
 
 def quote(value: str) -> str:

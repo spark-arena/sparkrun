@@ -7,6 +7,7 @@ import subprocess
 
 from sparkrun.orchestration import ssh as _ssh
 from sparkrun.orchestration.ssh import RemoteResult
+from sparkrun.utils.shell import b64_encode_cmd
 
 logger = logging.getLogger(__name__)
 
@@ -130,8 +131,6 @@ def run_indirect_sudo_script(
     Returns:
         RemoteResult with returncode, stdout, stderr.
     """
-    import base64
-
     if dry_run:
         logger.info("[dry-run] Would execute indirect sudo on %s (via su %s)", host, sudo_user)
         return RemoteResult(host=host, returncode=0, stdout="[dry-run]", stderr="")
@@ -142,14 +141,15 @@ def run_indirect_sudo_script(
     #
     # The password and script are base64-encoded into the wrapper itself
     # (not read from stdin) because stdin is used as the pipe to python3.
-    b64_password = base64.b64encode(sudo_password.encode()).decode()
-    b64_script = base64.b64encode(script.encode()).decode()
+
+    b64_password = b64_encode_cmd(sudo_password)
+    b64_script = b64_encode_cmd(script)
 
     wrapper = (
         "import base64, os, pty, select, sys, time\n"
         "try:\n"
-        "    password = base64.b64decode('%s').decode()\n"
-        "    script = base64.b64decode('%s').decode()\n"
+        "    password = base64.b64decode('%s').decode('utf-8')\n"
+        "    script = base64.b64decode('%s').decode('utf-8')\n"
         "    sudo_user = %r\n"
         "    pid, fd = pty.fork()\n"
         "    if pid == 0:\n"

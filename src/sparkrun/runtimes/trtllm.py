@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
@@ -347,12 +347,11 @@ class TrtllmRuntime(RuntimePlugin):
             return
 
         from sparkrun.orchestration.ssh import run_remote_command
-        from sparkrun.orchestration.docker import docker_exec_cmd
 
         write_cmd = ("cat > %s << 'SPARKRUN_EOF'\n%sSPARKRUN_EOF") % (_EXTRA_CONFIG_PATH, extra_yaml)
 
         for host, container_name in hosts_containers:
-            exec_cmd = docker_exec_cmd(container_name, write_cmd)
+            exec_cmd = self.executor.exec_cmd(container_name, write_cmd)
             result = run_remote_command(
                 host,
                 exec_cmd,
@@ -431,18 +430,18 @@ class TrtllmRuntime(RuntimePlugin):
         7. Exec mpirun on head container.
         """
         import time
-        from sparkrun.runtimes._cluster_ops import (
-            ClusterContext,
-            cleanup_ranked_containers,
-            resolve_ib_env,
-            launch_containers_parallel,
-        )
+
         from sparkrun.orchestration.primitives import (
             detect_host_ip,
             is_container_running,
         )
         from sparkrun.orchestration.ssh import run_remote_command
-        from sparkrun.orchestration.docker import docker_exec_cmd
+        from sparkrun.runtimes._cluster_ops import (
+            ClusterContext,
+            cleanup_ranked_containers,
+            launch_containers_parallel,
+            resolve_ib_env,
+        )
 
         progress = kwargs.pop("progress", None)
 
@@ -562,7 +561,7 @@ class TrtllmRuntime(RuntimePlugin):
             "cat > /tmp/sparkrun-rsh-wrapper.sh << 'SPARKRUN_EOF'\n%sSPARKRUN_EOF\nchmod +x /tmp/sparkrun-rsh-wrapper.sh"
         ) % rsh_wrapper
 
-        exec_write = docker_exec_cmd(head_container, write_wrapper_cmd)
+        exec_write = self.executor.exec_cmd(head_container, write_wrapper_cmd)
         result = run_remote_command(
             head_host,
             exec_write,
@@ -579,7 +578,7 @@ class TrtllmRuntime(RuntimePlugin):
             extra_config_yaml = self._build_extra_config(recipe, overrides)
             if extra_config_yaml:
                 write_config_cmd = ("cat > %s << 'SPARKRUN_EOF'\n%sSPARKRUN_EOF") % (_EXTRA_CONFIG_PATH, extra_config_yaml)
-                exec_config = docker_exec_cmd(head_container, write_config_cmd)
+                exec_config = self.executor.exec_cmd(head_container, write_config_cmd)
                 result = run_remote_command(
                     head_host,
                     exec_config,
@@ -629,14 +628,11 @@ class TrtllmRuntime(RuntimePlugin):
         for line in mpirun_cmd.strip().splitlines():
             logger.info("  %s", line)
 
-        # Exec mpirun on head container (detached)
-        detach_flag = "-d" if detached else ""
-        escaped_mpirun = mpirun_cmd.replace("'", "'\\''")
-
-        exec_mpirun = "docker exec %s %s bash -c '%s'" % (
-            detach_flag,
-            head_container,
-            escaped_mpirun,
+        # Exec mpirun on head container
+        exec_mpirun = self.executor.exec_cmd(
+            container_name=head_container,
+            command=mpirun_cmd,
+            detach=detached,
         )
         result = run_remote_command(
             head_host,

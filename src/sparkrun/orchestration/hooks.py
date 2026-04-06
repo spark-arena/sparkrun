@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import subprocess
 from pathlib import Path
+
 from vpd.legacy.arguments import arg_substitute
 
 logger = logging.getLogger(__name__)
@@ -314,11 +315,13 @@ def _run_exec_command(
     Raises:
         RuntimeError: If the command exits with non-zero status.
     """
-    from sparkrun.orchestration.primitives import run_script_on_host
+    # Use base64 encoding to safely pass the command through bash -c
+    import shlex
 
-    # Escape single quotes in command for bash -c
-    escaped = cmd.replace("'", "'\\''")
-    script = "docker exec --user root %s bash -c '%s'" % (container_name, escaped)
+    from sparkrun.orchestration.primitives import run_script_on_host
+    from sparkrun.utils.shell import b64_wrap_bash
+
+    script = "docker exec --user root %s bash -c %s" % (shlex.quote(container_name), shlex.quote(b64_wrap_bash(cmd)))
 
     logger.info("  %s on %s/%s: %s", label, host, container_name, cmd)
 
