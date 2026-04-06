@@ -7,6 +7,7 @@ from unittest import mock
 import pytest
 
 from sparkrun.models.vram import (
+    VRAMEstimate,
     _resolve_quant_dtype,
     bytes_per_element,
     estimate_vram,
@@ -403,7 +404,9 @@ class TestEstimateVram:
         assert est.context_multiplier is not None
         assert est.context_multiplier > 0
         # max_context_tokens / max_model_len
-        assert est.context_multiplier == pytest.approx(est.max_context_tokens / 4096, abs=0.01)
+        assert est.context_multiplier == pytest.approx(
+            est.max_context_tokens / 4096, abs=0.01
+        )
 
     def test_gpu_memory_utilization_none_skips_budget(self):
         """Without gpu_memory_utilization, budget fields should be None."""
@@ -740,46 +743,60 @@ class TestFetchSafetensorsParams:
         assert result is None
 
 
-class TestFetchSafetensorsSizeTry0:
-    """Tests for model_info API Try 0 in fetch_safetensors_size."""
+class _FakeSibling:
+    """Minimal stand-in for huggingface_hub RepoSibling."""
 
-    def test_model_info_api_used_first(self, monkeypatch):
-        """API try should succeed without downloading any files."""
-        st_info = _FakeSafeTensorsInfo(
-            parameters={"BF16": 7_000_000_000},
-            total=7_000_000_000,
-        )
-        mi = _FakeModelInfo(safetensors=st_info)
-        download_called = []
+    def __init__(self, rfilename: str):
+        self.rfilename = rfilename
 
-        with (
-            mock.patch("huggingface_hub.model_info", return_value=mi),
-            mock.patch("huggingface_hub.hf_hub_download", side_effect=lambda **kw: download_called.append(1)),
-        ):
-            result = fetch_safetensors_size("org/test-model")
 
-        # BF16 = 2 bytes per element → 7B * 2 = 14B bytes
-        assert result == 14_000_000_000
-        assert download_called == []  # no file download attempted
+class TestFetchSafetensorsSizeOrder:
+    """Tests for try ordering in fetch_safetensors_size."""
 
-    def test_falls_through_when_api_fails(self, monkeypatch, tmp_path):
-        """When API fails, should fall through to index file (Try 1)."""
+    def test_index_total_size_used_for_sharded_models(self, tmp_path):
+        """Index total_size should be used for sharded models (most reliable)."""
         import json
 
         index_file = tmp_path / "model.safetensors.index.json"
-        index_file.write_text(json.dumps({"metadata": {"total_size": 20_000_000_000}}))
+        index_file.write_text(json.dumps({
+            "metadata": {"total_size": 20_000_000_000},
+            "weight_map": {"layer.weight": "model-00001.safetensors"},
+        }))
+
+        # API would give different (unreliable for packed formats) value
+        api_called = []
 
         def _fake_download(**kwargs):
             if kwargs.get("filename") == "model.safetensors.index.json":
                 return str(index_file)
             raise FileNotFoundError("no such file")
 
-        with (
-            mock.patch("huggingface_hub.model_info", side_effect=Exception("offline")),
-            mock.patch("huggingface_hub.hf_hub_download", side_effect=_fake_download),
-            mock.patch("huggingface_hub.utils.disable_progress_bars"),
-            mock.patch("huggingface_hub.utils.enable_progress_bars"),
-        ):
-            result = fetch_safetensors_size("org/sharded-model")
+        def _fake_model_info(**kwargs):
+            api_called.append(1)
+            return _FakeModelInfo(safetensors=None)
 
-        assert result == 20_000_000_000
+        with mock.patch("huggingface_hub.model_info", side_effect=_fake_model_info), \
+             mock.patch("huggingface_hub.hf_hub_download", side_effect=_fake_download), \
+             mock.patch("huggingface_hub.utils.disable_progress_bars"), \
+             mock.patch("huggingface_hub.utils.enable_progress_bars"):
+            result = fetch_safetensors_size("org/awq-model")
+
+        assert result == 20_000_000_000  # index total_size
+        assert api_called == []  # API not called when index succeeds
+
+    def test_api_used_when_no_index(self):
+        """API should work when index file is unavailable."""
+        st_info = _FakeSafeTensorsInfo(
+            parameters={"BF16": 7_000_000_000},
+            total=7_000_000_000,
+        )
+        mi = _FakeModelInfo(safetensors=st_info)
+
+        with mock.patch("huggingface_hub.model_info", return_value=mi), \
+             mock.patch("huggingface_hub.hf_hub_download", side_effect=Exception("not found")), \
+             mock.patch("huggingface_hub.utils.disable_progress_bars"), \
+             mock.patch("huggingface_hub.utils.enable_progress_bars"):
+            result = fetch_safetensors_size("org/single-file-model")
+
+        # BF16 = 2 bytes per element → 7B * 2 = 14B bytes
+        assert result == 14_000_000_000
