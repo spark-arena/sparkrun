@@ -317,6 +317,17 @@ class TestDockerExecutorConfig:
         assert "-e HOME=/workspace" in cmd
         assert cmd.index("-e HOME=/tmp") < cmd.index("-e HOME=/workspace")
 
+    def test_run_cmd_extra_opts(self):
+        executor = DockerExecutor()
+        cmd = executor.run_cmd(
+            "img:latest",
+            container_name="my_container",
+            extra_opts=["-p", "8001:8001", "--gpus", "all", '--env="FOO=BAR"'],
+        )
+        assert "-p 8001:8001" in cmd
+        assert "--gpus all" in cmd
+        assert "'--env=\"FOO=BAR\"'" in cmd  # Should be safely quoted
+        assert "img:latest" in cmd
 
 # ---------------------------------------------------------------------------
 # High-level script generator tests

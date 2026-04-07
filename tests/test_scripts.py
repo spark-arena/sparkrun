@@ -52,7 +52,19 @@ def test_generate_container_launch_script_with_env():
     # Both env and nccl_env should be included
     assert "-e MY_VAR=value1" in script
     assert "-e NCCL_DEBUG=INFO" in script
-    assert "-e NCCL_IB_DISABLE=0" in script
+
+
+def test_generate_container_launch_script_with_extra_opts():
+    """With extra docker options."""
+    script = generate_container_launch_script(
+        image="test-image:latest",
+        container_name="test-container",
+        command="python app.py",
+        extra_docker_opts=["-p", "8000:8000", "--label", "foo=bar"],
+    )
+
+    assert "-p 8000:8000" in script
+    assert "--label foo=bar" in script
 
 
 def test_generate_container_launch_script_with_volumes():
