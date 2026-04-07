@@ -66,7 +66,7 @@ logger = logging.getLogger(__name__)
     "--trust", is_flag=True, default=False, hidden=True, help="Trust post_commands from third-party registries without confirmation"
 )
 @click.option("--label", "labels_override", multiple=True, help="Set meta data on a container (e.g., --label com.example.key=value)")
-@click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
+@click.argument("docker_args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def run(
     ctx,
@@ -100,12 +100,13 @@ def run(
     trust,
     labels_override,
     options,
-    extra_args,
+    docker_args,
     config_path=None,
 ):
     """Run an inference recipe.
 
     RECIPE_NAME can be a recipe file path or a name to search for.
+    Any trailing arguments [DOCKER_ARGS]... are passed directly to the container executor (e.g. docker run).
 
     Examples:
 
@@ -306,7 +307,7 @@ def run(
             init_port=init_port,
             topology=cluster_cfg.topology,
             executor_config=cli_executor_opts,
-            extra_docker_opts=list(extra_args) if extra_args else None,
+            extra_docker_opts=list(docker_args) if docker_args else None,
             rootless=not rootful,
             auto_user=not rootful,
         )
