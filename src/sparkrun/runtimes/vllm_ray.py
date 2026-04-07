@@ -154,6 +154,7 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
         ray_port: int = 46379,
         dashboard_port: int = 8265,
         dashboard: bool = False,
+        extra_docker_opts: list[str] | None = None,
         **kwargs,
     ) -> int:
         """Orchestrate a multi-node Ray cluster for vLLM.
@@ -177,6 +178,7 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
         from sparkrun.orchestration.ssh import run_remote_script, run_remote_scripts_parallel
 
         progress = kwargs.pop("progress", None)
+        combined_docker_opts = (self.get_extra_docker_opts() or []) + (extra_docker_opts or [])
 
         ctx = ClusterContext.build(self, hosts, image, cluster_id, env, cache_dir, config, dry_run)
         head_container = self.executor.container_name(cluster_id, "head")
@@ -233,6 +235,7 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
             env=ctx.all_env,
             volumes=ctx.volumes,
             nccl_env=nccl_env,
+            extra_docker_opts=combined_docker_opts or None,
         )
         head_result = run_remote_script(
             ctx.head_host,
@@ -292,6 +295,7 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
                 env=ctx.all_env,
                 volumes=ctx.volumes,
                 nccl_env=nccl_env,
+                extra_docker_opts=combined_docker_opts or None,
             )
             worker_results = run_remote_scripts_parallel(
                 ctx.worker_hosts,

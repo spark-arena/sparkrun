@@ -275,6 +275,7 @@ class Executor(ABC):
         env: dict[str, str] | None = None,
         volumes: dict[str, str] | None = None,
         nccl_env: dict[str, str] | None = None,
+        extra_docker_opts: list[str] | None = None,
     ) -> str:
         """Generate a script that starts a Ray head node in a container.
 
@@ -297,6 +298,7 @@ class Executor(ABC):
             detach=True,
             env=all_env,
             volumes=volumes,
+            extra_opts=extra_docker_opts,
         )
 
         template = read_script("ray_head.sh")
@@ -314,6 +316,7 @@ class Executor(ABC):
         env: dict[str, str] | None = None,
         volumes: dict[str, str] | None = None,
         nccl_env: dict[str, str] | None = None,
+        extra_docker_opts: list[str] | None = None,
     ) -> str:
         """Generate a script that starts a Ray worker node.
 
@@ -332,6 +335,7 @@ class Executor(ABC):
             detach=True,
             env=all_env,
             volumes=volumes,
+            extra_opts=extra_docker_opts,
         )
 
         template = read_script("ray_worker.sh")
