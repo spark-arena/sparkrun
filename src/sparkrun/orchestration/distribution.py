@@ -380,11 +380,13 @@ def distribute_resources(
         # Local-only (same user): just ensure image and model exist, no SSH needed
         with pending_op(_lock_id, "image_pull", **_pop_kw):
             logger.info("Ensuring container image is available locally...")
-            ensure_image(image, dry_run=dry_run)
+            if ensure_image(image, dry_run=dry_run) != 0:
+                raise DistributionError(f"Failed to pull or locate image: {image}")
         if model:
             with pending_op(_lock_id, "model_download", **_pop_kw):
                 logger.info("Ensuring model %s is available locally...", model)
-                download_model(model, cache_dir=effective_local_cache, revision=model_revision, dry_run=dry_run)
+                if download_model(model, cache_dir=effective_local_cache, revision=model_revision, dry_run=dry_run) != 0:
+                    raise DistributionError(f"Failed to download model: {model}")
         return None, {}, {}  # let runtime handle its own local IB detection
     nccl_env: dict[str, str] = {}
     ib_ip_map: dict[str, str] = {}
