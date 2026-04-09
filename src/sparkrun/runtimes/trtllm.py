@@ -415,6 +415,7 @@ class TrtllmRuntime(RuntimePlugin):
         dry_run: bool = False,
         detached: bool = True,
         nccl_env: dict[str, str] | None = None,
+        nccl_env_map: dict[str, dict[str, str]] | None = None,
         skip_keys: set[str] | frozenset[str] = frozenset(),
         extra_docker_opts: list[str] | None = None,
         **kwargs,
@@ -476,7 +477,7 @@ class TrtllmRuntime(RuntimePlugin):
             progress.step("Detecting InfiniBand")
         else:
             logger.info("Step 2/7: InfiniBand detection...")
-        nccl_env = resolve_ib_env(ctx, nccl_env)
+        nccl_env, nccl_env_map = resolve_ib_env(ctx, nccl_env, nccl_env_map)
         logger.info("Step 2/7: IB step done (%.1fs)", time.monotonic() - t0)
 
         # Step 3: Detect management IPs on all hosts
@@ -513,6 +514,7 @@ class TrtllmRuntime(RuntimePlugin):
             self.executor,
             nccl_env,
             extra_docker_opts=combined_docker_opts or None,
+            nccl_env_map=nccl_env_map,
         )
         if rc != 0:
             return rc

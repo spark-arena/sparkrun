@@ -124,28 +124,44 @@ def cleanup_named_containers(ctx: ClusterContext, container_names: list[str]) ->
 # ---------------------------------------------------------------------------
 
 
-def resolve_ib_env(ctx: ClusterContext, nccl_env: dict[str, str] | None) -> dict[str, str]:
-    """Resolve NCCL env: reuse pre-detected or detect via IB probe."""
-    from sparkrun.orchestration.primitives import resolve_nccl_env
+def resolve_ib_env(
+    ctx: ClusterContext,
+    nccl_env: dict[str, str] | None,
+    nccl_env_map: dict[str, dict[str, str]] | None = None,
+) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+    """Resolve NCCL env (head + per-host map): reuse pre-detected or probe.
 
-    return resolve_nccl_env(
-        nccl_env,
+    Returns ``(nccl_env, nccl_env_map)`` where ``nccl_env`` is the
+    head/shared view and ``nccl_env_map`` carries per-host overrides
+    (so heterogeneous socket interfaces don't crash gloo).
+    """
+    if nccl_env is not None:
+        logger.info("Using pre-detected NCCL env (%d vars)", len(nccl_env))
+        return nccl_env, nccl_env_map or {}
+
+    from sparkrun.orchestration.infiniband import detect_ib_for_hosts
+
+    logger.info("Detecting InfiniBand on %d host(s)...", len(ctx.hosts))
+    ib_result = detect_ib_for_hosts(
         ctx.hosts,
-        head_host=ctx.head_host,
         ssh_kwargs=ctx.ssh_kwargs,
         dry_run=ctx.dry_run,
         topology=ctx.topology,
     )
+    if not ib_result.nccl_env:
+        logger.info("  No InfiniBand detected, using default networking")
+    return ib_result.nccl_env, ib_result.nccl_env_map
 
 
 def detect_ib_with_ips(
     ctx: ClusterContext,
     nccl_env: dict[str, str] | None,
     ib_ip_map: dict[str, str] | None,
-) -> tuple[dict[str, str], dict[str, str]]:
-    """Detect IB env and IP map (for runtimes needing IB addresses).
+    nccl_env_map: dict[str, dict[str, str]] | None = None,
+) -> tuple[dict[str, str], dict[str, str], dict[str, dict[str, str]]]:
+    """Detect IB env, per-host map, and IP map.
 
-    Returns ``(nccl_env, ib_ip_map)`` tuple.
+    Returns ``(nccl_env, ib_ip_map, nccl_env_map)``.
     """
     from sparkrun.orchestration.infiniband import detect_ib_for_hosts
 
@@ -155,11 +171,11 @@ def detect_ib_with_ips(
         logger.info("Using pre-detected NCCL env (%d vars)", len(nccl_env))
         if ib_ip_map:
             logger.info("  Pre-detected IB IPs for %d host(s)", len(ib_ip_map))
-        return nccl_env, ib_ip_map
+        return nccl_env, ib_ip_map, nccl_env_map or {}
 
     logger.info("Detecting InfiniBand on all hosts...")
     ib_result = detect_ib_for_hosts(ctx.hosts, ssh_kwargs=ctx.ssh_kwargs, dry_run=ctx.dry_run, topology=ctx.topology)
-    return ib_result.nccl_env, ib_result.ib_ip_map
+    return ib_result.nccl_env, ib_result.ib_ip_map, ib_result.nccl_env_map
 
 
 # ---------------------------------------------------------------------------
@@ -196,8 +212,16 @@ def launch_containers_parallel(
     executor: Executor,
     nccl_env: dict[str, str] | None,
     extra_docker_opts: list[str] | None = None,
+    nccl_env_map: dict[str, dict[str, str]] | None = None,
 ) -> int:
     """Launch sleep-infinity containers in parallel.
+
+    When *nccl_env_map* is provided, each host receives the env entry
+    keyed by its hostname (falling back to the shared *nccl_env* when
+    the host has no per-host override).  This is what makes
+    heterogeneous management interfaces work — the head's
+    ``GLOO_SOCKET_IFNAME`` is not blindly broadcast to a worker that
+    doesn't have that interface up.
 
     Returns 0 on success, 1 on first failure.
     """
@@ -206,13 +230,14 @@ def launch_containers_parallel(
     with ThreadPoolExecutor(max_workers=len(containers)) as pool:
         futures = {}
         for host, cname in containers:
+            host_nccl_env = (nccl_env_map or {}).get(host, nccl_env)
             script = executor.generate_launch_script(
                 image=ctx.image,
                 container_name=cname,
                 command="sleep infinity",
                 env=ctx.all_env,
                 volumes=ctx.volumes,
-                nccl_env=nccl_env,
+                nccl_env=host_nccl_env,
                 extra_docker_opts=extra_docker_opts,
             )
             future = pool.submit(
@@ -319,6 +344,7 @@ def run_native_cluster(
     overrides: dict[str, Any] | None = None,
     *,
     nccl_env: dict[str, str] | None = None,
+    nccl_env_map: dict[str, dict[str, str]] | None = None,
     init_port: int = 25000,
     skip_keys: set[str] | frozenset[str] = frozenset(),
     banner_title: str = "Native Cluster Launcher",
@@ -371,7 +397,7 @@ def run_native_cluster(
         progress.step("Detecting InfiniBand")
     else:
         logger.info("Step 2/7: InfiniBand detection...")
-    nccl_env = resolve_ib_env(ctx, nccl_env)
+    nccl_env, nccl_env_map = resolve_ib_env(ctx, nccl_env, nccl_env_map)
     logger.info("Step 2/7: IB step done (%.1fs)", time.monotonic() - t0)
 
     # Step 3: Detect head node IP
@@ -434,6 +460,7 @@ def run_native_cluster(
         executor,
         nccl_env,
         extra_docker_opts=combined_docker_opts or None,
+        nccl_env_map=nccl_env_map,
     )
     if rc != 0:
         return rc

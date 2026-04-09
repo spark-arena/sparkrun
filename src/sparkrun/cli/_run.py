@@ -34,7 +34,6 @@ logger = logging.getLogger(__name__)
 @click.argument("recipe_name", type=RECIPE_NAME)
 @host_options
 @recipe_override_options
-@click.option("--name", "cluster_id_override", default=None, help="Override deterministic cluster ID (static container name)")
 @click.option("--solo", is_flag=True, help="Force single-node mode", hidden=True)
 @click.option("--port", type=int, default=None, help="Override serve port")
 @click.option("--served-model-name", default=None, help="Override served model name")
@@ -76,7 +75,6 @@ def run(
     hosts,
     hosts_file,
     cluster_name,
-    cluster_id_override,
     solo,
     port,
     tensor_parallel,
@@ -258,26 +256,6 @@ def run(
     if labels_override:
         cli_executor_opts["labels"] = list(labels_override)
 
-    # Also extract executor-specific keys from -o/--option overrides
-    executor_keys = {
-        "auto_remove",
-        "restart_policy",
-        "privileged",
-        "gpus",
-        "ipc",
-        "shm_size",
-        "network",
-        "user",
-        "security_opt",
-        "cap_add",
-        "ulimit",
-        "devices",
-        "memory_limit",
-    }
-    for key in list(overrides.keys()):
-        if key in executor_keys:
-            cli_executor_opts[key] = overrides.pop(key)
-
     # --- Diagnostics setup ---
     diag = None
     if diagnostics_path:
@@ -330,7 +308,6 @@ def run(
             dashboard=dashboard,
             init_port=init_port,
             topology=cluster_cfg.topology,
-            cluster_id_override=cluster_id_override,
             executor_config=cli_executor_opts,
             extra_docker_opts=list(executor_args) if executor_args else None,
             rootless=not rootful,
