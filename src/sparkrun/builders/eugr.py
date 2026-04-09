@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 from scitrera_app_framework import Variables, get_working_path
 
 from sparkrun.builders.base import BuilderPlugin, _flatten_dict, PULLABLE_REGISTRY_PREFIXES
+from sparkrun.utils.shell import quote, quote_list, args_list_to_shell_str
 
 if TYPE_CHECKING:
     from sparkrun.core.config import SparkrunConfig
@@ -509,7 +510,7 @@ class EugrBuilder(BuilderPlugin):
 
             # Add copy entry (docker cp source into container)
             copy_entry: dict[str, str] = {
-                "copy": str(mod_path),
+                "copy": quote(str(mod_path)),
                 "dest": dest,
             }
             if source_host is not None:
@@ -532,7 +533,8 @@ class EugrBuilder(BuilderPlugin):
         """Return the Docker image ID on a remote host, or None on failure."""
         from sparkrun.orchestration.primitives import run_script_on_host
 
-        script = "docker image inspect --format '{{.Id}}' %s 2>/dev/null" % image
+        # TODO: should route via executor
+        script = "docker image inspect --format '{{.Id}}' %s 2>/dev/null" % quote(image)
         result = run_script_on_host(host, script, ssh_kwargs=ssh_kwargs, timeout=30)
         if result.success and result.stdout.strip():
             return result.stdout.strip()
@@ -681,7 +683,8 @@ class EugrBuilder(BuilderPlugin):
             try:
                 from sparkrun.orchestration.primitives import run_script_on_host
 
-                script = "docker run --rm %s cat /workspace/build-metadata.yaml" % image
+                # TODO: inline script / should be on executor
+                script = "docker run --rm %s cat /workspace/build-metadata.yaml" % quote(image)
                 r = run_script_on_host(host, script, ssh_kwargs=ssh_kwargs, timeout=30)
                 if r.success and r.stdout.strip():
                     info = self.process_version_info({"build_metadata": r.stdout})
@@ -692,7 +695,7 @@ class EugrBuilder(BuilderPlugin):
         else:
             try:
                 result = subprocess.run(
-                    ["docker", "run", "--rm", image, "cat", "/workspace/build-metadata.yaml"],
+                    ["docker", "run", "--rm", quote(image), "cat", "/workspace/build-metadata.yaml"],
                     capture_output=True,
                     text=True,
                     timeout=30,
@@ -739,7 +742,7 @@ class EugrBuilder(BuilderPlugin):
         if not build_script.exists():
             raise RuntimeError("build-and-copy.sh not found at %s" % build_script)
 
-        cmd = [str(build_script), "-t", image] + build_args
+        cmd = [str(build_script), "-t", quote(image)] + quote_list(build_args)
         logger.info("Building eugr container: %s", " ".join(cmd))
 
         if dry_run:
@@ -769,7 +772,7 @@ class EugrBuilder(BuilderPlugin):
         """
         from sparkrun.orchestration.primitives import run_script_on_host
 
-        script = "docker image inspect %s >/dev/null 2>&1" % image
+        script = "docker image inspect %s >/dev/null 2>&1" % quote(image)
         result = run_script_on_host(host, script, ssh_kwargs=ssh_kwargs, timeout=30)
         return result.success
 
@@ -809,7 +812,7 @@ class EugrBuilder(BuilderPlugin):
                 '  git clone -b %(branch)s %(url)s "$REPO_DIR"\n'
                 "fi\n"
                 'echo "$REPO_DIR"\n'
-            ) % {"path": remote_path, "url": EUGR_REPO_URL, "branch": branch}
+            ) % {"path": remote_path, "url": EUGR_REPO_URL, "branch": quote(branch)}
         else:
             script = (
                 "set -e\n"
@@ -858,10 +861,10 @@ class EugrBuilder(BuilderPlugin):
 
         # TODO: hard-coded inline script
         remote_path = "~/.cache/sparkrun/eugr-spark-vllm-docker"
-        args_str = " ".join(build_args) if build_args else ""
-        script = ("set -e\ncd %(path)s\nchmod +x build-and-copy.sh\n./build-and-copy.sh -t %(image)s %(args)s\n") % {
+        args_str = args_list_to_shell_str(build_args)
+        script = "set -e\ncd %(path)s\nchmod +x build-and-copy.sh\n./build-and-copy.sh -t %(image)s %(args)s\n" % {
             "path": remote_path,
-            "image": image,
+            "image": quote(image),
             "args": args_str,
         }
 
@@ -931,7 +934,7 @@ class EugrBuilder(BuilderPlugin):
             repo_dir.parent.mkdir(parents=True, exist_ok=True)
             cmd = ["git", "clone"]
             if branch:
-                cmd += ["-b", branch]
+                cmd += ["-b", quote(branch)]
             cmd += [EUGR_REPO_URL, str(repo_dir)]
             result = subprocess.run(cmd, capture_output=True, text=True)
             if result.returncode != 0:
@@ -967,7 +970,7 @@ class EugrBuilder(BuilderPlugin):
                 text=True,
             )
             checkout = subprocess.run(
-                ["git", "-C", str(repo_dir), "checkout", branch],
+                ["git", "-C", str(repo_dir), "checkout", quote(branch)],
                 capture_output=True,
                 text=True,
             )

@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 
 from scitrera_app_framework import Plugin, Variables
 
+from sparkrun.utils.shell import quote
+
 if TYPE_CHECKING:
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.core.recipe import Recipe
@@ -143,7 +145,7 @@ class BuilderPlugin(Plugin):
             import json
             from sparkrun.orchestration.primitives import run_script_on_host
 
-            script = "docker inspect --format '{{json .Config.Labels}}' %s 2>/dev/null || echo '{}'" % container_name
+            script = "docker inspect --format '{{json .Config.Labels}}' %s 2>/dev/null || echo '{}'" % quote(container_name)
             result = run_script_on_host(host, script, ssh_kwargs=ssh_kwargs, timeout=15)
             if result.returncode != 0 or not result.stdout.strip():
                 return {}

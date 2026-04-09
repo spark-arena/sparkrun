@@ -23,27 +23,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def render_args_as_flags(args: dict[str, Any]) -> list[str]:
-    """Render a dict of args as CLI flags (--kebab-case-key value).
-
-    Booleans become bare flags (present when True, absent when False).
-    Lists emit repeated flags for each element.
-    """
-    parts: list[str] = []
-    for key, value in args.items():
-        flag = "--" + key.replace("_", "-")
-        if isinstance(value, bool):
-            if value:
-                parts.append(flag)
-            continue
-        if isinstance(value, list):
-            for item in value:
-                parts.extend([flag, str(item)])
-            continue
-        parts.extend([flag, str(value)])
-    return parts
-
-
 class BenchmarkingPlugin(Plugin):
     """Abstract base for benchmarking frameworks (SAF multi-extension plugin).
 

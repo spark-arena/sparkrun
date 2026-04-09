@@ -10,9 +10,9 @@ import pytest
 import yaml
 
 from sparkrun.benchmarking.base import (
-    render_args_as_flags,
     export_results,
 )
+from sparkrun.utils.shell import render_args_as_flags
 from sparkrun.core.benchmark_profiles import BenchmarkError, BenchmarkSpec
 from sparkrun.benchmarking.llama_benchy import LlamaBenchyFramework
 from sparkrun.core.recipe import Recipe

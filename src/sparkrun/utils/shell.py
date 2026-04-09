@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import re
 import shlex
+from typing import Any
 
 
 def quote(value: str) -> str:
@@ -47,7 +48,7 @@ def b64_wrap_bash(cmd: str, quoted: bool = True) -> str:
 def args_list_to_shell_str(args: list[str]) -> str:
     """Prepare a list of arguments for passing to a shell command."""
     # NOTE: no isinstance guard here, bubble up failures
-    return " ".join(quote(arg) for arg in args if arg)
+    return " ".join(quote(arg) for arg in args if arg) or ""
 
 
 def quote_list(source_list: list) -> list:
@@ -79,3 +80,24 @@ def validate_unix_username(user: str) -> str:
     if not re.fullmatch(r"[a-z_][a-z0-9_-]*\$?", user):
         raise ValueError("Invalid username: %r" % user)
     return user
+
+
+def render_args_as_flags(args: dict[str, Any]) -> list[str]:
+    """Render a dict of args as CLI flags (--kebab-case-key value).
+
+    Booleans become bare flags (present when True, absent when False).
+    Lists emit repeated flags for each element.
+    """
+    parts: list[str] = []
+    for key, value in args.items():
+        flag = "--" + key.replace("_", "-")
+        if isinstance(value, bool):
+            if value:
+                parts.append(flag)
+            continue
+        if isinstance(value, list):
+            for item in value:
+                parts.extend([flag, str(item)])
+            continue
+        parts.extend([flag, str(value)])
+    return parts
