@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import shlex
 from sparkrun.orchestration.executor import Executor
 from sparkrun.utils.shell import b64_wrap_bash, quote
 
@@ -57,7 +58,7 @@ class DockerExecutor(Executor):
             opts.append("--memory=%s" % cfg.memory_limit)
         if cfg.labels:
             for lbl in cfg.labels:
-                opts.extend(["--label", shlex.quote(lbl)])
+                opts.extend(["--label", quote(lbl)])
 
         return opts
 
@@ -99,7 +100,7 @@ class DockerExecutor(Executor):
 
         if extra_opts:
             for opt in extra_opts:
-                parts.extend(shlex.quote(token) for token in shlex.split(opt))
+                parts.extend(quote(token) for token in shlex.split(opt))
 
         parts.append(quote(image))
 
