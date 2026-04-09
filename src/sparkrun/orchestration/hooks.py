@@ -316,12 +316,11 @@ def _run_exec_command(
         RuntimeError: If the command exits with non-zero status.
     """
     # Use base64 encoding to safely pass the command through bash -c
-    import shlex
-
     from sparkrun.orchestration.primitives import run_script_on_host
-    from sparkrun.utils.shell import b64_wrap_bash
+    from sparkrun.utils.shell import b64_wrap_bash, quote
 
-    script = "docker exec --user root %s bash -c %s" % (shlex.quote(container_name), shlex.quote(b64_wrap_bash(cmd)))
+    # TODO: this should delegate via executor implementation; this should allow control over user
+    script = "docker exec --user root %s bash -c %s" % (quote(container_name), b64_wrap_bash(cmd))
 
     logger.info("  %s on %s/%s: %s", label, host, container_name, cmd)
 

@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 import shlex
 
+from sparkrun.utils.shell import b64_wrap_bash, quote
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,9 +38,8 @@ def docker_exec_cmd(
     if env:
         for key, value in sorted(env.items()):
             parts.extend(["-e", shlex.quote(f"{key}={value}")])
-    from sparkrun.utils.shell import b64_wrap_bash
 
-    parts.extend([shlex.quote(container_name), "bash", "-c", shlex.quote(b64_wrap_bash(command))])
+    parts.extend([quote(container_name), "bash", "-c", b64_wrap_bash(command)])
     return " ".join(parts)
 
 
@@ -52,7 +53,7 @@ def docker_stop_cmd(container_name: str, force: bool = True) -> str:
     Returns:
         Command string that stops (and optionally removes) the container.
     """
-    quoted = shlex.quote(container_name)
+    quoted = quote(container_name)
     if force:
         return "docker rm -f %s 2>/dev/null || true" % quoted
     return "docker stop %s 2>/dev/null || true" % quoted

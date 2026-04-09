@@ -105,7 +105,7 @@ class DockerExecutor(Executor):
         parts.append(quote(image))
 
         if command:
-            parts.extend(["bash", "-c", quote(b64_wrap_bash(command))])
+            parts.extend(["bash", "-c", b64_wrap_bash(command)])
 
         result = " ".join(parts)
 
@@ -131,7 +131,7 @@ class DockerExecutor(Executor):
         if env:
             for key, value in sorted(env.items()):
                 parts.extend(["-e", quote("%s=%s" % (key, value))])
-        parts.extend([quote(container_name), "bash", "-c", quote(b64_wrap_bash(command))])
+        parts.extend([quote(container_name), "bash", "-c", b64_wrap_bash(command)])
         return " ".join(parts)
 
     def stop_cmd(self, container_name: str, force: bool = True) -> str:

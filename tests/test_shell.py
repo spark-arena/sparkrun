@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 import base64
 import re
 
@@ -39,7 +38,7 @@ def test_b64_encode_cmd_with_unicode():
 def test_b64_wrap_bash():
     """Test the bash wrapping pipeline."""
     cmd = 'vllm serve --hf-overrides \'{"rope": "yarn"}\''
-    wrapped = b64_wrap_bash(cmd)
+    wrapped = b64_wrap_bash(cmd, quoted=False)
 
     assert wrapped.startswith("printf '%s' '")
     assert wrapped.endswith("' | base64 -d -- | bash --noprofile --norc")

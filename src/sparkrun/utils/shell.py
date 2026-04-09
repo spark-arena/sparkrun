@@ -19,16 +19,21 @@ def b64_encode_cmd(cmd: str) -> str:
     return base64.b64encode(cmd.encode("utf-8")).decode("utf-8")
 
 
-def b64_wrap_bash(cmd: str) -> str:
+def b64_wrap_bash(cmd: str, quoted: bool = True) -> str:
     """Wrap a command in a base64 pipeline that decodes and executes via bash.
 
-    Produces a string like: ``printf '%s' <b64> | base64 -d -- | bash``
+    Produces a string like: `printf '%s' <b64> | base64 -d -- | bash`
+
+    If quoted is True, then the result is properly shell quoted as well.
     """
     b64_cmd = b64_encode_cmd(cmd)
     # Using printf instead of echo is safer against strings starting with dashes.
     # Adding -- to base64 -d prevents interpretation of the b64 string as flags.
     # Using --noprofile --norc with bash ensures a clean execution environment.
-    return f"printf '%s' '{b64_cmd}' | base64 -d -- | bash --noprofile --norc"
+    result = f"printf '%s' '{b64_cmd}' | base64 -d -- | bash --noprofile --norc"
+    if quoted:
+        return quote(result)
+    return result
 
 
 def quote(value: str) -> str:
