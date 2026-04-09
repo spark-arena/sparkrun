@@ -10,6 +10,14 @@ import re
 import shlex
 
 
+def quote(value: str) -> str:
+    """Return a shell-safe quoted version of *value*.
+
+    Wraps :func:`shlex.quote` for convenience.
+    """
+    return shlex.quote(value)
+
+
 def b64_encode_cmd(cmd: str) -> str:
     """Base64 encode a command string to avoid shell escaping issues.
 
@@ -36,12 +44,16 @@ def b64_wrap_bash(cmd: str, quoted: bool = True) -> str:
     return result
 
 
-def quote(value: str) -> str:
-    """Return a shell-safe quoted version of *value*.
+def args_list_to_shell_str(args: list[str]) -> str:
+    """Prepare a list of arguments for passing to a shell command."""
+    # NOTE: no isinstance guard here, bubble up failures
+    return " ".join(quote(arg) for arg in args if arg)
 
-    Wraps :func:`shlex.quote` for convenience.
-    """
-    return shlex.quote(value)
+
+def quote_list(source_list: list) -> list:
+    """Return a copy of *source_list* with all values shell-quoted."""
+    # NOTE: no isinstance guard here, bubble up failures
+    return [quote(v) for v in source_list if v]
 
 
 def quote_dict(d: dict) -> dict:

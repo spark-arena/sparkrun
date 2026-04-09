@@ -8,9 +8,8 @@
 from __future__ import annotations
 
 import logging
-import shlex
 from sparkrun.orchestration.executor import Executor
-from sparkrun.utils.shell import b64_wrap_bash, quote
+from sparkrun.utils.shell import b64_wrap_bash, quote, args_list_to_shell_str, quote_list
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +25,7 @@ class DockerExecutor(Executor):
         if cfg.privileged:
             opts.append("--privileged")
         if cfg.gpus:
-            opts.extend(["--gpus", cfg.gpus])
+            opts.extend(["--gpus", quote(cfg.gpus)])
         if cfg.ipc:
             opts.append("--ipc=%s" % quote(cfg.ipc))
         if cfg.shm_size:
@@ -55,7 +54,7 @@ class DockerExecutor(Executor):
             for dev in cfg.devices:
                 opts.extend(["--device", quote(dev)])
         if cfg.memory_limit:
-            opts.append("--memory=%s" % cfg.memory_limit)
+            opts.append("--memory=%s" % quote(cfg.memory_limit))
         if cfg.labels:
             for lbl in cfg.labels:
                 opts.extend(["--label", quote(lbl)])
@@ -95,12 +94,14 @@ class DockerExecutor(Executor):
                 parts.extend(["-e", quote("%s=%s" % (key, value))])
 
         if volumes:
+            # TODO: option for ro/rw on volumes?
             for host_path, container_path in sorted(volumes.items()):
                 parts.extend(["-v", quote("%s:%s" % (host_path, container_path))])
 
         if extra_opts:
-            for opt in extra_opts:
-                parts.extend(quote(token) for token in shlex.split(opt))
+            # NOTE: each extra opt must be a single option, not many
+            # ALTERNATIVE: use shlex.split if we want to support batch input?
+            parts.extend(quote_list(extra_opts))
 
         parts.append(quote(image))
 
@@ -130,9 +131,9 @@ class DockerExecutor(Executor):
             parts.append("-d")
         if env:
             for key, value in sorted(env.items()):
-                parts.extend(["-e", quote("%s=%s" % (key, value))])
-        parts.extend([quote(container_name), "bash", "-c", b64_wrap_bash(command)])
-        return " ".join(parts)
+                parts.extend(["-e", "%s=%s" % (key, value)])
+        parts.extend([container_name, "bash", "-c", b64_wrap_bash(command)])
+        return args_list_to_shell_str(parts)
 
     def stop_cmd(self, container_name: str, force: bool = True) -> str:
         """Generate a docker stop/rm command string."""
@@ -153,8 +154,8 @@ class DockerExecutor(Executor):
             parts.append("-f")
         if tail is not None:
             parts.extend(["--tail", str(tail)])
-        parts.append(quote(container_name))
-        return " ".join(parts)
+        parts.append(container_name)
+        return args_list_to_shell_str(parts)
 
     def inspect_exists_cmd(self, image: str) -> str:
         """Generate a command to check if a docker image exists locally."""
