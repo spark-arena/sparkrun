@@ -21,6 +21,7 @@ from sparkrun.runtimes.base import RuntimePlugin
 if TYPE_CHECKING:
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.core.recipe import Recipe
+    from sparkrun.orchestration.comm_env import ClusterCommEnv
 
 logger = logging.getLogger(__name__)
 
@@ -414,8 +415,7 @@ class TrtllmRuntime(RuntimePlugin):
         config: SparkrunConfig | None = None,
         dry_run: bool = False,
         detached: bool = True,
-        nccl_env: dict[str, str] | None = None,
-        nccl_env_map: dict[str, dict[str, str]] | None = None,
+        comm_env: "ClusterCommEnv | None" = None,
         skip_keys: set[str] | frozenset[str] = frozenset(),
         extra_docker_opts: list[str] | None = None,
         **kwargs,
@@ -477,7 +477,7 @@ class TrtllmRuntime(RuntimePlugin):
             progress.step("Detecting InfiniBand")
         else:
             logger.info("Step 2/7: InfiniBand detection...")
-        nccl_env, nccl_env_map = resolve_ib_env(ctx, nccl_env, nccl_env_map)
+        comm_env = resolve_ib_env(ctx, comm_env)
         logger.info("Step 2/7: IB step done (%.1fs)", time.monotonic() - t0)
 
         # Step 3: Detect management IPs on all hosts
@@ -512,9 +512,8 @@ class TrtllmRuntime(RuntimePlugin):
             ctx,
             containers,
             self.executor,
-            nccl_env,
+            comm_env,
             extra_docker_opts=combined_docker_opts or None,
-            nccl_env_map=nccl_env_map,
         )
         if rc != 0:
             return rc
@@ -621,11 +620,12 @@ class TrtllmRuntime(RuntimePlugin):
             logger.error("No serve command or recipe provided")
             return 1
 
-        # Build mpirun command
+        # Build mpirun command (head-host env since mpirun runs in head container)
+        head_env = comm_env.get_env(ctx.head_host) if comm_env else None
         mpirun_cmd = self._build_mpirun_command(
             trtllm_cmd,
             host_ips,
-            nccl_env=nccl_env,
+            nccl_env=head_env,
         )
 
         logger.info("mpirun command:")

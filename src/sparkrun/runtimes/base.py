@@ -12,6 +12,7 @@ from scitrera_app_framework import Plugin, Variables, ext_parse_bool
 if TYPE_CHECKING:
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.core.recipe import Recipe
+    from sparkrun.orchestration.comm_env import ClusterCommEnv
     from sparkrun.orchestration.executor import Executor
 
 logger = logging.getLogger(__name__)
@@ -585,8 +586,7 @@ class RuntimePlugin(Plugin):
         config: SparkrunConfig | None = None,
         dry_run: bool = False,
         detached: bool = True,
-        nccl_env: dict[str, str] | None = None,
-        nccl_env_map: dict[str, dict[str, str]] | None = None,
+        comm_env: ClusterCommEnv | None = None,
         ib_ip_map: dict[str, str] | None = None,
         skip_keys: set[str] | frozenset[str] = frozenset(),
         executor: Executor | None = None,
@@ -607,14 +607,15 @@ class RuntimePlugin(Plugin):
             config: SparkrunConfig instance for SSH settings.
             dry_run: Show what would be done without executing.
             detached: Run serve command in background.
-            nccl_env: Pre-detected NCCL environment variables.  When
-                provided (not ``None``), skips runtime IB detection and
-                uses this env directly.
+            comm_env: Pre-detected :class:`ClusterCommEnv` (cluster
+                inter-node comm env with shared + per-host overrides).
+                When provided (not ``None``), skips runtime IB
+                detection and uses this env directly.
             ib_ip_map: Pre-detected InfiniBand IP mapping
                 (management host -> IB IP).  Used by runtimes that need
                 IB addresses for inter-node communication (e.g. llama.cpp
                 RPC).  When ``None``, the runtime may detect IB IPs
-                itself if ``nccl_env`` is also ``None``.
+                itself if ``comm_env`` is also ``None``.
             skip_keys: Config keys to omit when the runtime regenerates
                 serve commands internally (e.g. native-cluster runtimes
                 that call ``generate_node_command()`` instead of using
@@ -644,7 +645,7 @@ class RuntimePlugin(Plugin):
                 config=config,
                 dry_run=dry_run,
                 detached=detached,
-                nccl_env=nccl_env,
+                comm_env=comm_env,
                 recipe=recipe,
                 overrides=overrides,
                 progress=progress,
@@ -662,8 +663,7 @@ class RuntimePlugin(Plugin):
             config=config,
             dry_run=dry_run,
             detached=detached,
-            nccl_env=nccl_env,
-            nccl_env_map=nccl_env_map,
+            comm_env=comm_env,
             ib_ip_map=ib_ip_map,
             skip_keys=skip_keys,
             progress=progress,
@@ -746,7 +746,7 @@ class RuntimePlugin(Plugin):
         config: SparkrunConfig | None = None,
         dry_run: bool = False,
         detached: bool = True,
-        nccl_env: dict[str, str] | None = None,
+        comm_env: ClusterCommEnv | None = None,
         recipe: Recipe | None = None,
         overrides: dict[str, Any] | None = None,
         progress=None,
@@ -783,24 +783,24 @@ class RuntimePlugin(Plugin):
 
         combined_docker_opts = (self.get_extra_docker_opts() or []) + (extra_docker_opts or [])
 
-        # Step 1: InfiniBand detection (skip if pre-detected nccl_env provided)
+        # Step 1: InfiniBand detection (skip if pre-detected comm_env provided)
         if progress:
             progress.begin_runtime_steps(3)
         t0 = time.monotonic()
-        if nccl_env is not None:
+        if comm_env is not None:
             if progress:
-                progress.step("Using pre-detected NCCL env")
+                progress.step("Using pre-detected comm env")
             else:
-                logger.info("Step 1/3: Using pre-detected NCCL env (%d vars)", len(nccl_env))
+                logger.info("Step 1/3: Using pre-detected comm env (%d vars)", len(comm_env))
         else:
             if progress:
                 progress.step("Detecting InfiniBand")
             else:
                 logger.info("Step 1/3: Detecting InfiniBand on %s...", host)
             if is_local:
-                nccl_env = detect_infiniband_local(dry_run=dry_run)
+                comm_env = detect_infiniband_local(dry_run=dry_run)
             else:
-                nccl_env = detect_infiniband(
+                comm_env = detect_infiniband(
                     [host],
                     ssh_kwargs=ssh_kwargs,
                     dry_run=dry_run,
@@ -824,7 +824,7 @@ class RuntimePlugin(Plugin):
             command="sleep infinity",
             env=all_env,
             volumes=volumes,
-            nccl_env=nccl_env,
+            nccl_env=comm_env.get_env(host) if comm_env else None,
             extra_docker_opts=combined_docker_opts or None,
         )
         result = run_script_on_host(
@@ -1030,8 +1030,7 @@ class RuntimePlugin(Plugin):
         config=None,
         dry_run: bool = False,
         detached: bool = True,
-        nccl_env: dict[str, str] | None = None,
-        nccl_env_map: dict[str, dict[str, str]] | None = None,
+        comm_env: ClusterCommEnv | None = None,
         init_port: int = 25000,
         skip_keys: set[str] | frozenset[str] = frozenset(),
         banner_title: str = "Native Cluster Launcher",
@@ -1096,8 +1095,7 @@ class RuntimePlugin(Plugin):
             ctx=ctx,
             recipe=recipe,
             overrides=overrides,
-            nccl_env=nccl_env,
-            nccl_env_map=nccl_env_map,
+            comm_env=comm_env,
             init_port=init_port,
             skip_keys=skip_keys,
             banner_title=banner_title,

@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
+from sparkrun.orchestration.comm_env import ClusterCommEnv
 from sparkrun.scripts import read_script
 from sparkrun.utils import parse_kv_output
 
@@ -24,21 +25,17 @@ class IBDetectionResult:
     for fast internal transfers.
     """
 
-    nccl_env: dict[str, str] = field(default_factory=dict)
-    """NCCL env vars derived from the head host's IB detection.
+    comm_env: ClusterCommEnv = field(default_factory=ClusterCommEnv.empty)
+    """Inter-node comm env derived from IB detection.
 
-    Used as the default/shared env for the cluster.  For per-host
-    overrides (e.g. socket interface name when nodes have heterogeneous
-    management interfaces) prefer ``nccl_env_map``.
-    """
-    nccl_env_map: dict[str, dict[str, str]] = field(default_factory=dict)
-    """Mapping of queried host → NCCL env vars derived from that host.
-
-    Each entry is the result of :func:`generate_nccl_env` against that
-    host's own IB detection output.  This lets cluster orchestration
-    inject per-host socket interface names (``GLOO_SOCKET_IFNAME``,
-    ``MN_IF_NAME``, etc.) so heterogeneous mgmt interfaces (e.g. wired
-    on the head, wifi on a worker) don't crash gloo at init time.
+    ``comm_env.shared`` holds keys whose values are identical across
+    all hosts (``NCCL_NET``, ``NCCL_IB_HCA``, ``NCCL_IB_GID_INDEX``,
+    ``UCX_NET_DEVICES``, …).  ``comm_env.per_host`` holds the keys
+    that differ between hosts — typically the socket-interface names
+    (``GLOO_SOCKET_IFNAME``, ``MN_IF_NAME``, ``TP_SOCKET_IFNAME``,
+    ``OMPI_MCA_btl_tcp_if_include``) — so heterogeneous mgmt
+    interfaces (e.g. wired on the head, wifi on a worker) don't crash
+    gloo at init time.
     """
     ib_ip_map: dict[str, str] = field(default_factory=dict)
     """Mapping of queried host → first IB interface IP.
@@ -128,23 +125,49 @@ def generate_nccl_env(ib_info: dict[str, str], topology: str | None = None) -> d
 
     def _set_eth_interfaces(target):
         net_list = ib_info[target]
-        # NCCL_SOCKET_IFNAME uses '=' prefix per interface to pin exact devices (refer to NCCL docs for details)
-        # nccl_socket = ",".join("=" + if_ for if_ in net_list.split(","))
-        # NOTE: default will be any interface not loopback or docker
-        # env["NCCL_SOCKET_IFNAME"] = net_list  # nccl_socket
-        # NOTE: default will be any interface not loopback or docker
         env["MN_IF_NAME"] = net_list
         env["OMPI_MCA_btl_tcp_if_include"] = net_list
         env["GLOO_SOCKET_IFNAME"] = net_list
         env["TP_SOCKET_IFNAME"] = net_list
-        # env["UCX_NET_DEVICES"] = net_list
+
+    def _nccl_socket_ifname_list(mgmt_if: str | None, ib_nets: str) -> str:
+        """Build an ordered, deduped NCCL_SOCKET_IFNAME list.
+
+        NCCL accepts a comma-separated list and tries them in order.
+        Put the mgmt/default-route interface first (that's the one
+        reachable from the control machine and between hosts for
+        bootstrap / rendezvous TCP), then fall through to the
+        detected IB adapters so NCCL has options if mgmt is missing.
+        Duplicates are preserved in order of first appearance.
+        """
+        parts: list[str] = []
+        seen: set[str] = set()
+        if mgmt_if:
+            mgmt_if = mgmt_if.strip()
+            if mgmt_if and mgmt_if not in seen:
+                parts.append(mgmt_if)
+                seen.add(mgmt_if)
+        for ifname in (ib_nets or "").split(","):
+            ifname = ifname.strip()
+            if ifname and ifname not in seen:
+                parts.append(ifname)
+                seen.add(ifname)
+        return ",".join(parts)
 
     if ib_info.get("DETECTED_HCA_LIST"):
         env["NCCL_IB_HCA"] = ib_info["DETECTED_HCA_LIST"]
     if ib_info.get("DETECTED_SOCKET_IFNAME"):  # prefer MGMT/default interface for non-IB HCA adapters since it works for mesh or non-mesh
         _set_eth_interfaces("DETECTED_SOCKET_IFNAME")
+        env["NCCL_SOCKET_IFNAME"] = _nccl_socket_ifname_list(
+            ib_info["DETECTED_SOCKET_IFNAME"],
+            ib_info.get("DETECTED_NET_LIST", ""),
+        )
     elif ib_info.get("DETECTED_NET_LIST"):  # fallback to specifying CX7 interfaces
         _set_eth_interfaces("DETECTED_NET_LIST")
+        env["NCCL_SOCKET_IFNAME"] = _nccl_socket_ifname_list(
+            None,
+            ib_info["DETECTED_NET_LIST"],
+        )
     if ib_info.get("DETECTED_UCX_LIST"):
         env["UCX_NET_DEVICES"] = ib_info["DETECTED_UCX_LIST"]
 
@@ -263,8 +286,7 @@ def detect_ib_for_hosts(
         **kw,
     )
 
-    nccl_env: dict[str, str] = {}
-    nccl_env_map: dict[str, dict[str, str]] = {}
+    per_host_env: dict[str, dict[str, str]] = {}
     ib_ip_map: dict[str, str] = {}
     mgmt_ip_map: dict[str, str] = {}
 
@@ -273,16 +295,12 @@ def detect_ib_for_hosts(
             continue
         ib_info = parse_ib_detect_output(result.stdout)
 
-        # Per-host NCCL env (so heterogeneous socket interfaces work)
+        # Per-host comm env (so heterogeneous socket interfaces work)
         host_env = generate_nccl_env(ib_info, topology=topology)
         if host_env:
-            nccl_env_map[result.host] = host_env
-
-        # NCCL env from head host (kept as the default/shared view)
-        if result.host == head_host and not nccl_env:
-            nccl_env = host_env
-            if nccl_env:
-                logger.info("  InfiniBand detected on %s, NCCL configured", head_host)
+            per_host_env[result.host] = host_env
+            if result.host == head_host:
+                logger.info("  InfiniBand detected on %s, comm env configured", head_host)
 
         # IB IP for transfer routing
         ib_ips = extract_ib_ips(ib_info)
@@ -296,7 +314,8 @@ def detect_ib_for_hosts(
             mgmt_ip_map[result.host] = mgmt_ip
             logger.debug("  %s mgmt IP: %s", result.host, mgmt_ip)
 
-    if not nccl_env:
+    comm_env = ClusterCommEnv.from_per_host(per_host_env)
+    if comm_env.is_empty():
         logger.info("  No InfiniBand detected, using default networking")
 
     if ib_ip_map:
@@ -305,8 +324,7 @@ def detect_ib_for_hosts(
         logger.info("  No IB IPs found, transfers will use management network")
 
     return IBDetectionResult(
-        nccl_env=nccl_env,
-        nccl_env_map=nccl_env_map,
+        comm_env=comm_env,
         ib_ip_map=ib_ip_map,
         mgmt_ip_map=mgmt_ip_map,
     )

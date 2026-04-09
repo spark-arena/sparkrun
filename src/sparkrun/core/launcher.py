@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from sparkrun.core.progress import LaunchProgress
     from sparkrun.core.recipe import Recipe
     from sparkrun.core.registry import RegistryManager
+    from sparkrun.orchestration.comm_env import ClusterCommEnv
     from sparkrun.runtimes.base import RuntimePlugin
     from sparkrun.builders.base import BuilderPlugin
 
@@ -40,8 +41,7 @@ class LaunchResult:
     serve_port: int
     config: SparkrunConfig
     recipe_ref: str | None = None
-    nccl_env: dict[str, str] | None = None
-    nccl_env_map: dict[str, dict[str, str]] = field(default_factory=dict)
+    comm_env: "ClusterCommEnv | None" = None
     ib_ip_map: dict[str, str] = field(default_factory=dict)
     serve_command: str = ""
     runtime_info: dict[str, str] = field(default_factory=dict)
@@ -240,15 +240,14 @@ def launch_inference(
     )
 
     # -- Phase 3: Distribution --
-    nccl_env = None
-    nccl_env_map: dict[str, dict[str, str]] = {}
+    comm_env = None
     ib_ip_map: dict[str, str] = {}
     if not runtime.is_delegating_runtime():
         if p:
             p.phase(3)
         from sparkrun.orchestration.distribution import distribute_resources
 
-        nccl_env, nccl_env_map, ib_ip_map, mgmt_ip_map = distribute_resources(
+        comm_env, ib_ip_map, mgmt_ip_map = distribute_resources(
             container_image,
             recipe.model,
             host_list,
@@ -430,8 +429,7 @@ def launch_inference(
         config=config,
         dry_run=dry_run,
         detached=detached,
-        nccl_env=nccl_env,
-        nccl_env_map=nccl_env_map,
+        comm_env=comm_env,
         ib_ip_map=ib_ip_map,
         skip_keys=skip_keys,
         executor=executor,
@@ -510,8 +508,7 @@ def launch_inference(
         serve_port=serve_port,
         config=config,
         recipe_ref=recipe_ref,
-        nccl_env=nccl_env,
-        nccl_env_map=nccl_env_map,
+        comm_env=comm_env,
         ib_ip_map=ib_ip_map,
         serve_command=serve_command,
         runtime_info=runtime_info,

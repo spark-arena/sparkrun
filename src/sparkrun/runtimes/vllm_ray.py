@@ -10,6 +10,7 @@ from sparkrun.runtimes._vllm_common import VllmMixin, VLLM_FLAG_MAP, VLLM_BOOL_F
 
 if TYPE_CHECKING:
     from sparkrun.core.recipe import Recipe
+    from sparkrun.orchestration.comm_env import ClusterCommEnv
 
 logger = logging.getLogger(__name__)
 
@@ -150,8 +151,7 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
         config=None,
         dry_run: bool = False,
         detached: bool = True,
-        nccl_env: dict[str, str] | None = None,
-        nccl_env_map: dict[str, dict[str, str]] | None = None,
+        comm_env: "ClusterCommEnv | None" = None,
         ray_port: int = 46379,
         dashboard_port: int = 8265,
         dashboard: bool = False,
@@ -203,7 +203,7 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
             progress.step("Detecting InfiniBand")
         else:
             logger.info("Step 2/5: InfiniBand detection...")
-        nccl_env, nccl_env_map = resolve_ib_env(ctx, nccl_env, nccl_env_map)
+        comm_env = resolve_ib_env(ctx, comm_env)
         logger.info("Step 2/5: IB step done (%.1fs)", time.monotonic() - t0)
 
         # Auto-detect available ports to avoid collisions with running instances
@@ -227,7 +227,7 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
             progress.step("Launching Ray head")
         else:
             logger.info("Step 3/5: Launching Ray head on %s...", ctx.head_host)
-        head_nccl_env = (nccl_env_map or {}).get(ctx.head_host, nccl_env)
+        head_nccl_env = comm_env.get_env(ctx.head_host) if comm_env else None
         head_script = self.executor.generate_ray_head_script(
             image=image,
             container_name=head_container,
@@ -297,7 +297,7 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
             with ThreadPoolExecutor(max_workers=len(ctx.worker_hosts)) as _wpool:
                 _wfutures = {}
                 for _whost in ctx.worker_hosts:
-                    _whost_env = (nccl_env_map or {}).get(_whost, nccl_env)
+                    _whost_env = comm_env.get_env(_whost) if comm_env else None
                     _wscript = self.executor.generate_ray_worker_script(
                         image=image,
                         container_name=worker_container,

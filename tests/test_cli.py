@@ -2270,7 +2270,7 @@ class TestFollowLogs:
     def test_follow_logs_called_after_successful_run(self, runner, reset_bootstrap):
         """follow_logs is called after a successful detached run."""
         with (
-            mock.patch("sparkrun.orchestration.distribution.distribute_resources", return_value=(None, {}, {}, {})),
+            mock.patch("sparkrun.orchestration.distribution.distribute_resources", return_value=(None, {}, {})),
             mock.patch.object(SglangRuntime, "run", return_value=0),
             mock.patch.object(SglangRuntime, "follow_logs") as mock_follow,
         ):
@@ -2294,7 +2294,7 @@ class TestFollowLogs:
     def test_no_follow_flag_skips_follow_logs(self, runner, reset_bootstrap):
         """--no-follow prevents follow_logs from being called."""
         with (
-            mock.patch("sparkrun.orchestration.distribution.distribute_resources", return_value=(None, {}, {}, {})),
+            mock.patch("sparkrun.orchestration.distribution.distribute_resources", return_value=(None, {}, {})),
             mock.patch.object(SglangRuntime, "run", return_value=0),
             mock.patch.object(SglangRuntime, "follow_logs") as mock_follow,
             mock.patch("sparkrun.orchestration.job_metadata.check_job_running") as mock_check,
@@ -2340,7 +2340,7 @@ class TestFollowLogs:
     def test_foreground_skips_follow_logs(self, runner, reset_bootstrap):
         """--foreground prevents follow_logs from being called."""
         with (
-            mock.patch("sparkrun.orchestration.distribution.distribute_resources", return_value=(None, {}, {}, {})),
+            mock.patch("sparkrun.orchestration.distribution.distribute_resources", return_value=(None, {}, {})),
             mock.patch.object(SglangRuntime, "run", return_value=0),
             mock.patch.object(SglangRuntime, "follow_logs") as mock_follow,
         ):
@@ -2362,7 +2362,7 @@ class TestFollowLogs:
     def test_nonzero_exit_skips_follow_logs(self, runner, reset_bootstrap):
         """Non-zero exit code from runtime.run() prevents follow_logs."""
         with (
-            mock.patch("sparkrun.orchestration.distribution.distribute_resources", return_value=(None, {}, {}, {})),
+            mock.patch("sparkrun.orchestration.distribution.distribute_resources", return_value=(None, {}, {})),
             mock.patch.object(SglangRuntime, "run", return_value=1),
             mock.patch.object(SglangRuntime, "follow_logs") as mock_follow,
         ):
@@ -4643,7 +4643,7 @@ class TestClusterUserInCLICommands:
         # Mock distribute_resources to avoid SSH calls
         monkeypatch.setattr(
             "sparkrun.orchestration.distribution.distribute_resources",
-            lambda *a, **kw: (None, {}, {}, {}),
+            lambda *a, **kw: (None, {}, {}),
         )
         # Mock try_clear_page_cache
         monkeypatch.setattr(

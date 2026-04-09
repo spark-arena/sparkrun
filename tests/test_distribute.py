@@ -16,6 +16,7 @@ from unittest import mock
 
 import pytest
 
+from sparkrun.orchestration.comm_env import ClusterCommEnv
 from sparkrun.orchestration.ssh import (
     RemoteResult,
     build_ssh_opts_string,
@@ -957,17 +958,18 @@ class TestIBDetectionResult:
         from sparkrun.orchestration.infiniband import IBDetectionResult
 
         result = IBDetectionResult()
-        assert result.nccl_env == {}
+        assert result.comm_env.is_empty()
         assert result.ib_ip_map == {}
 
     def test_with_data(self):
+        from sparkrun.orchestration.comm_env import ClusterCommEnv
         from sparkrun.orchestration.infiniband import IBDetectionResult
 
         result = IBDetectionResult(
-            nccl_env={"NCCL_NET": "IB"},
+            comm_env=ClusterCommEnv(shared={"NCCL_NET": "IB"}),
             ib_ip_map={"h1": "10.0.0.1"},
         )
-        assert result.nccl_env == {"NCCL_NET": "IB"}
+        assert result.comm_env.get_env("h1") == {"NCCL_NET": "IB"}
         assert result.ib_ip_map == {"h1": "10.0.0.1"}
 
 
@@ -1027,9 +1029,10 @@ class TestDetectIbForHosts:
         from sparkrun.orchestration.infiniband import detect_ib_for_hosts
 
         result = detect_ib_for_hosts(["h1", "h2"])
-        # NCCL env from head
-        assert result.nccl_env.get("NCCL_NET") == "IB"
-        assert result.nccl_env.get("NCCL_IB_GID_INDEX") == "3"
+        # Head's per-host comm env carries the full detail
+        head_env = result.comm_env.get_env("h1")
+        assert head_env.get("NCCL_NET") == "IB"
+        assert head_env.get("NCCL_IB_GID_INDEX") == "3"
         # IB IPs for both hosts
         assert result.ib_ip_map == {"h1": "10.0.0.1", "h2": "10.0.0.2"}
 
@@ -1042,14 +1045,14 @@ class TestDetectIbForHosts:
         from sparkrun.orchestration.infiniband import detect_ib_for_hosts
 
         result = detect_ib_for_hosts(["h1"])
-        assert result.nccl_env == {}
+        assert result.comm_env.is_empty()
         assert result.ib_ip_map == {}
 
     def test_empty_hosts(self):
         from sparkrun.orchestration.infiniband import detect_ib_for_hosts
 
         result = detect_ib_for_hosts([])
-        assert result.nccl_env == {}
+        assert result.comm_env.is_empty()
         assert result.ib_ip_map == {}
 
     @mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel")
@@ -1072,7 +1075,7 @@ class TestDetectIbForHosts:
         from sparkrun.orchestration.infiniband import detect_ib_for_hosts
 
         result = detect_ib_for_hosts(["h1", "h2"])
-        assert result.nccl_env.get("NCCL_NET") == "IB"
+        assert result.comm_env.get_env("h1").get("NCCL_NET") == "IB"
         assert "h1" in result.ib_ip_map
         assert "h2" not in result.ib_ip_map
 
@@ -1252,7 +1255,9 @@ class TestDistributeResourcesTransferMode:
     @mock.patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={})
     def test_local_mode_uses_from_local(self, mock_ssh, mock_ib, mock_validate, mock_img):
         """Local mode calls distribute_image_from_local."""
-        mock_ib.return_value = mock.MagicMock(nccl_env={}, ib_ip_map={}, mgmt_ip_map={})
+        from sparkrun.orchestration.comm_env import ClusterCommEnv
+
+        mock_ib.return_value = mock.MagicMock(comm_env=ClusterCommEnv.empty(), ib_ip_map={}, mgmt_ip_map={})
         mock_img.return_value = []
         from sparkrun.orchestration.distribution import distribute_resources
 
@@ -1273,7 +1278,9 @@ class TestDistributeResourcesTransferMode:
     @mock.patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={})
     def test_push_mode_uses_push_helper(self, mock_ssh, mock_ib, mock_push):
         """Push mode calls _distribute_image_push."""
-        mock_ib.return_value = mock.MagicMock(nccl_env={}, ib_ip_map={}, mgmt_ip_map={})
+        from sparkrun.orchestration.comm_env import ClusterCommEnv
+
+        mock_ib.return_value = mock.MagicMock(comm_env=ClusterCommEnv.empty(), ib_ip_map={}, mgmt_ip_map={})
         mock_push.return_value = []
         from sparkrun.orchestration.distribution import distribute_resources
 
@@ -1293,7 +1300,9 @@ class TestDistributeResourcesTransferMode:
     @mock.patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={})
     def test_delegated_mode_uses_from_head(self, mock_ssh, mock_ib, mock_head):
         """Delegated mode calls distribute_image_from_head."""
-        mock_ib.return_value = mock.MagicMock(nccl_env={}, ib_ip_map={}, mgmt_ip_map={})
+        from sparkrun.orchestration.comm_env import ClusterCommEnv
+
+        mock_ib.return_value = mock.MagicMock(comm_env=ClusterCommEnv.empty(), ib_ip_map={}, mgmt_ip_map={})
         mock_head.return_value = []
         from sparkrun.orchestration.distribution import distribute_resources
 
@@ -1314,7 +1323,9 @@ class TestDistributeResourcesTransferMode:
     @mock.patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={})
     def test_push_mode_skips_ib_validation(self, mock_ssh, mock_ib, mock_validate, mock_push):
         """Push mode does not call validate_ib_connectivity."""
-        mock_ib.return_value = mock.MagicMock(nccl_env={}, ib_ip_map={}, mgmt_ip_map={})
+        from sparkrun.orchestration.comm_env import ClusterCommEnv
+
+        mock_ib.return_value = mock.MagicMock(comm_env=ClusterCommEnv.empty(), ib_ip_map={}, mgmt_ip_map={})
         from sparkrun.orchestration.distribution import distribute_resources
 
         distribute_resources(
@@ -1334,7 +1345,9 @@ class TestDistributeResourcesTransferMode:
     @mock.patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={})
     def test_push_mode_with_model(self, mock_ssh, mock_ib, mock_img_push, mock_mdl_push):
         """Push mode routes both image and model through push helpers."""
-        mock_ib.return_value = mock.MagicMock(nccl_env={}, ib_ip_map={}, mgmt_ip_map={})
+        from sparkrun.orchestration.comm_env import ClusterCommEnv
+
+        mock_ib.return_value = mock.MagicMock(comm_env=ClusterCommEnv.empty(), ib_ip_map={}, mgmt_ip_map={})
         mock_img_push.return_value = []
         mock_mdl_push.return_value = []
         from sparkrun.orchestration.distribution import distribute_resources
@@ -1357,7 +1370,9 @@ class TestDistributeResourcesTransferMode:
     @mock.patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={})
     def test_delegated_mode_with_model(self, mock_ssh, mock_ib, mock_img_head, mock_mdl_head):
         """Delegated mode routes both image and model through from_head."""
-        mock_ib.return_value = mock.MagicMock(nccl_env={}, ib_ip_map={}, mgmt_ip_map={})
+        from sparkrun.orchestration.comm_env import ClusterCommEnv
+
+        mock_ib.return_value = mock.MagicMock(comm_env=ClusterCommEnv.empty(), ib_ip_map={}, mgmt_ip_map={})
         mock_img_head.return_value = []
         mock_mdl_head.return_value = []
         from sparkrun.orchestration.distribution import distribute_resources
@@ -1380,7 +1395,7 @@ class TestDistributeResourcesTransferMode:
     def test_push_mode_computes_worker_transfer_hosts(self, mock_ssh, mock_ib, mock_push):
         """Push mode builds worker_transfer_hosts from IB IPs for workers."""
         mock_ib.return_value = mock.MagicMock(
-            nccl_env={},
+            comm_env=ClusterCommEnv.empty(),
             mgmt_ip_map={},
             ib_ip_map={"h1": "10.0.0.1", "h2": "10.0.0.2", "h3": "10.0.0.3"},
         )
@@ -1405,7 +1420,7 @@ class TestDistributeResourcesTransferMode:
     def test_auto_resolves_to_local_with_ib(self, mock_ssh, mock_ib, mock_validate, mock_img):
         """Auto mode resolves to local when IB is reachable from control node."""
         mock_ib.return_value = mock.MagicMock(
-            nccl_env={},
+            comm_env=ClusterCommEnv.empty(),
             mgmt_ip_map={},
             ib_ip_map={"h1": "10.0.0.1", "h2": "10.0.0.2"},
         )
@@ -1433,7 +1448,7 @@ class TestDistributeResourcesTransferMode:
     def test_auto_resolves_to_delegated_without_ib(self, mock_ssh, mock_ib, mock_validate, mock_membership, mock_head):
         """Auto mode resolves to delegated when external control and no IB."""
         mock_ib.return_value = mock.MagicMock(
-            nccl_env={},
+            comm_env=ClusterCommEnv.empty(),
             mgmt_ip_map={},
             ib_ip_map={"h1": "10.0.0.1", "h2": "10.0.0.2"},
         )
@@ -1461,7 +1476,7 @@ class TestDistributeResourcesTransferMode:
     def test_auto_resolves_to_delegated_no_ib_hardware(self, mock_ssh, mock_ib, mock_validate, mock_membership, mock_head):
         """Auto mode resolves to delegated when no IB hardware detected."""
         mock_ib.return_value = mock.MagicMock(
-            nccl_env={},
+            comm_env=ClusterCommEnv.empty(),
             mgmt_ip_map={},
             ib_ip_map={},
         )
@@ -1489,7 +1504,7 @@ class TestDistributeResourcesTransferMode:
     def test_auto_cluster_member_no_ib_uses_local(self, mock_ssh, mock_ib, mock_validate, mock_membership, mock_img):
         """Auto mode resolves to local when control is cluster member, even without IB."""
         mock_ib.return_value = mock.MagicMock(
-            nccl_env={},
+            comm_env=ClusterCommEnv.empty(),
             mgmt_ip_map={},
             ib_ip_map={},
         )
@@ -1516,7 +1531,7 @@ class TestDistributeResourcesTransferMode:
     def test_auto_cluster_member_with_ib_uses_local(self, mock_ssh, mock_ib, mock_validate, mock_membership, mock_img):
         """Auto mode resolves to local when control is cluster member with IB."""
         mock_ib.return_value = mock.MagicMock(
-            nccl_env={},
+            comm_env=ClusterCommEnv.empty(),
             mgmt_ip_map={},
             ib_ip_map={"h1": "10.0.0.1", "h2": "10.0.0.2"},
         )
@@ -1543,7 +1558,9 @@ class TestDistributeResourcesTransferMode:
     @mock.patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={})
     def test_auto_delegated_fallback_to_push_on_failure(self, mock_ssh, mock_ib, mock_validate, mock_membership, mock_head, mock_push):
         """Auto-resolved delegated falls back to push when delegated fails."""
-        mock_ib.return_value = mock.MagicMock(nccl_env={}, mgmt_ip_map={}, ib_ip_map={})
+        from sparkrun.orchestration.comm_env import ClusterCommEnv
+
+        mock_ib.return_value = mock.MagicMock(comm_env=ClusterCommEnv.empty(), mgmt_ip_map={}, ib_ip_map={})
         mock_head.return_value = ["h1", "h2"]  # delegated fails
         mock_push.return_value = []  # push succeeds
         from sparkrun.orchestration.distribution import distribute_resources
@@ -1566,7 +1583,9 @@ class TestDistributeResourcesTransferMode:
     @mock.patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={})
     def test_explicit_delegated_no_fallback_to_push(self, mock_ssh, mock_ib, mock_head, mock_push):
         """User-explicit delegated does NOT fall back to push on failure — raises instead."""
-        mock_ib.return_value = mock.MagicMock(nccl_env={}, mgmt_ip_map={}, ib_ip_map={})
+        from sparkrun.orchestration.comm_env import ClusterCommEnv
+
+        mock_ib.return_value = mock.MagicMock(comm_env=ClusterCommEnv.empty(), mgmt_ip_map={}, ib_ip_map={})
         mock_head.return_value = ["h1", "h2"]  # delegated fails
         from sparkrun.orchestration.distribution import DistributionError, distribute_resources
 
@@ -1594,7 +1613,9 @@ class TestDistributeResourcesTransferMode:
         self, mock_ssh, mock_ib, mock_validate, mock_membership, mock_img_head, mock_mdl_head, mock_mdl_push
     ):
         """Auto-resolved delegated model distribution falls back to push on failure."""
-        mock_ib.return_value = mock.MagicMock(nccl_env={}, mgmt_ip_map={}, ib_ip_map={})
+        from sparkrun.orchestration.comm_env import ClusterCommEnv
+
+        mock_ib.return_value = mock.MagicMock(comm_env=ClusterCommEnv.empty(), mgmt_ip_map={}, ib_ip_map={})
         mock_img_head.return_value = []  # image succeeds
         mock_mdl_head.return_value = ["h1", "h2"]  # model delegated fails
         mock_mdl_push.return_value = []  # model push succeeds

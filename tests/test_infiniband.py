@@ -98,12 +98,67 @@ def test_generate_nccl_env_with_ib():
     # Check detected values
     assert env["NCCL_IB_GID_INDEX"] == "3"
     assert env["NCCL_IB_HCA"] == "mlx5_0,mlx5_1"
-    assert "NCCL_SOCKET_IFNAME" not in env  # assert env[] == "eth0"
+    # NCCL_SOCKET_IFNAME = mgmt first, then IB adapters as fallback
+    assert env["NCCL_SOCKET_IFNAME"] == "eth0,ib0,ib1"
     assert env["MN_IF_NAME"] == "eth0"
     assert env["OMPI_MCA_btl_tcp_if_include"] == "eth0"
     assert env["GLOO_SOCKET_IFNAME"] == "eth0"
     assert env["TP_SOCKET_IFNAME"] == "eth0"
     assert env["UCX_NET_DEVICES"] == "mlx5_0:1,mlx5_1:1"
+
+
+def test_nccl_socket_ifname_dedupes_mgmt_in_ib_list():
+    """When mgmt iface also appears in DETECTED_NET_LIST, it isn't duplicated."""
+    ib_info = {
+        "IB_DETECTED": "1",
+        "DETECTED_SOCKET_IFNAME": "ib0",  # mgmt path happens to be ib0
+        "DETECTED_NET_LIST": "ib0,ib1",
+    }
+    env = generate_nccl_env(ib_info)
+    assert env["NCCL_SOCKET_IFNAME"] == "ib0,ib1"
+
+
+def test_nccl_socket_ifname_falls_back_to_ib_list_without_mgmt():
+    """When no DETECTED_SOCKET_IFNAME is found, fall back to IB list only."""
+    ib_info = {
+        "IB_DETECTED": "1",
+        "DETECTED_NET_LIST": "ib0,ib1",
+    }
+    env = generate_nccl_env(ib_info)
+    assert env["NCCL_SOCKET_IFNAME"] == "ib0,ib1"
+
+
+def test_nccl_socket_ifname_mgmt_first_heterogeneous():
+    """Real-world scenario: head on wired, worker on wifi, same IB fabric.
+
+    Each host's detection produces a different NCCL_SOCKET_IFNAME
+    first-entry (mgmt) but the same IB tail — exactly what we want
+    for ClusterCommEnv.from_per_host to split into shared + per-host.
+    """
+    head_env = generate_nccl_env(
+        {
+            "IB_DETECTED": "1",
+            "DETECTED_SOCKET_IFNAME": "enP7s7",
+            "DETECTED_NET_LIST": "enp1s0f0np0,enP2p1s0f0np0",
+        }
+    )
+    worker_env = generate_nccl_env(
+        {
+            "IB_DETECTED": "1",
+            "DETECTED_SOCKET_IFNAME": "wlP9s9",
+            "DETECTED_NET_LIST": "enp1s0f0np0,enP2p1s0f0np0",
+        }
+    )
+    assert head_env["NCCL_SOCKET_IFNAME"] == "enP7s7,enp1s0f0np0,enP2p1s0f0np0"
+    assert worker_env["NCCL_SOCKET_IFNAME"] == "wlP9s9,enp1s0f0np0,enP2p1s0f0np0"
+
+    from sparkrun.orchestration.comm_env import ClusterCommEnv
+
+    cce = ClusterCommEnv.from_per_host({"head": head_env, "worker": worker_env})
+    # NCCL_SOCKET_IFNAME differs per host → stays in per_host, not shared
+    assert "NCCL_SOCKET_IFNAME" not in cce.shared
+    assert cce.get_env("head")["NCCL_SOCKET_IFNAME"] == "enP7s7,enp1s0f0np0,enP2p1s0f0np0"
+    assert cce.get_env("worker")["NCCL_SOCKET_IFNAME"] == "wlP9s9,enp1s0f0np0,enP2p1s0f0np0"
 
 
 def test_generate_nccl_env_without_ib():
@@ -287,3 +342,129 @@ def test_ssh_kwargs_passed_through(mock_cmd):
         ssh_key="/path/to/key",
         ssh_options=["-o", "Foo=bar"],
     )
+
+
+# ---------------------------------------------------------------------------
+# ClusterCommEnv tests
+# ---------------------------------------------------------------------------
+
+
+class TestClusterCommEnv:
+    """Tests for the ClusterCommEnv value object used across cluster ops."""
+
+    def test_empty_returns_empty(self):
+        from sparkrun.orchestration.comm_env import ClusterCommEnv
+
+        cce = ClusterCommEnv.empty()
+        assert cce.is_empty()
+        assert cce.get_env("h1") == {}
+        assert cce.all_keys() == set()
+        assert len(cce) == 0
+        assert not cce
+
+    def test_from_shared_round_trip(self):
+        from sparkrun.orchestration.comm_env import ClusterCommEnv
+
+        cce = ClusterCommEnv.from_shared({"NCCL_NET": "IB"})
+        assert not cce.is_empty()
+        assert cce.get_env("h1") == {"NCCL_NET": "IB"}
+        assert cce.get_env("h2") == {"NCCL_NET": "IB"}
+
+    def test_get_env_merges_shared_and_override(self):
+        from sparkrun.orchestration.comm_env import ClusterCommEnv
+
+        cce = ClusterCommEnv(
+            shared={"NCCL_NET": "IB", "NCCL_IB_HCA": "mlx5_0"},
+            per_host={"h1": {"GLOO_SOCKET_IFNAME": "enp1s0"}},
+        )
+        assert cce.get_env("h1") == {
+            "NCCL_NET": "IB",
+            "NCCL_IB_HCA": "mlx5_0",
+            "GLOO_SOCKET_IFNAME": "enp1s0",
+        }
+        # Unknown host falls back to shared only
+        assert cce.get_env("unknown") == {"NCCL_NET": "IB", "NCCL_IB_HCA": "mlx5_0"}
+
+    def test_per_host_overrides_shared(self):
+        from sparkrun.orchestration.comm_env import ClusterCommEnv
+
+        cce = ClusterCommEnv(
+            shared={"NCCL_NET": "IB"},
+            per_host={"h1": {"NCCL_NET": "Socket"}},
+        )
+        assert cce.get_env("h1") == {"NCCL_NET": "Socket"}
+        assert cce.get_env("h2") == {"NCCL_NET": "IB"}
+
+    def test_get_env_returns_fresh_dict(self):
+        from sparkrun.orchestration.comm_env import ClusterCommEnv
+
+        cce = ClusterCommEnv(shared={"NCCL_NET": "IB"})
+        env1 = cce.get_env("h1")
+        env1["MUTATED"] = "yes"
+        assert "MUTATED" not in cce.get_env("h1")
+
+    def test_from_per_host_factors_out_shared_keys(self):
+        """Keys identical across hosts move to shared; differing keys stay per-host.
+
+        This is the real-world bug scenario: head on enP7s7, worker on
+        wlP9s9, everything else identical.
+        """
+        from sparkrun.orchestration.comm_env import ClusterCommEnv
+
+        per_host = {
+            "head": {
+                "NCCL_NET": "IB",
+                "NCCL_IB_HCA": "mlx5_0",
+                "GLOO_SOCKET_IFNAME": "enP7s7",
+                "TP_SOCKET_IFNAME": "enP7s7",
+            },
+            "worker": {
+                "NCCL_NET": "IB",
+                "NCCL_IB_HCA": "mlx5_0",
+                "GLOO_SOCKET_IFNAME": "wlP9s9",
+                "TP_SOCKET_IFNAME": "wlP9s9",
+            },
+        }
+        cce = ClusterCommEnv.from_per_host(per_host)
+        assert cce.shared == {"NCCL_NET": "IB", "NCCL_IB_HCA": "mlx5_0"}
+        assert cce.get_env("head")["GLOO_SOCKET_IFNAME"] == "enP7s7"
+        assert cce.get_env("worker")["GLOO_SOCKET_IFNAME"] == "wlP9s9"
+        assert cce.get_env("head")["NCCL_NET"] == "IB"
+        assert cce.get_env("worker")["NCCL_NET"] == "IB"
+
+    def test_from_per_host_single_host_becomes_shared(self):
+        from sparkrun.orchestration.comm_env import ClusterCommEnv
+
+        cce = ClusterCommEnv.from_per_host({"only": {"A": "1", "B": "2"}})
+        assert cce.shared == {"A": "1", "B": "2"}
+        assert cce.per_host == {}
+        assert cce.get_env("only") == {"A": "1", "B": "2"}
+
+    def test_from_per_host_empty(self):
+        from sparkrun.orchestration.comm_env import ClusterCommEnv
+
+        cce = ClusterCommEnv.from_per_host({})
+        assert cce.is_empty()
+
+    def test_from_per_host_key_missing_on_one_host_stays_per_host(self):
+        from sparkrun.orchestration.comm_env import ClusterCommEnv
+
+        cce = ClusterCommEnv.from_per_host(
+            {
+                "a": {"NCCL_NET": "IB", "ONLY_A": "1"},
+                "b": {"NCCL_NET": "IB"},
+            }
+        )
+        assert cce.shared == {"NCCL_NET": "IB"}
+        assert "ONLY_A" in cce.get_env("a")
+        assert "ONLY_A" not in cce.get_env("b")
+
+    def test_all_keys_union(self):
+        from sparkrun.orchestration.comm_env import ClusterCommEnv
+
+        cce = ClusterCommEnv(
+            shared={"A": "1"},
+            per_host={"h1": {"B": "2"}, "h2": {"C": "3"}},
+        )
+        assert cce.all_keys() == {"A", "B", "C"}
+        assert len(cce) == 3

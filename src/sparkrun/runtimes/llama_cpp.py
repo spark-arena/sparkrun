@@ -9,6 +9,7 @@ from sparkrun.runtimes.base import RuntimePlugin
 
 if TYPE_CHECKING:
     from sparkrun.core.recipe import Recipe
+    from sparkrun.orchestration.comm_env import ClusterCommEnv
 
 logger = logging.getLogger(__name__)
 
@@ -383,8 +384,7 @@ class LlamaCppRuntime(RuntimePlugin):
         config=None,
         dry_run: bool = False,
         detached: bool = True,
-        nccl_env: dict[str, str] | None = None,
-        nccl_env_map: dict[str, dict[str, str]] | None = None,
+        comm_env: "ClusterCommEnv | None" = None,
         ib_ip_map: dict[str, str] | None = None,
         rpc_port: int = _DEFAULT_RPC_PORT,
         skip_keys: set[str] | frozenset[str] = frozenset(),
@@ -454,7 +454,7 @@ class LlamaCppRuntime(RuntimePlugin):
             progress.step("Detecting InfiniBand")
         else:
             logger.info("Step 2/6: InfiniBand detection...")
-        nccl_env, ib_ip_map, nccl_env_map = detect_ib_with_ips(ctx, nccl_env, ib_ip_map, nccl_env_map)
+        comm_env, ib_ip_map = detect_ib_with_ips(ctx, comm_env, ib_ip_map)
         logger.info("Step 2/6: IB step done (%.1fs)", time.monotonic() - t0)
 
         # Resolve worker RPC addresses: prefer IB IPs for high-speed fabric
@@ -480,9 +480,7 @@ class LlamaCppRuntime(RuntimePlugin):
             all_containers.append((host, worker_container_name))
 
         combined_docker_opts = (self.get_extra_docker_opts() or []) + (extra_docker_opts or [])
-        rc = launch_containers_parallel(
-            ctx, all_containers, self.executor, nccl_env, extra_docker_opts=combined_docker_opts or None, nccl_env_map=nccl_env_map
-        )
+        rc = launch_containers_parallel(ctx, all_containers, self.executor, comm_env, extra_docker_opts=combined_docker_opts or None)
         if rc != 0:
             return rc
         logger.info("Step 3/6: All containers launched (%.1fs)", time.monotonic() - t0)
