@@ -253,7 +253,8 @@ def run(
         cli_executor_opts["memory_limit"] = memory
     if restart_policy:
         cli_executor_opts["restart_policy"] = restart_policy
-
+    if labels_override:
+        cli_executor_opts["labels"] = list(labels_override)
 
     # --- Diagnostics setup ---
     diag = None
