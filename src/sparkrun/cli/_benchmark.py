@@ -485,9 +485,11 @@ def _run_benchmark(
         if est_tests is not None:
             logger.info("Estimated test iterations: %d", est_tests)
 
+        served_model = overrides.get("served_model_name", recipe.model)
+
         bench_cmd = fw.build_benchmark_command(
             target_url=base_url,
-            model=recipe.model,
+            model=served_model,
             args=bench_args,
             result_file=result_file,
         )
