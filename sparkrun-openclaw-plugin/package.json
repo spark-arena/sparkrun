@@ -1,0 +1,50 @@
+{
+  "name": "@sparkarena/sparkrun-openclaw",
+  "version": "0.0.1",
+  "description": "AI-assisted inference on NVIDIA DGX Spark - run, manage, and stop LLM workloads with OpenClaw",
+  "type": "module",
+  "main": "index.ts",
+  "author": {
+    "name": "scitrera.ai",
+    "email": "open-source-team@scitrera.com"
+  },
+  "homepage": "https://sparkrun.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/spark-arena/sparkrun.git",
+    "directory": "sparkrun-openclaw-plugin"
+  },
+  "license": "Apache-2.0",
+  "keywords": [
+    "inference",
+    "llm",
+    "dgx-spark",
+    "nvidia",
+    "vllm",
+    "sglang",
+    "gpu",
+    "cluster",
+    "openclaw-plugin"
+  ],
+  "openclaw": {
+    "extensions": [
+      "index.ts"
+    ],
+    "compat": {
+      "pluginApi": "1.0"
+    }
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "index.ts",
+    "openclaw.plugin.json",
+    "skills/**/*.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "devDependencies": {
+    "@types/node": "^25.6.0"
+  }
+}

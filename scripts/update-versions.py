@@ -64,6 +64,10 @@ PROJECT_RULES: dict[str, list[UpdateRule]] = {
         ("plugin", Path("sparkrun-cc-plugin/.claude-plugin/plugin.json")),
         ("marketplace", Path(".claude-plugin/marketplace.json"), "sparkrun-cc-plugin"),
     ],
+    "sparkrun-openclaw-plugin": [
+        ("package", Path("sparkrun-openclaw-plugin/package.json")),
+        ("plugin", Path("sparkrun-openclaw-plugin/openclaw.plugin.json")),
+    ],
 }
 
 # ---------------------------------------------------------------------------
