@@ -25,6 +25,7 @@ from ._common import (
     recipe_override_options,
     resolve_cluster_config,
     validate_and_prepare_hosts,
+    HIDE_ADVANCED_OPTIONS,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,10 +38,10 @@ logger = logging.getLogger(__name__)
 @click.option("--solo", is_flag=True, help="Force single-node mode", hidden=True)
 @click.option("--port", type=int, default=None, help="Override serve port")
 @click.option("--served-model-name", default=None, help="Override served model name")
-@click.option("--ray-port", type=int, default=46379, help="Ray GCS port (vllm-ray)", hidden=True)
-@click.option("--init-port", type=int, default=25000, help="vllm/SGLang distributed init port", hidden=True)
-@click.option("--dashboard", is_flag=True, help="Enable Ray dashboard on head node", hidden=True)
-@click.option("--dashboard-port", type=int, default=8265, help="Ray dashboard port", hidden=True)
+@click.option("--ray-port", type=int, default=46379, help="Ray GCS port (vllm-ray)", hidden=HIDE_ADVANCED_OPTIONS)
+@click.option("--init-port", type=int, default=25000, help="vllm/SGLang distributed init port", hidden=HIDE_ADVANCED_OPTIONS)
+@click.option("--dashboard", is_flag=True, help="Enable Ray dashboard on head node", hidden=HIDE_ADVANCED_OPTIONS)
+@click.option("--dashboard-port", type=int, default=8265, help="Ray dashboard port", hidden=HIDE_ADVANCED_OPTIONS)
 @dry_run_option
 @click.option("--foreground", is_flag=True, help="Run in foreground (don't detach)")
 @click.option("--ensure", is_flag=True, default=False, help="Only launch if not already running; exit 0 if already up")
@@ -50,7 +51,11 @@ logger = logging.getLogger(__name__)
 @click.option("--memory-limit", "memory", default=None, help="Container memory limit (e.g. 32G)")
 @click.option("--rootful", is_flag=True, help="Run with --privileged as root inside container (legacy behavior)")
 @click.option(
-    "--restart", "restart_policy", default=None, help="Docker restart policy (no, always, unless-stopped, on-failure[:N])", hidden=True
+    "--restart",
+    "restart_policy",
+    default=None,
+    help="Docker restart policy (no, always, unless-stopped, on-failure[:N])",
+    hidden=HIDE_ADVANCED_OPTIONS,
 )
 @click.option(
     "--transfer-mode",
@@ -60,10 +65,22 @@ logger = logging.getLogger(__name__)
     hidden=True,
 )
 @click.option(
-    "--collect-diagnostics", "diagnostics_path", default=None, type=click.Path(), hidden=True, help="Collect diagnostics to NDJSON file"
+    "--collect-diagnostics",
+    "diagnostics_path",
+    default=None,
+    type=click.Path(),
+    hidden=HIDE_ADVANCED_OPTIONS,
+    help="Collect diagnostics to NDJSON file",
 )
 @click.option(
     "--trust", is_flag=True, default=False, hidden=True, help="Trust post_commands from third-party registries without confirmation"
+)
+@click.option("--label", "labels_override", multiple=True, help="Set meta data on a container (e.g., --label com.example.key=value)")
+@click.option(
+    "--executor-args",
+    multiple=True,
+    hidden=HIDE_ADVANCED_OPTIONS,
+    help="Arguments passed directly to the container executor (e.g. docker run)",
 )
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
@@ -97,7 +114,9 @@ def run(
     transfer_mode,
     diagnostics_path,
     trust,
+    labels_override,
     options,
+    executor_args,
     extra_args,
     config_path=None,
 ):
@@ -249,6 +268,8 @@ def run(
         cli_executor_opts["memory_limit"] = memory
     if restart_policy:
         cli_executor_opts["restart_policy"] = restart_policy
+    if labels_override:
+        cli_executor_opts["labels"] = list(labels_override)
 
     # --- Diagnostics setup ---
     diag = None
@@ -303,6 +324,7 @@ def run(
             init_port=init_port,
             topology=cluster_cfg.topology,
             executor_config=cli_executor_opts,
+            extra_docker_opts=list(executor_args) if executor_args else None,
             rootless=not rootful,
             auto_user=not rootful,
         )
@@ -355,13 +377,33 @@ def run(
             sctx.progress.phase_skip(6)
 
     # Follow container logs after a successful detached launch
-    if result.rc == 0 and not foreground and not dry_run and not no_follow:
-        runtime.follow_logs(
-            hosts=host_list,
-            cluster_id=result.cluster_id,
-            config=config,
-            dry_run=dry_run,
-        )
+    if result.rc == 0 and not foreground and not dry_run:
+        if not no_follow:
+            runtime.follow_logs(
+                hosts=host_list,
+                cluster_id=result.cluster_id,
+                config=config,
+                dry_run=dry_run,
+            )
+        else:
+            # Perform a 5s boot liveness check for detached containers to catch crashes
+            import time
+
+            from sparkrun.orchestration.job_metadata import check_job_running
+            from sparkrun.orchestration.primitives import build_ssh_kwargs
+
+            time.sleep(5.0)
+            ssh_kwargs = build_ssh_kwargs(config)
+
+            status = check_job_running(
+                cluster_id=result.cluster_id,
+                hosts=host_list,
+                ssh_kwargs=ssh_kwargs,
+                cache_dir=remote_cache_dir,
+            )
+            if not status.running:
+                click.secho("\n[sparkrun] CRITICAL: Container died unexpectedly after detached launch.", fg="red", err=True, bold=True)
+                result.rc = 1
 
     # --- Diagnostics finalize ---
     if diag:

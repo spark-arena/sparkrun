@@ -1,11 +1,11 @@
 #!/bin/bash
 set -uo pipefail
 
-echo "Cleaning up existing container: {container_name}"
+printf "Cleaning up existing container: %%s\n" {container_name}
 {cleanup_cmd}
 
-echo "Launching container: {container_name}"
-echo "Image: {image}"
+printf "Launching container: %%s\n" {container_name}
+printf "Image: %%s\n" {image}
 {run_cmd}
 
-echo "Container {container_name} launched successfully"
+printf "Container %%s launched successfully\n" {container_name}

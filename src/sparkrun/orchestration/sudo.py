@@ -7,6 +7,7 @@ import subprocess
 
 from sparkrun.orchestration import ssh as _ssh
 from sparkrun.orchestration.ssh import RemoteResult
+from sparkrun.utils.shell import b64_encode_cmd, b64_wrap_python
 
 logger = logging.getLogger(__name__)
 
@@ -130,8 +131,6 @@ def run_indirect_sudo_script(
     Returns:
         RemoteResult with returncode, stdout, stderr.
     """
-    import base64
-
     if dry_run:
         logger.info("[dry-run] Would execute indirect sudo on %s (via su %s)", host, sudo_user)
         return RemoteResult(host=host, returncode=0, stdout="[dry-run]", stderr="")
@@ -142,14 +141,15 @@ def run_indirect_sudo_script(
     #
     # The password and script are base64-encoded into the wrapper itself
     # (not read from stdin) because stdin is used as the pipe to python3.
-    b64_password = base64.b64encode(sudo_password.encode()).decode()
-    b64_script = base64.b64encode(script.encode()).decode()
+
+    b64_password = b64_encode_cmd(sudo_password)
+    b64_script = b64_encode_cmd(script)
 
     wrapper = (
         "import base64, os, pty, select, sys, time\n"
         "try:\n"
-        "    password = base64.b64decode('%s').decode()\n"
-        "    script = base64.b64decode('%s').decode()\n"
+        "    password = base64.b64decode('%s').decode('utf-8')\n"
+        "    script = base64.b64decode('%s').decode('utf-8')\n"
         "    sudo_user = %r\n"
         "    pid, fd = pty.fork()\n"
         "    if pid == 0:\n"
@@ -202,15 +202,15 @@ def run_indirect_sudo_script(
         "    sys.exit(1)\n"
     ) % (b64_password, b64_script, sudo_user)
 
-    # Pipe the wrapper to python3 via stdin (avoids shell escaping issues
+    # Deliver the wrapper via a base64 pipeline (avoids shell escaping issues
     # that occur with python3 -c when SSH joins args for the remote shell).
     kw = ssh_kwargs or {}
     cmd = _ssh.build_ssh_cmd(host, **{k: v for k, v in kw.items() if k in ("ssh_user", "ssh_key", "ssh_options")})
-    cmd.append("python3")
+    cmd.append(b64_wrap_python(wrapper, quoted=False))
 
     logger.debug("  SSH indirect sudo -> %s (su %s, %d bytes)", host, sudo_user, len(script))
 
-    result = _ssh._run_subprocess(cmd, host, "SSH indirect sudo", timeout=timeout, input_data=wrapper)
+    result = _ssh._run_subprocess(cmd, host, "SSH indirect sudo", timeout=timeout)
     if result.success:
         logger.info("  SSH indirect sudo <- %s OK", host)
     return result

@@ -29,9 +29,9 @@ def is_container_running(
         True if the container is currently running.
     """
     from sparkrun.orchestration.primitives import run_command_on_host
-    import shlex
+    from sparkrun.utils.shell import quote
 
-    cmd = "docker inspect -f '{{.State.Running}}' %s 2>/dev/null" % shlex.quote(container_name)
+    cmd = "docker inspect -f '{{.State.Running}}' %s 2>/dev/null" % quote(container_name)
     result = run_command_on_host(host, cmd, ssh_kwargs=ssh_kwargs, timeout=10)
     return result.success and "true" in result.stdout.lower()
 

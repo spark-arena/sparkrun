@@ -12,6 +12,8 @@ import subprocess
 import time
 from dataclasses import dataclass
 
+from sparkrun.utils.shell import quote, quote_list, args_list_to_shell_str
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_RSYNC_OPTIONS = ["-az", "--no-times", "--mkpath", "--partial", "--links"]
@@ -175,7 +177,7 @@ def run_remote_script(
     logger.debug("SSH command: %s", " ".join(cmd))
     logger.debug("Script: %d lines, %d bytes", script_lines, len(script))
 
-    result = _run_subprocess(cmd, host, "SSH script", timeout=timeout, input_data=script, quiet=quiet)
+    result = _run_subprocess(quote_list(cmd), host, "SSH script", timeout=timeout, input_data=script, quiet=quiet)
     if result.success:
         if result.stdout.strip():
             logger.debug("Remote script stdout on %s:\n%s", host, result.stdout.strip())
@@ -688,7 +690,7 @@ def build_ssh_opts_string(
         parts.extend(["-i", ssh_key])
     if ssh_options:
         parts.extend(ssh_options)
-    return " ".join(parts)
+    return args_list_to_shell_str(parts)
 
 
 def run_pipeline_to_remote(
@@ -729,7 +731,7 @@ def run_pipeline_to_remote(
         connect_timeout=connect_timeout,
     )
     target = f"{ssh_user}@{host}" if ssh_user else host
-    pipeline = f"{local_cmd} | ssh {ssh_opts} {target} '{remote_cmd}'"
+    pipeline = f"{local_cmd} | ssh {ssh_opts} {quote(target)} {quote(remote_cmd)}"
 
     if dry_run:
         logger.info("[dry-run] Would run pipeline to %s: %s", host, pipeline)

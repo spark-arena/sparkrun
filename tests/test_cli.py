@@ -2297,7 +2297,12 @@ class TestFollowLogs:
             mock.patch("sparkrun.orchestration.distribution.distribute_resources", return_value=(None, {}, {})),
             mock.patch.object(SglangRuntime, "run", return_value=0),
             mock.patch.object(SglangRuntime, "follow_logs") as mock_follow,
+            mock.patch("sparkrun.orchestration.job_metadata.check_job_running") as mock_check,
         ):
+            from sparkrun.orchestration.job_metadata import JobStatus
+
+            mock_check.return_value = JobStatus(running=True, cluster_id="test")
+
             result = runner.invoke(
                 main,
                 [
@@ -2312,6 +2317,7 @@ class TestFollowLogs:
 
             assert result.exit_code == 0
             mock_follow.assert_not_called()
+            mock_check.assert_called_once()
 
     def test_dry_run_skips_follow_logs(self, runner, reset_bootstrap):
         """--dry-run prevents follow_logs from being called."""

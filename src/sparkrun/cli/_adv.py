@@ -11,10 +11,11 @@ from ._common import (
     host_options,
     json_option,
     print_json,
+    HIDE_ADVANCED_OPTIONS,
 )
 
 
-@click.group(hidden=True)
+@click.group(hidden=HIDE_ADVANCED_OPTIONS)
 @click.pass_context
 def adv(ctx):
     """Advanced and experimental commands."""

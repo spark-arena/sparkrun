@@ -2,10 +2,10 @@
 
 from sparkrun.orchestration.docker import (
     docker_exec_cmd,
-    docker_stop_cmd,
     docker_inspect_exists_cmd,
-    docker_pull_cmd,
     docker_logs_cmd,
+    docker_pull_cmd,
+    docker_stop_cmd,
     generate_container_name,
 )
 
@@ -17,7 +17,10 @@ def test_docker_exec_basic():
     assert cmd.startswith("docker exec")
     assert "my-container" in cmd
     assert "bash -c" in cmd
-    assert "'echo hello'" in cmd
+    from sparkrun.utils.shell import b64_encode_cmd
+
+    expected = b64_encode_cmd("echo hello")
+    assert expected in cmd
 
 
 def test_docker_exec_detach():
@@ -33,6 +36,16 @@ def test_docker_exec_with_env():
 
     # Should be sorted
     assert "-e HOME=/root" in cmd
+    assert "-e PATH=/usr/local/bin" in cmd
+
+
+def test_docker_exec_with_env_spaces():
+    """With environment variables containing spaces."""
+    env = {"MY_VAR": "hello world", "PATH": "/usr/local/bin"}
+    cmd = docker_exec_cmd("my-container", "echo hello", env=env)
+
+    # Should be sorted and properly quoted
+    assert "-e 'MY_VAR=hello world'" in cmd
     assert "-e PATH=/usr/local/bin" in cmd
 
 

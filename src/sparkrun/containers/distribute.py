@@ -11,7 +11,6 @@ transfer so hosts that already have the correct image are skipped.
 from __future__ import annotations
 
 import logging
-import shlex
 
 from sparkrun.containers.registry import ensure_image, get_image_id
 from sparkrun.orchestration.primitives import map_transfer_failures
@@ -22,6 +21,7 @@ from sparkrun.orchestration.ssh import (
     run_remote_command,
 )
 from sparkrun.scripts import read_script
+from sparkrun.utils.shell import args_list_to_shell_str, quote
 
 from sparkrun.core.progress import PROGRESS
 
@@ -58,7 +58,8 @@ def _check_remote_image_ids(
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    cmd = _REMOTE_IMAGE_ID_CMD.format(image=shlex.quote(image))
+    # TODO: bypasses executor
+    cmd = _REMOTE_IMAGE_ID_CMD.format(image=quote(image))
     result_map: dict[str, str] = {}
 
     with ThreadPoolExecutor(max_workers=len(hosts)) as executor:
@@ -210,7 +211,7 @@ def distribute_image_from_local(
         return []
 
     # Step 3: stream to hosts that need it
-    local_cmd = "docker save %s" % shlex.quote(image)
+    local_cmd = "docker save %s" % quote(image)
     remote_cmd = "docker load"
 
     results = run_pipeline_to_remotes_parallel(
@@ -307,7 +308,7 @@ def distribute_image_from_head(
                 worker_transfer_hosts = None
 
     # Build ensure script (pull image on head)
-    ensure_script = read_script("image_sync.sh").format(image=shlex.quote(image))
+    ensure_script = read_script("image_sync.sh").format(image=quote(image))
 
     # Build distribute script (stream from head to workers)
     targets = worker_transfer_hosts or hosts[1:]
@@ -317,8 +318,8 @@ def distribute_image_from_head(
         ssh_options=ssh_options,
     )
     dist_script = read_script("image_distribute.sh").format(
-        image=shlex.quote(image),
-        targets=" ".join(shlex.quote(t) for t in targets),
+        image=quote(image),
+        targets=args_list_to_shell_str(targets),
         ssh_opts=ssh_opts,
         ssh_user=ssh_user or "",
     )

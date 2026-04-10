@@ -16,6 +16,7 @@ from .._common import (
     dry_run_option,
     host_options,
     json_option,
+    HIDE_ADVANCED_OPTIONS,
 )
 from . import setup
 from ._phases import (
@@ -1981,7 +1982,7 @@ def setup_fe_system_update(ctx, hosts, hosts_file, cluster_name, user, dry_run):
 # ---------------------------------------------------------------------------
 
 
-@setup.command("diagnose", hidden=True)
+@setup.command("diagnose", hidden=HIDE_ADVANCED_OPTIONS)
 @host_options
 @dry_run_option
 @click.option(

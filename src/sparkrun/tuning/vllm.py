@@ -7,7 +7,6 @@ and auto-mounted in future ``sparkrun run`` invocations.
 
 from __future__ import annotations
 
-import shlex
 from pathlib import Path
 
 from sparkrun.tuning._common import (
@@ -18,6 +17,7 @@ from sparkrun.tuning._common import (
     _get_tuning_env,
     _get_tuning_volumes,
 )
+from sparkrun.utils.shell import quote
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -122,4 +122,4 @@ def build_vllm_tuning_command(model: str, tp_size: int) -> str:
         "VLLM_TUNED_CONFIG_FOLDER=%s "
         "python3 benchmarks/kernels/benchmark_moe.py "
         "--model %s --tp-size %d --tune --save-dir %s"
-    ) % (VLLM_CLONE_DIR, config_dir, config_dir, shlex.quote(model), tp_size, config_dir)
+    ) % (VLLM_CLONE_DIR, config_dir, config_dir, quote(model), tp_size, config_dir)

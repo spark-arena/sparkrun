@@ -8,9 +8,8 @@
 from __future__ import annotations
 
 import logging
-import shlex
-
 from sparkrun.orchestration.executor import Executor
+from sparkrun.utils.shell import b64_wrap_bash, quote, args_list_to_shell_str
 
 logger = logging.getLogger(__name__)
 
@@ -26,13 +25,14 @@ class DockerExecutor(Executor):
         if cfg.privileged:
             opts.append("--privileged")
         if cfg.gpus:
-            opts.extend(["--gpus", cfg.gpus])
+            opts.extend(["--gpus", quote(cfg.gpus)])
         if cfg.ipc:
-            opts.append("--ipc=%s" % cfg.ipc)
+            opts.append("--ipc=%s" % quote(cfg.ipc))
         if cfg.shm_size:
-            opts.append("--shm-size=%s" % cfg.shm_size)
+            opts.append("--shm-size=%s" % quote(cfg.shm_size))
         if cfg.network:
-            opts.append("--network %s" % cfg.network)
+            logger.debug("DockerExecutor using network: %s", cfg.network)
+            opts.append("--network=%s" % quote(cfg.network))
         if cfg.user:
             if cfg.user == "$SHELL_USER":
                 opts.extend(["--user", "$(id -u):$(id -g)"])
@@ -40,21 +40,24 @@ class DockerExecutor(Executor):
                 opts.extend(["-v", "/etc/group:/etc/group:ro"])
                 opts.extend(["-e", "HOME=/tmp"])
             else:
-                opts.extend(["--user", cfg.user])
+                opts.extend(["--user", quote(cfg.user)])
         if cfg.security_opt:
             for opt in cfg.security_opt:
-                opts.extend(["--security-opt", opt])
+                opts.extend(["--security-opt", quote(opt)])
         if cfg.cap_add:
             for cap in cfg.cap_add:
-                opts.extend(["--cap-add", cap])
+                opts.extend(["--cap-add", quote(cap)])
         if cfg.ulimit:
             for ul in cfg.ulimit:
-                opts.extend(["--ulimit", ul])
+                opts.extend(["--ulimit", quote(ul)])
         if cfg.devices:
             for dev in cfg.devices:
-                opts.extend(["--device", dev])
+                opts.extend(["--device", quote(dev)])
         if cfg.memory_limit:
-            opts.append("--memory=%s" % cfg.memory_limit)
+            opts.append("--memory=%s" % quote(cfg.memory_limit))
+        if cfg.labels:
+            for lbl in cfg.labels:
+                opts.extend(["--label", quote(lbl)])
 
         return opts
 
@@ -84,23 +87,27 @@ class DockerExecutor(Executor):
             parts.extend(["--restart", cfg.restart_policy])
 
         if container_name:
-            parts.extend(["--name", container_name])
+            parts.extend(["--name", quote(container_name)])
 
         if env:
             for key, value in sorted(env.items()):
-                parts.extend(["-e", "%s=%s" % (key, value)])
+                parts.extend(["-e", quote("%s=%s" % (key, value))])
 
         if volumes:
+            # TODO: option for ro/rw on volumes?
             for host_path, container_path in sorted(volumes.items()):
-                parts.extend(["-v", "%s:%s" % (host_path, container_path)])
+                parts.extend(["-v", quote("%s:%s" % (host_path, container_path))])
 
         if extra_opts:
-            parts.extend(extra_opts)
+            from shlex import split as shlex_split
 
-        parts.append(shlex.quote(image))
+            for opt in extra_opts:
+                parts.extend(quote(token) for token in shlex_split(opt))
+
+        parts.append(quote(image))
 
         if command:
-            parts.append(command)
+            parts.extend(["bash", "-c", b64_wrap_bash(command)])
 
         result = " ".join(parts)
 
@@ -126,13 +133,12 @@ class DockerExecutor(Executor):
         if env:
             for key, value in sorted(env.items()):
                 parts.extend(["-e", "%s=%s" % (key, value)])
-        escaped_cmd = command.replace("'", "'\\''")
-        parts.extend([shlex.quote(container_name), "bash", "-c", "'%s'" % escaped_cmd])
-        return " ".join(parts)
+        parts.extend([container_name, "bash", "-c", b64_wrap_bash(command)])
+        return args_list_to_shell_str(parts)
 
     def stop_cmd(self, container_name: str, force: bool = True) -> str:
         """Generate a docker stop/rm command string."""
-        quoted = shlex.quote(container_name)
+        quoted = quote(container_name)
         if force:
             return "docker rm -f %s 2>/dev/null || true" % quoted
         return "docker stop %s 2>/dev/null || true" % quoted
@@ -150,12 +156,12 @@ class DockerExecutor(Executor):
         if tail is not None:
             parts.extend(["--tail", str(tail)])
         parts.append(container_name)
-        return " ".join(parts)
+        return args_list_to_shell_str(parts)
 
     def inspect_exists_cmd(self, image: str) -> str:
         """Generate a command to check if a docker image exists locally."""
-        return "docker image inspect %s >/dev/null 2>&1" % shlex.quote(image)
+        return "docker image inspect %s >/dev/null 2>&1" % quote(image)
 
     def pull_cmd(self, image: str) -> str:
         """Generate a ``docker pull`` command."""
-        return "docker pull %s" % shlex.quote(image)
+        return "docker pull %s" % quote(image)

@@ -6,6 +6,8 @@ import sys
 
 import click
 
+from sparkrun.utils.shell import quote
+
 from ._common import (
     CLUSTER_NAME,
     TARGET,
@@ -18,6 +20,7 @@ from ._common import (
     host_options,
     json_option,
     print_json,
+    HIDE_ADVANCED_OPTIONS,
 )
 
 
@@ -785,7 +788,7 @@ def cluster_check_job(ctx, target, hosts, hosts_file, cluster_name, tp_override,
         sys.exit(1)
 
 
-@cluster.command("inspect", hidden=True)
+@cluster.command("inspect", hidden=HIDE_ADVANCED_OPTIONS)
 @click.argument("name", type=CLUSTER_NAME, required=False, default=None)
 @host_options
 @dry_run_option
@@ -842,7 +845,7 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
 
         ib_result = detect_ib_for_hosts(host_list, ssh_kwargs=ssh_kwargs, topology=cluster_cfg.topology)
 
-    nccl_env = ib_result.nccl_env if ib_result else {}
+    nccl_env = ib_result.comm_env.get_env(host_list[0]) if ib_result else {}
 
     # Resolve effective transfer interface
     # auto (None) → cx7 if IB is available and validated, else mgmt
@@ -874,7 +877,7 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
         'if [ -d "$sr_dir" ]; then sr_exists="yes"; sr_du=$(du -sh "$sr_dir" 2>/dev/null | cut -f1); fi; '
         'if [ -d "$hf_dir" ]; then hf_exists="yes"; hf_du=$(du -sh "$hf_dir" 2>/dev/null | cut -f1); fi; '
         'echo "sr_exists=$sr_exists|sr_du=$sr_du|hf_exists=$hf_exists|hf_du=$hf_du|sr_dir=$sr_dir|hf_dir=$hf_dir"'
-    ) % (remote_sparkrun, remote_hf)
+    ) % (quote(remote_sparkrun), quote(remote_hf))
 
     # Query all hosts in parallel
     host_info: dict[str, dict] = {}

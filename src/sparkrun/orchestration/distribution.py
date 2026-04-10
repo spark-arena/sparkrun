@@ -12,6 +12,7 @@ from sparkrun.utils import is_local_host
 
 if TYPE_CHECKING:
     from sparkrun.core.config import SparkrunConfig
+    from sparkrun.orchestration.comm_env import ClusterCommEnv
     from sparkrun.orchestration.infiniband import IBDetectionResult
 
 logger = logging.getLogger(__name__)
@@ -306,7 +307,7 @@ def distribute_resources(
     transfer_interface: str | None = None,
     local_cache_dir: str | None = None,
     pre_ib: TransferModeResult | None = None,
-) -> tuple[dict[str, str] | None, dict[str, str], dict[str, str]]:
+) -> tuple["ClusterCommEnv | None", dict[str, str], dict[str, str]]:
     """Detect IB, distribute container image and model to target hosts.
 
     Performs InfiniBand detection (for both NCCL env and IB transfer IPs),
@@ -347,8 +348,10 @@ def distribute_resources(
             Defaults to *cache_dir* when not provided.
 
     Returns:
-        Tuple of (nccl_env, ib_ip_map, mgmt_ip_map).  ``nccl_env`` is
-        ``None`` when IB detection was skipped or not applicable.
+        Tuple of (comm_env, ib_ip_map, mgmt_ip_map).  ``comm_env`` is
+        a :class:`ClusterCommEnv` carrying both cluster-wide and
+        per-host inter-node comm env vars (``None`` when IB detection
+        was skipped or not applicable).
     """
     from sparkrun.orchestration.primitives import build_ssh_kwargs
     from sparkrun.orchestration.infiniband import detect_ib_for_hosts, validate_ib_connectivity
@@ -388,7 +391,10 @@ def distribute_resources(
                 if download_model(model, cache_dir=effective_local_cache, revision=model_revision, dry_run=dry_run) != 0:
                     raise DistributionError(f"Failed to download model: {model}")
         return None, {}, {}  # let runtime handle its own local IB detection
-    nccl_env: dict[str, str] = {}
+
+    from sparkrun.orchestration.comm_env import ClusterCommEnv
+
+    comm_env: ClusterCommEnv = ClusterCommEnv.empty()
     ib_ip_map: dict[str, str] = {}
     mgmt_ip_map: dict[str, str] = {}
     transfer_hosts: list[str] | None = None
@@ -437,7 +443,7 @@ def distribute_resources(
                 else:
                     logger.info("Auto-detected transfer mode: delegated (external control, no IB connectivity)")
 
-    nccl_env = ib_result.nccl_env
+    comm_env = ib_result.comm_env
     mgmt_ip_map = ib_result.mgmt_ip_map
 
     # Determine effective transfer interface (default: cx7)
@@ -591,4 +597,4 @@ def distribute_resources(
             raise DistributionError("Model distribution failed on: %s" % ", ".join(mdl_failed))
 
     logger.info("Distribution complete.")
-    return nccl_env, ib_ip_map, mgmt_ip_map
+    return comm_env, ib_ip_map, mgmt_ip_map

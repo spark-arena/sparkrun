@@ -8,6 +8,8 @@ import sys
 
 import click
 
+from sparkrun.cli._common import HIDE_ADVANCED_OPTIONS
+
 logger = logging.getLogger(__name__)
 
 # Phase teardown order (reverse of install order)
@@ -221,7 +223,7 @@ def _teardown_ssh_mesh(host_list, manifest_phase, user, ssh_kwargs, dry_run):
         return {}
 
 
-@click.command("uninstall", hidden=True)
+@click.command("uninstall", hidden=HIDE_ADVANCED_OPTIONS)
 @click.argument("cluster_name", required=False, default=None)
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmations (full teardown)")
 @click.option("--dry-run", "-n", is_flag=True, help="Preview without executing")

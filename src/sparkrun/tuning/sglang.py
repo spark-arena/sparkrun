@@ -7,7 +7,6 @@ and auto-mounted in future ``sparkrun run`` invocations.
 
 from __future__ import annotations
 
-import shlex
 from pathlib import Path
 
 from sparkrun.tuning._common import (
@@ -18,6 +17,7 @@ from sparkrun.tuning._common import (
     _get_tuning_env,
     _get_tuning_volumes,
 )
+from sparkrun.utils.shell import quote
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -185,4 +185,4 @@ def build_tuning_command(model: str, tp_size: int, triton_version: str | None = 
         "SGLANG_MOE_CONFIG_DIR=%s "
         "python3 %s/benchmark/kernels/fused_moe_triton/tuning_fused_moe_triton.py "
         "--model %s --tp-size %d --tune"
-    ) % (output_subdir, output_subdir, config_dir, SGLANG_CLONE_DIR, shlex.quote(model), tp_size)
+    ) % (output_subdir, output_subdir, config_dir, SGLANG_CLONE_DIR, quote(model), tp_size)

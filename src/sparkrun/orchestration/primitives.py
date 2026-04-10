@@ -18,6 +18,7 @@ from sparkrun.orchestration.ssh import (
     run_remote_script,
     run_remote_scripts_parallel,
 )
+from sparkrun.orchestration.comm_env import ClusterCommEnv
 from sparkrun.orchestration.infiniband import (
     generate_ib_detect_script,
     parse_ib_detect_output,
@@ -151,98 +152,75 @@ def detect_infiniband(
     ssh_kwargs: dict | None = None,
     dry_run: bool = False,
     topology: str | None = None,
-) -> dict[str, str]:
-    """Run InfiniBand detection on *hosts* and return NCCL env vars.
+) -> ClusterCommEnv:
+    """Run InfiniBand detection on *hosts* and return a :class:`ClusterCommEnv`.
 
-    Detects IB on all hosts in parallel and uses the head node's (or
-    the first host's) result to generate NCCL configuration.
-
-    Args:
-        hosts: Hosts to probe.
-        head_host: Which host's IB config to use (defaults to ``hosts[0]``).
-        ssh_kwargs: SSH connection parameters.
-        dry_run: Log what would happen without executing.
-
-    Returns:
-        Dict of NCCL environment variables (empty if no IB found).
+    Probes IB on all hosts in parallel and builds a comm env with
+    shared keys factored out and per-host interface overrides kept
+    separate.
     """
     if not hosts:
-        return {}
+        return ClusterCommEnv.empty()
 
-    target_host = head_host or hosts[0]
-    kw = ssh_kwargs or {}
+    from sparkrun.orchestration.infiniband import detect_ib_for_hosts
 
-    logger.info("Detecting InfiniBand on %d host(s)...", len(hosts))
-    ib_script = generate_ib_detect_script()
-    ib_results = run_remote_scripts_parallel(
+    ib_result = detect_ib_for_hosts(
         hosts,
-        ib_script,
-        timeout=30,
+        ssh_kwargs=ssh_kwargs,
         dry_run=dry_run,
-        **kw,
+        topology=topology,
     )
-
-    nccl_env: dict[str, str] = {}
-    for result in ib_results:
-        if result.host == target_host and result.success:
-            ib_info = parse_ib_detect_output(result.stdout)
-            nccl_env = generate_nccl_env(ib_info, topology=topology)
-            if nccl_env:
-                logger.info("  InfiniBand detected on %s, NCCL configured", target_host)
-            break
-
-    if not nccl_env:
-        logger.info("  No InfiniBand detected, using default networking")
-
-    return nccl_env
+    # ``head_host`` is accepted for backward-compat with older callers
+    # but the per-host map is now the source of truth — logging is
+    # handled inside ``detect_ib_for_hosts``.
+    _ = head_host
+    return ib_result.comm_env
 
 
 def detect_infiniband_local(
     dry_run: bool = False,
-) -> dict[str, str]:
-    """Run InfiniBand detection locally and return NCCL env vars."""
+) -> ClusterCommEnv:
+    """Run InfiniBand detection locally and return a :class:`ClusterCommEnv`."""
     ib_script = generate_ib_detect_script()
     result = run_local_script(ib_script, dry_run=dry_run)
     if result.success:
         ib_info = parse_ib_detect_output(result.stdout)
-        nccl_env = generate_nccl_env(ib_info)
-        if nccl_env:
-            logger.info("  InfiniBand detected locally, NCCL configured")
-            return nccl_env
+        env = generate_nccl_env(ib_info)
+        if env:
+            logger.info("  InfiniBand detected locally, comm env configured")
+            return ClusterCommEnv.from_shared(env)
         logger.info("  No InfiniBand detected, using default networking")
     else:
         logger.warning(
             "  InfiniBand detection failed, continuing without: %s",
             result.stderr[:100],
         )
-    return {}
+    return ClusterCommEnv.empty()
 
 
 def resolve_nccl_env(
-    nccl_env: dict[str, str] | None,
+    comm_env: ClusterCommEnv | None,
     hosts: list[str],
     head_host: str | None = None,
     ssh_kwargs: dict | None = None,
     dry_run: bool = False,
     topology: str | None = None,
-) -> dict[str, str]:
-    """Resolve NCCL environment: reuse pre-detected or detect.
-
-    Encapsulates the common IB detection pattern used by cluster launch methods.
+) -> ClusterCommEnv:
+    """Resolve comm env: reuse pre-detected or probe.
 
     Args:
-        nccl_env: Pre-detected NCCL env, or ``None`` to trigger detection.
+        comm_env: Pre-detected :class:`ClusterCommEnv`, or ``None`` to
+            trigger detection.
         hosts: Hosts to probe for InfiniBand.
-        head_host: Which host's IB config to use (defaults to hosts[0]).
+        head_host: Which host's IB config to log about (defaults to
+            ``hosts[0]``).  Informational only — the per-host map
+            captures the full picture.
         ssh_kwargs: SSH connection parameters.
         dry_run: Log without executing.
-
-    Returns:
-        Dict of NCCL environment variables (empty if no IB found).
     """
-    if nccl_env is not None:
-        logger.info("Using pre-detected NCCL env (%d vars)", len(nccl_env))
-        return nccl_env
+    if comm_env is not None:
+        logger.info("Using pre-detected comm env (%d vars)", len(comm_env))
+        return comm_env
     logger.info("Detecting InfiniBand on %d host(s)...", len(hosts))
     return detect_infiniband(
         hosts,

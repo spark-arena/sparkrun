@@ -13,6 +13,7 @@ from typing import Any
 from scitrera_app_framework import Variables
 
 from sparkrun.benchmarking.base import BenchmarkingPlugin
+from sparkrun.utils.shell import quote_list
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +127,7 @@ class LlamaBenchyFramework(BenchmarkingPlugin):
 
             cmd.extend([flag, str(value)])
 
-        return cmd
+        return quote_list(cmd)
 
     def interpret_arg(self, key: str, value: str) -> Any:
         """Interpret a CLI string arg into the correct type.

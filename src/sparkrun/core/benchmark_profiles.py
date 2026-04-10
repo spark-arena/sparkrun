@@ -6,7 +6,7 @@ from typing import Any
 
 from vpd import read_yaml
 
-from sparkrun.benchmarking.base import render_args_as_flags
+from sparkrun.utils.shell import render_args_as_flags
 from sparkrun.core.recipe import Recipe
 
 # Keys in the benchmark: block that are NOT framework args

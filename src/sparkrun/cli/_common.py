@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from typing import TYPE_CHECKING, Any
 
@@ -11,12 +12,16 @@ import click
 if TYPE_CHECKING:
     from sparkrun.core.context import SparkrunContext
 
+from scitrera_app_framework.util import ext_parse_bool
 from sparkrun.core.recipe import (
     expand_recipe_shortcut as _expand_recipe_shortcut,
     fetch_and_cache_recipe as _fetch_and_cache_recipe,
     is_recipe_url as _is_recipe_url,
     simplify_recipe_ref as _simplify_recipe_ref,  # noqa: F401 — re-exported for cli/_run.py, cli/_benchmark.py
 )
+from sparkrun.core.cluster_manager import ResolvedClusterConfig, resolve_cluster_config  # noqa: E402, F401 — re-exported
+
+HIDE_ADVANCED_OPTIONS = not ext_parse_bool(os.environ.get("SPARKRUN_ADVANCED", "0"))
 
 logger = logging.getLogger(__name__)
 
@@ -268,9 +273,6 @@ def _apply_tp_trimming(
         overrides=overrides,
         tp_override=tp_override,
     )
-
-
-from sparkrun.core.cluster_manager import ResolvedClusterConfig, resolve_cluster_config  # noqa: E402, F401 — re-exported
 
 
 def _get_cluster_manager(v=None, sctx: SparkrunContext | None = None):

@@ -10,6 +10,7 @@ from sparkrun.runtimes._vllm_common import VllmMixin, VLLM_FLAG_MAP, VLLM_BOOL_F
 
 if TYPE_CHECKING:
     from sparkrun.core.recipe import Recipe
+    from sparkrun.orchestration.comm_env import ClusterCommEnv
 
 logger = logging.getLogger(__name__)
 
@@ -150,10 +151,11 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
         config=None,
         dry_run: bool = False,
         detached: bool = True,
-        nccl_env: dict[str, str] | None = None,
+        comm_env: "ClusterCommEnv | None" = None,
         ray_port: int = 46379,
         dashboard_port: int = 8265,
         dashboard: bool = False,
+        extra_docker_opts: list[str] | None = None,
         **kwargs,
     ) -> int:
         """Orchestrate a multi-node Ray cluster for vLLM.
@@ -174,9 +176,10 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
             run_pre_serve_hooks,
         )
         from sparkrun.orchestration.primitives import is_valid_ip, wait_for_port
-        from sparkrun.orchestration.ssh import run_remote_script, run_remote_scripts_parallel
+        from sparkrun.orchestration.ssh import run_remote_script
 
         progress = kwargs.pop("progress", None)
+        combined_docker_opts = (self.get_extra_docker_opts() or []) + (extra_docker_opts or [])
 
         ctx = ClusterContext.build(self, hosts, image, cluster_id, env, cache_dir, config, dry_run)
         head_container = self.executor.container_name(cluster_id, "head")
@@ -200,7 +203,7 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
             progress.step("Detecting InfiniBand")
         else:
             logger.info("Step 2/5: InfiniBand detection...")
-        nccl_env = resolve_ib_env(ctx, nccl_env)
+        comm_env = resolve_ib_env(ctx, comm_env)
         logger.info("Step 2/5: IB step done (%.1fs)", time.monotonic() - t0)
 
         # Auto-detect available ports to avoid collisions with running instances
@@ -224,6 +227,7 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
             progress.step("Launching Ray head")
         else:
             logger.info("Step 3/5: Launching Ray head on %s...", ctx.head_host)
+        head_nccl_env = comm_env.get_env(ctx.head_host) if comm_env else None
         head_script = self.executor.generate_ray_head_script(
             image=image,
             container_name=head_container,
@@ -232,7 +236,8 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
             dashboard=dashboard,
             env=ctx.all_env,
             volumes=ctx.volumes,
-            nccl_env=nccl_env,
+            nccl_env=head_nccl_env,
+            extra_docker_opts=combined_docker_opts or None,
         )
         head_result = run_remote_script(
             ctx.head_host,
@@ -284,22 +289,36 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
                     len(ctx.worker_hosts),
                     ", ".join(ctx.worker_hosts),
                 )
-            worker_script = self.executor.generate_ray_worker_script(
-                image=image,
-                container_name=worker_container,
-                head_ip=head_ip,
-                ray_port=ray_port,
-                env=ctx.all_env,
-                volumes=ctx.volumes,
-                nccl_env=nccl_env,
-            )
-            worker_results = run_remote_scripts_parallel(
-                ctx.worker_hosts,
-                worker_script,
-                timeout=120,
-                dry_run=dry_run,
-                **ctx.ssh_kwargs,
-            )
+            # Generate per-host worker scripts so heterogeneous management
+            # interfaces (e.g. wired on head, wifi on a worker) get the
+            # right GLOO_SOCKET_IFNAME / NCCL_SOCKET_IFNAME / etc.
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            with ThreadPoolExecutor(max_workers=len(ctx.worker_hosts)) as _wpool:
+                _wfutures = {}
+                for _whost in ctx.worker_hosts:
+                    _whost_env = comm_env.get_env(_whost) if comm_env else None
+                    _wscript = self.executor.generate_ray_worker_script(
+                        image=image,
+                        container_name=worker_container,
+                        head_ip=head_ip,
+                        ray_port=ray_port,
+                        env=ctx.all_env,
+                        volumes=ctx.volumes,
+                        nccl_env=_whost_env,
+                        extra_docker_opts=combined_docker_opts or None,
+                    )
+                    _wfutures[
+                        _wpool.submit(
+                            run_remote_script,
+                            _whost,
+                            _wscript,
+                            timeout=120,
+                            dry_run=dry_run,
+                            **ctx.ssh_kwargs,
+                        )
+                    ] = _whost
+                worker_results = [f.result() for f in as_completed(_wfutures)]
             failed = [r for r in worker_results if not r.success and not dry_run]
             for r in failed:
                 logger.warning(

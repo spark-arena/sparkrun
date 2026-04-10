@@ -233,9 +233,6 @@ def _render_install_script(slug, recipe_yaml, cluster_yaml, cluster_name, user_h
     """Render user-level install script (no sudo needed)."""
     service_dir = "%s/.config/sparkrun/services/%s" % (user_home, slug)
     clusters_dir = "%s/.config/sparkrun/clusters" % user_home
-    # Escape single quotes in YAML content for heredoc safety
-    recipe_yaml_escaped = recipe_yaml.replace("'", "'\\''")
-    cluster_yaml_escaped = cluster_yaml.replace("'", "'\\''")
     return textwrap.dedent("""\
         #!/usr/bin/env bash
         set -euo pipefail
@@ -262,16 +259,14 @@ def _render_install_script(slug, recipe_yaml, cluster_yaml, cluster_name, user_h
         service_dir=service_dir,
         clusters_dir=clusters_dir,
         cluster_name=cluster_name,
-        recipe_yaml=recipe_yaml_escaped,
-        cluster_yaml=cluster_yaml_escaped,
+        recipe_yaml=recipe_yaml,
+        cluster_yaml=cluster_yaml,
     )
 
 
 def _render_sudo_install_script(slug, unit_contents):
     """Render sudo install script (writes unit file, enables service)."""
     unit_path = "/etc/systemd/system/sparkrun-%s.service" % slug
-    # Escape single quotes in unit contents for heredoc safety
-    unit_escaped = unit_contents.replace("'", "'\\''")
     return textwrap.dedent("""\
         #!/usr/bin/env bash
         set -euo pipefail
@@ -289,7 +284,7 @@ def _render_sudo_install_script(slug, unit_contents):
     """).format(
         unit_path=unit_path,
         slug=slug,
-        unit_contents=unit_escaped,
+        unit_contents=unit_contents,
     )
 
 

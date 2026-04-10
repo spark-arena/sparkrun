@@ -194,6 +194,23 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                 cluster_name = default_name
                 results["cluster"] = "%s (%d hosts, default)" % (cluster_name, len(host_list))
 
+        elif cluster_name and not host_list and not hosts:
+            # --cluster was explicitly named; if it already exists, offer to reuse it
+            try:
+                named_def = cluster_mgr.get(cluster_name)
+                if yes:
+                    host_list = list(named_def.hosts)
+                    results["cluster"] = "%s (%d hosts)" % (cluster_name, len(host_list))
+                else:
+                    click.echo("Cluster: %s (%d hosts: %s)" % (cluster_name, len(named_def.hosts), ", ".join(named_def.hosts)))
+                    if click.confirm("Continue with this cluster?", default=True):
+                        host_list = list(named_def.hosts)
+                        results["cluster"] = "%s (%d hosts)" % (cluster_name, len(host_list))
+                        click.echo()
+                    # If user declines, fall through to host-discovery + creation/update flow
+            except ClusterError:
+                pass  # Cluster doesn't exist yet; fall through to normal creation flow
+
         # When using an existing cluster, inherit its SSH user if the
         # wizard's --user flag wasn't explicitly provided.
         if cluster_name and user == default_user:

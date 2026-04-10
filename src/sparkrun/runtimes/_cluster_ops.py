@@ -18,6 +18,7 @@ from typing import Any, TYPE_CHECKING
 if TYPE_CHECKING:
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.core.recipe import Recipe
+    from sparkrun.orchestration.comm_env import ClusterCommEnv
     from sparkrun.orchestration.executor import Executor
     from sparkrun.runtimes.base import RuntimePlugin
 
@@ -124,42 +125,65 @@ def cleanup_named_containers(ctx: ClusterContext, container_names: list[str]) ->
 # ---------------------------------------------------------------------------
 
 
-def resolve_ib_env(ctx: ClusterContext, nccl_env: dict[str, str] | None) -> dict[str, str]:
-    """Resolve NCCL env: reuse pre-detected or detect via IB probe."""
-    from sparkrun.orchestration.primitives import resolve_nccl_env
+def resolve_ib_env(
+    ctx: ClusterContext,
+    comm_env: ClusterCommEnv | None,
+) -> ClusterCommEnv:
+    """Resolve the cluster comm env: reuse pre-detected or probe.
 
-    return resolve_nccl_env(
-        nccl_env,
+    Returns a :class:`ClusterCommEnv` carrying both shared and
+    per-host inter-node comm env vars.  Per-host entries let
+    heterogeneous management interfaces (e.g. wired on the head, wifi
+    on a worker) each bind the correct ``*_SOCKET_IFNAME`` values.
+    """
+    from sparkrun.orchestration.comm_env import ClusterCommEnv as _CCE
+
+    if comm_env is not None:
+        logger.info("Using pre-detected comm env (%d vars)", len(comm_env))
+        return comm_env
+
+    from sparkrun.orchestration.infiniband import detect_ib_for_hosts
+
+    logger.info("Detecting InfiniBand on %d host(s)...", len(ctx.hosts))
+    ib_result = detect_ib_for_hosts(
         ctx.hosts,
-        head_host=ctx.head_host,
         ssh_kwargs=ctx.ssh_kwargs,
         dry_run=ctx.dry_run,
         topology=ctx.topology,
     )
+    if ib_result.comm_env.is_empty():
+        logger.info("  No InfiniBand detected, using default networking")
+        return _CCE.empty()
+    return ib_result.comm_env
 
 
 def detect_ib_with_ips(
     ctx: ClusterContext,
-    nccl_env: dict[str, str] | None,
+    comm_env: ClusterCommEnv | None,
     ib_ip_map: dict[str, str] | None,
-) -> tuple[dict[str, str], dict[str, str]]:
-    """Detect IB env and IP map (for runtimes needing IB addresses).
+) -> tuple[ClusterCommEnv, dict[str, str]]:
+    """Detect comm env and IP map (for runtimes needing IB addresses).
 
-    Returns ``(nccl_env, ib_ip_map)`` tuple.
+    Returns ``(comm_env, ib_ip_map)``.
     """
     from sparkrun.orchestration.infiniband import detect_ib_for_hosts
 
     if ib_ip_map is None:
         ib_ip_map = {}
-    if nccl_env is not None:
-        logger.info("Using pre-detected NCCL env (%d vars)", len(nccl_env))
+    if comm_env is not None:
+        logger.info("Using pre-detected comm env (%d vars)", len(comm_env))
         if ib_ip_map:
             logger.info("  Pre-detected IB IPs for %d host(s)", len(ib_ip_map))
-        return nccl_env, ib_ip_map
+        return comm_env, ib_ip_map
 
     logger.info("Detecting InfiniBand on all hosts...")
-    ib_result = detect_ib_for_hosts(ctx.hosts, ssh_kwargs=ctx.ssh_kwargs, dry_run=ctx.dry_run, topology=ctx.topology)
-    return ib_result.nccl_env, ib_result.ib_ip_map
+    ib_result = detect_ib_for_hosts(
+        ctx.hosts,
+        ssh_kwargs=ctx.ssh_kwargs,
+        dry_run=ctx.dry_run,
+        topology=ctx.topology,
+    )
+    return ib_result.comm_env, ib_result.ib_ip_map
 
 
 # ---------------------------------------------------------------------------
@@ -194,10 +218,15 @@ def launch_containers_parallel(
     ctx: ClusterContext,
     containers: list[tuple[str, str]],
     executor: Executor,
-    nccl_env: dict[str, str] | None,
+    comm_env: ClusterCommEnv | None,
     extra_docker_opts: list[str] | None = None,
 ) -> int:
     """Launch sleep-infinity containers in parallel.
+
+    Each host receives ``comm_env.get_env(host)`` for its docker ``-e``
+    block, so heterogeneous management interfaces (e.g. wired on the
+    head, wifi on a worker) each see the right ``*_SOCKET_IFNAME``
+    values instead of the head's interface being broadcast cluster-wide.
 
     Returns 0 on success, 1 on first failure.
     """
@@ -206,13 +235,14 @@ def launch_containers_parallel(
     with ThreadPoolExecutor(max_workers=len(containers)) as pool:
         futures = {}
         for host, cname in containers:
+            host_nccl_env = comm_env.get_env(host) if comm_env else None
             script = executor.generate_launch_script(
                 image=ctx.image,
                 container_name=cname,
                 command="sleep infinity",
                 env=ctx.all_env,
                 volumes=ctx.volumes,
-                nccl_env=nccl_env,
+                nccl_env=host_nccl_env,
                 extra_docker_opts=extra_docker_opts,
             )
             future = pool.submit(
@@ -318,7 +348,7 @@ def run_native_cluster(
     recipe: Recipe | None = None,
     overrides: dict[str, Any] | None = None,
     *,
-    nccl_env: dict[str, str] | None = None,
+    comm_env: ClusterCommEnv | None = None,
     init_port: int = 25000,
     skip_keys: set[str] | frozenset[str] = frozenset(),
     banner_title: str = "Native Cluster Launcher",
@@ -327,6 +357,7 @@ def run_native_cluster(
     detached: bool = True,
     follow: bool = True,
     progress=None,
+    extra_docker_opts: list[str] | None = None,
 ) -> int:
     """Orchestrate a multi-node native cluster.
 
@@ -370,7 +401,7 @@ def run_native_cluster(
         progress.step("Detecting InfiniBand")
     else:
         logger.info("Step 2/7: InfiniBand detection...")
-    nccl_env = resolve_ib_env(ctx, nccl_env)
+    comm_env = resolve_ib_env(ctx, comm_env)
     logger.info("Step 2/7: IB step done (%.1fs)", time.monotonic() - t0)
 
     # Step 3: Detect head node IP
@@ -426,12 +457,13 @@ def run_native_cluster(
         all_nodes.append((host, rank, executor.node_container_name(ctx.cluster_id, rank)))
 
     containers = [(host, cname) for host, _rank, cname in all_nodes]
+    combined_docker_opts = (runtime.get_extra_docker_opts() or []) + (extra_docker_opts or [])
     rc = launch_containers_parallel(
         ctx,
         containers,
         executor,
-        nccl_env,
-        extra_docker_opts=runtime.get_extra_docker_opts() or None,
+        comm_env,
+        extra_docker_opts=combined_docker_opts or None,
     )
     if rc != 0:
         return rc

@@ -78,17 +78,21 @@ Runtimes, builders, and benchmarking frameworks are SAF multi-extension plugins 
 cli/__init__.py → core/bootstrap.py → SAF init → find_types_in_modules() → register_plugin()
 ```
 
-### Config Chain (vpd)
+### Config Chain (SAF Variables)
 
-sparkrun uses `vpd_chain` for cascading config resolution throughout the codebase:
+sparkrun uses SAF `Variables` with a `sources` tuple for cascading config resolution:
 
 ```python
-from vpd.legacy.yaml_dict import vpd_chain
-config = vpd_chain(cli_overrides, recipe_defaults, runtime_defaults)
-value = config.get("port")  # resolves through the chain
+from scitrera_app_framework.api import Variables, EnvPlacement
+
+config = Variables(
+    sources=(cli_overrides, user_config, recipe_defaults),
+    env_placement=EnvPlacement.IGNORED,
+)
+value = config.get("port")  # resolves left-to-right; first non-None wins
 ```
 
-Priority: CLI → recipe → runtime defaults. The same pattern is used for executor config, recipe defaults, and benchmark profiles.
+Priority: CLI → user config → recipe defaults. `Recipe.build_config_chain()` (`core/recipe.py`) is the canonical entry point — pass your CLI override dict and it returns a ready-to-use `Variables` instance. The same pattern is used for executor config in `launcher.py`.
 
 ### Executor Abstraction
 
@@ -113,6 +117,58 @@ All remote operations use **SSH stdin piping** — scripts are generated as Pyth
 from sparkrun.orchestration.ssh import run_remote_script
 result = run_remote_script(host, script_string, timeout=120, **ssh_kwargs)
 ```
+
+### Shell Execution & Security
+
+Sparkrun frequently dynamically generates bash scripts and Docker commands that interpolate user-provided inputs (like container names, image names, or environment variables). To prevent shell injection and handle spaces/special characters, you MUST adhere to the following rules:
+
+1. **Use `sparkrun.utils.shell` helpers — not `shlex` directly**: All shell-quoting utilities live in `sparkrun.utils.shell`. Import from there rather than calling `shlex` directly:
+   ```python
+   from sparkrun.utils.shell import quote, quote_list, quote_dict, args_list_to_shell_str, render_args_as_flags
+
+   # Single value
+   cmd = f"docker run --name {quote(container_name)} {quote(image)}"
+
+   # List of values → shell-safe space-separated string
+   opts_str = args_list_to_shell_str(["--port", "8000", "--model", model_path])
+
+   # List of values → quoted list (for further assembly)
+   quoted = quote_list(["--tp", "2", model_path])
+
+   # Dict with string values → quoted copy (e.g., env dicts)
+   safe_env = quote_dict({"MODEL": model_path, "PORT": "8000"})
+
+   # Dict of kwargs → ["--flag", "value", ...] pairs (booleans become bare flags)
+   flags = render_args_as_flags({"tensor_parallel_size": 2, "enable_prefix_caching": True})
+   ```
+
+2. **Base64 Command Wrapping**: When passing complex commands (especially those with nested quotes or JSON) into `bash -c` or over SSH, use `b64_wrap_bash` or `b64_wrap_python` from `sparkrun.utils.shell`. These handle the full encode-and-pipeline internally:
+   ```python
+   from sparkrun.utils.shell import b64_wrap_bash, b64_wrap_python
+
+   # Wrap a bash command (quoted=True by default — safe to embed in further shell strings)
+   wrapped = b64_wrap_bash("vllm serve --hf-overrides '{\"rope\": \"yarn\"}'")
+   # Produces (shell-quoted): printf '%s' '<b64>' | base64 -d -- | bash --noprofile --norc
+
+   # Wrap a Python script for delivery over SSH
+   wrapped_py = b64_wrap_python(python_script_str)
+   # Produces (shell-quoted): printf '%s' '<b64>' | base64 -d -- | python3
+   ```
+   Use `b64_encode_cmd` only when you need raw base64 bytes and will construct the pipeline yourself.
+
+3. **Use `printf` instead of `echo`**: Inside generated bash scripts (`.sh` files), never use `echo` to output interpolated Python variables. If a variable starts with a hyphen (e.g., `-n`), `echo` may interpret it as a flag. Instead, use `printf` with a format string:
+   ```bash
+   # DANGEROUS: echo "Launching {container_name}"
+   # SAFE:
+   printf "Launching %%s\n" "{container_name}"
+   ```
+   *Note: In Python string formatting (used to populate the scripts), `%` must be escaped as `%%`.*
+
+4. **Environment Variables**: When exporting variables in generated bash scripts, quote the interpolated value using `quote` in Python and omit quotes in the bash script:
+   ```python
+   from sparkrun.utils.shell import quote
+   env_lines.append(f"export MY_VAR={quote(val)}")
+   ```
 
 ### Runtime Architecture
 

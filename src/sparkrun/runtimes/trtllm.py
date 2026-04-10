@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import yaml
 
@@ -21,6 +21,7 @@ from sparkrun.runtimes.base import RuntimePlugin
 if TYPE_CHECKING:
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.core.recipe import Recipe
+    from sparkrun.orchestration.comm_env import ClusterCommEnv
 
 logger = logging.getLogger(__name__)
 
@@ -347,12 +348,11 @@ class TrtllmRuntime(RuntimePlugin):
             return
 
         from sparkrun.orchestration.ssh import run_remote_command
-        from sparkrun.orchestration.docker import docker_exec_cmd
 
         write_cmd = ("cat > %s << 'SPARKRUN_EOF'\n%sSPARKRUN_EOF") % (_EXTRA_CONFIG_PATH, extra_yaml)
 
         for host, container_name in hosts_containers:
-            exec_cmd = docker_exec_cmd(container_name, write_cmd)
+            exec_cmd = self.executor.exec_cmd(container_name, write_cmd)
             result = run_remote_command(
                 host,
                 exec_cmd,
@@ -415,8 +415,9 @@ class TrtllmRuntime(RuntimePlugin):
         config: SparkrunConfig | None = None,
         dry_run: bool = False,
         detached: bool = True,
-        nccl_env: dict[str, str] | None = None,
+        comm_env: "ClusterCommEnv | None" = None,
         skip_keys: set[str] | frozenset[str] = frozenset(),
+        extra_docker_opts: list[str] | None = None,
         **kwargs,
     ) -> int:
         """Orchestrate a multi-node TRT-LLM cluster using MPI.
@@ -431,18 +432,18 @@ class TrtllmRuntime(RuntimePlugin):
         7. Exec mpirun on head container.
         """
         import time
-        from sparkrun.runtimes._cluster_ops import (
-            ClusterContext,
-            cleanup_ranked_containers,
-            resolve_ib_env,
-            launch_containers_parallel,
-        )
+
         from sparkrun.orchestration.primitives import (
             detect_host_ip,
             is_container_running,
         )
         from sparkrun.orchestration.ssh import run_remote_command
-        from sparkrun.orchestration.docker import docker_exec_cmd
+        from sparkrun.runtimes._cluster_ops import (
+            ClusterContext,
+            cleanup_ranked_containers,
+            launch_containers_parallel,
+            resolve_ib_env,
+        )
 
         progress = kwargs.pop("progress", None)
 
@@ -476,7 +477,7 @@ class TrtllmRuntime(RuntimePlugin):
             progress.step("Detecting InfiniBand")
         else:
             logger.info("Step 2/7: InfiniBand detection...")
-        nccl_env = resolve_ib_env(ctx, nccl_env)
+        comm_env = resolve_ib_env(ctx, comm_env)
         logger.info("Step 2/7: IB step done (%.1fs)", time.monotonic() - t0)
 
         # Step 3: Detect management IPs on all hosts
@@ -506,12 +507,13 @@ class TrtllmRuntime(RuntimePlugin):
         else:
             logger.info("Step 4/7: Launching %d container(s) with sleep infinity...", ctx.num_nodes)
         containers = [(host, self.executor.node_container_name(cluster_id, rank)) for rank, host in enumerate(hosts)]
+        combined_docker_opts = (self.get_extra_docker_opts() or []) + (extra_docker_opts or [])
         rc = launch_containers_parallel(
             ctx,
             containers,
             self.executor,
-            nccl_env,
-            extra_docker_opts=extra_docker_opts or None,
+            comm_env,
+            extra_docker_opts=combined_docker_opts or None,
         )
         if rc != 0:
             return rc
@@ -562,7 +564,7 @@ class TrtllmRuntime(RuntimePlugin):
             "cat > /tmp/sparkrun-rsh-wrapper.sh << 'SPARKRUN_EOF'\n%sSPARKRUN_EOF\nchmod +x /tmp/sparkrun-rsh-wrapper.sh"
         ) % rsh_wrapper
 
-        exec_write = docker_exec_cmd(head_container, write_wrapper_cmd)
+        exec_write = self.executor.exec_cmd(head_container, write_wrapper_cmd)
         result = run_remote_command(
             head_host,
             exec_write,
@@ -579,7 +581,7 @@ class TrtllmRuntime(RuntimePlugin):
             extra_config_yaml = self._build_extra_config(recipe, overrides)
             if extra_config_yaml:
                 write_config_cmd = ("cat > %s << 'SPARKRUN_EOF'\n%sSPARKRUN_EOF") % (_EXTRA_CONFIG_PATH, extra_config_yaml)
-                exec_config = docker_exec_cmd(head_container, write_config_cmd)
+                exec_config = self.executor.exec_cmd(head_container, write_config_cmd)
                 result = run_remote_command(
                     head_host,
                     exec_config,
@@ -618,25 +620,23 @@ class TrtllmRuntime(RuntimePlugin):
             logger.error("No serve command or recipe provided")
             return 1
 
-        # Build mpirun command
+        # Build mpirun command (head-host env since mpirun runs in head container)
+        head_env = comm_env.get_env(ctx.head_host) if comm_env else None
         mpirun_cmd = self._build_mpirun_command(
             trtllm_cmd,
             host_ips,
-            nccl_env=nccl_env,
+            nccl_env=head_env,
         )
 
         logger.info("mpirun command:")
         for line in mpirun_cmd.strip().splitlines():
             logger.info("  %s", line)
 
-        # Exec mpirun on head container (detached)
-        detach_flag = "-d" if detached else ""
-        escaped_mpirun = mpirun_cmd.replace("'", "'\\''")
-
-        exec_mpirun = "docker exec %s %s bash -c '%s'" % (
-            detach_flag,
-            head_container,
-            escaped_mpirun,
+        # Exec mpirun on head container
+        exec_mpirun = self.executor.exec_cmd(
+            container_name=head_container,
+            command=mpirun_cmd,
+            detach=detached,
         )
         result = run_remote_command(
             head_host,

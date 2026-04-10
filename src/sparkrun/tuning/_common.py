@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from sparkrun.core.config import DEFAULT_CACHE_DIR
 from sparkrun.utils import format_duration as _format_duration  # noqa: F401 — re-exported for local callers
+from sparkrun.utils.shell import quote
 
 if TYPE_CHECKING:
     from sparkrun.core.config import SparkrunConfig
@@ -342,7 +343,7 @@ class BaseTuner:
         logger.info("Step 1/5: Launching tuning container on %s...", self.host)
 
         # Ensure output directory exists on the remote host (as the SSH user, not root)
-        mkdir_script = "#!/bin/bash\nset -uo pipefail\nmkdir -p %s\n" % self.remote_output_dir
+        mkdir_script = "#!/bin/bash\nset -uo pipefail\nmkdir -p %s\n" % quote(self.remote_output_dir)
         mkdir_result = run_script_on_host(
             self.host,
             mkdir_script,
@@ -485,21 +486,19 @@ class BaseTuner:
 
         output_dir = self._pre_check_output_dir(tp_size, triton_version)
 
-        check_script = (
-            'python3 -c "'
+        check_py = (
             "import sys, os, glob; "
             "from transformers import AutoConfig; "
-            "c = AutoConfig.from_pretrained('%s', trust_remote_code=True); "
+            "c = AutoConfig.from_pretrained(%r, trust_remote_code=True); "
             "E = getattr(c, 'num_local_experts', getattr(c, 'num_experts', 0)); "
             "I = getattr(c, 'intermediate_size', getattr(c, 'moe_intermediate_size', 0)); "
             "N = (I * 2) // %d; "
-            "pattern = os.path.join('%s', 'E=%%d,N=%%d,*' %% (E, N)); "
+            "pattern = os.path.join(%r, 'E=%%d,N=%%d,*' %% (E, N)); "
             "matches = glob.glob(pattern); "
             "sys.exit(0 if matches else 1)"
-            '"'
         ) % (self.model, tp_size, output_dir)
 
-        exec_cmd = docker_exec_cmd(self.container_name, check_script)
+        exec_cmd = docker_exec_cmd(self.container_name, "python3 -c " + quote(check_py))
         try:
             result = run_command_on_host(
                 self.host,

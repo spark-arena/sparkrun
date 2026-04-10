@@ -341,8 +341,10 @@ def test_resolve_auto_external_with_local_ib_reachable(mock_validate, mock_detec
     """Auto + external + same user + has local IB + IB reachable → local with IB results."""
     from sparkrun.orchestration.infiniband import IBDetectionResult
 
+    from sparkrun.orchestration.comm_env import ClusterCommEnv
+
     mock_detect.return_value = IBDetectionResult(
-        nccl_env={"NCCL_IB_HCA": "mlx5_0"},
+        comm_env=ClusterCommEnv(shared={"NCCL_IB_HCA": "mlx5_0"}),
         ib_ip_map={"10.0.0.5": "192.168.1.5"},
         mgmt_ip_map={"10.0.0.5": "10.0.0.5"},
     )
@@ -363,8 +365,10 @@ def test_resolve_auto_external_with_local_ib_unreachable(mock_validate, mock_det
     """Auto + external + same user + has local IB + IB unreachable → delegated with IB results."""
     from sparkrun.orchestration.infiniband import IBDetectionResult
 
+    from sparkrun.orchestration.comm_env import ClusterCommEnv
+
     mock_detect.return_value = IBDetectionResult(
-        nccl_env={"NCCL_IB_HCA": "mlx5_0"},
+        comm_env=ClusterCommEnv(shared={"NCCL_IB_HCA": "mlx5_0"}),
         ib_ip_map={"10.0.0.5": "192.168.1.5"},
         mgmt_ip_map={"10.0.0.5": "10.0.0.5"},
     )
@@ -402,7 +406,9 @@ def test_auto_detection_cross_user_forces_delegated(mock_pop, mock_dist_head, mo
     # Setup mocks
     mock_ssh_kw.return_value = {"ssh_user": "dgxuser", "ssh_key": None, "ssh_options": None}
     ib_mock = MagicMock()
-    ib_mock.nccl_env = {}
+    from sparkrun.orchestration.comm_env import ClusterCommEnv
+
+    ib_mock.comm_env = ClusterCommEnv.empty()
     ib_mock.ib_ip_map = {}
     ib_mock.mgmt_ip_map = {}
     mock_detect.return_value = ib_mock
@@ -440,7 +446,9 @@ def test_auto_detection_same_user_stays_local(mock_pop, mock_dist_local, mock_ss
 
     mock_ssh_kw.return_value = {"ssh_user": "drew", "ssh_key": None, "ssh_options": None}
     ib_mock = MagicMock()
-    ib_mock.nccl_env = {}
+    from sparkrun.orchestration.comm_env import ClusterCommEnv
+
+    ib_mock.comm_env = ClusterCommEnv.empty()
     ib_mock.ib_ip_map = {}
     ib_mock.mgmt_ip_map = {}
     mock_detect.return_value = ib_mock
@@ -479,7 +487,9 @@ def test_explicit_local_cross_user_warns(mock_pop, mock_dist_local, mock_ssh_kw,
 
     mock_ssh_kw.return_value = {"ssh_user": "dgxuser", "ssh_key": None, "ssh_options": None}
     ib_mock = MagicMock()
-    ib_mock.nccl_env = {}
+    from sparkrun.orchestration.comm_env import ClusterCommEnv
+
+    ib_mock.comm_env = ClusterCommEnv.empty()
     ib_mock.ib_ip_map = {}
     ib_mock.mgmt_ip_map = {}
     mock_detect.return_value = ib_mock

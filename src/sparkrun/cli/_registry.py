@@ -13,6 +13,7 @@ from ._common import (
     _get_config_and_registry,
     json_option,
     print_json,
+    HIDE_ADVANCED_OPTIONS,
 )
 from sparkrun.utils.cli_formatters import RUNTIME_DISPLAY as _RUNTIME_DISPLAY
 
@@ -207,7 +208,7 @@ def registry_disable(ctx, name, config_path=None):
         sys.exit(1)
 
 
-@registry.command("revert-to-defaults", hidden=True)
+@registry.command("revert-to-defaults", hidden=HIDE_ADVANCED_OPTIONS)
 @click.option("--no-update", "no_run_update", is_flag=True, help="Do not run registry update after reset")
 @click.pass_context
 def registry_revert_to_default(ctx, no_run_update, config_path=None):
