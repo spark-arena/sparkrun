@@ -34,7 +34,9 @@ logger = logging.getLogger(__name__)
 @click.argument("recipe_name", type=RECIPE_NAME)
 @host_options
 @recipe_override_options
-@click.option("--name", "cluster_id_override", default=None, help="Override deterministic cluster ID (static container name)")
+@click.option(
+    "--container-name", "cluster_id_override", default=None, hidden=True, help="Override deterministic cluster ID (static container name)"
+)
 @click.option("--solo", is_flag=True, help="Force single-node mode", hidden=True)
 @click.option("--port", type=int, default=None, help="Override serve port")
 @click.option("--served-model-name", default=None, help="Override served model name")
@@ -260,9 +262,19 @@ def run(
 
     # Also extract executor-specific keys from -o/--option overrides
     executor_keys = {
-        "auto_remove", "restart_policy", "privileged", "gpus", "ipc",
-        "shm_size", "network", "user", "security_opt", "cap_add",
-        "ulimit", "devices", "memory_limit",
+        "auto_remove",
+        "restart_policy",
+        "privileged",
+        "gpus",
+        "ipc",
+        "shm_size",
+        "network",
+        "user",
+        "security_opt",
+        "cap_add",
+        "ulimit",
+        "devices",
+        "memory_limit",
     }
     for key in list(overrides.keys()):
         if key in executor_keys:

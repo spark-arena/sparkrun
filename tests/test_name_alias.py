@@ -1,4 +1,3 @@
-import pytest
 from click.testing import CliRunner
 from sparkrun.cli import main
 from unittest.mock import MagicMock
@@ -42,10 +41,8 @@ def test_run_with_name_override(monkeypatch):
     monkeypatch.setattr("sparkrun.cli._run.validate_and_prepare_hosts", lambda *args, **kwargs: (["localhost"], True))
     monkeypatch.setattr("sparkrun.cli._run._display_vram_estimate", lambda *args, **kwargs: None)
 
-    result = runner.invoke(main, ["run", "test-recipe", "--name", "custom-cluster-id", "--solo"])
+    result = runner.invoke(main, ["run", "test-recipe", "--container-name", "custom-cluster-id", "--solo"])
 
     assert result.exit_code == 0
     args, kwargs = mock_launch.call_args
     assert kwargs.get("cluster_id_override") == "custom-cluster-id"
-
-
