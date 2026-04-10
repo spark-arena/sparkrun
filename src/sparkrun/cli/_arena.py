@@ -217,6 +217,8 @@ def arena_benchmark(
         rootful,
         bench_timeout,
         dry_run,
+        executor_args=None,
+        extra_args=None,
         export_results_files=False,
     )
 
