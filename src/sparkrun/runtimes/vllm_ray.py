@@ -106,6 +106,71 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
             "RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO": "0",
         }
 
+    # --- Ray env propagation fix (issue #135) ---
+
+    @staticmethod
+    def _write_ray_non_carry_over(
+        head_host: str,
+        head_container: str,
+        comm_env: "ClusterCommEnv",
+        ssh_kwargs: dict,
+        dry_run: bool,
+    ) -> None:
+        """Write ``ray_non_carry_over_env_vars.json`` in the head container.
+
+        vLLM's Ray executor copies ``NCCL_*`` / ``UCX_*`` env vars from
+        the head process to worker Ray actors.  When hosts have different
+        IB configurations (e.g. cables on different CX-7 ports), this
+        overwrites the workers' correct per-host values and causes NCCL
+        initialization failures.
+
+        vLLM reads ``/tmp/.config/vllm/ray_non_carry_over_env_vars.json``
+        (a JSON array of env-var names) and skips those vars during
+        propagation — so each worker keeps its own Docker-level env.
+
+        Only called when ``comm_env`` has per-host overrides; when all
+        hosts share identical IB config the file is unnecessary.
+        """
+        import json
+        from sparkrun.orchestration.ssh import run_remote_script
+        from sparkrun.utils.shell import quote
+
+        exclude_vars = sorted(comm_env.per_host_keys())
+        if not exclude_vars:
+            return
+
+        json_content = json.dumps(exclude_vars)
+
+        # Build a docker exec that writes the exclusion file
+        inner_cmd = (
+            "mkdir -p /tmp/.config/vllm && "
+            "printf '%%s\\n' '%s' > /tmp/.config/vllm/ray_non_carry_over_env_vars.json" % json_content.replace("'", "'\\''")
+        )
+        # TODO: should be via executor
+        script = "docker exec %s bash -c %s" % (
+            quote(head_container),
+            quote(inner_cmd),
+        )
+
+        logger.info(
+            "Excluding %d per-host env var(s) from Ray propagation: %s",
+            len(exclude_vars),
+            ", ".join(exclude_vars),
+        )
+
+        result = run_remote_script(
+            head_host,
+            script,
+            timeout=30,
+            dry_run=dry_run,
+            **ssh_kwargs,
+        )
+        if not dry_run and not result.success:
+            logger.warning(
+                "Failed to write ray_non_carry_over_env_vars.json: %s",
+                (result.stderr or "")[:200],
+            )
+
     # --- Log following hooks ---
 
     def _cluster_log_mode(self) -> str:
@@ -347,6 +412,19 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
         for worker in ctx.worker_hosts:
             all_containers.append((worker, worker_container))
         run_pre_serve_hooks(self, ctx, all_containers, recipe, overrides)
+
+        # Prevent vLLM Ray from propagating per-host NCCL/transport env
+        # vars from head to workers (GitHub issue #135).  Must run BEFORE
+        # the serve command so the exclusion file is in place when vLLM
+        # initializes the Ray executor.
+        if comm_env and comm_env.per_host:
+            self._write_ray_non_carry_over(
+                ctx.head_host,
+                head_container,
+                comm_env,
+                ctx.ssh_kwargs,
+                ctx.dry_run,
+            )
 
         # Step 5: Execute serve command on head
         t0 = time.monotonic()

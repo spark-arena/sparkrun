@@ -53,6 +53,19 @@ class ClusterCommEnv:
             keys.update(override.keys())
         return keys
 
+    def per_host_keys(self) -> set[str]:
+        """Return env-var names that have per-host overrides.
+
+        These are keys that appear in *per_host* (i.e. differ across
+        hosts or are only present on some hosts).  Useful for determining
+        which variables should NOT be propagated uniformly across a
+        cluster — e.g. by Ray's env-var copying mechanism.
+        """
+        keys: set[str] = set()
+        for override in self.per_host.values():
+            keys.update(override.keys())
+        return keys
+
     def hosts(self) -> list[str]:
         """Hosts with per-host overrides (not necessarily all cluster hosts)."""
         return list(self.per_host.keys())

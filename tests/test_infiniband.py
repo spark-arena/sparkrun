@@ -468,3 +468,64 @@ class TestClusterCommEnv:
         )
         assert cce.all_keys() == {"A", "B", "C"}
         assert len(cce) == 3
+
+    def test_per_host_keys_returns_override_keys_only(self):
+        from sparkrun.orchestration.comm_env import ClusterCommEnv
+
+        cce = ClusterCommEnv(
+            shared={"NCCL_NET": "IB", "NCCL_IB_HCA": "mlx5_0"},
+            per_host={
+                "head": {"GLOO_SOCKET_IFNAME": "enP7s7", "NCCL_IB_HCA": "rocep1s0f0"},
+                "worker": {"GLOO_SOCKET_IFNAME": "wlP9s9", "NCCL_IB_HCA": "rocep1s0f1"},
+            },
+        )
+        assert cce.per_host_keys() == {"GLOO_SOCKET_IFNAME", "NCCL_IB_HCA"}
+
+    def test_per_host_keys_empty_when_no_overrides(self):
+        from sparkrun.orchestration.comm_env import ClusterCommEnv
+
+        cce = ClusterCommEnv(shared={"NCCL_NET": "IB"})
+        assert cce.per_host_keys() == set()
+
+
+def test_cross_port_cabling_produces_per_host_nccl_vars():
+    """Issue #135: head port 1 (f0) + worker port 2 (f1) → per-host NCCL vars.
+
+    When DGX Sparks are cabled on different CX-7 ports, the HCA names,
+    network interfaces, and UCX devices differ per host.  These must
+    stay in ``per_host`` so each container receives its own values.
+    """
+    from sparkrun.orchestration.comm_env import ClusterCommEnv
+    from sparkrun.orchestration.infiniband import generate_nccl_env
+
+    head_ib = {
+        "IB_DETECTED": "1",
+        "DETECTED_HCA_LIST": "rocep1s0f0,roceP2p1s0f0",
+        "DETECTED_SOCKET_IFNAME": "enP7s7",
+        "DETECTED_NET_LIST": "enp1s0f0np0,enP2p1s0f0np0",
+        "DETECTED_UCX_LIST": "rocep1s0f0:1,roceP2p1s0f0:1",
+        "DETECTED_MGMT_IP": "192.168.0.192",
+    }
+    worker_ib = {
+        "IB_DETECTED": "1",
+        "DETECTED_HCA_LIST": "rocep1s0f1,roceP2p1s0f1",
+        "DETECTED_SOCKET_IFNAME": "enP7s7",
+        "DETECTED_NET_LIST": "enp1s0f1np1,enP2p1s0f1np1",
+        "DETECTED_UCX_LIST": "rocep1s0f1:1,roceP2p1s0f1:1",
+        "DETECTED_MGMT_IP": "192.168.1.116",
+    }
+
+    head_env = generate_nccl_env(head_ib)
+    worker_env = generate_nccl_env(worker_ib)
+    cce = ClusterCommEnv.from_per_host({"head": head_env, "worker": worker_env})
+
+    per_host = cce.per_host_keys()
+    assert "NCCL_IB_HCA" in per_host
+    assert "UCX_NET_DEVICES" in per_host
+    assert "NCCL_SOCKET_IFNAME" in per_host
+    # NODE_IP also differs (different mgmt IPs)
+    assert "NODE_IP" in per_host
+
+    # Verify each host gets its own values back
+    assert cce.get_env("head")["NCCL_IB_HCA"] == "rocep1s0f0,roceP2p1s0f0"
+    assert cce.get_env("worker")["NCCL_IB_HCA"] == "rocep1s0f1,roceP2p1s0f1"
