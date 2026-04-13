@@ -8,10 +8,12 @@ import re
 import pytest
 
 from sparkrun.utils.shell import (
+    assert_safe_path,
     b64_encode_cmd,
     b64_wrap_bash,
     quote,
     quote_dict,
+    safe_remote_path,
     validate_unix_username,
 )
 
@@ -73,6 +75,108 @@ def test_quote_dict():
     assert quoted["spaces"] == "'has spaces'"
     assert quoted["number"] == 42
     assert quoted["nested"] == {"key": "val"}
+
+
+class TestAssertSafePath:
+    """Tests for assert_safe_path() shell injection guard."""
+
+    def test_normal_absolute_path(self):
+        assert assert_safe_path("/home/user/.cache/sparkrun/mods/fix-something") == "/home/user/.cache/sparkrun/mods/fix-something"
+
+    def test_tilde_path(self):
+        assert assert_safe_path("~/.cache/sparkrun/mods/fix-something") == "~/.cache/sparkrun/mods/fix-something"
+
+    def test_path_with_spaces(self):
+        assert assert_safe_path("/home/user/my models/llama") == "/home/user/my models/llama"
+
+    def test_path_with_at_sign(self):
+        assert assert_safe_path("/cache/@eugr/recipes") == "/cache/@eugr/recipes"
+
+    def test_path_with_plus_equals(self):
+        assert assert_safe_path("/cache/model+extras/v1=final") == "/cache/model+extras/v1=final"
+
+    def test_semicolon_rejected(self):
+        with pytest.raises(ValueError, match="Unsafe character"):
+            assert_safe_path("/tmp/foo; rm -rf /")
+
+    def test_pipe_rejected(self):
+        with pytest.raises(ValueError, match="Unsafe character"):
+            assert_safe_path("/tmp/foo | cat /etc/passwd")
+
+    def test_ampersand_rejected(self):
+        with pytest.raises(ValueError, match="Unsafe character"):
+            assert_safe_path("/tmp/foo & malicious")
+
+    def test_dollar_rejected(self):
+        with pytest.raises(ValueError, match="Unsafe character"):
+            assert_safe_path("/tmp/$HOME/exploit")
+
+    def test_backtick_rejected(self):
+        with pytest.raises(ValueError, match="Unsafe character"):
+            assert_safe_path("/tmp/`whoami`/data")
+
+    def test_newline_rejected(self):
+        with pytest.raises(ValueError, match="Unsafe character"):
+            assert_safe_path("/tmp/foo\nrm -rf /")
+
+    def test_backslash_rejected(self):
+        with pytest.raises(ValueError, match="Unsafe character"):
+            assert_safe_path("/tmp/foo\\bar")
+
+    def test_single_quote_rejected(self):
+        with pytest.raises(ValueError, match="Unsafe character"):
+            assert_safe_path("/tmp/foo'bar")
+
+    def test_double_quote_rejected(self):
+        with pytest.raises(ValueError, match="Unsafe character"):
+            assert_safe_path('/tmp/foo"bar')
+
+    def test_parentheses_rejected(self):
+        with pytest.raises(ValueError, match="Unsafe character"):
+            assert_safe_path("/tmp/$(whoami)")
+
+    def test_curly_braces_rejected(self):
+        with pytest.raises(ValueError, match="Unsafe character"):
+            assert_safe_path("/tmp/${HOME}")
+
+    def test_exclamation_rejected(self):
+        with pytest.raises(ValueError, match="Unsafe character"):
+            assert_safe_path("/tmp/foo!bar")
+
+    def test_angle_brackets_rejected(self):
+        with pytest.raises(ValueError, match="Unsafe character"):
+            assert_safe_path("/tmp/foo > /etc/passwd")
+
+
+class TestSafeRemotePath:
+    """Tests for safe_remote_path() — tilde-to-$HOME conversion + validation."""
+
+    def test_tilde_prefix_converted(self):
+        assert safe_remote_path("~/.cache/sparkrun/mods/fix") == "$HOME/.cache/sparkrun/mods/fix"
+
+    def test_bare_tilde_converted(self):
+        assert safe_remote_path("~") == "$HOME"
+
+    def test_absolute_path_unchanged(self):
+        assert safe_remote_path("/home/user/.cache/sparkrun") == "/home/user/.cache/sparkrun"
+
+    def test_relative_path_unchanged(self):
+        assert safe_remote_path("mods/fix-something") == "mods/fix-something"
+
+    def test_tilde_mid_path_unchanged(self):
+        """Tilde not at start is not a home-dir reference — leave it alone."""
+        assert safe_remote_path("/tmp/~backup") == "/tmp/~backup"
+
+    def test_injection_rejected(self):
+        with pytest.raises(ValueError, match="Unsafe character"):
+            safe_remote_path("~/; rm -rf /")
+
+    def test_dollar_rejected(self):
+        with pytest.raises(ValueError, match="Unsafe character"):
+            safe_remote_path("$HOME/.cache")
+
+    def test_path_with_spaces(self):
+        assert safe_remote_path("~/.cache/my models") == "$HOME/.cache/my models"
 
 
 def test_validate_unix_username_valid():

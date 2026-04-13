@@ -117,6 +117,52 @@ def validate_unix_username(user: str) -> str:
     return user
 
 
+# Characters that can perform command injection when a path is interpolated
+# into a shell script (even inside double quotes).  Tilde, slash, dot, dash,
+# underscore, plus, at, colon, comma, equals, and spaces are intentionally
+# allowed — they are safe inside double-quoted shell strings and common in
+# legitimate paths.
+_SHELL_INJECTION_RE = re.compile(r"[;&|`$!\"'<>()\{\}\n\\]")
+
+
+def assert_safe_path(value: str) -> str:
+    """Validate that *value* is free of shell-injection metacharacters.
+
+    Intended for paths that will be interpolated into shell scripts inside
+    double quotes.  Raises :class:`ValueError` if dangerous characters are
+    found.
+
+    Returns *value* unchanged on success so it can be used inline::
+
+        script = 'rsync "%s"/ dest/' % assert_safe_path(source)
+    """
+    match = _SHELL_INJECTION_RE.search(value)
+    if match:
+        raise ValueError("Unsafe character %r in path %r — possible shell injection" % (match.group(), value))
+    return value
+
+
+def safe_remote_path(value: str) -> str:
+    """Validate and prepare a path for interpolation into a remote shell script.
+
+    1. Validates that *value* contains no injection metacharacters (via
+       :func:`assert_safe_path`).
+    2. Converts a leading ``~/`` to ``$HOME/`` so the path expands correctly
+       inside double-quoted shell strings.  (Tilde expansion only works in
+       unquoted contexts in bash, but ``$HOME`` expands inside double quotes.)
+
+    Returns the transformed path, ready for ``"%(path)s"`` interpolation::
+
+        script = 'docker cp "%s"/. ctr:dest/' % safe_remote_path(source)
+    """
+    assert_safe_path(value)
+    if value.startswith("~/"):
+        return "$HOME/" + value[2:]
+    if value == "~":
+        return "$HOME"
+    return value
+
+
 def render_args_as_flags(args: dict[str, Any]) -> list[str]:
     """Render a dict of args as CLI flags (--kebab-case-key value).
 

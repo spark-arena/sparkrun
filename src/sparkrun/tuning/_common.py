@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 
 from sparkrun.core.config import DEFAULT_CACHE_DIR
 from sparkrun.utils import format_duration as _format_duration  # noqa: F401 — re-exported for local callers
-from sparkrun.utils.shell import quote
+from sparkrun.utils.shell import quote, safe_remote_path
 
 if TYPE_CHECKING:
     from sparkrun.core.config import SparkrunConfig
@@ -343,7 +343,7 @@ class BaseTuner:
         logger.info("Step 1/5: Launching tuning container on %s...", self.host)
 
         # Ensure output directory exists on the remote host (as the SSH user, not root)
-        mkdir_script = "#!/bin/bash\nset -uo pipefail\nmkdir -p %s\n" % quote(self.remote_output_dir)
+        mkdir_script = '#!/bin/bash\nset -uo pipefail\nmkdir -p "%s"\n' % safe_remote_path(self.remote_output_dir)
         mkdir_result = run_script_on_host(
             self.host,
             mkdir_script,

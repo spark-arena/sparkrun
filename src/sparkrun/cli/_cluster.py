@@ -6,8 +6,6 @@ import sys
 
 import click
 
-from sparkrun.utils.shell import quote
-
 from ._common import (
     CLUSTER_NAME,
     TARGET,
@@ -878,7 +876,7 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
         'if [ -d "$hf_dir" ]; then hf_exists="yes"; hf_du=$(du -sh "$hf_dir" 2>/dev/null | cut -f1); fi; '
         'free_space=$(df -h / 2>/dev/null | awk "NR==2{print \\$4}"); '
         'echo "sr_exists=$sr_exists|sr_du=$sr_du|hf_exists=$hf_exists|hf_du=$hf_du|sr_dir=$sr_dir|hf_dir=$hf_dir|free_space=${free_space:--}"'
-    ) % (quote(remote_sparkrun), quote(remote_hf))
+    ) % (remote_sparkrun, remote_hf)
 
     # Query all hosts in parallel
     host_info: dict[str, dict] = {}

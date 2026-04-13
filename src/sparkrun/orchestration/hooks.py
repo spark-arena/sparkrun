@@ -382,11 +382,15 @@ def _run_copy_command(
 
     if source_host is not None:
         # Delegated mode: source files live on source_host, not locally.
-        # Pass the original path (not locally-expanded) so ~ resolves on the remote host.
+        # Validate against injection, then convert ~/… to $HOME/… so the
+        # path expands correctly inside double-quoted remote shell scripts.
+        from sparkrun.utils.shell import safe_remote_path
+
+        remote_source = safe_remote_path(source)
         result = _run_delegated_copy(
             host,
             container_name,
-            source,
+            remote_source,
             dest,
             source_host,
             ssh_kwargs=ssh_kwargs,
