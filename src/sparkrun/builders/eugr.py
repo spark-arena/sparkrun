@@ -510,7 +510,7 @@ class EugrBuilder(BuilderPlugin):
 
             # Add copy entry (docker cp source into container)
             copy_entry: dict[str, str] = {
-                "copy": quote(str(mod_path)),
+                "copy": str(mod_path),
                 "dest": dest,
             }
             if source_host is not None:

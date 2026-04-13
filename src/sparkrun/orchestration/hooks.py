@@ -382,10 +382,11 @@ def _run_copy_command(
 
     if source_host is not None:
         # Delegated mode: source files live on source_host, not locally.
+        # Pass the original path (not locally-expanded) so ~ resolves on the remote host.
         result = _run_delegated_copy(
             host,
             container_name,
-            str(source_path),
+            source,
             dest,
             source_host,
             ssh_kwargs=ssh_kwargs,
@@ -456,7 +457,7 @@ def _run_delegated_copy(
 
     if host == source_host:
         # Files already on this host — docker cp directly
-        script = ("set -e\ndocker exec --user root %(c)s mkdir -p %(dest)s\ndocker cp %(src)s/. %(c)s:%(dest)s/\n") % {
+        script = ('set -e\ndocker exec --user root %(c)s mkdir -p %(dest)s\ndocker cp "%(src)s"/. %(c)s:%(dest)s/\n') % {
             "c": container_name,
             "src": source,
             "dest": dest,
@@ -481,7 +482,7 @@ def _run_delegated_copy(
         script = (
             "set -e\n"
             "mkdir -p %(tmp)s\n"
-            "rsync -a --no-times %(rsync_ssh)s %(user)s%(src_host)s:%(src)s/ %(tmp)s/\n"
+            'rsync -a --no-times %(rsync_ssh)s %(user)s%(src_host)s:"%(src)s"/ %(tmp)s/\n'
             "docker exec --user root %(c)s mkdir -p %(dest)s\n"
             "docker cp %(tmp)s/. %(c)s:%(dest)s/\n"
             "rm -rf %(tmp)s\n"
