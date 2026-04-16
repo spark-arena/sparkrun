@@ -97,7 +97,7 @@ def _stop_all(hosts, hosts_file, cluster_name, config, dry_run):
     # Build per-host container name mapping
     host_containers: dict[str, list[str]] = {}
     for cid, group in result.groups.items():
-        for host, role, status, image in group.members:
+        for host, role, _status, _image in group.members:
             container_name = "%s_%s" % (cid, role)
             host_containers.setdefault(host, []).append(container_name)
     for entry in result.solo_entries:

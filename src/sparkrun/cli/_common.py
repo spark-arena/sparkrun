@@ -336,7 +336,7 @@ def _load_recipe(config, recipe_name, resolve=True):
         # Interactive disambiguation
         if sys.stdin.isatty():
             click.echo("Recipe '%s' found in multiple registries:" % e.name)
-            for i, (reg, path) in enumerate(e.matches, 1):
+            for i, (reg, _path) in enumerate(e.matches, 1):
                 click.echo("  %d. @%s/%s" % (i, reg, e.name))
             click.echo()
             choice = click.prompt(
@@ -347,7 +347,7 @@ def _load_recipe(config, recipe_name, resolve=True):
             _reg_name, recipe_path = e.matches[choice - 1]
             recipe = Recipe.load(recipe_path, resolve=resolve)
         else:
-            raise click.ClickException(str(e))
+            raise click.ClickException(str(e)) from e
     except RecipeError as e:
         click.echo("Error: %s" % e, err=True)
         sys.exit(1)
