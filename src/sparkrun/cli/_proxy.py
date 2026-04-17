@@ -557,6 +557,8 @@ def load_cmd(
         recipe=recipe,
     )
 
+    assert recipe is not None
+
     issues = recipe.validate()
     for issue in issues:
         click.echo("Warning: %s" % issue, err=True)

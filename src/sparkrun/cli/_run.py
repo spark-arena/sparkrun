@@ -160,6 +160,7 @@ def run(
 
     # Find and load recipe (defer resolution until overrides are built)
     recipe, _recipe_path, registry_mgr = _load_recipe(config, recipe_name, resolve=False)
+    assert recipe is not None
 
     # If recipe was loaded from a URL, simplify for display
     _resolved_name = _expand_recipe_shortcut(recipe_name)
@@ -178,6 +179,7 @@ def run(
         port=port,
         served_model_name=served_model_name,
     )
+    assert recipe is not None
 
     # Validate recipe (after resolve so runtime is populated)
     issues = recipe.validate()

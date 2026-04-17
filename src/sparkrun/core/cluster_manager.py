@@ -96,7 +96,7 @@ class ClusterStatusResult:
 
     def to_dict(self) -> dict[str, Any]:
         """Convert the result to a JSON-serializable dictionary."""
-        out = {
+        out: dict[str, Any] = {
             "groups": {},
             "solo_entries": [],
             "idle_hosts": self.idle_hosts,
@@ -233,11 +233,11 @@ class ClusterManager:
         name: str,
         hosts: list[str] | None = None,
         description: str | None = None,
-        user: str | None = _UNSET,
-        cache_dir: str | None = _UNSET,
-        transfer_mode: str | None = _UNSET,
-        transfer_interface: str | None = _UNSET,
-        topology: str | None = _UNSET,
+        user: str | None | Any = _UNSET,
+        cache_dir: str | None | Any = _UNSET,
+        transfer_mode: str | None | Any = _UNSET,
+        transfer_interface: str | None | Any = _UNSET,
+        topology: str | None | Any = _UNSET,
     ) -> None:
         """Update existing cluster definition.
 

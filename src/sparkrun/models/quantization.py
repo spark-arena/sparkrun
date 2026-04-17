@@ -41,7 +41,7 @@ def fetch_hf_quant_config(
     """
     try:
         from huggingface_hub import hf_hub_download
-        from huggingface_hub.utils import disable_progress_bars, enable_progress_bars
+        from huggingface_hub.utils.tqdm import disable_progress_bars, enable_progress_bars
         import json
 
         from sparkrun.models.download import _hub_cache
@@ -142,7 +142,7 @@ def _resolve_mixed_precision(quant_block: dict[str, Any]) -> tuple[str, int | No
     if not algo_counts:
         return "", None
 
-    dominant = max(algo_counts, key=algo_counts.get)
+    dominant = max(algo_counts, key=lambda k: algo_counts[k])
     # Pick the most common group_size for the dominant algo
     gs_list = group_sizes.get(dominant)
     dominant_gs: int | None = None

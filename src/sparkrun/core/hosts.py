@@ -34,11 +34,10 @@ def _get_local_identifiers() -> set[str]:
     except OSError:
         pass
 
-    # Resolve hostname to IPs
     if hostname:
         try:
             for info in socket.getaddrinfo(hostname, None):
-                identifiers.add(info[4][0])
+                identifiers.add(str(info[4][0]))
         except (OSError, socket.gaierror):
             pass
 

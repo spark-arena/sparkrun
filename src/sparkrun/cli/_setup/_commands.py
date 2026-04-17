@@ -60,6 +60,8 @@ def setup_completion(ctx, shell):
         snippet = 'eval "$(%s=zsh_source sparkrun)"' % completion_var
     elif shell == "fish":
         snippet = "%s=fish_source sparkrun | source" % completion_var
+    else:
+        snippet = ""
 
     # Check if already installed
     if rc_file.exists():
@@ -73,7 +75,8 @@ def setup_completion(ctx, shell):
 
     with open(rc_file, "a") as f:
         f.write("\n# sparkrun tab-completion\n")
-        f.write(snippet + "\n")
+        if shell in ("bash", "zsh", "fish"):
+            f.write(snippet + "\n")
 
     click.echo("Completion installed for %s in %s" % (shell, rc_file))
     click.echo("Restart your shell or run: source %s" % rc_file)
@@ -437,7 +440,8 @@ else
 fi
 
 # PubkeyAcceptedAlgorithms in main sshd_config
-printf 'sshd_accepted_algs=%s\n' "$(grep -i '^PubkeyAcceptedAlgorithms\|^PubkeyAcceptedKeyTypes' /etc/ssh/sshd_config 2>/dev/null || echo default)"
+printf 'sshd_accepted_algs=%s\n' \
+    "$(grep -i '^PubkeyAcceptedAlgorithms\|^PubkeyAcceptedKeyTypes' /etc/ssh/sshd_config 2>/dev/null || echo default)"
 
 # Key types present in authorized_keys
 printf 'ak_key_types=%s\n' "$(awk '{print $1}' ~/.ssh/authorized_keys 2>/dev/null | sort -u | tr '\n' ',' || echo none)"
@@ -1037,6 +1041,7 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
     click.echo()
 
     # Step 4: Plan
+    assert topology_result is not None
     if effective_topology == CX7Topology.RING:
         plan = plan_ring_cx7(detections, topology_result, all_subnets, mtu=mtu, force=force)
     else:
@@ -1268,7 +1273,11 @@ def setup_docker_group(ctx, hosts, hosts_file, cluster_name, user, dry_run):
     if ok_count and not dry_run:
         _record_setup_phase(cluster_name, user, host_list, "docker_group")
 
-    if ok_count and any("added" in (result_map.get(h).stdout if result_map.get(h) else "") for h in host_list):
+    def _has_added(h: str) -> bool:
+        res = result_map.get(h)
+        return bool(res and res.stdout and "added" in res.stdout)
+
+    if ok_count and any(_has_added(h) for h in host_list):
         click.echo()
         click.echo("Note: Users newly added to the docker group must re-login")
         click.echo("(or run 'newgrp docker') for the change to take effect.")
@@ -1843,8 +1852,8 @@ def setup_fe_system_update(ctx, hosts, hosts_file, cluster_name, user, dry_run):
         cluster_hosts = []
         if default_cluster:
             try:
-                cdata = mgr.get_cluster(default_cluster)
-                cluster_hosts = cdata.get("hosts", [])
+                cdata = mgr.get(default_cluster)
+                cluster_hosts = cdata.hosts
             except Exception:
                 pass
 
@@ -1926,7 +1935,7 @@ def setup_fe_system_update(ctx, hosts, hosts_file, cluster_name, user, dry_run):
             r = run_sudo_script_on_host(
                 h,
                 cmd,
-                password=sudo_password,
+                password=sudo_password or "",
                 ssh_kwargs=sudo_ssh_kwargs,
                 timeout=600,
                 dry_run=dry_run,
@@ -1958,7 +1967,7 @@ def setup_fe_system_update(ctx, hosts, hosts_file, cluster_name, user, dry_run):
                     run_sudo_script_on_host(
                         h,
                         "nohup bash -c 'sleep 2 && reboot' &>/dev/null &",
-                        password=sudo_password,
+                        password=sudo_password or "",
                         ssh_kwargs=sudo_ssh_kwargs,
                         timeout=10,
                         dry_run=dry_run,

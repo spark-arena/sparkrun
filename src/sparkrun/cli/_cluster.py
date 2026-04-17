@@ -704,6 +704,7 @@ def cluster_check_job(ctx, target, hosts, hosts_file, cluster_name, tp_override,
     if _is_cluster_id(target) is not None:
         # --- Cluster ID path ---
         cid = _is_cluster_id(target)
+        assert cid is not None
         from sparkrun.orchestration.job_metadata import load_job_metadata
 
         meta = load_job_metadata(cid, cache_dir=str(config.cache_dir))

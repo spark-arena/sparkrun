@@ -73,6 +73,9 @@ asyncio_mode = "auto"
 line-length = 140
 target-version = "py312"
 
+[tool.ruff.lint]
+select = ["E", "F", "B", "SIM"]
+
 [dependency-groups]
 dev = [
     "pre-commit>=4.5.1",

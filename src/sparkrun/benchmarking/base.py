@@ -144,10 +144,10 @@ class BenchmarkResult:
 
     # benchmark results
     success: bool = False
-    results: dict[str, Any] = None
+    results: dict[str, Any] | None = None
     outputs: Optional[dict[str, Any]] = None
-    start_time: datetime = None
-    end_time: datetime = None
+    start_time: datetime | None = None
+    end_time: datetime | None = None
 
     # recipe/launch info
     recipe_name: Optional[str] = None
@@ -220,6 +220,10 @@ class BenchmarkResult:
         profile = self.profile
         benchmark_args = self.benchmark_args
 
+        if recipe is None:
+            logger.warning("No recipe associated with benchmark result.")
+            return {}
+        
         # Resolve container image to a pinned long-term reference when possible
         container_pinned = False
         recipe_container = container_image or recipe.container
@@ -237,7 +241,8 @@ class BenchmarkResult:
             except Exception:
                 logger.debug("Long-term image resolution failed", exc_info=True)
 
-        recipe_hash = hashlib.sha256(recipe.export(overrides=None).encode("utf-8")).hexdigest()
+        recipe_export = str(recipe.export(overrides=None))
+        recipe_hash = hashlib.sha256(recipe_export.encode("utf-8")).hexdigest()
 
         hf_model = parse_gguf_model_spec(recipe.model)[0]
         model_meta: dict[str, Any] = {}
@@ -277,9 +282,9 @@ class BenchmarkResult:
                 "hash": recipe_hash,
             },
             "timing": {
-                "start": self.start_time.isoformat(),
-                "end": self.end_time.isoformat(),
-                "duration": (self.end_time - self.start_time).total_seconds(),
+                "start": self.start_time.isoformat() if self.start_time else None,
+                "end": self.end_time.isoformat() if self.end_time else None,
+                "duration": (self.end_time - self.start_time).total_seconds() if self.start_time and self.end_time else None,
             },
             "cluster": _build_cluster_meta(recipe, overrides, cluster_id, host_list),
             "benchmark": {
@@ -336,7 +341,7 @@ def export_results(
     """
     output_path = Path(output_path)
     # noinspection PyProtectedMember
-    recipe_text = recipe.export(path=None)
+    recipe_text = str(recipe.export(path=None) or "")
     recipe_hash = hashlib.sha256(recipe_text.encode("utf-8")).hexdigest()
 
     # Build model metadata from recipe metadata (includes auto-detected

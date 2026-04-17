@@ -13,12 +13,12 @@ class SparkrunJSONEncoder(json.JSONEncoder):
     Automatically serializes objects with to_dict() and dataclasses.
     """
 
-    def default(self, obj: Any) -> Any:
-        if hasattr(obj, "to_dict") and callable(obj.to_dict):
-            return obj.to_dict()
-        if dataclasses.is_dataclass(obj):
-            return dataclasses.asdict(obj)
-        return super().default(obj)
+    def default(self, o: Any) -> Any:
+        if hasattr(o, "to_dict") and callable(o.to_dict):
+            return o.to_dict()
+        if dataclasses.is_dataclass(o) and not isinstance(o, type):
+            return dataclasses.asdict(o)
+        return super().default(o)
 
 
 def dumps_json(data: Any, pretty: bool = False) -> str:

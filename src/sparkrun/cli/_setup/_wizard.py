@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 @click.option("--dry-run", "-n", is_flag=True, help="Preview without executing")
 @click.option("--yes", "-y", is_flag=True, help="Accept all defaults (non-interactive)")
 @click.pass_context
-def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
+def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):  # pyright: ignore[reportGeneralTypeIssues]
     """Guided setup wizard for sparkrun.
 
     Walks through cluster creation, SSH mesh, CX7 configuration,

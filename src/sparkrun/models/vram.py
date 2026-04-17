@@ -192,7 +192,7 @@ def fetch_model_config(
     """
     try:
         from huggingface_hub import hf_hub_download
-        from huggingface_hub.utils import disable_progress_bars, enable_progress_bars
+        from huggingface_hub.utils.tqdm import disable_progress_bars, enable_progress_bars
         import json
 
         from sparkrun.models.download import _hub_cache
@@ -235,7 +235,7 @@ def fetch_safetensors_size(
     """
     try:
         from huggingface_hub import hf_hub_download
-        from huggingface_hub.utils import disable_progress_bars, enable_progress_bars
+        from huggingface_hub.utils.tqdm import disable_progress_bars, enable_progress_bars
         import json
 
         from sparkrun.models.download import _hub_cache
@@ -300,7 +300,7 @@ def fetch_safetensors_size(
             model_files = set(index.get("weight_map", {}).values())
             if model_files:
                 try:
-                    from huggingface_hub import list_repo_tree
+                    from huggingface_hub import list_repo_tree, RepoFile
 
                     tree_kwargs: dict[str, Any] = {"repo_id": model_id}
                     if revision:
@@ -308,9 +308,10 @@ def fetch_safetensors_size(
                     file_total = 0
                     matched = 0
                     for entry in list_repo_tree(**tree_kwargs):
-                        if hasattr(entry, "rfilename") and entry.rfilename in model_files:
-                            if entry.size and entry.size > 0:
-                                file_total += entry.size
+                        if isinstance(entry, RepoFile) and entry.rfilename in model_files:
+                            size = getattr(entry, "size", 0)
+                            if size and size > 0:
+                                file_total += size
                                 matched += 1
                     if matched > 0 and file_total > 0:
                         logger.debug(

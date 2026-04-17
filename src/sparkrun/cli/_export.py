@@ -37,7 +37,7 @@ def _apply_spark_arena_benchmarks(recipe, recipe_name: str):
     if recipe.metadata.get("spark_arena_benchmarks"):
         return  # already set
 
-    if recipe_name.startswith(SPARK_ARENA_PREFIX):
+    if recipe_name and recipe_name.startswith(SPARK_ARENA_PREFIX):
         from sparkrun.core.parallelism import extract_parallelism_meta
 
         uuid = recipe_name[len(SPARK_ARENA_PREFIX) :]
@@ -107,8 +107,9 @@ def export_running(ctx, target, hosts, hosts_file, cluster_name, output_json, sa
     config, _ = _get_config_and_registry()
 
     # Resolve cluster_id
-    if _is_cluster_id(target) is not None:
-        cluster_id = _is_cluster_id(target)
+    cid = _is_cluster_id(target)
+    if cid is not None:
+        cluster_id = cid
     else:
         # Target is a recipe name — need hosts to generate cluster_id
         recipe, _recipe_path, _registry_mgr = _load_recipe(config, target)
@@ -413,9 +414,10 @@ def _resolve_recipe_for_systemd(
     from sparkrun.orchestration.job_metadata import load_job_metadata
     from sparkrun.core.recipe import Recipe
 
+    cid = _is_cluster_id(target)
     # If target is a cluster_id, reconstruct from job metadata
-    if _is_cluster_id(target) is not None:
-        cluster_id = _is_cluster_id(target)
+    if cid is not None:
+        cluster_id = cid
         meta = load_job_metadata(cluster_id, cache_dir=str(config.cache_dir))
         if not meta:
             click.echo("Error: No job metadata found for '%s'." % target, err=True)
@@ -556,6 +558,8 @@ def export_systemd(
         port,
         served_model_name,
     )
+
+    assert recipe is not None
 
     head_host = host_list[0]
     slug = service_name or recipe.slug

@@ -329,15 +329,15 @@ def fetch_and_cache_recipe(url: str) -> Path:
         return cache_path
     except (HTTPError, URLError, OSError) as e:
         if cache_path.exists():
-            reason = e.code if isinstance(e, HTTPError) else e.reason
+            reason = e.code if isinstance(e, HTTPError) else (getattr(e, "reason", None) or str(e))
             logger.warning(
                 "Failed to fetch recipe (using cached copy): %s",
                 reason,
             )
             return cache_path
         if isinstance(e, HTTPError):
-            raise RecipeError("Failed to fetch recipe from %s: HTTP %d" % (url, e.code))
-        raise RecipeError("Failed to fetch recipe from %s: %s" % (url, e.reason if isinstance(e, URLError) else e))
+            raise RecipeError("Failed to fetch recipe from %s: HTTP %d" % (url, e.code)) from e
+        raise RecipeError("Failed to fetch recipe from %s: %s" % (url, e.reason if isinstance(e, URLError) else e)) from e
 
 
 # Backward-compat aliases (old underscore names)
@@ -544,6 +544,8 @@ class Recipe:
         while last != rendered:
             last = rendered
             rendered = arg_substitute(rendered, config_chain)
+
+        assert isinstance(rendered, str)
 
         # Fix trailing spaces after backslash line-continuations.
         # ``\<space><newline>`` → ``\<newline>``
@@ -784,13 +786,13 @@ class Recipe:
         # Get effective max_model_len and tensor_parallel from config chain
         max_model_len = config.get("max_model_len")
         if max_model_len is not None:
-            max_model_len = int(max_model_len)
+            max_model_len = int(str(max_model_len))
 
         tp_val = config.get("tensor_parallel")
-        tensor_parallel = int(tp_val) if tp_val is not None else 1
+        tensor_parallel = int(str(tp_val)) if tp_val is not None else 1
 
         pp_val = config.get("pipeline_parallel")
-        pipeline_parallel = int(pp_val) if pp_val is not None else 1
+        pipeline_parallel = int(str(pp_val)) if pp_val is not None else 1
 
         # Check for kv_cache_dtype in defaults (runtime-specific)
         if not kv_dtype:
@@ -800,7 +802,7 @@ class Recipe:
 
         # GPU memory utilization (runtime budget fraction)
         gpu_mem_val = config.get("gpu_memory_utilization")
-        gpu_memory_utilization = float(gpu_mem_val) if gpu_mem_val is not None else None
+        gpu_memory_utilization = float(str(gpu_mem_val)) if gpu_mem_val is not None else None
 
         result = _estimate_vram(
             model_params=model_params,

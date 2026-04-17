@@ -1,3 +1,4 @@
+default_install_hook_types: [pre-commit, pre-push]
 repos:
   - repo: https://github.com/astral-sh/uv-pre-commit
     rev: 0.11.3
@@ -8,4 +9,6 @@ repos:
     hooks:
       - id: ruff-check
         args: [ --fix ]
+        stages: [pre-push]
       - id: ruff-format
+        stages: [pre-push]

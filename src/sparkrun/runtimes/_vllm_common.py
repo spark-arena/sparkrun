@@ -25,12 +25,12 @@ class VllmMixin:
         """Set VLLM_TUNED_CONFIG_FOLDER if tuning configs exist."""
         from sparkrun.tuning.vllm import get_vllm_tuning_env
 
-        env = super().get_extra_env()
+        env = super().get_extra_env()  # type: ignore
         env.update(get_vllm_tuning_env() or {})
         return env
 
     def version_commands(self) -> dict[str, str]:
-        cmds = super().version_commands()
+        cmds = super().version_commands()  # type: ignore
         cmds["vllm"] = "python3 -c 'import vllm; print(vllm.__version__)' 2>/dev/null || echo unknown"
         return cmds
 

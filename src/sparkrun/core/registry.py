@@ -319,6 +319,8 @@ class RegistryManager:
             Exception: If the file cannot be read or parsed.
         """
         data = read_yaml(self._registries_path)
+        if not isinstance(data, dict):
+            return []
         registries = data.get("registries", [])
         return [
             RegistryEntry(
