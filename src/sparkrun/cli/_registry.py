@@ -128,11 +128,14 @@ def registry_list(ctx, show_disabled, only_show_visible, output_json, config_pat
 
 @registry.command("add")
 @click.argument("url")
+@click.option("--no-update", is_flag=True, help="Skip the automatic fetch of newly added registries")
 @click.pass_context
-def registry_add_url(ctx, url, config_path=None):
+def registry_add_url(ctx, url, no_update, config_path=None):
     """Add registries from a repository's .sparkrun/registry.yaml manifest.
 
     Clones the repository, reads the manifest, and adds all declared registries.
+    Newly added registries are then fetched so their recipes are immediately
+    available to ``sparkrun run``.  Pass ``--no-update`` to skip the fetch.
 
     Examples:
 
@@ -145,13 +148,34 @@ def registry_add_url(ctx, url, config_path=None):
     try:
         click.echo("Discovering registries from %s..." % url)
         added = registry_mgr.add_registry_from_url(url)
-        if added:
-            click.echo("Added %d registr%s:" % (len(added), "y" if len(added) == 1 else "ies"))
-            for entry in added:
-                vis = "" if entry.visible else " (hidden)"
-                click.echo("  %s — %s%s" % (entry.name, entry.description, vis))
-        else:
+        if not added:
             click.echo("No new registries added (all may already exist).")
+            return
+
+        click.echo("Added %d registr%s:" % (len(added), "y" if len(added) == 1 else "ies"))
+        for entry in added:
+            vis = "" if entry.visible else " (hidden)"
+            click.echo("  %s — %s%s" % (entry.name, entry.description, vis))
+
+        if no_update:
+            return
+
+        enabled_names = [e.name for e in added if e.enabled]
+        if not enabled_names:
+            return
+
+        click.echo()
+        click.echo("Fetching registry contents...")
+
+        def _progress(prog_name: str, success: bool) -> None:
+            status = "done" if success else "FAILED"
+            click.echo("  Updating %s... %s" % (prog_name, status))
+
+        for name in enabled_names:
+            try:
+                registry_mgr.update(name, progress=_progress)
+            except RegistryError as update_err:
+                click.echo("  Updating %s... FAILED (%s)" % (name, update_err))
     except RegistryError as e:
         click.echo("Error: %s" % e, err=True)
         sys.exit(1)

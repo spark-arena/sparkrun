@@ -217,6 +217,59 @@ class TestRegistryAddRemove:
             assert result.exit_code != 0
             assert "Error" in result.output
 
+    def test_add_registry_auto_updates_added_entries(self, runner, registry_setup):
+        """After adding registries from a URL, update() is invoked to fetch contents."""
+        from sparkrun.core.registry import RegistryEntry
+
+        added = [
+            RegistryEntry(
+                name="freshly-added",
+                url="https://github.com/test/repo",
+                subpath="recipes",
+                description="freshly added",
+                enabled=True,
+            )
+        ]
+        with (
+            mock.patch(
+                "sparkrun.core.registry.RegistryManager.add_registry_from_url",
+                return_value=added,
+            ),
+            mock.patch("sparkrun.core.registry.RegistryManager.update") as mock_update,
+        ):
+            mock_update.return_value = {"freshly-added": True}
+            result = runner.invoke(main, ["registry", "add", "https://github.com/test/repo"])
+            assert result.exit_code == 0, result.output
+            assert "Fetching registry contents" in result.output
+            # update() should have been called for the freshly added registry
+            assert mock_update.called
+            call_args = mock_update.call_args
+            assert call_args.args[0] == "freshly-added" or call_args.kwargs.get("name") == "freshly-added"
+
+    def test_add_registry_no_update_flag_skips_fetch(self, runner, registry_setup):
+        """--no-update skips the post-add fetch."""
+        from sparkrun.core.registry import RegistryEntry
+
+        added = [
+            RegistryEntry(
+                name="freshly-added",
+                url="https://github.com/test/repo",
+                subpath="recipes",
+                enabled=True,
+            )
+        ]
+        with (
+            mock.patch(
+                "sparkrun.core.registry.RegistryManager.add_registry_from_url",
+                return_value=added,
+            ),
+            mock.patch("sparkrun.core.registry.RegistryManager.update") as mock_update,
+        ):
+            result = runner.invoke(main, ["registry", "add", "--no-update", "https://github.com/test/repo"])
+            assert result.exit_code == 0, result.output
+            assert "Fetching registry contents" not in result.output
+            assert not mock_update.called
+
     def test_remove_registry(self, runner, registry_setup):
         """Test removing a registry."""
         result = runner.invoke(
@@ -242,6 +295,100 @@ class TestRegistryAddRemove:
         )
         assert result.exit_code != 0
         assert "Error" in result.output
+
+
+class TestLoadRecipeRetryAfterUpdate:
+    """Test _load_recipe's optional registry-refresh retry on recipe-not-found."""
+
+    def test_retry_after_update_refreshes_and_succeeds(self, registry_setup):
+        """When retry_after_update=True, a missing recipe triggers update() and retries."""
+        from sparkrun.cli._common import _load_recipe
+        from sparkrun.core.config import SparkrunConfig
+        from sparkrun.core.recipe import RecipeError
+        from sparkrun.core.registry import RegistryManager
+
+        config = SparkrunConfig()
+
+        # registry_setup returns (config_root, cache_root); the cached recipe
+        # at test-registry/recipes/test-vllm.yaml already exists on disk.
+        _config_root, cache_root = registry_setup
+        recipe_path = Path(cache_root) / "test-registry" / "recipes" / "test-vllm.yaml"
+
+        calls = {"find": 0, "update": 0}
+
+        def _fake_find(*args, **kwargs):
+            calls["find"] += 1
+            if calls["find"] == 1:
+                raise RecipeError("Recipe 'new-recipe' not found")
+            return recipe_path
+
+        def _fake_update(self, *a, **kw):
+            calls["update"] += 1
+            return {}
+
+        with (
+            mock.patch("sparkrun.core.recipe.find_recipe", side_effect=_fake_find),
+            mock.patch.object(RegistryManager, "update", _fake_update),
+        ):
+            recipe, _path, _reg = _load_recipe(config, "new-recipe", resolve=False, retry_after_update=True)
+
+        assert calls["find"] == 2
+        assert calls["update"] == 1
+        assert recipe is not None
+
+    def test_retry_disabled_by_default(self, registry_setup):
+        """Without retry_after_update, a missing recipe exits with an error."""
+        from sparkrun.cli._common import _load_recipe
+        from sparkrun.core.config import SparkrunConfig
+        from sparkrun.core.recipe import RecipeError
+        from sparkrun.core.registry import RegistryManager
+
+        config = SparkrunConfig()
+
+        update_called = {"n": 0}
+
+        def _fake_find(*args, **kwargs):
+            raise RecipeError("Recipe 'new-recipe' not found")
+
+        def _fake_update(self, *a, **kw):
+            update_called["n"] += 1
+            return {}
+
+        with (
+            mock.patch("sparkrun.core.recipe.find_recipe", side_effect=_fake_find),
+            mock.patch.object(RegistryManager, "update", _fake_update),
+            pytest.raises(SystemExit),
+        ):
+            _load_recipe(config, "new-recipe", resolve=False)
+
+        assert update_called["n"] == 0
+
+    def test_retry_skipped_for_path_like_names(self, registry_setup):
+        """Path-like names don't trigger a registry update even with retry_after_update."""
+        from sparkrun.cli._common import _load_recipe
+        from sparkrun.core.config import SparkrunConfig
+        from sparkrun.core.recipe import RecipeError
+        from sparkrun.core.registry import RegistryManager
+
+        config = SparkrunConfig()
+
+        update_called = {"n": 0}
+
+        def _fake_find(*args, **kwargs):
+            raise RecipeError("Recipe './missing.yaml' not found")
+
+        def _fake_update(self, *a, **kw):
+            update_called["n"] += 1
+            return {}
+
+        with (
+            mock.patch("sparkrun.core.recipe.find_recipe", side_effect=_fake_find),
+            mock.patch.object(RegistryManager, "update", _fake_update),
+            pytest.raises(SystemExit),
+        ):
+            _load_recipe(config, "./missing.yaml", resolve=False, retry_after_update=True)
+
+        assert update_called["n"] == 0
 
 
 class TestRegistryRevertToDefault:
