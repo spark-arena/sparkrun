@@ -289,7 +289,24 @@ def _get_cluster_manager(v=None, sctx: SparkrunContext | None = None):
     return ClusterManager(get_config_root(v))
 
 
-def _load_recipe(config, recipe_name, resolve=True):
+def _recipe_name_looks_like_path(name: str) -> bool:
+    """Return True when *name* looks like a filesystem path.
+
+    Used to short-circuit registry refresh retries for obvious path inputs,
+    since updating remote registries cannot help resolve a missing local file.
+    """
+    if not name:
+        return False
+    if name.startswith("@"):  # @registry/recipe is a registry reference, not a path
+        return False
+    if name.startswith((".", "/", "~")):
+        return True
+    if name.endswith((".yaml", ".yml")):
+        return True
+    return False
+
+
+def _load_recipe(config, recipe_name, resolve=True, retry_after_update=False):
     """Find, load, and return a recipe.
 
     Handles disambiguation when a recipe name matches multiple registries.
@@ -302,6 +319,10 @@ def _load_recipe(config, recipe_name, resolve=True):
         resolve: Run the resolver chain immediately (default True).
             Pass ``False`` when CLI overrides need to influence runtime
             resolution — call ``recipe.resolve(overrides)`` later.
+        retry_after_update: When True and the initial lookup fails with a
+            "not found" error, run ``registry_mgr.update()`` once and retry
+            the lookup. Useful for ``sparkrun run`` so that copy-pasted
+            recipe names from newly-published sources just work.
 
     Returns:
         Tuple of (recipe, recipe_path, registry_mgr).
@@ -327,27 +348,51 @@ def _load_recipe(config, recipe_name, resolve=True):
         registry_mgr.ensure_initialized()
         return recipe, cached_path, registry_mgr
 
-    try:
-        registry_mgr = config.get_registry_manager()
-        registry_mgr.ensure_initialized()
-        recipe_path = find_recipe(recipe_name, registry_manager=registry_mgr, local_files=discover_cwd_recipes())
-        recipe = Recipe.load(recipe_path, resolve=resolve)
-    except RecipeAmbiguousError as e:
-        # Interactive disambiguation
-        if sys.stdin.isatty():
-            click.echo("Recipe '%s' found in multiple registries:" % e.name)
-            for i, (reg, path) in enumerate(e.matches, 1):
-                click.echo("  %d. @%s/%s" % (i, reg, e.name))
-            click.echo()
-            choice = click.prompt(
-                "Select registry",
-                type=click.IntRange(1, len(e.matches)),
-                default=1,
-            )
-            _reg_name, recipe_path = e.matches[choice - 1]
-            recipe = Recipe.load(recipe_path, resolve=resolve)
-        else:
+    registry_mgr = config.get_registry_manager()
+    registry_mgr.ensure_initialized()
+
+    def _prompt_disambiguation(err):
+        click.echo("Recipe '%s' found in multiple registries:" % err.name)
+        for i, (reg, path) in enumerate(err.matches, 1):
+            click.echo("  %d. @%s/%s" % (i, reg, err.name))
+        click.echo()
+        choice = click.prompt(
+            "Select registry",
+            type=click.IntRange(1, len(err.matches)),
+            default=1,
+        )
+        _reg_name, chosen = err.matches[choice - 1]
+        return chosen
+
+    # Locate the recipe file; optionally retry once after refreshing registries.
+    recipe_path = None
+    retried = False
+    while True:
+        try:
+            recipe_path = find_recipe(recipe_name, registry_manager=registry_mgr, local_files=discover_cwd_recipes())
+            break
+        except RecipeAmbiguousError as e:
+            if sys.stdin.isatty():
+                recipe_path = _prompt_disambiguation(e)
+                break
             raise click.ClickException(str(e))
+        except RecipeError as e:
+            if retried or not retry_after_update or _recipe_name_looks_like_path(recipe_name):
+                click.echo("Error: %s" % e, err=True)
+                sys.exit(1)
+            retried = True
+            click.echo("Recipe '%s' not found; refreshing registries and retrying..." % recipe_name, err=True)
+            # If the user scoped the name (@registry/...), only refresh that registry.
+            from sparkrun.utils import parse_scoped_name
+
+            scoped_registry, _ = parse_scoped_name(recipe_name)
+            try:
+                registry_mgr.update(scoped_registry) if scoped_registry else registry_mgr.update()
+            except Exception as update_err:
+                logger.debug("Registry update failed during retry: %s", update_err)
+
+    try:
+        recipe = Recipe.load(recipe_path, resolve=resolve)
     except RecipeError as e:
         click.echo("Error: %s" % e, err=True)
         sys.exit(1)

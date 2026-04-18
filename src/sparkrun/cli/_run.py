@@ -158,8 +158,10 @@ def run(
     # Determine hosts
     host_list, cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, sctx=sctx)
 
-    # Find and load recipe (defer resolution until overrides are built)
-    recipe, _recipe_path, registry_mgr = _load_recipe(config, recipe_name, resolve=False)
+    # Find and load recipe (defer resolution until overrides are built).
+    # Retry after a registry refresh when the recipe isn't found, so that
+    # copy-pasted recipe names from newly-published sources just work.
+    recipe, _recipe_path, registry_mgr = _load_recipe(config, recipe_name, resolve=False, retry_after_update=True)
 
     # If recipe was loaded from a URL, simplify for display
     _resolved_name = _expand_recipe_shortcut(recipe_name)
