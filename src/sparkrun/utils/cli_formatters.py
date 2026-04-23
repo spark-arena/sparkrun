@@ -250,12 +250,11 @@ def format_monitor_table(
     lines = [header, separator]
     for host in hosts:
         state = data.get(host)
-        if state is None or (state.latest is None and state.error is None):
-            lines.append(f"{host:<{host_w}}{'(connecting...)':>6}")
-            continue
-
-        if state.error and state.latest is None:
-            lines.append(f"{host:<{host_w}}{state.error}")
+        if state is None or state.latest is None:
+            if state and state.error:
+                lines.append(f"{host:<{host_w}}{state.error}")
+            else:
+                lines.append(f"{host:<{host_w}}{'(connecting...)':>6}")
             continue
 
         s = state.latest

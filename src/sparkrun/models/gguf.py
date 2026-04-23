@@ -194,7 +194,7 @@ def dominant_quantization(counts: Counter[str]) -> str | None:
     quant_counts = {k: v for k, v in counts.items() if k not in _NON_QUANT_TYPES}
     if not quant_counts:
         return None
-    return max(quant_counts, key=quant_counts.get)
+    return max(quant_counts, key=lambda k: quant_counts[k])
 
 
 def fetch_remote_gguf_quant(
@@ -228,7 +228,7 @@ def fetch_remote_gguf_quant(
     """
     try:
         from huggingface_hub import hf_hub_url
-        from huggingface_hub.utils import build_hf_headers
+        from huggingface_hub.utils._headers import build_hf_headers
         from urllib.request import Request, urlopen
     except ImportError:
         logger.debug("huggingface_hub not available for GGUF header fetch")

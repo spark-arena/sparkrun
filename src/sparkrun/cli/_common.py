@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 # noinspection PyShadowingBuiltins
-def json_option(help: str = None):
+def json_option(help: str | None = None):
     return click.option(
         "--json",
         "output_json",
@@ -327,16 +327,16 @@ def _load_recipe(config, recipe_name, resolve=True):
         registry_mgr.ensure_initialized()
         return recipe, cached_path, registry_mgr
 
+    registry_mgr = config.get_registry_manager()
+    registry_mgr.ensure_initialized()
     try:
-        registry_mgr = config.get_registry_manager()
-        registry_mgr.ensure_initialized()
         recipe_path = find_recipe(recipe_name, registry_manager=registry_mgr, local_files=discover_cwd_recipes())
         recipe = Recipe.load(recipe_path, resolve=resolve)
     except RecipeAmbiguousError as e:
         # Interactive disambiguation
         if sys.stdin.isatty():
             click.echo("Recipe '%s' found in multiple registries:" % e.name)
-            for i, (reg, path) in enumerate(e.matches, 1):
+            for i, (reg, _path) in enumerate(e.matches, 1):
                 click.echo("  %d. @%s/%s" % (i, reg, e.name))
             click.echo()
             choice = click.prompt(
@@ -347,7 +347,7 @@ def _load_recipe(config, recipe_name, resolve=True):
             _reg_name, recipe_path = e.matches[choice - 1]
             recipe = Recipe.load(recipe_path, resolve=resolve)
         else:
-            raise click.ClickException(str(e))
+            raise click.ClickException(str(e)) from e
     except RecipeError as e:
         click.echo("Error: %s" % e, err=True)
         sys.exit(1)
@@ -497,14 +497,14 @@ def _complete_yaml_files(incomplete):
                 rel = "./" + rel
             if entry.is_dir():
                 items.append(
-                    click.shell_completion.CompletionItem(
+                    click.shell_completion.CompletionItem(  # type: ignore
                         rel + "/",
                         type="dir",
                     )
                 )
             elif entry.suffix in (".yaml", ".yml"):
                 items.append(
-                    click.shell_completion.CompletionItem(
+                    click.shell_completion.CompletionItem(  # type: ignore
                         rel,
                         type="file",
                     )
@@ -554,29 +554,30 @@ class RecipeNameType(click.ParamType):
                         recipe_path = registry_mgr.cache_root / reg.name / reg.subpath
                         recipes = list_recipes(search_paths=[recipe_path])
                         for r in recipes:
-                            items.append(click.shell_completion.CompletionItem("@%s/%s" % (reg.name, r["file"])))
+                            items.append(click.shell_completion.CompletionItem("@%s/%s" % (reg.name, r["file"])))  # type: ignore
                     if not items and matching_registries:
                         # No recipes found — show registry names so the user
                         # can still discover and select the registry.
                         # type="dir" prevents the shell from appending a
                         # trailing space, so the user can continue typing
                         # the recipe name after the slash.
-                        items = [click.shell_completion.CompletionItem("@%s/" % reg.name, type="dir") for reg in matching_registries]
+                        items = [click.shell_completion.CompletionItem("@%s/" % reg.name, type="dir") for reg in matching_registries]  # type: ignore
                     return items
                 else:
                     # Completing recipe after @registry/
                     from sparkrun.utils import parse_scoped_name
 
                     registry_name, recipe_prefix = parse_scoped_name(incomplete)
-                    # Only load recipes from the target registry
                     try:
+                        if registry_name is None:
+                            return []
                         entry = registry_mgr.get_registry(registry_name)
                     except Exception:
                         return []
                     recipe_path = registry_mgr.cache_root / entry.name / entry.subpath
                     recipes = list_recipes(search_paths=[recipe_path])
                     return [
-                        click.shell_completion.CompletionItem("@%s/%s" % (registry_name, r["file"]))
+                        click.shell_completion.CompletionItem("@%s/%s" % (registry_name, r["file"]))  # type: ignore
                         for r in recipes
                         if r["file"].startswith(recipe_prefix)
                     ]
@@ -590,7 +591,7 @@ class RecipeNameType(click.ParamType):
 
             config, registry_mgr = _get_config_and_registry()
             recipes = list_recipes(registry_manager=registry_mgr, include_hidden=False, local_files=discover_cwd_recipes())
-            return [click.shell_completion.CompletionItem(r["file"]) for r in recipes if r["file"].startswith(incomplete)]
+            return [click.shell_completion.CompletionItem(r["file"]) for r in recipes if r["file"].startswith(incomplete)]  # type: ignore
         except Exception:
             return []
 
@@ -662,7 +663,7 @@ class ProfileNameType(click.ParamType):
                             continue
                         profiles = registry_mgr.list_benchmark_profiles(registry_name=reg.name, include_hidden=True)
                         for p in profiles:
-                            items.append(click.shell_completion.CompletionItem("@%s/%s" % (reg.name, p["file"])))
+                            items.append(click.shell_completion.CompletionItem("@%s/%s" % (reg.name, p["file"])))  # type: ignore
                     return items
                 else:
                     # Completing profile name after @registry/
@@ -671,7 +672,7 @@ class ProfileNameType(click.ParamType):
                     registry_name, profile_prefix = parse_scoped_name(incomplete)
                     profiles = registry_mgr.list_benchmark_profiles(registry_name=registry_name, include_hidden=True)
                     return [
-                        click.shell_completion.CompletionItem("@%s/%s" % (registry_name, p["file"]))
+                        click.shell_completion.CompletionItem("@%s/%s" % (registry_name, p["file"]))  # type: ignore
                         for p in profiles
                         if p["file"].startswith(profile_prefix)
                     ]
@@ -683,7 +684,7 @@ class ProfileNameType(click.ParamType):
             # Default: list profile names from visible registries only
             config, registry_mgr = _get_config_and_registry()
             profiles = registry_mgr.list_benchmark_profiles()
-            return [click.shell_completion.CompletionItem(p["file"]) for p in profiles if p["file"].startswith(incomplete)]
+            return [click.shell_completion.CompletionItem(p["file"]) for p in profiles if p["file"].startswith(incomplete)]  # type: ignore
         except Exception:
             return []
 
@@ -701,7 +702,7 @@ class ClusterNameType(click.ParamType):
         try:
             mgr = _get_cluster_manager()
             clusters = mgr.list_clusters()
-            return [click.shell_completion.CompletionItem(c.name) for c in clusters if c.name.startswith(incomplete)]
+            return [click.shell_completion.CompletionItem(c.name) for c in clusters if c.name.startswith(incomplete)]  # type: ignore
         except Exception:
             return []
 
@@ -719,7 +720,9 @@ class RegistryNameType(click.ParamType):
         try:
             _, registry_mgr = _get_config_and_registry()
             return [
-                click.shell_completion.CompletionItem(reg.name) for reg in registry_mgr.list_registries() if reg.name.startswith(incomplete)
+                click.shell_completion.CompletionItem(reg.name)  # pyright: ignore[reportAttributeAccessIssue]
+                for reg in registry_mgr.list_registries()
+                if reg.name.startswith(incomplete)  # type: ignore
             ]
         except Exception:
             return []
@@ -741,7 +744,7 @@ class RuntimeNameType(click.ParamType):
             _, registry_mgr = _get_config_and_registry()
             recipes = list_recipes(registry_manager=registry_mgr)
             runtimes = sorted({r.get("runtime", "") for r in recipes if r.get("runtime")})
-            return [click.shell_completion.CompletionItem(rt) for rt in runtimes if rt.startswith(incomplete)]
+            return [click.shell_completion.CompletionItem(rt) for rt in runtimes if rt.startswith(incomplete)]  # type: ignore
         except Exception:
             return []
 

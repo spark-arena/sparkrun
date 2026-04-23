@@ -261,7 +261,7 @@ class TrtllmRuntime(RuntimePlugin):
         kv_cache: dict[str, Any] = {}
         frac = config.get("free_gpu_memory_fraction")
         if frac is not None:
-            kv_cache["free_gpu_memory_fraction"] = float(frac)
+            kv_cache["free_gpu_memory_fraction"] = float(str(frac))
         kv_dtype = config.get("kv_cache_dtype")
         if kv_dtype is not None:
             kv_cache["dtype"] = str(kv_dtype)
@@ -278,7 +278,7 @@ class TrtllmRuntime(RuntimePlugin):
             cuda_graph["enable_padding"] = bool(padding)
         cg_max_batch = config.get("cuda_graph_max_batch_size")
         if cg_max_batch is not None:
-            cuda_graph["max_batch_size"] = int(cg_max_batch)
+            cuda_graph["max_batch_size"] = int(str(cg_max_batch))
         if cuda_graph:
             extra["cuda_graph_config"] = cuda_graph
 

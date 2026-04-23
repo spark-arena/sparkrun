@@ -190,7 +190,10 @@ def apply_sudoers(host_list, user, dry_run, sudo_password=None, sudo_dispatch_fn
     for label, script in sudoers_scripts:
         label_ok = 0
         for h in host_list:
-            r = sudo_dispatch_fn(h, script, sudo_password or "", timeout=300)
+            if sudo_dispatch_fn:
+                r = sudo_dispatch_fn(h, script, sudo_password or "", timeout=300)
+            else:
+                r = _sudo_script_on_host(h, script, sudo_password or "", ssh_kwargs={}, timeout=300, dry_run=dry_run)
             if r.success:
                 label_ok += 1
             else:

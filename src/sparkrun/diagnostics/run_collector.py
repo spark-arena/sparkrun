@@ -223,8 +223,8 @@ class RunDiagnosticsCollector:
         """Emit ``run_error`` with phase context and optional traceback."""
         self._success = False
         if tb is None and isinstance(error, Exception):
-            tb = traceback.format_exception(type(error), error, error.__traceback__)
-            tb = "".join(tb)
+            tb_list = traceback.format_exception(type(error), error, error.__traceback__)
+            tb = "".join(tb_list)
         self._writer.emit(
             "run_error",
             {

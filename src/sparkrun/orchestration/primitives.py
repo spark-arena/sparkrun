@@ -136,7 +136,7 @@ def map_transfer_failures(
     Returns:
         List of management hostnames where transfer failed.
     """
-    xfer_to_host = dict(zip(transfer_hosts, management_hosts))
+    xfer_to_host = dict(zip(transfer_hosts, management_hosts, strict=False))
     failed = [xfer_to_host.get(r.host, r.host) for r in results if not r.success]
     return failed
 

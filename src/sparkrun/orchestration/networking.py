@@ -692,6 +692,7 @@ def detect_switch(
     if is_local_host(target_host):
         r = run_local_script(full_script, dry_run=dry_run)
     elif needs_sudo_pw:
+        assert sudo_password is not None
         r = run_remote_sudo_script(target_host, full_script, sudo_password, timeout=30, dry_run=dry_run, **kw)
     else:
         r = run_remote_script(target_host, full_script, timeout=30, dry_run=dry_run, **kw)
@@ -1483,6 +1484,7 @@ def configure_cx7_host(
         local_sudo_safe = sudo_password and (ssh_user is None or ssh_user == os_user)
 
         if local_sudo_safe:
+            assert sudo_password is not None
             # Pipe password to sudo -S bash -s for local hosts without NOPASSWD
             proc = subprocess.run(
                 ["sudo", "-S", "bash", "-s"],
