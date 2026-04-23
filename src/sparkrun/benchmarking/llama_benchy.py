@@ -60,7 +60,7 @@ class LlamaBenchyFramework(BenchmarkingPlugin):
     }
     passthrough_args = _PASSTHROUGH_ARGS
 
-    def initialize(self, v: Variables, logger_arg: Logger) -> LlamaBenchyFramework:
+    def initialize(self, v: Variables, logger: Logger) -> LlamaBenchyFramework:
         return self
 
     def check_prerequisites(self) -> list[str]:

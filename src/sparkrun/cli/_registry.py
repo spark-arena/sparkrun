@@ -372,8 +372,9 @@ def export_metadata(ctx, output, include_hidden):
         if not recipe_dir or not recipe_dir.is_dir():
             continue
 
+        assert recipe_dir is not None
         recipe_count = 0
-        for f in sorted(recipe_dir.rglob("*.yaml"), key=lambda p: (len(p.relative_to(recipe_dir).parts), p.name)):
+        for f in sorted(recipe_dir.rglob("*.yaml"), key=lambda p, rd=recipe_dir: (len(p.relative_to(rd).parts), p.name)):
             try:
                 data = read_yaml(str(f))
                 if not isinstance(data, dict):

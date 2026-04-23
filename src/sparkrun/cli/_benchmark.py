@@ -285,6 +285,8 @@ def _run_benchmark(
     # ---------------------------------------------------------------
     # 4. Build overrides and resolve runtime/hosts
     # ---------------------------------------------------------------
+    serve_port: int = 8000  # Default, overridden below
+
     recipe, overrides = _apply_recipe_overrides(
         options,
         tensor_parallel=tensor_parallel,
@@ -296,6 +298,8 @@ def _run_benchmark(
         # custom
         port=port,
     )
+
+    assert recipe is not None, "Recipe must not prove None after override application"
 
     issues = recipe.validate()
     for issue in issues:
@@ -501,9 +505,12 @@ def _run_benchmark(
         if est_tests is not None:
             logger.info("Estimated test iterations: %d", est_tests)
 
+        config_chain = recipe.build_config_chain(overrides)
+        effective_model = config_chain.get("served_model_name") or overrides.get("model") or recipe.model
+
         bench_cmd = fw.build_benchmark_command(
             target_url=base_url,
-            model=recipe.model,
+            model=effective_model,
             args=bench_args,
             result_file=result_file,
         )
@@ -524,6 +531,7 @@ def _run_benchmark(
             click.echo("--- benchmark output ---")
             bench_start = time.monotonic()
             bench_result.start_time = datetime.now(tz=timezone.utc)
+            proc = None
             try:
                 import os
 
@@ -539,13 +547,14 @@ def _run_benchmark(
                 )
 
                 stdout_lines: list[str] = []
-                for line in proc.stdout:
-                    click.echo(line, nl=False)
-                    stdout_lines.append(line)
+                if proc and proc.stdout:
+                    for line in proc.stdout:
+                        click.echo(line, nl=False)
+                        stdout_lines.append(line)
 
                 proc.wait(timeout=effective_timeout)
                 stdout_text = "".join(stdout_lines)
-                stderr_text = proc.stderr.read()
+                stderr_text = proc.stderr.read() if proc and proc.stderr else ""
 
                 elapsed = time.monotonic() - bench_start
                 bench_result.end_time = datetime.now(tz=timezone.utc)
@@ -567,7 +576,8 @@ def _run_benchmark(
                 else:
                     click.echo("Benchmark completed successfully (%.0fs elapsed)." % elapsed)
             except subprocess.TimeoutExpired:
-                proc.kill()
+                if proc:
+                    proc.kill()
                 click.echo("Error: benchmark timed out after %d seconds" % effective_timeout, err=True)
                 stdout_text = ""
                 stderr_text = ""

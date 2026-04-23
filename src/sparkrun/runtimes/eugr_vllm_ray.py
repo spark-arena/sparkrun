@@ -36,12 +36,12 @@ class EugrVllmRayRuntime(VllmRayRuntime):
     It exists for backward compatibility with v1 recipes.
     """
 
-    _v: Variables = None
+    _v: Variables | None = None
 
     runtime_name = "eugr-vllm"
     default_image_prefix = ""  # eugr uses local builds
 
-    def initialize(self, v: Variables, logger_arg: Logger) -> EugrVllmRayRuntime:
+    def initialize(self, v: Variables, logger: Logger) -> EugrVllmRayRuntime:
         """Initialize the eugr-vllm runtime plugin."""
         self._v = v
         return self

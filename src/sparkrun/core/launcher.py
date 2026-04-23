@@ -143,6 +143,10 @@ def launch_inference(
             v = sctx.variables
         if progress is None:
             progress = sctx.progress
+    if config is None:
+        from sparkrun.core.config import SparkrunConfig
+
+        config = SparkrunConfig()
     p = progress  # short alias
 
     from sparkrun.orchestration.distribution import resolve_auto_transfer_mode
@@ -167,7 +171,7 @@ def launch_inference(
         from sparkrun.orchestration.primitives import find_available_port
 
         config_chain = recipe.build_config_chain(overrides)
-        desired_port = int(config_chain.get("port") or 8000)
+        desired_port = int(str(config_chain.get("port") or 8000))
         head_host = host_list[0]
         serve_port = find_available_port(
             head_host,
@@ -178,7 +182,7 @@ def launch_inference(
         overrides["port"] = serve_port
     else:
         config_chain = recipe.build_config_chain(overrides)
-        serve_port = int(config_chain.get("port") or 8000)
+        serve_port = int(str(config_chain.get("port") or 8000))
 
     # Derive deterministic cluster_id from recipe + (trimmed) hosts
     cluster_id = cluster_id_override or generate_cluster_id(recipe, host_list, overrides=overrides)
@@ -295,8 +299,11 @@ def launch_inference(
         from sparkrun.tuning.sync import sync_registry_tuning
 
         try:
+            rm = registry_mgr
+            if rm is None:
+                rm = config.get_registry_manager()
             synced = sync_registry_tuning(
-                registry_mgr,
+                rm,
                 recipe.runtime,
                 dry_run=dry_run,
                 registry_name=recipe.source_registry,
@@ -585,7 +592,7 @@ def post_launch_lifecycle(
 
     # Determine effective port
     config_chain = recipe.build_config_chain(overrides)
-    effective_port = config_chain.get("port", 8000)
+    effective_port = int(str(config_chain.get("port", 8000)))
 
     click.echo("Waiting for server to become ready...")
     if not dry_run:
@@ -600,7 +607,7 @@ def post_launch_lifecycle(
             container_name=head_container,
         )
         if not port_ready:
-            click.echo("Error: Server port %d never became ready" % effective_port, err=True)
+            click.echo("Error: Server port %s never became ready" % effective_port, err=True)
             sys.exit(1)
 
         # Wait for HTTP 200 on /v1/models

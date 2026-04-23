@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 
 from vpd.legacy.arguments import arg_substitute
@@ -94,11 +95,12 @@ def render_hook_command(cmd: str, context: dict[str, str]) -> str:
     while last != rendered:
         last = rendered
         rendered = arg_substitute(rendered, context)
+        assert isinstance(rendered, str)
     return rendered
 
 
 def render_hook_commands(
-    commands: list[str | dict[str, str]],
+    commands: Sequence[str | dict[str, str]],
     context: dict[str, str],
 ) -> list[str | dict[str, str]]:
     """Render ``{key}`` placeholders in a list of hook commands.
@@ -126,7 +128,7 @@ def render_hook_commands(
 
 def run_pre_exec(
     hosts_containers: list[tuple[str, str]],
-    commands: list[str | dict[str, str]],
+    commands: Sequence[str | dict[str, str]],
     config_chain,
     ssh_kwargs: dict | None = None,
     dry_run: bool = False,

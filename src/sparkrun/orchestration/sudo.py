@@ -272,7 +272,7 @@ def run_with_sudo_fallback(
     dry_run: bool = False,
     sudo_password: str | None = None,
     timeout: int = 300,
-) -> tuple[dict[str, object], list[str]]:
+) -> tuple[dict[str, RemoteResult], list[str]]:
     """Run script with sudo fallback. Returns (result_map, still_failed_hosts).
 
     Local hosts (localhost, 127.0.0.1) are executed directly via
@@ -308,7 +308,7 @@ def run_with_sudo_fallback(
     local_hosts = [h for h in host_list if should_run_locally(h, ssh_user)]
     remote_hosts = [h for h in host_list if not should_run_locally(h, ssh_user)]
 
-    result_map: dict[str, object] = {}
+    result_map: dict[str, RemoteResult] = {}
     failed_hosts: list[str] = []
 
     # Step 1a: Run locally for local hosts (sudo -n, non-interactive)

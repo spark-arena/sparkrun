@@ -54,7 +54,7 @@ def get_config_root(v: Variables | None = None) -> Path:
         from scitrera_app_framework.core import is_stateful_ready
 
         stateful_root = is_stateful_ready(v)
-        if stateful_root:
+        if stateful_root and isinstance(stateful_root, (str, Path)):
             return Path(stateful_root)
     return DEFAULT_CONFIG_DIR
 
@@ -69,7 +69,8 @@ class SparkrunConfig:
 
     def _load(self):
         if self.config_path.exists():
-            self._data = read_yaml(str(self.config_path)) or {}
+            data = read_yaml(str(self.config_path))
+            self._data = data if isinstance(data, dict) else {}
         else:
             self._data = {}
 

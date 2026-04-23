@@ -9,7 +9,8 @@ from textual.binding import Binding
 from textual.containers import Vertical
 from textual.widgets import DataTable, Footer, Header, Static
 
-from sparkrun.core.monitoring import ClusterMonitor, HostMonitorState, MonitorSample
+from sparkrun.core.monitoring import ClusterMonitor, HostMonitorState, MonitorSample, NvMonitorClusterMonitor
+from typing import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +91,8 @@ def _render_detail(host: str, state: HostMonitorState | None, cache_dir: str | N
     if state.error and state.latest is None:
         return f"[red]{host}: {state.error}[/red]"
 
-    s: MonitorSample = state.latest
+    s: MonitorSample | None = state.latest
+    assert s is not None
 
     cpu = _pct(s.cpu_usage_pct)
     ram = _pct(s.mem_used_pct)
@@ -243,7 +245,7 @@ def _cell_gpu_dec(s: MonitorSample) -> str:
 
 
 # Ordered column definitions: (key, label, cell_fn)
-_TABLE_COLS: list[tuple[str, str, object]] = [
+_TABLE_COLS: list[tuple[str, str, Callable[[MonitorSample], str]]] = [
     ("jobs", "Jobs", _cell_jobs),
     ("cpu", "CPU%", _cell_cpu),
     ("ram", "RAM%", _cell_ram),
@@ -290,7 +292,7 @@ class ClusterMonitorApp(App):
 
     def __init__(
         self,
-        monitor: ClusterMonitor,
+        monitor: ClusterMonitor | NvMonitorClusterMonitor,
         cache_dir: str | None = None,
         **kwargs,
     ):

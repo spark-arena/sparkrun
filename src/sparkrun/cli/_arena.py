@@ -291,6 +291,7 @@ def arena_benchmark(
     click.echo("Uploading results to Spark Arena...")
 
     try:
+        assert refresh_token is not None
         success, sid = upload_benchmark_results(
             refresh_token=refresh_token,
             upload_files=upload_files,

@@ -458,7 +458,7 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
             return 0
         return exec_result.returncode
 
-    def _print_connection_info(self, hosts, cluster_id, head_ip=None, dashboard_port=8265):
+    def _print_connection_info(self, hosts, cluster_id, *, head_ip=None, dashboard_port=8265, per_node_logs: bool = False):
         """Print vLLM-specific connection info including Dashboard URL."""
         logger.info("=" * 60)
         logger.info("Cluster launched successfully. Nodes: %d", len(hosts))

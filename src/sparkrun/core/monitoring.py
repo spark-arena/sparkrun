@@ -106,7 +106,7 @@ def parse_monitor_line(line: str) -> MonitorSample | None:
         return None
 
     kwargs = {}
-    for col_name, value in zip(MONITOR_COLUMNS, parts):
+    for col_name, value in zip(MONITOR_COLUMNS, parts, strict=False):
         kwargs[col_name] = value.strip()
 
     return MonitorSample(**kwargs)
@@ -282,6 +282,7 @@ class ClusterMonitor:
                 stderr=subprocess.PIPE,
                 text=True,
             )
+            assert proc.stdin is not None
             proc.stdin.write(self._script)
             proc.stdin.close()
 
@@ -299,7 +300,7 @@ class ClusterMonitor:
 
     def stop(self) -> None:
         """Terminate all SSH subprocesses."""
-        for host, state in self.states.items():
+        for _host, state in self.states.items():
             if state.process is not None:
                 try:
                     state.process.terminate()
@@ -318,6 +319,7 @@ class ClusterMonitor:
     def _reader(self, host: str, proc: subprocess.Popen) -> None:
         """Read stdout from an SSH process line by line, updating state."""
         try:
+            assert proc.stdout is not None
             for raw_line in proc.stdout:
                 line = raw_line.strip()
                 if not line:
@@ -500,6 +502,7 @@ class NvMonitorClusterMonitor:
                 stderr=subprocess.PIPE,
                 text=True,
             )
+            assert proc.stdin is not None
             proc.stdin.write(self._script)
             proc.stdin.close()
 
@@ -513,7 +516,7 @@ class NvMonitorClusterMonitor:
 
     def stop(self) -> None:
         """Terminate all SSH processes."""
-        for host, state in self.states.items():
+        for _host, state in self.states.items():
             if state.process is not None:
                 try:
                     state.process.terminate()
@@ -535,6 +538,7 @@ class NvMonitorClusterMonitor:
         import json
 
         try:
+            assert proc.stdout is not None
             for raw_line in proc.stdout:
                 line = raw_line.strip()
                 if not line:
