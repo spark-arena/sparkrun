@@ -340,7 +340,7 @@ def _format_param_count(value) -> str | None:
 
 
 @registry.command("export-metadata", hidden=True)
-@click.option("--output", "-o", type=click.Path(), default="recipes.json", help="Output path for the JSON manifest")
+@click.option("--output", type=click.Path(), default="recipes.json", help="Output path for the JSON manifest")
 @click.option("--include-hidden", is_flag=True, help="Include recipes from hidden registries")
 @click.pass_context
 def export_metadata(ctx, output, include_hidden):
