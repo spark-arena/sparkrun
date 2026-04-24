@@ -124,6 +124,10 @@ def build_ssh_cmd(
         List of command parts suitable for subprocess.
     """
     cmd = ["ssh", "-o", "BatchMode=yes", "-o", f"ConnectTimeout={connect_timeout}"]
+
+    # Telemetry tunnel (Worker -> Orchestrator/Head)
+    cmd.extend(["-R", "8125:127.0.0.1:8125"])
+
     if ssh_key:
         cmd.extend(["-i", ssh_key])
     if ssh_options:
@@ -684,6 +688,10 @@ def build_ssh_opts_string(
         ``"-o BatchMode=yes -o ConnectTimeout=10 -i /path/key"``.
     """
     parts = ["-o", "BatchMode=yes", "-o", f"ConnectTimeout={connect_timeout}"]
+
+    # Telemetry tunnel (Worker -> Orchestrator/Head)
+    parts.extend(["-R", "8125:127.0.0.1:8125"])
+
     if ssh_key:
         parts.extend(["-i", ssh_key])
     if ssh_options:

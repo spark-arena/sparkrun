@@ -27,8 +27,27 @@ Flag         Level  What's visible
 from __future__ import annotations
 
 import logging
+import socket
 import time
+import os
 from enum import IntEnum
+
+
+class StatsdClient:
+    def __init__(self) -> None:
+        host = os.environ.get("SPARKRUN_STATSD_HOST", "127.0.0.1")
+        port = int(os.environ.get("SPARKRUN_STATSD_PORT", "8125"))
+        self.addr = (host, port)
+
+    def send(self, msg: str) -> None:
+        try:
+            with socket.create_connection(self.addr, timeout=0.1) as sock:
+                sock.sendall(msg.encode("utf-8"))
+        except Exception:
+            pass
+
+
+statsd = StatsdClient()
 
 # ---------------------------------------------------------------------------
 # Custom log levels
@@ -97,6 +116,8 @@ class LaunchProgress:
 
         Emits ``[N/6] Label`` at PROGRESS level (always visible).
         """
+        statsd.send(f"vllm_sparkrun_deploy_progress:{((num - 1) / TOTAL_PHASES) * 100}|g")
+        statsd.send("vllm_sparkrun_deploy_status:1|g")
         if self._current_phase is not None:
             self._auto_close_phase()
         self._current_phase = num
@@ -111,6 +132,9 @@ class LaunchProgress:
         if self._phase_t0 is not None:
             dt = elapsed if elapsed is not None else (time.monotonic() - self._phase_t0)
             self._log.log(PROGRESS, "  done (%.1fs)", dt)
+        if self._current_phase == TOTAL_PHASES:
+            statsd.send("vllm_sparkrun_deploy_progress:100|g")
+            statsd.send("vllm_sparkrun_deploy_status:2|g")
         self._current_phase = None
         self._phase_t0 = None
 
@@ -138,6 +162,8 @@ class LaunchProgress:
         """
         self._step_current += 1
         if self._step_total > 0:
+            step_pct = ((self._step_current - 1) / self._step_total) * 100
+            statsd.send(f"vllm_sparkrun_deploy_step_progress:{step_pct}|g")
             self._log.log(
                 PROGRESS,
                 "  Step %d/%d: %s",
