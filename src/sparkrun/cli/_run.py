@@ -27,6 +27,7 @@ from ._common import (
     validate_and_prepare_hosts,
     HIDE_ADVANCED_OPTIONS,
 )
+import contextlib
 
 logger = logging.getLogger(__name__)
 
@@ -444,10 +445,8 @@ def run(
 
             _head = host_list[0] if host_list else "localhost"
             _cname = generate_container_name(result.cluster_id, "solo") if is_solo else generate_node_container_name(result.cluster_id, 0)
-            try:
+            with contextlib.suppress(Exception):
                 diag.capture_container_logs(_head, _cname, _diag_ssh2(config))
-            except Exception:
-                pass
         diag.emit_summary()
         diag.close()
         click.echo("Diagnostics written to: %s" % diagnostics_path)

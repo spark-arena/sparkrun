@@ -11,6 +11,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
+import contextlib
 
 logger = logging.getLogger(__name__)
 
@@ -48,10 +49,8 @@ class NDJSONWriter:
 
     def close(self) -> None:
         if self._fh is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._fh.close()
-            except Exception:
-                pass
             self._fh = None
 
     def emit(self, record_type: str, data: dict | None = None) -> dict:

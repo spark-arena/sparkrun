@@ -863,10 +863,7 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
 
     # Build a script that checks existence and disk usage for both dirs.
     # We derive remote sparkrun cache the same way: ~/.cache/sparkrun on the remote user.
-    if cluster_cfg.user:
-        remote_sparkrun = "/home/%s/.cache/sparkrun" % cluster_cfg.user
-    else:
-        remote_sparkrun = "$HOME/.cache/sparkrun"
+    remote_sparkrun = "/home/%s/.cache/sparkrun" % cluster_cfg.user if cluster_cfg.user else "$HOME/.cache/sparkrun"
 
     check_cmd = (
         'sr_dir="%s"; hf_dir="%s"; '

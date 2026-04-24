@@ -72,14 +72,13 @@ def wait_for_port(
     check_cmd = "nc -z localhost %d" % port
     for attempt in range(1, max_retries + 1):
         # Check container liveness before polling the port
-        if container_name and attempt > 1:
-            if not is_container_running(host, container_name, ssh_kwargs=ssh_kwargs):
-                logger.error(
-                    "  Container %s is no longer running on %s — aborting wait",
-                    container_name,
-                    host,
-                )
-                return False
+        if container_name and attempt > 1 and not is_container_running(host, container_name, ssh_kwargs=ssh_kwargs):
+            logger.error(
+                "  Container %s is no longer running on %s — aborting wait",
+                container_name,
+                host,
+            )
+            return False
 
         result = run_command_on_host(host, check_cmd, ssh_kwargs=ssh_kwargs, timeout=5, quiet=True)
         if result.success:

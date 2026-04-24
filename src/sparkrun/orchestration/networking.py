@@ -894,10 +894,7 @@ def select_subnets_for_topology(
     Returns:
         List of IPv4Network subnets.
     """
-    if topology == CX7Topology.RING:
-        count = 6
-    else:
-        count = 2
+    count = 6 if topology == CX7Topology.RING else 2
 
     # For 2-subnet case, delegate to existing function
     if count == 2:
@@ -1072,10 +1069,7 @@ def _is_existing_ring_valid(
         return False
 
     # Should have exactly 3 links for a ring
-    if len(all_link_subnets) != 3:
-        return False
-
-    return True
+    return len(all_link_subnets) == 3
 
 
 def _is_ring_host_valid(

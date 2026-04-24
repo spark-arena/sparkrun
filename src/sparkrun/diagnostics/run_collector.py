@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import time
 import traceback
+import contextlib
 
 from sparkrun.diagnostics.ndjson_writer import NDJSONWriter
 from sparkrun.diagnostics.spark_collector import collect_spark_diagnostics
@@ -29,7 +30,7 @@ class _DiagnosticsLogHandler(logging.Handler):
         self._writer = writer
 
     def emit(self, record: logging.LogRecord) -> None:
-        try:
+        with contextlib.suppress(Exception):
             self._writer.emit(
                 "log",
                 {
@@ -39,8 +40,6 @@ class _DiagnosticsLogHandler(logging.Handler):
                     "timestamp": record.created,
                 },
             )
-        except Exception:
-            pass  # never let diagnostics logging break the run
 
 
 class RunDiagnosticsCollector:

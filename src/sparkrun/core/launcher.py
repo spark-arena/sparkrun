@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+import contextlib
 
 if TYPE_CHECKING:
     from sparkrun.core.config import SparkrunConfig
@@ -459,10 +460,8 @@ def launch_inference(
             if recipe.builder:
                 from sparkrun.core.bootstrap import get_builder
 
-                try:
+                with contextlib.suppress(ValueError):
                     ver_builder = get_builder(recipe.builder, v)
-                except ValueError:
-                    pass
             # noinspection PyProtectedMember
             runtime_info = runtime._collect_runtime_info(
                 head_host,
@@ -576,10 +575,7 @@ def post_launch_lifecycle(
     _ssh_kw = build_ssh_kwargs(config)
 
     # Determine head container name
-    if is_solo:
-        head_container = generate_container_name(result.cluster_id, "solo")
-    else:
-        head_container = generate_node_container_name(result.cluster_id, 0)
+    head_container = generate_container_name(result.cluster_id, "solo") if is_solo else generate_node_container_name(result.cluster_id, 0)
 
     # Detect head IP for health checks
     if is_local_host(head_host):

@@ -1900,10 +1900,9 @@ def setup_fe_system_update(ctx, hosts, hosts_file, cluster_name, user, dry_run):
     click.echo("  - Reboot")
     click.echo()
 
-    if not dry_run:
-        if not click.confirm("Proceed?", default=False):
-            click.echo("Aborted.")
-            return
+    if not dry_run and not click.confirm("Proceed?", default=False):
+        click.echo("Aborted.")
+        return
 
     # --- Step 3: Get sudo access ---
     sudo_password, indirect_user = ensure_sudo_password(
