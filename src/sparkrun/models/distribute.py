@@ -23,6 +23,14 @@ from sparkrun.core.progress import PROGRESS
 
 logger = logging.getLogger(__name__)
 
+# Shell expression evaluated on the remote host when no explicit cache_dir is
+# configured.  Mirrors huggingface_hub's resolution order (HF_HOME → $HOME/.cache/
+# huggingface) so the remote script writes under the target user's home, not the
+# control machine's.  Embedding this (instead of the control machine's already-
+# resolved path) is what fixes the cross-user / cross-host case where the SSH
+# login user's $HOME differs from the invoking user's $HOME.
+REMOTE_DEFAULT_HF_CACHE = r"${HF_HOME:-$HOME/.cache/huggingface}"
+
 
 def _try_fix_remote_permissions(
     cache_dir: str,
@@ -205,7 +213,11 @@ def distribute_model_from_head(
     if not hosts:
         return []
 
-    cache = resolve_hf_cache_home(cache_dir)
+    # When an explicit cache_dir is configured (e.g. via `sparkrun cluster
+    # update --cache-dir`), trust it as a literal absolute path valid on the
+    # target.  Otherwise defer resolution to the remote shell so the path is
+    # relative to the SSH login user's home, not the control machine's.
+    cache = cache_dir if cache_dir else REMOTE_DEFAULT_HF_CACHE
     head = hosts[0]
     logger.debug("Distributing model '%s' from head (%s) to %d host(s)", model_id, head, len(hosts))
 
