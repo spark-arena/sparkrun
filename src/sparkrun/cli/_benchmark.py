@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 @click.option("--port", type=int, default=None, help="Override serve port")
 @click.option("--profile", default=None, type=PROFILE_NAME, help="Benchmark profile name or file path")
 @click.option("--framework", default=None, help="Override benchmarking framework (default: llama-benchy)")
-@click.option("--out", "--output", "output_file", default=None, type=click.Path(), help="Output file for results YAML")
+@click.option("--output", "output_file", default=None, type=click.Path(), help="Output file for results YAML")
 @click.option("-b", "--benchmark-option", "bench_options", multiple=True, help="Override benchmark arg: -b key=value (repeatable)")
 @click.option(
     "--exit-on-first-fail/--no-exit-on-first-fail",
@@ -411,7 +411,6 @@ def _run_benchmark(
                 registry_mgr=registry_mgr,
                 auto_port=True,
                 sync_tuning=sync_tuning,
-                skip_keys={"served_model_name"},
                 dry_run=dry_run,
                 detached=True,
                 rootless=not rootful,
@@ -595,11 +594,20 @@ def _run_benchmark(
                     profile_slug = profile.replace("/", "_").replace("@", "") if profile else "default"
                     effective_pp = int(config_chain.get("pipeline_parallel") or 1)
                     pp_suffix = "_pp%d" % effective_pp if effective_pp > 1 else ""
-                    output_file = "benchmark_%s_%s_tp%d%s.yaml" % (
-                        recipe.name.replace("/", "_"),
-                        profile_slug,
-                        effective_tp,
-                        pp_suffix,
+
+                    out_dir = config.default_benchmark_output_dir
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    output_file = str(
+                        out_dir
+                        / (
+                            "benchmark_%s_%s_tp%d%s.yaml"
+                            % (
+                                recipe.name.replace("/", "_"),
+                                profile_slug,
+                                effective_tp,
+                                pp_suffix,
+                            )
+                        )
                     )
 
                 export_results(
