@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 import click
+import contextlib
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +17,7 @@ logger = logging.getLogger(__name__)
 @click.option("--dry-run", "-n", is_flag=True, help="Preview without executing")
 @click.option("--yes", "-y", is_flag=True, help="Accept all defaults (non-interactive)")
 @click.pass_context
-def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
+def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):  # pyright: ignore[reportGeneralTypeIssues]
     """Guided setup wizard for sparkrun.
 
     Walks through cluster creation, SSH mesh, CX7 configuration,
@@ -265,13 +266,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                 # Suggest local management IP as default
                 if not hosts:
                     default_hosts = local_cx7.mgmt_ip or "127.0.0.1"
-                    if yes:
-                        hosts = default_hosts
-                    else:
-                        hosts = click.prompt(
-                            "Enter host IPs/hostnames (comma-separated)",
-                            default=default_hosts,
-                        )
+                    hosts = default_hosts if yes else click.prompt("Enter host IPs/hostnames (comma-separated)", default=default_hosts)
             else:
                 # Step 1c: No CX7 on control machine
                 click.echo("  No CX7 interfaces detected on this machine.")
@@ -311,10 +306,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
 
             # Step 1d: Create cluster
             if not cluster_name:
-                if yes:
-                    cluster_name = "default"
-                else:
-                    cluster_name = click.prompt("Cluster name", default="default")
+                cluster_name = "default" if yes else click.prompt("Cluster name", default="default")
 
             # Prompt for SSH username (--user flag takes precedence)
             if not yes and user == default_user:
@@ -684,10 +676,8 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
 
                     # Save topology to cluster definition
                     if cluster_name and effective_topology != CX7Topology.UNKNOWN:
-                        try:
+                        with contextlib.suppress(Exception):
                             cluster_mgr.update(cluster_name, topology=effective_topology.value)
-                        except Exception:
-                            pass
 
                 except Exception as e:
                     results["cx7"] = "failed"
@@ -780,11 +770,10 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                                 sudo_ssh_kwargs,
                                 dry_run=dry_run,
                             )
-                            if dg_still_failed:
-                                if pw:
-                                    for h in dg_still_failed:
-                                        r = _run_sudo_on_host(h, dg_fallback, pw, timeout=30)
-                                        dg_result_map[h] = r
+                            if dg_still_failed and pw:
+                                for h in dg_still_failed:
+                                    r = _run_sudo_on_host(h, dg_fallback, pw, timeout=30)
+                                    dg_result_map[h] = r
 
                         dg_ok = sum(1 for h in host_list if dg_result_map.get(h) and dg_result_map[h].success)
                         results["docker"] = "OK (%d/%d)" % (dg_ok, len(host_list)) if dg_ok else "failed"

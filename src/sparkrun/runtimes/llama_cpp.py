@@ -106,7 +106,7 @@ class LlamaCppRuntime(RuntimePlugin):
         pp = config.get("pipeline_parallel")
 
         if tp is not None and pp is not None:
-            tp_val, pp_val = int(tp), int(pp)
+            tp_val, pp_val = int(str(tp)), int(str(pp))
             # Both > 1 is genuinely mutually exclusive
             if tp_val > 1 and pp_val > 1:
                 raise ValueError(
@@ -123,9 +123,9 @@ class LlamaCppRuntime(RuntimePlugin):
             return None
 
         if tp is not None:
-            return "row" if int(tp) > 1 else None
+            return "row" if int(str(tp)) > 1 else None
         if pp is not None:
-            return "layer" if int(pp) > 1 else None
+            return "layer" if int(str(pp)) > 1 else None
         return None
 
     def compute_required_nodes(self, recipe, overrides=None):
@@ -149,7 +149,7 @@ class LlamaCppRuntime(RuntimePlugin):
 
         if tp is not None and pp is not None:
             # Both set — use whichever is > 1; if both are 1, return 1
-            tp_val, pp_val = int(tp), int(pp)
+            tp_val, pp_val = int(str(tp)), int(str(pp))
             if tp_val > 1:
                 return tp_val
             if pp_val > 1:
@@ -157,9 +157,9 @@ class LlamaCppRuntime(RuntimePlugin):
             return 1
 
         if tp is not None:
-            return int(tp)
+            return int(str(tp))
         if pp is not None:
-            return int(pp)
+            return int(str(pp))
         return None
 
     @staticmethod
@@ -422,6 +422,8 @@ class LlamaCppRuntime(RuntimePlugin):
         logger.warning("llama.cpp RPC clustering is EXPERIMENTAL. Behavior may change in future versions.")
 
         progress = kwargs.pop("progress", None)
+
+        assert recipe is not None
 
         ctx = ClusterContext.build(self, hosts, image, cluster_id, env, cache_dir, config, dry_run, overrides=overrides)
         head_container = self._container_name(cluster_id, "head")

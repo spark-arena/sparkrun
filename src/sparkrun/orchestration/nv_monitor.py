@@ -20,6 +20,7 @@ from sparkrun.orchestration.ssh import (
     run_remote_scripts_parallel,
     run_rsync_parallel,
 )
+import contextlib
 
 logger = logging.getLogger(__name__)
 
@@ -232,18 +233,14 @@ def stop_nv_monitor_ssh(proc: subprocess.Popen | None) -> None:
     """
     if proc is None:
         return
-    try:
+    with contextlib.suppress(OSError):
         proc.terminate()
-    except OSError:
-        pass
     try:
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
         proc.kill()
-        try:
+        with contextlib.suppress(subprocess.TimeoutExpired):
             proc.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            pass
 
 
 def stop_nv_monitor_remote(

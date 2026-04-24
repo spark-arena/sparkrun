@@ -692,6 +692,7 @@ def detect_switch(
     if is_local_host(target_host):
         r = run_local_script(full_script, dry_run=dry_run)
     elif needs_sudo_pw:
+        assert sudo_password is not None
         r = run_remote_sudo_script(target_host, full_script, sudo_password, timeout=30, dry_run=dry_run, **kw)
     else:
         r = run_remote_script(target_host, full_script, timeout=30, dry_run=dry_run, **kw)
@@ -893,10 +894,7 @@ def select_subnets_for_topology(
     Returns:
         List of IPv4Network subnets.
     """
-    if topology == CX7Topology.RING:
-        count = 6
-    else:
-        count = 2
+    count = 6 if topology == CX7Topology.RING else 2
 
     # For 2-subnet case, delegate to existing function
     if count == 2:
@@ -1071,10 +1069,7 @@ def _is_existing_ring_valid(
         return False
 
     # Should have exactly 3 links for a ring
-    if len(all_link_subnets) != 3:
-        return False
-
-    return True
+    return len(all_link_subnets) == 3
 
 
 def _is_ring_host_valid(
@@ -1483,6 +1478,7 @@ def configure_cx7_host(
         local_sudo_safe = sudo_password and (ssh_user is None or ssh_user == os_user)
 
         if local_sudo_safe:
+            assert sudo_password is not None
             # Pipe password to sudo -S bash -s for local hosts without NOPASSWD
             proc = subprocess.run(
                 ["sudo", "-S", "bash", "-s"],

@@ -116,7 +116,7 @@ def _teardown_docker_group(host_list, user, ssh_kwargs, sudo_fn, dry_run):
     validate_unix_username(user)
 
     script = (
-        '#!/bin/bash\nset -euo pipefail\ngpasswd -d "%s" docker 2>/dev/null && echo "REMOVED: %s from docker group" || echo "SKIPPED: %s not in docker group"\n'
+        '#!/bin/bash\nset -euo pipefail\ngpasswd -d "%s" docker 2>/dev/null && echo "REMOVED: %s from docker group" || echo "SKIPPED: %s not in docker group"\n'  # noqa: E501
         % (user, user, user)
     )
 

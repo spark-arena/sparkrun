@@ -704,6 +704,7 @@ def cluster_check_job(ctx, target, hosts, hosts_file, cluster_name, tp_override,
     if _is_cluster_id(target) is not None:
         # --- Cluster ID path ---
         cid = _is_cluster_id(target)
+        assert cid is not None
         from sparkrun.orchestration.job_metadata import load_job_metadata
 
         meta = load_job_metadata(cid, cache_dir=str(config.cache_dir))
@@ -849,9 +850,7 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
     # auto (None) → cx7 if IB is available and validated, else mgmt
     if xfer_iface == "mgmt":
         resolved_iface = "mgmt"
-    elif xfer_result.ib_validated:
-        resolved_iface = "cx7"
-    elif ib_result and ib_result.ib_ip_map:
+    elif xfer_result.ib_validated or ib_result and ib_result.ib_ip_map:
         resolved_iface = "cx7"
     elif ib_result:
         resolved_iface = "mgmt"
@@ -864,10 +863,7 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
 
     # Build a script that checks existence and disk usage for both dirs.
     # We derive remote sparkrun cache the same way: ~/.cache/sparkrun on the remote user.
-    if cluster_cfg.user:
-        remote_sparkrun = "/home/%s/.cache/sparkrun" % cluster_cfg.user
-    else:
-        remote_sparkrun = "$HOME/.cache/sparkrun"
+    remote_sparkrun = "/home/%s/.cache/sparkrun" % cluster_cfg.user if cluster_cfg.user else "$HOME/.cache/sparkrun"
 
     check_cmd = (
         'sr_dir="%s"; hf_dir="%s"; '

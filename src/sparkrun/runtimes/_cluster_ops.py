@@ -385,6 +385,10 @@ def run_native_cluster(
 
     executor = runtime.executor
 
+    assert recipe is not None
+    if overrides is None:
+        overrides = {}
+
     if progress:
         progress.begin_runtime_steps(7)
 

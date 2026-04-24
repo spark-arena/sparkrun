@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sys
 
+import contextlib
+
 import click
 import yaml
 
@@ -372,8 +374,9 @@ def export_metadata(ctx, output, include_hidden):
         if not recipe_dir or not recipe_dir.is_dir():
             continue
 
+        assert recipe_dir is not None
         recipe_count = 0
-        for f in sorted(recipe_dir.rglob("*.yaml"), key=lambda p: (len(p.relative_to(recipe_dir).parts), p.name)):
+        for f in sorted(recipe_dir.rglob("*.yaml"), key=lambda p, rd=recipe_dir: (len(p.relative_to(rd).parts), p.name)):
             try:
                 data = read_yaml(str(f))
                 if not isinstance(data, dict):
@@ -386,10 +389,8 @@ def export_metadata(ctx, output, include_hidden):
 
             # Run VRAM estimation to auto-detect model_params and model_dtype
             # from HuggingFace when not present in recipe metadata.
-            try:
+            with contextlib.suppress(Exception):
                 recipe.estimate_vram(auto_detect=True)
-            except Exception:
-                pass  # best-effort — metadata fields may remain None
 
             rel_path = f.relative_to(recipe_dir)
             raw_url = _build_raw_url(entry.url, entry.subpath, str(rel_path))

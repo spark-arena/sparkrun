@@ -118,19 +118,15 @@ def resolve_gguf_path(
         return None
 
     # Search recursively for .gguf files matching the quant variant
-    if quant:
-        pattern = "**/*%s*.gguf" % quant
-    else:
-        pattern = "**/*.gguf"
+    pattern = "**/*%s*.gguf" % quant if quant else "**/*.gguf"
 
     matched = sorted(model_cache.glob(pattern))
-    if not matched:
+    if not matched and quant:
         # Retry case-insensitive: glob is case-sensitive on Linux,
         # so fall back to a manual filter when the quant case differs.
-        if quant:
-            all_gguf = sorted(model_cache.glob("**/*.gguf"))
-            q_lower = quant.lower()
-            matched = [f for f in all_gguf if q_lower in f.name.lower()]
+        all_gguf = sorted(model_cache.glob("**/*.gguf"))
+        q_lower = quant.lower()
+        matched = [f for f in all_gguf if q_lower in f.name.lower()]
 
     if not matched:
         return None
@@ -325,7 +321,7 @@ def _snapshot_download(
     """
     try:
         from huggingface_hub import snapshot_download
-        from huggingface_hub.utils import enable_progress_bars
+        from huggingface_hub.utils.tqdm import enable_progress_bars
 
         enable_progress_bars()
 

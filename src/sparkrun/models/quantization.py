@@ -41,7 +41,7 @@ def fetch_hf_quant_config(
     """
     try:
         from huggingface_hub import hf_hub_download
-        from huggingface_hub.utils import disable_progress_bars, enable_progress_bars
+        from huggingface_hub.utils.tqdm import disable_progress_bars, enable_progress_bars
         import json
 
         from sparkrun.models.download import _hub_cache
@@ -89,10 +89,7 @@ def _resolve_from_hf_quant_config(data: dict[str, Any]) -> QuantizationInfo | No
         return None
 
     kv_cache_algo = quant_block.get("kv_cache_quant_algo")
-    if isinstance(kv_cache_algo, str):
-        kv_cache_algo = kv_cache_algo.lower().strip() or None
-    else:
-        kv_cache_algo = None
+    kv_cache_algo = kv_cache_algo.lower().strip() or None if isinstance(kv_cache_algo, str) else None
 
     group_size = quant_block.get("group_size")
 
@@ -142,7 +139,7 @@ def _resolve_mixed_precision(quant_block: dict[str, Any]) -> tuple[str, int | No
     if not algo_counts:
         return "", None
 
-    dominant = max(algo_counts, key=algo_counts.get)
+    dominant = max(algo_counts, key=lambda k: algo_counts[k])
     # Pick the most common group_size for the dominant algo
     gs_list = group_sizes.get(dominant)
     dominant_gs: int | None = None
@@ -214,10 +211,7 @@ def _resolve_from_quantization_config(qc: dict[str, Any]) -> QuantizationInfo | 
     if method in ("auto-round", "autoround", "auto_round"):
         b = 4 if bits is None else int(bits)
         data_type = str(qc.get("data_type", "int")).lower()
-        if data_type == "int":
-            wd = "int%d" % b
-        else:
-            wd = "fp%d" % b
+        wd = "int%d" % b if data_type == "int" else "fp%d" % b
         return QuantizationInfo(
             method="auto-round",
             bits=b,

@@ -97,7 +97,7 @@ def _stop_all(hosts, hosts_file, cluster_name, config, dry_run):
     # Build per-host container name mapping
     host_containers: dict[str, list[str]] = {}
     for cid, group in result.groups.items():
-        for host, role, status, image in group.members:
+        for host, role, _status, _image in group.members:
             container_name = "%s_%s" % (cid, role)
             host_containers.setdefault(host, []).append(container_name)
     for entry in result.solo_entries:
@@ -136,6 +136,7 @@ def _stop_by_cluster_id(target, hosts, hosts_file, cluster_name, config, dry_run
     from sparkrun.orchestration.primitives import build_ssh_kwargs, cleanup_containers, cleanup_containers_local, should_run_locally
 
     cluster_id = _is_cluster_id(target)
+    assert cluster_id is not None
     meta = load_job_metadata(cluster_id, cache_dir=str(config.cache_dir))
 
     # Resolve hosts: CLI flags > metadata > default cluster
@@ -168,6 +169,7 @@ def _stop_recipe(recipe_name, hosts, hosts_file, cluster_name, config, tp_overri
     from sparkrun.core.bootstrap import init_sparkrun, get_runtime
 
     recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name)
+    assert recipe is not None
 
     host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config)
 
@@ -243,6 +245,7 @@ def logs_cmd(ctx, target, hosts, hosts_file, cluster_name, tp_override, port, se
     # Branch: cluster ID target
     if _is_cluster_id(target) is not None:
         cluster_id = _is_cluster_id(target)
+        assert cluster_id is not None
         from sparkrun.orchestration.job_metadata import load_job_metadata
 
         meta = load_job_metadata(cluster_id, cache_dir=str(config.cache_dir))
@@ -292,6 +295,7 @@ def logs_cmd(ctx, target, hosts, hosts_file, cluster_name, tp_override, port, se
 
     # Load recipe
     recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name)
+    assert recipe is not None
 
     # Resolve hosts
     host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, sctx=sctx)

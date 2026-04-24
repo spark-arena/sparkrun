@@ -118,10 +118,10 @@ class EugrBuilder(BuilderPlugin):
 
     builder_name = "eugr"
 
-    _v: Variables = None
+    _v: Variables | None = None
     _repo_dir: Path | None = None
 
-    def initialize(self, v: Variables, logger_arg: Logger) -> EugrBuilder:
+    def initialize(self, v: Variables, logger: Logger) -> EugrBuilder:
         """Initialize the eugr builder plugin."""
         self._v = v
         return self
@@ -340,6 +340,7 @@ class EugrBuilder(BuilderPlugin):
         if resolved:
             return resolved, True
 
+        assert ghcr_pkg is not None
         # Fall back to GHCR API tag enumeration
         resolved = self._match_via_ghcr_api(
             ghcr_image,
@@ -636,10 +637,7 @@ class EugrBuilder(BuilderPlugin):
 
         if upstream.get("vllm_commit") != entry.get("vllm_commit"):
             return False
-        if upstream.get("flashinfer_commit") != entry.get("flashinfer_commit"):
-            return False
-
-        return True
+        return upstream.get("flashinfer_commit") == entry.get("flashinfer_commit")
 
     def _save_build_metadata(
         self,
@@ -738,6 +736,8 @@ class EugrBuilder(BuilderPlugin):
             build_args: Additional build arguments forwarded to the script.
             dry_run: Show what would be done without executing.
         """
+        if not self._repo_dir:
+            raise RuntimeError("Repository not initialized")
         build_script = self._repo_dir / "build-and-copy.sh"
         if not build_script.exists():
             raise RuntimeError("build-and-copy.sh not found at %s" % build_script)

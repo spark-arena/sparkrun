@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 
 from vpd.legacy.arguments import arg_substitute
@@ -48,7 +49,8 @@ def build_hook_context(
 
     # Pull all values from the config chain into a flat dict
     if hasattr(config_chain, "keys"):
-        for key in config_chain.keys():
+        keys_iter = config_chain.keys() if callable(config_chain.keys) else config_chain.keys
+        for key in keys_iter:
             val = config_chain.get(key)
             if val is not None:
                 ctx[key] = str(val)
@@ -94,11 +96,12 @@ def render_hook_command(cmd: str, context: dict[str, str]) -> str:
     while last != rendered:
         last = rendered
         rendered = arg_substitute(rendered, context)
+        assert isinstance(rendered, str)
     return rendered
 
 
 def render_hook_commands(
-    commands: list[str | dict[str, str]],
+    commands: Sequence[str | dict[str, str]],
     context: dict[str, str],
 ) -> list[str | dict[str, str]]:
     """Render ``{key}`` placeholders in a list of hook commands.
@@ -126,7 +129,7 @@ def render_hook_commands(
 
 def run_pre_exec(
     hosts_containers: list[tuple[str, str]],
-    commands: list[str | dict[str, str]],
+    commands: Sequence[str | dict[str, str]],
     config_chain,
     ssh_kwargs: dict | None = None,
     dry_run: bool = False,
@@ -156,7 +159,8 @@ def run_pre_exec(
     # Build context from config chain for rendering
     ctx: dict[str, str] = {}
     if hasattr(config_chain, "keys"):
-        for key in config_chain.keys():
+        keys_iter = config_chain.keys() if callable(config_chain.keys) else config_chain.keys
+        for key in keys_iter:
             val = config_chain.get(key)
             if val is not None:
                 ctx[key] = str(val)

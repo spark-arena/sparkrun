@@ -27,6 +27,7 @@ from ._common import (
     validate_and_prepare_hosts,
     HIDE_ADVANCED_OPTIONS,
 )
+import contextlib
 
 logger = logging.getLogger(__name__)
 
@@ -160,6 +161,7 @@ def run(
 
     # Find and load recipe (defer resolution until overrides are built)
     recipe, _recipe_path, registry_mgr = _load_recipe(config, recipe_name, resolve=False)
+    assert recipe is not None
 
     # If recipe was loaded from a URL, simplify for display
     _resolved_name = _expand_recipe_shortcut(recipe_name)
@@ -178,6 +180,7 @@ def run(
         port=port,
         served_model_name=served_model_name,
     )
+    assert recipe is not None
 
     # Validate recipe (after resolve so runtime is populated)
     issues = recipe.validate()
@@ -461,10 +464,8 @@ def run(
 
             _head = host_list[0] if host_list else "localhost"
             _cname = generate_container_name(result.cluster_id, "solo") if is_solo else generate_node_container_name(result.cluster_id, 0)
-            try:
+            with contextlib.suppress(Exception):
                 diag.capture_container_logs(_head, _cname, _diag_ssh2(config))
-            except Exception:
-                pass
         diag.emit_summary()
         diag.close()
         click.echo("Diagnostics written to: %s" % diagnostics_path)

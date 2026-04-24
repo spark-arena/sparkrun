@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from sparkrun.core.config import DEFAULT_CACHE_DIR
 from sparkrun.utils import format_duration as _format_duration  # noqa: F401 — re-exported for local callers
@@ -33,7 +33,7 @@ def _get_tuning_dir(cache_subdir: str) -> Path:
 
 
 def _get_tuning_volumes(
-    tuning_dir_fn: callable,
+    tuning_dir_fn: Callable[[], Path],
     container_path: str,
 ) -> dict[str, str] | None:
     """Return volume mapping for tuning configs if they exist.
@@ -52,7 +52,7 @@ def _get_tuning_volumes(
 
 
 def _get_tuning_env(
-    volumes_fn: callable,
+    volumes_fn: Callable[[], dict[str, str] | None],
     env_var: str,
     container_path: str,
 ) -> dict[str, str] | None:

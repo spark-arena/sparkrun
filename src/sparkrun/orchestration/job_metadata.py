@@ -92,6 +92,8 @@ def check_job_running(
         else:
             return JobStatus(running=False, cluster_id=cluster_id, metadata=meta, hosts=[])
 
+    assert hosts is not None
+
     head_host = hosts[0]
     is_solo = len(hosts) == 1
 

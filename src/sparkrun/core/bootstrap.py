@@ -97,6 +97,7 @@ def get_variables() -> Variables:
     global _variables
     if _variables is None:
         init_sparkrun()
+    assert _variables is not None
     return _variables
 
 

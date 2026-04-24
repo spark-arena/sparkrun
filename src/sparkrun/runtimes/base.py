@@ -1142,7 +1142,7 @@ class RuntimePlugin(Plugin):
         Subclasses should call super() and add runtime-specific entries.
         """
         return {
-            "cuda": "nvcc --version 2>/dev/null | grep 'release' | sed 's/.*release //' | sed 's/,.*//' || nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 || echo unknown",
+            "cuda": "nvcc --version 2>/dev/null | grep 'release' | sed 's/.*release //' | sed 's/,.*//' || nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 || echo unknown",  # noqa: E501
             "python": "python3 --version 2>/dev/null | awk '{print $2}' || echo unknown",
             "torch": "python3 -c 'import torch; print(torch.__version__)' 2>/dev/null || echo unknown",
             "nccl": "python3 -c 'import torch; print(torch.cuda.nccl.version())' 2>/dev/null || echo unknown",

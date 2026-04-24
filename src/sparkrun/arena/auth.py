@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
 from dataclasses import dataclass
+import contextlib
 
 logger = logging.getLogger(__name__)
 
@@ -64,10 +65,8 @@ def load_refresh_token() -> str | None:
 def clear_refresh_token() -> None:
     """Delete the stored refresh token."""
     path = get_token_path()
-    try:
+    with contextlib.suppress(FileNotFoundError):
         path.unlink()
-    except FileNotFoundError:
-        pass
 
 
 def exchange_token(refresh_token: str, debug_mode: bool = False) -> ExchangeResult:
@@ -95,9 +94,9 @@ def exchange_token(refresh_token: str, debug_mode: bool = False) -> ExchangeResu
             msg = err_data.get("message") or err_data.get("error", body)
         except (json.JSONDecodeError, ValueError):
             msg = body
-        raise RuntimeError("Token exchange failed (%d): %s" % (e.code, msg))
+        raise RuntimeError("Token exchange failed (%d): %s" % (e.code, msg)) from e
     except URLError as e:
-        raise RuntimeError("Cannot reach auth proxy: %s" % e.reason)
+        raise RuntimeError("Cannot reach auth proxy: %s" % e.reason) from e
 
     id_token = data.get("id_token")
     user_id = data.get("user_id")
@@ -146,7 +145,7 @@ def _can_open_browser() -> bool:
     return True
 
 
-def run_browser_login() -> str | None:
+def run_browser_login() -> tuple[str, str] | None:
     """Run browser-based OAuth login flow.
 
     Returns the refresh token on success, or None on failure.
