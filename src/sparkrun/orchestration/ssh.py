@@ -125,9 +125,6 @@ def build_ssh_cmd(
     """
     cmd = ["ssh", "-o", "BatchMode=yes", "-o", f"ConnectTimeout={connect_timeout}"]
 
-    # Telemetry tunnel (Worker -> Orchestrator/Head)
-    cmd.extend(["-R", "8125:127.0.0.1:8125"])
-
     if ssh_key:
         cmd.extend(["-i", ssh_key])
     if ssh_options:
@@ -689,9 +686,6 @@ def build_ssh_opts_string(
     """
     parts = ["-o", "BatchMode=yes", "-o", f"ConnectTimeout={connect_timeout}"]
 
-    # Telemetry tunnel (Worker -> Orchestrator/Head)
-    parts.extend(["-R", "8125:127.0.0.1:8125"])
-
     if ssh_key:
         parts.extend(["-i", ssh_key])
     if ssh_options:
@@ -1001,3 +995,67 @@ def run_rsync_parallel(
     ok = sum(1 for r in results if r.success)
     logger.info("  Parallel rsync done: %d/%d OK (%.1fs total)", ok, len(results), elapsed)
     return results
+
+class TelemetryTunnel:
+    """Context manager to establish a forward tunnel for remote Docker telemetry."""
+
+    def __init__(self, host, ssh_user: str | None = None, ssh_key: str | None = None, ssh_options: list[str] | None = None):
+        self.host = getattr(host, "name", str(host))
+        self.ssh_user = ssh_user
+        self.ssh_key = ssh_key
+        self.ssh_options = ssh_options
+        self.local_port: int | None = None
+        self.tunnel_proc: subprocess.Popen | None = None
+
+    def __enter__(self):
+        import socket
+        import urllib.request
+        import json
+
+        # 1. Find an open ephemeral port
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("0.0.0.0", 0))
+            self.local_port = s.getsockname()[1]
+
+        # 2. Start SSH forward tunnel: ssh -N -L local_port:/var/run/docker.sock host
+        cmd = build_ssh_cmd(self.host, self.ssh_user, self.ssh_key, self.ssh_options)
+        cmd.extend(["-N", "-L", f"0.0.0.0:{self.local_port}:/var/run/docker.sock"])
+        
+        logger.info("Establishing telemetry tunnel to %s via local port %d", self.host, self.local_port)
+        self.tunnel_proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        # Give the tunnel a moment to establish
+        time.sleep(1)
+
+        # 3. Register with Fleet Multiplexer API
+        try:
+            req = urllib.request.Request("http://127.0.0.1:8126/api/nodes", method="POST")
+            req.add_header("Content-Type", "application/json")
+            # The Fleet Multiplexer runs inside Docker, so it needs to access the host via host.docker.internal
+            data = json.dumps({"host_id": self.host, "docker_url": f"tcp://host.docker.internal:{self.local_port}"}).encode("utf-8")
+            urllib.request.urlopen(req, data=data, timeout=2.0)
+            logger.debug("Successfully registered %s with Fleet Multiplexer", self.host)
+        except Exception as e:
+            logger.warning("Failed to register %s with Fleet Multiplexer: %s", self.host, e)
+
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        import urllib.request
+
+        # 1. Deregister from Fleet Multiplexer
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:8126/api/nodes/{self.host}", method="DELETE")
+            urllib.request.urlopen(req, timeout=2.0)
+            logger.debug("Successfully deregistered %s from Fleet Multiplexer", self.host)
+        except Exception as e:
+            logger.debug("Failed to deregister %s from Fleet Multiplexer: %s", self.host, e)
+
+        # 2. Kill the SSH tunnel
+        if self.tunnel_proc:
+            logger.info("Tearing down telemetry tunnel to %s", self.host)
+            self.tunnel_proc.terminate()
+            try:
+                self.tunnel_proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.tunnel_proc.kill()

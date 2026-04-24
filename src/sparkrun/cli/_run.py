@@ -279,33 +279,93 @@ def run(
     # Launch via shared pipeline
     if diag:
         diag.phase_start("launch")
+        
+    from contextlib import ExitStack
+    from sparkrun.orchestration.ssh import TelemetryTunnel
+    from sparkrun.orchestration.primitives import build_ssh_kwargs
+
     try:
-        result = launch_inference(
-            recipe=recipe,
-            runtime=runtime,
-            host_list=host_list,
-            overrides=overrides,
-            sctx=sctx,
-            is_solo=is_solo,
-            cache_dir=remote_cache_dir,
-            local_cache_dir=local_cache_dir,
-            transfer_mode=effective_transfer_mode,
-            transfer_interface=effective_transfer_interface,
-            recipe_ref=recipe_ref,
-            registry_mgr=registry_mgr,
-            sync_tuning=not no_sync_tuning,
-            dry_run=dry_run,
-            detached=not foreground,
-            follow=not no_follow,
-            ray_port=ray_port,
-            dashboard_port=dashboard_port,
-            dashboard=dashboard,
-            init_port=init_port,
-            topology=cluster_cfg.topology,
-            executor_config=cli_executor_opts,
-            rootless=not rootful,
-            auto_user=not rootful,
-        )
+        with ExitStack() as stack:
+            # Set up a telemetry tunnel for each host in the cluster
+            if not dry_run:
+                tunnel_ssh_kw = build_ssh_kwargs(config)
+                for host in host_list:
+                    stack.enter_context(
+                        TelemetryTunnel(
+                            host=host,
+                            ssh_user=tunnel_ssh_kw.get("ssh_user"),
+                            ssh_key=tunnel_ssh_kw.get("ssh_key"),
+                            ssh_options=tunnel_ssh_kw.get("ssh_options"),
+                        )
+                    )
+
+            result = launch_inference(
+                recipe=recipe,
+                runtime=runtime,
+                host_list=host_list,
+                overrides=overrides,
+                sctx=sctx,
+                is_solo=is_solo,
+                cache_dir=remote_cache_dir,
+                local_cache_dir=local_cache_dir,
+                transfer_mode=effective_transfer_mode,
+                transfer_interface=effective_transfer_interface,
+                recipe_ref=recipe_ref,
+                registry_mgr=registry_mgr,
+                sync_tuning=not no_sync_tuning,
+                dry_run=dry_run,
+                detached=not foreground,
+                follow=not no_follow,
+                ray_port=ray_port,
+                dashboard_port=dashboard_port,
+                dashboard=dashboard,
+                init_port=init_port,
+                topology=cluster_cfg.topology,
+                executor_config=cli_executor_opts,
+                rootless=not rootful,
+                auto_user=not rootful,
+            )
+            
+            if diag:
+                diag.phase_end("launch")
+                diag.emit_launch_result(result)
+                diag.emit_serve_command(result.serve_command, result.container_image)
+
+            # region USER FACING STDOUT INFORMATION
+
+            click.echo("Cluster:   %s" % result.cluster_id)
+            click.echo()
+            click.echo("Serve command:")
+            for line in result.serve_command.strip().splitlines():
+                click.echo("  %s" % line)
+            click.echo()
+
+            if result.runtime_info:
+                click.echo("Runtime versions:")
+                for k, v in sorted(result.runtime_info.items()):
+                    click.echo("  %-10s %s" % (k + ":", v))
+                click.echo()
+
+            # endregion
+
+            # Post-serve lifecycle: run post_exec and post_commands if recipe defines them
+            has_post_hooks = bool(recipe.post_exec or recipe.post_commands)
+            if result.rc == 0 and has_post_hooks and not foreground:
+                from sparkrun.core.launcher import post_launch_lifecycle
+
+                post_launch_lifecycle(result, remote_cache_dir=remote_cache_dir, trust=trust, dry_run=dry_run, progress=sctx.progress)
+            else:
+                if sctx.progress:
+                    sctx.progress.phase_skip(6)
+
+            # Follow container logs after a successful detached launch
+            if result.rc == 0 and not foreground and not dry_run and not no_follow:
+                runtime.follow_logs(
+                    hosts=host_list,
+                    cluster_id=result.cluster_id,
+                    config=config,
+                    dry_run=dry_run,
+                )
     except DistributionError as e:
         if diag:
             diag.phase_end("launch", error=str(e))
