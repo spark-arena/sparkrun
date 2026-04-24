@@ -79,3 +79,13 @@ dev = [
     "pytest>=9.0.2",
     "ruff>=0.15.9",
 ]
+
+[tool.pyright]
+include = ["src"]
+extraPaths = ["src"]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.12"
+typeCheckingMode = "basic"
+reportMissingImports = "warning"
+reportMissingModuleSource = "warning"
