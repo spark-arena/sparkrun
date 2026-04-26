@@ -363,6 +363,66 @@ def _format_param_count(value) -> str | None:
     return str(n)
 
 
+# TODO: extract speculate should be centralized like parallelism & quant, etc.
+def _extract_speculative(recipe) -> dict | None:
+    """Return speculative-decoding metadata for the recipe, or None.
+
+    Resolution order:
+      1. Explicit ``recipe.metadata["speculative"]`` (author-declared dict).
+         Recommended shape::
+
+             metadata:
+               speculative:
+                 method: eagle | mtp | ngram | nextn | draft
+                 draft_model: <hf-id>   # optional, only for method=draft
+
+      2. Heuristic from ``recipe.defaults``:
+         - vLLM: ``speculative_config`` JSON string with a ``"method"`` field.
+         - SGLang: ``speculative_algo`` value (NEXTN, EAGLE3, MTP, ...).
+         - vLLM/legacy: ``speculative_model``/``draft_model`` defaults imply
+           a draft-model approach.
+
+      3. Heuristic scan of ``recipe.command`` for unambiguous CLI flags
+         (``--draft-model``, ``--prompt-lookup-num-tokens``).
+
+    Always best-effort — false negatives preferred over false positives.
+    Returns ``{"method": ..., "source": "heuristic"}`` for inferred results.
+    """
+    declared = recipe.metadata.get("speculative") if recipe.metadata else None
+    if isinstance(declared, dict) and declared:
+        return declared
+
+    defaults = recipe.defaults or {}
+
+    spec_config = defaults.get("speculative_config")
+    if isinstance(spec_config, str) and spec_config.strip():
+        # vLLM accepts a JSON string. Parse defensively — recipe authors may
+        # write malformed JSON; in that case fall through to substring detect.
+        import json as _json
+
+        try:
+            parsed = _json.loads(spec_config)
+            method = parsed.get("method") if isinstance(parsed, dict) else None
+            if method:
+                return {"method": str(method).lower(), "source": "heuristic"}
+        except (ValueError, TypeError):
+            pass
+
+    spec_algo = defaults.get("speculative_algo")
+    if isinstance(spec_algo, str) and spec_algo.strip():
+        return {"method": spec_algo.strip().lower(), "source": "heuristic"}
+
+    if defaults.get("speculative_model") or defaults.get("draft_model"):
+        return {"method": "draft", "source": "heuristic"}
+
+    cmd = (recipe.command or "").lower()
+    if "--draft-model" in cmd:
+        return {"method": "draft", "source": "heuristic"}
+    if "--prompt-lookup" in cmd or "ngram_prompt" in cmd:
+        return {"method": "ngram", "source": "heuristic"}
+    return None
+
+
 @registry.command("export-metadata", hidden=True)
 @click.option("--output", type=click.Path(), default="recipes.json", help="Output path for the JSON manifest")
 @click.option("--include-hidden", is_flag=True, help="Include recipes from hidden registries")
@@ -375,6 +435,7 @@ def export_metadata(ctx, output, include_hidden):
 
     from vpd.next.util import read_yaml
     from sparkrun.core.recipe import Recipe
+    from sparkrun.core.parallelism import extract_parallelism_meta
     from sparkrun.models.download import parse_gguf_model_spec
 
     config, registry_mgr = _get_config_and_registry()
@@ -420,6 +481,16 @@ def export_metadata(ctx, output, include_hidden):
             tp_val = recipe.defaults.get("tensor_parallel")
             gpu_mem_val = recipe.defaults.get("gpu_memory_utilization")
             port_val = recipe.defaults.get("port")
+            ctx_val = recipe.defaults.get("max_model_len")
+            try:
+                ctx_int = int(ctx_val) if ctx_val is not None else None
+            except (TypeError, ValueError):
+                ctx_int = None
+            # Short-key dict ({"tp": 2, "pp": 2}, only non-1 dims). `tp` is also
+            # written as a top-level field below for backward compat with the
+            # web manifest's stage-3 tok/s augmenter which reads recipe['tp'].
+            parallelism_meta = extract_parallelism_meta(recipe.defaults)
+            speculative = _extract_speculative(recipe)
 
             display_runtime = _RUNTIME_DISPLAY.get(recipe.runtime, recipe.runtime)
 
@@ -443,36 +514,44 @@ def export_metadata(ctx, output, include_hidden):
                 continue
             seen_slugs[slug] = str(f)
 
-            all_recipes.append(
-                {
-                    "slug": slug,
-                    "name": recipe.name,
-                    "registry": entry.name,
-                    "model": parse_gguf_model_spec(recipe.model)[0],
-                    "model_full": recipe.model,
-                    "runtime": display_runtime,
-                    "cluster_backend": cluster_backend,
-                    "description": recipe.description,
-                    "model_params": _format_param_count(recipe.metadata.get("model_params")),
-                    "model_dtype": str(recipe.metadata["model_dtype"]) if recipe.metadata.get("model_dtype") else None,
-                    "category": recipe.metadata.get("category"),
-                    "maintainer": recipe.maintainer,
-                    "min_nodes": recipe.min_nodes,
-                    "max_nodes": recipe.max_nodes,
-                    "mode": recipe.mode,
-                    "tp": int(tp_val) if tp_val is not None else 1,
-                    "gpu_mem": float(gpu_mem_val) if gpu_mem_val is not None else 0.9,
-                    "port": int(port_val) if port_val is not None else 8000,
-                    "container": recipe.container,  # TODO: should we replace w/ first-party if meets requirements?
-                    "recipe_version": recipe.recipe_version,
-                    "raw_url": raw_url,
-                    "spark_arena_benchmarks": [
-                        {"tp": b["tp"], "uuid": b["uuid"], "url": "https://spark-arena.com/benchmark/%s" % b["uuid"]}
-                        for b in recipe.metadata.get("spark_arena_benchmarks", [])
-                    ]
-                    or None,
-                }
-            )
+            recipe_entry = {
+                "slug": slug,
+                "name": recipe.name,
+                "registry": entry.name,
+                "model": parse_gguf_model_spec(recipe.model)[0],
+                "model_full": recipe.model,
+                "runtime": display_runtime,
+                "cluster_backend": cluster_backend,
+                "description": recipe.description,
+                "model_params": _format_param_count(recipe.metadata.get("model_params")),
+                "model_dtype": str(recipe.metadata["model_dtype"]) if recipe.metadata.get("model_dtype") else None,
+                "category": recipe.metadata.get("category"),
+                "maintainer": recipe.maintainer,
+                "min_nodes": recipe.min_nodes,
+                "max_nodes": recipe.max_nodes,
+                "mode": recipe.mode,
+                "tp": int(tp_val) if tp_val is not None else 1,
+                "gpu_mem": float(gpu_mem_val) if gpu_mem_val is not None else 0.9,
+                "port": int(port_val) if port_val is not None else 8000,
+                "container": recipe.container,  # TODO: should we replace w/ first-party if meets requirements?
+                "recipe_version": recipe.recipe_version,
+                "raw_url": raw_url,
+                "max_model_len": ctx_int,
+                "speculative": speculative,
+                "spark_arena_benchmarks": [
+                    {"tp": b["tp"], "uuid": b["uuid"], "url": "https://spark-arena.com/benchmark/%s" % b["uuid"]}
+                    for b in recipe.metadata.get("spark_arena_benchmarks", [])
+                ]
+                or None,
+            }
+            # Merge non-1 parallelism dims (pp/dp/ep/cp) as top-level fields.
+            # tp is already emitted above; skip it to avoid clobbering on the
+            # off chance the helper round-trips it differently.
+            for short_key, val in parallelism_meta.items():
+                if short_key == "tp":
+                    continue
+                recipe_entry[short_key] = val
+            all_recipes.append(recipe_entry)
             all_runtimes.add(display_runtime)
             recipe_count += 1
 
