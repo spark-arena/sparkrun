@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest import mock
 from unittest.mock import patch
 
 import pytest
@@ -649,6 +650,123 @@ class TestResolveTransferConfig:
         config = _FakeConfig()
         _, _, mode, _ = cfg.resolve_transfer_config(config)
         assert mode == "auto"
+
+
+# ---------------------------------------------------------------------------
+# resolve_cluster_config tests — SSH user inference fallback
+# ---------------------------------------------------------------------------
+
+
+class TestResolveClusterConfigSshUserFallback:
+    """When no cluster user is configured, ``resolve_cluster_config`` should
+    fall back to ``ssh -G`` so per-host ``User`` overrides in
+    ``~/.ssh/config`` reach remote-cache derivation.  This is what makes
+    ``sparkrun run -H some-host …`` work when ``some-host``'s SSH login
+    user differs from the local OS user."""
+
+    def _ssh_g_stub(self, user_value: str, returncode: int = 0):
+        """Build a subprocess.run replacement that emits a fixed `user` line."""
+        from types import SimpleNamespace
+
+        def _run(cmd, **kwargs):
+            return SimpleNamespace(
+                returncode=returncode,
+                stdout="hostname spark2.example\nuser %s\nport 22\n" % user_value,
+                stderr="",
+            )
+        return _run
+
+    def test_inferred_when_ssh_user_differs_from_local(self):
+        """ssh-G reports a different user → cfg.user is populated for cache derivation."""
+        from sparkrun.core import cluster_manager as cm
+
+        with patch("subprocess.run", self._ssh_g_stub("user1")), patch.dict(
+            "os.environ", {"USER": "alice"}
+        ):
+            cfg = cm.resolve_cluster_config(
+                cluster_name=None,
+                hosts="spark2.example",
+                hosts_file=None,
+                cluster_mgr=None,
+            )
+        assert cfg.user == "user1"
+
+    def test_not_adopted_when_ssh_user_matches_local(self):
+        """ssh-G defaults to $USER when no override — that's not a useful signal,
+        so cfg.user stays None and existing local-path semantics apply."""
+        from sparkrun.core import cluster_manager as cm
+
+        with patch("subprocess.run", self._ssh_g_stub("alice")), patch.dict(
+            "os.environ", {"USER": "alice"}
+        ):
+            cfg = cm.resolve_cluster_config(
+                cluster_name=None,
+                hosts="spark2.example",
+                hosts_file=None,
+                cluster_mgr=None,
+            )
+        assert cfg.user is None
+
+    def test_inferred_user_drives_cross_user_cache_derivation(self):
+        """End-to-end: ssh-G inference + resolve_transfer_config produces the
+        remote user's cache path, not the local user's.  This is the bug the
+        PR fixes for `sparkrun run -H <host>` (no --cluster) when SSH config
+        maps to a different remote login user."""
+        from sparkrun.core import cluster_manager as cm
+
+        with patch("subprocess.run", self._ssh_g_stub("user1")), patch(
+            "sys.platform", "linux"
+        ), patch.dict("os.environ", {"USER": "alice"}):
+            cfg = cm.resolve_cluster_config(
+                cluster_name=None,
+                hosts="spark2.example",
+                hosts_file=None,
+                cluster_mgr=None,
+            )
+            _, remote, _, _ = cfg.resolve_transfer_config(_FakeConfig())
+        assert cfg.user == "user1"
+        assert remote == "/home/user1/.cache/huggingface"
+
+    def test_no_inference_when_cluster_user_already_set(self):
+        """A cluster-defined user wins over ssh-G inference."""
+        from sparkrun.core import cluster_manager as cm
+
+        fake_def = mock.MagicMock()
+        fake_def.user = "explicit-user"
+        fake_def.transfer_mode = None
+        fake_def.transfer_interface = None
+        fake_def.cache_dir = None
+        fake_def.topology = None
+        fake_mgr = mock.MagicMock()
+        fake_mgr.get.return_value = fake_def
+
+        # ssh-G should never be consulted in this branch — make it explode if it is.
+        def _boom(*_a, **_kw):
+            raise AssertionError("ssh -G must not be invoked when cluster user is set")
+
+        with patch("subprocess.run", _boom):
+            cfg = cm.resolve_cluster_config(
+                cluster_name="mycluster",
+                hosts="spark2.example",
+                hosts_file=None,
+                cluster_mgr=fake_mgr,
+            )
+        assert cfg.user == "explicit-user"
+
+    def test_ssh_g_failure_leaves_user_none(self):
+        """ssh-G failures (binary missing, timeout, non-zero exit) are non-fatal."""
+        from sparkrun.core import cluster_manager as cm
+
+        with patch("subprocess.run", self._ssh_g_stub("ignored", returncode=255)), patch.dict(
+            "os.environ", {"USER": "alice"}
+        ):
+            cfg = cm.resolve_cluster_config(
+                cluster_name=None,
+                hosts="spark2.example",
+                hosts_file=None,
+                cluster_mgr=None,
+            )
+        assert cfg.user is None
 
 
 # ---------------------------------------------------------------------------
