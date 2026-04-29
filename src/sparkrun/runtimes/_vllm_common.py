@@ -54,6 +54,7 @@ VLLM_FLAG_MAP = {
     "pipeline_parallel": "-pp",
     "data_parallel": "--data-parallel-size",
     "kv_cache_dtype": "--kv-cache-dtype",
+    "otlp_traces_endpoint": "--otlp-traces-endpoint",
 }
 
 # Boolean flags (present = True, absent = False)

@@ -869,6 +869,13 @@ def _apply_recipe_overrides(
         if v is not None:
             overrides[k] = v
 
+    # Apply env.* overrides to recipe.env directly
+    if recipe is not None:
+        for k, v in list(overrides.items()):
+            if k.startswith("env."):
+                recipe.env[k[4:]] = str(v)
+                del overrides[k]
+
     # Resolve runtime with overrides visible to resolvers
     if recipe is not None:
         recipe.resolve(overrides)
