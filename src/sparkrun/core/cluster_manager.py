@@ -609,6 +609,64 @@ class ResolvedClusterConfig:
         return local_cache_dir, remote_cache_dir, effective_transfer_mode, effective_transfer_interface
 
 
+def _first_explicit_host(hosts: str | None, hosts_file: str | None) -> str | None:
+    """Return the first host literal from ``--hosts`` or ``--hosts-file``.
+
+    Used to look up SSH-config-derived properties (currently the SSH
+    user) when no cluster definition is available.  Returns ``None`` if
+    neither source yields a usable host.
+    """
+    if hosts:
+        for token in hosts.split(","):
+            token = token.strip()
+            if token:
+                return token
+    if hosts_file:
+        try:
+            with open(hosts_file) as f:
+                for raw in f:
+                    line = raw.split("#", 1)[0].strip()
+                    if line:
+                        return line
+        except OSError:
+            return None
+    return None
+
+
+def _resolve_ssh_user_from_host(host: str) -> str | None:
+    """Return the SSH login user that ``ssh`` would use for *host*.
+
+    Invokes ``ssh -G <host>`` and parses the ``user`` directive so that
+    ``~/.ssh/config`` Match/Host overrides flow through to remote-cache
+    derivation.  ``ssh -G`` is config-only (no network), making this
+    cheap and safe.
+
+    Returns ``None`` on any error.  Note: ``ssh -G`` always emits a
+    ``user`` line — if the config doesn't override it, the value equals
+    the local OS user.  Callers should treat that as "no useful info"
+    rather than a meaningful cross-user signal.
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["ssh", "-G", host],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        if line.startswith("user "):
+            value = line.split(None, 1)[1].strip()
+            return value or None
+    return None
+
+
 def resolve_cluster_config(
     cluster_name: str | None,
     hosts: str | None,
@@ -622,8 +680,17 @@ def resolve_cluster_config(
     chain of ``core.hosts.resolve_hosts``).  The SSH user is still
     resolved from the cluster when *cluster_name* is given explicitly.
 
+    If no SSH user can be determined from the cluster definition, fall
+    back to ``ssh -G`` on the first explicit host so that per-host
+    ``User`` overrides in ``~/.ssh/config`` are honored.  Without this,
+    ``--hosts foo`` against a host whose SSH config sets a different
+    login user would derive the remote HF cache path from the *local*
+    OS user's home, breaking cross-user delegated distribution.
+
     Returns a :class:`ResolvedClusterConfig` with all resolved properties.
     """
+    import os
+
     cfg = ResolvedClusterConfig()
 
     # Determine which cluster to resolve
@@ -631,24 +698,35 @@ def resolve_cluster_config(
     if not resolved and not hosts and not hosts_file:
         resolved = cluster_mgr.get_default() if cluster_mgr else None
 
-    if not resolved:
-        return cfg
+    if resolved:
+        cfg.name = resolved
+        try:
+            cluster_def = cluster_mgr.get(resolved)
+        except Exception:
+            logger.debug("Failed to resolve cluster '%s'", resolved, exc_info=True)
+            cluster_def = None
 
-    cfg.name = resolved
-    try:
-        cluster_def = cluster_mgr.get(resolved)
-    except Exception:
-        logger.debug("Failed to resolve cluster '%s'", resolved, exc_info=True)
-        return cfg
+        if cluster_def is not None:
+            # User is always resolved (even with explicit --hosts, if --cluster given)
+            cfg.user = cluster_def.user
 
-    # User is always resolved (even with explicit --hosts, if --cluster given)
-    cfg.user = cluster_def.user
+            # transfer_mode, transfer_interface, and cache_dir only apply when hosts come from the cluster
+            if not hosts and not hosts_file:
+                cfg.transfer_mode = cluster_def.transfer_mode
+                cfg.transfer_interface = cluster_def.transfer_interface
+                cfg.cache_dir = cluster_def.cache_dir
+                cfg.topology = cluster_def.topology
 
-    # transfer_mode, transfer_interface, and cache_dir only apply when hosts come from the cluster
-    if not hosts and not hosts_file:
-        cfg.transfer_mode = cluster_def.transfer_mode
-        cfg.transfer_interface = cluster_def.transfer_interface
-        cfg.cache_dir = cluster_def.cache_dir
-        cfg.topology = cluster_def.topology
+    # Fallback: when no cluster user is configured but explicit hosts are
+    # given, infer the SSH login user from ssh-config.  Only adopt the
+    # value if it differs from the local OS user — ssh-G always emits a
+    # user line (defaults to $USER) and same-user means no derivation
+    # is needed anyway.
+    if not cfg.user:
+        first_host = _first_explicit_host(hosts, hosts_file)
+        if first_host:
+            inferred = _resolve_ssh_user_from_host(first_host)
+            if inferred and inferred != os.environ.get("USER"):
+                cfg.user = inferred
 
     return cfg

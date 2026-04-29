@@ -945,6 +945,42 @@ class TestDistributeModelFromHead:
         assert "10.0.0.1" in dist_script
         assert "10.0.0.2" in dist_script
 
+    @mock.patch("sparkrun.orchestration.ssh.run_remote_script")
+    def test_default_cache_resolves_on_remote(self, mock_run):
+        """Without an explicit cache_dir, scripts embed a shell expression that
+        resolves against the remote user's $HOME (not the control machine's)."""
+        mock_run.return_value = RemoteResult(host="head", returncode=0, stdout="ok", stderr="")
+        from sparkrun.models.distribute import distribute_model_from_head
+
+        failed = distribute_model_from_head("org/model", ["head", "w1"])
+        assert failed == []
+        # Both the ensure (download) script and the distribute (rsync) script
+        # must reference the shell expression, not any local absolute path.
+        ensure_script = mock_run.call_args_list[0][0][1]
+        dist_script = mock_run.call_args_list[1][0][1]
+        for script in (ensure_script, dist_script):
+            assert "${HF_HOME:-$HOME/.cache/huggingface}" in script
+            # Guard against the old bug: no accidental interpolation of the
+            # control machine's resolved home directory.
+            import os
+            assert os.path.expanduser("~/.cache/huggingface") not in script
+
+    @mock.patch("sparkrun.orchestration.ssh.run_remote_script")
+    def test_explicit_cache_dir_is_passed_through(self, mock_run):
+        """An explicit cache_dir overrides the remote default and is embedded as-is."""
+        mock_run.return_value = RemoteResult(host="head", returncode=0, stdout="ok", stderr="")
+        from sparkrun.models.distribute import distribute_model_from_head
+
+        failed = distribute_model_from_head(
+            "org/model", ["head", "w1"], cache_dir="/mnt/shared/hf"
+        )
+        assert failed == []
+        ensure_script = mock_run.call_args_list[0][0][1]
+        dist_script = mock_run.call_args_list[1][0][1]
+        for script in (ensure_script, dist_script):
+            assert "/mnt/shared/hf" in script
+            assert "${HF_HOME" not in script
+
 
 # ---------------------------------------------------------------------------
 # InfiniBand detection helpers
