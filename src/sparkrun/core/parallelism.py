@@ -18,13 +18,27 @@ class ParallelismConfig:
 
     @property
     def total_gpus(self) -> int:
-        """Total GPU count = tp * pp (dp/ep/cp don't add GPUs for inference)."""
-        return self.tensor_parallel * self.pipeline_parallel
+        """Total GPU count across the whole job = tp * pp * dp.
+
+        Each DP replica uses ``tp * pp`` GPUs; with ``dp`` replicas the full
+        job consumes ``tp * pp * dp`` GPUs.  On DGX Spark (1 GPU per node)
+        this equals :attr:`total_nodes`.
+        """
+        return self.tensor_parallel * self.pipeline_parallel * self.data_parallel
 
     @property
     def model_shard_factor(self) -> int:
-        """Factor by which model weights are sharded across GPUs = tp * pp."""
+        """Factor by which model weights are sharded across GPUs = tp * pp.
+
+        Also the GPU count for a *single* DP replica.  Use this (not
+        :attr:`total_gpus`) for VRAM-per-GPU estimation.
+        """
         return self.tensor_parallel * self.pipeline_parallel
+
+    @property
+    def total_nodes(self) -> int:
+        """Total nodes required on DGX Spark (1 GPU per node) = tp * pp * dp."""
+        return self.tensor_parallel * self.pipeline_parallel * self.data_parallel
 
 
 # Canonical list of parallelism keys and their short aliases.

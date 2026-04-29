@@ -181,6 +181,11 @@ class EugrBuilder(BuilderPlugin):
             logger.info("Mapped eugr nightly image to container name '%s'", image)
         # NOTE: if not :latest, then we do want to use the given container image
 
+        # TODO: review semantics here for build/no-build when image names are standarized
+        # # if we have "unusual build_args then we need to pursue the build path
+        # elif build_args:
+        #     needs_build = True
+
         # Determine if we need to build the image.
         # If the image references a known public registry, it's pullable — never build it.
         is_pullable = any(image.startswith(prefix) for prefix in PULLABLE_REGISTRY_PREFIXES)

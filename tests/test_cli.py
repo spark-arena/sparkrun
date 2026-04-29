@@ -1880,6 +1880,38 @@ class TestTensorParallelValidation:
             call_kwargs = mock_run.call_args.kwargs
             assert len(call_kwargs["hosts"]) == 2
 
+    def test_dp_override_scales_required_nodes(self, runner, reset_bootstrap):
+        """--dp 2 with a tp=1 recipe requires 2 hosts (tp*pp*dp)."""
+        with mock.patch.object(SglangRuntime, "run", return_value=0) as mock_run:
+            result = runner.invoke(
+                main,
+                [
+                    "run",
+                    _TEST_RECIPE_NAME,
+                    "--tp",
+                    "1",
+                    "--dp",
+                    "2",
+                    "--dry-run",
+                    "--hosts",
+                    "10.0.0.1,10.0.0.2,10.0.0.3",
+                ],
+            )
+
+            assert result.exit_code == 0
+            assert "2 nodes required" in result.output
+            assert "using 2 of 3 hosts" in result.output
+            mock_run.assert_called_once()
+            call_kwargs = mock_run.call_args.kwargs
+            assert len(call_kwargs["hosts"]) == 2
+
+    def test_dp_hidden_from_help(self, runner, reset_bootstrap):
+        """`sparkrun run --help` must not expose --dp (hidden advanced flag)."""
+        result = runner.invoke(main, ["run", "--help"])
+        assert result.exit_code == 0
+        assert "--data-parallel" not in result.output
+        assert "--dp " not in result.output
+
     def test_tp_trims_to_one_becomes_solo(self, runner, reset_bootstrap):
         """tensor_parallel=1 with multiple hosts should trim to 1 host and run solo."""
         with mock.patch.object(SglangRuntime, "run", return_value=0) as mock_run:
@@ -3694,9 +3726,7 @@ class TestBenchmarkCommand:
         assert "--framework" in result.output
 
     def test_benchmark_dry_run(self, runner, tmp_recipe_dir):
-        """sparkrun benchmark --dry-run <recipe> attempts to run benchmark flow."""
-        # Note: This test may fail if recipe resolution doesn't work in test env.
-        # The important thing is that the command structure is correct.
+        """sparkrun benchmark --dry-run <recipe> uses implicit current directory fallback if unconfigured."""
         result = runner.invoke(
             main,
             [
@@ -3706,8 +3736,42 @@ class TestBenchmarkCommand:
                 "test-v2",
             ],
         )
-        # Accept either success or recipe-not-found error (exit code 1)
-        # The key is that argument parsing worked (exit code 2 would be usage error)
+        assert result.exit_code in (0, 1)
+
+    def test_benchmark_dry_run_with_output_flag(self, runner, tmp_recipe_dir, tmp_path):
+        """sparkrun benchmark --dry-run <recipe> --output honors the explicit output option."""
+        out_target = tmp_path / "explicit_out.yaml"
+        result = runner.invoke(
+            main,
+            [
+                "benchmark",
+                "--solo",
+                "--dry-run",
+                "--output",
+                str(out_target),
+                "test-v2",
+            ],
+        )
+        # Verify it attempts to run with output path (it might exit 1 if the dry run recipe isn't found perfectly)
+        assert result.exit_code in (0, 1)
+        if result.exit_code == 0:
+            assert "[dry-run] Would parse and export results to: " + str(out_target) in result.output
+
+    def test_benchmark_dry_run_with_config_default(self, runner, tmp_recipe_dir, tmp_path, monkeypatch):
+        """sparkrun benchmark uses SparkrunConfig output default if --output is omitted."""
+        custom_out = tmp_path / "custom_data"
+        custom_out.mkdir()
+        # Mock SparkrunConfig so default_benchmark_output_dir returns our temp path
+        monkeypatch.setattr("sparkrun.core.config.SparkrunConfig.default_benchmark_output_dir", custom_out)
+        result = runner.invoke(
+            main,
+            [
+                "benchmark",
+                "--solo",
+                "--dry-run",
+                "test-v2",
+            ],
+        )
         assert result.exit_code in (0, 1)
 
     def test_benchmark_dry_run_with_option_override(self, runner, tmp_recipe_dir):

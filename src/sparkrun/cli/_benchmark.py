@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 @click.option("--port", type=int, default=None, help="Override serve port")
 @click.option("--profile", default=None, type=PROFILE_NAME, help="Benchmark profile name or file path")
 @click.option("--framework", default=None, help="Override benchmarking framework (default: llama-benchy)")
-@click.option("--out", "--output", "output_file", default=None, type=click.Path(), help="Output file for results YAML")
+@click.option("--output", "output_file", default=None, type=click.Path(), help="Output file for results YAML")
 @click.option("-b", "--benchmark-option", "bench_options", multiple=True, help="Override benchmark arg: -b key=value (repeatable)")
 @click.option(
     "--exit-on-first-fail/--no-exit-on-first-fail",
@@ -82,6 +82,7 @@ def benchmark(
     cluster_name,
     tensor_parallel,
     pipeline_parallel,
+    data_parallel,
     gpu_mem,
     max_model_len,
     options,
@@ -131,6 +132,7 @@ def benchmark(
         cluster_name,
         tensor_parallel,
         pipeline_parallel,
+        data_parallel,
         gpu_mem,
         max_model_len,
         options,
@@ -161,6 +163,7 @@ def _run_benchmark(
     cluster_name,
     tensor_parallel,
     pipeline_parallel,
+    data_parallel,
     gpu_mem,
     max_model_len,
     options,
@@ -289,6 +292,7 @@ def _run_benchmark(
         options,
         tensor_parallel=tensor_parallel,
         pipeline_parallel=pipeline_parallel,
+        data_parallel=data_parallel,
         gpu_mem=gpu_mem,
         max_model_len=max_model_len,
         image=image,
@@ -411,7 +415,6 @@ def _run_benchmark(
                 registry_mgr=registry_mgr,
                 auto_port=True,
                 sync_tuning=sync_tuning,
-                skip_keys={"served_model_name"},
                 dry_run=dry_run,
                 detached=True,
                 rootless=not rootful,
@@ -500,6 +503,13 @@ def _run_benchmark(
         est_tests = fw.estimate_test_count(bench_args)
         if est_tests is not None:
             logger.info("Estimated test iterations: %d", est_tests)
+
+        # Pass served_model_name as an argument if defined, satisfying llama-benchy's
+        # requirement to maintain the original huggingface model ID for tokenization.
+        # Check config_chain to capture both CLI overrides and recipe definitions natively.
+        served_model_name = config_chain.get("served_model_name")
+        if served_model_name and "served_model_name" not in bench_args:
+            bench_args["served_model_name"] = served_model_name
 
         bench_cmd = fw.build_benchmark_command(
             target_url=base_url,
@@ -595,11 +605,20 @@ def _run_benchmark(
                     profile_slug = profile.replace("/", "_").replace("@", "") if profile else "default"
                     effective_pp = int(config_chain.get("pipeline_parallel") or 1)
                     pp_suffix = "_pp%d" % effective_pp if effective_pp > 1 else ""
-                    output_file = "benchmark_%s_%s_tp%d%s.yaml" % (
-                        recipe.name.replace("/", "_"),
-                        profile_slug,
-                        effective_tp,
-                        pp_suffix,
+
+                    out_dir = config.default_benchmark_output_dir
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    output_file = str(
+                        out_dir
+                        / (
+                            "benchmark_%s_%s_tp%d%s.yaml"
+                            % (
+                                recipe.name.replace("/", "_"),
+                                profile_slug,
+                                effective_tp,
+                                pp_suffix,
+                            )
+                        )
                     )
 
                 export_results(

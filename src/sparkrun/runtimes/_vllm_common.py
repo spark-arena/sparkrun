@@ -52,6 +52,7 @@ VLLM_FLAG_MAP = {
     "trust_remote_code": "--trust-remote-code",
     "distributed_executor_backend": "--distributed-executor-backend",
     "pipeline_parallel": "-pp",
+    "data_parallel": "--data-parallel-size",
     "kv_cache_dtype": "--kv-cache-dtype",
 }
 

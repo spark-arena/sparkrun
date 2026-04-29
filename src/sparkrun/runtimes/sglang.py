@@ -101,6 +101,7 @@ class SglangRuntime(RuntimePlugin):
         node_rank: int,
         init_port: int = 25000,
         skip_keys: set[str] | frozenset[str] = frozenset(),
+        hosts: list[str] | None = None,
     ) -> str:
         """Generate the sglang command for a specific node.
 

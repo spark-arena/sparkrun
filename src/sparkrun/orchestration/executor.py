@@ -52,7 +52,7 @@ class ExecutorConfig:
     privileged: bool = True
     gpus: str = "all"
     ipc: str = "host"
-    shm_size: str = "10.24gb"
+    shm_size: str = "25gb"
     network: str = "host"
     user: str | None = None
     security_opt: list[str] | None = None

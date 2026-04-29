@@ -441,6 +441,162 @@ def test_vllm_distributed_generate_node_command_worker():
     assert "--headless" in cmd
 
 
+class TestVllmDistributedDPRankMath:
+    """Verify per-node DP/TP rank math in vllm_distributed.generate_node_command."""
+
+    def _make_recipe(self, defaults):
+        return Recipe.from_dict(
+            {
+                "name": "dp-test",
+                "model": "meta-llama/Llama-2-7b-hf",
+                "runtime": "vllm-distributed",
+                "defaults": defaults,
+            }
+        )
+
+    def _cmd_for(self, defaults, node_rank, hosts, num_nodes=None):
+        recipe = self._make_recipe(defaults)
+        runtime = VllmDistributedRuntime()
+        return runtime.generate_node_command(
+            recipe=recipe,
+            overrides={},
+            head_ip=hosts[0],
+            num_nodes=num_nodes or len(hosts),
+            node_rank=node_rank,
+            init_port=25000,
+            hosts=hosts,
+        )
+
+    # --- Regression: pure TP (dp=1) keeps today's behavior ---
+
+    def test_pure_tp_no_dp_flags(self):
+        """TP=2, DP=1: classic torch-distributed tp, no DP flags emitted."""
+        hosts = ["10.0.0.1", "10.0.0.2"]
+        cmd = self._cmd_for({"tensor_parallel": 2}, node_rank=1, hosts=hosts)
+        assert "--nnodes 2" in cmd
+        assert "--node-rank 1" in cmd
+        assert "--master-addr 10.0.0.1" in cmd
+        assert "--headless" in cmd
+        assert "--data-parallel-size" not in cmd
+        assert "--data-parallel-rank" not in cmd
+
+    # --- Pure DP (tp=pp=1, dp>1) ---
+
+    def test_pure_dp_rank0_flags(self):
+        """Pure DP: no --nnodes/--master-addr (no intra-replica coordination)."""
+        hosts = ["10.0.0.1", "10.0.0.2"]
+        cmd = self._cmd_for({"data_parallel": 2}, node_rank=0, hosts=hosts)
+        assert "--data-parallel-size 2" in cmd
+        assert "--data-parallel-rank 0" in cmd
+        assert "--data-parallel-address 10.0.0.1" in cmd
+        assert "--data-parallel-rpc-port 13345" in cmd
+        assert "--nnodes" not in cmd
+        assert "--node-rank" not in cmd
+        assert "--master-addr" not in cmd
+        assert "--headless" not in cmd
+
+    def test_pure_dp_rank1_uses_global_rank0_as_address(self):
+        """DP rank 1: --data-parallel-address points at the global first host."""
+        hosts = ["10.0.0.1", "10.0.0.2"]
+        cmd = self._cmd_for({"data_parallel": 2}, node_rank=1, hosts=hosts)
+        assert "--data-parallel-rank 1" in cmd
+        assert "--data-parallel-address 10.0.0.1" in cmd
+
+    def test_pure_dp_respects_custom_rpc_port(self):
+        hosts = ["10.0.0.1", "10.0.0.2"]
+        cmd = self._cmd_for(
+            {"data_parallel": 2, "data_parallel_rpc_port": 20000},
+            node_rank=0,
+            hosts=hosts,
+        )
+        assert "--data-parallel-rpc-port 20000" in cmd
+
+    # --- Hybrid TP+DP (the rank-collision case the user flagged) ---
+
+    def test_hybrid_tp2_dp2_node0(self):
+        """Node A (global rank 0): dp_rank=0, intra=0, tp_master=A."""
+        hosts = ["A", "B", "C", "D"]
+        cmd = self._cmd_for(
+            {"tensor_parallel": 2, "data_parallel": 2},
+            node_rank=0,
+            hosts=hosts,
+        )
+        assert "--nnodes 2" in cmd
+        assert "--node-rank 0" in cmd
+        assert "--master-addr A" in cmd
+        assert "--data-parallel-rank 0" in cmd
+        assert "--data-parallel-address A" in cmd
+        assert "--headless" not in cmd  # intra rank 0
+
+    def test_hybrid_tp2_dp2_node1(self):
+        """Node B (global rank 1): dp_rank=0, intra=1, tp_master=A, headless."""
+        hosts = ["A", "B", "C", "D"]
+        cmd = self._cmd_for(
+            {"tensor_parallel": 2, "data_parallel": 2},
+            node_rank=1,
+            hosts=hosts,
+        )
+        assert "--node-rank 1" in cmd
+        assert "--master-addr A" in cmd
+        assert "--data-parallel-rank 0" in cmd
+        assert "--data-parallel-address A" in cmd
+        assert "--headless" in cmd
+
+    def test_hybrid_tp2_dp2_node2(self):
+        """Node C (global rank 2): dp_rank=1, intra=0, tp_master=C (NOT A)."""
+        hosts = ["A", "B", "C", "D"]
+        cmd = self._cmd_for(
+            {"tensor_parallel": 2, "data_parallel": 2},
+            node_rank=2,
+            hosts=hosts,
+        )
+        assert "--node-rank 0" in cmd  # intra-replica rank 0
+        assert "--master-addr C" in cmd  # replica 1's own master
+        assert "--data-parallel-rank 1" in cmd
+        assert "--data-parallel-address A" in cmd  # DP master is always global rank 0
+        assert "--headless" not in cmd  # intra rank 0
+
+    def test_hybrid_tp2_dp2_node3(self):
+        """Node D (global rank 3): dp_rank=1, intra=1, tp_master=C, headless."""
+        hosts = ["A", "B", "C", "D"]
+        cmd = self._cmd_for(
+            {"tensor_parallel": 2, "data_parallel": 2},
+            node_rank=3,
+            hosts=hosts,
+        )
+        assert "--node-rank 1" in cmd
+        assert "--master-addr C" in cmd
+        assert "--data-parallel-rank 1" in cmd
+        assert "--headless" in cmd
+
+    # --- Recipe-template already has --data-parallel-size: don't duplicate ---
+
+    def test_template_data_parallel_size_not_duplicated(self):
+        """If the recipe command template already emits --data-parallel-size, runtime skips it."""
+        recipe = Recipe.from_dict(
+            {
+                "name": "template-dp",
+                "model": "m",
+                "runtime": "vllm-distributed",
+                "defaults": {"data_parallel": 2},
+                "command": "vllm serve {model} --data-parallel-size {data_parallel}",
+            }
+        )
+        runtime = VllmDistributedRuntime()
+        cmd = runtime.generate_node_command(
+            recipe=recipe,
+            overrides={},
+            head_ip="10.0.0.1",
+            num_nodes=2,
+            node_rank=0,
+            init_port=25000,
+            hosts=["10.0.0.1", "10.0.0.2"],
+        )
+        assert cmd.count("--data-parallel-size") == 1
+        assert "--data-parallel-rank 0" in cmd
+        assert "--data-parallel-address 10.0.0.1" in cmd
+
+
 def test_vllm_distributed_cluster_env():
     """Returns NCCL_CUMEM_ENABLE and OMP_NUM_THREADS (no Ray vars)."""
     runtime = VllmDistributedRuntime()
@@ -1510,6 +1666,36 @@ class TestComputeRequiredNodes:
         runtime = _StubRuntime()
         assert runtime.compute_required_nodes(recipe, {}) is None
 
+    def test_dp_only(self):
+        """DP=2 alone → requires 2 nodes (one per replica on DGX Spark)."""
+        recipe = self._make_recipe(defaults={"data_parallel": 2})
+        runtime = _StubRuntime()
+        assert runtime.compute_required_nodes(recipe) == 2
+
+    def test_tp_times_dp(self):
+        """TP=2, DP=2 → 4 nodes (2 nodes × 2 replicas)."""
+        recipe = self._make_recipe(defaults={"tensor_parallel": 2, "data_parallel": 2})
+        runtime = _StubRuntime()
+        assert runtime.compute_required_nodes(recipe) == 4
+
+    def test_tp_pp_dp_combined(self):
+        """TP=2, PP=2, DP=3 → 12 nodes."""
+        recipe = self._make_recipe(
+            defaults={
+                "tensor_parallel": 2,
+                "pipeline_parallel": 2,
+                "data_parallel": 3,
+            }
+        )
+        runtime = _StubRuntime()
+        assert runtime.compute_required_nodes(recipe) == 12
+
+    def test_dp_override(self):
+        """CLI --dp override is honored."""
+        recipe = self._make_recipe(defaults={"tensor_parallel": 1})
+        runtime = _StubRuntime()
+        assert runtime.compute_required_nodes(recipe, {"data_parallel": 4}) == 4
+
 
 class TestSglangComputeRequiredNodes:
     """Test SglangRuntime inherits base tp*pp (no override needed)."""
@@ -1713,6 +1899,13 @@ class TestLlamaCppComputeRequiredNodes:
         runtime = LlamaCppRuntime()
         with pytest.raises(ValueError, match="simultaneously"):
             runtime.compute_required_nodes(recipe, {"pipeline_parallel": 2})
+
+    def test_dp_gt_1_raises_value_error(self):
+        """llama.cpp has no DP support — dp>1 must raise."""
+        recipe = self._make_recipe(defaults={"data_parallel": 2})
+        runtime = LlamaCppRuntime()
+        with pytest.raises(ValueError, match="data_parallel"):
+            runtime.compute_required_nodes(recipe)
 
 
 class TestLlamaCppSplitModeCommand:
@@ -1944,11 +2137,15 @@ class TestAugmentServedModelName:
         assert "--served-model-name dist-model" in cmd
 
     def test_vllm_distributed_node_command_appends(self):
-        """vllm-distributed generate_node_command: template missing flag → appended."""
+        """vllm-distributed generate_node_command: template missing flag → appended.
+
+        Uses tp=2 (replica_size > 1) so torch-distributed flags are emitted
+        alongside the served-model-name append.
+        """
         recipe = self._make_recipe(
             runtime="vllm-distributed",
             command="vllm serve {model} --port 8000",
-            defaults={"served_model_name": "dist-model"},
+            defaults={"served_model_name": "dist-model", "tensor_parallel": 2},
         )
         runtime = VllmDistributedRuntime()
         cmd = runtime.generate_node_command(

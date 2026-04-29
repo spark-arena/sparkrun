@@ -1095,6 +1095,7 @@ def test_vllm_distributed_generate_node_command_skip_keys():
             "defaults": {
                 "served_model_name": "my-alias",
                 "port": 8000,
+                "tensor_parallel": 2,  # needed for torch-dist cluster flags to emit
             },
         }
     )

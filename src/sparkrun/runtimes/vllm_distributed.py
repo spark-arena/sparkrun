@@ -84,15 +84,42 @@ class VllmDistributedRuntime(VllmMixin, RuntimePlugin):
         node_rank: int,
         init_port: int = 25000,
         skip_keys: set[str] | frozenset[str] = frozenset(),
+        hosts: list[str] | None = None,
     ) -> str:
         """Generate the vllm serve command for a specific node.
 
-        Produces the full ``vllm serve`` invocation with the node-specific
-        ``--nnodes``, ``--node-rank``, ``--master-addr``, and
-        ``--master-port`` flags appended.  Workers (rank > 0) also get
-        ``--headless``.
+        Handles the three parallelism regimes on DGX Spark (1 GPU/node):
+
+        * ``tp*pp > 1, dp == 1``: cross-node tensor/pipeline parallel
+          within a single replica.  Appends ``--nnodes``, ``--node-rank``,
+          ``--master-addr``, ``--master-port``; workers add ``--headless``.
+        * ``tp*pp == 1, dp > 1``: pure data-parallel replication.  Each
+          node is its own replica; appends ``--data-parallel-size``,
+          ``--data-parallel-rank``, ``--data-parallel-address``,
+          ``--data-parallel-rpc-port``.  No tp/pp torch-distributed flags.
+        * ``tp*pp > 1, dp > 1`` (hybrid): both sets of flags.  The node's
+          ``--master-addr`` points at the first host of *its* dp replica,
+          and ``--node-rank`` is the rank *within* that replica (0..tp*pp-1),
+          not the global node index.
         """
+        from sparkrun.core.parallelism import extract_parallelism
+
         config = recipe.build_config_chain(overrides)
+        p = extract_parallelism(config)
+        replica_size = p.tensor_parallel * p.pipeline_parallel
+        dp = p.data_parallel
+
+        # Rank math — see CLAUDE.md / plan "Rank math" section.
+        # When dp == 1 this collapses to node_rank = global rank, tp_master = head_ip.
+        if replica_size <= 0:
+            replica_size = 1  # defensive: tp or pp misconfigured as 0
+        dp_rank = node_rank // replica_size
+        intra_replica_rank = node_rank % replica_size
+        if hosts and len(hosts) >= (dp_rank + 1) * replica_size:
+            tp_master_addr = hosts[dp_rank * replica_size]
+        else:
+            # Fallback: no host list available (solo / unit tests).
+            tp_master_addr = head_ip
 
         # If recipe has an explicit command template, render it
         rendered = recipe.render_command(config)
@@ -114,16 +141,37 @@ class VllmDistributedRuntime(VllmMixin, RuntimePlugin):
         else:
             base = self._build_base_command(recipe, config, skip_keys=skip_keys)
 
-        # Append vLLM native multi-node arguments
-        parts = [
-            base,
-            "--nnodes %d" % num_nodes,
-            "--node-rank %d" % node_rank,
-            "--master-addr %s" % head_ip,
-            "--master-port %d" % init_port,
-        ]
-        if node_rank > 0:
-            parts.append("--headless")
+        parts = [base]
+
+        # Torch-distributed coordination for cross-node tp/pp (intra-replica).
+        if replica_size > 1:
+            parts.extend(
+                [
+                    "--nnodes %d" % replica_size,
+                    "--node-rank %d" % intra_replica_rank,
+                    "--master-addr %s" % tp_master_addr,
+                    "--master-port %d" % init_port,
+                ]
+            )
+            if intra_replica_rank > 0:
+                parts.append("--headless")
+
+        # vLLM data-parallel coordination (inter-replica).
+        if dp > 1:
+            dp_rpc_port = int(config.get("data_parallel_rpc_port") or 13345)
+            dp_address = hosts[0] if hosts else head_ip
+            # Only inject --data-parallel-size when the recipe template
+            # didn't already supply it (mirrors how we handle -tp today).
+            if "--data-parallel-size" not in (base or ""):
+                parts.append("--data-parallel-size %d" % dp)
+            parts.extend(
+                [
+                    "--data-parallel-rank %d" % dp_rank,
+                    "--data-parallel-address %s" % dp_address,
+                    "--data-parallel-rpc-port %d" % dp_rpc_port,
+                ]
+            )
+
         return " ".join(parts)
 
     def _build_base_command(self, recipe: Recipe, config, skip_keys: set[str] | frozenset[str] = frozenset()) -> str:

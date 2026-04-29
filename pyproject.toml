@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sparkrun"
-version = "0.2.28"
+version = "0.2.29"
 description = "Launch and manage Docker-based inference workloads on NVIDIA DGX Spark systems"
 readme = "README.md"
 license = "Apache-2.0"
@@ -53,6 +53,7 @@ trtllm = "sparkrun.runtimes.trtllm:TrtllmRuntime"
 
 [project.entry-points."sparkrun.benchmarking"]
 llama-benchy = "sparkrun.benchmarking.llama_benchy:LlamaBenchyFramework"
+tool-eval-bench = "sparkrun.benchmarking.tool_eval_bench:ToolEvalBenchFramework"
 
 [project.entry-points."sparkrun.builders"]
 docker-pull = "sparkrun.builders.docker_pull:DockerPullBuilder"
@@ -79,3 +80,13 @@ dev = [
     "pytest>=9.0.2",
     "ruff>=0.15.9",
 ]
+
+[tool.pyright]
+include = ["src"]
+extraPaths = ["src"]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.12"
+typeCheckingMode = "basic"
+reportMissingImports = "warning"
+reportMissingModuleSource = "warning"

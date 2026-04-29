@@ -289,7 +289,24 @@ def _get_cluster_manager(v=None, sctx: SparkrunContext | None = None):
     return ClusterManager(get_config_root(v))
 
 
-def _load_recipe(config, recipe_name, resolve=True):
+def _recipe_name_looks_like_path(name: str) -> bool:
+    """Return True when *name* looks like a filesystem path.
+
+    Used to short-circuit registry refresh retries for obvious path inputs,
+    since updating remote registries cannot help resolve a missing local file.
+    """
+    if not name:
+        return False
+    if name.startswith("@"):  # @registry/recipe is a registry reference, not a path
+        return False
+    if name.startswith((".", "/", "~")):
+        return True
+    if name.endswith((".yaml", ".yml")):
+        return True
+    return False
+
+
+def _load_recipe(config, recipe_name, resolve=True, retry_after_update=False):
     """Find, load, and return a recipe.
 
     Handles disambiguation when a recipe name matches multiple registries.
@@ -302,6 +319,10 @@ def _load_recipe(config, recipe_name, resolve=True):
         resolve: Run the resolver chain immediately (default True).
             Pass ``False`` when CLI overrides need to influence runtime
             resolution — call ``recipe.resolve(overrides)`` later.
+        retry_after_update: When True and the initial lookup fails with a
+            "not found" error, run ``registry_mgr.update()`` once and retry
+            the lookup. Useful for ``sparkrun run`` so that copy-pasted
+            recipe names from newly-published sources just work.
 
     Returns:
         Tuple of (recipe, recipe_path, registry_mgr).
@@ -327,27 +348,51 @@ def _load_recipe(config, recipe_name, resolve=True):
         registry_mgr.ensure_initialized()
         return recipe, cached_path, registry_mgr
 
-    try:
-        registry_mgr = config.get_registry_manager()
-        registry_mgr.ensure_initialized()
-        recipe_path = find_recipe(recipe_name, registry_manager=registry_mgr, local_files=discover_cwd_recipes())
-        recipe = Recipe.load(recipe_path, resolve=resolve)
-    except RecipeAmbiguousError as e:
-        # Interactive disambiguation
-        if sys.stdin.isatty():
-            click.echo("Recipe '%s' found in multiple registries:" % e.name)
-            for i, (reg, path) in enumerate(e.matches, 1):
-                click.echo("  %d. @%s/%s" % (i, reg, e.name))
-            click.echo()
-            choice = click.prompt(
-                "Select registry",
-                type=click.IntRange(1, len(e.matches)),
-                default=1,
-            )
-            _reg_name, recipe_path = e.matches[choice - 1]
-            recipe = Recipe.load(recipe_path, resolve=resolve)
-        else:
+    registry_mgr = config.get_registry_manager()
+    registry_mgr.ensure_initialized()
+
+    def _prompt_disambiguation(err):
+        click.echo("Recipe '%s' found in multiple registries:" % err.name)
+        for i, (reg, path) in enumerate(err.matches, 1):
+            click.echo("  %d. @%s/%s" % (i, reg, err.name))
+        click.echo()
+        choice = click.prompt(
+            "Select registry",
+            type=click.IntRange(1, len(err.matches)),
+            default=1,
+        )
+        _reg_name, chosen = err.matches[choice - 1]
+        return chosen
+
+    # Locate the recipe file; optionally retry once after refreshing registries.
+    recipe_path = None
+    retried = False
+    while True:
+        try:
+            recipe_path = find_recipe(recipe_name, registry_manager=registry_mgr, local_files=discover_cwd_recipes())
+            break
+        except RecipeAmbiguousError as e:
+            if sys.stdin.isatty():
+                recipe_path = _prompt_disambiguation(e)
+                break
             raise click.ClickException(str(e))
+        except RecipeError as e:
+            if retried or not retry_after_update or _recipe_name_looks_like_path(recipe_name):
+                click.echo("Error: %s" % e, err=True)
+                sys.exit(1)
+            retried = True
+            click.echo("Recipe '%s' not found; refreshing registries and retrying..." % recipe_name, err=True)
+            # If the user scoped the name (@registry/...), only refresh that registry.
+            from sparkrun.utils import parse_scoped_name
+
+            scoped_registry, _ = parse_scoped_name(recipe_name)
+            try:
+                registry_mgr.update(scoped_registry) if scoped_registry else registry_mgr.update()
+            except Exception as update_err:
+                logger.debug("Registry update failed during retry: %s", update_err)
+
+    try:
+        recipe = Recipe.load(recipe_path, resolve=resolve)
     except RecipeError as e:
         click.echo("Error: %s" % e, err=True)
         sys.exit(1)
@@ -758,21 +803,43 @@ def host_options(f):
 
 
 def recipe_override_options(f):
-    """Common recipe override options: --tp, --pp, --gpu-mem, --max-model-len, --option/-o, --image."""
+    """Common recipe override options: --tp, --pp, --gpu-mem, --max-model-len, --option/-o, --image.
+
+    ``--dp`` / ``--data-parallel`` is registered but hidden — DP recipes are
+    unusual and the flag is primarily for advanced users / tests; novice
+    users should drive DP via recipe defaults.
+    """
     f = click.option("--option", "-o", "options", multiple=True, help="Override any recipe default: -o key=value (repeatable)")(f)
     f = click.option("--image", default=None, help="Override container image")(f)
     f = click.option("--max-model-len", type=int, default=None, help="Override maximum model context length")(f)
     f = click.option(
         "--gpu-mem", "--gpu-memory-utilization", "--mem-fraction-static", type=float, default=None, help="Override GPU memory utilization"
     )(f)
+    f = click.option(
+        "--dp",
+        "--data-parallel",
+        "data_parallel",
+        type=int,
+        default=None,
+        hidden=True,
+        help="Override data parallelism (advanced)",
+    )(f)
     f = click.option("--pp", "--pipeline-parallel", "pipeline_parallel", type=int, default=None, help="Override pipeline parallelism")(f)
     f = click.option("--tp", "--tensor-parallel", "tensor_parallel", type=int, default=None, help="Override tensor parallelism")(f)
-    # TODO: add options for expert parallel and data parallel and context parallel ??? and runtime arg validation
+    # TODO: add options for expert parallel and context parallel ??? and runtime arg validation
     return f
 
 
 def _apply_recipe_overrides(
-    options, tensor_parallel=None, pipeline_parallel=None, gpu_mem=None, max_model_len=None, image=None, recipe=None, **kwargs
+    options,
+    tensor_parallel=None,
+    pipeline_parallel=None,
+    data_parallel=None,
+    gpu_mem=None,
+    max_model_len=None,
+    image=None,
+    recipe=None,
+    **kwargs,
 ):
     """Build overrides dict, apply to recipe, and resolve runtime.
 
@@ -789,6 +856,8 @@ def _apply_recipe_overrides(
         overrides["tensor_parallel"] = tensor_parallel
     if pipeline_parallel is not None:
         overrides["pipeline_parallel"] = pipeline_parallel
+    if data_parallel is not None:
+        overrides["data_parallel"] = data_parallel
     if gpu_mem is not None:
         overrides["gpu_memory_utilization"] = gpu_mem
     if max_model_len is not None:
@@ -880,6 +949,7 @@ def build_cluster_id_overrides(
     served_model_name: str | None = None,
     tp_override: int | None = None,
     pp_override: int | None = None,
+    dp_override: int | None = None,
 ) -> dict | None:
     """Build overrides dict for cluster_id generation from CLI flags.
 
@@ -894,6 +964,8 @@ def build_cluster_id_overrides(
         overrides["tensor_parallel"] = tp_override
     if pp_override is not None:
         overrides["pipeline_parallel"] = pp_override
+    if dp_override is not None:
+        overrides["data_parallel"] = dp_override
     return overrides or None
 
 

@@ -29,6 +29,17 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
     def get_family(self) -> str:
         return "vllm"
 
+    def validate_recipe(self, recipe: Recipe) -> list[str]:
+        issues = super().validate_recipe(recipe)
+        dp = recipe.defaults.get("data_parallel")
+        if dp is not None and int(dp) > 1:
+            issues.append(
+                "[vllm-ray] data_parallel > 1 is not yet supported with the Ray backend; "
+                "switch to the vllm-distributed runtime (unset distributed_executor_backend=ray) "
+                "or set data_parallel=1."
+            )
+        return issues
+
     def generate_command(
         self,
         recipe: Recipe,

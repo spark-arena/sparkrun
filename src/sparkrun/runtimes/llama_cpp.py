@@ -138,11 +138,16 @@ class LlamaCppRuntime(RuntimePlugin):
 
         Raises:
             ValueError: If both tensor_parallel and pipeline_parallel
-                are set.
+                are set, or if data_parallel > 1 (llama.cpp has no native
+                multi-replica DP coordination).
         """
         config = recipe.build_config_chain(overrides or {})
         # _resolve_split_mode validates mutual exclusivity
         self._resolve_split_mode(config)
+
+        dp = config.get("data_parallel")
+        if dp is not None and int(dp) > 1:
+            raise ValueError("llama.cpp runtime does not support data_parallel > 1 (got %d)" % int(dp))
 
         tp = config.get("tensor_parallel")
         pp = config.get("pipeline_parallel")

@@ -440,6 +440,7 @@ def run_native_cluster(
         node_rank=0,
         init_port=init_port,
         skip_keys=skip_keys,
+        hosts=ctx.hosts,
     )
     logger.info("Serve command (head, rank 0):")
     for line in head_command.strip().splitlines():
@@ -561,6 +562,7 @@ def run_native_cluster(
                     node_rank=rank,
                     init_port=init_port,
                     skip_keys=skip_keys,
+                    hosts=ctx.hosts,
                 )
                 worker_container = all_nodes[rank][2]
                 worker_exec_script = executor.generate_exec_serve_script(

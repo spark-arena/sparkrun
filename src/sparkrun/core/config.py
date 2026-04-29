@@ -82,6 +82,12 @@ class SparkrunConfig:
         return Path(self._data.get("hf_cache_dir", str(DEFAULT_HF_CACHE_DIR)))
 
     @property
+    def default_benchmark_output_dir(self) -> Path:
+        defaults = self._data.get("defaults", {})
+        dir_val = defaults.get("benchmark_output_dir")
+        return Path(os.path.expanduser(str(dir_val))) if dir_val else Path.cwd()
+
+    @property
     def default_hosts(self) -> list[str]:
         cluster = self._data.get("cluster", {})
         return cluster.get("hosts", [])

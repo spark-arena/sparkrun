@@ -33,20 +33,45 @@ class TestParallelismConfig:
         p = ParallelismConfig(tensor_parallel=2, pipeline_parallel=3)
         assert p.total_gpus == 6
 
-    def test_model_shard_factor_equals_total_gpus(self):
+    def test_model_shard_factor_equals_total_gpus_when_dp_is_one(self):
         p = ParallelismConfig(tensor_parallel=2, pipeline_parallel=2)
         assert p.model_shard_factor == 4
-        assert p.model_shard_factor == p.total_gpus
+        assert p.model_shard_factor == p.total_gpus  # dp=1 default
 
-    def test_dp_ep_cp_dont_affect_total_gpus(self):
+    def test_ep_cp_dont_affect_total_gpus(self):
+        """Only tp/pp/dp count toward total GPU usage; ep/cp are intra-GPU concepts."""
         p = ParallelismConfig(
             tensor_parallel=2,
             pipeline_parallel=2,
-            data_parallel=4,
+            data_parallel=1,
             expert_parallel=8,
             context_parallel=2,
         )
-        assert p.total_gpus == 4  # only tp * pp
+        assert p.total_gpus == 4  # tp * pp * dp, ep/cp irrelevant
+
+    def test_total_nodes_defaults_to_one(self):
+        p = ParallelismConfig()
+        assert p.total_nodes == 1
+
+    def test_total_nodes_dp_only(self):
+        """DP=4 alone: 4 replicas, 1 GPU each → 4 nodes, 4 GPUs."""
+        p = ParallelismConfig(data_parallel=4)
+        assert p.total_nodes == 4
+        assert p.total_gpus == 4
+        assert p.model_shard_factor == 1  # each replica is a single-GPU model
+
+    def test_total_nodes_hybrid_tp_dp(self):
+        """TP=2, DP=2: 2 replicas of 2 GPUs each → 4 nodes, 4 GPUs, shard factor 2."""
+        p = ParallelismConfig(tensor_parallel=2, data_parallel=2)
+        assert p.total_nodes == 4
+        assert p.total_gpus == 4
+        assert p.model_shard_factor == 2
+
+    def test_total_nodes_equals_tp_times_pp_times_dp(self):
+        p = ParallelismConfig(tensor_parallel=2, pipeline_parallel=3, data_parallel=5)
+        assert p.total_nodes == 30
+        assert p.total_gpus == 30
+        assert p.model_shard_factor == 6  # tp * pp — GPUs per replica
 
 
 class TestExtractParallelism:

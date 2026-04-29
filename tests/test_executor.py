@@ -20,6 +20,7 @@ from sparkrun.orchestration.executor import (
 from sparkrun.orchestration.executor_docker import DockerExecutor
 from sparkrun.utils.shell import b64_encode_cmd
 
+
 # ---------------------------------------------------------------------------
 # ExecutorConfig tests
 # ---------------------------------------------------------------------------
@@ -35,7 +36,7 @@ class TestExecutorConfig:
         assert cfg.privileged is True
         assert cfg.gpus == "all"
         assert cfg.ipc == "host"
-        assert cfg.shm_size == "10.24gb"
+        assert cfg.shm_size == "25gb"
         assert cfg.network == "host"
 
     def test_restart_forces_no_auto_remove(self):
