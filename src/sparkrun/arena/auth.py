@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
 from dataclasses import dataclass
+import contextlib
 
 logger = logging.getLogger(__name__)
 
@@ -64,10 +65,8 @@ def load_refresh_token() -> str | None:
 def clear_refresh_token() -> None:
     """Delete the stored refresh token."""
     path = get_token_path()
-    try:
+    with contextlib.suppress(FileNotFoundError):
         path.unlink()
-    except FileNotFoundError:
-        pass
 
 
 def exchange_token(refresh_token: str, debug_mode: bool = False) -> ExchangeResult:

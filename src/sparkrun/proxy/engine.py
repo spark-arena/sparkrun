@@ -215,14 +215,14 @@ class ProxyEngine:
         else:
             # Redirect output to log file so startup errors are visible
             log_path = self.state_dir / "litellm.log"
-            log_file = open(log_path, "w")
-            proc = subprocess.Popen(
-                cmd,
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-                env=env,
-            )
+            with open(log_path, "w") as log_file:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                    env=env,
+                )
 
             # Wait briefly and verify the process survived startup
             import time
@@ -230,7 +230,6 @@ class ProxyEngine:
             time.sleep(2)
             poll = proc.poll()
             if poll is not None:
-                log_file.close()
                 # Process already exited — show error
                 try:
                     tail = log_path.read_text()[-2000:]
@@ -291,15 +290,15 @@ class ProxyEngine:
             yaml.safe_dump(cfg, f, default_flow_style=False)
 
         log_path = self.state_dir / "autodiscover.log"
-        log_file = open(log_path, "w")
 
         try:
-            proc = subprocess.Popen(
-                [sys.executable, "-m", "sparkrun.proxy.autodiscover", str(self._autodiscover_config_path)],
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
+            with open(log_path, "w") as log_file:
+                proc = subprocess.Popen(
+                    [sys.executable, "-m", "sparkrun.proxy.autodiscover", str(self._autodiscover_config_path)],
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
             logger.info(
                 "Auto-discover started (PID %d), interval=%ds, log=%s",
                 proc.pid,
@@ -308,7 +307,6 @@ class ProxyEngine:
             )
             return proc.pid
         except Exception:
-            log_file.close()
             logger.warning("Failed to start auto-discover process", exc_info=True)
             return None
 

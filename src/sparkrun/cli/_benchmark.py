@@ -29,6 +29,7 @@ from ._common import (
     validate_and_prepare_hosts,
     HIDE_ADVANCED_OPTIONS,
 )
+import contextlib
 
 logger = logging.getLogger(__name__)
 
@@ -686,10 +687,8 @@ def _run_benchmark(
     finally:
         import os
 
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(result_file)
-        except OSError:
-            pass
 
     return bench_result
 

@@ -122,9 +122,8 @@ def _resolve_v1_migration(recipe: Recipe) -> None:
     """v1 format recipes -> eugr builder (runtime left for vllm variant resolution)."""
     if recipe.recipe_version != "1":
         return
-    if recipe.runtime in ("vllm", ""):
-        if not recipe.builder:
-            recipe.builder = "eugr"
+    if recipe.runtime in ("vllm", "") and not recipe.builder:
+        recipe.builder = "eugr"
 
 
 def _resolve_eugr_signals(recipe: Recipe) -> None:
@@ -132,9 +131,10 @@ def _resolve_eugr_signals(recipe: Recipe) -> None:
     if recipe.runtime not in ("vllm", ""):
         return
     rc = recipe.runtime_config
-    if rc.get("build_args") or rc.get("mods") or recipe.container.strip().startswith("ghcr.io/spark-arena/dgx-vllm-eugr-nightly"):
-        if not recipe.builder:
-            recipe.builder = "eugr"
+    if (
+        rc.get("build_args") or rc.get("mods") or recipe.container.strip().startswith("ghcr.io/spark-arena/dgx-vllm-eugr-nightly")
+    ) and not recipe.builder:
+        recipe.builder = "eugr"
 
 
 def _resolve_vllm_variant(recipe: Recipe) -> None:
@@ -718,10 +718,7 @@ class Recipe:
 
                     # Fill in missing fields (metadata takes precedence)
                     if not model_dtype:
-                        if quant_info:
-                            model_dtype = quant_info.weight_dtype
-                        else:
-                            model_dtype = _storage_dtype
+                        model_dtype = quant_info.weight_dtype if quant_info else _storage_dtype
                     if not num_layers:
                         num_layers = hf_info.get("num_layers")
                     if not num_kv_heads:
@@ -1019,15 +1016,15 @@ class Recipe:
             meta["maintainer"] = self.maintainer
 
         # transfer SELECTED model parameters to recipe
-        if meta and meta.get("model_dtype", None) is not None:
+        if meta and meta.get("model_dtype") is not None:
             meta["model_dtype"] = str(meta["model_dtype"])
-        if meta and meta.get("kv_dtype", None) is not None:
+        if meta and meta.get("kv_dtype") is not None:
             meta["kv_dtype"] = str(meta["kv_dtype"])
-        if meta and meta.get("model_params", None) is not None:
+        if meta and meta.get("model_params") is not None:
             meta["model_params"] = str(meta["model_params"])
-        if meta and meta.get("quantization", None) is not None:
+        if meta and meta.get("quantization") is not None:
             meta["quantization"] = str(meta["quantization"])
-        if meta and meta.get("quant_bits", None) is not None:
+        if meta and meta.get("quant_bits") is not None:
             meta["quant_bits"] = int(meta["quant_bits"])
 
         # -- Builder --

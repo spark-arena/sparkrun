@@ -641,10 +641,7 @@ class EugrBuilder(BuilderPlugin):
 
         if upstream.get("vllm_commit") != entry.get("vllm_commit"):
             return False
-        if upstream.get("flashinfer_commit") != entry.get("flashinfer_commit"):
-            return False
-
-        return True
+        return upstream.get("flashinfer_commit") == entry.get("flashinfer_commit")
 
     def _save_build_metadata(
         self,

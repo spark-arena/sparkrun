@@ -309,10 +309,9 @@ def fetch_safetensors_size(
                     file_total = 0
                     matched = 0
                     for entry in list_repo_tree(**tree_kwargs):
-                        if hasattr(entry, "rfilename") and entry.rfilename in model_files:
-                            if entry.size and entry.size > 0:
-                                file_total += entry.size
-                                matched += 1
+                        if hasattr(entry, "rfilename") and entry.rfilename in model_files and entry.size and entry.size > 0:
+                            file_total += entry.size
+                            matched += 1
                     if matched > 0 and file_total > 0:
                         logger.debug(
                             "Got %d bytes from file sizes (%d/%d files) for %s",

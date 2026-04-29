@@ -48,7 +48,7 @@ def build_hook_context(
 
     # Pull all values from the config chain into a flat dict
     if hasattr(config_chain, "keys"):
-        for key in config_chain.keys():
+        for key in config_chain:
             val = config_chain.get(key)
             if val is not None:
                 ctx[key] = str(val)
@@ -156,7 +156,7 @@ def run_pre_exec(
     # Build context from config chain for rendering
     ctx: dict[str, str] = {}
     if hasattr(config_chain, "keys"):
-        for key in config_chain.keys():
+        for key in config_chain:
             val = config_chain.get(key)
             if val is not None:
                 ctx[key] = str(val)

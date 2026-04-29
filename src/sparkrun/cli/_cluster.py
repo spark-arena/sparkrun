@@ -849,9 +849,7 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
     # auto (None) → cx7 if IB is available and validated, else mgmt
     if xfer_iface == "mgmt":
         resolved_iface = "mgmt"
-    elif xfer_result.ib_validated:
-        resolved_iface = "cx7"
-    elif ib_result and ib_result.ib_ip_map:
+    elif xfer_result.ib_validated or ib_result and ib_result.ib_ip_map:
         resolved_iface = "cx7"
     elif ib_result:
         resolved_iface = "mgmt"
@@ -864,10 +862,7 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
 
     # Build a script that checks existence and disk usage for both dirs.
     # We derive remote sparkrun cache the same way: ~/.cache/sparkrun on the remote user.
-    if cluster_cfg.user:
-        remote_sparkrun = "/home/%s/.cache/sparkrun" % cluster_cfg.user
-    else:
-        remote_sparkrun = "$HOME/.cache/sparkrun"
+    remote_sparkrun = "/home/%s/.cache/sparkrun" % cluster_cfg.user if cluster_cfg.user else "$HOME/.cache/sparkrun"
 
     check_cmd = (
         'sr_dir="%s"; hf_dir="%s"; '

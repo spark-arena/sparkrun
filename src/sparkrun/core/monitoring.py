@@ -8,6 +8,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from typing import Callable
+import contextlib
 
 logger = logging.getLogger(__name__)
 
@@ -301,18 +302,14 @@ class ClusterMonitor:
         """Terminate all SSH subprocesses."""
         for host, state in self.states.items():
             if state.process is not None:
-                try:
+                with contextlib.suppress(OSError):
                     state.process.terminate()
-                except OSError:
-                    pass
                 try:
                     state.process.wait(timeout=3)
                 except subprocess.TimeoutExpired:
                     state.process.kill()
-                    try:
+                    with contextlib.suppress(subprocess.TimeoutExpired):
                         state.process.wait(timeout=2)
-                    except subprocess.TimeoutExpired:
-                        pass
         self._started = False
 
     def _reader(self, host: str, proc: subprocess.Popen) -> None:
@@ -333,10 +330,8 @@ class ClusterMonitor:
             rc = proc.poll()
             if rc is not None and rc != 0:
                 stderr_text = ""
-                try:
+                with contextlib.suppress(Exception):
                     stderr_text = proc.stderr.read().strip() if proc.stderr else ""
-                except Exception:
-                    pass
                 if self.states[host].latest is None:
                     self.states[host].error = stderr_text or "SSH connection failed (rc=%d)" % rc
 
@@ -370,18 +365,14 @@ class ClusterMonitor:
 
         # Terminate the old process so its reader thread exits.
         if state.process is not None:
-            try:
+            with contextlib.suppress(OSError):
                 state.process.terminate()
-            except OSError:
-                pass
             try:
                 state.process.wait(timeout=3)
             except subprocess.TimeoutExpired:
                 state.process.kill()
-                try:
+                with contextlib.suppress(subprocess.TimeoutExpired):
                     state.process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    pass
 
         state.error = "stale data — reconnecting"
         # Reset timestamp so the watchdog doesn't re-trigger immediately.
@@ -515,18 +506,14 @@ class NvMonitorClusterMonitor:
         """Terminate all SSH processes."""
         for host, state in self.states.items():
             if state.process is not None:
-                try:
+                with contextlib.suppress(OSError):
                     state.process.terminate()
-                except OSError:
-                    pass
                 try:
                     state.process.wait(timeout=3)
                 except subprocess.TimeoutExpired:
                     state.process.kill()
-                    try:
+                    with contextlib.suppress(subprocess.TimeoutExpired):
                         state.process.wait(timeout=2)
-                    except subprocess.TimeoutExpired:
-                        pass
         self._started = False
         self._restore_loggers(self._saved_log_levels)
 
@@ -565,10 +552,8 @@ class NvMonitorClusterMonitor:
             rc = proc.poll()
             if rc is not None and rc != 0:
                 stderr_text = ""
-                try:
+                with contextlib.suppress(Exception):
                     stderr_text = proc.stderr.read().strip() if proc.stderr else ""
-                except Exception:
-                    pass
                 if self.states[host].latest is None:
                     short = stderr_text.splitlines()[-1] if stderr_text else "rc=%d" % rc
                     self.states[host].error = short
@@ -595,18 +580,14 @@ class NvMonitorClusterMonitor:
         """Kill stale SSH process and start fresh."""
         state = self.states[host]
         if state.process is not None:
-            try:
+            with contextlib.suppress(OSError):
                 state.process.terminate()
-            except OSError:
-                pass
             try:
                 state.process.wait(timeout=3)
             except subprocess.TimeoutExpired:
                 state.process.kill()
-                try:
+                with contextlib.suppress(subprocess.TimeoutExpired):
                     state.process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    pass
 
         state.error = "stale data — reconnecting"
         state.last_updated = time.monotonic()

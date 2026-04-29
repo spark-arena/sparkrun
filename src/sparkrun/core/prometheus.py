@@ -49,10 +49,7 @@ def parse_prometheus_text(text: str) -> dict[str, float]:
         key = name + labels
 
         try:
-            if raw_value in ("NaN", "+Inf", "-Inf", "Inf"):
-                value = float(raw_value)
-            else:
-                value = float(raw_value)
+            value = float(raw_value) if raw_value in ("NaN", "+Inf", "-Inf", "Inf") else float(raw_value)
         except ValueError:
             logger.debug("Skipping unparseable metric value: %s", line)
             continue

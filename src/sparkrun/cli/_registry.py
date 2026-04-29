@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sys
 
+import contextlib
+
 import click
 import yaml
 
@@ -471,10 +473,8 @@ def export_metadata(ctx, output, include_hidden):
 
             # Run VRAM estimation to auto-detect model_params and model_dtype
             # from HuggingFace when not present in recipe metadata.
-            try:
+            with contextlib.suppress(Exception):
                 recipe.estimate_vram(auto_detect=True)
-            except Exception:
-                pass  # best-effort — metadata fields may remain None
 
             rel_path = f.relative_to(recipe_dir)
             raw_url = _build_raw_url(entry.url, entry.subpath, str(rel_path))
