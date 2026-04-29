@@ -6,6 +6,7 @@ Keeping them here avoids circular imports and reduces duplication.
 
 from __future__ import annotations
 import logging
+from typing import Any
 
 # Loggers that produce excessive output at DEBUG/INFO level.
 _NOISY_LOGGERS = (
@@ -104,6 +105,19 @@ def merge_env(*env_dicts: dict[str, str] | None) -> dict[str, str]:
         if d:
             merged.update(d)
     return merged
+
+
+def extract_env_overrides(overrides: dict[str, Any] | None) -> dict[str, str]:
+    """Extract env.* items from overrides into a plain env dict."""
+    env: dict[str, str] = {}
+    if not overrides:
+        return env
+    for key, value in overrides.items():
+        if key.startswith("env."):
+            var_name = key[4:]
+            if var_name:
+                env[var_name] = str(value)
+    return env
 
 
 def is_local_host(host: str) -> bool:

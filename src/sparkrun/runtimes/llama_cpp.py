@@ -428,7 +428,7 @@ class LlamaCppRuntime(RuntimePlugin):
 
         progress = kwargs.pop("progress", None)
 
-        ctx = ClusterContext.build(self, hosts, image, cluster_id, env, cache_dir, config, dry_run)
+        ctx = ClusterContext.build(self, hosts, image, cluster_id, env, cache_dir, config, dry_run, overrides=overrides)
         head_container = self._container_name(cluster_id, "head")
         worker_container_name = self._container_name(cluster_id, "worker")
 

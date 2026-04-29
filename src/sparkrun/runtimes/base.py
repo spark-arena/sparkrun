@@ -774,7 +774,7 @@ class RuntimePlugin(Plugin):
             run_script_on_host,
             should_run_locally,
         )
-        from sparkrun.utils import merge_env
+        from sparkrun.utils import merge_env, extract_env_overrides
 
         ssh_kwargs = build_ssh_kwargs(config)
         is_local = should_run_locally(host, ssh_kwargs.get("ssh_user"))
@@ -785,6 +785,7 @@ class RuntimePlugin(Plugin):
             self.get_solo_env(),  # solo-specific
             env,  # recipe
             self.get_extra_env(),  # tuning/other overrides
+            extract_env_overrides(overrides),  # CLI overrides (env.*)
         )
 
         combined_docker_opts = (self.get_extra_docker_opts() or []) + (extra_docker_opts or [])

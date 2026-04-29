@@ -64,6 +64,14 @@ class VllmDistributedRuntime(VllmMixin, RuntimePlugin):
                 "--served-model-name",
                 skip_keys,
             )
+            # Augment OTel flags if present in config but missing from rendered command
+            for key in ["otlp_traces_endpoint", "collect_detailed_traces"]:
+                if key in skip_keys:
+                    continue
+                val = config.get(key)
+                if val is not None and VLLM_FLAG_MAP[key] not in rendered:
+                    rendered += f" {VLLM_FLAG_MAP[key]} {val}"
+
             if skip_keys:
                 rendered = self.strip_flags_from_command(
                     rendered,
@@ -130,6 +138,14 @@ class VllmDistributedRuntime(VllmMixin, RuntimePlugin):
                 "--served-model-name",
                 skip_keys,
             )
+            # Augment OTel flags if present in config but missing from rendered command
+            for key in ["otlp_traces_endpoint", "collect_detailed_traces"]:
+                if key in skip_keys:
+                    continue
+                val = config.get(key)
+                if val is not None and VLLM_FLAG_MAP[key] not in rendered:
+                    rendered += f" {VLLM_FLAG_MAP[key]} {val}"
+
             if skip_keys:
                 rendered = self.strip_flags_from_command(
                     rendered,

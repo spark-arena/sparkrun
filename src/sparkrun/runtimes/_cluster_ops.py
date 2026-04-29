@@ -58,6 +58,7 @@ class ClusterContext:
         config: SparkrunConfig | None,
         dry_run: bool,
         topology: str | None = None,
+        overrides: dict[str, Any] | None = None,
     ) -> ClusterContext:
         """Build context from runtime hooks and config.
 
@@ -65,7 +66,7 @@ class ClusterContext:
         runtime's ``_run_cluster`` method.
         """
         from sparkrun.orchestration.primitives import build_ssh_kwargs, build_volumes
-        from sparkrun.utils import merge_env
+        from sparkrun.utils import merge_env, extract_env_overrides
 
         num_nodes = len(hosts)
         ssh_kwargs = build_ssh_kwargs(config)
@@ -76,6 +77,7 @@ class ClusterContext:
             runtime_env,
             env,
             runtime.get_extra_env(),
+            extract_env_overrides(overrides),
         )
         return cls(
             hosts=hosts,

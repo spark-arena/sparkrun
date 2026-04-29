@@ -257,7 +257,7 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
         progress = kwargs.pop("progress", None)
         combined_docker_opts = (self.get_extra_docker_opts() or []) + (extra_docker_opts or [])
 
-        ctx = ClusterContext.build(self, hosts, image, cluster_id, env, cache_dir, config, dry_run)
+        ctx = ClusterContext.build(self, hosts, image, cluster_id, env, cache_dir, config, dry_run, overrides=overrides)
         head_container = self.executor.container_name(cluster_id, "head")
         worker_container = self.executor.container_name(cluster_id, "worker")
 

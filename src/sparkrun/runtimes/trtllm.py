@@ -447,7 +447,7 @@ class TrtllmRuntime(RuntimePlugin):
 
         progress = kwargs.pop("progress", None)
 
-        ctx = ClusterContext.build(self, hosts, image, cluster_id, env, cache_dir, config, dry_run)
+        ctx = ClusterContext.build(self, hosts, image, cluster_id, env, cache_dir, config, dry_run, overrides=overrides)
         extra_docker_opts = self.get_extra_docker_opts()
 
         self._print_cluster_banner(
