@@ -7,6 +7,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from sparkrun.core.config import resolve_hf_token as _get_hf_token
 from sparkrun.core.hosts import is_control_in_cluster
 from sparkrun.utils import is_local_host
 
@@ -247,6 +248,7 @@ def _distribute_model_push(
     worker_transfer_hosts: list[str] | None,
     ssh_kwargs: dict,
     model_revision: str | None = None,
+    hf_token: str | None = None,
     dry_run: bool = False,
     local_cache_dir: str | None = None,
 ) -> list[str]:
@@ -270,6 +272,7 @@ def _distribute_model_push(
         [head],
         cache_dir=cache_dir,
         local_cache_dir=local_cache_dir,
+        token=hf_token,
         revision=model_revision,
         transfer_hosts=None,
         dry_run=dry_run,
@@ -286,6 +289,7 @@ def _distribute_model_push(
             hosts,
             cache_dir=cache_dir,
             revision=model_revision,
+            hf_token=hf_token,
             worker_transfer_hosts=worker_transfer_hosts,
             dry_run=dry_run,
             **ssh_kwargs,
@@ -380,6 +384,9 @@ def distribute_resources(
 
     ssh_kwargs = build_ssh_kwargs(config)
 
+    # Get HF token from control node environment
+    hf_token = _get_hf_token()
+
     if len(host_list) <= 1 and is_local_host(host_list[0]) and not _is_cross_user(ssh_kwargs):
         # Local-only (same user): just ensure image and model exist, no SSH needed
         with pending_op(_lock_id, "image_pull", **_pop_kw):
@@ -389,7 +396,7 @@ def distribute_resources(
         if model:
             with pending_op(_lock_id, "model_download", **_pop_kw):
                 logger.info("Ensuring model %s is available locally...", model)
-                if download_model(model, cache_dir=effective_local_cache, revision=model_revision, dry_run=dry_run) != 0:
+                if download_model(model, cache_dir=effective_local_cache, token=hf_token, revision=model_revision, dry_run=dry_run) != 0:
                     raise DistributionError(f"Failed to download model: {model}")
         return None, {}, {}  # let runtime handle its own local IB detection
 
@@ -544,6 +551,7 @@ def distribute_resources(
                     host_list,
                     cache_dir=cache_dir,
                     local_cache_dir=effective_local_cache,
+                    token=hf_token,
                     revision=model_revision,
                     transfer_hosts=transfer_hosts,
                     dry_run=dry_run,
@@ -557,6 +565,7 @@ def distribute_resources(
                     worker_transfer_hosts=worker_transfer_hosts,
                     ssh_kwargs=ssh_kwargs,
                     model_revision=model_revision,
+                    hf_token=hf_token,
                     dry_run=dry_run,
                     local_cache_dir=effective_local_cache,
                 )
@@ -566,6 +575,7 @@ def distribute_resources(
                     host_list,
                     cache_dir=cache_dir,
                     revision=model_revision,
+                    hf_token=hf_token,
                     worker_transfer_hosts=worker_transfer_hosts,
                     dry_run=dry_run,
                     **ssh_kwargs,
@@ -579,6 +589,7 @@ def distribute_resources(
                         worker_transfer_hosts=worker_transfer_hosts,
                         ssh_kwargs=ssh_kwargs,
                         model_revision=model_revision,
+                        hf_token=hf_token,
                         dry_run=dry_run,
                         local_cache_dir=effective_local_cache,
                     )
@@ -588,6 +599,7 @@ def distribute_resources(
                     host_list,
                     cache_dir=cache_dir,
                     local_cache_dir=effective_local_cache,
+                    token=hf_token,
                     revision=model_revision,
                     transfer_hosts=transfer_hosts,
                     dry_run=dry_run,
@@ -657,6 +669,7 @@ def distribute_from_config(
 
     # Single-localhost fast path: same as distribute_resources
     ssh_kwargs = build_ssh_kwargs(config)
+    hf_token = _get_hf_token()
     if len(host_list) <= 1 and is_local_host(host_list[0]) and not _is_cross_user(ssh_kwargs):
         _do_local_ensure = dist_cfg.containers.enabled
         _model_names = [e.name for e in dist_cfg.models.entries] if dist_cfg.models.enabled else []
@@ -676,7 +689,10 @@ def distribute_from_config(
             with pending_op(_lock_id, "model_download", **_pop_kw):
                 for mn in _model_names:
                     logger.info("Ensuring model %s is available locally...", mn)
-                    if download_model(mn, cache_dir=local_cache_dir or cache_dir, revision=model_revision, dry_run=dry_run) != 0:
+                    if (
+                        download_model(mn, cache_dir=local_cache_dir or cache_dir, token=hf_token, revision=model_revision, dry_run=dry_run)
+                        != 0
+                    ):
                         raise DistributionError(f"Failed to download model: {mn}")
         return None, {}, {}
 
@@ -774,6 +790,7 @@ def distribute_from_config(
                     worker_transfer_hosts,
                     ssh_kwargs,
                     entry_revision,
+                    hf_token,
                     dry_run,
                     _auto_delegated,
                 )
@@ -838,6 +855,7 @@ def _distribute_single_model(
     worker_transfer_hosts: list[str] | None,
     ssh_kwargs: dict,
     revision: str | None,
+    hf_token: str | None,
     dry_run: bool,
     auto_delegated: bool,
 ) -> list[str]:
@@ -854,6 +872,7 @@ def _distribute_single_model(
             targets,
             cache_dir=cache_dir,
             local_cache_dir=local_cache_dir,
+            token=hf_token,
             revision=revision,
             transfer_hosts=t_hosts,
             dry_run=dry_run,
@@ -866,6 +885,7 @@ def _distribute_single_model(
             [head],
             cache_dir=cache_dir,
             local_cache_dir=local_cache_dir,
+            token=hf_token,
             revision=revision,
             transfer_hosts=None,
             dry_run=dry_run,
@@ -875,12 +895,26 @@ def _distribute_single_model(
             return list(targets)
         if len(targets) > 1:
             return distribute_model_from_head(
-                model, targets, cache_dir=cache_dir, revision=revision, worker_transfer_hosts=w_hosts, dry_run=dry_run, **ssh_kwargs
+                model,
+                targets,
+                cache_dir=cache_dir,
+                revision=revision,
+                hf_token=hf_token,
+                worker_transfer_hosts=w_hosts,
+                dry_run=dry_run,
+                **ssh_kwargs,
             )
         return []
     elif transfer_mode == "delegated":
         result = distribute_model_from_head(
-            model, targets, cache_dir=cache_dir, revision=revision, worker_transfer_hosts=w_hosts, dry_run=dry_run, **ssh_kwargs
+            model,
+            targets,
+            cache_dir=cache_dir,
+            revision=revision,
+            hf_token=hf_token,
+            worker_transfer_hosts=w_hosts,
+            dry_run=dry_run,
+            **ssh_kwargs,
         )
         if result and auto_delegated:
             head = targets[0]
@@ -889,6 +923,7 @@ def _distribute_single_model(
                 [head],
                 cache_dir=cache_dir,
                 local_cache_dir=local_cache_dir,
+                token=hf_token,
                 revision=revision,
                 transfer_hosts=None,
                 dry_run=dry_run,
@@ -896,7 +931,14 @@ def _distribute_single_model(
             )
             if not head_failed and len(targets) > 1:
                 result = distribute_model_from_head(
-                    model, targets, cache_dir=cache_dir, revision=revision, worker_transfer_hosts=w_hosts, dry_run=dry_run, **ssh_kwargs
+                    model,
+                    targets,
+                    cache_dir=cache_dir,
+                    revision=revision,
+                    hf_token=hf_token,
+                    worker_transfer_hosts=w_hosts,
+                    dry_run=dry_run,
+                    **ssh_kwargs,
                 )
         return result
     return distribute_model_from_local(
@@ -904,6 +946,7 @@ def _distribute_single_model(
         targets,
         cache_dir=cache_dir,
         local_cache_dir=local_cache_dir,
+        token=hf_token,
         revision=revision,
         transfer_hosts=t_hosts,
         dry_run=dry_run,

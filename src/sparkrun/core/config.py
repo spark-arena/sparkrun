@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING, Optional
 
 from vpd.next.util import read_yaml
 
@@ -46,6 +46,18 @@ def resolve_hf_cache_home(cache_dir: str | None) -> str:
     and related env vars).
     """
     return cache_dir or str(DEFAULT_HF_CACHE_DIR)
+
+
+def resolve_hf_token() -> Optional[str]:
+    try:
+        # noinspection PyUnusedImports
+        from huggingface_hub import get_token
+
+        return get_token()
+    except ImportError:
+        pass
+
+    return os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
 
 
 def get_config_root(v: Variables | None = None) -> Path:
