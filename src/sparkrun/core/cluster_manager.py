@@ -369,10 +369,12 @@ class ClusterManager:
             Default cluster name if set and cluster exists, None otherwise
         """
         if not self.default_file.exists():
+            logger.debug("no cluster default file exists")
             return None
 
         default_name = self.default_file.read_text().strip()
         if not default_name:
+            logger.debug("default cluster file is empty")
             return None
 
         # Verify cluster still exists
@@ -382,6 +384,7 @@ class ClusterManager:
             self.unset_default()
             return None
 
+        logger.debug("Resolved default cluster is '%s'", default_name)
         return default_name
 
     def _write_cluster(self, cluster_def: ClusterDefinition) -> None:
@@ -417,6 +420,7 @@ class ClusterManager:
         if not data:
             raise ClusterError(f"Invalid cluster file format: {cluster_path}")
 
+        logger.debug("Read cluster definition from %s", cluster_path)
         return ClusterDefinition(
             name=data.get("name", cluster_path.stem),
             hosts=data.get("hosts", []),
@@ -630,8 +634,12 @@ def resolve_cluster_config(
     resolved = cluster_name
     if not resolved and not hosts and not hosts_file:
         resolved = cluster_mgr.get_default() if cluster_mgr else None
+        logger.debug("No cluster given, trying (default)  cluster '%s'", resolved)
+    else:
+        logger.debug("Cluster resolution: %s", resolved)
 
     if not resolved:
+        logger.debug("No cluster resolution found, returning default config")
         return cfg
 
     cfg.name = resolved
@@ -644,11 +652,14 @@ def resolve_cluster_config(
     # User is always resolved (even with explicit --hosts, if --cluster given)
     cfg.user = cluster_def.user
 
-    # transfer_mode, transfer_interface, and cache_dir only apply when hosts come from the cluster
+    # transfer_mode, transfer_interface, cache_dir, and topology only apply when hosts come from the cluster
     if not hosts and not hosts_file:
+        logger.debug("Using cluster config for transfer_mode, transfer_interface, cache_dir, and topology")
         cfg.transfer_mode = cluster_def.transfer_mode
         cfg.transfer_interface = cluster_def.transfer_interface
         cfg.cache_dir = cluster_def.cache_dir
         cfg.topology = cluster_def.topology
+    else:
+        logger.debug("explicit hosts; not using cluster for transfer_mode, transfer_interface, cache_dir, and topology")
 
     return cfg

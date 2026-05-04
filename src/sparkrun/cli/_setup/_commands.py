@@ -1818,19 +1818,17 @@ def setup_fe_system_update(ctx, hosts, hosts_file, cluster_name, user, dry_run):
       4. fwupdmgr upgrade
       5. reboot
     """
-    from sparkrun.core.config import SparkrunConfig
-
-    from .._common import _resolve_setup_context
+    from .._common import _get_context, _resolve_setup_context
     from ._sudo import ensure_sudo_password
 
-    # TODO: should use same sctx init as we typically use
-    config = SparkrunConfig()
+    sctx = _get_context(ctx)
+    config = sctx.config
 
     # --- Step 1: Determine target hosts ---
     # If explicit hosts/cluster provided, use those directly
     explicit_hosts = hosts or hosts_file or cluster_name
     if explicit_hosts:
-        host_list, user, ssh_kwargs = _resolve_setup_context(hosts, hosts_file, cluster_name, config, user)
+        host_list, user, ssh_kwargs = _resolve_setup_context(hosts, hosts_file, cluster_name, config)
     else:
         # Interactive: ask local vs cluster
         click.echo("Where would you like to run the system update?")
@@ -1838,13 +1836,13 @@ def setup_fe_system_update(ctx, hosts, hosts_file, cluster_name, user, dry_run):
         click.echo("  1) Local machine only")
 
         # Try to list cluster hosts
-        mgr = _get_cluster_manager()
+        mgr = _get_cluster_manager(sctx=sctx)
         default_cluster = mgr.get_default()
         cluster_hosts = []
         if default_cluster:
             try:
-                cdata = mgr.get_cluster(default_cluster)
-                cluster_hosts = cdata.get("hosts", [])
+                cdata = mgr.get(default_cluster)
+                cluster_hosts = cdata.hosts
             except Exception:
                 pass
 
