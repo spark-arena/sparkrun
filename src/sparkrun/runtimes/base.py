@@ -193,7 +193,7 @@ class RuntimePlugin(Plugin):
         hosts: list[str],
         config: SparkrunConfig | None = None,
         dry_run: bool = False,
-        transfer_mode: str = "local",
+        transfer_mode: str = "auto",
         overrides: dict[str, Any] | None = None,
     ) -> None:
         """Pre-launch preparation (e.g., building container images).

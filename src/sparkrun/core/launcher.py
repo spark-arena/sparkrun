@@ -230,7 +230,7 @@ def launch_inference(
         except Exception:
             logger.debug("Failed to save job metadata: %s", cluster_id, exc_info=True)
 
-    # Pre-launch preparation (e.g., eugr container builds)
+    # Pre-launch preparation (post-container builds)
     runtime.prepare(
         recipe,
         host_list,

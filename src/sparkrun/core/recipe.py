@@ -90,7 +90,7 @@ class DistributionResourceConfig:
     """Distribution settings for a resource type (models or containers)."""
 
     enabled: bool = True
-    entries: list = field(default_factory=list)
+    entries: list[DistributionModelEntry | DistributionContainerEntry] = field(default_factory=list)
 
 
 @dataclass
@@ -157,8 +157,13 @@ class DistributionConfig:
             externally_provided=data.get("externally_provided", True),
         )
 
-    def add_model(self, model_dist_config: DistributionModelEntry):
-        self.models.entries.append(model_dist_config)
+    def add_model(self, model: str):
+        """Add a model distribution config to the distribution config."""
+        # scan through existing models and make sure that we don't add a duplicate
+        for existing_model in self.models.entries:
+            if existing_model.name == model:
+                return
+        self.models.entries.append(DistributionModelEntry(name=model))
 
     def add_container(self, model_container_config: DistributionContainerEntry):
         self.containers.entries.append(model_container_config)
