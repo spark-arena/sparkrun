@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.orchestration.comm_env import ClusterCommEnv
     from sparkrun.orchestration.infiniband import IBDetectionResult
+    from sparkrun.core.recipe import Recipe
 
 logger = logging.getLogger(__name__)
 
@@ -598,3 +599,313 @@ def distribute_resources(
 
     logger.info("Distribution complete.")
     return comm_env, ib_ip_map, mgmt_ip_map
+
+
+def _resolve_targets(indices: list[int], host_list: list[str]) -> list[str]:
+    """Resolve node index list to actual hosts. ``-1`` means all nodes."""
+    if -1 in indices:
+        return list(host_list)
+    return [host_list[i] for i in indices if 0 <= i < len(host_list)]
+
+
+def distribute_from_config(
+    recipe: "Recipe",
+    image: str,
+    host_list: list[str],
+    cache_dir: str,
+    config: SparkrunConfig,
+    dry_run: bool,
+    model_revision: str | None = None,
+    recipe_name: str = "",
+    transfer_mode: str = "auto",
+    transfer_interface: str | None = None,
+    local_cache_dir: str | None = None,
+    pre_ib: TransferModeResult | None = None,
+) -> tuple["ClusterCommEnv | None", dict[str, str], dict[str, str]]:
+    """Distribute resources based on recipe ``distribution_config``.
+
+    Resolves templated entry names, expands target node indices, and
+    distributes each model/container to its specified hosts.  Falls back
+    to ``distribute_resources()`` behavior when called with the default
+    auto-generated config.
+
+    Args:
+        recipe: Loaded recipe with ``distribution_config`` attribute.
+        image: Resolved container image reference.
+        host_list: Target hostnames/IPs.
+        cache_dir: HuggingFace cache directory.
+        config: SparkrunConfig instance.
+        dry_run: Show what would be done without executing.
+        model_revision: Optional HuggingFace model revision to pin.
+        recipe_name: Recipe name for pending-op lock display.
+        transfer_mode: Distribution strategy.
+        transfer_interface: Network interface for transfers.
+        local_cache_dir: Control-machine cache dir for model downloads.
+        pre_ib: Pre-computed IB detection results.
+
+    Returns:
+        Tuple of (comm_env, ib_ip_map, mgmt_ip_map).
+    """
+    from sparkrun.core.recipe import DistributionModelEntry, DistributionContainerEntry
+    from sparkrun.orchestration.primitives import build_ssh_kwargs
+    from sparkrun.orchestration.infiniband import detect_ib_for_hosts, validate_ib_connectivity
+    from sparkrun.containers.registry import ensure_image
+    from sparkrun.models.download import download_model
+    from sparkrun.core.pending_ops import pending_op
+
+    dist_cfg = recipe.distribution_config.resolve(recipe, resolved_container=image)
+
+    # Single-localhost fast path: same as distribute_resources
+    ssh_kwargs = build_ssh_kwargs(config)
+    if len(host_list) <= 1 and is_local_host(host_list[0]) and not _is_cross_user(ssh_kwargs):
+        _do_local_ensure = dist_cfg.containers.enabled
+        _model_names = [e.name for e in dist_cfg.models.entries] if dist_cfg.models.enabled else []
+        lock_parts = [image] + _model_names
+        _lock_key = hashlib.sha256("|".join(lock_parts).encode()).hexdigest()[:12]
+        _lock_id = f"sparkrun_{_lock_key}"
+        _pop_kw = dict(
+            recipe=recipe_name, model=_model_names[0] if _model_names else "", image=image, hosts=host_list, cache_dir=str(config.cache_dir)
+        )
+
+        if _do_local_ensure:
+            with pending_op(_lock_id, "image_pull", **_pop_kw):
+                logger.info("Ensuring container image is available locally...")
+                if ensure_image(image, dry_run=dry_run) != 0:
+                    raise DistributionError(f"Failed to pull or locate image: {image}")
+        if _model_names:
+            with pending_op(_lock_id, "model_download", **_pop_kw):
+                for mn in _model_names:
+                    logger.info("Ensuring model %s is available locally...", mn)
+                    if download_model(mn, cache_dir=local_cache_dir or cache_dir, revision=model_revision, dry_run=dry_run) != 0:
+                        raise DistributionError(f"Failed to download model: {mn}")
+        return None, {}, {}
+
+    # IB detection (reuse from pre_ib or compute)
+    if pre_ib is not None and pre_ib.ib_result is not None:
+        ib_result = pre_ib.ib_result
+        _ib_validated = pre_ib.ib_validated
+        _auto_delegated = pre_ib.auto_delegated
+    else:
+        ib_result = detect_ib_for_hosts(host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
+        _ib_validated = None
+        if transfer_mode in ("auto", "local"):
+            _ib_validated = validate_ib_connectivity(ib_result.ib_ip_map, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
+        _auto_delegated = False
+        if transfer_mode == "auto":
+            _cu = _is_cross_user(ssh_kwargs)
+            if is_control_in_cluster(host_list) and not _cu:
+                transfer_mode = "local"
+            elif _ib_validated and not _cu:
+                transfer_mode = "local"
+            else:
+                transfer_mode = "delegated"
+                _auto_delegated = True
+
+    comm_env = ib_result.comm_env
+    mgmt_ip_map = ib_result.mgmt_ip_map
+    _use_mgmt = transfer_interface == "mgmt"
+    _cross_user = _is_cross_user(ssh_kwargs)
+
+    if transfer_mode == "local":
+        ib_ip_map = _ib_validated or {}
+        transfer_hosts = [ib_result.ib_ip_map.get(h, h) for h in host_list] if ib_ip_map and not _use_mgmt else None
+        worker_transfer_hosts = None
+    else:
+        ib_ip_map = ib_result.ib_ip_map
+        transfer_hosts = None
+        if len(host_list) > 1 and ib_result.ib_ip_map and not _use_mgmt:
+            worker_transfer_hosts = [ib_result.ib_ip_map.get(h, h) for h in host_list[1:]]
+        else:
+            worker_transfer_hosts = None
+
+    from sparkrun.core.progress import PROGRESS as _PROGRESS_LEVEL
+
+    effective_local_cache = local_cache_dir or cache_dir
+    _lock_key = hashlib.sha256(f"{image}|{','.join(host_list)}".encode()).hexdigest()[:12]
+    _lock_id = f"sparkrun_{_lock_key}"
+    _pop_kw = dict(recipe=recipe_name, model=image, image=image, hosts=host_list, cache_dir=str(config.cache_dir))
+
+    # Distribute container images
+    if dist_cfg.containers.enabled:
+        for entry in dist_cfg.containers.entries:
+            if not isinstance(entry, DistributionContainerEntry):
+                continue
+            entry_name = entry.name or image
+            targets = _resolve_targets(entry.target if entry.target else [-1], host_list)
+            if not targets:
+                continue
+            logger.log(_PROGRESS_LEVEL, "  Distributing image %s to %d host(s)", entry_name, len(targets))
+            with pending_op(_lock_id, "image_distribute", **_pop_kw):
+                img_failed = _distribute_single_image(
+                    entry_name,
+                    targets,
+                    host_list,
+                    transfer_mode,
+                    transfer_hosts,
+                    worker_transfer_hosts,
+                    ssh_kwargs,
+                    dry_run,
+                    _auto_delegated,
+                )
+            if img_failed:
+                raise DistributionError("Image distribution failed on: %s" % ", ".join(img_failed))
+
+    # Distribute models
+    if dist_cfg.models.enabled:
+        for entry in dist_cfg.models.entries:
+            if not isinstance(entry, DistributionModelEntry):
+                continue
+            if not entry.name:
+                continue
+            targets = _resolve_targets(entry.target if entry.target else [-1], host_list)
+            if not targets:
+                continue
+            entry_revision = entry.revision or model_revision
+            logger.log(_PROGRESS_LEVEL, "  Distributing model %s to %d host(s)", entry.name, len(targets))
+            with pending_op(_lock_id, "model_download", **_pop_kw):
+                mdl_failed = _distribute_single_model(
+                    entry.name,
+                    targets,
+                    host_list,
+                    cache_dir,
+                    effective_local_cache,
+                    transfer_mode,
+                    transfer_hosts,
+                    worker_transfer_hosts,
+                    ssh_kwargs,
+                    entry_revision,
+                    dry_run,
+                    _auto_delegated,
+                )
+            if mdl_failed:
+                raise DistributionError("Model distribution failed on: %s" % ", ".join(mdl_failed))
+
+    logger.info("Distribution complete.")
+    return comm_env, ib_ip_map, mgmt_ip_map
+
+
+def _distribute_single_image(
+    image: str,
+    targets: list[str],
+    full_hosts: list[str],
+    transfer_mode: str,
+    transfer_hosts: list[str] | None,
+    worker_transfer_hosts: list[str] | None,
+    ssh_kwargs: dict,
+    dry_run: bool,
+    auto_delegated: bool,
+) -> list[str]:
+    """Distribute a single image to a subset of hosts."""
+    from sparkrun.containers.distribute import distribute_image_from_local, distribute_image_from_head
+
+    # Map transfer hosts to target subset
+    target_set = set(targets)
+    t_hosts = [h for h in transfer_hosts if h in target_set] if transfer_hosts else None
+    w_hosts = [h for h in worker_transfer_hosts if h in target_set] if worker_transfer_hosts else None
+
+    if transfer_mode == "local":
+        return distribute_image_from_local(image, targets, transfer_hosts=t_hosts, dry_run=dry_run, **ssh_kwargs)
+    elif transfer_mode == "push":
+        head = targets[0]
+        if targets == full_hosts:
+            return _distribute_image_push(image, targets, w_hosts, ssh_kwargs, dry_run)
+        # Subset push: push to head only, then head distributes
+        head_failed = distribute_image_from_local(image, [head], transfer_hosts=None, dry_run=dry_run, **ssh_kwargs)
+        if head_failed:
+            return list(targets)
+        if len(targets) > 1:
+            return distribute_image_from_head(image, targets, worker_transfer_hosts=w_hosts, dry_run=dry_run, **ssh_kwargs)
+        return []
+    elif transfer_mode == "delegated":
+        result = distribute_image_from_head(image, targets, worker_transfer_hosts=w_hosts, dry_run=dry_run, **ssh_kwargs)
+        if result and auto_delegated:
+            head = targets[0]
+            head_failed = distribute_image_from_local(image, [head], transfer_hosts=None, dry_run=dry_run, **ssh_kwargs)
+            if not head_failed and len(targets) > 1:
+                result = distribute_image_from_head(image, targets, worker_transfer_hosts=w_hosts, dry_run=dry_run, **ssh_kwargs)
+        return result
+    return distribute_image_from_local(image, targets, transfer_hosts=t_hosts, dry_run=dry_run, **ssh_kwargs)
+
+
+def _distribute_single_model(
+    model: str,
+    targets: list[str],
+    full_hosts: list[str],
+    cache_dir: str,
+    local_cache_dir: str,
+    transfer_mode: str,
+    transfer_hosts: list[str] | None,
+    worker_transfer_hosts: list[str] | None,
+    ssh_kwargs: dict,
+    revision: str | None,
+    dry_run: bool,
+    auto_delegated: bool,
+) -> list[str]:
+    """Distribute a single model to a subset of hosts."""
+    from sparkrun.models.distribute import distribute_model_from_local, distribute_model_from_head
+
+    target_set = set(targets)
+    t_hosts = [h for h in transfer_hosts if h in target_set] if transfer_hosts else None
+    w_hosts = [h for h in worker_transfer_hosts if h in target_set] if worker_transfer_hosts else None
+
+    if transfer_mode == "local":
+        return distribute_model_from_local(
+            model,
+            targets,
+            cache_dir=cache_dir,
+            local_cache_dir=local_cache_dir,
+            revision=revision,
+            transfer_hosts=t_hosts,
+            dry_run=dry_run,
+            **ssh_kwargs,
+        )
+    elif transfer_mode == "push":
+        head = targets[0]
+        head_failed = distribute_model_from_local(
+            model,
+            [head],
+            cache_dir=cache_dir,
+            local_cache_dir=local_cache_dir,
+            revision=revision,
+            transfer_hosts=None,
+            dry_run=dry_run,
+            **ssh_kwargs,
+        )
+        if head_failed:
+            return list(targets)
+        if len(targets) > 1:
+            return distribute_model_from_head(
+                model, targets, cache_dir=cache_dir, revision=revision, worker_transfer_hosts=w_hosts, dry_run=dry_run, **ssh_kwargs
+            )
+        return []
+    elif transfer_mode == "delegated":
+        result = distribute_model_from_head(
+            model, targets, cache_dir=cache_dir, revision=revision, worker_transfer_hosts=w_hosts, dry_run=dry_run, **ssh_kwargs
+        )
+        if result and auto_delegated:
+            head = targets[0]
+            head_failed = distribute_model_from_local(
+                model,
+                [head],
+                cache_dir=cache_dir,
+                local_cache_dir=local_cache_dir,
+                revision=revision,
+                transfer_hosts=None,
+                dry_run=dry_run,
+                **ssh_kwargs,
+            )
+            if not head_failed and len(targets) > 1:
+                result = distribute_model_from_head(
+                    model, targets, cache_dir=cache_dir, revision=revision, worker_transfer_hosts=w_hosts, dry_run=dry_run, **ssh_kwargs
+                )
+        return result
+    return distribute_model_from_local(
+        model,
+        targets,
+        cache_dir=cache_dir,
+        local_cache_dir=local_cache_dir,
+        revision=revision,
+        transfer_hosts=t_hosts,
+        dry_run=dry_run,
+        **ssh_kwargs,
+    )

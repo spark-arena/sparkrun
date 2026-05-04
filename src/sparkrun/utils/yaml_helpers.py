@@ -17,4 +17,5 @@ def _literal_str_representer(dumper: yaml.Dumper, data: str) -> yaml.ScalarNode:
     return dumper.represent_scalar("tag:yaml.org,2002:str", data)
 
 
+# noinspection PyTypeChecker
 LiteralBlockDumper.add_representer(str, _literal_str_representer)

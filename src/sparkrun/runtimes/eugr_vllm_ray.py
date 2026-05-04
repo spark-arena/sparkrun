@@ -64,6 +64,7 @@ class EugrVllmRayRuntime(VllmRayRuntime):
         config: SparkrunConfig | None = None,
         dry_run: bool = False,
         transfer_mode: str = "local",
+        overrides: dict[str, Any] | None = None,
     ) -> None:
         """Delegate to EugrBuilder for image building and mod injection.
 

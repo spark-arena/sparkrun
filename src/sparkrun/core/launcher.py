@@ -237,6 +237,7 @@ def launch_inference(
         config=config,
         dry_run=dry_run,
         transfer_mode=effective_transfer_mode,
+        overrides=overrides,
     )
 
     # -- Phase 3: Distribution --
@@ -245,11 +246,11 @@ def launch_inference(
     if not runtime.is_delegating_runtime():
         if p:
             p.phase(3)
-        from sparkrun.orchestration.distribution import distribute_resources
+        from sparkrun.orchestration.distribution import distribute_from_config
 
-        comm_env, ib_ip_map, mgmt_ip_map = distribute_resources(
+        comm_env, ib_ip_map, mgmt_ip_map = distribute_from_config(
+            recipe,
             container_image,
-            recipe.model,
             host_list,
             effective_cache_dir,
             config,

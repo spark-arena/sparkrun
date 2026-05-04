@@ -194,6 +194,7 @@ class RuntimePlugin(Plugin):
         config: SparkrunConfig | None = None,
         dry_run: bool = False,
         transfer_mode: str = "local",
+        overrides: dict[str, Any] | None = None,
     ) -> None:
         """Pre-launch preparation (e.g., building container images).
 
@@ -207,6 +208,7 @@ class RuntimePlugin(Plugin):
             config: SparkrunConfig instance.
             dry_run: Show what would be done without executing.
             transfer_mode: ``"local"`` or ``"delegated"``.
+            overrides: CLI overrides dict (for reading resolved config values).
         """
         pass
 
