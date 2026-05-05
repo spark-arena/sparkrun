@@ -7,6 +7,7 @@ import logging
 from sparkrun.core.config import resolve_hf_cache_home
 from sparkrun.orchestration.primitives import sync_resource_to_hosts
 from sparkrun.scripts import read_script
+from sparkrun.utils.shell import quote
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,7 @@ def sync_model_to_hosts(
     hosts: list[str],
     cache_dir: str | None = None,
     revision: str | None = None,
+    hf_token: str | None = None,
     ssh_user: str | None = None,
     ssh_key: str | None = None,
     dry_run: bool = False,
@@ -30,6 +32,7 @@ def sync_model_to_hosts(
         hosts: List of remote hostnames or IPs.
         cache_dir: Override for the HuggingFace cache directory.
         revision: Optional revision (branch, tag, or commit hash).
+        hf_token: Optional HuggingFace API token for gated models.
         ssh_user: Optional SSH username.
         ssh_key: Optional path to SSH private key.
         dry_run: If True, show what would be done without executing.
@@ -45,6 +48,9 @@ def sync_model_to_hosts(
         cache=cache,
         revision_flag=revision_flag,
     )
+
+    if hf_token:
+        script = 'export HF_TOKEN="' + str(quote(hf_token)) + '";\n' + script
 
     return sync_resource_to_hosts(
         script,

@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from sparkrun.core.config import resolve_hf_cache_home
+from sparkrun.core.config import resolve_hf_cache_home, resolve_hf_token as _get_hf_token
 
 logger = logging.getLogger(__name__)
 
@@ -370,6 +370,9 @@ def download_model(
     Returns:
         Exit code (0 = success).
     """
+    if token is None:
+        token = _get_hf_token()
+
     if is_gguf_model(model_id):
         return _download_gguf(
             model_id,

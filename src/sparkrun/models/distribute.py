@@ -170,6 +170,7 @@ def distribute_model_from_head(
     hosts: list[str],
     cache_dir: str | None = None,
     revision: str | None = None,
+    hf_token: str | None = None,
     ssh_user: str | None = None,
     ssh_key: str | None = None,
     ssh_options: list[str] | None = None,
@@ -188,6 +189,7 @@ def distribute_model_from_head(
         hosts: Cluster hostnames (``hosts[0]`` is the head).
         cache_dir: Override for the HuggingFace cache directory.
         revision: Optional revision (branch, tag, or commit hash).
+        hf_token: Optional HuggingFace API token for gated models.
         ssh_user: Optional SSH username.
         ssh_key: Optional path to SSH private key.
         ssh_options: Additional SSH options.
@@ -201,6 +203,7 @@ def distribute_model_from_head(
         List of hostnames where distribution failed (empty = full success).
     """
     from sparkrun.orchestration.distribution import _distribute_from_head
+    from sparkrun.utils.shell import quote
 
     if not hosts:
         return []
@@ -227,6 +230,10 @@ def distribute_model_from_head(
             cache=cache,
             revision_flag=revision_flag,
         )
+
+    # Inject HF token for gated models
+    if hf_token:
+        ensure_script = 'export HF_TOKEN="' + str(quote(hf_token)) + '";\n' + ensure_script
 
     # Build distribute script (rsync from head to workers)
     targets = worker_transfer_hosts or hosts[1:]

@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import json
+from typing import TYPE_CHECKING
 from sparkrun.runtimes._util import default_env_hf_offline
+
+if TYPE_CHECKING:
+    from sparkrun.core.recipe import Recipe
 
 
 class VllmMixin:
@@ -33,6 +38,17 @@ class VllmMixin:
         cmds = super().version_commands()
         cmds["vllm"] = "python3 -c 'import vllm; print(vllm.__version__)' 2>/dev/null || echo unknown"
         return cmds
+
+    def detect_spec_config_draft_model(self, recipe: "Recipe") -> str | None:
+        try:
+            # TODO: support various ways that speculative config can be specified
+            # noinspection PyProtectedMember
+            spec_cfg = recipe._effective_default("speculative_config")
+            spec_cfg_dict = json.loads(spec_cfg)
+            if spec_cfg_dict["method"] == "dflash":
+                return spec_cfg_dict.get("model", None)
+        except Exception:
+            return None
 
 
 # Standard vLLM CLI flags and their recipe default keys

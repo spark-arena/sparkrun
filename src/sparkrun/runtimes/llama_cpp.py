@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, TYPE_CHECKING
 
+from sparkrun.core.config import SparkrunConfig
 from sparkrun.runtimes.base import RuntimePlugin
 
 if TYPE_CHECKING:
@@ -174,6 +175,22 @@ class LlamaCppRuntime(RuntimePlugin):
 
         command = re.sub(r"--split-mode\s+\S+", "", command).strip()
         return "%s --split-mode %s" % (command, split_mode)
+
+    def prepare(
+        self,
+        recipe: Recipe,
+        hosts: list[str],
+        config: SparkrunConfig | None = None,
+        dry_run: bool = False,
+        transfer_mode: str = "auto",
+        overrides: dict[str, Any] | None = None,
+    ) -> None:
+        # if multiple hosts, then we patch distribution config to only distribute model to head node
+        # (llama.cpp RPC distributes model from head node to other nodes)
+        if len(hosts) > 1:
+            # TODO: verify correct model, etc. (for now, this should be relatively safe though)
+            recipe.distribution_config.models.entries[0].target = [0]
+        return
 
     # --- Command generation ---
 

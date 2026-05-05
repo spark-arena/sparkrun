@@ -387,6 +387,73 @@ def test_resolve_auto_external_control_cross_user_returns_delegated(mock_in_clus
     assert result.mode == "delegated"
 
 
+@patch("sparkrun.orchestration.distribution.is_control_in_cluster", return_value=False)
+@patch("sparkrun.orchestration.distribution._has_local_ib", return_value=True)
+@patch("sparkrun.orchestration.infiniband.detect_ib_for_hosts")
+@patch("sparkrun.orchestration.infiniband.validate_ib_connectivity", return_value={"10.0.0.5": "192.168.1.5"})
+@patch.dict("os.environ", {"USER": "drew"})
+def test_resolve_auto_forwards_topology_to_ib_detect(mock_validate, mock_detect, mock_ib, mock_in_cluster):
+    """Topology kwarg is forwarded into detect_ib_for_hosts so ring overrides apply."""
+    from sparkrun.orchestration.infiniband import IBDetectionResult
+    from sparkrun.orchestration.comm_env import ClusterCommEnv
+
+    mock_detect.return_value = IBDetectionResult(
+        comm_env=ClusterCommEnv(shared={"NCCL_IB_HCA": "mlx5_0"}),
+        ib_ip_map={"10.0.0.5": "192.168.1.5"},
+        mgmt_ip_map={"10.0.0.5": "10.0.0.5"},
+    )
+    resolve_auto_transfer_mode("auto", ["10.0.0.5"], ssh_kwargs={"ssh_user": "drew"}, topology="ring")
+    assert mock_detect.call_args.kwargs.get("topology") == "ring"
+
+
+@patch("sparkrun.orchestration.distribution.is_local_host", return_value=False)
+@patch("sparkrun.orchestration.distribution._is_cross_user", return_value=False)
+@patch("sparkrun.orchestration.distribution.is_control_in_cluster", return_value=True)
+@patch("sparkrun.orchestration.infiniband.validate_ib_connectivity", return_value={})
+@patch("sparkrun.orchestration.infiniband.detect_ib_for_hosts")
+@patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={})
+def test_distribute_from_config_forwards_topology_to_ib_detect(
+    mock_ssh, mock_detect, mock_validate, mock_in_cluster, mock_cross, mock_local
+):
+    """distribute_from_config forwards topology to detect_ib_for_hosts when pre_ib lacks ib_result."""
+    from sparkrun.orchestration.comm_env import ClusterCommEnv
+    from sparkrun.orchestration.distribution import distribute_from_config
+    from sparkrun.orchestration.infiniband import IBDetectionResult
+
+    mock_detect.return_value = IBDetectionResult(
+        comm_env=ClusterCommEnv.empty(),
+        ib_ip_map={},
+        mgmt_ip_map={},
+    )
+
+    # Mock recipe with disabled distribution so the function just runs IB detect and returns.
+    recipe = MagicMock()
+    dist_cfg = MagicMock()
+    dist_cfg.containers.enabled = False
+    dist_cfg.models.enabled = False
+    recipe.distribution_config.resolve.return_value = dist_cfg
+
+    config = MagicMock()
+    config.cache_dir = "/tmp/cache"
+
+    # pre_ib without ib_result forces the in-function IB detection path.
+    pre_ib = TransferModeResult(mode="local", ib_result=None)
+
+    distribute_from_config(
+        recipe,
+        "img:latest",
+        ["h1", "h2"],
+        "/cache",
+        config,
+        dry_run=True,
+        transfer_mode="local",
+        pre_ib=pre_ib,
+        topology="ring",
+    )
+
+    assert mock_detect.call_args.kwargs.get("topology") == "ring"
+
+
 # ---------------------------------------------------------------------------
 # distribute_resources cross-user auto-detection tests
 # ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ from sparkrun.runtimes._vllm_common import VllmMixin, VLLM_FLAG_MAP, VLLM_BOOL_F
 
 if TYPE_CHECKING:
     from sparkrun.core.recipe import Recipe
+    from sparkrun.core.config import SparkrunConfig
     from sparkrun.orchestration.comm_env import ClusterCommEnv
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,20 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
                 "or set data_parallel=1."
             )
         return issues
+
+    def prepare(
+        self,
+        recipe: Recipe,
+        hosts: list[str],
+        config: "SparkrunConfig | None" = None,
+        dry_run: bool = False,
+        transfer_mode: str = "auto",
+        overrides: dict[str, Any] | None = None,
+    ) -> None:
+        """Detect and add a draft model to distribution config if needed"""
+        draft_model = self.detect_spec_config_draft_model(recipe)
+        if draft_model:
+            recipe.distribution_config.add_model(draft_model)
 
     def generate_command(
         self,
