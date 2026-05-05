@@ -18,7 +18,7 @@ from ._common import (
 
 logger = logging.getLogger(__name__)
 
-_BENCHMARK_PROFILE = "@official/spark-arena-v1"
+_BENCHMARK_PROFILE = "@official/spark-arena-v2"
 
 ASCII_ART = r"""
 !       _____                  __      ___
