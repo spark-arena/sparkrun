@@ -1828,7 +1828,7 @@ def setup_fe_system_update(ctx, hosts, hosts_file, cluster_name, user, dry_run):
     # If explicit hosts/cluster provided, use those directly
     explicit_hosts = hosts or hosts_file or cluster_name
     if explicit_hosts:
-        host_list, user, ssh_kwargs = _resolve_setup_context(hosts, hosts_file, cluster_name, config)
+        host_list, user, ssh_kwargs = _resolve_setup_context(hosts, hosts_file, cluster_name, config, user)
     else:
         # Interactive: ask local vs cluster
         click.echo("Where would you like to run the system update?")
