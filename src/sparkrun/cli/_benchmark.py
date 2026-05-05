@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -38,7 +40,55 @@ if TYPE_CHECKING:
     pass
 
 
-@click.command()
+class _BenchmarkGroup(click.Group):
+    """Group that falls back to the 'run' subcommand when no recognized
+    subcommand name is present in the argument list (preserves legacy
+    `sparkrun benchmark <recipe>` UX, including `benchmark --solo --dry-run
+    <recipe>` forms where options precede the positional)."""
+
+    def parse_args(self, ctx, args):
+        # If none of the known subcommand names appears as a standalone token in
+        # the argument list, prepend "run" so the group routes there.  We scan
+        # all args but skip anything that looks like an option value (i.e. the
+        # token immediately following a --flag=... would not appear here as a
+        # separate element anyway), so a simple scan for tokens matching command
+        # names is sufficient.
+        if args:
+            command_names = set(self.commands)
+            has_subcommand = any(a in command_names for a in args if not a.startswith("-"))
+            if not has_subcommand:
+                args = ["run"] + list(args)
+        return super().parse_args(ctx, args)
+
+
+@click.group(cls=_BenchmarkGroup)
+@click.pass_context
+def benchmark(ctx):
+    """Benchmark an inference recipe.
+
+    Runs the full benchmark flow: launch inference, run benchmark, stop
+    inference.
+
+    Manage benchmark profiles via the registry subcommands:
+
+      sparkrun registry list-benchmark-profiles
+
+      sparkrun registry show-benchmark-profile <name>
+
+    Examples:
+
+      sparkrun benchmark qwen3-1.7b-sglang --solo
+
+      sparkrun benchmark qwen3-1.7b-sglang --tp 2 --profile spark-arena-v1
+
+      sparkrun benchmark qwen3-1.7b-sglang -b depth=0,2048,4096 -b tg=32,128
+
+      sparkrun benchmark qwen3-1.7b-sglang --skip-run --solo
+    """
+    pass
+
+
+@benchmark.command("run")
 @click.argument("recipe_name", type=RECIPE_NAME)
 @host_options
 @recipe_override_options
@@ -65,6 +115,7 @@ if TYPE_CHECKING:
     default=None,
     help="Benchmark timeout in seconds (default: %d, or from profile)" % DEFAULT_BENCHMARK_TIMEOUT,
 )
+@click.option("--fresh", is_flag=True, default=False, help="Force fresh start, deleting prior state if any")
 @dry_run_option
 @click.option(
     "--executor-args",
@@ -74,7 +125,7 @@ if TYPE_CHECKING:
 )
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
-def benchmark(
+def benchmark_run(
     ctx,
     recipe_name,
     hosts,
@@ -99,31 +150,12 @@ def benchmark(
     sync_tuning,
     rootful,
     bench_timeout,
+    fresh,
     dry_run,
     executor_args,
     extra_args,
 ):
-    """Benchmark an inference recipe.
-
-    Runs the full benchmark flow: launch inference, run benchmark, stop
-    inference.
-
-    Manage benchmark profiles via the registry subcommands:
-
-      sparkrun registry list-benchmark-profiles
-
-      sparkrun registry show-benchmark-profile <name>
-
-    Examples:
-
-      sparkrun benchmark qwen3-1.7b-sglang --solo
-
-      sparkrun benchmark qwen3-1.7b-sglang --tp 2 --profile spark-arena-v1
-
-      sparkrun benchmark qwen3-1.7b-sglang -b depth=0,2048,4096 -b tg=32,128
-
-      sparkrun benchmark qwen3-1.7b-sglang --skip-run --solo
-    """
+    """Run a benchmark against an inference recipe."""
     return _run_benchmark(
         ctx,
         recipe_name,
@@ -152,7 +184,242 @@ def benchmark(
         dry_run,
         executor_args,
         extra_args,
+        fresh=fresh,
     )
+
+
+@benchmark.command("resume")
+@click.argument("benchmark_id")
+@dry_run_option
+@click.pass_context
+def benchmark_resume(ctx, benchmark_id, dry_run):
+    """Resume a paused benchmark by id."""
+    sctx = _get_context(ctx)
+    _resume_benchmark_run(ctx, benchmark_id, dry_run, sctx=sctx)
+
+
+def _resume_benchmark_run(ctx, benchmark_id: str, dry_run: bool, *, sctx=None):
+    """Resume a paused benchmark by id and return the parsed results dict.
+
+    Shared by ``benchmark resume`` and ``arena benchmark resume``.  Writes
+    consolidated.json, result.yaml, and the per-format output files to disk and
+    returns the ``results`` mapping (keys: ``rows``, ``csv``, ``json``, etc.).
+    Returns ``None`` only if we exit early (the caller should treat that as an
+    error — sys.exit has already been called).
+    """
+    from sparkrun.benchmarking.run_state import BenchmarkRunState
+    from sparkrun.benchmarking.scheduler import run_schedule
+    from sparkrun.benchmarking.progress_ui import BenchmarkProgressUI
+    from sparkrun.orchestration.job_metadata import load_job_metadata
+
+    if sctx is None:
+        sctx = _get_context(ctx)
+    config = sctx.config
+    cache_dir = str(config.cache_dir) if config else None
+
+    # Load existing state
+    state = BenchmarkRunState.load(benchmark_id, cache_dir)
+    if state is None:
+        click.echo("Error: no benchmark state found for id: %s" % benchmark_id, err=True)
+        sys.exit(1)
+
+    if state.is_complete(len(state.schedule)):
+        click.echo("Benchmark %s is already complete. Nothing to resume." % benchmark_id)
+        sys.exit(0)
+
+    # Reconstruct recipe
+    recipe_name = state.recipe_qualified_name
+    try:
+        recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name, resolve=False)
+    except Exception as e:
+        click.echo("Error: could not reload recipe %r: %s" % (recipe_name, e), err=True)
+        sys.exit(1)
+
+    # Reconstruct hosts from job metadata
+    meta = load_job_metadata(state.cluster_id, cache_dir=cache_dir)
+    if not meta or not meta.get("hosts"):
+        click.echo(
+            "Error: no job metadata found for cluster_id %r.\n"
+            "Please relaunch inference with `sparkrun run` and then retry resume." % state.cluster_id,
+            err=True,
+        )
+        sys.exit(1)
+    hosts = meta["hosts"]
+
+    # Check if inference is currently running
+    from sparkrun.orchestration.job_metadata import check_job_running
+    from sparkrun.orchestration.primitives import build_ssh_kwargs
+
+    ssh_kwargs = build_ssh_kwargs(config)
+    job_status = check_job_running(cluster_id=state.cluster_id, hosts=hosts, ssh_kwargs=ssh_kwargs)
+    if not job_status.running:
+        click.echo(
+            "Error: inference cluster %r is not currently running.\n"
+            "Please relaunch with `sparkrun run %s` first, then retry resume." % (state.cluster_id, recipe_name),
+            err=True,
+        )
+        sys.exit(1)
+
+    # Determine the serving URL
+    from sparkrun.utils import is_local_host
+    from sparkrun.orchestration.primitives import detect_host_ip
+
+    head_host = hosts[0]
+    serve_port = meta.get("port") or 8000
+
+    if is_local_host(head_host):
+        target_ip = "127.0.0.1"
+    else:
+        if dry_run:
+            target_ip = "<HEAD_IP>"
+        else:
+            try:
+                target_ip = detect_host_ip(head_host, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
+            except RuntimeError as e:
+                click.echo("Error detecting head IP: %s" % e, err=True)
+                sys.exit(1)
+
+    base_url = "http://%s:%d/v1" % (target_ip, serve_port)
+
+    # Reconstruct framework
+    from sparkrun.core.bootstrap import get_benchmarking_framework
+
+    try:
+        fw = get_benchmarking_framework(state.framework)
+    except ValueError as e:
+        click.echo("Error: %s" % e, err=True)
+        sys.exit(1)
+
+    # Rebuild tasks from saved state
+    tasks = fw.build_task_list(state.base_args, state.schedule)
+    if tasks is None:
+        click.echo("Error: framework %r does not support scheduled execution (build_task_list returned None)" % state.framework, err=True)
+        sys.exit(1)
+
+    effective_timeout = DEFAULT_BENCHMARK_TIMEOUT
+
+    click.echo("=" * 60)
+    click.echo("sparkrun — benchmark resume")
+    click.echo("=" * 60)
+    click.echo("Benchmark ID:          %s" % benchmark_id)
+    click.echo("Recipe:                %s" % recipe_name)
+    click.echo("Framework:             %s" % state.framework)
+    click.echo("Profile:               %s" % (state.profile or "(none)"))
+    click.echo("Hosts:                 %s" % ", ".join(hosts))
+    click.echo("Completed tasks:       %d / %d" % (len(state.completed_indices), len(tasks)))
+    click.echo("State directory:       %s" % state.state_dir(cache_dir))
+    click.echo("=" * 60)
+    click.echo("")
+
+    title = "%s/%s" % (recipe.name, state.profile) if state.profile else recipe.name
+
+    try:
+        with BenchmarkProgressUI(total_tasks=len(tasks), benchmark_id=benchmark_id, title=title) as pui:
+            sched_result = run_schedule(
+                fw=fw,
+                tasks=tasks,
+                state=state,
+                target_url=base_url,
+                model=recipe.model,
+                timeout=effective_timeout,
+                progress_ui=pui,
+                cache_dir=cache_dir,
+                exit_on_first_fail=False,
+                skip_run=True,  # inference already running; treat first task as needing warmup by session logic
+            )
+
+        consolidated = sched_result.consolidated
+
+        # Write consolidated.json to state dir
+        consolidated_path = state.state_dir(cache_dir) / "consolidated.json"
+        consolidated_path.write_text(json.dumps(consolidated, indent=2))
+
+        if not sched_result.success:
+            click.echo("")
+            click.echo("Benchmark incomplete — resume with: sparkrun benchmark resume %s" % benchmark_id)
+            sys.exit(1)
+
+        click.echo("")
+        click.echo("Benchmark resumed and completed successfully.")
+
+        # Export results
+        from sparkrun.benchmarking.base import export_results
+
+        stdout_text = json.dumps(consolidated)
+        results = fw.parse_results(stdout_text, "", result_file=str(consolidated_path))
+
+        overrides = meta.get("overrides") or {}
+        effective_tp = int(overrides.get("tensor_parallel") or meta.get("tensor_parallel") or 1)
+
+        profile_slug = state.profile.replace("/", "_").replace("@", "") if state.profile else "default"
+        effective_pp = int(overrides.get("pipeline_parallel") or meta.get("pipeline_parallel") or 1)
+        pp_suffix = "_pp%d" % effective_pp if effective_pp > 1 else ""
+
+        if config:
+            out_dir = config.default_benchmark_output_dir
+            out_dir.mkdir(parents=True, exist_ok=True)
+            output_file = str(
+                out_dir
+                / (
+                    "benchmark_%s_%s_tp%d%s.yaml"
+                    % (
+                        recipe.name.replace("/", "_"),
+                        profile_slug,
+                        effective_tp,
+                        pp_suffix,
+                    )
+                )
+            )
+        else:
+            output_file = "benchmark_%s_%s_tp%d%s.yaml" % (
+                recipe.name.replace("/", "_"),
+                profile_slug,
+                effective_tp,
+                pp_suffix,
+            )
+
+        export_results(
+            recipe=recipe,
+            hosts=hosts,
+            tp=effective_tp,
+            cluster_id=state.cluster_id,
+            framework_name=fw.framework_name,
+            profile_name=state.profile,
+            args=state.base_args,
+            results=results,
+            output_path=output_file,
+            runtime_info=None,
+        )
+        click.echo("Results saved to: %s" % output_file)
+
+        # Write additional formats
+        from pathlib import Path
+
+        _OUTPUT_WRITERS = {
+            "json": lambda data, path: path.write_text(__import__("json").dumps(data, indent=2)),
+            "csv": lambda data, path: path.write_text(data),
+        }
+        for fmt, writer in _OUTPUT_WRITERS.items():
+            content = results.get(fmt)
+            if not content:
+                continue
+            fmt_path = Path(output_file).with_suffix(".%s" % fmt)
+            writer(content, fmt_path)
+            click.echo("%s results saved to: %s" % (fmt.upper(), fmt_path))
+
+        # Save result.yaml in state dir too
+        result_yaml_path = state.state_dir(cache_dir) / "result.yaml"
+        import yaml as _yaml
+
+        with open(result_yaml_path, "w") as _fh:
+            _yaml.safe_dump(results, _fh, default_flow_style=False)
+
+        return results
+
+    except KeyboardInterrupt:
+        click.echo("")
+        click.echo("Interrupted. State preserved — resume with: sparkrun benchmark resume %s" % benchmark_id)
+        sys.exit(130)
 
 
 def _run_benchmark(
@@ -184,6 +451,8 @@ def _run_benchmark(
     executor_args,
     extra_args,
     export_results_files=True,
+    fresh: bool = False,
+    submission_id_for_extras: str | None = None,
 ):
     """Execute the full benchmark flow: launch inference -> benchmark -> stop.
 
@@ -393,6 +662,70 @@ def _run_benchmark(
     bench_result.host_list = host_list
     bench_result.container_image = container_image
 
+    # ---------------------------------------------------------------
+    # Scheduled execution setup (build task list before launch)
+    # ---------------------------------------------------------------
+    cache_dir = str(config.cache_dir) if config else None
+    tasks = fw.build_task_list(bench_args, bench_spec.schedule if bench_spec else None)
+
+    if tasks is not None:
+        from sparkrun.benchmarking.run_state import BenchmarkRunState, derive_benchmark_id
+
+        benchmark_id = derive_benchmark_id(
+            cluster_id,
+            fw.framework_name,
+            profile,
+            bench_args,
+            [t.schedule_entry for t in tasks],
+        )
+
+        state_dir = (config.cache_dir / "benchmarks" / benchmark_id) if config else None
+        state_dir_str = str(state_dir) if state_dir else "~/.cache/sparkrun/benchmarks/%s" % benchmark_id
+
+        click.echo("Benchmark ID:          %s" % benchmark_id)
+        click.echo("Resume command:        sparkrun benchmark resume %s" % benchmark_id)
+        click.echo("State directory:       %s" % state_dir_str)
+        click.echo("")
+
+        # Check for existing state
+        existing_state = BenchmarkRunState.load(benchmark_id, cache_dir)
+        if existing_state is not None and not existing_state.is_complete(len(tasks)):
+            if fresh:
+                # Force fresh: delete prior state directory
+                if state_dir and state_dir.exists():
+                    shutil.rmtree(state_dir)
+                    logger.debug("Deleted prior benchmark state at %s (--fresh)", state_dir)
+                existing_state = None
+            else:
+                resume_answer = click.confirm(
+                    "Found existing incomplete benchmark state (%d/%d tasks done). Resume?"
+                    % (len(existing_state.completed_indices), len(tasks)),
+                    default=True,
+                )
+                if not resume_answer:
+                    if state_dir and state_dir.exists():
+                        shutil.rmtree(state_dir)
+                        logger.debug("Deleted prior benchmark state at %s (user chose fresh start)", state_dir)
+                    existing_state = None
+
+        # Build or load state
+        if existing_state is not None:
+            state = existing_state
+        else:
+            state = BenchmarkRunState(
+                benchmark_id=benchmark_id,
+                cluster_id=cluster_id,
+                recipe_qualified_name=recipe.qualified_name,
+                framework=fw.framework_name,
+                profile=profile,
+                base_args=bench_args,
+                schedule=[t.schedule_entry for t in tasks],
+                completed_indices=[],
+                failed_indices=[],
+            )
+            if submission_id_for_extras:
+                state.extras["submission_id"] = submission_id_for_extras
+
     try:
         # ---------------------------------------------------------------
         # 6. Launch inference (unless --skip-run)
@@ -511,87 +844,151 @@ def _run_benchmark(
         if served_model_name and "served_model_name" not in bench_args:
             bench_args["served_model_name"] = served_model_name
 
-        bench_cmd = fw.build_benchmark_command(
-            target_url=base_url,
-            model=recipe.model,
-            args=bench_args,
-            result_file=result_file,
-        )
-        bench_result.profile = profile
-        bench_result.benchmark_args = bench_args
+        stdout_text = ""
+        stderr_text = ""
 
-        logger.info("Benchmark command:")
-        logger.info("  %s", " ".join(bench_cmd))
-        click.echo("")
+        if tasks is not None:
+            # -----------------------------------------------------------
+            # Scheduled execution path
+            # -----------------------------------------------------------
+            bench_result.profile = profile
+            bench_result.benchmark_args = bench_args
 
-        if dry_run:
-            click.echo("[dry-run] Would execute benchmark command")
-            stdout_text = ""
-            stderr_text = ""
-        else:
-            import time
+            if dry_run:
+                click.echo("[dry-run] Would execute %d scheduled benchmark tasks via scheduler" % len(tasks))
+                for i, t in enumerate(tasks):
+                    click.echo("[dry-run]   task %d: %s" % (i, t.label))
+            else:
+                from sparkrun.benchmarking.progress_ui import BenchmarkProgressUI
+                from sparkrun.benchmarking.scheduler import run_schedule
 
-            click.echo("--- benchmark output ---")
-            bench_start = time.monotonic()
-            bench_result.start_time = datetime.now(tz=timezone.utc)
-            try:
-                import os
+                title = "%s/%s" % (recipe.name, profile) if profile else recipe.name
 
-                bench_env = os.environ.copy()
-                bench_env["PYTHONUNBUFFERED"] = "1"
-                proc = subprocess.Popen(
-                    bench_cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    bufsize=1,
-                    env=bench_env,
-                )
+                with BenchmarkProgressUI(total_tasks=len(tasks), benchmark_id=benchmark_id, title=title) as pui:
+                    sched_result = run_schedule(
+                        fw=fw,
+                        tasks=tasks,
+                        state=state,
+                        target_url=base_url,
+                        model=recipe.model,
+                        timeout=effective_timeout,
+                        progress_ui=pui,
+                        cache_dir=cache_dir,
+                        exit_on_first_fail=exit_on_first_fail,
+                        skip_run=skip_run,
+                    )
 
-                stdout_lines: list[str] = []
-                for line in proc.stdout:
-                    click.echo(line, nl=False)
-                    stdout_lines.append(line)
+                consolidated = sched_result.consolidated
 
-                proc.wait(timeout=effective_timeout)
-                stdout_text = "".join(stdout_lines)
-                stderr_text = proc.stderr.read()
-
-                elapsed = time.monotonic() - bench_start
-                bench_result.end_time = datetime.now(tz=timezone.utc)
-                click.echo("--- end benchmark output ---")
-                click.echo("")
-
-                if proc.returncode != 0:
-                    click.echo("Warning: benchmark exited with code %d (%.0fs elapsed)" % (proc.returncode, elapsed), err=True)
-                    if stderr_text:
-                        click.echo("stderr: %s" % stderr_text[:500], err=True)
-                    if exit_on_first_fail:
-                        click.echo("Skipping result export (--exit-on-first-fail set and benchmark failed).", err=True)
-                        if launched and not no_stop:
-                            click.echo("")
-                            click.echo("Stopping inference...")
-                            _stop_inference(runtime, host_list, cluster_id, config, dry_run)
-                            click.echo("Inference stopped.")
-                        sys.exit(proc.returncode)
+                # Write consolidated.json to state dir
+                if state_dir:
+                    state_dir.mkdir(parents=True, exist_ok=True)
+                    consolidated_path = state_dir / "consolidated.json"
+                    consolidated_path.write_text(json.dumps(consolidated, indent=2))
+                    result_file_for_parse = str(consolidated_path)
                 else:
-                    click.echo("Benchmark completed successfully (%.0fs elapsed)." % elapsed)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                click.echo("Error: benchmark timed out after %d seconds" % effective_timeout, err=True)
-                stdout_text = ""
-                stderr_text = ""
-            except FileNotFoundError:
-                click.echo("Error: benchmark command not found: %s" % bench_cmd[0], err=True)
-                if launched and not no_stop:
-                    _stop_inference(runtime, host_list, cluster_id, config, dry_run)
-                sys.exit(1)
+                    result_file_for_parse = result_file
+
+                if not sched_result.success:
+                    click.echo("")
+                    click.echo("Benchmark incomplete — resume with: sparkrun benchmark resume %s" % benchmark_id)
+                    if launched and not no_stop:
+                        click.echo("")
+                        click.echo("Stopping inference...")
+                        _stop_inference(runtime, host_list, cluster_id, config, dry_run)
+                        click.echo("Inference stopped.")
+                    sys.exit(1)
+
+                # Use consolidated JSON as "stdout_text" for parse_results
+                stdout_text = json.dumps(consolidated)
+                bench_result.end_time = datetime.now(tz=timezone.utc)
+                bench_result.start_time = bench_result.start_time or datetime.now(tz=timezone.utc)
+        else:
+            # -----------------------------------------------------------
+            # Legacy single-call subprocess path
+            # -----------------------------------------------------------
+            bench_cmd = fw.build_benchmark_command(
+                target_url=base_url,
+                model=recipe.model,
+                args=bench_args,
+                result_file=result_file,
+            )
+            bench_result.profile = profile
+            bench_result.benchmark_args = bench_args
+
+            logger.info("Benchmark command:")
+            logger.info("  %s", " ".join(bench_cmd))
+            click.echo("")
+
+            if dry_run:
+                click.echo("[dry-run] Would execute benchmark command")
+            else:
+                import time
+
+                click.echo("--- benchmark output ---")
+                bench_start = time.monotonic()
+                bench_result.start_time = datetime.now(tz=timezone.utc)
+                try:
+                    import os
+
+                    bench_env = os.environ.copy()
+                    bench_env["PYTHONUNBUFFERED"] = "1"
+                    proc = subprocess.Popen(
+                        bench_cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        bufsize=1,
+                        env=bench_env,
+                    )
+
+                    stdout_lines: list[str] = []
+                    for line in proc.stdout:
+                        click.echo(line, nl=False)
+                        stdout_lines.append(line)
+
+                    proc.wait(timeout=effective_timeout)
+                    stdout_text = "".join(stdout_lines)
+                    stderr_text = proc.stderr.read()
+
+                    elapsed = time.monotonic() - bench_start
+                    bench_result.end_time = datetime.now(tz=timezone.utc)
+                    click.echo("--- end benchmark output ---")
+                    click.echo("")
+
+                    if proc.returncode != 0:
+                        click.echo("Warning: benchmark exited with code %d (%.0fs elapsed)" % (proc.returncode, elapsed), err=True)
+                        if stderr_text:
+                            click.echo("stderr: %s" % stderr_text[:500], err=True)
+                        if exit_on_first_fail:
+                            click.echo("Skipping result export (--exit-on-first-fail set and benchmark failed).", err=True)
+                            if launched and not no_stop:
+                                click.echo("")
+                                click.echo("Stopping inference...")
+                                _stop_inference(runtime, host_list, cluster_id, config, dry_run)
+                                click.echo("Inference stopped.")
+                            sys.exit(proc.returncode)
+                    else:
+                        click.echo("Benchmark completed successfully (%.0fs elapsed)." % elapsed)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    click.echo("Error: benchmark timed out after %d seconds" % effective_timeout, err=True)
+                    stdout_text = ""
+                    stderr_text = ""
+                except FileNotFoundError:
+                    click.echo("Error: benchmark command not found: %s" % bench_cmd[0], err=True)
+                    if launched and not no_stop:
+                        _stop_inference(runtime, host_list, cluster_id, config, dry_run)
+                    sys.exit(1)
+
+            result_file_for_parse = result_file
 
         # -----------------------------------------------------------
         # 9. Parse and export results
         # -----------------------------------------------------------
         if not dry_run:
-            results = fw.parse_results(stdout_text, stderr_text, result_file=result_file)
+            _parse_result_file = result_file_for_parse if tasks is not None else result_file
+            results = fw.parse_results(stdout_text, stderr_text, result_file=_parse_result_file)
             bench_result.results = results
 
             rows = results.get("rows", [])
@@ -678,6 +1075,8 @@ def _run_benchmark(
     except KeyboardInterrupt:
         click.echo("")
         click.echo("Interrupted.")
+        if tasks is not None:
+            click.echo("State preserved — resume with: sparkrun benchmark resume %s" % benchmark_id)
         if not no_stop and not skip_run:
             click.echo("Stopping inference (cleaning up containers)...")
             _stop_inference(runtime, host_list, cluster_id, config, dry_run)

@@ -13,6 +13,8 @@ from typing import Any
 from scitrera_app_framework import Variables
 
 from sparkrun.benchmarking.base import BenchmarkingPlugin
+from sparkrun.benchmarking.scheduler import BenchTask
+from sparkrun.core.benchmark_profiles import BenchmarkError
 from sparkrun.utils.shell import quote_list
 
 logger = logging.getLogger(__name__)
@@ -169,6 +171,72 @@ class LlamaBenchyFramework(BenchmarkingPlugin):
             return combos * int(runs) if combos > 0 else None
         except Exception:
             return None
+
+    def build_task_list(
+        self,
+        base_args: dict[str, Any],
+        schedule: list[dict[str, Any]] | None,
+    ) -> list[BenchTask]:
+        """Build a task list for llama-benchy, always returning a non-None list.
+
+        If ``schedule`` is provided, each entry must contain ``depth`` (int) and
+        ``concurrency`` (int). Other keys override ``base_args`` for that task.
+        If ``schedule`` is None, builds the cartesian product of
+        ``base_args["depth"]`` x ``base_args["concurrency"]``, depth-major.
+        """
+        import copy
+
+        tasks: list[BenchTask] = []
+
+        if schedule is not None:
+            for idx, entry in enumerate(schedule):
+                d = entry.get("depth")
+                if not isinstance(d, int):
+                    raise BenchmarkError("schedule entry %d missing/invalid 'depth' (must be int)" % idx)
+                c = entry.get("concurrency")
+                if not isinstance(c, int):
+                    raise BenchmarkError("schedule entry %d missing/invalid 'concurrency' (must be int)" % idx)
+
+                run_args = copy.deepcopy(base_args)
+                for k, v in entry.items():
+                    if k not in ("depth", "concurrency"):
+                        run_args[k] = v
+                run_args["depth"] = [d]
+                run_args["concurrency"] = [c]
+
+                tasks.append(
+                    BenchTask(
+                        index=idx,
+                        label="d=%d c=%d" % (d, c),
+                        run_args=run_args,
+                        schedule_entry=dict(entry),
+                    )
+                )
+        else:
+            depths = base_args.get("depth", [0])
+            if not isinstance(depths, list):
+                depths = [depths]
+            concurrencies = base_args.get("concurrency", [1])
+            if not isinstance(concurrencies, list):
+                concurrencies = [concurrencies]
+
+            idx = 0
+            for d in depths:
+                for c in concurrencies:
+                    run_args = dict(base_args)
+                    run_args["depth"] = [d]
+                    run_args["concurrency"] = [c]
+                    tasks.append(
+                        BenchTask(
+                            index=idx,
+                            label="d=%d c=%d" % (d, c),
+                            run_args=run_args,
+                            schedule_entry={"depth": d, "concurrency": c},
+                        )
+                    )
+                    idx += 1
+
+        return tasks
 
     def parse_results(self, stdout: str, stderr: str, result_file: str | None = None) -> dict[str, Any]:
         """Parse llama-benchy JSON output into structured results.

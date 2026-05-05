@@ -19,6 +19,7 @@ from sparkrun.core.bootstrap import EXT_BENCHMARKING_FRAMEWORKS
 if TYPE_CHECKING:
     from sparkrun.core.recipe import Recipe
     from sparkrun.core.launcher import LaunchResult
+    from sparkrun.benchmarking.scheduler import BenchTask
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,23 @@ class BenchmarkingPlugin(Plugin):
 
         Returns None if the count cannot be determined.  Subclasses should
         override this when the framework's test matrix is predictable.
+        """
+        return None
+
+    def build_task_list(
+        self,
+        base_args: dict[str, Any],
+        schedule: list[dict[str, Any]] | None,
+    ) -> list["BenchTask"] | None:
+        """Build a list of scheduled benchmark tasks or return None for legacy single-call path.
+
+        If ``schedule`` is provided (non-None), the framework should validate each entry
+        and raise :class:`~sparkrun.core.benchmark_profiles.BenchmarkError` on invalid entries.
+        If ``schedule`` is None, the framework may optionally build a default task list
+        from ``base_args`` (e.g. cartesian product). Returning None opts out of the
+        batched execution path and falls back to the legacy single-call flow.
+
+        Default: framework does not support batched/scheduled execution.
         """
         return None
 

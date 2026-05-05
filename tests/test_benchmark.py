@@ -1146,3 +1146,104 @@ def test_llama_cpp_build_rpc_head_command_skip_keys():
     assert "my-alias" not in cmd
     assert "--port" in cmd
     assert "--rpc 10.0.0.2:50052" in cmd
+
+
+# ========== BenchmarkSpec.schedule field Tests ==========
+
+
+def test_benchmark_spec_load_with_schedule(tmp_path: Path):
+    """BenchmarkSpec.load parses a schedule: list-of-dicts into spec.schedule."""
+    p = tmp_path / "bench.yaml"
+    _write_yaml(
+        p,
+        {
+            "benchmark": {
+                "framework": "llama-benchy",
+                "args": {"pp": [2048]},
+                "schedule": [
+                    {"depth": 0, "concurrency": 1},
+                    {"depth": 4096, "concurrency": 5},
+                ],
+            }
+        },
+    )
+    spec = BenchmarkSpec.load(p)
+    assert spec.schedule == [
+        {"depth": 0, "concurrency": 1},
+        {"depth": 4096, "concurrency": 5},
+    ]
+
+
+def test_benchmark_spec_load_schedule_not_a_list_raises(tmp_path: Path):
+    """BenchmarkSpec.load raises BenchmarkError when schedule is not a list."""
+    p = tmp_path / "bench.yaml"
+    _write_yaml(
+        p,
+        {
+            "benchmark": {
+                "framework": "llama-benchy",
+                "args": {"pp": [2048]},
+                "schedule": {"depth": 0, "concurrency": 1},  # dict, not list
+            }
+        },
+    )
+    with pytest.raises(BenchmarkError, match="schedule"):
+        BenchmarkSpec.load(p)
+
+
+def test_benchmark_spec_load_schedule_with_non_dict_items_raises(tmp_path: Path):
+    """BenchmarkSpec.load raises BenchmarkError when schedule contains non-dict items."""
+    p = tmp_path / "bench.yaml"
+    _write_yaml(
+        p,
+        {
+            "benchmark": {
+                "framework": "llama-benchy",
+                "args": {"pp": [2048]},
+                "schedule": [{"depth": 0, "concurrency": 1}, "not-a-dict"],
+            }
+        },
+    )
+    with pytest.raises(BenchmarkError, match="schedule"):
+        BenchmarkSpec.load(p)
+
+
+def test_benchmark_spec_load_no_schedule_field(tmp_path: Path):
+    """BenchmarkSpec.load with no schedule field leaves spec.schedule as None."""
+    p = tmp_path / "bench.yaml"
+    _write_yaml(
+        p,
+        {
+            "benchmark": {
+                "framework": "llama-benchy",
+                "args": {"pp": [2048]},
+            }
+        },
+    )
+    spec = BenchmarkSpec.load(p)
+    assert spec.schedule is None
+
+
+def test_benchmark_spec_from_recipe_with_schedule(tmp_path: Path):
+    """BenchmarkSpec.from_recipe extracts schedule from a recipe's benchmark block."""
+    recipe = Recipe.from_dict(
+        {
+            "name": "test-recipe",
+            "model": "org/model",
+            "runtime": "vllm",
+            "benchmark": {
+                "framework": "llama-benchy",
+                "args": {"pp": [2048]},
+                "schedule": [
+                    {"depth": 0, "concurrency": 1},
+                    {"depth": 8192, "concurrency": 2},
+                ],
+            },
+        }
+    )
+    spec = BenchmarkSpec.from_recipe(recipe)
+    assert spec is not None
+    assert spec.schedule == [
+        {"depth": 0, "concurrency": 1},
+        {"depth": 8192, "concurrency": 2},
+    ]
