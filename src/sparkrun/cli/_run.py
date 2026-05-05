@@ -311,7 +311,7 @@ def run(
         _diag_ssh_kw = _diag_ssh(config)
         diag = RunDiagnosticsCollector(diagnostics_path, host_list, _diag_ssh_kw, dry_run=dry_run)
         diag.open()
-        diag.emit_header(cluster_name=cluster_name, command="sparkrun run %s" % recipe_name)
+        diag.emit_header(cluster_name=cluster_cfg.name or cluster_name, command="sparkrun run %s" % recipe_name)
         diag.emit_recipe(recipe, overrides)
         diag.emit_config(
             hosts=host_list,

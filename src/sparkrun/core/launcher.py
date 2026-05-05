@@ -159,6 +159,7 @@ def launch_inference(
         host_list,
         ssh_kwargs=ssh_kwargs,
         dry_run=dry_run,
+        topology=topology,
     )
     effective_transfer_mode = transfer_result.mode
 
@@ -261,6 +262,7 @@ def launch_inference(
             transfer_interface=transfer_interface,
             local_cache_dir=effective_local_cache,
             pre_ib=transfer_result,
+            topology=topology,
         )
         # Re-save job metadata with IP maps from IB detection
         if not dry_run and (ib_ip_map or mgmt_ip_map):

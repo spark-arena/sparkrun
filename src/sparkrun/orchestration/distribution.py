@@ -64,6 +64,7 @@ def resolve_auto_transfer_mode(
     host_list: list[str],
     ssh_kwargs: dict | None = None,
     dry_run: bool = False,
+    topology: str | None = None,
 ) -> TransferModeResult:
     """Resolve ``"auto"`` transfer mode to a concrete strategy.
 
@@ -107,7 +108,7 @@ def resolve_auto_transfer_mode(
     # resolve definitively and cache results for distribute_resources().
     from sparkrun.orchestration.infiniband import detect_ib_for_hosts, validate_ib_connectivity
 
-    ib_result = detect_ib_for_hosts(host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
+    ib_result = detect_ib_for_hosts(host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run, topology=topology)
     ib_validated = validate_ib_connectivity(ib_result.ib_ip_map, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
 
     if ib_validated:
@@ -312,6 +313,7 @@ def distribute_resources(
     transfer_interface: str | None = None,
     local_cache_dir: str | None = None,
     pre_ib: TransferModeResult | None = None,
+    topology: str | None = None,
 ) -> tuple["ClusterCommEnv | None", dict[str, str], dict[str, str]]:
     """Detect IB, distribute container image and model to target hosts.
 
@@ -422,6 +424,7 @@ def distribute_resources(
             host_list,
             ssh_kwargs=ssh_kwargs,
             dry_run=dry_run,
+            topology=topology,
         )
         # Validate IB connectivity for auto/local modes
         _ib_validated: dict[str, str] | None = None
@@ -633,6 +636,7 @@ def distribute_from_config(
     transfer_interface: str | None = None,
     local_cache_dir: str | None = None,
     pre_ib: TransferModeResult | None = None,
+    topology: str | None = None,
 ) -> tuple["ClusterCommEnv | None", dict[str, str], dict[str, str]]:
     """Distribute resources based on recipe ``distribution_config``.
 
@@ -702,7 +706,7 @@ def distribute_from_config(
         _ib_validated = pre_ib.ib_validated
         _auto_delegated = pre_ib.auto_delegated
     else:
-        ib_result = detect_ib_for_hosts(host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
+        ib_result = detect_ib_for_hosts(host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run, topology=topology)
         _ib_validated = None
         if transfer_mode in ("auto", "local"):
             _ib_validated = validate_ib_connectivity(ib_result.ib_ip_map, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
