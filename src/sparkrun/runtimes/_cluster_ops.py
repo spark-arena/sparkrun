@@ -202,6 +202,29 @@ def detect_head_ip(ctx: ClusterContext) -> str:
     return detect_host_ip(ctx.head_host, ssh_kwargs=ctx.ssh_kwargs, dry_run=ctx.dry_run)
 
 
+def resolve_hosts_for_init(ctx: ClusterContext, head_ip: str) -> list[str]:
+    """Return ``ctx.hosts`` with loopback entries replaced by routable IPs.
+
+    The cluster config conventionally lists the control machine's own
+    host as ``127.0.0.1`` for SSH convenience.  That loopback must not
+    appear in NCCL / torch-distributed master addresses, otherwise
+    workers connect to their own loopback instead of the head.
+    """
+    from sparkrun.orchestration.primitives import detect_host_ip
+    from sparkrun.utils import is_local_host
+
+    resolved: list[str] = []
+    for h in ctx.hosts:
+        if not is_local_host(h):
+            resolved.append(h)
+            continue
+        if h == ctx.head_host:
+            resolved.append(head_ip)
+        else:
+            resolved.append(detect_host_ip(h, ssh_kwargs=ctx.ssh_kwargs, dry_run=ctx.dry_run))
+    return resolved
+
+
 def find_port(ctx: ClusterContext, host: str, preferred: int) -> int:
     """Find an available port, avoiding collisions with running instances."""
     from sparkrun.orchestration.primitives import find_available_port
@@ -418,6 +441,13 @@ def run_native_cluster(
     logger.info("  Head IP: %s", head_ip)
     logger.info("Step 3/7: IP detection done (%.1fs)", time.monotonic() - t0)
 
+    # Substitute loopback entries (e.g. ``127.0.0.1`` from cluster config)
+    # with routable IPs so NCCL / torch-distributed master addresses are
+    # never broadcast as loopback to remote workers.
+    resolved_hosts = resolve_hosts_for_init(ctx, head_ip)
+    if resolved_hosts != ctx.hosts:
+        logger.info("  Resolved init hosts: %s", resolved_hosts)
+
     # Auto-detect available init port
     init_port = find_port(ctx, ctx.head_host, init_port)
 
@@ -440,7 +470,7 @@ def run_native_cluster(
         node_rank=0,
         init_port=init_port,
         skip_keys=skip_keys,
-        hosts=ctx.hosts,
+        hosts=resolved_hosts,
     )
     logger.info("Serve command (head, rank 0):")
     for line in head_command.strip().splitlines():
@@ -562,7 +592,7 @@ def run_native_cluster(
                     node_rank=rank,
                     init_port=init_port,
                     skip_keys=skip_keys,
-                    hosts=ctx.hosts,
+                    hosts=resolved_hosts,
                 )
                 worker_container = all_nodes[rank][2]
                 worker_exec_script = executor.generate_exec_serve_script(
