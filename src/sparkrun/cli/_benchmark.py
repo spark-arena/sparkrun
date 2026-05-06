@@ -336,7 +336,7 @@ def _resume_benchmark_run(ctx, benchmark_id: str, dry_run: bool, *, sctx=None):
 
         if not sched_result.success:
             click.echo("")
-            click.echo("Benchmark incomplete — resume with: sparkrun benchmark resume %s" % benchmark_id)
+            click.echo("Benchmark incomplete; you can resume later.")
             sys.exit(1)
 
         click.echo("")
@@ -418,7 +418,7 @@ def _resume_benchmark_run(ctx, benchmark_id: str, dry_run: bool, *, sctx=None):
 
     except KeyboardInterrupt:
         click.echo("")
-        click.echo("Interrupted. State preserved — resume with: sparkrun benchmark resume %s" % benchmark_id)
+        click.echo("Interrupted. State preserved so that you can resume later.")
         sys.exit(130)
 
 
@@ -683,7 +683,6 @@ def _run_benchmark(
         state_dir_str = str(state_dir) if state_dir else "~/.cache/sparkrun/benchmarks/%s" % benchmark_id
 
         click.echo("Benchmark ID:          %s" % benchmark_id)
-        click.echo("Resume command:        sparkrun benchmark resume %s" % benchmark_id)
         click.echo("State directory:       %s" % state_dir_str)
         click.echo("")
 
@@ -904,7 +903,7 @@ def _run_benchmark(
 
                 if not sched_result.success:
                     click.echo("")
-                    click.echo("Benchmark incomplete — resume with: sparkrun benchmark resume %s" % benchmark_id)
+                    click.echo("Benchmark incomplete; you can resume later")
                     if launched and not no_stop:
                         click.echo("")
                         click.echo("Stopping inference...")
@@ -1089,7 +1088,7 @@ def _run_benchmark(
         click.echo("")
         click.echo("Interrupted.")
         if tasks is not None:
-            click.echo("State preserved — resume with: sparkrun benchmark resume %s" % benchmark_id)
+            click.echo("State preserved so that you can resume later")
         if not no_stop and not skip_run:
             click.echo("Stopping inference (cleaning up containers)...")
             _stop_inference(runtime, host_list, cluster_id, config, dry_run)
