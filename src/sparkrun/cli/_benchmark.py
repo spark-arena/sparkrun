@@ -726,6 +726,19 @@ def _run_benchmark(
             if submission_id_for_extras:
                 state.extras["submission_id"] = submission_id_for_extras
 
+        # Pin framework version on first creation so subsequent calls (and
+        # resumed sessions) all use the same tool release.  Skip detection
+        # if a version is already pinned (resume path) or detection fails.
+        if "framework_version" not in state.extras:
+            detected_version = fw.detect_version()
+            if detected_version:
+                state.extras["framework_version"] = detected_version
+                click.echo("Pinned %s version: %s" % (fw.framework_name, detected_version))
+            else:
+                logger.debug("No framework version detected for %s; version will float", fw.framework_name)
+        else:
+            click.echo("Using pinned %s version: %s" % (fw.framework_name, state.extras["framework_version"]))
+
     try:
         # ---------------------------------------------------------------
         # 6. Launch inference (unless --skip-run)

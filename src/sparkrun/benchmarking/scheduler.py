@@ -131,6 +131,12 @@ def run_schedule(
                 run_args.setdefault("no_warmup", True)
                 run_args.setdefault("skip_coherence", True)
 
+            # Pin framework version to whatever was resolved on the first run
+            # of this benchmark, so resumes don't drift onto a newer release.
+            pinned_version = state.extras.get("framework_version")
+            if pinned_version:
+                run_args["_pinned_version"] = pinned_version
+
             depth, concurrency = _extract_depth_concurrency(run_args)
             result_file = state.runs_dir(cache_dir) / ("%03d_d%d_c%d.json" % (idx, depth, concurrency))
             log_file = state.runs_dir(cache_dir) / ("%03d_d%d_c%d.log" % (idx, depth, concurrency))

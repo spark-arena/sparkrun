@@ -114,6 +114,21 @@ class BenchmarkingPlugin(Plugin):
         """Return default benchmark args when no profile is provided."""
         return dict(self.default_args)
 
+    def detect_version(self) -> str | None:
+        """Resolve the framework tool version that will be used for execution.
+
+        Frameworks that pin via ``uvx <pkg>@<version>`` (or similar) should
+        implement this so the version can be captured up-front and reused for
+        all subsequent calls within the same benchmark run — including
+        resumes after a crash.  The scheduler stashes the result in
+        ``state.extras["framework_version"]`` and threads it back into every
+        per-task ``run_args`` via the ``_pinned_version`` sentinel key, which
+        the framework's ``build_benchmark_command`` is expected to consume.
+
+        Default: framework does not support pinning.  Returns ``None``.
+        """
+        return None
+
     def estimate_test_count(self, args: dict[str, Any]) -> int | None:
         """Estimate the number of test combinations from the args.
 

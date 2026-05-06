@@ -72,6 +72,38 @@ class LlamaBenchyFramework(BenchmarkingPlugin):
             missing.append("uvx not found on PATH. Install uv: https://docs.astral.sh/uv/getting-started/installation/")
         return missing
 
+    def detect_version(self) -> str | None:
+        """Resolve the llama-benchy version uvx will use for execution.
+
+        Runs ``uvx llama-benchy --version`` once and parses the version
+        token out of stdout.  Returns ``None`` on any failure — callers
+        should treat ``None`` as "leave version floating".
+        """
+        import re
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                ["uvx", "llama-benchy", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            logger.warning("Could not detect llama-benchy version: %s", exc)
+            return None
+
+        if result.returncode != 0:
+            logger.warning("`uvx llama-benchy --version` exited %d: %s", result.returncode, result.stderr.strip())
+            return None
+
+        text = (result.stdout or "") + "\n" + (result.stderr or "")
+        match = re.search(r"\b(\d+\.\d+(?:\.\d+)?(?:[\w.+-]*)?)\b", text)
+        if not match:
+            logger.warning("Could not parse llama-benchy version from output: %s", text.strip()[:200])
+            return None
+        return match.group(1)
+
     def build_benchmark_command(
         self,
         target_url: str,
@@ -83,6 +115,10 @@ class LlamaBenchyFramework(BenchmarkingPlugin):
 
         Always uses ``--format json`` for machine-parseable output and
         ``--save-result`` to capture results to a file.
+
+        If ``args`` carries a ``_pinned_version`` sentinel key, the package
+        spec becomes ``llama-benchy@<version>`` so the same version is used
+        on every call within a benchmark run (including resumes).
         """
         # Strip GGUF quant suffix (e.g. "repo/model-GGUF:Q4_K_M" → "repo/model-GGUF")
         # The colon syntax is a sparkrun convention; the served model uses the repo ID.
@@ -90,9 +126,12 @@ class LlamaBenchyFramework(BenchmarkingPlugin):
 
         model_id, _ = parse_gguf_model_spec(model)
 
+        pinned_version = args.get("_pinned_version") if isinstance(args, dict) else None
+        package_spec = "llama-benchy@%s" % pinned_version if pinned_version else "llama-benchy"
+
         cmd = [
             "uvx",
-            "llama-benchy",
+            package_spec,
             "--base-url",
             target_url,
             "--model",
@@ -107,7 +146,7 @@ class LlamaBenchyFramework(BenchmarkingPlugin):
         # Render args as CLI flags
         for key, value in args.items():
             # Skip args we handle explicitly above
-            if key in ("base_url", "model", "format", "save_result"):
+            if key in ("base_url", "model", "format", "save_result", "_pinned_version"):
                 continue
 
             # Resolve shorthand aliases to canonical names
