@@ -65,13 +65,19 @@ def _build_table_rows(consolidated: dict[str, Any]) -> list[tuple[int, int, floa
     pp_vals: dict[tuple[int, int], list[float | None]] = defaultdict(list)
     tg_vals: dict[tuple[int, int], list[float | None]] = defaultdict(list)
     ttfr_vals: dict[tuple[int, int], list[float | None]] = defaultdict(list)
-    counts: dict[tuple[int, int], int] = defaultdict(int)
+    # `runs` reflects the number of measurement repetitions actually executed.
+    # Each non-prefill benchmark entry's throughput dict carries a `values`
+    # array of length == --runs; we sum those lengths across entries (a single
+    # llama-benchy call yields one non-prefill entry, but the same (d, c)
+    # could be re-run later, e.g. via gap re-queue, in which case lengths add).
+    runs_count: dict[tuple[int, int], int] = defaultdict(int)
+    seen_keys: set[tuple[int, int]] = set()
 
     for b in benchmarks:
         depth = int(b.get("context_size") or 0)
         conc = int(b.get("concurrency") or 1)
         key = (depth, conc)
-        counts[key] += 1
+        seen_keys.add(key)
 
         is_prefill = bool(b.get("is_context_prefill_phase"))
         if is_prefill:
@@ -90,8 +96,22 @@ def _build_table_rows(consolidated: dict[str, Any]) -> list[tuple[int, int, floa
         tg_vals[key].append(_mean_val("tg_throughput"))
         ttfr_vals[key].append(_mean_val("ttfr"))
 
+        # Number of measurement repetitions == len(values) on whichever
+        # throughput dict carries it; prefer tg_throughput, then pp_throughput.
+        run_repetitions = 0
+        for field in ("tg_throughput", "pp_throughput"):
+            metric = b.get(field)
+            if isinstance(metric, dict):
+                values = metric.get("values")
+                if isinstance(values, list) and values:
+                    run_repetitions = len(values)
+                    break
+        if run_repetitions == 0:
+            run_repetitions = 1  # fall back: at least one row was emitted
+        runs_count[key] += run_repetitions
+
     rows = []
-    for key in sorted(counts):
+    for key in sorted(seen_keys):
         depth, conc = key
         rows.append(
             (
@@ -100,7 +120,7 @@ def _build_table_rows(consolidated: dict[str, Any]) -> list[tuple[int, int, floa
                 _safe_mean(pp_vals.get(key, [])),
                 _safe_mean(tg_vals.get(key, [])),
                 _safe_mean(ttfr_vals.get(key, [])),
-                counts[key],
+                runs_count.get(key, 0),
             )
         )
     return rows
