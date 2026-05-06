@@ -596,38 +596,34 @@ class TestResolveTransferConfig:
         _, remote, _, _ = cfg.resolve_transfer_config(config)
         assert remote == "/mnt/shared/models"
 
-    def test_cross_user_derives_remote_from_ssh_user(self):
-        """Different SSH user → remote cache derived from that user's home."""
+    def test_no_cluster_cache_dir_returns_none(self):
+        """Without an explicit cluster cache_dir, remote resolution is deferred.
+
+        Returning ``None`` signals the caller (typically ``launch_inference``
+        via ``resolve_effective_cache_dir``) to probe the target so the path
+        reflects the SSH login user's ``$HOME`` / ``HF_HOME`` rather than the
+        control machine's.
+        """
+        cfg = ResolvedClusterConfig()
+        config = _FakeConfig()
+        _, remote, _, _ = cfg.resolve_transfer_config(config)
+        assert remote is None
+
+    def test_cluster_user_alone_does_not_synthesize_remote_path(self):
+        """Cluster-defined user is no longer used to synthesize a /home/<user>/...
+        remote cache path; resolution defers to the probe."""
         cfg = ResolvedClusterConfig(user="gpuadmin")
         config = _FakeConfig()
         with patch.dict("os.environ", {"USER": "localuser"}):
             _, remote, _, _ = cfg.resolve_transfer_config(config)
-        assert remote == "/home/gpuadmin/.cache/huggingface"
+        assert remote is None
 
-    def test_non_linux_control_uses_linux_path(self):
-        """macOS (or other non-Linux) control machine → remote path is Linux-safe."""
-        cfg = ResolvedClusterConfig()
-        config = _FakeConfig("/Users/drew/.cache/huggingface")
-        with patch("sys.platform", "darwin"), patch.dict("os.environ", {"USER": "drew"}):
-            _, remote, _, _ = cfg.resolve_transfer_config(config)
-        assert remote == "/home/drew/.cache/huggingface"
-
-    def test_non_linux_control_with_ssh_user(self):
-        """macOS control + cluster SSH user → remote path uses SSH user."""
-        cfg = ResolvedClusterConfig(user="drew")
-        config = _FakeConfig("/Users/drew/.cache/huggingface")
-        # Same username on both sides, so cross-user branch doesn't fire
-        with patch("sys.platform", "darwin"), patch.dict("os.environ", {"USER": "drew"}):
-            _, remote, _, _ = cfg.resolve_transfer_config(config)
-        assert remote == "/home/drew/.cache/huggingface"
-
-    def test_linux_control_uses_local_path(self):
-        """Linux control machine → remote path matches local (same platform)."""
+    def test_local_cache_dir_always_returned(self):
+        """Local cache dir is always populated from the config (never deferred)."""
         cfg = ResolvedClusterConfig()
         config = _FakeConfig("/home/drew/.cache/huggingface")
-        with patch("sys.platform", "linux"), patch.dict("os.environ", {"USER": "drew"}):
-            _, remote, _, _ = cfg.resolve_transfer_config(config)
-        assert remote == "/home/drew/.cache/huggingface"
+        local, _, _, _ = cfg.resolve_transfer_config(config)
+        assert local == "/home/drew/.cache/huggingface"
 
     def test_transfer_mode_override(self):
         """CLI transfer_mode_override takes precedence over cluster setting."""

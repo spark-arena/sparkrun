@@ -576,11 +576,12 @@ class ResolvedClusterConfig:
     def resolve_transfer_config(self, config, transfer_mode_override: str | None = None):
         """Resolve transfer configuration against defaults.
 
-        When the cluster has a configured ``user`` that differs from the OS
-        user and no explicit ``cache_dir`` is set, the remote cache dir is
-        derived from the SSH user's home directory (``~<user>/.cache/huggingface``)
-        rather than the local user's.  This prevents permission errors when
-        the cluster user can't write to the control user's home directory.
+        Returns ``None`` for ``remote_cache_dir`` when no explicit cluster
+        ``cache_dir`` is configured.  Downstream callers (e.g. ``launch_inference``)
+        are responsible for resolving ``None`` against the actual remote, typically
+        via :func:`sparkrun.orchestration.primitives.probe_remote_hf_cache` so the
+        path reflects the SSH login user's ``$HOME`` / ``HF_HOME`` rather than the
+        control machine's.
 
         Args:
             config: SparkrunConfig instance.
@@ -588,26 +589,10 @@ class ResolvedClusterConfig:
 
         Returns:
             Tuple of ``(local_cache_dir, remote_cache_dir, effective_transfer_mode, effective_transfer_interface)``.
+            ``remote_cache_dir`` is ``None`` unless the cluster sets ``cache_dir`` explicitly.
         """
-        import os
-        import sys
-
         local_cache_dir = str(config.hf_cache_dir)
-        if self.cache_dir:
-            remote_cache_dir = self.cache_dir
-        elif self.user and self.user != os.environ.get("USER"):
-            # Cross-user: derive remote cache from the SSH user's home.
-            # Use absolute path (not ~user) because tilde isn't expanded
-            # inside quoted strings in bash scripts.
-            remote_cache_dir = "/home/%s/.cache/huggingface" % self.user
-        elif sys.platform != "linux":
-            # Control machine is non-Linux (e.g. macOS) but targets are
-            # Linux — derive remote cache from the SSH user if configured,
-            # otherwise fall back to the OS username.
-            _user = self.user or os.environ.get("USER", "user")
-            remote_cache_dir = "/home/%s/.cache/huggingface" % _user
-        else:
-            remote_cache_dir = local_cache_dir
+        remote_cache_dir = self.cache_dir if self.cache_dir else None
         effective_transfer_mode = transfer_mode_override or self.transfer_mode or "auto"
         effective_transfer_interface = self.transfer_interface
         return local_cache_dir, remote_cache_dir, effective_transfer_mode, effective_transfer_interface
