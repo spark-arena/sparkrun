@@ -16,7 +16,7 @@ from typing import Any
 
 import yaml
 
-from sparkrun.core.config import DEFAULT_CACHE_DIR
+from sparkrun.core.config import resolve_sparkrun_cache_dir
 
 logger = logging.getLogger(__name__)
 
@@ -24,12 +24,6 @@ logger = logging.getLogger(__name__)
 def _now_iso() -> str:
     """Return current UTC time as ISO-8601 string."""
     return datetime.now(timezone.utc).isoformat()
-
-
-def _resolve_cache_dir(cache_dir: str | None) -> str:
-    if cache_dir is None:
-        return str(DEFAULT_CACHE_DIR)
-    return cache_dir
 
 
 def derive_benchmark_id(
@@ -78,7 +72,7 @@ class BenchmarkRunState:
 
     def state_dir(self, cache_dir: str | None = None) -> Path:
         """Return ``~/.cache/sparkrun/benchmarks/<benchmark_id>/``."""
-        return Path(_resolve_cache_dir(cache_dir)) / "benchmarks" / self.benchmark_id
+        return resolve_sparkrun_cache_dir(cache_dir) / "benchmarks" / self.benchmark_id
 
     def runs_dir(self, cache_dir: str | None = None) -> Path:
         """Return the per-run artefact directory (``state_dir / "runs"``)."""
@@ -117,7 +111,7 @@ class BenchmarkRunState:
     @classmethod
     def load(cls, benchmark_id: str, cache_dir: str | None = None) -> "BenchmarkRunState | None":
         """Load state from disk. Returns ``None`` if no state file exists."""
-        sdir = Path(_resolve_cache_dir(cache_dir)) / "benchmarks" / benchmark_id
+        sdir = resolve_sparkrun_cache_dir(cache_dir) / "benchmarks" / benchmark_id
         state_path = sdir / "state.yaml"
         if not state_path.exists():
             return None

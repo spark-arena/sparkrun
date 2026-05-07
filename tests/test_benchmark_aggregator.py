@@ -1,12 +1,20 @@
-"""Tests for consolidate_results and gap_analysis in aggregator.py."""
+"""Tests for consolidate_results and gap_analysis in aggregator.py.
+
+The aggregator delegates schema knowledge to the framework plugin.  Most tests
+here drive the delegation contract via a small ``_FakeFW`` stub; one test uses
+the real :class:`LlamaBenchyFramework` to lock in the end-to-end shape that
+llama-benchy emits.
+"""
 
 from __future__ import annotations
 
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 from sparkrun.benchmarking.aggregator import consolidate_results, gap_analysis
+from sparkrun.benchmarking.llama_benchy import LlamaBenchyFramework
 from sparkrun.benchmarking.scheduler import BenchTask
 
 
@@ -50,90 +58,128 @@ def _make_task(index: int, depth: int, concurrency: int) -> BenchTask:
     )
 
 
+class _FakeFW:
+    """Minimal stub plugin exercising the aggregator's delegation contract."""
+
+    def __init__(self) -> None:
+        self.consolidate_calls: list[list[dict[str, Any]]] = []
+
+    def consolidate_per_task_results(self, per_task_jsons: list[dict[str, Any]]) -> dict[str, Any]:
+        self.consolidate_calls.append(per_task_jsons)
+        return {"runs": list(per_task_jsons)}
+
+    def task_coverage_key(self, task: BenchTask) -> Any:
+        return task.index
+
+    def consolidated_coverage_keys(self, consolidated: dict[str, Any]) -> set[Any]:
+        return set(range(len(consolidated.get("runs") or [])))
+
+
 # ---------------------------------------------------------------------------
-# consolidate_results — empty / missing
+# consolidate_results — delegation
 # ---------------------------------------------------------------------------
 
 
 def test_consolidate_empty_dir_no_runs_subdir(tmp_path: Path):
-    """consolidate_results returns empty dict when runs/ does not exist."""
+    """consolidate_results delegates an empty list when runs/ does not exist."""
     state_dir = tmp_path / "bench_aabbccddeeff"
     state_dir.mkdir()
-    result = consolidate_results(state_dir)
-    assert result == {"model": "", "max_concurrency": 0, "benchmarks": []}
+    fw = _FakeFW()
+    result = consolidate_results(state_dir, fw)
+    assert fw.consolidate_calls == [[]]
+    assert result == {"runs": []}
 
 
 def test_consolidate_empty_runs_dir(tmp_path: Path):
-    """consolidate_results returns empty dict when runs/ exists but has no JSON files."""
+    """consolidate_results delegates an empty list when runs/ has no JSON files."""
     state_dir = tmp_path / "bench_aabbccddeeff"
     (state_dir / "runs").mkdir(parents=True)
-    result = consolidate_results(state_dir)
-    assert result == {"model": "", "max_concurrency": 0, "benchmarks": []}
+    fw = _FakeFW()
+    result = consolidate_results(state_dir, fw)
+    assert fw.consolidate_calls == [[]]
+    assert result == {"runs": []}
 
 
-# ---------------------------------------------------------------------------
-# consolidate_results — merging
-# ---------------------------------------------------------------------------
-
-
-def test_consolidate_multiple_files_correct_order(tmp_path: Path):
-    """Multiple JSON files are merged in numeric-prefix order; model comes from first."""
+def test_consolidate_preserves_filename_index_ordering(tmp_path: Path):
+    """Files are read in numeric-prefix order regardless of suffix."""
     state_dir = tmp_path / "bench_aabbccddeeff"
     runs_dir = state_dir / "runs"
+    _write_result(runs_dir, "002_d0_c5.json", {"tag": "third"})
+    _write_result(runs_dir, "000.json", {"tag": "first"})
+    _write_result(runs_dir, "001_d4096_c2.json", {"tag": "second"})
 
-    _write_result(runs_dir, "000_d0_c1.json", _make_result("org/model-a", concurrency=1, context_size=0))
-    _write_result(runs_dir, "001_d4096_c2.json", _make_result("org/model-b", concurrency=2, context_size=4096))
-    _write_result(runs_dir, "002_d0_c5.json", _make_result("org/model-c", concurrency=5, context_size=0))
+    fw = _FakeFW()
+    consolidate_results(state_dir, fw)
 
-    result = consolidate_results(state_dir)
-
-    # model taken from the first file
-    assert result["model"] == "org/model-a"
-    # All benchmark entries concatenated in order
-    assert len(result["benchmarks"]) == 3
-    assert result["benchmarks"][0]["context_size"] == 0
-    assert result["benchmarks"][1]["context_size"] == 4096
-    assert result["benchmarks"][2]["context_size"] == 0
-
-
-def test_consolidate_max_concurrency_from_benchmark_rows(tmp_path: Path):
-    """max_concurrency is the max of all observed concurrency values across all merged benchmarks."""
-    state_dir = tmp_path / "bench_aabbccddeeff"
-    runs_dir = state_dir / "runs"
-
-    # First file has concurrency=1 in its benchmarks row; second has concurrency=8
-    _write_result(runs_dir, "000_d0_c1.json", _make_result("org/model", concurrency=1, context_size=0))
-    _write_result(runs_dir, "001_d0_c8.json", _make_result("org/model", concurrency=8, context_size=0))
-
-    result = consolidate_results(state_dir)
-    assert result["max_concurrency"] == 8
-
-
-# ---------------------------------------------------------------------------
-# consolidate_results — malformed file is skipped
-# ---------------------------------------------------------------------------
+    # The plugin should see exactly one call with the dicts in numeric order.
+    assert len(fw.consolidate_calls) == 1
+    tags = [d.get("tag") for d in fw.consolidate_calls[0]]
+    assert tags == ["first", "second", "third"]
 
 
 def test_consolidate_malformed_json_skipped(tmp_path: Path, caplog):
-    """A malformed JSON file is skipped with a warning; other files still merge."""
+    """A malformed JSON file is skipped with a warning; remaining files are forwarded."""
     state_dir = tmp_path / "bench_aabbccddeeff"
     runs_dir = state_dir / "runs"
     runs_dir.mkdir(parents=True)
 
-    _write_result(runs_dir, "000_d0_c1.json", _make_result("org/model", concurrency=1, context_size=0))
+    _write_result(runs_dir, "000_d0_c1.json", {"ok": 1})
     (runs_dir / "001_d4096_c2.json").write_text("THIS IS NOT VALID JSON {{{{")
-    _write_result(runs_dir, "002_d0_c5.json", _make_result("org/model", concurrency=5, context_size=0))
+    _write_result(runs_dir, "002_d0_c5.json", {"ok": 2})
 
+    fw = _FakeFW()
     with caplog.at_level(logging.WARNING, logger="sparkrun.benchmarking.aggregator"):
-        result = consolidate_results(state_dir)
+        consolidate_results(state_dir, fw)
 
-    # Bad file skipped; 2 valid files merged
-    assert len(result["benchmarks"]) == 2
-    assert result["model"] == "org/model"
+    # Only the 2 valid dicts forwarded
+    assert len(fw.consolidate_calls) == 1
+    assert len(fw.consolidate_calls[0]) == 2
 
-    # Warning was logged for the bad file
     warning_messages = [r.message for r in caplog.records if r.levelno == logging.WARNING]
     assert any("001_d4096_c2.json" in m for m in warning_messages), "Expected warning mentioning the bad file, got: %s" % warning_messages
+
+
+def test_consolidate_non_dict_top_level_skipped(tmp_path: Path, caplog):
+    """A JSON file whose top level is not a dict is skipped with a warning."""
+    state_dir = tmp_path / "bench_aabbccddeeff"
+    runs_dir = state_dir / "runs"
+    runs_dir.mkdir(parents=True)
+
+    _write_result(runs_dir, "000_d0_c1.json", {"ok": 1})
+    (runs_dir / "001_d4096_c2.json").write_text(json.dumps([1, 2, 3]))  # list, not dict
+
+    fw = _FakeFW()
+    with caplog.at_level(logging.WARNING, logger="sparkrun.benchmarking.aggregator"):
+        consolidate_results(state_dir, fw)
+
+    assert len(fw.consolidate_calls[0]) == 1
+    warning_messages = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("not a dict" in m for m in warning_messages)
+
+
+# ---------------------------------------------------------------------------
+# consolidate_results — end-to-end with LlamaBenchyFramework
+# ---------------------------------------------------------------------------
+
+
+def test_consolidate_llama_benchy_end_to_end(tmp_path: Path):
+    """Real LlamaBenchyFramework: model from first file, max_concurrency from rows, benchmarks concatenated."""
+    state_dir = tmp_path / "bench_aabbccddeeff"
+    runs_dir = state_dir / "runs"
+
+    _write_result(runs_dir, "000_d0_c1.json", _make_result("org/model-a", concurrency=1, context_size=0))
+    _write_result(runs_dir, "001_d4096_c8.json", _make_result("org/model-b", concurrency=8, context_size=4096))
+    _write_result(runs_dir, "002_d0_c5.json", _make_result("org/model-c", concurrency=5, context_size=0))
+
+    fw = LlamaBenchyFramework()
+    result = consolidate_results(state_dir, fw)
+
+    assert result["model"] == "org/model-a"
+    assert result["max_concurrency"] == 8
+    assert len(result["benchmarks"]) == 3
+    assert result["benchmarks"][0]["context_size"] == 0
+    assert result["benchmarks"][1]["context_size"] == 4096
+    assert result["benchmarks"][2]["context_size"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -141,12 +187,29 @@ def test_consolidate_malformed_json_skipped(tmp_path: Path, caplog):
 # ---------------------------------------------------------------------------
 
 
-def test_gap_analysis_no_gaps(tmp_path: Path):
-    """gap_analysis returns empty list when all tasks are present in consolidated."""
-    tasks = [
-        _make_task(0, depth=0, concurrency=1),
-        _make_task(1, depth=4096, concurrency=2),
-    ]
+def test_gap_analysis_no_gaps_with_stub_fw():
+    """Stub FW: when every task index appears in consolidated_coverage_keys, no gaps."""
+    tasks = [_make_task(0, depth=0, concurrency=1), _make_task(1, depth=4096, concurrency=2)]
+    consolidated = {"runs": [{"a": 1}, {"a": 2}]}
+    fw = _FakeFW()
+    gaps = gap_analysis(tasks, consolidated, fw)
+    assert gaps == []
+
+
+def test_gap_analysis_detects_missing_with_stub_fw():
+    """Stub FW: a task whose index is not in consolidated_coverage_keys is a gap."""
+    tasks = [_make_task(0, depth=0, concurrency=1), _make_task(1, depth=4096, concurrency=2)]
+    consolidated = {"runs": [{"a": 1}]}  # only index 0 covered
+    fw = _FakeFW()
+    gaps = gap_analysis(tasks, consolidated, fw)
+    assert len(gaps) == 1
+    assert gaps[0].index == 1
+
+
+def test_gap_analysis_no_gaps_with_llama_benchy():
+    """Real llama-benchy plugin: (depth, concurrency) keys derived from run_args / benchmarks."""
+    fw = LlamaBenchyFramework()
+    tasks = [_make_task(0, depth=0, concurrency=1), _make_task(1, depth=4096, concurrency=2)]
     consolidated = {
         "model": "org/model",
         "max_concurrency": 2,
@@ -155,38 +218,32 @@ def test_gap_analysis_no_gaps(tmp_path: Path):
             {"context_size": 4096, "concurrency": 2},
         ],
     }
-    gaps = gap_analysis(tasks, consolidated)
+    gaps = gap_analysis(tasks, consolidated, fw)
     assert gaps == []
 
 
-def test_gap_analysis_detects_missing_task(tmp_path: Path):
-    """gap_analysis returns tasks whose (depth, concurrency) pair is missing."""
-    tasks = [
-        _make_task(0, depth=0, concurrency=1),
-        _make_task(1, depth=4096, concurrency=2),
-    ]
-    # Only task 0 is present in results
+def test_gap_analysis_detects_missing_with_llama_benchy():
+    """Real llama-benchy plugin: tasks missing from benchmarks[] are surfaced as gaps."""
+    fw = LlamaBenchyFramework()
+    tasks = [_make_task(0, depth=0, concurrency=1), _make_task(1, depth=4096, concurrency=2)]
     consolidated = {
         "model": "org/model",
         "max_concurrency": 1,
-        "benchmarks": [
-            {"context_size": 0, "concurrency": 1},
-        ],
+        "benchmarks": [{"context_size": 0, "concurrency": 1}],
     }
-    gaps = gap_analysis(tasks, consolidated)
+    gaps = gap_analysis(tasks, consolidated, fw)
     assert len(gaps) == 1
     assert gaps[0].index == 1
 
 
-def test_gap_analysis_tasks_missing_run_args_flagged(tmp_path: Path, caplog):
-    """Tasks with missing depth or concurrency in run_args are flagged as gaps with a warning."""
-    tasks = [
-        BenchTask(index=0, label="bad-task", run_args={}, schedule_entry={}),
-    ]
+def test_gap_analysis_tasks_missing_run_args_flagged(caplog):
+    """A llama-benchy task with empty run_args yields a (None, None) coverage key → gap + warning."""
+    fw = LlamaBenchyFramework()
+    tasks = [BenchTask(index=0, label="bad-task", run_args={}, schedule_entry={})]
     consolidated = {"model": "org/model", "max_concurrency": 0, "benchmarks": []}
 
     with caplog.at_level(logging.WARNING, logger="sparkrun.benchmarking.aggregator"):
-        gaps = gap_analysis(tasks, consolidated)
+        gaps = gap_analysis(tasks, consolidated, fw)
 
     assert len(gaps) == 1
     assert gaps[0].index == 0

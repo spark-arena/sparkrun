@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from logging import Logger
 from pathlib import Path
-from typing import Any, TYPE_CHECKING, Optional
+from typing import Any, Callable, TYPE_CHECKING, Optional
 
 import yaml
 from scitrera_app_framework import Plugin, Variables
@@ -22,6 +22,41 @@ if TYPE_CHECKING:
     from sparkrun.benchmarking.scheduler import BenchTask
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ProgressColumn:
+    """One column definition for the progress UI table."""
+
+    name: str
+    justify: str = "right"  # "left" | "right" | "center"
+    style: str | None = None
+
+
+def _identity_row_key(row: tuple[Any, ...]) -> Any:
+    return row
+
+
+def _default_rows_from_consolidated(consolidated: dict[str, Any]) -> list[tuple[Any, ...]]:
+    """Default: emit one row per entry in ``consolidated["runs"]`` with its index."""
+    runs = consolidated.get("runs") or []
+    return [(i,) for i in range(len(runs))]
+
+
+@dataclass(frozen=True)
+class ProgressTableSpec:
+    """Description of the per-completion progress table for a benchmarking plugin."""
+
+    columns: list[ProgressColumn]
+    rows_from_consolidated: Callable[[dict[str, Any]], list[tuple[Any, ...]]]
+    row_key: Callable[[tuple[Any, ...]], Any] = _identity_row_key
+    format_cell: Callable[[Any, ProgressColumn], str] | None = None
+
+
+_DEFAULT_PROGRESS_TABLE_SPEC = ProgressTableSpec(
+    columns=[ProgressColumn(name="idx", justify="right")],
+    rows_from_consolidated=_default_rows_from_consolidated,
+)
 
 
 class BenchmarkingPlugin(Plugin):
@@ -153,6 +188,45 @@ class BenchmarkingPlugin(Plugin):
         Default: framework does not support batched/scheduled execution.
         """
         return None
+
+    # --- Scheduler / aggregator hooks (optional, with safe defaults) -----
+
+    def result_filename_suffix(self, task: "BenchTask") -> str:
+        """Per-task suffix appended after the index in scheduler artifact filenames.
+
+        The scheduler writes ``{idx:03d}{suffix}.json`` / ``{idx:03d}{suffix}.log``.
+        Default: empty string (use index-only filenames).
+        """
+        return ""
+
+    def consolidate_per_task_results(self, per_task_jsons: list[dict[str, Any]]) -> dict[str, Any]:
+        """Consolidate per-task JSON dicts into a single framework-shaped dict.
+
+        Default: ``{"runs": list(per_task_jsons)}``.
+        """
+        return {"runs": list(per_task_jsons)}
+
+    def task_coverage_key(self, task: "BenchTask") -> Any:
+        """Identifier used to detect whether a task is represented in consolidated results.
+
+        Default: the task's index.
+        """
+        return task.index
+
+    def consolidated_coverage_keys(self, consolidated: dict[str, Any]) -> set[Any]:
+        """Return the set of coverage keys present in the consolidated dict.
+
+        Default: indices ``[0, len(consolidated["runs"]))``.
+        """
+        return set(range(len(consolidated.get("runs") or [])))
+
+    def progress_table_spec(self) -> ProgressTableSpec:
+        """Return the column spec / row generator the progress UI uses for live display.
+
+        Default: a minimal one-column ``idx`` table populated from
+        ``consolidated["runs"]``.
+        """
+        return _DEFAULT_PROGRESS_TABLE_SPEC
 
     def __repr__(self) -> str:
         return "%s(framework_name=%r)" % (self.__class__.__name__, self.framework_name)

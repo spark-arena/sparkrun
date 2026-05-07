@@ -59,15 +59,6 @@ class ScheduleRunResult:
     consolidated: dict[str, Any]
 
 
-def _extract_depth_concurrency(run_args: dict[str, Any]) -> tuple[int, int]:
-    """Extract (depth, concurrency) scalars from run_args lists, falling back to (0, 1)."""
-    depth_list = run_args.get("depth", [])
-    concurrency_list = run_args.get("concurrency", [])
-    depth = depth_list[0] if depth_list else 0
-    concurrency = concurrency_list[0] if concurrency_list else 1
-    return int(depth), int(concurrency)
-
-
 def run_schedule(
     fw: "BenchmarkingPlugin",
     tasks: list[BenchTask],
@@ -100,7 +91,7 @@ def run_schedule(
         :class:`ScheduleRunResult` describing the outcome.
     """
     total = len(tasks)
-    consolidated: dict[str, Any] = consolidate_results(state.state_dir(cache_dir))
+    consolidated: dict[str, Any] = consolidate_results(state.state_dir(cache_dir), fw)
 
     # Session bookkeeping — mark this execution session.
     state.mark_session_started()
@@ -137,9 +128,9 @@ def run_schedule(
             if pinned_version:
                 run_args["_pinned_version"] = pinned_version
 
-            depth, concurrency = _extract_depth_concurrency(run_args)
-            result_file = state.runs_dir(cache_dir) / ("%03d_d%d_c%d.json" % (idx, depth, concurrency))
-            log_file = state.runs_dir(cache_dir) / ("%03d_d%d_c%d.log" % (idx, depth, concurrency))
+            suffix = fw.result_filename_suffix(task)
+            result_file = state.runs_dir(cache_dir) / ("%03d%s.json" % (idx, suffix))
+            log_file = state.runs_dir(cache_dir) / ("%03d%s.log" % (idx, suffix))
 
             cmd = fw.build_benchmark_command(target_url, model, run_args, result_file=str(result_file))
 
@@ -179,7 +170,7 @@ def run_schedule(
                     state.mark_completed(idx)
                     state.save(cache_dir)
                     progress_ui.end_task(idx, success=True, duration_s=duration_s)
-                    consolidated = consolidate_results(state.state_dir(cache_dir))
+                    consolidated = consolidate_results(state.state_dir(cache_dir), fw)
                     progress_ui.update_results_table(consolidated)
                     session_first_task = False
                 else:
@@ -220,7 +211,7 @@ def run_schedule(
         # Post-loop gap analysis — done at most once.
         if not _gap_pass_done:
             _gap_pass_done = True
-            gaps = gap_analysis(tasks, consolidated)
+            gaps = gap_analysis(tasks, consolidated, fw)
             if gaps:
                 progress_ui.log("Found %d gap(s); re-queueing" % len(gaps))
                 for gap_task in gaps:
@@ -243,7 +234,7 @@ def run_schedule(
                     )
 
         # Final consolidation and session close.
-        consolidated = consolidate_results(state.state_dir(cache_dir))
+        consolidated = consolidate_results(state.state_dir(cache_dir), fw)
         progress_ui.update_results_table(consolidated)
 
         if state.is_complete(total):

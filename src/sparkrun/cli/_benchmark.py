@@ -9,7 +9,8 @@ import subprocess
 import sys
 import tempfile
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import Any, TYPE_CHECKING
 
 import click
 
@@ -38,6 +39,41 @@ DEFAULT_BENCHMARK_TIMEOUT: int = 14400  # 4 hours
 
 if TYPE_CHECKING:
     pass
+
+
+def _benchmark_title(recipe_name: str, profile: str | None) -> str:
+    """Return the recipe/profile title used by the progress UI."""
+    return "%s/%s" % (recipe_name, profile) if profile else recipe_name
+
+
+def _write_consolidated(state_dir: Path, consolidated: dict[str, Any]) -> Path:
+    """Write the consolidated dict to ``<state_dir>/consolidated.json`` and return the path."""
+    state_dir.mkdir(parents=True, exist_ok=True)
+    p = state_dir / "consolidated.json"
+    p.write_text(json.dumps(consolidated, indent=2))
+    return p
+
+
+def _emit_results_outputs(results: dict[str, Any], base_path: Path) -> dict[str, Path]:
+    """Write json/csv variants of ``base_path`` and echo the artifact paths.
+
+    Returns a mapping from format ("json", "csv") to the written path so callers
+    can record them on a result struct.
+    """
+    writers = {
+        "json": lambda data, path: path.write_text(json.dumps(data, indent=2)),
+        "csv": lambda data, path: path.write_text(data),
+    }
+    written: dict[str, Path] = {}
+    for fmt, writer in writers.items():
+        payload = results.get(fmt)
+        if not payload:
+            continue
+        out = base_path.with_suffix("." + fmt)
+        writer(payload, out)
+        click.echo("%s output: %s" % (fmt.upper(), out))
+        written[fmt] = out
+    return written
 
 
 class _BenchmarkGroup(click.Group):
@@ -311,10 +347,10 @@ def _resume_benchmark_run(ctx, benchmark_id: str, dry_run: bool, *, sctx=None):
     click.echo("=" * 60)
     click.echo("")
 
-    title = "%s/%s" % (recipe.name, state.profile) if state.profile else recipe.name
+    title = _benchmark_title(recipe.name, state.profile)
 
     try:
-        with BenchmarkProgressUI(total_tasks=len(tasks), benchmark_id=benchmark_id, title=title) as pui:
+        with BenchmarkProgressUI(total_tasks=len(tasks), benchmark_id=benchmark_id, fw=fw, title=title) as pui:
             sched_result = run_schedule(
                 fw=fw,
                 tasks=tasks,
@@ -331,8 +367,7 @@ def _resume_benchmark_run(ctx, benchmark_id: str, dry_run: bool, *, sctx=None):
         consolidated = sched_result.consolidated
 
         # Write consolidated.json to state dir
-        consolidated_path = state.state_dir(cache_dir) / "consolidated.json"
-        consolidated_path.write_text(json.dumps(consolidated, indent=2))
+        consolidated_path = _write_consolidated(state.state_dir(cache_dir), consolidated)
 
         if not sched_result.success:
             click.echo("")
@@ -393,19 +428,7 @@ def _resume_benchmark_run(ctx, benchmark_id: str, dry_run: bool, *, sctx=None):
         click.echo("Results saved to: %s" % output_file)
 
         # Write additional formats
-        from pathlib import Path
-
-        _OUTPUT_WRITERS = {
-            "json": lambda data, path: path.write_text(__import__("json").dumps(data, indent=2)),
-            "csv": lambda data, path: path.write_text(data),
-        }
-        for fmt, writer in _OUTPUT_WRITERS.items():
-            content = results.get(fmt)
-            if not content:
-                continue
-            fmt_path = Path(output_file).with_suffix(".%s" % fmt)
-            writer(content, fmt_path)
-            click.echo("%s results saved to: %s" % (fmt.upper(), fmt_path))
+        _emit_results_outputs(results, Path(output_file))
 
         # Save result.yaml in state dir too
         result_yaml_path = state.state_dir(cache_dir) / "result.yaml"
@@ -874,9 +897,9 @@ def _run_benchmark(
                 from sparkrun.benchmarking.progress_ui import BenchmarkProgressUI
                 from sparkrun.benchmarking.scheduler import run_schedule
 
-                title = "%s/%s" % (recipe.name, profile) if profile else recipe.name
+                title = _benchmark_title(recipe.name, profile)
 
-                with BenchmarkProgressUI(total_tasks=len(tasks), benchmark_id=benchmark_id, title=title) as pui:
+                with BenchmarkProgressUI(total_tasks=len(tasks), benchmark_id=benchmark_id, fw=fw, title=title) as pui:
                     sched_result = run_schedule(
                         fw=fw,
                         tasks=tasks,
@@ -894,9 +917,7 @@ def _run_benchmark(
 
                 # Write consolidated.json to state dir
                 if state_dir:
-                    state_dir.mkdir(parents=True, exist_ok=True)
-                    consolidated_path = state_dir / "consolidated.json"
-                    consolidated_path.write_text(json.dumps(consolidated, indent=2))
+                    consolidated_path = _write_consolidated(state_dir, consolidated)
                     result_file_for_parse = str(consolidated_path)
                 else:
                     result_file_for_parse = result_file
@@ -1045,23 +1066,11 @@ def _run_benchmark(
                 click.echo("Results saved to: %s" % output_file)
                 bench_result.output_yaml = output_file
 
-                from pathlib import Path
-
-                _OUTPUT_WRITERS = {
-                    "json": lambda data, path: path.write_text(__import__("json").dumps(data, indent=2)),
-                    "csv": lambda data, path: path.write_text(data),
-                }
-                for fmt, writer in _OUTPUT_WRITERS.items():
-                    content = results.get(fmt)
-                    if not content:
-                        continue
-                    fmt_path = Path(output_file).with_suffix(".%s" % fmt)
-                    writer(content, fmt_path)
-                    click.echo("%s results saved to: %s" % (fmt.upper(), fmt_path))
-                    if fmt == "csv":
-                        bench_result.output_csv = str(fmt_path)
-                    elif fmt == "json":
-                        bench_result.output_json = str(fmt_path)
+                written_paths = _emit_results_outputs(results, Path(output_file))
+                if "csv" in written_paths:
+                    bench_result.output_csv = str(written_paths["csv"])
+                if "json" in written_paths:
+                    bench_result.output_json = str(written_paths["json"])
         else:
             click.echo("[dry-run] Would parse and export results to: %s" % (output_file or "benchmark_<recipe>_<framework>.yaml"))
 

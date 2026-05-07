@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+from sparkrun.benchmarking.base import BenchmarkingPlugin
+from sparkrun.benchmarking.llama_benchy import LlamaBenchyFramework
 from sparkrun.benchmarking.progress_ui import BenchmarkProgressUI
 from sparkrun.benchmarking.run_state import BenchmarkRunState
 from sparkrun.benchmarking.scheduler import BenchTask, run_schedule
@@ -67,31 +69,32 @@ def _make_popen_factory(returncodes: list[int]):
 
         proc = _FakeProc(returncode=rc, write_result_to=result_file)
 
-        # Extract depth/concurrency from the result filename (e.g. "000_d0_c1.json")
+        # Extract depth/concurrency from the result filename (e.g. "000_d0_c1.json"
+        # for llama-benchy or "000.json" for the suffix-less stub).
         if result_file is not None:
-            name = result_file.stem  # e.g. "000_d0_c1"
+            name = result_file.stem  # e.g. "000_d0_c1" or "000"
             parts = name.split("_")
             for p in parts:
-                if p.startswith("d"):
-                    try:
-                        proc._depth = int(p[1:])
-                    except ValueError:
-                        pass
-                if p.startswith("c"):
-                    try:
-                        proc._concurrency = int(p[1:])
-                    except ValueError:
-                        pass
+                if p.startswith("d") and p[1:].isdigit():
+                    proc._depth = int(p[1:])
+                if p.startswith("c") and p[1:].isdigit():
+                    proc._concurrency = int(p[1:])
 
         return proc
 
     return _factory
 
 
-class _FakeFW:
-    """Minimal fake BenchmarkingPlugin that builds a deterministic command."""
+class _FakeFW(BenchmarkingPlugin):
+    """Minimal fake BenchmarkingPlugin that builds a deterministic command and uses default plugin hooks."""
 
     framework_name = "fake"
+
+    def check_prerequisites(self) -> list[str]:  # pragma: no cover — exercised via run_schedule
+        return []
+
+    def parse_results(self, stdout: str, stderr: str, result_file: str | None = None) -> dict[str, Any]:  # pragma: no cover
+        return {}
 
     def build_benchmark_command(
         self,
@@ -141,15 +144,17 @@ def _run(
     returncodes: list[int],
     *,
     exit_on_first_fail: bool = False,
+    fw: BenchmarkingPlugin | None = None,
 ):
     """Run run_schedule with a mocked Popen and a real BenchmarkProgressUI."""
-    fw = _FakeFW()
-    ui = BenchmarkProgressUI(total_tasks=len(tasks), benchmark_id=state.benchmark_id)
+    if fw is None:
+        fw = _FakeFW()
+    ui = BenchmarkProgressUI(total_tasks=len(tasks), benchmark_id=state.benchmark_id, fw=fw)
 
     with ui:
         with patch("subprocess.Popen", side_effect=_make_popen_factory(returncodes)):
             result = run_schedule(
-                fw=fw,  # type: ignore[arg-type]
+                fw=fw,
                 tasks=tasks,
                 state=state,
                 target_url="http://localhost:8000/v1",
@@ -183,6 +188,86 @@ def test_run_schedule_happy_path(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
+# Filename suffix delegation
+# ---------------------------------------------------------------------------
+
+
+def test_run_schedule_filename_suffix_stub_fw(tmp_path: Path):
+    """Stub FW returns suffix='' → per-task result files are ``{idx:03d}.json``."""
+    tasks = _make_tasks(2)
+    state = _make_state(tmp_path, n_tasks=2)
+
+    captured_paths: list[str] = []
+
+    def _capturing_factory(cmd, *a, **kw):
+        for i, arg in enumerate(cmd):
+            if arg == "--save-result" and i + 1 < len(cmd):
+                captured_paths.append(cmd[i + 1])
+        return _make_popen_factory([0, 0])(cmd, *a, **kw)
+
+    fw = _FakeFW()
+    ui = BenchmarkProgressUI(total_tasks=len(tasks), benchmark_id=state.benchmark_id, fw=fw)
+    with ui:
+        with patch("subprocess.Popen", side_effect=_capturing_factory):
+            run_schedule(
+                fw=fw,
+                tasks=tasks,
+                state=state,
+                target_url="http://localhost:8000/v1",
+                model="org/model",
+                timeout=None,
+                progress_ui=ui,
+                cache_dir=str(tmp_path),
+            )
+
+    names = [Path(p).name for p in captured_paths]
+    assert names == ["000.json", "001.json"], "stub FW (suffix='') should produce idx-only filenames, got %r" % names
+
+
+def test_run_schedule_filename_suffix_llama_benchy(tmp_path: Path):
+    """LlamaBenchyFramework: per-task result files are ``{idx:03d}_d{depth}_c{conc}.json``."""
+    tasks = _make_tasks(2)
+    state = _make_state(tmp_path, n_tasks=2)
+
+    captured_paths: list[str] = []
+
+    def _capturing_factory(cmd, *a, **kw):
+        for i, arg in enumerate(cmd):
+            if arg == "--save-result" and i + 1 < len(cmd):
+                captured_paths.append(cmd[i + 1])
+        return _make_popen_factory([0, 0])(cmd, *a, **kw)
+
+    # Use llama-benchy for filename suffix logic but keep cmd shape from the stub
+    # by patching build_benchmark_command to a deterministic command.
+    fw = LlamaBenchyFramework()
+
+    def _fake_build(target_url, model, args, result_file=None):
+        cmd = ["/usr/bin/echo", "task"]
+        if result_file:
+            cmd.extend(["--save-result", result_file])
+        return cmd
+
+    fw.build_benchmark_command = _fake_build  # type: ignore[method-assign]
+
+    ui = BenchmarkProgressUI(total_tasks=len(tasks), benchmark_id=state.benchmark_id, fw=fw)
+    with ui:
+        with patch("subprocess.Popen", side_effect=_capturing_factory):
+            run_schedule(
+                fw=fw,
+                tasks=tasks,
+                state=state,
+                target_url="http://localhost:8000/v1",
+                model="org/model",
+                timeout=None,
+                progress_ui=ui,
+                cache_dir=str(tmp_path),
+            )
+
+    names = [Path(p).name for p in captured_paths]
+    assert names == ["000_d0_c1.json", "001_d1_c1.json"], "llama-benchy FW should produce ``_d{depth}_c{conc}`` suffix, got %r" % names
+
+
+# ---------------------------------------------------------------------------
 # Warmup rule
 # ---------------------------------------------------------------------------
 
@@ -203,11 +288,11 @@ def test_run_schedule_warmup_rule(tmp_path: Path):
 
     fw.build_benchmark_command = _capturing_build  # type: ignore[method-assign]
 
-    ui = BenchmarkProgressUI(total_tasks=len(tasks), benchmark_id=state.benchmark_id)
+    ui = BenchmarkProgressUI(total_tasks=len(tasks), benchmark_id=state.benchmark_id, fw=fw)
     with ui:
         with patch("subprocess.Popen", side_effect=_make_popen_factory([0, 0])):
             run_schedule(
-                fw=fw,  # type: ignore[arg-type]
+                fw=fw,
                 tasks=tasks,
                 state=state,
                 target_url="http://localhost:8000/v1",
@@ -239,13 +324,12 @@ def test_run_schedule_resume_warmup_rule(tmp_path: Path):
     """On resume (tasks 0,1 pre-completed), task 2 is session-first so no warmup suppression.
 
     Tasks 3+ should have no_warmup=True (not first of the new session).
-    consolidate_results is patched to return all (depth, concurrency) pairs as present so
-    the post-loop gap pass finds nothing to re-queue and exactly 2 Popen calls are made.
+    consolidate_results is patched to return all task indices as covered so the post-loop
+    gap pass finds nothing to re-queue and exactly 2 Popen calls are made.
     """
     tasks = _make_tasks(4)
     state = _make_state(tmp_path, n_tasks=4)
 
-    # Pre-populate tasks 0 and 1 as already completed
     state.completed_indices = [0, 1]
     state.save(str(tmp_path))
 
@@ -259,22 +343,15 @@ def test_run_schedule_resume_warmup_rule(tmp_path: Path):
 
     fw.build_benchmark_command = _capturing_build  # type: ignore[method-assign]
 
-    # Return a fully-populated consolidated result so gap_analysis returns [] every time.
-    # Without this patch, the gap pass detects tasks 0/1 as missing from runs/ (their result
-    # files were never written by the pre-completed session) and re-queues them, causing
-    # more than 2 Popen calls and making warmup assertions ambiguous.
-    full_consolidated = {
-        "model": "org/model",
-        "max_concurrency": 1,
-        "benchmarks": [{"context_size": i, "concurrency": 1} for i in range(4)],
-    }
+    # Stub-FW coverage uses task indices; full = 4 indices present so no gap re-run.
+    full_consolidated = {"runs": [{"i": 0}, {"i": 1}, {"i": 2}, {"i": 3}]}
 
-    ui = BenchmarkProgressUI(total_tasks=len(tasks), benchmark_id=state.benchmark_id)
+    ui = BenchmarkProgressUI(total_tasks=len(tasks), benchmark_id=state.benchmark_id, fw=fw)
     with ui:
         with patch("subprocess.Popen", side_effect=_make_popen_factory([0, 0])):
             with patch("sparkrun.benchmarking.scheduler.consolidate_results", return_value=full_consolidated):
                 run_schedule(
-                    fw=fw,  # type: ignore[arg-type]
+                    fw=fw,
                     tasks=tasks,
                     state=state,
                     target_url="http://localhost:8000/v1",
@@ -289,13 +366,13 @@ def test_run_schedule_resume_warmup_rule(tmp_path: Path):
 
     # Task index 2 is first of new session — warmup should NOT be suppressed
     first_resumed_args = call_args_list[0]
-    assert first_resumed_args.get("no_warmup") is not True, "First resumed task should not have no_warmup=True"
-    assert first_resumed_args.get("skip_coherence") is not True, "First resumed task should not have skip_coherence=True"
+    assert first_resumed_args.get("no_warmup") is not True
+    assert first_resumed_args.get("skip_coherence") is not True
 
     # Task index 3 is subsequent — warmup and coherence should be suppressed
     second_resumed_args = call_args_list[1]
-    assert second_resumed_args.get("no_warmup") is True, "Second resumed task should have no_warmup=True"
-    assert second_resumed_args.get("skip_coherence") is True, "Second resumed task should have skip_coherence=True"
+    assert second_resumed_args.get("no_warmup") is True
+    assert second_resumed_args.get("skip_coherence") is True
 
 
 # ---------------------------------------------------------------------------
@@ -308,7 +385,6 @@ def test_run_schedule_exit_on_first_fail(tmp_path: Path):
     tasks = _make_tasks(3)
     state = _make_state(tmp_path, n_tasks=3)
 
-    # Task 0: success, task 1: fail — task 2 should never be called
     popen_factory = _make_popen_factory([0, 2])
 
     popen_call_count = 0
@@ -320,11 +396,11 @@ def test_run_schedule_exit_on_first_fail(tmp_path: Path):
         return original_factory(cmd, *a, **kw)
 
     fw = _FakeFW()
-    ui = BenchmarkProgressUI(total_tasks=len(tasks), benchmark_id=state.benchmark_id)
+    ui = BenchmarkProgressUI(total_tasks=len(tasks), benchmark_id=state.benchmark_id, fw=fw)
     with ui:
         with patch("subprocess.Popen", side_effect=_counting_factory):
             result = run_schedule(
-                fw=fw,  # type: ignore[arg-type]
+                fw=fw,
                 tasks=tasks,
                 state=state,
                 target_url="http://localhost:8000/v1",
@@ -353,9 +429,6 @@ def test_run_schedule_gap_requeue(tmp_path: Path):
 
     popen_call_count = 0
 
-    # First pass: both tasks return rc=0 and write result files.
-    # But we'll mock consolidate_results to report a gap on the first call
-    # (simulating a missing benchmark row), then return complete on the second.
     fake_full_consolidated = {
         "model": "org/model",
         "max_concurrency": 1,
@@ -375,11 +448,9 @@ def test_run_schedule_gap_requeue(tmp_path: Path):
 
     consolidate_call_count = 0
 
-    def _fake_consolidate(state_dir):
+    def _fake_consolidate(state_dir, fw):
         nonlocal consolidate_call_count
         consolidate_call_count += 1
-        # First 3 calls (initial + after each task success) return the gap result
-        # After that, return full so gap pass completes
         if consolidate_call_count <= 3:
             return fake_gap_consolidated
         return fake_full_consolidated
@@ -389,13 +460,22 @@ def test_run_schedule_gap_requeue(tmp_path: Path):
         popen_call_count += 1
         return _make_popen_factory([0])(cmd, *a, **kw)
 
-    fw = _FakeFW()
-    ui = BenchmarkProgressUI(total_tasks=len(tasks), benchmark_id=state.benchmark_id)
+    fw = LlamaBenchyFramework()
+
+    def _fake_build(target_url, model, args, result_file=None):
+        cmd = ["/usr/bin/echo", "task"]
+        if result_file:
+            cmd.extend(["--save-result", result_file])
+        return cmd
+
+    fw.build_benchmark_command = _fake_build  # type: ignore[method-assign]
+
+    ui = BenchmarkProgressUI(total_tasks=len(tasks), benchmark_id=state.benchmark_id, fw=fw)
     with ui:
         with patch("subprocess.Popen", side_effect=_counting_popen):
             with patch("sparkrun.benchmarking.scheduler.consolidate_results", side_effect=_fake_consolidate):
                 result = run_schedule(
-                    fw=fw,  # type: ignore[arg-type]
+                    fw=fw,
                     tasks=tasks,
                     state=state,
                     target_url="http://localhost:8000/v1",
