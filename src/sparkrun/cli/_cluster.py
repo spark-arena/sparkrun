@@ -817,6 +817,7 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     from sparkrun.core.cluster_manager import resolve_cluster_config
+    from sparkrun.core.launcher import resolve_effective_cache_dir
     from sparkrun.orchestration.primitives import build_ssh_kwargs
     from sparkrun.orchestration.ssh import run_remote_command
 
@@ -827,6 +828,10 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
     # Resolve effective cluster configuration
     cluster_cfg = resolve_cluster_config(cluster_name, hosts, hosts_file, cluster_mgr)
     local_hf, remote_hf, xfer_mode, xfer_iface = cluster_cfg.resolve_transfer_config(config)
+    # When the cluster has no explicit cache_dir, resolve_transfer_config returns
+    # None.  Probe the head node so the inspected path reflects the remote user's
+    # $HOME / HF_HOME instead of falling through as a literal "None".
+    remote_hf = resolve_effective_cache_dir(remote_hf, host_list, ssh_kwargs, config, dry_run=dry_run)
     local_sparkrun = str(config.cache_dir)
 
     # Resolve auto transfer mode to a concrete value
