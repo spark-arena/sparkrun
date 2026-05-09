@@ -183,22 +183,24 @@ Explicit `runtime` always wins. Command-hint detection only fires when `runtime`
 | `llama-cpp`        | RPC (experimental)                                  | Workers run `rpc-server`, head uses `--rpc`    |
 | `trtllm`           | MPI (`mpirun` + rsh wrapper)                        | `sleep infinity` containers + `mpirun` on head |
 | `eugr-vllm`        | Ray (inherits vllm-ray)                             | eugr container builds + Ray cluster            |
+| `atlas`            | Native (`--rank`, `--world-size`, `--master-addr`)  | Atlas Spark (avarok/atlas-gb10) — pure-Rust LLM inference; each rank runs `atlas serve`, rank 0 only HTTP |
 
 ### Common Defaults Keys
 
-| Key                      | vLLM                       | SGLang                  | llama.cpp            | TRT-LLM               | Description                       |
-|--------------------------|----------------------------|-------------------------|----------------------|-----------------------|-----------------------------------|
-| `port`                   | `--port`                   | `--port`                | `--port`             | `--port`              | Serve port                        |
-| `host`                   | `--host`                   | `--host`                | `--host`             | `--host`              | Bind address                      |
-| `tensor_parallel`        | `-tp`                      | `--tp-size`             | `--split-mode row`   | `--tp_size`           | TP degree (= node count on Spark) |
-| `pipeline_parallel`      | `-pp`                      | `--pp-size`             | `--split-mode layer` | `--pp_size`           | PP degree                         |
-| `gpu_memory_utilization` | `--gpu-memory-utilization` | `--mem-fraction-static` | —                    | —                     | GPU memory fraction               |
-| `max_model_len`          | `--max-model-len`          | `--context-length`      | `--ctx-size`         | `--max_seq_len`       | Max sequence length               |
-| `served_model_name`      | `--served-model-name`      | `--served-model-name`   | `--alias`            | —                     | Model name in API                 |
-| `dtype`                  | `--dtype`                  | `--dtype`               | —                    | —                     | Model dtype                       |
-| `quantization`           | `--quantization`           | `--quantization`        | —                    | —                     | Quantization method               |
-| `trust_remote_code`      | `--trust-remote-code`      | `--trust-remote-code`   | —                    | `--trust_remote_code` | Allow remote code                 |
-| `kv_cache_dtype`         | `--kv-cache-dtype`         | `--kv-cache-dtype`      | —                    | via extra config      | KV cache dtype                    |
+| Key                      | vLLM                       | SGLang                  | llama.cpp            | TRT-LLM               | Atlas                 | Description                       |
+|--------------------------|----------------------------|-------------------------|----------------------|-----------------------|-----------------------|-----------------------------------|
+| `port`                   | `--port`                   | `--port`                | `--port`             | `--port`              | `--port`              | Serve port                        |
+| `host`                   | `--host`                   | `--host`                | `--host`             | `--host`              | `--host`              | Bind address                      |
+| `tensor_parallel`        | `-tp`                      | `--tp-size`             | `--split-mode row`   | `--tp_size`           | `--tp-size`           | TP degree (= node count on Spark) |
+| `pipeline_parallel`      | `-pp`                      | `--pp-size`             | `--split-mode layer` | `--pp_size`           | —                     | PP degree                         |
+| `ep_size`                | —                          | `--ep-size`             | —                    | —                     | `--ep-size`           | Expert-parallel degree            |
+| `gpu_memory_utilization` | `--gpu-memory-utilization` | `--mem-fraction-static` | —                    | —                     | `--gpu-memory-utilization` | GPU memory fraction          |
+| `max_model_len`          | `--max-model-len`          | `--context-length`      | `--ctx-size`         | `--max_seq_len`       | `--max-seq-len`       | Max sequence length               |
+| `served_model_name`      | `--served-model-name`      | `--served-model-name`   | `--alias`            | —                     | `--model-name`        | Model name in API                 |
+| `dtype`                  | `--dtype`                  | `--dtype`               | —                    | —                     | (auto)                | Model dtype                       |
+| `quantization`           | `--quantization`           | `--quantization`        | —                    | —                     | (auto)                | Quantization method               |
+| `trust_remote_code`      | `--trust-remote-code`      | `--trust-remote-code`   | —                    | `--trust_remote_code` | (no-op)               | Allow remote code                 |
+| `kv_cache_dtype`         | `--kv-cache-dtype`         | `--kv-cache-dtype`      | —                    | via extra config      | `--kv-cache-dtype`    | KV cache dtype                    |
 
 Any key can appear in `defaults` — there is no fixed schema. Runtime-specific keys (e.g. `tool_call_parser`, `ctx_size`,
 `n_gpu_layers`, `reasoning_parser`) are passed through to command template substitution.

@@ -611,3 +611,170 @@ def test_stop_by_cluster_id_cross_user_uses_ssh():
 
         mock_local.assert_not_called()
         mock_remote.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# probe_remote_hf_cache tests
+# ---------------------------------------------------------------------------
+
+
+class TestProbeRemoteHfCache:
+    """Tests for ``probe_remote_hf_cache`` — SSHes the head and returns the
+    resolved HF cache path so callers don't leak the control machine's $HOME."""
+
+    def test_returns_remote_path_on_success(self):
+        from sparkrun.orchestration.primitives import probe_remote_hf_cache
+
+        with patch(
+            "sparkrun.orchestration.primitives.run_remote_command",
+            return_value=RemoteResult(host="h", returncode=0, stdout="/home/user1/.cache/huggingface\n", stderr=""),
+        ) as mock_run:
+            path = probe_remote_hf_cache("h", ssh_user="user1")
+
+        assert path == "/home/user1/.cache/huggingface"
+        # Verify the probe command embeds HF_HOME fallback expression
+        call_kwargs = mock_run.call_args
+        assert "HF_HOME" in call_kwargs.args[1]
+        assert "$HOME" in call_kwargs.args[1]
+
+    def test_dry_run_skips_ssh(self):
+        from sparkrun.orchestration.primitives import probe_remote_hf_cache
+
+        with patch("sparkrun.orchestration.primitives.run_remote_command") as mock_run:
+            path = probe_remote_hf_cache("h", dry_run=True)
+
+        assert path  # falls back to local default, not None
+        mock_run.assert_not_called()
+
+    def test_failure_raises_runtime_error(self):
+        import pytest
+        from sparkrun.orchestration.primitives import probe_remote_hf_cache
+
+        with patch(
+            "sparkrun.orchestration.primitives.run_remote_command",
+            return_value=RemoteResult(host="h", returncode=255, stdout="", stderr="ssh: connection refused"),
+        ):
+            with pytest.raises(RuntimeError, match="Could not resolve remote HF cache"):
+                probe_remote_hf_cache("h")
+
+    def test_empty_output_raises_runtime_error(self):
+        import pytest
+        from sparkrun.orchestration.primitives import probe_remote_hf_cache
+
+        with patch(
+            "sparkrun.orchestration.primitives.run_remote_command",
+            return_value=RemoteResult(host="h", returncode=0, stdout="\n", stderr=""),
+        ):
+            with pytest.raises(RuntimeError):
+                probe_remote_hf_cache("h")
+
+    def test_unsafe_path_rejected(self):
+        """A remote that returns a path with shell metacharacters must be
+        rejected before that path is fed to shlex.quote-aware downstream code."""
+        import pytest
+        from sparkrun.orchestration.primitives import probe_remote_hf_cache
+
+        with patch(
+            "sparkrun.orchestration.primitives.run_remote_command",
+            return_value=RemoteResult(host="h", returncode=0, stdout="/tmp/$(whoami)/.cache/huggingface\n", stderr=""),
+        ):
+            with pytest.raises(ValueError, match="Unsafe character"):
+                probe_remote_hf_cache("h")
+
+
+# ---------------------------------------------------------------------------
+# resolve_effective_cache_dir tests — launcher.py
+# ---------------------------------------------------------------------------
+
+
+class TestResolveEffectiveCacheDir:
+    """Tests for ``core.launcher.resolve_effective_cache_dir`` — the single
+    decision point that turns the (possibly None) cluster cache_dir into a
+    concrete absolute path before it reaches build_volumes / docker -v / rsync."""
+
+    def _config(self, hf_cache="/home/local/.cache/huggingface"):
+        cfg = MagicMock()
+        cfg.hf_cache_dir = hf_cache
+        return cfg
+
+    def test_explicit_cache_dir_skips_probe(self):
+        """When the cluster sets cache_dir explicitly, that value is returned
+        as-is — no probe, no fallback."""
+        from sparkrun.core.launcher import resolve_effective_cache_dir
+
+        with patch("sparkrun.orchestration.primitives.probe_remote_hf_cache") as mock_probe:
+            result = resolve_effective_cache_dir(
+                "/mnt/shared/hf",
+                ["remote-host"],
+                {"ssh_user": "user1"},
+                self._config(),
+            )
+
+        assert result == "/mnt/shared/hf"
+        mock_probe.assert_not_called()
+
+    def test_local_same_user_uses_local_cache(self):
+        """Single localhost target with same user → use control's hf_cache_dir,
+        no SSH probe needed."""
+        from sparkrun.core.launcher import resolve_effective_cache_dir
+
+        with (
+            patch("sparkrun.utils.is_local_host", return_value=True),
+            patch("sparkrun.orchestration.primitives.probe_remote_hf_cache") as mock_probe,
+            patch.dict("os.environ", {"USER": "drew"}),
+        ):
+            result = resolve_effective_cache_dir(
+                None,
+                ["localhost"],
+                {"ssh_user": None},
+                self._config("/home/drew/.cache/huggingface"),
+            )
+
+        assert result == "/home/drew/.cache/huggingface"
+        mock_probe.assert_not_called()
+
+    def test_remote_host_triggers_probe(self):
+        """Non-local host with no explicit cache → probe the head."""
+        from sparkrun.core.launcher import resolve_effective_cache_dir
+
+        with (
+            patch("sparkrun.utils.is_local_host", return_value=False),
+            patch(
+                "sparkrun.orchestration.primitives.probe_remote_hf_cache",
+                return_value="/home/user1/.cache/huggingface",
+            ) as mock_probe,
+        ):
+            result = resolve_effective_cache_dir(
+                None,
+                ["spark-01"],
+                {"ssh_user": "user1"},
+                self._config(),
+            )
+
+        assert result == "/home/user1/.cache/huggingface"
+        mock_probe.assert_called_once()
+        # Probe receives the head host
+        assert mock_probe.call_args.args[0] == "spark-01"
+
+    def test_local_host_cross_user_triggers_probe(self):
+        """Even when target is localhost, a different SSH user means we need
+        the probe (the target user's $HOME differs from ours)."""
+        from sparkrun.core.launcher import resolve_effective_cache_dir
+
+        with (
+            patch("sparkrun.utils.is_local_host", return_value=True),
+            patch(
+                "sparkrun.orchestration.primitives.probe_remote_hf_cache",
+                return_value="/home/other/.cache/huggingface",
+            ) as mock_probe,
+            patch.dict("os.environ", {"USER": "drew"}),
+        ):
+            result = resolve_effective_cache_dir(
+                None,
+                ["localhost"],
+                {"ssh_user": "other"},
+                self._config(),
+            )
+
+        assert result == "/home/other/.cache/huggingface"
+        mock_probe.assert_called_once()

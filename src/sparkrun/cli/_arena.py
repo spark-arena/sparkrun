@@ -18,15 +18,15 @@ from ._common import (
 
 logger = logging.getLogger(__name__)
 
-_BENCHMARK_PROFILE = "@official/spark-arena-v1"
+_BENCHMARK_PROFILE = "@official/spark-arena-v2"
 
 ASCII_ART = r"""
-!       _____                  __      ___                         
+!       _____                  __      ___
 !      / ___/____  ____ ______/ /__   /   |  ________  ____  ____ _
 !      \__ \/ __ \/ __ `/ ___/ //_/  / /| | / ___/ _ \/ __ \/ __ `/
-!     ___/ / /_/ / /_/ / /  / ,<    / ___ |/ /  /  __/ / / / /_/ / 
-!    /____/ .___/\__,_/_/  /_/|_|  /_/  |_/_/   \___/_/ /_/\__,_/  
-!        /_/                                                       
+!     ___/ / /_/ / /_/ / /  / ,<    / ___ |/ /  /  __/ / / / /_/ /
+!    /____/ .___/\__,_/_/  /_/|_|  /_/  |_/_/   \___/_/ /_/\__,_/
+!        /_/
 """
 
 
@@ -94,7 +94,29 @@ def status():
         click.echo("Run 'sparkrun arena login' to re-authenticate.")
 
 
-@arena.command("benchmark")
+class _ArenaBenchmarkGroup(click.Group):
+    """Group that falls back to the 'run' subcommand when the first
+    positional isn't a known subcommand name."""
+
+    def parse_args(self, ctx, args):
+        # Detect whether any subcommand name is present in args; if not,
+        # prepend 'run' so legacy `arena benchmark <recipe>` keeps working.
+        if args:
+            command_names = set(self.commands)
+            has_subcmd = any(a in command_names for a in args if not a.startswith("-"))
+            if not has_subcmd:
+                args = ["run"] + list(args)
+        return super().parse_args(ctx, args)
+
+
+@arena.group("benchmark", cls=_ArenaBenchmarkGroup)
+@click.pass_context
+def arena_benchmark(ctx):
+    """Benchmark a recipe and submit results to Spark Arena."""
+    pass
+
+
+@arena_benchmark.command("run")
 @click.argument("recipe_name", type=RECIPE_NAME)
 @host_options
 @recipe_override_options
@@ -121,7 +143,7 @@ def status():
 @click.option("--local-test", is_flag=True, hidden=True, help="Smoke test: skip profile and simulate upload without sending")
 @dry_run_option
 @click.pass_context
-def arena_benchmark(
+def arena_benchmark_run(
     ctx,
     recipe_name,
     hosts,
@@ -159,8 +181,9 @@ def arena_benchmark(
     """
     from sparkrun import __version__
     from sparkrun.arena.auth import load_refresh_token, exchange_token
-    from sparkrun.arena.upload import upload_benchmark_results
+    from sparkrun.arena.upload import generate_submission_id, upload_benchmark_results
     from ._benchmark import _run_benchmark
+    from ._common import _get_context
 
     # --- Pre-flight checks ---
     click.echo(ASCII_ART)
@@ -186,6 +209,10 @@ def arena_benchmark(
 
         click.echo("Authentication verified.")
         click.echo()
+
+    # Generate submission_id before calling _run_benchmark so it is stable
+    # across schedule retries and persisted in state.extras.
+    submission_id = generate_submission_id()
 
     profile = None if local_test else _BENCHMARK_PROFILE
     framework = None
@@ -222,6 +249,7 @@ def arena_benchmark(
         executor_args=None,
         extra_args=None,
         export_results_files=False,
+        submission_id_for_extras=submission_id,
     )
 
     # require result and success; launch_result may be absent with --skip-run
@@ -258,11 +286,8 @@ def arena_benchmark(
         return
 
     # --- Write files to cache directory ---
-    from sparkrun.arena.upload import generate_submission_id
-    from ._common import _get_context
-
-    submission_id = generate_submission_id()
-    arena_cache = _get_context(ctx).config.cache_dir
+    sctx = _get_context(ctx)
+    arena_cache = sctx.config.cache_dir
     cache_dir = arena_cache / "benchmarks" / submission_id
     cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -280,9 +305,171 @@ def arena_benchmark(
         (meta_path, "metadata"),
     ]
 
+    # Persist arena-specific extras in state for resume support
+    _persist_arena_extras(ctx, bench_result, submission_id, effective_recipe, metadata)
+
     if local_test:
         click.echo()
         click.echo("[local-test] Benchmark files written to: %s" % cache_dir)
+        for fpath, folder in upload_files:
+            click.echo("  %s -> %s/" % (fpath.name, folder))
+        click.echo("[local-test] Skipping actual upload.")
+        return
+
+    # --- Upload results ---
+    click.echo()
+    click.echo("Uploading results to Spark Arena...")
+
+    try:
+        success, sid = upload_benchmark_results(
+            refresh_token=refresh_token,
+            upload_files=upload_files,
+            submission_id=submission_id,
+        )
+    except RuntimeError as e:
+        click.echo("Upload failed: %s" % e, err=True)
+        sys.exit(1)
+
+    if success:
+        click.echo("Results uploaded successfully (submission: %s)" % sid)
+    else:
+        click.echo("Some files failed to upload (submission: %s)" % sid, err=True)
+        sys.exit(1)
+
+
+def _persist_arena_extras(ctx, bench_result, submission_id: str, effective_recipe: str, metadata: dict) -> None:
+    """Persist arena-specific fields into BenchmarkRunState.extras if a state exists."""
+    from sparkrun.benchmarking.run_state import BenchmarkRunState
+    from ._common import _get_context
+
+    sctx = _get_context(ctx)
+    config = sctx.config
+    cache_dir = str(config.cache_dir) if config else None
+
+    # cluster_id and framework are needed to derive benchmark_id; they live on bench_result
+    cluster_id = bench_result.cluster_id
+    if not cluster_id:
+        return
+
+    # We don't have benchmark_id directly on bench_result, so we look up by cluster_id.
+    # The state was already saved by _run_benchmark; load it by scanning or by re-deriving.
+    # Re-derive: we need framework + base_args — obtain from bench_result.
+    fw = bench_result.framework
+    bench_args = getattr(bench_result, "benchmark_args", None)
+    if fw is None or bench_args is None:
+        return
+
+    # Re-derive benchmark_id from the same inputs used in _run_benchmark
+    # We need the schedule; approximate by loading any existing state for this cluster_id.
+    # The simplest approach: scan the benchmarks cache dir for a state whose cluster_id matches.
+    if not config:
+        return
+
+    benchmarks_dir = config.cache_dir / "benchmarks"
+    if not benchmarks_dir.exists():
+        return
+
+    for candidate_dir in benchmarks_dir.iterdir():
+        if not candidate_dir.is_dir():
+            continue
+        state = BenchmarkRunState.load(candidate_dir.name, cache_dir)
+        if state is None:
+            continue
+        if state.cluster_id != cluster_id:
+            continue
+        # Found the matching state; persist extras (do not overwrite existing submission_id)
+        if "submission_id" not in state.extras:
+            state.extras["submission_id"] = submission_id
+        state.extras["effective_recipe_text"] = effective_recipe
+        state.extras["metadata_json"] = metadata
+        state.save(cache_dir)
+        logger.debug("Persisted arena extras into benchmark state %s", state.benchmark_id)
+        break
+
+
+@arena_benchmark.command("resume")
+@click.argument("benchmark_id")
+@click.option("--local-test", is_flag=True, hidden=True, help="Skip authentication and simulate upload.")
+@dry_run_option
+@click.pass_context
+def arena_benchmark_resume(ctx, benchmark_id, local_test, dry_run):
+    """Resume a paused arena benchmark by id, then upload."""
+    from sparkrun.arena.auth import load_refresh_token, exchange_token
+    from sparkrun.arena.upload import generate_submission_id, upload_benchmark_results
+    from sparkrun.benchmarking.run_state import BenchmarkRunState
+    from ._benchmark import _resume_benchmark_run
+    from ._common import _get_context
+
+    sctx = _get_context(ctx)
+    config = sctx.config
+    cache_dir = str(config.cache_dir) if config else None
+
+    # Load state to recover submission_id
+    state = BenchmarkRunState.load(benchmark_id, cache_dir)
+    if state is None:
+        click.echo("Error: no benchmark state found for id: %s" % benchmark_id, err=True)
+        sys.exit(1)
+
+    # Recover or generate submission_id (idempotent across retries)
+    submission_id: str = state.extras.get("submission_id") or generate_submission_id()
+
+    # --- Authentication ---
+    refresh_token = None
+    if local_test:
+        click.echo("[local-test] Skipping authentication — upload will be simulated.")
+        click.echo()
+    else:
+        refresh_token = load_refresh_token()
+        if not refresh_token:
+            click.echo("Error: Not logged in. Run 'sparkrun arena login' first.", err=True)
+            sys.exit(1)
+
+        try:
+            exchange_token(refresh_token)
+        except RuntimeError as e:
+            click.echo("Error: Authentication failed: %s" % e, err=True)
+            click.echo("Run 'sparkrun arena login' to re-authenticate.", err=True)
+            sys.exit(1)
+
+        click.echo("Authentication verified.")
+        click.echo()
+
+    # --- Resume benchmark (runs scheduler, writes output files, returns results dict) ---
+    results = _resume_benchmark_run(ctx, benchmark_id, dry_run, sctx=sctx)
+    if results is None:
+        # _resume_benchmark_run already called sys.exit; this path is unreachable but defensive
+        return
+
+    if dry_run:
+        click.echo("[dry-run] Would upload results to Spark Arena (submission: %s)" % submission_id)
+        return
+
+    # --- Gather upload artefacts ---
+    # Prefer extras stored on first run; fall back to re-generating from results dict.
+    effective_recipe: str = state.extras.get("effective_recipe_text", "")
+    metadata: dict = state.extras.get("metadata_json", {})
+    benchmark_csv: str = results.get("csv", "")
+
+    arena_cache_dir = config.cache_dir / "benchmarks" / submission_id
+    arena_cache_dir.mkdir(parents=True, exist_ok=True)
+
+    recipe_path = arena_cache_dir / "recipe.yaml"
+    csv_path = arena_cache_dir / "benchmark.csv"
+    meta_path = arena_cache_dir / "metadata.json"
+
+    recipe_path.write_text(effective_recipe)
+    csv_path.write_text(benchmark_csv)
+    meta_path.write_text(json.dumps(metadata, indent=2))
+
+    upload_files = [
+        (recipe_path, "recipes"),
+        (csv_path, "logs"),
+        (meta_path, "metadata"),
+    ]
+
+    if local_test:
+        click.echo()
+        click.echo("[local-test] Benchmark files written to: %s" % arena_cache_dir)
         for fpath, folder in upload_files:
             click.echo("  %s -> %s/" % (fpath.name, folder))
         click.echo("[local-test] Skipping actual upload.")

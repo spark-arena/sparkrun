@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # Pinned upstream ref. Bump as needed; users can override per-call with
 # ``-b ref=<tag-or-branch>`` (the value is consumed by the plugin and not
 # forwarded to the subprocess).
-_DEFAULT_REF = "v1.4.3"
+_DEFAULT_REF = "v1.6.0"
 _GIT_URL = "https://github.com/SeraphimSerapis/tool-eval-bench"
 
 # tool-eval-bench args that take multiple space-separated values.

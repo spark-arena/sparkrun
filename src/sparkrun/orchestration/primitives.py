@@ -74,6 +74,60 @@ def build_volumes(
     return volumes
 
 
+def probe_remote_hf_cache(
+    host: str,
+    ssh_user: str | None = None,
+    ssh_key: str | None = None,
+    ssh_options: list[str] | None = None,
+    timeout: int = 10,
+    dry_run: bool = False,
+) -> str:
+    """SSH-probe *host* for its resolved HuggingFace cache directory.
+
+    Runs ``echo "${HF_HOME:-$HOME/.cache/huggingface}"`` on the target so the
+    returned path reflects the SSH login user's environment, not the control
+    machine's.  Used to populate ``cache_dir`` when no cluster ``cache_dir``
+    is configured and the target may have a different ``$HOME`` or ``HF_HOME``.
+
+    The result is validated against shell-injection metacharacters before being
+    returned, since callers feed it to ``shlex.quote``-aware code paths
+    (volume mounts, rsync targets) that would silently break if the path
+    contained ``$``, ``{``, ``}`` etc.
+
+    Args:
+        host: Remote host to probe.
+        ssh_user, ssh_key, ssh_options: Standard SSH parameters.
+        timeout: SSH command timeout in seconds.
+        dry_run: When True, returns ``DEFAULT_HF_CACHE_DIR`` without an SSH call.
+
+    Returns:
+        Concrete absolute path on the remote host.
+
+    Raises:
+        RuntimeError: If the probe fails or returns a path with unsafe characters.
+    """
+    if dry_run:
+        return resolve_hf_cache_home(None)
+
+    cmd = 'echo "${HF_HOME:-$HOME/.cache/huggingface}"'
+    result = run_remote_command(
+        host,
+        cmd,
+        ssh_user=ssh_user,
+        ssh_key=ssh_key,
+        ssh_options=ssh_options,
+        timeout=timeout,
+    )
+    if not result.success or not result.stdout.strip():
+        raise RuntimeError(
+            "Could not resolve remote HF cache on %s (rc=%d): %s" % (host, result.returncode, result.stderr.strip() or "no output")
+        )
+
+    from sparkrun.utils.shell import assert_safe_path
+
+    return assert_safe_path(result.stdout.strip())
+
+
 # ---------------------------------------------------------------------------
 # Resource sync helpers
 # ---------------------------------------------------------------------------

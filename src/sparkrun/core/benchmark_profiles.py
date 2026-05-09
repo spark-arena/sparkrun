@@ -10,7 +10,7 @@ from sparkrun.utils.shell import render_args_as_flags
 from sparkrun.core.recipe import Recipe
 
 # Keys in the benchmark: block that are NOT framework args
-_KNOWN_BENCHMARK_KEYS = {"framework", "args", "metadata", "timeout"}
+_KNOWN_BENCHMARK_KEYS = {"framework", "args", "metadata", "timeout", "schedule"}
 
 
 class ProfileError(Exception):
@@ -137,6 +137,7 @@ class BenchmarkSpec:
     framework: str
     args: dict[str, Any]
     timeout: int | None = None
+    schedule: list[dict[str, Any]] | None = None
 
     @classmethod
     def load(cls, path: str | Path) -> BenchmarkSpec:
@@ -180,11 +181,17 @@ class BenchmarkSpec:
         if timeout is not None:
             timeout = int(timeout)
 
+        schedule = block.get("schedule")
+        if schedule is not None:
+            if not isinstance(schedule, list) or not all(isinstance(e, dict) for e in schedule):
+                raise BenchmarkError("benchmark.schedule must be a list of mappings")
+
         return cls(
             source_path=str(p),
             framework=framework,
             args=args,
             timeout=timeout,
+            schedule=schedule,
         )
 
     @classmethod
@@ -209,11 +216,17 @@ class BenchmarkSpec:
         if timeout is not None:
             timeout = int(timeout)
 
+        schedule = block.get("schedule")
+        if schedule is not None:
+            if not isinstance(schedule, list) or not all(isinstance(e, dict) for e in schedule):
+                raise BenchmarkError("benchmark.schedule must be a list of mappings")
+
         return cls(
             source_path=recipe.source_path or "",
             framework=str(framework),
             args=args,
             timeout=timeout,
+            schedule=schedule,
         )
 
     def build_command(self, extra_args: dict[str, Any] | None = None) -> list[str]:

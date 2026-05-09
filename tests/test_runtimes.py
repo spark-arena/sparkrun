@@ -2293,3 +2293,87 @@ class TestAugmentServedModelName:
             skip_keys={"served_model_name"},
         )
         assert "--alias" not in cmd
+
+
+class TestResolveHostsForInit:
+    """Verify loopback substitution for NCCL / torch-distributed init addresses.
+
+    Cluster configs commonly list the control machine's own host as
+    ``127.0.0.1`` for SSH convenience.  ``resolve_hosts_for_init`` must
+    swap that loopback for the detected non-loopback head IP before the
+    list is fed into ``generate_node_command``, otherwise workers would
+    treat their own loopback as the master address.
+    """
+
+    def _make_ctx(self, hosts, head_host=None):
+        from sparkrun.runtimes._cluster_ops import ClusterContext
+
+        head_host = head_host or hosts[0]
+        return ClusterContext(
+            hosts=list(hosts),
+            head_host=head_host,
+            worker_hosts=[h for h in hosts if h != head_host],
+            num_nodes=len(hosts),
+            ssh_kwargs={},
+            volumes={},
+            all_env={},
+            cluster_id="test-cluster",
+            image="test:image",
+            dry_run=True,
+            config=None,
+        )
+
+    def test_loopback_head_substituted(self):
+        """``127.0.0.1`` head entry is replaced by the detected head IP."""
+        from sparkrun.runtimes._cluster_ops import resolve_hosts_for_init
+
+        ctx = self._make_ctx(["127.0.0.1", "10.0.0.5"])
+        assert resolve_hosts_for_init(ctx, head_ip="10.0.0.4") == ["10.0.0.4", "10.0.0.5"]
+
+    def test_localhost_alias_head_substituted(self):
+        """``localhost`` is treated the same as ``127.0.0.1``."""
+        from sparkrun.runtimes._cluster_ops import resolve_hosts_for_init
+
+        ctx = self._make_ctx(["localhost", "10.0.0.5"])
+        assert resolve_hosts_for_init(ctx, head_ip="10.0.0.4") == ["10.0.0.4", "10.0.0.5"]
+
+    def test_all_remote_unchanged(self):
+        """When no host is local, the list is returned as-is."""
+        from sparkrun.runtimes._cluster_ops import resolve_hosts_for_init
+
+        ctx = self._make_ctx(["10.0.0.4", "10.0.0.5"])
+        assert resolve_hosts_for_init(ctx, head_ip="10.0.0.4") == ["10.0.0.4", "10.0.0.5"]
+
+    def test_vllm_distributed_master_addr_no_loopback(self):
+        """End-to-end: vllm_distributed renders no ``127.0.0.1`` master-addr.
+
+        Guards the bug: with raw ``hosts[0] == "127.0.0.1"`` the runtime
+        used to emit ``--master-addr 127.0.0.1``.  After ``resolve_hosts_for_init``
+        the resolved list feeds ``generate_node_command``, so the master
+        address is the actual head IP.
+        """
+        from sparkrun.runtimes._cluster_ops import resolve_hosts_for_init
+
+        ctx = self._make_ctx(["127.0.0.1", "10.0.0.5"])
+        resolved = resolve_hosts_for_init(ctx, head_ip="10.0.0.4")
+
+        recipe = Recipe.from_dict(
+            {
+                "name": "loopback-fix",
+                "model": "m",
+                "runtime": "vllm-distributed",
+                "defaults": {"tensor_parallel": 2},
+            }
+        )
+        runtime = VllmDistributedRuntime()
+        cmd = runtime.generate_node_command(
+            recipe=recipe,
+            overrides={},
+            head_ip="10.0.0.4",
+            num_nodes=2,
+            node_rank=1,
+            init_port=25000,
+            hosts=resolved,
+        )
+        assert "127.0.0.1" not in cmd
+        assert "--master-addr 10.0.0.4" in cmd

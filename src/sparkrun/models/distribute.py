@@ -141,7 +141,12 @@ def distribute_model_from_local(
         dry_run=dry_run,
     )
 
-    # Step 3: rsync model cache to all hosts in parallel
+    # Step 3: rsync model cache to all hosts in parallel.
+    # HF cache uses content-addressed blob filenames (blobs/<sha256>),
+    # so identical names always mean identical content.  --size-only is
+    # both correct and lets rsync skip already-synced shards instantly
+    # without reading them.  Quantized weights (NVFP4/safetensors) don't
+    # compress, so -z is wasted CPU and is omitted here.
     local_model_path = model_cache_path(model_id, local_cache)
     remote_model_path = model_cache_path(model_id, remote_cache)
     results = run_rsync_parallel(
@@ -151,6 +156,7 @@ def distribute_model_from_local(
         ssh_user=ssh_user,
         ssh_key=ssh_key,
         ssh_options=ssh_options,
+        rsync_options=["-a", "--size-only", "--mkpath", "--partial", "--links"],
         timeout=timeout,
         dry_run=dry_run,
     )

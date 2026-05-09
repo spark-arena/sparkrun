@@ -48,6 +48,46 @@ class LaunchResult:
     builder: BuilderPlugin | None = None
 
 
+def resolve_effective_cache_dir(
+    cache_dir: str | None,
+    host_list: list[str],
+    ssh_kwargs: dict,
+    config: SparkrunConfig,
+    dry_run: bool = False,
+) -> str:
+    """Resolve the remote HF cache path to a concrete absolute string.
+
+    - If *cache_dir* is given (cluster ``cache_dir`` or CLI override), use it
+      as-is.
+    - Otherwise, when targeting a remote host (or running cross-user), probe
+      the head node via SSH so the resolved path reflects the SSH login user's
+      ``$HOME`` / ``HF_HOME`` rather than the control machine's.
+    - For the single-localhost same-user fast path, fall back to the control
+      machine's HF cache.
+
+    Returning a concrete path here avoids embedding shell-expansion expressions
+    downstream, where ``shlex.quote``-aware code paths (volume mounts, ssh
+    quoted commands) would prevent the expansion from running.
+    """
+    if cache_dir:
+        return cache_dir
+
+    from sparkrun.utils import is_local_host
+    from sparkrun.orchestration.primitives import probe_remote_hf_cache
+    import os
+
+    head = host_list[0] if host_list else None
+    ssh_user = ssh_kwargs.get("ssh_user")
+    cross_user = ssh_user is not None and ssh_user != os.environ.get("USER", "root")
+
+    if head and not is_local_host(head):
+        return probe_remote_hf_cache(head, dry_run=dry_run, **ssh_kwargs)
+    if head and cross_user:
+        return probe_remote_hf_cache(head, dry_run=dry_run, **ssh_kwargs)
+
+    return str(config.hf_cache_dir)
+
+
 def launch_inference(
     *,
     recipe: Recipe,
@@ -151,9 +191,15 @@ def launch_inference(
     if p:
         p.phase(1)
 
-    effective_cache_dir = cache_dir or str(config.hf_cache_dir)
-    effective_local_cache = local_cache_dir or effective_cache_dir
     ssh_kwargs = build_ssh_kwargs(config)
+    effective_local_cache = local_cache_dir or str(config.hf_cache_dir)
+    effective_cache_dir = resolve_effective_cache_dir(
+        cache_dir,
+        host_list,
+        ssh_kwargs,
+        config,
+        dry_run=dry_run,
+    )
     transfer_result = resolve_auto_transfer_mode(
         transfer_mode or "auto",
         host_list,

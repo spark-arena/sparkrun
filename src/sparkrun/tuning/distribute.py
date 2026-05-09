@@ -82,7 +82,7 @@ def distribute_tuning_to_hosts(
             ssh_user=ssh_user,
             ssh_key=ssh_key,
             ssh_options=ssh_options,
-            rsync_options=["-az", "--no-times", "--delete", "--partial"],
+            rsync_options=["-az", "--delete", "--partial"],
             dry_run=dry_run,
         )
         head_failed = [r.host for r in head_results if not r.success]
@@ -102,7 +102,7 @@ def distribute_tuning_to_hosts(
             "set -euo pipefail\n"
             'SOURCE="{source}"\n'
             "for TARGET in {targets}; do\n"
-            '  rsync -az --no-times --delete --partial -e "ssh {ssh_opts}" '
+            '  rsync -az --delete --partial -e "ssh {ssh_opts}" '
             '"$SOURCE/" {user_prefix}$TARGET:"$SOURCE/"\n'
             "done\n"
         ).format(
@@ -142,7 +142,7 @@ def distribute_tuning_to_hosts(
         ssh_user=ssh_user,
         ssh_key=ssh_key,
         ssh_options=ssh_options,
-        rsync_options=["-az", "--no-times", "--delete", "--partial"],
+        rsync_options=["-az", "--delete", "--partial"],
         dry_run=dry_run,
     )
 

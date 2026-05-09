@@ -403,7 +403,7 @@ def run(
     if result.rc == 0 and has_post_hooks and not foreground:
         from sparkrun.core.launcher import post_launch_lifecycle
 
-        post_launch_lifecycle(result, remote_cache_dir=remote_cache_dir, trust=trust, dry_run=dry_run, progress=sctx.progress)
+        post_launch_lifecycle(result, remote_cache_dir=result.effective_cache_dir, trust=trust, dry_run=dry_run, progress=sctx.progress)
     else:
         if sctx.progress:
             sctx.progress.phase_skip(6)
@@ -431,7 +431,7 @@ def run(
                 cluster_id=result.cluster_id,
                 hosts=host_list,
                 ssh_kwargs=ssh_kwargs,
-                cache_dir=remote_cache_dir,
+                cache_dir=str(config.cache_dir),
             )
             if not status.running:
                 click.secho("\n[sparkrun] CRITICAL: Container died unexpectedly after detached launch.", fg="red", err=True, bold=True)

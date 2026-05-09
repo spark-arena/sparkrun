@@ -12,6 +12,7 @@ from ._common import (
     _setup_logging,
     dry_run_option,
     host_options,
+    json_option,
 )
 from ._adv import adv
 from ._arena import arena
@@ -66,10 +67,12 @@ main.add_command(arena)
 @click.option("--registry", type=REGISTRY_NAME, default=None, help="Filter by registry name")
 @click.option("--runtime", type=RUNTIME_NAME, default=None, help="Filter by runtime (e.g. vllm, sglang, llama-cpp)")
 @click.argument("query", required=False)
+@click.option("--all", "-a", "show_all", is_flag=True, help="Include hidden registry recipes")
+@json_option()
 @click.pass_context
-def list_cmd(ctx, registry, runtime, query):
+def list_cmd(ctx, registry, runtime, query, show_all, output_json):
     """List available recipes (alias for 'recipe list')."""
-    ctx.invoke(recipe_list, registry=registry, runtime=runtime, query=query)
+    ctx.invoke(recipe_list, registry=registry, runtime=runtime, query=query, show_all=show_all, output_json=output_json)
 
 
 @main.command()

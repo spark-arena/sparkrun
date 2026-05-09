@@ -486,7 +486,7 @@ def _run_delegated_copy(
         script = (
             "set -e\n"
             "mkdir -p %(tmp)s\n"
-            'rsync -a --no-times %(rsync_ssh)s %(user)s%(src_host)s:"%(src)s"/ %(tmp)s/\n'
+            'rsync -a %(rsync_ssh)s %(user)s%(src_host)s:"%(src)s"/ %(tmp)s/\n'
             "docker exec --user root %(c)s mkdir -p %(dest)s\n"
             "docker cp %(tmp)s/. %(c)s:%(dest)s/\n"
             "rm -rf %(tmp)s\n"

@@ -202,6 +202,29 @@ def detect_head_ip(ctx: ClusterContext) -> str:
     return detect_host_ip(ctx.head_host, ssh_kwargs=ctx.ssh_kwargs, dry_run=ctx.dry_run)
 
 
+def resolve_hosts_for_init(ctx: ClusterContext, head_ip: str) -> list[str]:
+    """Return ``ctx.hosts`` with loopback entries replaced by routable IPs.
+
+    The cluster config conventionally lists the control machine's own
+    host as ``127.0.0.1`` for SSH convenience.  That loopback must not
+    appear in NCCL / torch-distributed master addresses, otherwise
+    workers connect to their own loopback instead of the head.
+    """
+    from sparkrun.orchestration.primitives import detect_host_ip
+    from sparkrun.utils import is_local_host
+
+    resolved: list[str] = []
+    for h in ctx.hosts:
+        if not is_local_host(h):
+            resolved.append(h)
+            continue
+        if h == ctx.head_host:
+            resolved.append(head_ip)
+        else:
+            resolved.append(detect_host_ip(h, ssh_kwargs=ctx.ssh_kwargs, dry_run=ctx.dry_run))
+    return resolved
+
+
 def find_port(ctx: ClusterContext, host: str, preferred: int) -> int:
     """Find an available port, avoiding collisions with running instances."""
     from sparkrun.orchestration.primitives import find_available_port
@@ -349,6 +372,7 @@ def run_native_cluster(
     overrides: dict[str, Any] | None = None,
     *,
     comm_env: ClusterCommEnv | None = None,
+    ib_ip_map: dict[str, str] | None = None,
     init_port: int = 25000,
     skip_keys: set[str] | frozenset[str] = frozenset(),
     banner_title: str = "Native Cluster Launcher",
@@ -395,13 +419,14 @@ def run_native_cluster(
     cleanup_ranked_containers(ctx, executor)
     logger.info("Step 1/7: Cleanup done (%.1fs)", time.monotonic() - t0)
 
-    # Step 2: InfiniBand detection
+    # Step 2: InfiniBand detection (also resolves IB IPs for runtimes
+    # that opt into IB-routed bootstrap via prefer_ib_for_init_addr).
     t0 = time.monotonic()
     if progress:
         progress.step("Detecting InfiniBand")
     else:
         logger.info("Step 2/7: InfiniBand detection...")
-    comm_env = resolve_ib_env(ctx, comm_env)
+    comm_env, ib_ip_map = detect_ib_with_ips(ctx, comm_env, ib_ip_map)
     logger.info("Step 2/7: IB step done (%.1fs)", time.monotonic() - t0)
 
     # Step 3: Detect head node IP
@@ -417,6 +442,21 @@ def run_native_cluster(
         return 1
     logger.info("  Head IP: %s", head_ip)
     logger.info("Step 3/7: IP detection done (%.1fs)", time.monotonic() - t0)
+
+    # Substitute loopback entries (e.g. ``127.0.0.1`` from cluster config)
+    # with routable IPs so NCCL / torch-distributed master addresses are
+    # never broadcast as loopback to remote workers.
+    resolved_hosts = resolve_hosts_for_init(ctx, head_ip)
+    if resolved_hosts != ctx.hosts:
+        logger.info("  Resolved init hosts: %s", resolved_hosts)
+
+    # Optional IB-routed bootstrap: overlay IB IPs on head_ip and
+    # resolved_hosts when the runtime opts in.  Hosts without an IB
+    # entry keep their mgmt-resolved address.
+    if runtime.prefer_ib_for_init_addr() and ib_ip_map:
+        head_ip = ib_ip_map.get(ctx.head_host, head_ip)
+        resolved_hosts = [ib_ip_map.get(orig, fallback) for orig, fallback in zip(ctx.hosts, resolved_hosts)]
+        logger.info("  IB-routed init: head=%s, hosts=%s", head_ip, resolved_hosts)
 
     # Auto-detect available init port
     init_port = find_port(ctx, ctx.head_host, init_port)
@@ -440,7 +480,7 @@ def run_native_cluster(
         node_rank=0,
         init_port=init_port,
         skip_keys=skip_keys,
-        hosts=ctx.hosts,
+        hosts=resolved_hosts,
     )
     logger.info("Serve command (head, rank 0):")
     for line in head_command.strip().splitlines():
@@ -562,7 +602,7 @@ def run_native_cluster(
                     node_rank=rank,
                     init_port=init_port,
                     skip_keys=skip_keys,
-                    hosts=ctx.hosts,
+                    hosts=resolved_hosts,
                 )
                 worker_container = all_nodes[rank][2]
                 worker_exec_script = executor.generate_exec_serve_script(

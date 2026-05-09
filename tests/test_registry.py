@@ -9,11 +9,13 @@ import pytest
 import yaml
 
 from sparkrun.core.registry import (
+    EXTERNAL_RESERVED_NAMES,
     FALLBACK_DEFAULT_REGISTRIES,
     RESERVED_NAME_PREFIXES,
     RegistryEntry,
     RegistryError,
     RegistryManager,
+    _get_git_org,
     validate_registry_name,
 )
 
@@ -167,9 +169,9 @@ class TestDefaultRegistries:
         assert eugr.enabled is True
         assert eugr.visible is True
 
-    def test_six_default_registries(self):
-        """Test that there are exactly six default registries."""
-        assert len(FALLBACK_DEFAULT_REGISTRIES) == 6
+    def test_seven_default_registries(self):
+        """Test that there are exactly seven default registries."""
+        assert len(FALLBACK_DEFAULT_REGISTRIES) == 7
 
     def test_testing_registry_subpath(self):
         """Test the sparkrun-testing registry subpath."""
@@ -1097,6 +1099,96 @@ class TestReservedNamePrefixes:
         )
         mgr.add_registry(entry)
         assert mgr.get_registry("sparkrun-contrib").name == "sparkrun-contrib"
+
+
+class TestGetGitOrg:
+    """Tests for `_get_git_org` URL parsing."""
+
+    def test_https_github_url(self):
+        assert _get_git_org("https://github.com/scitrera/repo") == "scitrera"
+
+    def test_https_github_url_with_git_suffix(self):
+        assert _get_git_org("https://github.com/scitrera/repo.git") == "scitrera"
+
+    def test_www_github_url(self):
+        assert _get_git_org("https://www.github.com/spark-arena/repo") == "spark-arena"
+
+    def test_uppercase_url_lowercased(self):
+        """Hostname comparison and returned org should both be lowercased."""
+        assert _get_git_org("HTTPS://GITHUB.COM/Avarok-Cybersecurity/atlas-recipes.git") == "avarok-cybersecurity"
+
+    def test_mixed_case_org_lowercased(self):
+        """Mixed-case org names should be normalized to lowercase."""
+        assert _get_git_org("https://github.com/Avarok-Cybersecurity/atlas-recipes") == "avarok-cybersecurity"
+
+    def test_non_github_url_returns_none(self):
+        assert _get_git_org("https://gitlab.com/someone/repo") is None
+
+    def test_invalid_url_returns_none(self):
+        assert _get_git_org("not-a-url") is None
+
+    def test_scp_style_url_returns_none(self):
+        """scp-style git URLs (git@github.com:org/repo.git) lack a hostname under urlparse."""
+        assert _get_git_org("git@github.com:scitrera/repo.git") is None
+
+    def test_empty_url_returns_none(self):
+        assert _get_git_org("") is None
+
+    def test_github_url_with_trailing_slash(self):
+        assert _get_git_org("https://github.com/scitrera/repo/") == "scitrera"
+
+
+class TestExternalReservedNames:
+    """Tests for `EXTERNAL_RESERVED_NAMES` exact-match validation."""
+
+    def test_atlas_allowed_for_avarok(self):
+        """The reserved 'atlas' name must be allowed for the Avarok-Cybersecurity org."""
+        validate_registry_name("atlas", "https://github.com/Avarok-Cybersecurity/atlas-recipes.git")
+
+    def test_atlas_allowed_case_insensitive_url(self):
+        """URL case shouldn't matter — `_get_git_org` lowercases."""
+        validate_registry_name("atlas", "https://github.com/avarok-cybersecurity/atlas-recipes")
+
+    def test_atlas_allowed_case_insensitive_name(self):
+        """Name case shouldn't matter."""
+        validate_registry_name("ATLAS", "https://github.com/Avarok-Cybersecurity/atlas-recipes.git")
+
+    def test_atlas_rejected_from_other_org(self):
+        """The 'atlas' name from a non-allowed org should raise."""
+        with pytest.raises(RegistryError, match="reserved"):
+            validate_registry_name("atlas", "https://github.com/random-user/atlas-fork")
+
+    def test_atlas_rejected_from_non_github(self):
+        """The 'atlas' name from a non-GitHub URL should raise (org cannot be verified)."""
+        with pytest.raises(RegistryError, match="reserved"):
+            validate_registry_name("atlas", "https://gitlab.com/avarok-cybersecurity/atlas-recipes")
+
+    def test_atlas_prefix_falls_through_to_prefix_check(self):
+        """`atlas-foo` is not an exact match — should bypass EXTERNAL_RESERVED_NAMES.
+
+        Since 'atlas' is not in RESERVED_NAME_PREFIXES, 'atlas-foo' from any org should pass.
+        """
+        validate_registry_name("atlas-foo", "https://github.com/random-user/repo")
+
+    def test_atlas_default_fallback_entry_validates(self):
+        """The hardcoded atlas FALLBACK entry must satisfy validate_registry_name.
+
+        Regression: a case-mismatch between `_get_git_org`'s lowercase output and
+        the EXTERNAL_RESERVED_NAMES values would silently drop the entry from
+        manifest discovery (the RegistryError is caught and logged).
+        """
+        atlas = next((e for e in FALLBACK_DEFAULT_REGISTRIES if e.name == "atlas"), None)
+        assert atlas is not None, "atlas missing from FALLBACK_DEFAULT_REGISTRIES"
+        validate_registry_name(atlas.name, atlas.url)
+
+    def test_external_reserved_org_values_lowercase(self):
+        """Org values in EXTERNAL_RESERVED_NAMES must be lowercase to match `_get_git_org`."""
+        for name, orgs in EXTERNAL_RESERVED_NAMES.items():
+            for org in orgs:
+                assert org == org.lower(), (
+                    "EXTERNAL_RESERVED_NAMES[%r] contains non-lowercase org %r — "
+                    "_get_git_org returns lowercase so this entry would never match." % (name, org)
+                )
 
 
 class TestReservedNamePrefixesIntegrity:

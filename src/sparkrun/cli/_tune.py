@@ -93,9 +93,20 @@ def tune_sglang(
     if len(host_list) > 1:
         logger.info("Tuning runs on a single host; using first host: %s", target_host)
 
-    # Resolve remote cache dir from cluster config
+    # Resolve remote cache dir.  When the cluster doesn't define an explicit
+    # cache_dir, probe the target so the path reflects the SSH login user's
+    # $HOME / HF_HOME instead of the control machine's.
+    from sparkrun.core.launcher import resolve_effective_cache_dir
+    from sparkrun.orchestration.primitives import build_ssh_kwargs
+
     cluster_cfg = resolve_cluster_config(cluster_name, hosts, hosts_file, _cluster_mgr)
-    remote_cache_dir = cluster_cfg.cache_dir  # None is fine — tuner/build_volumes handles default
+    remote_cache_dir = resolve_effective_cache_dir(
+        cluster_cfg.cache_dir,
+        host_list,
+        build_ssh_kwargs(config),
+        config,
+        dry_run=dry_run,
+    )
 
     # Default TP sizes
     effective_tp = tuple(tp_sizes) if tp_sizes else DEFAULT_TP_SIZES
@@ -184,9 +195,20 @@ def tune_vllm(
     if len(host_list) > 1:
         logger.info("Tuning runs on a single host; using first host: %s", target_host)
 
-    # Resolve remote cache dir from cluster config
+    # Resolve remote cache dir.  When the cluster doesn't define an explicit
+    # cache_dir, probe the target so the path reflects the SSH login user's
+    # $HOME / HF_HOME instead of the control machine's.
+    from sparkrun.core.launcher import resolve_effective_cache_dir
+    from sparkrun.orchestration.primitives import build_ssh_kwargs
+
     cluster_cfg = resolve_cluster_config(cluster_name, hosts, hosts_file, _cluster_mgr)
-    remote_cache_dir = cluster_cfg.cache_dir  # None is fine — tuner/build_volumes handles default
+    remote_cache_dir = resolve_effective_cache_dir(
+        cluster_cfg.cache_dir,
+        host_list,
+        build_ssh_kwargs(config),
+        config,
+        dry_run=dry_run,
+    )
 
     # Default TP sizes
     effective_tp = tuple(tp_sizes) if tp_sizes else DEFAULT_TP_SIZES
