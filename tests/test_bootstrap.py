@@ -57,13 +57,14 @@ def test_list_runtimes_discovers_all():
     v = init_sparkrun(log_level="WARNING")
     runtimes = list_runtimes(v=v)
 
+    assert "atlas" in runtimes
     assert "eugr-vllm" in runtimes
     assert "llama-cpp" in runtimes
     assert "sglang" in runtimes
     assert "trtllm" in runtimes
     assert "vllm-ray" in runtimes
     assert "vllm-distributed" in runtimes
-    assert len(runtimes) == 6
+    assert len(runtimes) == 7
 
 
 def test_get_runtime_vllm_ray():

@@ -372,6 +372,7 @@ def run_native_cluster(
     overrides: dict[str, Any] | None = None,
     *,
     comm_env: ClusterCommEnv | None = None,
+    ib_ip_map: dict[str, str] | None = None,
     init_port: int = 25000,
     skip_keys: set[str] | frozenset[str] = frozenset(),
     banner_title: str = "Native Cluster Launcher",
@@ -418,13 +419,14 @@ def run_native_cluster(
     cleanup_ranked_containers(ctx, executor)
     logger.info("Step 1/7: Cleanup done (%.1fs)", time.monotonic() - t0)
 
-    # Step 2: InfiniBand detection
+    # Step 2: InfiniBand detection (also resolves IB IPs for runtimes
+    # that opt into IB-routed bootstrap via prefer_ib_for_init_addr).
     t0 = time.monotonic()
     if progress:
         progress.step("Detecting InfiniBand")
     else:
         logger.info("Step 2/7: InfiniBand detection...")
-    comm_env = resolve_ib_env(ctx, comm_env)
+    comm_env, ib_ip_map = detect_ib_with_ips(ctx, comm_env, ib_ip_map)
     logger.info("Step 2/7: IB step done (%.1fs)", time.monotonic() - t0)
 
     # Step 3: Detect head node IP
@@ -447,6 +449,14 @@ def run_native_cluster(
     resolved_hosts = resolve_hosts_for_init(ctx, head_ip)
     if resolved_hosts != ctx.hosts:
         logger.info("  Resolved init hosts: %s", resolved_hosts)
+
+    # Optional IB-routed bootstrap: overlay IB IPs on head_ip and
+    # resolved_hosts when the runtime opts in.  Hosts without an IB
+    # entry keep their mgmt-resolved address.
+    if runtime.prefer_ib_for_init_addr() and ib_ip_map:
+        head_ip = ib_ip_map.get(ctx.head_host, head_ip)
+        resolved_hosts = [ib_ip_map.get(orig, fallback) for orig, fallback in zip(ctx.hosts, resolved_hosts)]
+        logger.info("  IB-routed init: head=%s, hosts=%s", head_ip, resolved_hosts)
 
     # Auto-detect available init port
     init_port = find_port(ctx, ctx.head_host, init_port)

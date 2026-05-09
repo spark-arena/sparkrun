@@ -53,7 +53,7 @@ def test_atlas_generate_command_structured():
     )
 
     cmd = runtime.generate_command(recipe, {}, is_cluster=False)
-    assert cmd.startswith("atlas serve Sehyo/Qwen3.5-35B-A3B-NVFP4")
+    assert cmd.startswith("spark serve Sehyo/Qwen3.5-35B-A3B-NVFP4")
     assert "--port 8888" in cmd
     assert "--max-seq-len 8192" in cmd
     assert "--kv-cache-dtype nvfp4" in cmd
@@ -203,22 +203,27 @@ def test_atlas_compute_required_nodes_orthogonal_tp_ep():
 
 
 def test_atlas_cluster_env_includes_rdma():
-    """Cluster env mirrors the validated GB10 RoCEv2 NCCL settings."""
+    """Cluster env mirrors the validated GB10 RoCEv2 NCCL settings.
+
+    NCCL_SOCKET_IFNAME / NCCL_IB_HCA are populated by IB detection (cluster
+    config), not hardcoded here, so this test only asserts the runtime-level
+    constants that ride alongside.
+    """
     runtime = AtlasRuntime()
     env = runtime.get_cluster_env(head_ip="10.0.0.1", num_nodes=2)
-    assert env["NCCL_IB_HCA"] == "rocep1s0f0"
+    assert env["NCCL_IB_DISABLE"] == "0"
     assert env["NCCL_IB_ROCE_VERSION_NUM"] == "2"
     assert env["NCCL_PROTO"] == "Simple"
+    assert "NCCL_IB_HCA" not in env  # comes from comm_env detection
 
 
-def test_atlas_extra_docker_opts_include_infiniband():
-    """RDMA + io_uring + IPC_LOCK opts required by Atlas's storage and NCCL paths."""
+def test_atlas_extra_docker_opts_include_required_capabilities():
+    """IPC_LOCK / SYS_NICE / unconfined seccomp required by NCCL + io_uring paths."""
     runtime = AtlasRuntime()
     opts = runtime.get_extra_docker_opts()
     joined = " ".join(opts)
-    assert "/dev/infiniband" in joined
     assert "IPC_LOCK" in joined
-    assert "memlock=-1" in joined
+    assert "SYS_NICE" in joined
     assert "seccomp=unconfined" in joined
 
 
@@ -236,3 +241,56 @@ def test_atlas_validate_recipe_no_model():
     issues = runtime.validate_recipe(recipe)
     assert len(issues) == 1
     assert "model is required" in issues[0]
+
+
+# --- Bool flag stripping (regression: bool flags were not stripped from
+# rendered command templates because they lived in a separate map) ---
+
+
+def test_atlas_skip_keys_strips_bool_flag_synthesized():
+    """Synthesized commands respect skip_keys for bool flags."""
+    runtime = AtlasRuntime()
+    recipe = _recipe(defaults={"speculative": True, "enable_prefix_caching": True})
+    cmd = runtime.generate_command(recipe, {}, is_cluster=False, skip_keys={"speculative"})
+    assert "--speculative" not in cmd
+    assert "--enable-prefix-caching" in cmd
+
+
+def test_atlas_skip_keys_strips_bool_flag_from_template():
+    """Recipes with explicit command templates also strip bool flags via skip_keys."""
+    runtime = AtlasRuntime()
+    recipe = _recipe(
+        command="spark serve {model} --port {port} --enable-prefix-caching --speculative",
+        defaults={"port": 9000, "speculative": True, "enable_prefix_caching": True},
+    )
+    cmd = runtime.generate_command(recipe, {}, is_cluster=False, skip_keys={"enable_prefix_caching"})
+    assert "--enable-prefix-caching" not in cmd
+    assert "--speculative" in cmd
+
+
+def test_atlas_skip_keys_strips_bool_flag_from_node_command():
+    """generate_node_command's strip path covers bool flags too."""
+    runtime = AtlasRuntime()
+    recipe = _recipe(
+        command="spark serve {model} --port {port} --high-speed-swap",
+        defaults={"port": 9000, "high_speed_swap": True},
+    )
+    head = runtime.generate_node_command(
+        recipe,
+        {},
+        head_ip="10.0.0.1",
+        num_nodes=2,
+        node_rank=0,
+        init_port=29500,
+        skip_keys={"high_speed_swap"},
+    )
+    assert "--high-speed-swap" not in head
+
+
+def test_atlas_bool_flag_falsy_omitted():
+    """Bool flags with falsy values are not emitted (regression for ext_parse_bool)."""
+    runtime = AtlasRuntime()
+    recipe = _recipe(defaults={"speculative": "false", "enable_prefix_caching": 0})
+    cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+    assert "--speculative" not in cmd
+    assert "--enable-prefix-caching" not in cmd

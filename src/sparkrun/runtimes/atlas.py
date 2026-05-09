@@ -1,6 +1,6 @@
-"""Native Atlas Spark runtime for sparkrun.
+"""Atlas runtime for sparkrun.
 
-Atlas (https://github.com/avarok-tech/atlas) is a pure-Rust LLM inference
+Atlas (https://github.com/Avarok-Cybersecurity/atlas) is a pure-Rust LLM inference
 server. It bootstraps multi-rank deployments via NCCL using
 ``--rank``/``--world-size``/``--master-addr``/``--master-port`` flags,
 without Ray. This runtime therefore uses the ``"native"`` clustering
@@ -34,11 +34,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-
 # Standardized sparkrun config keys → Atlas CLI flags.
 # Keys here follow the conventions documented in RECIPES.md "Common
 # Defaults Keys" so that recipes are portable across runtimes where
-# possible.
+# possible.  Boolean toggles are listed in `_ATLAS_BOOL_FLAGS` and emit
+# only the flag (no value).
 _ATLAS_FLAG_MAP = {
     # Sparkrun standard keys
     "port": "--port",
@@ -50,8 +50,8 @@ _ATLAS_FLAG_MAP = {
     "max_num_batched_tokens": "--max-prefill-tokens",
     "served_model_name": "--model-name",
     "kv_cache_dtype": "--kv-cache-dtype",
+    "ep_size": "--ep-size",  # TODO: change to expert_parallel after alias config [FUTURE]
     # Atlas-specific keys (passed through as-is)
-    "ep_size": "--ep-size",
     "max_batch_size": "--max-batch-size",
     "block_size": "--block-size",
     "kv_high_precision_layers": "--kv-high-precision-layers",
@@ -73,24 +73,8 @@ _ATLAS_FLAG_MAP = {
     "model_from_path": "--model-from-path",
     "cache_dir": "--cache-dir",
     "gpu_ordinal": "--gpu-ordinal",
-}
-
-# Boolean flags — present when truthy, omitted otherwise.
-_ATLAS_BOOL_FLAGS = {
-    "enable_prefix_caching",
-    "speculative",
-    "self_speculative",
-    "ngram_speculative",
-    "dflash",
-    "disable_thinking",
-    "high_speed_swap",
-    "require_auth",
-    # `trust_remote_code` is accepted as a no-op so cross-runtime recipes
-    # don't need to special-case Atlas. Atlas always loads from the local
-    # HF cache and doesn't execute remote code.
-}
-
-_ATLAS_BOOL_TO_FLAG = {
+    # Boolean toggles — present when truthy, omitted otherwise.  Listed
+    # in `_ATLAS_BOOL_FLAGS` so build/strip helpers treat them correctly.
     "enable_prefix_caching": "--enable-prefix-caching",
     "speculative": "--speculative",
     "self_speculative": "--self-speculative",
@@ -100,6 +84,19 @@ _ATLAS_BOOL_TO_FLAG = {
     "high_speed_swap": "--high-speed-swap",
     "require_auth": "--require-auth",
 }
+
+_ATLAS_BOOL_FLAGS = frozenset(
+    {
+        "enable_prefix_caching",
+        "speculative",
+        "self_speculative",
+        "ngram_speculative",
+        "dflash",
+        "disable_thinking",
+        "high_speed_swap",
+        "require_auth",
+    }
+)
 
 
 class AtlasRuntime(RuntimePlugin):
@@ -118,6 +115,10 @@ class AtlasRuntime(RuntimePlugin):
     def cluster_strategy(self) -> str:
         """Atlas handles its own multi-rank distribution via NCCL, not Ray."""
         return "native"
+
+    def prefer_ib_for_init_addr(self) -> bool:
+        """Added to give option to usb IB IP for Atlas instead of MGMT IP during troubleshooting"""
+        return False
 
     def get_common_env(self):
         return default_env_hf_offline()
@@ -153,7 +154,7 @@ class AtlasRuntime(RuntimePlugin):
                     rendered,
                     skip_keys,
                     _ATLAS_FLAG_MAP,
-                    frozenset(_ATLAS_BOOL_TO_FLAG.keys()),
+                    _ATLAS_BOOL_FLAGS,
                 )
             return rendered
 
@@ -166,7 +167,7 @@ class AtlasRuntime(RuntimePlugin):
         head_ip: str,
         num_nodes: int,
         node_rank: int,
-        init_port: int = 25000,
+        init_port: int = 29500,
         skip_keys: set[str] | frozenset[str] = frozenset(),
         hosts: list[str] | None = None,
     ) -> str:
@@ -190,7 +191,7 @@ class AtlasRuntime(RuntimePlugin):
                     rendered,
                     skip_keys,
                     _ATLAS_FLAG_MAP,
-                    frozenset(_ATLAS_BOOL_TO_FLAG.keys()),
+                    _ATLAS_BOOL_FLAGS,
                 )
             base = rendered
         else:
@@ -219,7 +220,7 @@ class AtlasRuntime(RuntimePlugin):
         Worker ranks (node_rank > 0) override ``--port 0`` to suppress HTTP
         binding; only the head exposes the OpenAI API.
         """
-        parts = ["atlas", "serve", recipe.model]
+        parts = ["spark", "serve", recipe.model]
 
         skip = set(skip_keys)
         # Worker ranks always bind --port 0 regardless of the recipe value.
@@ -231,20 +232,10 @@ class AtlasRuntime(RuntimePlugin):
             self.build_flags_from_map(
                 config,
                 _ATLAS_FLAG_MAP,
-                bool_keys=frozenset(),
+                bool_keys=_ATLAS_BOOL_FLAGS,
                 skip_keys=skip,
             )
         )
-
-        # Boolean toggles use a separate map so we control flag spelling.
-        for key, flag in _ATLAS_BOOL_TO_FLAG.items():
-            if key in skip:
-                continue
-            value = config.get(key)
-            if value is None:
-                continue
-            if _coerce_bool(value):
-                parts.append(flag)
 
         return " ".join(parts)
 
@@ -261,8 +252,9 @@ class AtlasRuntime(RuntimePlugin):
         """Build the head-rank command, including coordination flags in cluster mode."""
         base = self._build_base_command(recipe, config, node_rank=node_rank, skip_keys=skip_keys)
 
+        init_port = int(config.get("init_port", 29500))
         if is_cluster and head_ip:
-            base += " --rank 0 --world-size %d --master-addr %s --master-port 29500" % (num_nodes, head_ip)
+            base += " --rank 0 --world-size %d --master-addr %s --master-port %d" % (num_nodes, head_ip, init_port)
 
         return base
 
@@ -301,9 +293,10 @@ class AtlasRuntime(RuntimePlugin):
         """
         return {
             **RuntimePlugin.get_cluster_env(self, head_ip, num_nodes),
-            "NCCL_SOCKET_IFNAME": "enp1s0f0np0",
+            # Interface/HCA should always come from cluster config -- IF THESE ARE NEEDED, then we need to do deeper work on NCCL
+            # "NCCL_SOCKET_IFNAME": "enp1s0f0np0",
+            # "NCCL_IB_HCA": "rocep1s0f0",
             "NCCL_IB_DISABLE": "0",
-            "NCCL_IB_HCA": "rocep1s0f0",
             "NCCL_IB_ROCE_VERSION_NUM": "2",
             "NCCL_IB_ADDR_FAMILY": "AF_INET",
             "NCCL_IB_TIMEOUT": "22",
@@ -329,12 +322,13 @@ class AtlasRuntime(RuntimePlugin):
         unblock ``ibv_reg_mr``; ``SYS_NICE`` is needed by the SQPOLL
         kernel thread.
         """
+        # TODO: this should transition to be executor_config pass-through [FUTURE; works well enough today]
         return [
-            "--device=/dev/infiniband",
+            # Allow bash
+            "--entrypoint",
+            '""',
             "--cap-add=IPC_LOCK",
             "--cap-add=SYS_NICE",
-            "--ulimit",
-            "memlock=-1",
             "--security-opt",
             "seccomp=unconfined",
         ]
@@ -343,7 +337,8 @@ class AtlasRuntime(RuntimePlugin):
 
     def version_commands(self) -> dict[str, str]:
         cmds = super().version_commands()
-        cmds["atlas"] = "atlas --version 2>/dev/null || echo unknown"
+        # TODO: atlas does not have versions; adjust later
+        cmds["atlas"] = "spark --version 2>/dev/null || echo unknown"
         return cmds
 
     # --- Cluster lifecycle ---
@@ -373,6 +368,7 @@ class AtlasRuntime(RuntimePlugin):
         dry_run: bool = False,
         detached: bool = True,
         comm_env: "ClusterCommEnv | None" = None,
+        ib_ip_map: dict[str, str] | None = None,
         init_port: int = 29500,
         skip_keys: set[str] | frozenset[str] = frozenset(),
         **kwargs,
@@ -391,6 +387,7 @@ class AtlasRuntime(RuntimePlugin):
             dry_run=dry_run,
             detached=detached,
             comm_env=comm_env,
+            ib_ip_map=ib_ip_map,
             init_port=init_port,
             skip_keys=skip_keys,
             banner_title="Atlas Cluster Launcher",
@@ -398,17 +395,6 @@ class AtlasRuntime(RuntimePlugin):
             node_label="atlas rank",
             **kwargs,
         )
-
-
-def _coerce_bool(value: Any) -> bool:
-    """Match SAF's truthy semantics for recipe defaults coming from YAML."""
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return value != 0
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on", "y", "t"}
-    return bool(value)
 
 
 def _coerce_int(value: Any, default: int) -> int:
