@@ -98,6 +98,13 @@ FALLBACK_DEFAULT_REGISTRIES = [
         description="Community recipe registry",
         visible=False,
     ),
+    RegistryEntry(
+        name="atlas",
+        url="https://github.com/Avarok-Cybersecurity/atlas-recipes.git",
+        subpath="recipes",
+        description="Atlas recipes",
+        visible=False,
+    ),
 ]
 
 # Git URLs whose .sparkrun/registry.yaml manifests are used for first-run
@@ -140,6 +147,33 @@ RESERVED_PREFIX_ALLOWED_ORGS = (
     "raphaelamorim",
 )
 
+# Specific registry names reserved for specific GitHub orgs (exact-match,
+# not prefix).  Org names must be lowercase to match :func:`_get_git_org`,
+# which lowercases the URL path component before returning.
+EXTERNAL_RESERVED_NAMES = {
+    "atlas": ("avarok-cybersecurity",),
+}
+
+
+def _get_git_org(url: str) -> str | None:
+    """Extract the GitHub organization from a git URL."""
+    # Extract GitHub org from URL
+    # noinspection PyBroadException
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        if parsed.hostname and parsed.hostname.lower() in ("github.com", "www.github.com"):
+            # Path is like /org/repo or /org/repo.git
+            parts = parsed.path.strip("/").split("/")
+            if parts:
+                org = parts[0].lower()
+                return org
+    except Exception:
+        pass
+
+    return None
+
 
 def validate_registry_name(name: str, url: str) -> None:
     """Raise RegistryError if name uses a reserved prefix from a non-allowed URL.
@@ -156,29 +190,30 @@ def validate_registry_name(name: str, url: str) -> None:
             from an allowed GitHub organization.
     """
     name_lower = name.lower()
+
+    # check specific EXTERNAL_RESERVED_NAMES entries
+    if name_lower in EXTERNAL_RESERVED_NAMES:
+        if _get_git_org(url) in EXTERNAL_RESERVED_NAMES[name_lower]:
+            return
+        else:
+            raise RegistryError(
+                "Registry name %s is reserved. Only GitHub organizations [%s] may use this prefix."
+                % (name, "|".join(EXTERNAL_RESERVED_NAMES[name_lower]))
+            )
+
+    # check for reserved prefixes
     matched_prefix = None
     for prefix in RESERVED_NAME_PREFIXES:
         if name_lower.startswith(prefix):
             matched_prefix = prefix
             break
-
     if matched_prefix is None:
         return
 
     # Extract GitHub org from URL
-    try:
-        from urllib.parse import urlparse
-
-        parsed = urlparse(url)
-        if parsed.hostname and parsed.hostname.lower() in ("github.com", "www.github.com"):
-            # Path is like /org/repo or /org/repo.git
-            parts = parsed.path.strip("/").split("/")
-            if parts:
-                org = parts[0].lower()
-                if org in RESERVED_PREFIX_ALLOWED_ORGS:
-                    return
-    except Exception:
-        pass
+    org = _get_git_org(url)
+    if org in RESERVED_PREFIX_ALLOWED_ORGS:
+        return
 
     allowed = ", ".join(RESERVED_PREFIX_ALLOWED_ORGS)
     raise RegistryError(
