@@ -278,8 +278,14 @@ class AtlasRuntime(RuntimePlugin):
 
         if tp == ep and tp > 1:
             # Overlapping groups: both TP and EP share the same ranks.
-            return tp
-        return tp * ep
+            result = tp
+        else:
+            result = tp * ep
+
+        if result > 1:
+            raise ValueError("Atlas runtime currently only supports single node. Support for multiple nodes is coming soon.")
+
+        return result
 
     # --- Cluster env ---
 
@@ -296,6 +302,9 @@ class AtlasRuntime(RuntimePlugin):
             # Interface/HCA should always come from cluster config -- IF THESE ARE NEEDED, then we need to do deeper work on NCCL
             # "NCCL_SOCKET_IFNAME": "enp1s0f0np0",
             # "NCCL_IB_HCA": "rocep1s0f0",
+            "NCCL_IB_GID_INDEX": "",  # clear
+            "NCCL_CROSS_NIC": "",  # clear
+            "NCCL_DEBUG": "INFO",
             "NCCL_IB_DISABLE": "0",
             "NCCL_IB_ROCE_VERSION_NUM": "2",
             "NCCL_IB_ADDR_FAMILY": "AF_INET",
