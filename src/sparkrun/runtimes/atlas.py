@@ -282,8 +282,8 @@ class AtlasRuntime(RuntimePlugin):
         else:
             result = tp * ep
 
-        # if result > 1:
-        #     raise ValueError("Atlas runtime currently only supports single node. Support for multiple nodes is coming soon.")
+        if result > 1:
+            raise ValueError("Atlas runtime currently only supports single node. Support for multiple nodes is coming soon.")
 
         return result
 
