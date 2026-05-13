@@ -38,6 +38,7 @@ class RegistryEntry:
         visible: If False, recipes hidden from default listings
         tuning_subpath: Path within repo for tuning configs
         benchmark_subpath: Path within repo for benchmark profiles
+        mods_subpath: Path within repo for shared mods (run.sh + supporting files)
     """
 
     name: str
@@ -48,6 +49,7 @@ class RegistryEntry:
     visible: bool = True
     tuning_subpath: str = ""
     benchmark_subpath: str = ""
+    mods_subpath: str = ""
 
 
 FALLBACK_DEFAULT_REGISTRIES = [
@@ -74,6 +76,7 @@ FALLBACK_DEFAULT_REGISTRIES = [
         url="https://github.com/eugr/spark-vllm-docker",
         subpath="recipes",
         description="Official eugr/spark-vllm-docker repo recipes",
+        mods_subpath="mods",
         visible=True,
     ),
     RegistryEntry(
@@ -365,6 +368,7 @@ class RegistryManager:
                 visible=r.get("visible", True),
                 tuning_subpath=r.get("tuning_subpath", ""),
                 benchmark_subpath=r.get("benchmark_subpath", ""),
+                mods_subpath=r.get("mods_subpath", ""),
             )
             for r in registries
         ]
@@ -416,6 +420,8 @@ class RegistryManager:
                 d["tuning_subpath"] = e.tuning_subpath
             if e.benchmark_subpath:
                 d["benchmark_subpath"] = e.benchmark_subpath
+            if e.mods_subpath:
+                d["mods_subpath"] = e.mods_subpath
             data_list.append(d)
 
         data = {"registries": data_list}
@@ -448,13 +454,15 @@ class RegistryManager:
         """Build the sparse-checkout path list for a single registry entry.
 
         Always includes the recipe subpath and ``.sparkrun`` (for manifests).
-        Tuning and benchmark subpaths are added when configured.
+        Tuning, benchmark, and mods subpaths are added when configured.
         """
         paths = [entry.subpath]
         if entry.tuning_subpath:
             paths.append(entry.tuning_subpath)
         if entry.benchmark_subpath:
             paths.append(entry.benchmark_subpath)
+        if entry.mods_subpath:
+            paths.append(entry.mods_subpath)
         paths.append(".sparkrun")
         return paths
 
@@ -768,6 +776,7 @@ class RegistryManager:
                     visible=reg_data.get("visible", True),
                     tuning_subpath=reg_data.get("tuning_subpath", reg_data.get("tuning", "")),
                     benchmark_subpath=reg_data.get("benchmark_subpath", reg_data.get("benchmarks", "")),
+                    mods_subpath=reg_data.get("mods_subpath", reg_data.get("mods", "")),
                 )
                 for reg_data in registries_data
             ]
@@ -1310,6 +1319,84 @@ class RegistryManager:
                         }
                     )
         return configs
+
+    def _mods_dir(self, entry: RegistryEntry) -> Path | None:
+        """Get the mods directory within a cached registry.
+
+        Args:
+            entry: Registry entry
+
+        Returns:
+            Path to the mods directory, or None if not configured/available
+        """
+        if not entry.mods_subpath:
+            return None
+        cache_dir = self._cache_dir(entry.name)
+        mods_path = cache_dir / entry.mods_subpath
+        return mods_path if mods_path.exists() else None
+
+    def ensure_registry_on_host(
+        self,
+        name: str,
+        host: str,
+        ssh_kwargs: dict | None = None,
+        dry_run: bool = False,
+    ) -> str:
+        """Clone or update a registry's git repo on a remote head node.
+
+        Used by delegated-mode flows that need registry-backed resources
+        (e.g. mods) to live on the head node rather than the control
+        machine. Mirrors the local clone layout under
+        ``~/.cache/sparkrun/registries/_url_<hash>/`` on the remote host
+        with sparse-checkout configured for the union of all subpaths
+        declared by registries sharing this URL.
+
+        Args:
+            name: Registry name (used to look up the URL and subpaths).
+            host: Remote head node hostname.
+            ssh_kwargs: SSH connection kwargs.
+            dry_run: When True, return the would-be path without acting.
+
+        Returns:
+            Absolute path on the remote host where the registry is checked out.
+        """
+        import hashlib
+
+        from sparkrun.orchestration.primitives import run_script_on_host
+        from sparkrun.utils.shell import quote
+
+        entry = self.get_registry(name)
+        sparse_paths = self._sparse_checkout_paths_for_url(entry.url)
+        url_hash = hashlib.sha256(entry.url.encode()).hexdigest()[:12]
+        remote_clone_dir = "~/.cache/sparkrun/registries/_url_%s" % url_hash
+        sparse_args = " ".join(quote(p) for p in sparse_paths) if sparse_paths else ""
+
+        script = (
+            "set -e\n"
+            "REPO_DIR=%(path)s\n"
+            'if [ -d "$REPO_DIR/.git" ]; then\n'
+            '  git -C "$REPO_DIR" fetch origin\n'
+            '  git -C "$REPO_DIR" reset --hard FETCH_HEAD\n'
+            "else\n"
+            '  mkdir -p "$(dirname "$REPO_DIR")"\n'
+            '  git clone --filter=blob:none --sparse %(url)s "$REPO_DIR"\n'
+            "fi\n"
+        ) % {"path": remote_clone_dir, "url": quote(entry.url)}
+        if sparse_args:
+            script += 'git -C "$REPO_DIR" sparse-checkout set %s\n' % sparse_args
+        script += 'echo "$REPO_DIR"\n'
+
+        logger.info("Ensuring registry %r on head node %s...", name, host)
+        if dry_run:
+            return remote_clone_dir
+
+        result = run_script_on_host(host, script, ssh_kwargs=ssh_kwargs, timeout=180)
+        if not result.success:
+            raise RegistryError(
+                "Failed to ensure registry %r on %s: %s" % (name, host, result.stderr.strip() if result.stderr else "(no output)")
+            )
+        # Strip trailing newlines and return the resolved path
+        return result.stdout.strip() if result.stdout else remote_clone_dir
 
     def _benchmark_dir(self, entry: RegistryEntry) -> Path | None:
         """Get benchmark directory within a cached registry.

@@ -108,12 +108,13 @@ def _fetch_upstream_wheel_hashes() -> dict[str, str]:
 
 
 class EugrBuilder(BuilderPlugin):
-    """Builder for eugr-style container images with mod support.
+    """Builder for eugr-style container images.
 
-    Handles:
-    - Building container images via eugr's ``build-and-copy.sh``
-    - Converting recipe ``mods`` into ``pre_exec`` entries for the
-      hooks system to execute at container launch time.
+    Builds container images via eugr's ``build-and-copy.sh``.
+
+    Note: generic mod support (recipe ``mods:`` → ``pre_exec`` entries)
+    is handled centrally by :mod:`sparkrun.core.mods`, not by this
+    builder.
     """
 
     builder_name = "eugr"
@@ -136,12 +137,10 @@ class EugrBuilder(BuilderPlugin):
         transfer_mode: str = "local",
         ssh_kwargs: dict | None = None,
     ) -> str:
-        """Build container image and inject mod pre_exec commands.
+        """Build the eugr container image when needed.
 
         If the recipe has ``build_args`` in runtime_config, builds
-        the container via eugr's ``build-and-copy.sh``.  If the recipe
-        has ``mods``, converts them to ``pre_exec`` entries that the
-        hook system will execute at container launch time.
+        the container via eugr's ``build-and-copy.sh``.
 
         In delegated mode (``transfer_mode="delegated"``), the build
         and repo clone happen on the **head node** via SSH rather than
@@ -163,8 +162,6 @@ class EugrBuilder(BuilderPlugin):
         logger.debug("eugr prepare_image: transfer_mode=%s, delegated=%s", transfer_mode, delegated)
         head = hosts[0] if hosts else "localhost"
         build_args = recipe.runtime_config.get("build_args", [])
-        mods = recipe.runtime_config.get("mods", [])
-        has_mods = bool(mods)
         needs_build = False  # assume False at first
 
         # ~~ SPECIAL CASES: map pullable eugr nightly images to use direct build ~~~
@@ -208,14 +205,14 @@ class EugrBuilder(BuilderPlugin):
                 else:
                     logger.info("image '%s' not found locally; will build", image)
 
-        # nothing eugr-specific to prepare -- no build, no mods
-        if not needs_build and not has_mods:
+        # nothing eugr-specific to prepare -- no build
+        if not needs_build:
             return image
 
         # Resolve optional branch override from builder_config
         branch = recipe.builder_config.get("branch") if recipe.builder_config else None
 
-        # Ensure repo is available (for build script and/or mods)
+        # Ensure repo is available (for build script)
         if delegated:
             remote_repo = self._ensure_repo_remote(head, ssh_kwargs, dry_run=dry_run, branch=branch)
             self._repo_dir = Path(remote_repo)
@@ -246,11 +243,6 @@ class EugrBuilder(BuilderPlugin):
                 self._build_image(image, build_args, dry_run)
                 if not dry_run:
                     self._save_build_metadata(image, build_args, config)
-
-        # Convert mods to pre_exec entries
-        if has_mods:
-            source_host = head if delegated else None
-            self._inject_mod_pre_exec(recipe, mods, source_host=source_host)
 
         # TODO: potentially inject metadata flags as needed into recipe?
         return image
@@ -477,54 +469,6 @@ class EugrBuilder(BuilderPlugin):
             return resolved
 
         return None
-
-    # --- Mod -> pre_exec conversion ---
-
-    def _inject_mod_pre_exec(
-        self,
-        recipe: Recipe,
-        mods: list[str],
-        source_host: str | None = None,
-    ) -> None:
-        """Convert mod entries to pre_exec commands on the recipe.
-
-        Each mod is a directory containing a ``run.sh`` script.  The
-        conversion produces two pre_exec entries per mod:
-        1. A dict with ``copy`` key — file injection via docker cp
-        2. A string — execute run.sh inside the container
-
-        Args:
-            recipe: Recipe instance (pre_exec list is mutated).
-            mods: List of mod directory names relative to repo root.
-            source_host: When set (delegated mode), the ``copy`` entry
-                gets a ``source_host`` key so the hooks system knows
-                where the source files live.
-        """
-        if not self._repo_dir:
-            logger.warning("Cannot inject mods without a repo dir")
-            return
-
-        for mod_name in mods:
-            # Strip leading 'mods/' if present — recipes may specify either
-            # "fix-something" or "mods/fix-something"; normalise to avoid
-            # doubling the path component.
-            clean_name = mod_name.removeprefix("mods/")
-            mod_path = self._repo_dir / "mods" / clean_name
-            mod_basename = Path(clean_name).name
-            dest = "/workspace/mods/%s" % mod_basename
-
-            # Add copy entry (docker cp source into container)
-            copy_entry: dict[str, str] = {
-                "copy": str(mod_path),
-                "dest": dest,
-            }
-            if source_host is not None:
-                copy_entry["source_host"] = source_host
-            recipe.pre_exec.append(copy_entry)
-            # Add exec entry (run the mod script with WORKSPACE_DIR set)
-            recipe.pre_exec.append("export WORKSPACE_DIR=$PWD && cd %s && chmod +x run.sh && ./run.sh" % dest)
-
-        logger.info("Injected %d mod(s) as pre_exec entries", len(mods))
 
     # --- Build cache ---
 

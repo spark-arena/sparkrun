@@ -913,25 +913,8 @@ class TestEugrPrepare:
                     # subprocess.run should not be called in dry-run
                     mock_run.assert_not_called()
 
-    def test_prepare_injects_mod_pre_exec(self, eugr_builder):
-        """prepare_image() injects mod entries into recipe.pre_exec."""
-        builder, repo_dir = eugr_builder
-        recipe = Recipe.from_dict(
-            {
-                "name": "test",
-                "model": "some-model",
-                "runtime": "eugr-vllm",
-                "runtime_config": {"mods": ["mods/flash-attn"]},
-            }
-        )
-        with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=True):
-            with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
-                builder.prepare_image("vllm-node", recipe, ["10.0.0.1"])
-                # Should have injected copy + exec entries
-                assert len(recipe.pre_exec) == 2
-                assert isinstance(recipe.pre_exec[0], dict)
-                assert "copy" in recipe.pre_exec[0]
-                assert "run.sh" in recipe.pre_exec[1]
+    # Note: mod -> pre_exec injection moved out of the eugr builder into the
+    # generic core/mods.py resolver. See tests/test_mods.py for that coverage.
 
     def test_prepare_build_failure_raises(self, eugr_builder):
         """prepare_image() raises RuntimeError on build failure."""
