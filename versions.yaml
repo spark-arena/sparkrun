@@ -6,6 +6,17 @@ sparkrun: 0.2.32
 sparkrun-cc-plugin: 0.0.4
 sparkrun-openclaw-plugin: 0.0.1
 
+# Prefer pinned versions to avoid supply chain attacks.
+preferred_versions:
+  python:
+    "scitrera-app-framework": "0.0.69"
+    "vpd": "0.9.13"
+    "six": "1.17.0" # transitive dependency of vpd but we pin the version for security reasons
+    "click": "8.3.3"
+    "pyyaml": "6.0.3"
+    "huggingface_hub": "1.14.0"
+    "textual": "8.2.5"
+
 project_rules:
   sparkrun:
     - { type: pyproject, path: pyproject.toml }
