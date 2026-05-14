@@ -1,7 +1,17 @@
-# Authoritative versions for all sparkrun packages
-# Run: python scripts/update-versions.py to sync all files
-# Run: python scripts/update-versions.py --check to verify (CI-friendly)
+# Authoritative versions for all sparkrun packages.
+# Run: python scripts/update-versions.py             to sync all files
+# Run: python scripts/update-versions.py --check     to verify (CI-friendly)
 
 sparkrun: 0.2.32
 sparkrun-cc-plugin: 0.0.4
 sparkrun-openclaw-plugin: 0.0.1
+
+project_rules:
+  sparkrun:
+    - { type: pyproject, path: pyproject.toml }
+  sparkrun-cc-plugin:
+    - { type: plugin,      path: sparkrun-cc-plugin/.claude-plugin/plugin.json }
+    - { type: marketplace, path: .claude-plugin/marketplace.json, args: [ sparkrun-cc-plugin ] }
+  sparkrun-openclaw-plugin:
+    - { type: package, path: sparkrun-openclaw-plugin/package.json }
+    - { type: plugin,  path: sparkrun-openclaw-plugin/openclaw.plugin.json }
