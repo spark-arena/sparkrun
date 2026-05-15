@@ -39,6 +39,24 @@ EXECUTOR_DEFAULTS = {
 }
 
 
+def accelerator_vendor_for(host_hardware) -> str | None:
+    """Return the single shared accelerator vendor on *host_hardware*, or ``None``.
+
+    Used by per-host executor config resolution to decide whether to
+    emit NVIDIA ``--gpus``, ROCm device flags, etc.  Returns ``None``
+    when the host has zero accelerators or advertises more than one
+    vendor (e.g. an Apple M5 host with a discrete NVIDIA GPU); the
+    caller is expected to fall back to recipe-level overrides or refuse
+    to auto-pack.
+    """
+    if host_hardware is None:
+        return None
+    vendors = getattr(host_hardware, "vendors", None)
+    if not vendors or len(vendors) != 1:
+        return None
+    return next(iter(vendors))
+
+
 @dataclass
 class ExecutorConfig:
     """Typed view of resolved executor settings.
@@ -61,6 +79,21 @@ class ExecutorConfig:
     devices: list[str] | None = None
     memory_limit: str | None = None
     labels: list[str] | None = None
+    accelerator_vendor: str | None = None
+    """Per-host accelerator vendor that drives device-flag emission.
+
+    ``None`` (default) preserves legacy NVIDIA behavior: the executor
+    emits ``--gpus <gpus>``.  Set to ``"nvidia"`` explicitly when a
+    per-host config is computed from :class:`HostHardware`.  Other
+    supported values:
+
+    - ``"amd"``: ROCm — emits ``--device /dev/kfd --device /dev/dri --group-add video``.
+    - ``"intel"``: Intel Gaudi — emits ``--device /dev/accel``.
+    - ``"apple"`` / ``"cpu"``: no device flag (Apple MLX requires a
+      non-Docker executor; this leaves CPU-only containers untouched).
+
+    For all non-NVIDIA values, ``gpus`` is ignored.
+    """
 
     @classmethod
     def from_chain(cls, chain) -> ExecutorConfig:
