@@ -17,6 +17,43 @@ logger = logging.getLogger(__name__)
 class DockerExecutor(Executor):
     """Docker-based executor for container operations."""
 
+    def _accelerator_opts(self) -> list[str]:
+        """Emit accelerator device flags based on ``config.accelerator_vendor``.
+
+        - ``None`` (default) or ``"nvidia"`` → ``--gpus <cfg.gpus>``
+          (legacy behavior; output is byte-identical to pre-Phase-4).
+        - ``"amd"`` → ROCm device + render-group flags.
+        - ``"intel"`` → Intel Gaudi device flag.
+        - ``"apple"`` / ``"cpu"`` → no device flag.  Apple MLX cannot
+          run inside Docker; callers should route such hosts to a
+          non-Docker executor (future Phase).
+        """
+        cfg = self.config
+        vendor = (cfg.accelerator_vendor or "").lower()
+
+        if not vendor or vendor == "nvidia":
+            if cfg.gpus:
+                return ["--gpus", quote(cfg.gpus)]
+            return []
+        if vendor == "amd":
+            return [
+                "--device",
+                "/dev/kfd",
+                "--device",
+                "/dev/dri",
+                "--group-add",
+                "video",
+            ]
+        if vendor == "intel":
+            return ["--device", "/dev/accel"]
+        if vendor in ("apple", "cpu"):
+            return []
+        logger.warning(
+            "DockerExecutor: unknown accelerator_vendor %r — emitting no device flag",
+            cfg.accelerator_vendor,
+        )
+        return []
+
     def _build_default_opts(self) -> list[str]:
         """Build the default ``docker run`` option list from config."""
         cfg = self.config
@@ -24,8 +61,7 @@ class DockerExecutor(Executor):
 
         if cfg.privileged:
             opts.append("--privileged")
-        if cfg.gpus:
-            opts.extend(["--gpus", quote(cfg.gpus)])
+        opts.extend(self._accelerator_opts())
         if cfg.ipc:
             opts.append("--ipc=%s" % quote(cfg.ipc))
         if cfg.shm_size:
