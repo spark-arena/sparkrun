@@ -118,6 +118,13 @@ class AtlasRuntime(RuntimePlugin):
     runtime_name = "atlas"
     default_image_prefix = "avarok/atlas-gb10"
 
+    # Atlas's NCCL constants in get_cluster_env() are validated for the
+    # DGX Spark GB10 RoCEv2 fabric.  Generalising them is its own
+    # workstream; until then, gate to GB10 hosts so other accelerators
+    # surface an actionable compatibility error rather than a silent
+    # NCCL misconfiguration.
+    requires_capability = frozenset({"gb10"})
+
     def cluster_strategy(self) -> str:
         """Atlas handles its own multi-rank distribution via NCCL, not Ray."""
         return "native"
@@ -238,6 +245,7 @@ class AtlasRuntime(RuntimePlugin):
         init_port: int = 29500,
         skip_keys: set[str] | frozenset[str] = frozenset(),
         hosts: list[str] | None = None,
+        placement=None,
     ) -> str:
         """Generate the per-rank ``atlas serve`` command.
 
@@ -329,7 +337,7 @@ class AtlasRuntime(RuntimePlugin):
 
     # --- Parallelism ---
 
-    def compute_required_nodes(self, recipe: Recipe, overrides: dict[str, Any] | None = None) -> int | None:
+    def compute_required_nodes(self, recipe: Recipe, overrides: dict[str, Any] | None = None, *, cluster=None) -> int | None:
         """Atlas world_size = max(tp*ep, tp, ep).
 
         Atlas supports overlapping ``tp == ep`` topology (both groups
