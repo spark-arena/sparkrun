@@ -242,9 +242,23 @@ def display_recipe_detail(recipe, show_vram=True, registry_name=None, cli_overri
         display_vram_estimate(recipe, cli_overrides=cli_overrides, cache_dir=cache_dir)
 
 
-def display_vram_estimate(recipe, cli_overrides=None, auto_detect=True, cache_dir=None):
-    """Display VRAM estimation for a recipe."""
-    from sparkrun.models.vram import DGX_SPARK_VRAM_GB
+def display_vram_estimate(
+    recipe,
+    cli_overrides=None,
+    auto_detect=True,
+    cache_dir=None,
+    cluster=None,
+    placement=None,
+):
+    """Display VRAM estimation for a recipe.
+
+    When *cluster* is provided, also render a per-host fit table using
+    :func:`sparkrun.models.fit.check_fit`.  When *placement* is also
+    provided, the per-host walk follows the placed rank set rather than
+    every cluster host.  Legacy DGX-Spark single-line fit remains in
+    the output for back-compat.
+    """
+    from sparkrun.models.vram import DEFAULT_VRAM_GB
 
     try:
         est = recipe.estimate_vram(cli_overrides=cli_overrides, auto_detect=auto_detect, cache_dir=cache_dir)
@@ -267,7 +281,7 @@ def display_vram_estimate(recipe, cli_overrides=None, auto_detect=True, cache_di
     if est.pipeline_parallel > 1:
         click.echo(f"  Pipeline parallel: {est.pipeline_parallel}")
     click.echo(f"  Per-GPU total:    {est.total_per_gpu_gb:.2f} GB")
-    fit_str = "YES" if est.fits_dgx_spark else "EXCEEDS %.0f GB" % DGX_SPARK_VRAM_GB
+    fit_str = "YES" if est.fits_dgx_spark else "EXCEEDS %.0f GB" % DEFAULT_VRAM_GB
     click.echo(f"  DGX Spark fit:    {fit_str}")
 
     # GPU memory budget analysis
@@ -275,7 +289,7 @@ def display_vram_estimate(recipe, cli_overrides=None, auto_detect=True, cache_di
         click.echo("\n  GPU Memory Budget:")
         click.echo(f"    gpu_memory_utilization: {est.gpu_memory_utilization:.0%}")
         click.echo(
-            f"    Usable GPU memory:     {est.usable_gpu_memory_gb:.1f} GB ({DGX_SPARK_VRAM_GB:.0f} GB x {est.gpu_memory_utilization:.0%})"
+            f"    Usable GPU memory:     {est.usable_gpu_memory_gb:.1f} GB ({DEFAULT_VRAM_GB:.0f} GB x {est.gpu_memory_utilization:.0%})"
         )
         click.echo(f"    Available for KV:      {est.available_kv_gb:.1f} GB")
         if est.max_context_tokens is not None:
@@ -287,6 +301,33 @@ def display_vram_estimate(recipe, cli_overrides=None, auto_detect=True, cache_di
 
     for w in est.warnings:
         click.echo(f"  Warning: {w}")
+
+    # Per-host cluster fit (Phase X.1) — only when caller threaded
+    # a cluster and a placement through.  Skipped on the legacy
+    # "loose host list" path so the existing DGX output stays intact.
+    if cluster is not None and placement is not None and placement.hosts_used:
+        from sparkrun.models.fit import check_fit
+
+        try:
+            fit = check_fit(est, cluster, placement)
+        except Exception as e:
+            click.echo(f"  Per-host fit check skipped: {e}")
+            return
+
+        click.echo("\n  Per-host fit:")
+        for host, detail in fit.per_host.items():
+            if detail.accelerator_memory_gb is None:
+                click.echo(f"    {host}: ranks={detail.ranks_assigned}, accelerator memory unknown")
+            else:
+                marker = "OK" if detail.ok else "EXCEEDS"
+                click.echo(
+                    f"    {host}: ranks={detail.ranks_assigned}, "
+                    f"per-rank={detail.vram_per_rank_gb:.1f} GB, "
+                    f"accelerator={detail.accelerator_memory_gb:.1f} GB, "
+                    f"headroom={detail.headroom_gb:.1f} GB [{marker}]"
+                )
+        for w in fit.warnings:
+            click.echo(f"  Warning: {w}")
 
 
 def format_monitor_table(
