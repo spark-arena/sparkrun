@@ -16,6 +16,8 @@ from vpd.next.util import read_yaml
 from vpd.legacy.arguments import arg_substitute
 from scitrera_app_framework.api import Variables, EnvPlacement
 
+from sparkrun.core.layout import RecipeLayout
+
 if TYPE_CHECKING:
     from sparkrun.core.registry import RegistryManager
     from sparkrun.models.vram import VRAMEstimate
@@ -64,6 +66,7 @@ _KNOWN_KEYS = {
     "builder_config",
     "executor_config",
     "distribution_config",
+    "layout",
 }
 
 
@@ -662,6 +665,11 @@ class Recipe:
         # Distribution config (auto-generated default, mutable by runtimes)
         self.distribution_config: DistributionConfig = _parse_distribution_config(data)
 
+        # Explicit placement layout for heterogeneous clusters (optional).
+        # Parsed permissively in Phase 1; placement engine in Phase 2 will validate.
+        raw_layout = data.get("layout")
+        self.layout: RecipeLayout | None = RecipeLayout.from_dict(raw_layout) if isinstance(raw_layout, dict) else None
+
         # Applied overrides (populated by resolve())
         self._applied_overrides: dict[str, Any] = {}
 
@@ -1096,6 +1104,7 @@ class Recipe:
             "builder_config": dict(self.builder_config),
             "executor_config": dict(self.executor_config),
             "distribution_config": dataclass_asdict(self.distribution_config),
+            "layout": self.layout.to_dict() if self.layout else None,
             "_applied_overrides": dict(self._applied_overrides),
             "_raw": dict(self._raw),
         }
@@ -1135,6 +1144,8 @@ class Recipe:
         self._applied_overrides = dict(state.get("_applied_overrides") or {})
         dist_cfg: dict | None = state.get("distribution_config", None)
         self.distribution_config = _parse_distribution_config(self._raw) if dist_cfg is None else DistributionConfig.from_dict(dist_cfg)
+        layout_state = state.get("layout")
+        self.layout = RecipeLayout.from_dict(layout_state) if isinstance(layout_state, dict) else None
 
     @classmethod
     def _deserialize(cls, data: dict[str, Any]) -> Recipe:
@@ -1179,6 +1190,7 @@ class Recipe:
         "container",
         "solo_only",
         "cluster_only",
+        "layout",
         "metadata",
         "build_args",
         "mods",
@@ -1228,6 +1240,12 @@ class Recipe:
             d["solo_only"] = True
         if self._raw.get("cluster_only"):
             d["cluster_only"] = True
+
+        # -- Explicit placement layout (Phase 1; optional) --
+        if self.layout is not None:
+            layout_dict = self.layout.to_dict()
+            if layout_dict:
+                d["layout"] = layout_dict
 
         # -- Metadata (absorb promoted keys) --
         d["metadata"] = meta = dict(self.metadata)

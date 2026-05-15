@@ -37,7 +37,15 @@ class ParallelismConfig:
 
     @property
     def total_nodes(self) -> int:
-        """Total nodes required on DGX Spark (1 GPU per node) = tp * pp * dp."""
+        """Total nodes required *assuming 1 GPU per host* = tp * pp * dp.
+
+        .. deprecated:: phase-2
+            Equivalent to :attr:`total_gpus`; correct only for clusters
+            where every host has exactly one accelerator (e.g. DGX Spark).
+            For multi-GPU hosts or heterogeneous clusters use
+            :func:`sparkrun.core.placement.compute_placement` and read
+            ``len(assignment.hosts_used)``.
+        """
         return self.tensor_parallel * self.pipeline_parallel * self.data_parallel
 
 

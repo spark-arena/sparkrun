@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from sparkrun.core.hardware import HostHardware, default_dgx_spark_hardware
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,27 @@ class ClusterDefinition:
     transfer_mode: str | None = None
     transfer_interface: str | None = None
     topology: str | None = None
+    hosts_hardware: dict[str, HostHardware] = field(default_factory=dict)
+    """Optional per-host hardware metadata, keyed by host name/address.
+
+    Hosts absent from this dict are assumed to be DGX Sparks (see
+    :func:`sparkrun.core.hardware.default_dgx_spark_hardware`).  Reading
+    code should go through :meth:`hardware_for` rather than indexing
+    this dict directly so the default fallback is preserved.
+    """
+
+    def hardware_for(self, host: str) -> HostHardware:
+        """Return hardware metadata for *host*, defaulting to DGX Spark.
+
+        Phase 1 fallback: when a host has no explicit entry, behave as
+        if it were a DGX Spark (1× GB10, 121 GB unified memory).  This
+        preserves the pre-refactor assumption that every cluster host
+        is a DGX Spark.
+        """
+        hw = self.hosts_hardware.get(host)
+        if hw is None:
+            return default_dgx_spark_hardware()
+        return hw
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to a JSON-serializable dictionary (omits None optional fields)."""
@@ -58,6 +81,8 @@ class ClusterDefinition:
             d["transfer_interface"] = self.transfer_interface
         if self.topology:
             d["topology"] = self.topology
+        if self.hosts_hardware:
+            d["hosts_hardware"] = {h: hw.to_dict() for h, hw in self.hosts_hardware.items()}
         return d
 
 
@@ -167,6 +192,7 @@ class ClusterManager:
         transfer_mode: str | None = None,
         transfer_interface: str | None = None,
         topology: str | None = None,
+        hosts_hardware: dict[str, HostHardware] | None = None,
     ) -> None:
         """Create a new named cluster.
 
@@ -179,6 +205,8 @@ class ClusterManager:
             transfer_mode: Optional transfer mode (local, push, delegated)
             transfer_interface: Optional transfer interface (cx7, mgmt)
             topology: Optional CX7 topology (direct, switch, ring)
+            hosts_hardware: Optional per-host hardware metadata.  Missing
+                entries fall back to DGX Spark via :meth:`ClusterDefinition.hardware_for`.
 
         Raises:
             ClusterError: If cluster already exists or name is invalid
@@ -206,6 +234,7 @@ class ClusterManager:
             transfer_mode=transfer_mode,
             transfer_interface=transfer_interface,
             topology=topology,
+            hosts_hardware=dict(hosts_hardware) if hosts_hardware else {},
         )
         self._write_cluster(cluster_def)
         logger.info("Created cluster '%s' with %d hosts", name, len(hosts))
@@ -238,6 +267,7 @@ class ClusterManager:
         transfer_mode: str | None = _UNSET,
         transfer_interface: str | None = _UNSET,
         topology: str | None = _UNSET,
+        hosts_hardware: dict[str, HostHardware] | None = _UNSET,
     ) -> None:
         """Update existing cluster definition.
 
@@ -250,6 +280,7 @@ class ClusterManager:
             transfer_mode: Transfer mode (if provided; pass ``None`` explicitly to clear)
             transfer_interface: Transfer interface (if provided; pass ``None`` explicitly to clear)
             topology: CX7 topology (if provided; pass ``None`` explicitly to clear)
+            hosts_hardware: Per-host hardware metadata (if provided; pass empty dict to clear).
 
         Raises:
             ClusterError: If cluster does not exist
@@ -291,6 +322,10 @@ class ClusterManager:
         if topology is not _UNSET:
             cluster_def.topology = topology
             logger.debug("Updated topology for cluster '%s'", name)
+
+        if hosts_hardware is not _UNSET:
+            cluster_def.hosts_hardware = dict(hosts_hardware) if hosts_hardware else {}
+            logger.debug("Updated hosts_hardware for cluster '%s'", name)
 
         # Write back
         self._write_cluster(cluster_def)
@@ -406,6 +441,8 @@ class ClusterManager:
             data["transfer_interface"] = cluster_def.transfer_interface
         if cluster_def.topology is not None:
             data["topology"] = cluster_def.topology
+        if cluster_def.hosts_hardware:
+            data["hosts_hardware"] = {h: hw.to_dict() for h, hw in cluster_def.hosts_hardware.items()}
 
         with cluster_path.open("w") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
@@ -421,6 +458,13 @@ class ClusterManager:
             raise ClusterError(f"Invalid cluster file format: {cluster_path}")
 
         logger.debug("Read cluster definition from %s", cluster_path)
+        raw_hw = data.get("hosts_hardware") or {}
+        hosts_hardware: dict[str, HostHardware] = {}
+        if isinstance(raw_hw, dict):
+            for host, entry in raw_hw.items():
+                if isinstance(entry, dict):
+                    hosts_hardware[str(host)] = HostHardware.from_dict(entry)
+
         return ClusterDefinition(
             name=data.get("name", cluster_path.stem),
             hosts=data.get("hosts", []),
@@ -430,6 +474,7 @@ class ClusterManager:
             transfer_mode=data.get("transfer_mode"),
             transfer_interface=data.get("transfer_interface"),
             topology=data.get("topology"),
+            hosts_hardware=hosts_hardware,
         )
 
 

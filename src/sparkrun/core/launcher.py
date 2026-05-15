@@ -124,6 +124,10 @@ def launch_inference(
     rootless: bool = True,
     auto_user: bool = True,
     progress: LaunchProgress | None = None,
+    # Phase X threading: named cluster definition (carries per-host hardware
+    # metadata).  When None, the runtime falls back to the legacy
+    # host-list-only path (1 GPU / host, no per-host hardware lookups).
+    cluster=None,
 ) -> LaunchResult:
     """Launch an inference workload.
 
@@ -507,6 +511,7 @@ def launch_inference(
         executor=executor,
         progress=progress,
         extra_docker_opts=extra_docker_opts,
+        cluster=cluster,
         **run_kwargs,
     )
 
