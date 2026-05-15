@@ -1,0 +1,206 @@
+"""Tests for HardwarePlatformPlugin + concrete platforms (Phase 8)."""
+
+from __future__ import annotations
+
+import pytest
+
+from sparkrun.core.hardware import AcceleratorSpec, HostHardware, default_dgx_spark_hardware
+from sparkrun.orchestration.collectives import NcclBackend
+from sparkrun.platforms import (
+    DgxSparkPlatform,
+    GenericNvidiaPlatform,
+    HardwarePlatformPlugin,
+    get_platform_by_name,
+    iter_platforms,
+    register_platform,
+    resolve_platform,
+)
+
+
+def _nvidia(model: str, *, memory_gb: float | None = 80.0) -> HostHardware:
+    return HostHardware(accelerators=[AcceleratorSpec(vendor="nvidia", model=model, memory_gb=memory_gb, capabilities=frozenset({"cuda"}))])
+
+
+def _amd(model: str = "mi300x") -> HostHardware:
+    return HostHardware(accelerators=[AcceleratorSpec(vendor="amd", model=model, capabilities=frozenset({"rocm"}))])
+
+
+# --------------------------------------------------------------------------
+# Plugin contract
+# --------------------------------------------------------------------------
+
+
+def test_dgx_spark_platform_metadata():
+    p = DgxSparkPlatform()
+    assert p.platform_name == "dgx-spark"
+    assert p.vendors == frozenset({"nvidia"})
+    assert p.name() == "sparkrun.platform.dgx-spark"
+
+
+def test_generic_nvidia_platform_metadata():
+    p = GenericNvidiaPlatform()
+    assert p.platform_name == "nvidia-generic"
+    assert p.vendors == frozenset({"nvidia"})
+
+
+def test_platform_is_multi_extension():
+    """Mirrors RuntimePlugin: multi-extension marker + extension-point name."""
+    p = DgxSparkPlatform()
+    assert p.is_multi_extension(None) is True
+    assert p.extension_point_name(None) == "sparkrun.platform"
+    # SAF requires is_enabled False for multi-extension plugins
+    assert p.is_enabled(None) is False
+
+
+# --------------------------------------------------------------------------
+# DgxSparkPlatform
+# --------------------------------------------------------------------------
+
+
+def test_dgx_spark_matches_gb10_default_hardware():
+    """The library's DGX Spark default fingerprint is recognised."""
+    assert DgxSparkPlatform().matches(default_dgx_spark_hardware()) is True
+
+
+def test_dgx_spark_matches_gb10_explicit():
+    assert DgxSparkPlatform().matches(_nvidia("gb10")) is True
+
+
+def test_dgx_spark_does_not_match_h100():
+    assert DgxSparkPlatform().matches(_nvidia("h100")) is False
+
+
+def test_dgx_spark_does_not_match_amd():
+    assert DgxSparkPlatform().matches(_amd()) is False
+
+
+def test_dgx_spark_collective_is_nccl():
+    assert isinstance(DgxSparkPlatform().collective_backend(), NcclBackend)
+
+
+def test_dgx_spark_accelerator_vendor():
+    assert DgxSparkPlatform().accelerator_vendor() == "nvidia"
+
+
+def test_dgx_spark_default_images():
+    p = DgxSparkPlatform()
+    assert p.default_image("atlas") == "avarok/atlas-gb10:latest"
+    assert p.default_image("vllm-distributed") == "ghcr.io/spark-arena/dgx-vllm-eugr-nightly-tf5:latest"
+    assert p.default_image("sglang") == "scitrera/dgx-spark-sglang:latest"
+    assert p.default_image("nonexistent-runtime") is None
+
+
+# --------------------------------------------------------------------------
+# GenericNvidiaPlatform
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("model", ["h100", "h200", "b200", "gb10", "rtx-pro-6000", "a100"])
+def test_generic_nvidia_matches_any_nvidia_host(model: str):
+    assert GenericNvidiaPlatform().matches(_nvidia(model)) is True
+
+
+def test_generic_nvidia_does_not_match_amd():
+    assert GenericNvidiaPlatform().matches(_amd()) is False
+
+
+def test_generic_nvidia_does_not_match_empty_host():
+    assert GenericNvidiaPlatform().matches(HostHardware()) is False
+
+
+def test_generic_nvidia_default_images():
+    p = GenericNvidiaPlatform()
+    assert p.default_image("vllm-distributed") == "vllm/vllm-openai:latest"
+    assert p.default_image("sglang") == "lmsysorg/sglang:latest"
+    # Atlas/eugr deliberately omitted from generic defaults — Phase 7 gates them.
+    assert p.default_image("atlas") is None
+
+
+# --------------------------------------------------------------------------
+# Registry / resolve_platform
+# --------------------------------------------------------------------------
+
+
+def test_resolve_platform_prefers_dgx_for_gb10():
+    """Both DgxSpark + GenericNvidia match GB10; resolution returns DgxSpark."""
+    p = resolve_platform(_nvidia("gb10"))
+    assert isinstance(p, DgxSparkPlatform)
+
+
+def test_resolve_platform_falls_back_to_generic_for_h100():
+    p = resolve_platform(_nvidia("h100"))
+    assert isinstance(p, GenericNvidiaPlatform)
+
+
+def test_resolve_platform_returns_none_for_amd():
+    """No AMD platform shipped yet — resolver returns None instead of guessing."""
+    assert resolve_platform(_amd()) is None
+
+
+def test_resolve_platform_returns_none_for_empty_host():
+    assert resolve_platform(HostHardware()) is None
+
+
+def test_iter_platforms_returns_fresh_list():
+    """Caller can mutate the returned list without polluting the registry."""
+    a = iter_platforms()
+    a.clear()
+    b = iter_platforms()
+    assert len(b) >= 2  # at least dgx-spark + nvidia-generic
+
+
+def test_get_platform_by_name():
+    assert isinstance(get_platform_by_name("dgx-spark"), DgxSparkPlatform)
+    assert isinstance(get_platform_by_name("nvidia-generic"), GenericNvidiaPlatform)
+    assert get_platform_by_name("nonexistent") is None
+
+
+# --------------------------------------------------------------------------
+# register_platform extensibility
+# --------------------------------------------------------------------------
+
+
+class _FakePlatform(HardwarePlatformPlugin):
+    platform_name = "fake"
+    vendors = frozenset({"amd"})
+
+    def matches(self, host_hardware):
+        return any(a.vendor == "amd" for a in host_hardware.accelerators)
+
+    def accelerator_vendor(self):
+        return "amd"
+
+    def collective_backend(self):
+        from sparkrun.orchestration.collectives import RcclBackend
+
+        return RcclBackend()
+
+
+@pytest.fixture
+def _isolate_registry():
+    """Snapshot the registry around tests that mutate it."""
+    from sparkrun import platforms as plat_mod
+
+    snapshot = list(plat_mod._REGISTRY)
+    yield
+    plat_mod._REGISTRY[:] = snapshot
+
+
+def test_register_platform_append_default(_isolate_registry):
+    instance = _FakePlatform()
+    register_platform(instance)
+    assert iter_platforms()[-1] is instance
+
+
+def test_register_platform_prepend_wins_resolution(_isolate_registry):
+    instance = _FakePlatform()
+    register_platform(instance, prepend=True)
+    # AMD host now resolves to the registered fake platform.
+    p = resolve_platform(_amd())
+    assert p is instance
+
+
+def test_register_platform_does_not_disturb_existing_resolution(_isolate_registry):
+    """Appending leaves NVIDIA resolution unchanged."""
+    register_platform(_FakePlatform())
+    assert isinstance(resolve_platform(_nvidia("gb10")), DgxSparkPlatform)
