@@ -81,7 +81,14 @@ _PARAM_SUFFIXES = {
 # Total system memory is ~128 GB (127601452 KiB ≈ 121.7 GiB).
 # Usable GPU memory depends on gpu_memory_utilization and OS overhead.
 # We use 121 GiB as an "available for inference" figure.
-DGX_SPARK_VRAM_GB = 121.0
+#
+# Phase 3 of the hardware-agnostic refactor: this constant is the default
+# per-host VRAM budget used by the legacy single-platform fit path
+# (:attr:`VRAMEstimate.fits_dgx_spark`).  For heterogeneous-cluster fits,
+# use :func:`sparkrun.models.fit.check_fit` instead, which reads
+# ``memory_gb`` from each host's :class:`~sparkrun.core.hardware.HostHardware`.
+DEFAULT_VRAM_GB = 121.0
+DGX_SPARK_VRAM_GB = DEFAULT_VRAM_GB  # back-compat alias; prefer DEFAULT_VRAM_GB
 
 
 @dataclass
@@ -114,7 +121,13 @@ class VRAMEstimate:
 
     @property
     def fits_dgx_spark(self) -> bool:
-        """Whether the estimated VRAM fits within DGX Spark GPU memory."""
+        """Whether the estimated per-GPU VRAM fits within DGX Spark memory.
+
+        Legacy single-platform helper.  For heterogeneous-cluster fit checks
+        use :func:`sparkrun.models.fit.check_fit`, which inspects each
+        host's actual accelerator memory from
+        :class:`~sparkrun.core.hardware.HostHardware`.
+        """
         return self.total_per_gpu_gb <= DGX_SPARK_VRAM_GB
 
     def to_dict(self) -> dict[str, Any]:
