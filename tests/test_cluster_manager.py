@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from sparkrun.core.cluster_manager import ClusterManager, ClusterError, ResolvedClusterConfig
+from sparkrun.core.hardware import AcceleratorSpec, HostHardware
 
 
 def test_create_cluster(tmp_path: Path):
@@ -781,3 +782,94 @@ class TestParseMonitorLine:
         assert sample is not None
         assert sample.timestamp == "2026-03-02T10:00:00Z"
         assert sample.hostname == "val"
+
+
+# ---------------------------------------------------------------------------
+# Per-host hardware metadata (Phase 1)
+# ---------------------------------------------------------------------------
+
+
+def test_create_cluster_without_hosts_hardware_defaults_dgx_spark(tmp_path: Path):
+    """A cluster created without hosts_hardware returns DGX Spark default per host."""
+    manager = ClusterManager(tmp_path)
+    manager.create("legacy", ["host1", "host2"])
+
+    cluster = manager.get("legacy")
+    assert cluster.hosts_hardware == {}
+
+    hw = cluster.hardware_for("host1")
+    assert len(hw.accelerators) == 1
+    assert hw.accelerators[0].vendor == "nvidia"
+    assert hw.accelerators[0].model == "gb10"
+    assert hw.accelerators[0].memory_gb == 121.0
+
+
+def test_create_cluster_with_hosts_hardware_round_trips(tmp_path: Path):
+    """A cluster with explicit per-host hardware round-trips through YAML."""
+    manager = ClusterManager(tmp_path)
+    hw_spark = HostHardware(
+        accelerators=[
+            AcceleratorSpec(
+                vendor="nvidia",
+                model="gb10",
+                memory_gb=121.0,
+                capabilities=frozenset({"cuda"}),
+            )
+        ]
+    )
+    hw_rtx = HostHardware(
+        accelerators=[
+            AcceleratorSpec(
+                vendor="nvidia",
+                model="rtx-pro-6000",
+                count=2,
+                memory_gb=96.0,
+                capabilities=frozenset({"cuda"}),
+            )
+        ],
+        notes="workstation",
+    )
+    manager.create(
+        "mixed",
+        ["spark-01", "rtx-box"],
+        hosts_hardware={"spark-01": hw_spark, "rtx-box": hw_rtx},
+    )
+
+    restored = manager.get("mixed")
+    assert restored.hardware_for("spark-01") == hw_spark
+    assert restored.hardware_for("rtx-box") == hw_rtx
+
+
+def test_hardware_for_unknown_host_returns_default(tmp_path: Path):
+    """Hosts absent from hosts_hardware still get a DGX Spark default."""
+    manager = ClusterManager(tmp_path)
+    hw = HostHardware(accelerators=[AcceleratorSpec(vendor="amd", model="mi300x", memory_gb=192.0)])
+    manager.create("partial", ["amd-box", "mystery-host"], hosts_hardware={"amd-box": hw})
+
+    restored = manager.get("partial")
+    assert restored.hardware_for("amd-box").accelerators[0].vendor == "amd"
+    # Unknown host -> DGX Spark default
+    default_hw = restored.hardware_for("mystery-host")
+    assert default_hw.accelerators[0].model == "gb10"
+
+
+def test_update_hosts_hardware(tmp_path: Path):
+    """update() with hosts_hardware overwrites the field."""
+    manager = ClusterManager(tmp_path)
+    manager.create("c", ["h1"])
+    hw = HostHardware(accelerators=[AcceleratorSpec(vendor="intel", model="gaudi3", memory_gb=128.0)])
+    manager.update("c", hosts_hardware={"h1": hw})
+
+    restored = manager.get("c")
+    assert restored.hardware_for("h1") == hw
+
+
+def test_to_dict_includes_hosts_hardware_only_when_set(tmp_path: Path):
+    """to_dict omits hosts_hardware when empty (back-compat with old consumers)."""
+    manager = ClusterManager(tmp_path)
+    manager.create("legacy", ["h1"])
+    assert "hosts_hardware" not in manager.get("legacy").to_dict()
+
+    hw = HostHardware(accelerators=[AcceleratorSpec(vendor="nvidia", model="h200", count=8, memory_gb=141.0)])
+    manager.update("legacy", hosts_hardware={"h1": hw})
+    assert "hosts_hardware" in manager.get("legacy").to_dict()
