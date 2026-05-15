@@ -192,6 +192,7 @@ def _apply_node_trimming(
     runtime=None,
     tp_override: int | None = None,
     quiet: bool = False,
+    cluster=None,
 ) -> list[str]:
     """Trim host list to match the runtime's required node count.
 
@@ -210,6 +211,9 @@ def _apply_node_trimming(
         runtime: Optional runtime plugin instance.
         tp_override: Explicit --tp value (takes precedence).
         quiet: Suppress logging.
+        cluster: Optional :class:`ClusterDefinition` for hardware-aware
+            placement (multi-GPU hosts).  When ``None``, the legacy 1
+            GPU / host assumption is preserved.
 
     Returns:
         Possibly trimmed host list.
@@ -222,7 +226,7 @@ def _apply_node_trimming(
         effective_overrides["tensor_parallel"] = tp_override
 
     if runtime is not None:
-        required = runtime.compute_required_nodes(recipe, effective_overrides)
+        required = runtime.compute_required_nodes(recipe, effective_overrides, cluster=cluster)
     else:
         # Legacy fallback: TP-only
         if tp_override is not None:
@@ -461,11 +465,29 @@ def _display_recipe_detail(recipe, show_vram=True, registry_name=None, cli_overr
     display_recipe_detail(recipe, show_vram=show_vram, registry_name=registry_name, cli_overrides=cli_overrides, cache_dir=cache_dir)
 
 
-def _display_vram_estimate(recipe, cli_overrides=None, auto_detect=True, cache_dir=None):
-    """Display VRAM estimation (delegates to cli_formatters)."""
+def _display_vram_estimate(
+    recipe,
+    cli_overrides=None,
+    auto_detect=True,
+    cache_dir=None,
+    cluster=None,
+    placement=None,
+):
+    """Display VRAM estimation (delegates to cli_formatters).
+
+    When *cluster* + *placement* are threaded through, the formatter
+    renders per-host fit alongside the legacy DGX-Spark single-line fit.
+    """
     from sparkrun.utils.cli_formatters import display_vram_estimate
 
-    display_vram_estimate(recipe, cli_overrides=cli_overrides, auto_detect=auto_detect, cache_dir=cache_dir)
+    display_vram_estimate(
+        recipe,
+        cli_overrides=cli_overrides,
+        auto_detect=auto_detect,
+        cache_dir=cache_dir,
+        cluster=cluster,
+        placement=placement,
+    )
 
 
 def _shell_rc_file(shell):
@@ -894,16 +916,22 @@ def validate_and_prepare_hosts(
     overrides: dict,
     runtime,
     solo: bool = False,
+    cluster=None,
 ) -> tuple[list[str], bool]:
     """Validate node count, enforce max_nodes, and determine solo mode.
 
     Returns ``(trimmed_host_list, is_solo)``.
     Exits with an error on invalid configurations.
+
+    When *cluster* is provided, node count is derived via the
+    placement engine (multi-GPU hosts and explicit recipe layouts are
+    honoured).  When ``None``, the legacy 1-GPU-per-host assumption
+    is preserved.
     """
     # Node count validation / trimming
     if len(host_list) > 1 and not solo:
         try:
-            required = runtime.compute_required_nodes(recipe, overrides)
+            required = runtime.compute_required_nodes(recipe, overrides, cluster=cluster)
         except ValueError as e:
             click.echo("Error: %s" % e, err=True)
             sys.exit(1)
@@ -921,13 +949,14 @@ def validate_and_prepare_hosts(
                     recipe,
                     overrides,
                     runtime=runtime,
+                    cluster=cluster,
                 )
                 click.echo("Note: %d nodes required, using %d of %d hosts" % (required, required, original_count))
 
     # Enforce max_nodes
     if recipe.max_nodes is not None and len(host_list) > recipe.max_nodes:
         try:
-            req = runtime.compute_required_nodes(recipe, overrides)
+            req = runtime.compute_required_nodes(recipe, overrides, cluster=cluster)
         except ValueError:
             req = None
         if req is not None and req > recipe.max_nodes:

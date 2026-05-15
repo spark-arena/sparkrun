@@ -159,6 +159,19 @@ def run(
     # Determine hosts
     host_list, cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, sctx=sctx)
 
+    # Resolve the named cluster definition when one is in play.  Carries
+    # per-host hardware metadata (Phase 1) so downstream code can compute
+    # placement, fit, and per-host backend selection.  Falls back to None
+    # for explicit --hosts / --hosts-file (legacy host-list-only path).
+    cluster_def = None
+    if cluster_mgr is not None and not hosts and not hosts_file:
+        _name = cluster_name or cluster_mgr.get_default()
+        if _name:
+            try:
+                cluster_def = cluster_mgr.get(_name)
+            except Exception:
+                cluster_def = None
+
     # Find and load recipe (defer resolution until overrides are built).
     # Retry after a registry refresh when the recipe isn't found, so that
     # copy-pasted recipe names from newly-published sources just work.
@@ -217,10 +230,28 @@ def run(
         else:
             host_source = "localhost"
 
-    # Node count validation, max_nodes enforcement, and solo mode determination
-    host_list, is_solo = validate_and_prepare_hosts(host_list, recipe, overrides, runtime, solo=solo)
+    # Node count validation, max_nodes enforcement, and solo mode determination.
+    # Passing ``cluster=cluster_def`` lets compute_required_nodes use the
+    # placement engine (multi-GPU hosts, recipe layout); legacy 1-GPU/host
+    # behaviour is preserved when cluster_def is None.
+    host_list, is_solo = validate_and_prepare_hosts(host_list, recipe, overrides, runtime, solo=solo, cluster=cluster_def)
     if recipe.mode == "cluster" and is_solo and not solo:
         click.echo("Warning: Recipe requires cluster mode but only one host specified", err=True)
+
+    # Pre-flight: refuse if the runtime can't safely target a placed host
+    # (e.g. Atlas/eugr against non-GB10 hardware).  Skipped when the user
+    # bypassed the cluster registry via --hosts / --hosts-file.
+    if cluster_def is not None and not is_solo:
+        from sparkrun.runtimes.compatibility import (
+            IncompatibleHardwareError,
+            assert_runtime_cluster_compatibility,
+        )
+
+        try:
+            assert_runtime_cluster_compatibility(runtime, cluster_def)
+        except IncompatibleHardwareError as e:
+            click.echo("Error: %s" % e, err=True)
+            sys.exit(1)
 
     # --ensure: check if job is already running, exit 0 if so
     if ensure:
@@ -259,7 +290,33 @@ def run(
     if effective_transfer_mode not in ("auto", "local"):
         click.echo("Transfer:  %s" % effective_transfer_mode)
 
-    _display_vram_estimate(recipe, cli_overrides=overrides, auto_detect=True, cache_dir=local_cache_dir)
+    # Compute placement up-front when we have a cluster definition + multi-host
+    # workload, so the VRAM display can render per-host fit alongside the
+    # legacy DGX-Spark single-line summary.  Failures fall back silently —
+    # the legacy single-line fit always renders regardless.
+    display_placement = None
+    if cluster_def is not None and not is_solo:
+        try:
+            from sparkrun.core.parallelism import extract_parallelism
+            from sparkrun.core.placement import compute_placement
+
+            display_placement = compute_placement(
+                extract_parallelism(recipe.build_config_chain(overrides)),
+                host_list,
+                host_hardware=cluster_def.hosts_hardware or None,
+                layout=recipe.layout,
+            )
+        except Exception:
+            display_placement = None
+
+    _display_vram_estimate(
+        recipe,
+        cli_overrides=overrides,
+        auto_detect=True,
+        cache_dir=local_cache_dir,
+        cluster=cluster_def,
+        placement=display_placement,
+    )
 
     click.echo()
     click.echo("Hosts:     %s" % host_source)
@@ -359,6 +416,7 @@ def run(
             extra_docker_opts=list(executor_args) if executor_args else None,
             rootless=not rootful,
             auto_user=not rootful,
+            cluster=cluster_def,
         )
     except DistributionError as e:
         if diag:
