@@ -108,9 +108,26 @@ def cluster_create(ctx, name, hosts, hosts_file, description, user, cache_dir, t
     type=click.Choice(["none", "direct", "switch", "ring"], case_sensitive=False),
     help="CX7 topology (none=remove, direct/switch=switched fabric, ring=3-node mesh/ring)",
 )
+@click.option(
+    "--infer-hardware",
+    is_flag=True,
+    help="SSH into each cluster host, detect accelerators (NVIDIA/AMD/Intel/Apple) + IB, and persist per-host hardware metadata",
+)
 @click.pass_context
 def cluster_update(
-    ctx, name, hosts, hosts_file, add_host, remove_host, description, user, cache_dir, transfer_mode, transfer_interface, topology
+    ctx,
+    name,
+    hosts,
+    hosts_file,
+    add_host,
+    remove_host,
+    description,
+    user,
+    cache_dir,
+    transfer_mode,
+    transfer_interface,
+    topology,
+    infer_hardware,
 ):
     """Update an existing cluster.
 
@@ -157,11 +174,12 @@ def cluster_update(
         and not transfer_mode_provided
         and not transfer_interface_provided
         and not topology_provided
+        and not infer_hardware
     ):
         click.echo(
             "Error: Nothing to update. Provide --hosts, --hosts-file, --add-host, "
             "--remove-host, -d, --user, --cache-dir, --transfer-mode, "
-            "--transfer-interface, or --topology.",
+            "--transfer-interface, --topology, or --infer-hardware.",
             err=True,
         )
         sys.exit(1)
@@ -219,6 +237,42 @@ def cluster_update(
             update_kwargs["topology"] = "switch"
         else:
             update_kwargs["topology"] = topology
+
+    if infer_hardware:
+        from sparkrun.core.fingerprint import fingerprint_host
+        from sparkrun.orchestration.primitives import build_ssh_kwargs
+
+        # Resolve hosts list to probe: prefer the (possibly updated) host_list
+        # for this invocation, else read the persisted cluster.
+        probe_hosts: list[str]
+        if host_list is not None:
+            probe_hosts = host_list
+        else:
+            try:
+                probe_hosts = list(mgr.get(name).hosts)
+            except ClusterError as e:
+                click.echo(f"Error: {e}", err=True)
+                sys.exit(1)
+
+        sctx = _get_context(ctx)
+        ssh_kwargs = build_ssh_kwargs(sctx.config)
+        click.echo("Fingerprinting %d host(s)..." % len(probe_hosts))
+        hosts_hardware: dict = {}
+        for host in probe_hosts:
+            click.echo("  %s ..." % host, nl=False)
+            try:
+                hw = fingerprint_host(host, ssh_kwargs)
+            except Exception as e:
+                click.echo(" FAILED (%s)" % e)
+                continue
+            hosts_hardware[host] = hw
+            if hw.accelerators:
+                summary = ", ".join("%dx %s/%s" % (a.count, a.vendor, a.model) for a in hw.accelerators)
+                click.echo(" %s" % summary)
+            else:
+                click.echo(" no accelerators detected (%s)" % (hw.notes or "?"))
+        if hosts_hardware:
+            update_kwargs["hosts_hardware"] = hosts_hardware
 
     try:
         mgr.update(name, hosts=host_list, description=description, **update_kwargs)
