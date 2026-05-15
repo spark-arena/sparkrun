@@ -561,7 +561,28 @@ def _run_benchmark(
             click.echo("Error: --bench-option must be key=value, got: %s" % opt_str, err=True)
             sys.exit(1)
         key, _, val = opt_str.partition("=")
-        bench_args[key.strip()] = fw.interpret_arg(key.strip(), val.strip())
+        stripped_key = key.strip()
+        if "api_key" in stripped_key.lower():
+            click.echo(
+                f"Error: Passing '{stripped_key}' via --bench-option is insecure. "
+                "Please set the OPENAI_API_KEY environment variable or use a .env file instead.",
+                err=True,
+            )
+            sys.exit(1)
+        bench_args[stripped_key] = fw.interpret_arg(stripped_key, val.strip())
+
+    if "api_key" not in bench_args:
+        import os
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            try:
+                from dotenv import load_dotenv
+                load_dotenv()
+                api_key = os.environ.get("OPENAI_API_KEY")
+            except ImportError:
+                pass
+        if api_key:
+            bench_args["api_key"] = api_key
 
     if exit_on_first_fail:
         bench_args["exit_on_first_fail"] = True
@@ -652,7 +673,8 @@ def _run_benchmark(
     click.echo("")
     click.echo("Benchmark args:")
     for k, bv in bench_args.items():
-        click.echo("  %-35s %s" % (k + ":", bv))
+        display_val = "***REDACTED***" if "api_key" in k.lower() else bv
+        click.echo("  %-35s %s" % (k + ":", display_val))
     click.echo("=" * 60)
     click.echo("")
 
