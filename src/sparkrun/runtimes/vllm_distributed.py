@@ -100,6 +100,7 @@ class VllmDistributedRuntime(VllmMixin, RuntimePlugin):
         init_port: int = 25000,
         skip_keys: set[str] | frozenset[str] = frozenset(),
         hosts: list[str] | None = None,
+        placement=None,
     ) -> str:
         """Generate the vllm serve command for a specific node.
 
@@ -130,7 +131,13 @@ class VllmDistributedRuntime(VllmMixin, RuntimePlugin):
             replica_size = 1  # defensive: tp or pp misconfigured as 0
         dp_rank = node_rank // replica_size
         intra_replica_rank = node_rank % replica_size
-        if hosts and len(hosts) >= (dp_rank + 1) * replica_size:
+        # Placement-aware lookup (Phase X threading) — accounts for
+        # multi-GPU hosts where ``ranks[dp_rank * replica_size]`` may
+        # share a host with adjacent ranks.  Falls back to the legacy
+        # ``hosts[i]`` indexing when no placement is threaded through.
+        if placement is not None and placement.total_ranks >= (dp_rank + 1) * replica_size:
+            tp_master_addr = placement.host_for_rank(dp_rank * replica_size)
+        elif hosts and len(hosts) >= (dp_rank + 1) * replica_size:
             tp_master_addr = hosts[dp_rank * replica_size]
         else:
             # Fallback: no host list available (solo / unit tests).

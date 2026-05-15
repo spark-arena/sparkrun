@@ -270,9 +270,21 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
         from sparkrun.orchestration.ssh import run_remote_script
 
         progress = kwargs.pop("progress", None)
+        cluster = kwargs.pop("cluster", None)
         combined_docker_opts = (self.get_extra_docker_opts() or []) + (extra_docker_opts or [])
 
-        ctx = ClusterContext.build(self, hosts, image, cluster_id, env, cache_dir, config, dry_run)
+        ctx = ClusterContext.build(
+            self,
+            hosts,
+            image,
+            cluster_id,
+            env,
+            cache_dir,
+            config,
+            dry_run,
+            cluster=cluster,
+            recipe=recipe,
+        )
         head_container = self.executor.container_name(cluster_id, "head")
         worker_container = self.executor.container_name(cluster_id, "worker")
 

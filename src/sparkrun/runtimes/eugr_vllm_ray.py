@@ -41,6 +41,11 @@ class EugrVllmRayRuntime(VllmRayRuntime):
     runtime_name = "eugr-vllm"
     default_image_prefix = ""  # eugr uses local builds
 
+    # eugr builds depend on DGX Spark GB10-specific image content.
+    # Gate to GB10 hosts so other accelerators surface an actionable
+    # compatibility error rather than silently failing at run time.
+    requires_capability = frozenset({"gb10"})
+
     def initialize(self, v: Variables, logger_arg: Logger) -> EugrVllmRayRuntime:
         """Initialize the eugr-vllm runtime plugin."""
         self._v = v

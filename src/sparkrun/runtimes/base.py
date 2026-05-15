@@ -38,6 +38,18 @@ class RuntimePlugin(Plugin):
     runtime_name: str = ""
     default_image_prefix: str = ""
 
+    # --- Hardware compatibility (Phase 7) ---
+    requires_capability: frozenset[str] = frozenset()
+    """Capabilities or accelerator-model names every placed host must advertise.
+
+    Empty (default) means the runtime accepts any host.  An entry matches
+    when *any* accelerator on the host has that tag in
+    :attr:`AcceleratorSpec.capabilities` **or** when its
+    :attr:`AcceleratorSpec.model` equals the entry.  This lets runtimes
+    pin to specific accelerator models (e.g. ``"gb10"`` for Atlas/Eugr)
+    without having to coordinate a separate capability-tag taxonomy.
+    """
+
     # --- Executor ---
     _executor: Executor | None = None
 
@@ -115,6 +127,40 @@ class RuntimePlugin(Plugin):
             return recipe.container
         return "%s:latest" % self.default_image_prefix
 
+    def default_image_for(self, host_hardware=None) -> str | None:
+        """Return a default container image for a given host's hardware.
+
+        Resolution order:
+
+        1. If *host_hardware* matches a registered
+           :class:`HardwarePlatformPlugin` (via
+           :func:`sparkrun.platforms.resolve_platform`) and that
+           platform publishes a default for this runtime, return it.
+        2. Otherwise fall back to the legacy
+           ``{default_image_prefix}:latest``.
+        3. Return ``None`` when no prefix is declared, so callers can
+           surface "no default image; set ``recipe.container`` explicitly".
+
+        Subclasses are encouraged to override this rather than
+        :meth:`resolve_container` for vendor-specific defaults; doing so
+        keeps explicit ``recipe.container`` values authoritative across
+        all hosts.
+        """
+        if host_hardware is not None:
+            try:
+                from sparkrun.platforms import resolve_platform
+
+                platform = resolve_platform(host_hardware)
+            except Exception:
+                platform = None
+            if platform is not None:
+                img = platform.default_image(self.runtime_name)
+                if img is not None:
+                    return img
+        if self.default_image_prefix:
+            return "%s:latest" % self.default_image_prefix
+        return None
+
     # noinspection PyMethodMayBeStatic
     def get_common_env(self):
         """Return environment variables common to either solo or cluster mode for this runtime."""
@@ -191,6 +237,7 @@ class RuntimePlugin(Plugin):
         init_port: int = 25000,
         skip_keys: set[str] | frozenset[str] = frozenset(),
         hosts: list[str] | None = None,
+        placement=None,
     ) -> str:
         """Generate the serve command for a specific node in native clustering.
 
@@ -208,6 +255,11 @@ class RuntimePlugin(Plugin):
                 support hybrid tp+dp rank math (e.g. vLLM) use this to
                 compute per-replica master addresses.  Ignored by runtimes
                 without that support.
+            placement: Optional :class:`RankAssignment` from the
+                placement engine.  When present, runtimes that support
+                multi-rank-per-host topologies use it instead of
+                indexing ``hosts[i]``.  Back-compat ``None`` keeps the
+                legacy 1-GPU-per-host behavior.
 
         Returns:
             The full command string for this node.
@@ -318,15 +370,34 @@ class RuntimePlugin(Plugin):
             issues.append("[%s] model is required" % self.runtime_name)
         return issues
 
-    def compute_required_nodes(self, recipe: Recipe, overrides: dict[str, Any] | None = None) -> int | None:
+    def compute_required_nodes(
+        self,
+        recipe: Recipe,
+        overrides: dict[str, Any] | None = None,
+        *,
+        cluster=None,
+    ) -> int | None:
         """Compute the number of nodes required to run this recipe.
 
-        On DGX Spark (1 GPU per node), the total node count is the
-        product of tensor, pipeline, and data parallelism: ``tp * pp * dp``.
+        Two paths:
+
+        * **Cluster-aware** (``cluster`` is a
+          :class:`~sparkrun.core.cluster_manager.ClusterDefinition`):
+          routes through :func:`sparkrun.core.placement.compute_placement`
+          so multi-GPU hosts and explicit ``recipe.layout`` are honored.
+          Returns the count of *hosts* actually used, which can be less
+          than ``total_gpus`` when a host carries multiple ranks.
+        * **Legacy (1 GPU per host)** (``cluster=None``): returns
+          ``tp * pp * dp``.  Correct for homogeneous DGX Spark clusters
+          and preserved for back-compat with callers that don't yet
+          thread a cluster through.
 
         Args:
             recipe: The loaded recipe.
             overrides: CLI override values (merged into config chain).
+            cluster: Optional cluster definition.  When provided, the
+                placement engine uses ``cluster.hosts_hardware`` and
+                ``recipe.layout`` to compute host count precisely.
 
         Returns:
             Required node count, or ``None`` if no parallelism config
@@ -342,6 +413,19 @@ class RuntimePlugin(Plugin):
         if tp_val is None and pp_val is None and dp_val is None:
             return None
         p = extract_parallelism(config)
+
+        if cluster is not None:
+            from sparkrun.core.placement import compute_placement
+
+            placement = compute_placement(
+                p,
+                cluster.hosts,
+                host_hardware=cluster.hosts_hardware or None,
+                layout=recipe.layout,
+            )
+            return len(placement.hosts_used)
+
+        # Legacy path: 1 GPU per host (DGX Spark default).
         return p.total_nodes
 
     @staticmethod
@@ -670,6 +754,9 @@ class RuntimePlugin(Plugin):
         progress = kwargs.pop("progress", None)
 
         if len(hosts) <= 1:
+            # Pop cluster-aware kwargs that solo path doesn't need yet
+            # (placement is meaningless for single-host workloads).
+            kwargs.pop("cluster", None)
             return self._run_solo(
                 host=hosts[0] if hosts else "localhost",
                 image=image,
@@ -1116,6 +1203,7 @@ class RuntimePlugin(Plugin):
         from sparkrun.runtimes._cluster_ops import ClusterContext, run_native_cluster
 
         topology = kwargs.pop("topology", None)
+        cluster = kwargs.pop("cluster", None)
         ctx = ClusterContext.build(
             runtime=self,
             hosts=hosts,
@@ -1126,6 +1214,8 @@ class RuntimePlugin(Plugin):
             config=config,
             dry_run=dry_run,
             topology=topology,
+            cluster=cluster,
+            recipe=recipe,
         )
         return run_native_cluster(
             runtime=self,

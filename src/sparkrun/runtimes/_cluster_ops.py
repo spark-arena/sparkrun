@@ -16,7 +16,9 @@ from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from sparkrun.core.cluster_manager import ClusterDefinition
     from sparkrun.core.config import SparkrunConfig
+    from sparkrun.core.placement import RankAssignment
     from sparkrun.core.recipe import Recipe
     from sparkrun.orchestration.comm_env import ClusterCommEnv
     from sparkrun.orchestration.executor import Executor
@@ -45,6 +47,28 @@ class ClusterContext:
     dry_run: bool
     config: SparkrunConfig | None
     topology: str | None = None
+    cluster: ClusterDefinition | None = None
+    """Named cluster definition (Phase X threading).
+
+    When set, per-host hardware metadata is available via
+    :meth:`hardware_for`.  ``None`` preserves the legacy host-list-only
+    behavior so callers that pre-date the threading pass still work.
+    """
+
+    placement: RankAssignment | None = None
+    """Rank-to-host placement computed via :func:`compute_placement`.
+
+    ``None`` for callers that haven't threaded the cluster through;
+    runtimes that consume it must fall back to ``enumerate(hosts)``.
+    """
+
+    def hardware_for(self, host: str):
+        """Return per-host :class:`HostHardware` (DGX Spark default when unknown)."""
+        from sparkrun.core.hardware import default_dgx_spark_hardware
+
+        if self.cluster is not None:
+            return self.cluster.hardware_for(host)
+        return default_dgx_spark_hardware()
 
     @classmethod
     def build(
@@ -58,11 +82,17 @@ class ClusterContext:
         config: SparkrunConfig | None,
         dry_run: bool,
         topology: str | None = None,
+        *,
+        cluster: ClusterDefinition | None = None,
+        recipe: Recipe | None = None,
     ) -> ClusterContext:
         """Build context from runtime hooks and config.
 
         Replaces the ~8-line setup boilerplate repeated in every
-        runtime's ``_run_cluster`` method.
+        runtime's ``_run_cluster`` method.  ``cluster`` and ``recipe``
+        are optional; when both are present the placement engine
+        computes a :class:`RankAssignment` so runtimes can resolve
+        rank→host without indexing ``hosts[i]``.
         """
         from sparkrun.orchestration.primitives import build_ssh_kwargs, build_volumes
         from sparkrun.utils import merge_env
@@ -77,6 +107,24 @@ class ClusterContext:
             env,
             runtime.get_extra_env(),
         )
+
+        placement = None
+        if cluster is not None and recipe is not None:
+            try:
+                from sparkrun.core.parallelism import extract_parallelism
+                from sparkrun.core.placement import compute_placement
+
+                config_chain = recipe.build_config_chain()
+                parallelism = extract_parallelism(config_chain)
+                placement = compute_placement(
+                    parallelism,
+                    hosts,
+                    host_hardware=cluster.hosts_hardware or None,
+                    layout=recipe.layout,
+                )
+            except Exception as e:
+                logger.warning("Placement computation skipped: %s", e)
+
         return cls(
             hosts=hosts,
             head_host=hosts[0],
@@ -90,6 +138,8 @@ class ClusterContext:
             dry_run=dry_run,
             config=config,
             topology=topology,
+            cluster=cluster,
+            placement=placement,
         )
 
 
@@ -125,6 +175,65 @@ def cleanup_named_containers(ctx: ClusterContext, container_names: list[str]) ->
 # ---------------------------------------------------------------------------
 
 
+def _refuse_unsupported_collectives(ctx: ClusterContext) -> None:
+    """Raise if a placed cluster spans collective backends that aren't safe to mix.
+
+    Walks the placed hosts (or every cluster host when no placement was
+    threaded) and surfaces an actionable error when:
+
+    - The placed set spans more than one accelerator vendor.  NCCL/RCCL/HCCL
+      cannot share a process group, so the launch must either use a single
+      vendor's collective backend or split work via an explicit recipe layout
+      so each replica stays vendor-homogeneous.
+    - The single placed vendor maps to a backend scaffold that isn't yet
+      implemented (RCCL/HCCL today) — surface that now rather than waiting
+      for the per-rank NCCL env to silently mislead a worker process.
+
+    A single-vendor NVIDIA placement (the default DGX path, or any
+    fingerprinted NVIDIA host) returns silently.
+    """
+    if ctx.cluster is None:
+        return
+
+    placed_hosts = ctx.placement.hosts_used if ctx.placement is not None else tuple(ctx.cluster.hosts)
+    if not placed_hosts:
+        return
+
+    vendors: set[str] = set()
+    for host in placed_hosts:
+        hw = ctx.cluster.hardware_for(host)
+        for a in hw.accelerators:
+            if a.vendor:
+                vendors.add(a.vendor)
+
+    if not vendors or vendors == {"nvidia"}:
+        return  # NCCL default path is byte-identical to pre-Phase-X.
+
+    if len(vendors) > 1:
+        raise RuntimeError(
+            "Heterogeneous-vendor cluster %s spans %s.  Sparkrun cannot compose a single "
+            "collective env across NCCL/RCCL/HCCL — split work via recipe.layout so each "
+            "replica stays vendor-homogeneous." % (sorted(placed_hosts), sorted(vendors))
+        )
+
+    from sparkrun.orchestration.collectives import get_backend
+
+    vendor = next(iter(vendors))
+    backend = get_backend(vendor)
+    # Probe whether the backend has a real env implementation (NCCL today;
+    # RCCL/HCCL raise NotImplementedError).  Touch the public API once; if it
+    # raises, re-surface as a clear launch-time error rather than waiting for
+    # the (eventual) per-host script generation to discover it.
+    try:
+        backend.env_for_host({}, topology=None)
+    except NotImplementedError as e:
+        raise RuntimeError(
+            "%s backend not yet implemented for %s hosts (%s).  Contribute an "
+            "implementation in sparkrun/orchestration/collectives/ or pin the cluster "
+            "to NVIDIA hosts." % (backend.name.upper(), vendor, e)
+        ) from e
+
+
 def resolve_ib_env(
     ctx: ClusterContext,
     comm_env: ClusterCommEnv | None,
@@ -137,6 +246,8 @@ def resolve_ib_env(
     on a worker) each bind the correct ``*_SOCKET_IFNAME`` values.
     """
     from sparkrun.orchestration.comm_env import ClusterCommEnv as _CCE
+
+    _refuse_unsupported_collectives(ctx)
 
     if comm_env is not None:
         logger.info("Using pre-detected comm env (%d vars)", len(comm_env))
@@ -167,6 +278,8 @@ def detect_ib_with_ips(
     Returns ``(comm_env, ib_ip_map)``.
     """
     from sparkrun.orchestration.infiniband import detect_ib_for_hosts
+
+    _refuse_unsupported_collectives(ctx)
 
     if ib_ip_map is None:
         ib_ip_map = {}
@@ -481,6 +594,7 @@ def run_native_cluster(
         init_port=init_port,
         skip_keys=skip_keys,
         hosts=resolved_hosts,
+        placement=ctx.placement,
     )
     logger.info("Serve command (head, rank 0):")
     for line in head_command.strip().splitlines():
@@ -603,6 +717,7 @@ def run_native_cluster(
                     init_port=init_port,
                     skip_keys=skip_keys,
                     hosts=resolved_hosts,
+                    placement=ctx.placement,
                 )
                 worker_container = all_nodes[rank][2]
                 worker_exec_script = executor.generate_exec_serve_script(

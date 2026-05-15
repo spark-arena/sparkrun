@@ -159,7 +159,7 @@ class LlamaCppRuntime(RuntimePlugin):
             return "layer" if int(pp) > 1 else None
         return None
 
-    def compute_required_nodes(self, recipe, overrides=None):
+    def compute_required_nodes(self, recipe, overrides=None, *, cluster=None):
         """Compute required nodes from TP or PP (mutually exclusive).
 
         In llama.cpp, ``--split-mode row`` (TP) and ``--split-mode layer``
@@ -474,8 +474,20 @@ class LlamaCppRuntime(RuntimePlugin):
         logger.warning("llama.cpp RPC clustering is EXPERIMENTAL. Behavior may change in future versions.")
 
         progress = kwargs.pop("progress", None)
+        cluster = kwargs.pop("cluster", None)
 
-        ctx = ClusterContext.build(self, hosts, image, cluster_id, env, cache_dir, config, dry_run)
+        ctx = ClusterContext.build(
+            self,
+            hosts,
+            image,
+            cluster_id,
+            env,
+            cache_dir,
+            config,
+            dry_run,
+            cluster=cluster,
+            recipe=recipe,
+        )
         head_container = self._container_name(cluster_id, "head")
         worker_container_name = self._container_name(cluster_id, "worker")
 
