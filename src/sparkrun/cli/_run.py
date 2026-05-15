@@ -252,6 +252,10 @@ def run(
     click.echo("Runtime:   %s" % runtime.runtime_name)
     click.echo("Image:     %s" % container_image)
     click.echo("Model:     %s" % recipe.model)
+    if recipe.extra_models:
+        for em in recipe.extra_models:
+            rev = " @ %s" % em.revision if em.revision else ""
+            click.echo("Extra:     %s%s" % (em.name, rev))
     if is_solo:
         click.echo("Mode:      solo")
     else:

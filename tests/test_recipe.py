@@ -2513,3 +2513,142 @@ class TestRecipeSerialization:
         restored = Recipe._deserialize(original.__getstate__())
         restored.resolve({"distributed_executor_backend": "ray"})
         assert restored.runtime == "vllm-ray"
+
+
+class TestExtraModels:
+    """Tests for the extra_models field."""
+
+    # --- parsing ------------------------------------------------------------------
+
+    def test_no_extra_models(self, sample_v2_recipe_data: dict):
+        """When extra_models is not present, it defaults to an empty list."""
+        recipe = Recipe.from_dict(sample_v2_recipe_data)
+        assert recipe.extra_models == []
+
+    def test_empty_extra_models(self, sample_v2_recipe_data: dict):
+        """Empty list when explicitly set to []."""
+        data = {**sample_v2_recipe_data, "extra_models": []}
+        recipe = Recipe.from_dict(data)
+        assert recipe.extra_models == []
+
+    def test_simple_string_entries(self, sample_v2_recipe_data: dict):
+        """Each string entry becomes a DistributionModelEntry with just a name."""
+        data = {**sample_v2_recipe_data, "extra_models": ["google/gemma-4-9b-draft"]}
+        recipe = Recipe.from_dict(data)
+        assert len(recipe.extra_models) == 1
+        assert recipe.extra_models[0].name == "google/gemma-4-9b-draft"
+        assert recipe.extra_models[0].revision is None
+
+    def test_dict_entries_with_revision(self, sample_v2_recipe_data: dict):
+        """Dict entries preserve the revision."""
+        data = {
+            **sample_v2_recipe_data,
+            "extra_models": [
+                {"model": "google/gemma-4-9b-mtp", "revision": "main"},
+            ],
+        }
+        recipe = Recipe.from_dict(data)
+        assert len(recipe.extra_models) == 1
+        assert recipe.extra_models[0].name == "google/gemma-4-9b-mtp"
+        assert recipe.extra_models[0].revision == "main"
+
+    def test_dict_entry_without_revision(self, sample_v2_recipe_data: dict):
+        """Revision is optional in dict form."""
+        data = {
+            **sample_v2_recipe_data,
+            "extra_models": [{"model": "google/gemma-4-9b-draft"}],
+        }
+        recipe = Recipe.from_dict(data)
+        assert recipe.extra_models[0].revision is None
+
+    def test_mixed_formats(self, sample_v2_recipe_data: dict):
+        """String and dict entries can coexist."""
+        data = {
+            **sample_v2_recipe_data,
+            "extra_models": [
+                "google/gemma-4-9b-draft",
+                {"model": "google/gemma-4-9b-mtp", "revision": "main"},
+            ],
+        }
+        recipe = Recipe.from_dict(data)
+        assert len(recipe.extra_models) == 2
+        assert recipe.extra_models[0].name == "google/gemma-4-9b-draft"
+        assert recipe.extra_models[1].name == "google/gemma-4-9b-mtp"
+
+    # --- distribution_config integration ------------------------------------------
+
+    def test_extra_models_added_to_distribution_config(self, sample_v2_recipe_data: dict):
+        """extra_models are injected as additional DistributionModelEntry items."""
+        data = {**sample_v2_recipe_data, "extra_models": ["draft-model"]}
+        recipe = Recipe.from_dict(data)
+        model_names = [e.name for e in recipe.distribution_config.models.entries]
+        assert model_names == ["{model}", "draft-model"]
+
+    def test_extra_model_literal_duplicate_skipped(self, sample_v2_recipe_data: dict):
+        """Literal duplicates in extra_models are deduplicated by add_model()."""
+        data = {**sample_v2_recipe_data, "extra_models": ["draft-model", "draft-model"]}
+        recipe = Recipe.from_dict(data)
+        model_names = [e.name for e in recipe.distribution_config.models.entries]
+        assert model_names == ["{model}", "draft-model"]
+
+    def test_extra_model_revision_preserved_in_distribution(self, sample_v2_recipe_data: dict):
+        """Revision from extra_models flows into the distribution entry."""
+        data = {
+            **sample_v2_recipe_data,
+            "extra_models": [{"model": "draft-model", "revision": "abc123"}],
+        }
+        recipe = Recipe.from_dict(data)
+        draft_entry = next(
+            e for e in recipe.distribution_config.models.entries if e.name == "draft-model"
+        )
+        assert draft_entry.revision == "abc123"
+
+    # --- serialization ------------------------------------------------------------
+
+    def test_round_trip_extra_models(self, sample_v2_recipe_data: dict):
+        """extra_models survive __getstate__/__setstate__ round-trip."""
+        data = {
+            **sample_v2_recipe_data,
+            "extra_models": [
+                "draft-model",
+                {"model": "mtp-model", "revision": "main"},
+            ],
+        }
+        original = Recipe.from_dict(data)
+        restored = Recipe._deserialize(original.__getstate__())
+        assert len(restored.extra_models) == 2
+        assert restored.extra_models[0].name == "draft-model"
+        assert restored.extra_models[1].name == "mtp-model"
+        assert restored.extra_models[1].revision == "main"
+
+    def test_round_trip_yaml_extra_models(self, sample_v2_recipe_data: dict):
+        """extra_models survive _serialize_yaml / _deserialize_yaml round-trip."""
+        data = {
+            **sample_v2_recipe_data,
+            "extra_models": ["draft-model"],
+        }
+        original = Recipe.from_dict(data)
+        restored = Recipe._deserialize_yaml(original._serialize_yaml())
+        assert len(restored.extra_models) == 1
+        assert restored.extra_models[0].name == "draft-model"
+
+    # --- export -------------------------------------------------------------------
+
+    def test_export_includes_extra_models(self, sample_v2_recipe_data: dict):
+        """Export dict includes extra_models when present."""
+        data = {
+            **sample_v2_recipe_data,
+            "extra_models": [
+                {"model": "draft-model", "revision": "abc123"},
+            ],
+        }
+        recipe = Recipe.from_dict(data)
+        exported = recipe.to_dict()
+        assert "extra_models" in exported
+        assert exported["extra_models"] == [{"model": "draft-model", "revision": "abc123"}]
+
+    def test_export_omits_empty_extra_models(self, sample_v2_recipe_data: dict):
+        """Export dict omits extra_models when empty."""
+        recipe = Recipe.from_dict(sample_v2_recipe_data)
+        exported = recipe.to_dict()
+        assert "extra_models" not in exported

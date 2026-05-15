@@ -41,6 +41,7 @@ _KNOWN_KEYS = {
     "description",
     "model",
     "model_revision",
+    "extra_models",
     "runtime",
     "runtime_version",
     "mode",
@@ -157,13 +158,13 @@ class DistributionConfig:
             externally_provided=data.get("externally_provided", True),
         )
 
-    def add_model(self, model: str):
+    def add_model(self, model: str, revision: str | None = None):
         """Add a model distribution config to the distribution config."""
         # scan through existing models and make sure that we don't add a duplicate
         for existing_model in self.models.entries:
             if existing_model.name == model:
                 return
-        self.models.entries.append(DistributionModelEntry(name=model))
+        self.models.entries.append(DistributionModelEntry(name=model, revision=revision))
 
     def add_container(self, model_container_config: DistributionContainerEntry):
         self.containers.entries.append(model_container_config)
@@ -211,6 +212,36 @@ def _default_distribution_config(model: str = "{model}", container: str = "{cont
         ),
         externally_provided=False,
     )
+
+
+def _parse_extra_models(raw: list | None) -> list[DistributionModelEntry]:
+    """Parse ``extra_models`` from raw recipe YAML data.
+
+    Each entry is a string (model ID) or a dict with ``model`` + optional ``revision`` keys.
+    """
+    if not raw or not isinstance(raw, list):
+        return []
+    entries: list[DistributionModelEntry] = []
+    for item in raw:
+        if isinstance(item, str):
+            entries.append(DistributionModelEntry(name=item))
+        elif isinstance(item, dict):
+            entries.append(DistributionModelEntry(
+                name=item.get("model", ""),
+                revision=item.get("revision"),
+            ))
+    return entries
+
+
+def _serialize_extra_models(entries: list[DistributionModelEntry]) -> list[dict[str, str | None]]:
+    """Serialize extra_models to a list of plain dicts for export."""
+    result: list[dict[str, str | None]] = []
+    for e in entries:
+        d: dict[str, str | None] = {"model": e.name}
+        if e.revision:
+            d["revision"] = e.revision
+        result.append(d)
+    return result
 
 
 def _parse_distribution_config(data: dict[str, Any]) -> DistributionConfig:
@@ -582,6 +613,7 @@ class Recipe:
         self.description: str = data.get("description", "")
         self.model: str = data.get("model", "")
         self.model_revision: str | None = data.get("model_revision")
+        self.extra_models: list[DistributionModelEntry] = _parse_extra_models(data.get("extra_models", []))
         self.runtime: str = data.get("runtime", "")  # init to empty string if not provided
         self.runtime_version: str = data.get("runtime_version", "")
 
@@ -652,6 +684,8 @@ class Recipe:
 
         # Distribution config (auto-generated default, mutable by runtimes)
         self.distribution_config: DistributionConfig = _parse_distribution_config(data)
+        for em in self.extra_models:
+            self.distribution_config.add_model(em.name, em.revision)
 
         # Applied overrides (populated by resolve())
         self._applied_overrides: dict[str, Any] = {}
@@ -1066,6 +1100,7 @@ class Recipe:
             "description": self.description,
             "model": self.model,
             "model_revision": self.model_revision,
+            "extra_models": [{"model": e.name, "revision": e.revision} for e in self.extra_models],
             "runtime": self.runtime,
             "runtime_version": self.runtime_version,
             "mode": self.mode,
@@ -1102,6 +1137,7 @@ class Recipe:
         self.description = state.get("description", "")
         self.model = state.get("model", "")
         self.model_revision = state.get("model_revision")
+        self.extra_models = _parse_extra_models(state.get("extra_models", []))
         self.runtime = state.get("runtime", "")
         self.runtime_version = state.get("runtime_version", "")
         self.mode = state.get("mode", "auto")
@@ -1153,7 +1189,8 @@ class Recipe:
         return cls._deserialize(data)
 
     def __repr__(self) -> str:
-        return "Recipe(name=%r, runtime=%r, model=%r)" % (self.name, self.runtime, self.model)
+        extra = ", extra_models=%r" % [e.name for e in self.extra_models] if self.extra_models else ""
+        return "Recipe(name=%r, runtime=%r, model=%r%s)" % (self.name, self.runtime, self.model, extra)
 
     # Preferred key ordering for export.  Entries are either exact key names
     # or fnmatch-style patterns (e.g. "model*" matches "model", "model_revision").
@@ -1198,6 +1235,8 @@ class Recipe:
         # -- Core fields (always present) --
         if self.model_revision:
             d["model_revision"] = self.model_revision
+        if self.extra_models:
+            d["extra_models"] = _serialize_extra_models(self.extra_models)
         d["runtime"] = self._raw.get("runtime", self.runtime)  # use bare original if given
         if self.runtime_version:
             d["runtime_version"] = self.runtime_version
