@@ -153,6 +153,7 @@ class TrtllmRuntime(RuntimePlugin):
         host_ips: list[str],
         nccl_env: dict[str, str] | None = None,
         extra_env_keys: list[str] | None = None,
+        ranks_per_node: int = 1,
     ) -> str:
         """Wrap a trtllm-serve command with mpirun for multi-node execution.
 
@@ -161,6 +162,8 @@ class TrtllmRuntime(RuntimePlugin):
             host_ips: Management IPs for all hosts (order = rank order).
             nccl_env: NCCL environment variables to propagate via ``-x``.
             extra_env_keys: Additional env var names to propagate.
+            ranks_per_node: MPI ranks per host (1 on DGX Spark / 1-GPU
+                hosts; derived from placement on multi-GPU hosts).
 
         Returns:
             Complete ``mpirun`` command string.
@@ -173,7 +176,7 @@ class TrtllmRuntime(RuntimePlugin):
             "/tmp/sparkrun-rsh-wrapper.sh",
             "--mca",
             "rmaps_ppr_n_pernode",
-            "1",
+            str(ranks_per_node),
             "-H",
             ",".join(host_ips),
         ]
@@ -446,8 +449,20 @@ class TrtllmRuntime(RuntimePlugin):
         )
 
         progress = kwargs.pop("progress", None)
+        cluster = kwargs.pop("cluster", None)
 
-        ctx = ClusterContext.build(self, hosts, image, cluster_id, env, cache_dir, config, dry_run)
+        ctx = ClusterContext.build(
+            self,
+            hosts,
+            image,
+            cluster_id,
+            env,
+            cache_dir,
+            config,
+            dry_run,
+            cluster=cluster,
+            recipe=recipe,
+        )
         extra_docker_opts = self.get_extra_docker_opts()
 
         self._print_cluster_banner(
@@ -620,12 +635,16 @@ class TrtllmRuntime(RuntimePlugin):
             logger.error("No serve command or recipe provided")
             return 1
 
-        # Build mpirun command (head-host env since mpirun runs in head container)
+        # Build mpirun command (head-host env since mpirun runs in head container).
+        # When placement carries multi-GPU hosts, derive slot count from
+        # the heaviest host so MPI doesn't cap every host to 1 rank.
         head_env = comm_env.get_env(ctx.head_host) if comm_env else None
+        ranks_per_node = ctx.placement.max_ranks_per_host if ctx.placement else 1
         mpirun_cmd = self._build_mpirun_command(
             trtllm_cmd,
             host_ips,
             nccl_env=head_env,
+            ranks_per_node=ranks_per_node or 1,
         )
 
         logger.info("mpirun command:")
