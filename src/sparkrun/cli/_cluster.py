@@ -837,7 +837,7 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
     # Resolve auto transfer mode to a concrete value
     from sparkrun.orchestration.distribution import resolve_auto_transfer_mode
 
-    xfer_result = resolve_auto_transfer_mode(xfer_mode, host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
+    xfer_result = resolve_auto_transfer_mode(xfer_mode, host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run, topology=cluster_cfg.topology)
     resolved_mode = xfer_result.mode
 
     # Detect IB / NCCL env — reuse from transfer mode resolution if available,
