@@ -233,6 +233,27 @@ def launch_inference(
     # Resolve container image
     container_image = runtime.resolve_container(recipe, overrides)
 
+    # Resolve recipe.mods to pre_exec entries (builder-agnostic).
+    # Part of preparation — surfaces resolution failures before any
+    # builder/distribution work, and keeps the builder ignorant of mods.
+    if recipe.mods:
+        if registry_mgr is None and config is not None:
+            registry_mgr = config.get_registry_manager()
+        if registry_mgr is not None:
+            from sparkrun.core.mods import resolve_and_inject_mods
+
+            resolve_and_inject_mods(
+                recipe,
+                registry_mgr,
+                config=config,
+                transfer_mode=effective_transfer_mode,
+                head=host_list[0] if host_list else None,
+                ssh_kwargs=ssh_kwargs,
+                dry_run=dry_run,
+            )
+        else:
+            logger.warning("Cannot resolve recipe.mods: no RegistryManager available")
+
     if p:
         p.phase_end()
 

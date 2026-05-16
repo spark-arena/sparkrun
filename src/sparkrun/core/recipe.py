@@ -58,6 +58,7 @@ _KNOWN_KEYS = {
     "pre_exec",
     "post_exec",
     "post_commands",
+    "mods",
     "stop_after_post",
     "builder",
     "builder_config",
@@ -333,7 +334,7 @@ def _resolve_eugr_signals(recipe: Recipe) -> None:
     if recipe.runtime not in ("vllm", ""):
         return
     rc = recipe.runtime_config
-    if rc.get("build_args") or rc.get("mods") or recipe.container.strip().startswith("ghcr.io/spark-arena/dgx-vllm-eugr-nightly"):
+    if rc.get("build_args") or recipe.mods or recipe.container.strip().startswith("ghcr.io/spark-arena/dgx-vllm-eugr-nightly"):
         if not recipe.builder:
             recipe.builder = "eugr"
 
@@ -641,6 +642,14 @@ class Recipe:
         self.post_exec: list[str] = list(data.get("post_exec", []))
         self.post_commands: list[str] = list(data.get("post_commands", []))
         self.stop_after_post: bool = bool(data.get("stop_after_post", False))
+
+        # Mods (generic, builder-agnostic): list of references resolved to
+        # pre_exec entries by core/mods.py before container launch.
+        # v1 recipes carry mods under runtime_config; migrate to top-level
+        # so exports round-trip cleanly and the resolver sees a single source.
+        self.mods: list[str] = list(data.get("mods", []) or [])
+        if not self.mods and isinstance(self.runtime_config.get("mods"), list):
+            self.mods = list(self.runtime_config.pop("mods"))
 
         # Builder plugin
         self.builder: str = data.get("builder", "")
@@ -1082,6 +1091,7 @@ class Recipe:
             "post_exec": list(self.post_exec),
             "post_commands": list(self.post_commands),
             "stop_after_post": self.stop_after_post,
+            "mods": list(self.mods),
             "builder": self.builder,
             "builder_config": dict(self.builder_config),
             "executor_config": dict(self.executor_config),
@@ -1118,6 +1128,7 @@ class Recipe:
         self.post_exec = list(state.get("post_exec") or [])
         self.post_commands = list(state.get("post_commands") or [])
         self.stop_after_post = bool(state.get("stop_after_post", False))
+        self.mods = list(state.get("mods") or [])
         self.builder = state.get("builder", "")
         self.builder_config = dict(state.get("builder_config") or {})
         self.executor_config = dict(state.get("executor_config") or {})
@@ -1248,6 +1259,10 @@ class Recipe:
             d["defaults"] = dict(self.defaults)
         if self.env:
             d["env"] = dict(self.env)
+
+        # -- Mods (resolved to pre_exec at run time; preserve source list on export) --
+        if self.mods:
+            d["mods"] = list(self.mods)
 
         # -- Lifecycle hooks --
         if self.pre_exec:

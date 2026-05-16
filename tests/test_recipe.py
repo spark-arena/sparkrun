@@ -68,9 +68,12 @@ def test_load_v1_recipe_migrates_to_eugr(tmp_recipe_dir: Path):
     assert recipe.runtime == "vllm-distributed"
     assert recipe.builder == "eugr"
 
-    # build_args and mods should be in runtime_config
+    # build_args stays in runtime_config; mods is now a top-level field
+    # (auto-migrated from v1 runtime_config to recipe.mods so the generic
+    # core/mods.py resolver can handle any builder)
     assert recipe.runtime_config["build_args"] == ["ARG1=value1"]
-    assert recipe.runtime_config["mods"] == ["mod1.patch"]
+    assert recipe.mods == ["mod1.patch"]
+    assert "mods" not in recipe.runtime_config
 
 
 def test_load_v1_recipe_no_mods_still_eugr(tmp_recipe_dir: Path):
@@ -559,7 +562,9 @@ def test_recipe_runtime_config_catchall():
         }
     )
     assert recipe.runtime_config["build_args"] == ["--pre-tf"]
-    assert recipe.runtime_config["mods"] == ["mods/fix-something"]
+    # mods is a known top-level field, not swept into runtime_config
+    assert recipe.mods == ["mods/fix-something"]
+    assert "mods" not in recipe.runtime_config
     assert recipe.runtime_config["custom_field"] == "custom_value"
     # Known keys should NOT be in runtime_config
     assert "name" not in recipe.runtime_config

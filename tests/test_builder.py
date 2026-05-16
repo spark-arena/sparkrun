@@ -212,27 +212,8 @@ class TestEugrPrepareImage:
 
         mock_run.assert_not_called()
 
-    def test_eugr_prepare_injects_mod_pre_exec(self, eugr_builder_with_repo):
-        """prepare_image() injects mod entries into recipe.pre_exec."""
-        builder, repo_dir = eugr_builder_with_repo
-        recipe = Recipe.from_dict(
-            {
-                "name": "test",
-                "model": "some/model",
-                "runtime": "eugr-vllm",
-                "runtime_config": {"mods": ["mods/flash-attn"]},
-            }
-        )
-        with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=True):
-            with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
-                builder.prepare_image("vllm-node", recipe, ["10.0.0.1"])
-
-        # Should have injected one copy dict + one exec string per mod
-        assert len(recipe.pre_exec) == 2
-        assert isinstance(recipe.pre_exec[0], dict)
-        assert "copy" in recipe.pre_exec[0]
-        assert isinstance(recipe.pre_exec[1], str)
-        assert "run.sh" in recipe.pre_exec[1]
+    # Note: mod -> pre_exec injection moved out of the eugr builder into the
+    # generic core/mods.py resolver. See tests/test_mods.py for that coverage.
 
     def test_eugr_prepare_build_failure_raises(self, eugr_builder_with_repo):
         """prepare_image() raises RuntimeError when the build exits non-zero."""
@@ -250,71 +231,6 @@ class TestEugrPrepareImage:
                 mock_run.return_value = mock.Mock(returncode=1)
                 with pytest.raises(RuntimeError, match="eugr container build failed"):
                     builder.prepare_image("vllm-node", recipe, ["10.0.0.1"])
-
-    def test_eugr_mod_pre_exec_format(self, eugr_builder_with_repo):
-        """Injected mod pre_exec entries have correct copy/dest keys and run.sh string."""
-        builder, repo_dir = eugr_builder_with_repo
-        recipe = Recipe.from_dict(
-            {
-                "name": "test",
-                "model": "some/model",
-                "runtime": "eugr-vllm",
-                "runtime_config": {"mods": ["mods/flash-attn"]},
-            }
-        )
-        with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=True):
-            with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
-                builder.prepare_image("vllm-node", recipe, ["10.0.0.1"])
-
-        copy_entry = recipe.pre_exec[0]
-        exec_entry = recipe.pre_exec[1]
-
-        # The copy dict must have "copy" (source path) and "dest" (container path)
-        assert "copy" in copy_entry
-        assert "dest" in copy_entry
-        assert copy_entry["dest"].startswith("/workspace/mods/")
-
-        # The exec string must reference run.sh
-        assert "run.sh" in exec_entry
-
-        # The copy source must NOT double the 'mods/' prefix
-        assert "mods/mods/" not in copy_entry["copy"]
-        assert copy_entry["copy"].endswith("/mods/flash-attn")
-
-    def test_eugr_mod_bare_name_same_as_prefixed(self, eugr_builder_with_repo):
-        """Mod specified as 'flash-attn' (bare) produces same paths as 'mods/flash-attn'."""
-        builder, repo_dir = eugr_builder_with_repo
-
-        # Build recipe with bare mod name (no 'mods/' prefix)
-        recipe_bare = Recipe.from_dict(
-            {
-                "name": "test",
-                "model": "some/model",
-                "runtime": "eugr-vllm",
-                "runtime_config": {"mods": ["flash-attn"]},
-            }
-        )
-        with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=True):
-            with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
-                builder.prepare_image("vllm-node", recipe_bare, ["10.0.0.1"])
-
-        # Build recipe with prefixed mod name
-        recipe_prefixed = Recipe.from_dict(
-            {
-                "name": "test",
-                "model": "some/model",
-                "runtime": "eugr-vllm",
-                "runtime_config": {"mods": ["mods/flash-attn"]},
-            }
-        )
-        with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=True):
-            with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
-                builder.prepare_image("vllm-node", recipe_prefixed, ["10.0.0.1"])
-
-        # Both should produce identical pre_exec entries
-        assert recipe_bare.pre_exec[0]["copy"] == recipe_prefixed.pre_exec[0]["copy"]
-        assert recipe_bare.pre_exec[0]["dest"] == recipe_prefixed.pre_exec[0]["dest"]
-        assert recipe_bare.pre_exec[1] == recipe_prefixed.pre_exec[1]
 
 
 # ---------------------------------------------------------------------------
@@ -503,80 +419,8 @@ class TestEugrDelegatedMode:
         )
         assert result == "my-image"
 
-    def test_eugr_prepare_delegated_clones_repo_remotely(self, eugr_builder_with_repo):
-        """In delegated mode, _ensure_repo_remote is called instead of local ensure_repo."""
-        builder, repo_dir = eugr_builder_with_repo
-        recipe = Recipe.from_dict(
-            {
-                "name": "test",
-                "model": "some/model",
-                "runtime": "eugr-vllm",
-                "runtime_config": {"mods": ["flash-attn"]},
-            }
-        )
-        with mock.patch.object(builder, "_image_exists_on_host", return_value=True):
-            with mock.patch.object(builder, "_ensure_repo_remote", return_value="/remote/repo") as mock_remote_repo:
-                with mock.patch.object(builder, "ensure_repo") as mock_local_repo:
-                    builder.prepare_image(
-                        "vllm-node",
-                        recipe,
-                        ["head-host"],
-                        transfer_mode="delegated",
-                        ssh_kwargs={},
-                    )
-        mock_remote_repo.assert_called_once()
-        mock_local_repo.assert_not_called()
-
-    def test_eugr_mod_pre_exec_delegated_sets_source_host(self, eugr_builder_with_repo):
-        """In delegated mode, copy entries include a source_host key."""
-        builder, repo_dir = eugr_builder_with_repo
-        recipe = Recipe.from_dict(
-            {
-                "name": "test",
-                "model": "some/model",
-                "runtime": "eugr-vllm",
-                "runtime_config": {"mods": ["flash-attn"]},
-            }
-        )
-        with mock.patch.object(builder, "_image_exists_on_host", return_value=True):
-            with mock.patch.object(builder, "_ensure_repo_remote", return_value=str(repo_dir)):
-                builder.prepare_image(
-                    "vllm-node",
-                    recipe,
-                    ["head-host"],
-                    transfer_mode="delegated",
-                    ssh_kwargs={},
-                )
-
-        assert len(recipe.pre_exec) == 2
-        copy_entry = recipe.pre_exec[0]
-        assert isinstance(copy_entry, dict)
-        assert copy_entry["source_host"] == "head-host"
-
-    def test_eugr_prepare_local_no_source_host(self, eugr_builder_with_repo):
-        """In local mode, copy entries do NOT include a source_host key."""
-        builder, repo_dir = eugr_builder_with_repo
-        recipe = Recipe.from_dict(
-            {
-                "name": "test",
-                "model": "some/model",
-                "runtime": "eugr-vllm",
-                "runtime_config": {"mods": ["flash-attn"]},
-            }
-        )
-        with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=True):
-            with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
-                builder.prepare_image(
-                    "vllm-node",
-                    recipe,
-                    ["10.0.0.1"],
-                    transfer_mode="local",
-                )
-
-        assert len(recipe.pre_exec) == 2
-        copy_entry = recipe.pre_exec[0]
-        assert isinstance(copy_entry, dict)
-        assert "source_host" not in copy_entry
+    # Note: mod-specific delegated-mode behavior moved to core/mods.py;
+    # covered by tests/test_mods.py.
 
     @mock.patch("sparkrun.orchestration.primitives.run_script_on_host")
     def test_image_exists_on_host_true(self, mock_run):

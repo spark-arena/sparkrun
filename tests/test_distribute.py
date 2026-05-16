@@ -3,7 +3,7 @@
 Covers:
 - SSH transfer primitives (build_ssh_opts_string, run_pipeline_to_remote,
   run_rsync, and their parallel variants)
-- Container image hash checking (_check_remote_image_ids, _filter_hosts_needing_image)
+- Container image identity checking (_check_remote_image_identities, _filter_hosts_needing_image)
 - Container distribution (distribute_image_from_local, distribute_image_from_head)
 - Model distribution (distribute_model_from_local, distribute_model_from_head)
 - InfiniBand detection helpers (IBDetectionResult, extract_ib_ips, detect_ib_for_hosts)
@@ -280,90 +280,245 @@ class TestParallelRsync:
 
 
 # ---------------------------------------------------------------------------
-# Image hash checking
+# Image identity checking
 # ---------------------------------------------------------------------------
 
 
-class TestCheckRemoteImageIds:
-    """Test _check_remote_image_ids."""
+class TestParseIdentity:
+    """Test _parse_identity (parser for combined inspect output)."""
+
+    def test_id_and_one_digest(self):
+        from sparkrun.containers.distribute import _parse_identity
+
+        image_id, digests = _parse_identity("sha256:abc|repo@sha256:xyz \n")
+        assert image_id == "sha256:abc"
+        assert digests == ["repo@sha256:xyz"]
+
+    def test_id_and_multiple_digests(self):
+        from sparkrun.containers.distribute import _parse_identity
+
+        image_id, digests = _parse_identity("sha256:abc|r1@sha256:x r2@sha256:x ")
+        assert image_id == "sha256:abc"
+        assert digests == ["r1@sha256:x", "r2@sha256:x"]
+
+    def test_id_and_no_digests(self):
+        from sparkrun.containers.distribute import _parse_identity
+
+        image_id, digests = _parse_identity("sha256:abc|")
+        assert image_id == "sha256:abc"
+        assert digests == []
+
+    def test_empty_means_absent(self):
+        from sparkrun.containers.distribute import _parse_identity
+
+        image_id, digests = _parse_identity("")
+        assert image_id is None
+        assert digests == []
+
+
+class TestImagesMatch:
+    """Test _images_match (digest-overlap or id-equality)."""
+
+    def test_id_equality(self):
+        """Same Id, both sides — match even without RepoDigests."""
+        from sparkrun.containers.distribute import _images_match
+
+        assert _images_match("sha256:abc", [], "sha256:abc", []) is True
+
+    def test_digest_overlap_with_different_ids(self):
+        """Issue #152: different Ids (storage-driver drift), same RepoDigest sha → match."""
+        from sparkrun.containers.distribute import _images_match
+
+        # Same registry image pulled on hosts with different storage drivers.
+        assert (
+            _images_match(
+                "sha256:lenovo",
+                ["sparkarena/spark-vllm-docker@sha256:e07b3d4e9c45"],
+                "sha256:msi",
+                ["sparkarena/spark-vllm-docker@sha256:e07b3d4e9c45"],
+            )
+            is True
+        )
+
+    def test_digest_overlap_across_repos(self):
+        """Same digest sha under different repo names (mirror) → match."""
+        from sparkrun.containers.distribute import _images_match
+
+        assert (
+            _images_match(
+                "sha256:a",
+                ["docker.io/foo@sha256:X"],
+                "sha256:b",
+                ["quay.io/foo@sha256:X"],
+            )
+            is True
+        )
+
+    def test_no_overlap_and_different_ids(self):
+        """Different Ids and different RepoDigests → no match."""
+        from sparkrun.containers.distribute import _images_match
+
+        assert (
+            _images_match(
+                "sha256:a",
+                ["repo@sha256:X"],
+                "sha256:b",
+                ["repo@sha256:Y"],
+            )
+            is False
+        )
+
+    def test_local_has_digest_remote_does_not_falls_back_to_id(self):
+        """Mixed: only local has RepoDigests — fall back to Id comparison."""
+        from sparkrun.containers.distribute import _images_match
+
+        # Different Id, no remote digests → mismatch (Id fallback).
+        assert _images_match("sha256:a", ["repo@sha256:X"], "sha256:b", []) is False
+        # Same Id, no remote digests → match.
+        assert _images_match("sha256:a", ["repo@sha256:X"], "sha256:a", []) is True
+
+    def test_remote_absent(self):
+        """Remote has no Id and no digests → image not present, no match."""
+        from sparkrun.containers.distribute import _images_match
+
+        assert _images_match("sha256:a", ["r@sha256:X"], None, []) is False
+
+
+class TestCheckRemoteImageIdentities:
+    """Test _check_remote_image_identities."""
 
     @mock.patch("sparkrun.containers.distribute.run_remote_command")
-    def test_returns_host_id_map(self, mock_cmd):
-        """Returns mapping of host → image ID for hosts that have the image."""
+    def test_returns_host_identity_map(self, mock_cmd):
+        """Returns mapping of host → (id, repo_digests) for hosts with the image."""
         mock_cmd.side_effect = [
-            RemoteResult(host="h1", returncode=0, stdout="sha256:abc123\n", stderr=""),
-            RemoteResult(host="h2", returncode=0, stdout="sha256:def456\n", stderr=""),
+            RemoteResult(host="h1", returncode=0, stdout="sha256:abc|repo@sha256:x \n", stderr=""),
+            RemoteResult(host="h2", returncode=0, stdout="sha256:def|\n", stderr=""),
         ]
-        from sparkrun.containers.distribute import _check_remote_image_ids
+        from sparkrun.containers.distribute import _check_remote_image_identities
 
-        result = _check_remote_image_ids("img:latest", ["h1", "h2"])
-        assert result == {"h1": "sha256:abc123", "h2": "sha256:def456"}
+        result = _check_remote_image_identities("img:latest", ["h1", "h2"])
+        assert result == {
+            "h1": ("sha256:abc", ["repo@sha256:x"]),
+            "h2": ("sha256:def", []),
+        }
 
     @mock.patch("sparkrun.containers.distribute.run_remote_command")
     def test_skips_hosts_without_image(self, mock_cmd):
         """Hosts where the image is absent (empty stdout) are omitted."""
         mock_cmd.side_effect = [
-            RemoteResult(host="h1", returncode=0, stdout="sha256:abc123\n", stderr=""),
+            RemoteResult(host="h1", returncode=0, stdout="sha256:abc|r@sha256:x \n", stderr=""),
             RemoteResult(host="h2", returncode=0, stdout="", stderr=""),
         ]
-        from sparkrun.containers.distribute import _check_remote_image_ids
+        from sparkrun.containers.distribute import _check_remote_image_identities
 
-        result = _check_remote_image_ids("img:latest", ["h1", "h2"])
-        assert result == {"h1": "sha256:abc123"}
+        result = _check_remote_image_identities("img:latest", ["h1", "h2"])
+        assert result == {"h1": ("sha256:abc", ["r@sha256:x"])}
 
     @mock.patch("sparkrun.containers.distribute.run_remote_command")
     def test_skips_failed_commands(self, mock_cmd):
         """Hosts where the SSH command failed are omitted."""
         mock_cmd.side_effect = [
-            RemoteResult(host="h1", returncode=0, stdout="sha256:abc123\n", stderr=""),
+            RemoteResult(host="h1", returncode=0, stdout="sha256:abc|\n", stderr=""),
             RemoteResult(host="h2", returncode=1, stdout="", stderr="error"),
         ]
-        from sparkrun.containers.distribute import _check_remote_image_ids
+        from sparkrun.containers.distribute import _check_remote_image_identities
 
-        result = _check_remote_image_ids("img:latest", ["h1", "h2"])
-        assert result == {"h1": "sha256:abc123"}
+        result = _check_remote_image_identities("img:latest", ["h1", "h2"])
+        assert result == {"h1": ("sha256:abc", [])}
 
     def test_dry_run_returns_empty(self):
-        from sparkrun.containers.distribute import _check_remote_image_ids
+        from sparkrun.containers.distribute import _check_remote_image_identities
 
-        result = _check_remote_image_ids("img:latest", ["h1", "h2"], dry_run=True)
+        result = _check_remote_image_identities("img:latest", ["h1", "h2"], dry_run=True)
         assert result == {}
 
     def test_empty_hosts_returns_empty(self):
-        from sparkrun.containers.distribute import _check_remote_image_ids
+        from sparkrun.containers.distribute import _check_remote_image_identities
 
-        result = _check_remote_image_ids("img:latest", [])
+        result = _check_remote_image_identities("img:latest", [])
         assert result == {}
 
 
 class TestFilterHostsNeedingImage:
     """Test _filter_hosts_needing_image."""
 
-    @mock.patch("sparkrun.containers.distribute._check_remote_image_ids")
-    def test_all_hosts_up_to_date(self, mock_check):
+    @mock.patch("sparkrun.containers.distribute._check_remote_image_identities")
+    def test_all_hosts_up_to_date_by_id(self, mock_check):
         """Hosts with matching image ID are filtered out."""
-        mock_check.return_value = {"h1": "sha256:abc", "h2": "sha256:abc"}
+        mock_check.return_value = {"h1": ("sha256:abc", []), "h2": ("sha256:abc", [])}
         from sparkrun.containers.distribute import _filter_hosts_needing_image
 
         result = _filter_hosts_needing_image("img", ["h1", "h2"], "sha256:abc")
         assert result == []
 
-    @mock.patch("sparkrun.containers.distribute._check_remote_image_ids")
+    @mock.patch("sparkrun.containers.distribute._check_remote_image_identities")
     def test_all_hosts_need_transfer(self, mock_check):
         """Hosts with missing or mismatched IDs are included."""
-        mock_check.return_value = {"h1": "sha256:old"}  # h2 not present
+        mock_check.return_value = {"h1": ("sha256:old", [])}  # h2 not present
         from sparkrun.containers.distribute import _filter_hosts_needing_image
 
         result = _filter_hosts_needing_image("img", ["h1", "h2"], "sha256:new")
         assert result == ["h1", "h2"]
 
-    @mock.patch("sparkrun.containers.distribute._check_remote_image_ids")
+    @mock.patch("sparkrun.containers.distribute._check_remote_image_identities")
     def test_partial_match(self, mock_check):
         """Only hosts with mismatched IDs are returned."""
-        mock_check.return_value = {"h1": "sha256:abc", "h2": "sha256:old"}
+        mock_check.return_value = {"h1": ("sha256:abc", []), "h2": ("sha256:old", [])}
         from sparkrun.containers.distribute import _filter_hosts_needing_image
 
         result = _filter_hosts_needing_image("img", ["h1", "h2"], "sha256:abc")
+        assert result == ["h2"]
+
+    @mock.patch("sparkrun.containers.distribute._check_remote_image_identities")
+    def test_issue_152_storage_driver_drift(self, mock_check):
+        """Different Ids but overlapping RepoDigests → skip transfer (issue #152)."""
+        # Lenovo host (overlay2) and MSI host (containerd overlayfs) report
+        # different local Ids but the same RepoDigest for the same image.
+        mock_check.return_value = {
+            "lenovo": ("sha256:lenovo", ["sparkarena/spark-vllm@sha256:e07b3d"]),
+            "msi": ("sha256:msi", ["sparkarena/spark-vllm@sha256:e07b3d"]),
+        }
+        from sparkrun.containers.distribute import _filter_hosts_needing_image
+
+        result = _filter_hosts_needing_image(
+            "img",
+            ["lenovo", "msi"],
+            "sha256:control",  # control machine yet another Id
+            local_repo_digests=["sparkarena/spark-vllm@sha256:e07b3d"],
+        )
+        assert result == []
+
+    @mock.patch("sparkrun.containers.distribute._check_remote_image_identities")
+    def test_digest_match_across_mirrored_repos(self, mock_check):
+        """Same digest sha under different repo names → skip transfer."""
+        mock_check.return_value = {
+            "h1": ("sha256:a", ["quay.io/foo@sha256:X"]),
+        }
+        from sparkrun.containers.distribute import _filter_hosts_needing_image
+
+        result = _filter_hosts_needing_image(
+            "img",
+            ["h1"],
+            "sha256:b",
+            local_repo_digests=["docker.io/foo@sha256:X"],
+        )
+        assert result == []
+
+    @mock.patch("sparkrun.containers.distribute._check_remote_image_identities")
+    def test_id_fallback_when_remote_has_no_digests(self, mock_check):
+        """Locally-built / save-loaded remote with no digests → Id fallback."""
+        mock_check.return_value = {
+            "h1": ("sha256:same", []),  # same Id, no digests (e.g. after save/load)
+            "h2": ("sha256:other", []),
+        }
+        from sparkrun.containers.distribute import _filter_hosts_needing_image
+
+        result = _filter_hosts_needing_image(
+            "img",
+            ["h1", "h2"],
+            "sha256:same",
+            local_repo_digests=["repo@sha256:X"],  # local has digest, remote doesn't
+        )
         assert result == ["h2"]
 
     def test_dry_run_returns_all(self):
@@ -373,11 +528,11 @@ class TestFilterHostsNeedingImage:
         result = _filter_hosts_needing_image("img", ["h1", "h2"], "sha256:abc", dry_run=True)
         assert result == ["h1", "h2"]
 
-    def test_no_local_id_returns_all(self):
-        """When local image ID is None, all hosts need transfer."""
+    def test_no_local_identity_returns_all(self):
+        """When local Id and digests are both empty, all hosts need transfer."""
         from sparkrun.containers.distribute import _filter_hosts_needing_image
 
-        result = _filter_hosts_needing_image("img", ["h1", "h2"], None)
+        result = _filter_hosts_needing_image("img", ["h1", "h2"], None, local_repo_digests=[])
         assert result == ["h1", "h2"]
 
 
@@ -390,7 +545,7 @@ class TestDistributeImageFromLocal:
     """Test distribute_image_from_local."""
 
     @mock.patch("sparkrun.containers.distribute.run_pipeline_to_remotes_parallel")
-    @mock.patch("sparkrun.containers.distribute.get_image_id", return_value=None)
+    @mock.patch("sparkrun.containers.distribute.get_image_identity", return_value=(None, []))
     @mock.patch("sparkrun.containers.distribute.ensure_image")
     def test_dry_run(self, mock_ensure, mock_id, mock_parallel):
         mock_ensure.return_value = 0
@@ -403,7 +558,7 @@ class TestDistributeImageFromLocal:
         assert failed == []
 
     @mock.patch("sparkrun.containers.distribute.run_pipeline_to_remotes_parallel")
-    @mock.patch("sparkrun.containers.distribute.get_image_id", return_value=None)
+    @mock.patch("sparkrun.containers.distribute.get_image_identity", return_value=(None, []))
     @mock.patch("sparkrun.containers.distribute.ensure_image")
     def test_success(self, mock_ensure, mock_id, mock_parallel):
         mock_ensure.return_value = 0
@@ -422,7 +577,7 @@ class TestDistributeImageFromLocal:
         assert "docker load" in call_kwargs[0][2]
 
     @mock.patch("sparkrun.containers.distribute.run_pipeline_to_remotes_parallel")
-    @mock.patch("sparkrun.containers.distribute.get_image_id", return_value=None)
+    @mock.patch("sparkrun.containers.distribute.get_image_identity", return_value=(None, []))
     @mock.patch("sparkrun.containers.distribute.ensure_image")
     def test_ensure_fails(self, mock_ensure, mock_id, mock_parallel):
         """If ensure_image fails, all hosts are returned as failed."""
@@ -434,7 +589,7 @@ class TestDistributeImageFromLocal:
         mock_parallel.assert_not_called()
 
     @mock.patch("sparkrun.containers.distribute.run_pipeline_to_remotes_parallel")
-    @mock.patch("sparkrun.containers.distribute.get_image_id", return_value=None)
+    @mock.patch("sparkrun.containers.distribute.get_image_identity", return_value=(None, []))
     @mock.patch("sparkrun.containers.distribute.ensure_image")
     def test_partial_failure(self, mock_ensure, mock_id, mock_parallel):
         """Only failed hosts are returned."""
@@ -449,7 +604,7 @@ class TestDistributeImageFromLocal:
         assert failed == ["h2"]
 
     @mock.patch("sparkrun.containers.distribute.run_pipeline_to_remotes_parallel")
-    @mock.patch("sparkrun.containers.distribute.get_image_id", return_value=None)
+    @mock.patch("sparkrun.containers.distribute.get_image_identity", return_value=(None, []))
     @mock.patch("sparkrun.containers.distribute.ensure_image")
     def test_empty_hosts(self, mock_ensure, mock_id, mock_parallel):
         mock_ensure.return_value = 0
@@ -461,7 +616,7 @@ class TestDistributeImageFromLocal:
 
     @mock.patch("sparkrun.containers.distribute.run_pipeline_to_remotes_parallel")
     @mock.patch("sparkrun.containers.distribute._filter_hosts_needing_image")
-    @mock.patch("sparkrun.containers.distribute.get_image_id", return_value="sha256:abc")
+    @mock.patch("sparkrun.containers.distribute.get_image_identity", return_value=("sha256:abc", []))
     @mock.patch("sparkrun.containers.distribute.ensure_image")
     def test_hash_check_skips_up_to_date(self, mock_ensure, mock_id, mock_filter, mock_parallel):
         """When all hosts are up to date, no transfer happens."""
@@ -475,7 +630,7 @@ class TestDistributeImageFromLocal:
 
     @mock.patch("sparkrun.containers.distribute.run_pipeline_to_remotes_parallel")
     @mock.patch("sparkrun.containers.distribute._filter_hosts_needing_image")
-    @mock.patch("sparkrun.containers.distribute.get_image_id", return_value="sha256:abc")
+    @mock.patch("sparkrun.containers.distribute.get_image_identity", return_value=("sha256:abc", []))
     @mock.patch("sparkrun.containers.distribute.ensure_image")
     def test_hash_check_transfers_stale_hosts(self, mock_ensure, mock_id, mock_filter, mock_parallel):
         """Only hosts that need the image get the transfer."""
@@ -497,7 +652,7 @@ class TestDistributeImageTransferHosts:
     """Test transfer_hosts routing in distribute_image_from_local."""
 
     @mock.patch("sparkrun.containers.distribute.run_pipeline_to_remotes_parallel")
-    @mock.patch("sparkrun.containers.distribute.get_image_id", return_value=None)
+    @mock.patch("sparkrun.containers.distribute.get_image_identity", return_value=(None, []))
     @mock.patch("sparkrun.containers.distribute.ensure_image")
     def test_transfer_hosts_used_for_pipeline(self, mock_ensure, mock_id, mock_parallel):
         """When transfer_hosts is provided, pipeline uses those IPs."""
@@ -520,7 +675,7 @@ class TestDistributeImageTransferHosts:
         assert "10.0.0.2" in transferred
 
     @mock.patch("sparkrun.containers.distribute.run_pipeline_to_remotes_parallel")
-    @mock.patch("sparkrun.containers.distribute.get_image_id", return_value=None)
+    @mock.patch("sparkrun.containers.distribute.get_image_identity", return_value=(None, []))
     @mock.patch("sparkrun.containers.distribute.ensure_image")
     def test_transfer_hosts_failure_maps_back(self, mock_ensure, mock_id, mock_parallel):
         """Failures on transfer IPs are reported as management hostnames."""
@@ -653,14 +808,14 @@ class TestDistributeImageFromHead:
         assert "10.0.0.1" in dist_script
         assert "10.0.0.2" in dist_script
 
-    @mock.patch("sparkrun.containers.distribute._check_remote_image_ids")
+    @mock.patch("sparkrun.containers.distribute._check_remote_image_identities")
     @mock.patch("sparkrun.orchestration.distribution._distribute_from_head")
     def test_all_hosts_up_to_date_early_return(self, mock_dist, mock_check):
         """All hosts have matching image → early return, no distribution."""
         mock_check.return_value = {
-            "head": "sha256:abc123",
-            "w1": "sha256:abc123",
-            "w2": "sha256:abc123",
+            "head": ("sha256:abc123", []),
+            "w1": ("sha256:abc123", []),
+            "w2": ("sha256:abc123", []),
         }
         from sparkrun.containers.distribute import distribute_image_from_head
 
@@ -668,14 +823,28 @@ class TestDistributeImageFromHead:
         assert failed == []
         mock_dist.assert_not_called()
 
-    @mock.patch("sparkrun.containers.distribute._check_remote_image_ids")
+    @mock.patch("sparkrun.containers.distribute._check_remote_image_identities")
+    @mock.patch("sparkrun.orchestration.distribution._distribute_from_head")
+    def test_all_hosts_up_to_date_by_digest_storage_driver_drift(self, mock_dist, mock_check):
+        """Issue #152: different Ids but matching RepoDigests → early return."""
+        mock_check.return_value = {
+            "head": ("sha256:lenovo", ["repo@sha256:e07b3d"]),
+            "w1": ("sha256:msi", ["repo@sha256:e07b3d"]),
+        }
+        from sparkrun.containers.distribute import distribute_image_from_head
+
+        failed = distribute_image_from_head("img:latest", ["head", "w1"])
+        assert failed == []
+        mock_dist.assert_not_called()
+
+    @mock.patch("sparkrun.containers.distribute._check_remote_image_identities")
     @mock.patch("sparkrun.orchestration.distribution._distribute_from_head")
     def test_partial_workers_stale(self, mock_dist, mock_check):
         """Head has image, 1 of 2 workers stale → distribute only to stale worker."""
         mock_check.return_value = {
-            "head": "sha256:abc123",
-            "w1": "sha256:abc123",
-            "w2": "sha256:old999",
+            "head": ("sha256:abc123", []),
+            "w1": ("sha256:abc123", []),
+            "w2": ("sha256:old999", []),
         }
         mock_dist.return_value = []
         from sparkrun.containers.distribute import distribute_image_from_head
@@ -693,11 +862,11 @@ class TestDistributeImageFromHead:
         assert "10.0.0.2" in call_kwargs["distribute_script"]
         assert "10.0.0.1" not in call_kwargs["distribute_script"]
 
-    @mock.patch("sparkrun.containers.distribute._check_remote_image_ids")
+    @mock.patch("sparkrun.containers.distribute._check_remote_image_identities")
     @mock.patch("sparkrun.orchestration.distribution._distribute_from_head")
     def test_head_missing_image_falls_through(self, mock_dist, mock_check):
-        """Head missing image (not in remote_ids) → all hosts passed through."""
-        mock_check.return_value = {"w1": "sha256:abc123"}
+        """Head missing image (not in remote_identities) → all hosts passed through."""
+        mock_check.return_value = {"w1": ("sha256:abc123", [])}
         mock_dist.return_value = []
         from sparkrun.containers.distribute import distribute_image_from_head
 
@@ -707,7 +876,7 @@ class TestDistributeImageFromHead:
         call_kwargs = mock_dist.call_args[1]
         assert call_kwargs["hosts"] == ["head", "w1", "w2"]
 
-    @mock.patch("sparkrun.containers.distribute._check_remote_image_ids")
+    @mock.patch("sparkrun.containers.distribute._check_remote_image_identities")
     @mock.patch("sparkrun.orchestration.ssh.run_remote_script")
     def test_dry_run_skips_precheck(self, mock_run, mock_check):
         """dry_run skips the pre-check entirely."""

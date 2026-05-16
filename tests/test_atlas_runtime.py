@@ -296,3 +296,57 @@ def test_atlas_bool_flag_falsy_omitted():
     cmd = runtime.generate_command(recipe, {}, is_cluster=False)
     assert "--speculative" not in cmd
     assert "--enable-prefix-caching" not in cmd
+
+
+# --- prepare(): speculative draft-model pre-sync ---
+
+
+def _draft_model_names(recipe) -> list[str]:
+    return [e.name for e in recipe.distribution_config.models.entries]
+
+
+def test_atlas_prepare_adds_draft_model_to_distribution():
+    """prepare() copies recipe defaults.draft_model into distribution_config."""
+    runtime = AtlasRuntime()
+    recipe = _recipe(defaults={"draft_model": "Sehyo/Qwen3.5-35B-Draft"})
+
+    assert "Sehyo/Qwen3.5-35B-Draft" not in _draft_model_names(recipe)
+    runtime.prepare(recipe, hosts=["10.0.0.1"])
+    assert "Sehyo/Qwen3.5-35B-Draft" in _draft_model_names(recipe)
+
+
+def test_atlas_prepare_no_draft_model_is_noop():
+    """prepare() does nothing when draft_model is absent."""
+    runtime = AtlasRuntime()
+    recipe = _recipe()
+    before = list(_draft_model_names(recipe))
+    runtime.prepare(recipe, hosts=["10.0.0.1"])
+    assert _draft_model_names(recipe) == before
+
+
+def test_atlas_prepare_dedupes_when_draft_equals_main_model():
+    """add_model dedups by name, so prepare() is safe even if draft matches main."""
+    runtime = AtlasRuntime()
+    recipe = _recipe(defaults={"draft_model": "Sehyo/Qwen3.5-35B-A3B-NVFP4"})
+    runtime.prepare(recipe, hosts=["10.0.0.1"])
+    names = _draft_model_names(recipe)
+    # Default entry holds the templated "{model}" placeholder; the draft
+    # is added as a separate entry (substitution happens later via resolve()).
+    assert names.count("Sehyo/Qwen3.5-35B-A3B-NVFP4") == 1
+
+
+def test_atlas_prepare_with_cli_override():
+    """prepare() respects CLI overrides via _effective_default."""
+    runtime = AtlasRuntime()
+    recipe = _recipe()
+    recipe._applied_overrides = {"draft_model": "override/draft"}
+    runtime.prepare(recipe, hosts=["10.0.0.1"])
+    assert "override/draft" in _draft_model_names(recipe)
+
+
+def test_atlas_draft_model_flag_still_renders():
+    """Regression: --draft-model still emits with new prepare() wiring."""
+    runtime = AtlasRuntime()
+    recipe = _recipe(defaults={"draft_model": "Sehyo/Qwen3.5-35B-Draft", "speculative": True})
+    cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+    assert "--draft-model Sehyo/Qwen3.5-35B-Draft" in cmd

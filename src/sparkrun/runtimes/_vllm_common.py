@@ -44,9 +44,9 @@ class VllmMixin:
             # TODO: support various ways that speculative config can be specified
             # noinspection PyProtectedMember
             spec_cfg = recipe._effective_default("speculative_config")
-            spec_cfg_dict = json.loads(spec_cfg)
-            if spec_cfg_dict["method"] == "dflash":
-                return spec_cfg_dict.get("model", None)
+            spec_cfg_dict = json.loads(spec_cfg) or {}
+            # intended primarily for dflash, but we allow any "model" field for future extensibility
+            return spec_cfg_dict.get("model", None)
         except Exception:
             return None
 
@@ -70,6 +70,7 @@ VLLM_FLAG_MAP = {
     "pipeline_parallel": "-pp",
     "data_parallel": "--data-parallel-size",
     "kv_cache_dtype": "--kv-cache-dtype",
+    "otlp_traces_endpoint": "--otlp-traces-endpoint",
 }
 
 # Boolean flags (present = True, absent = False)

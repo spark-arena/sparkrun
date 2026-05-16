@@ -1,7 +1,28 @@
-# Authoritative versions for all sparkrun packages
-# Run: python scripts/update-versions.py to sync all files
-# Run: python scripts/update-versions.py --check to verify (CI-friendly)
+# Authoritative versions for all sparkrun packages.
+# Run: python scripts/update-versions.py             to sync all files
+# Run: python scripts/update-versions.py --check     to verify (CI-friendly)
 
-sparkrun: 0.2.31
+sparkrun: 0.2.32
 sparkrun-cc-plugin: 0.0.4
 sparkrun-openclaw-plugin: 0.0.1
+
+# Prefer pinned versions to avoid supply chain attacks.
+preferred_versions:
+  python:
+    "scitrera-app-framework": "0.0.69"
+    "vpd": "0.9.13"
+    "six": "1.17.0" # transitive dependency of vpd but we pin the version for security reasons
+    "click": "8.3.3"
+    "pyyaml": "6.0.3"
+    "huggingface_hub": "1.14.0"
+    "textual": "8.2.5"
+
+project_rules:
+  sparkrun:
+    - { type: pyproject, path: pyproject.toml }
+  sparkrun-cc-plugin:
+    - { type: plugin,      path: sparkrun-cc-plugin/.claude-plugin/plugin.json }
+    - { type: marketplace, path: .claude-plugin/marketplace.json, args: [ sparkrun-cc-plugin ] }
+  sparkrun-openclaw-plugin:
+    - { type: package, path: sparkrun-openclaw-plugin/package.json }
+    - { type: plugin,  path: sparkrun-openclaw-plugin/openclaw.plugin.json }
