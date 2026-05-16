@@ -997,7 +997,10 @@ class Recipe:
         # Get effective max_model_len and tensor_parallel from config chain
         max_model_len = config.get("max_model_len")
         if max_model_len is not None:
-            max_model_len = int(max_model_len)
+            if str(max_model_len).lower() == "auto":
+                max_model_len = None
+            else:
+                max_model_len = int(max_model_len)
 
         tp_val = config.get("tensor_parallel")
         tensor_parallel = int(tp_val) if tp_val is not None else 1
