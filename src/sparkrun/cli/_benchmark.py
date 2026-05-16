@@ -573,7 +573,7 @@ def _run_benchmark(
         if "api_key" in stripped_key.lower():
             click.echo(
                 f"Error: Passing '{stripped_key}' via --bench-option is insecure. "
-                "Please set the OPENAI_API_KEY environment variable or use a .env file instead.",
+                "Please use the --api-key-env flag to pass it via an environment variable instead.",
                 err=True,
             )
             sys.exit(1)
