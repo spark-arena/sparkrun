@@ -301,6 +301,106 @@ def test_sglang_validate_recipe_no_model():
     assert "model is required" in issues[0]
 
 
+# --- SGLang prepare(): speculative draft-model pre-sync ---
+
+
+def _sglang_recipe(**overrides) -> Recipe:
+    data = {
+        "name": "test-recipe",
+        "model": "meta-llama/Llama-2-7b-hf",
+        "runtime": "sglang",
+    }
+    data.update(overrides)
+    return Recipe.from_dict(data)
+
+
+def _model_names(recipe) -> list[str]:
+    return [e.name for e in recipe.distribution_config.models.entries]
+
+
+def test_sglang_prepare_canonical_key_adds_draft_model():
+    """speculative_draft_model_path → distribution_config.add_model."""
+    runtime = SglangRuntime()
+    recipe = _sglang_recipe(defaults={"speculative_draft_model_path": "draft/repo"})
+    runtime.prepare(recipe, hosts=["10.0.0.1"])
+    assert "draft/repo" in _model_names(recipe)
+
+
+def test_sglang_prepare_alias_key_adds_draft_model():
+    """speculative_draft_model alias also triggers add_model."""
+    runtime = SglangRuntime()
+    recipe = _sglang_recipe(defaults={"speculative_draft_model": "alias/draft"})
+    runtime.prepare(recipe, hosts=["10.0.0.1"])
+    assert "alias/draft" in _model_names(recipe)
+
+
+def test_sglang_prepare_canonical_wins_when_both_set():
+    """When both keys are set, canonical key wins; add_model called once."""
+    runtime = SglangRuntime()
+    recipe = _sglang_recipe(
+        defaults={
+            "speculative_draft_model_path": "canonical/draft",
+            "speculative_draft_model": "alias/draft",
+        },
+    )
+    runtime.prepare(recipe, hosts=["10.0.0.1"])
+    names = _model_names(recipe)
+    assert "canonical/draft" in names
+    assert "alias/draft" not in names
+
+
+def test_sglang_prepare_no_speculative_is_noop():
+    """prepare() does nothing when neither key is set."""
+    runtime = SglangRuntime()
+    recipe = _sglang_recipe()
+    before = list(_model_names(recipe))
+    runtime.prepare(recipe, hosts=["10.0.0.1"])
+    assert _model_names(recipe) == before
+
+
+def test_sglang_speculative_canonical_emits_flag():
+    """Generated command includes --speculative-draft-model-path."""
+    runtime = SglangRuntime()
+    recipe = _sglang_recipe(defaults={"speculative_draft_model_path": "draft/repo"})
+    cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+    assert "--speculative-draft-model-path draft/repo" in cmd
+
+
+def test_sglang_speculative_alias_emits_flag():
+    """Alias key normalizes to canonical so the flag still emits."""
+    runtime = SglangRuntime()
+    recipe = _sglang_recipe(defaults={"speculative_draft_model": "alias/draft"})
+    cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+    assert "--speculative-draft-model-path alias/draft" in cmd
+
+
+def test_sglang_speculative_alias_emits_flag_in_node_command():
+    """Alias normalization also applies to per-node command generation."""
+    runtime = SglangRuntime()
+    recipe = _sglang_recipe(defaults={"speculative_draft_model": "alias/draft"})
+    cmd = runtime.generate_node_command(
+        recipe,
+        {},
+        head_ip="10.0.0.1",
+        num_nodes=2,
+        node_rank=0,
+    )
+    assert "--speculative-draft-model-path alias/draft" in cmd
+
+
+def test_sglang_speculative_skip_key_strips_flag():
+    """skip_keys suppresses --speculative-draft-model-path."""
+    runtime = SglangRuntime()
+    recipe = _sglang_recipe(defaults={"speculative_draft_model_path": "draft/repo"})
+    cmd = runtime.generate_command(
+        recipe,
+        {},
+        is_cluster=False,
+        skip_keys={"speculative_draft_model_path"},
+    )
+    assert "--speculative-draft-model-path" not in cmd
+
+
 # --- VllmDistributedRuntime Tests ---
 
 

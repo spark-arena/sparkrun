@@ -9,6 +9,7 @@ from sparkrun.runtimes._util import default_env_hf_offline
 from sparkrun.runtimes.base import RuntimePlugin
 
 if TYPE_CHECKING:
+    from sparkrun.core.config import SparkrunConfig
     from sparkrun.core.recipe import Recipe
     from sparkrun.orchestration.comm_env import ClusterCommEnv
 
@@ -30,6 +31,7 @@ _SGLANG_FLAG_MAP = {
     "chunked_prefill": "--chunked-prefill-size",
     "kv_cache_dtype": "--kv-cache-dtype",
     "tokenizer_path": "--tokenizer-path",
+    "speculative_draft_model_path": "--speculative-draft-model-path",
 }
 
 _SGLANG_BOOL_FLAGS = {
@@ -54,6 +56,35 @@ class SglangRuntime(RuntimePlugin):
         """SGLang uses native multi-node distribution, not Ray."""
         return "native"
 
+    def prepare(
+        self,
+        recipe: Recipe,
+        hosts: list[str],
+        config: "SparkrunConfig | None" = None,
+        dry_run: bool = False,
+        transfer_mode: str = "auto",
+        overrides: dict[str, Any] | None = None,
+    ) -> None:
+        """Pre-sync the speculative draft model when configured."""
+        draft_model = self._detect_speculative_draft_model(recipe)
+        if draft_model:
+            recipe.distribution_config.add_model(draft_model)
+
+    @staticmethod
+    def _detect_speculative_draft_model(recipe: "Recipe") -> str | None:
+        """Resolve the speculative draft model from recipe defaults.
+
+        Accepts either ``speculative_draft_model_path`` (canonical, matches
+        the CLI flag) or ``speculative_draft_model`` (alias).  Returns
+        ``None`` when neither is set.
+        """
+        for key in ("speculative_draft_model_path", "speculative_draft_model"):
+            # noinspection PyProtectedMember
+            val = recipe._effective_default(key)
+            if val:
+                return str(val)
+        return None
+
     def generate_command(
         self,
         recipe: Recipe,
@@ -70,7 +101,7 @@ class SglangRuntime(RuntimePlugin):
         per-node variant.
         """
         config = recipe.build_config_chain(overrides)
-        self._inject_gguf_model(config)
+        self._normalize_config(config)
 
         # If recipe has an explicit command template, render it
         rendered = recipe.render_command(config)
@@ -110,7 +141,7 @@ class SglangRuntime(RuntimePlugin):
         ``--node-rank`` flags appended.
         """
         config = recipe.build_config_chain(overrides)
-        self._inject_gguf_model(config)
+        self._normalize_config(config)
 
         # If recipe has an explicit command template, render it
         rendered = recipe.render_command(config)
@@ -155,6 +186,18 @@ class SglangRuntime(RuntimePlugin):
         gguf_path = config.get("_gguf_model_path")
         if gguf_path:
             config.put("model", str(gguf_path))
+
+    @staticmethod
+    def _normalize_config(config) -> None:
+        """Apply pre-render config normalizations (GGUF path + speculative alias)."""
+        SglangRuntime._inject_gguf_model(config)
+        # Accept ``speculative_draft_model`` as an alias for the canonical
+        # ``speculative_draft_model_path`` key so users can use either in
+        # recipe defaults; flag emission only looks at the canonical key.
+        if not config.get("speculative_draft_model_path"):
+            alias = config.get("speculative_draft_model")
+            if alias:
+                config.set("speculative_draft_model_path", alias)
 
     def _build_base_command(self, recipe: Recipe, config, skip_keys: set[str] | frozenset[str] = frozenset()) -> str:
         """Build the sglang command without cluster-specific arguments."""

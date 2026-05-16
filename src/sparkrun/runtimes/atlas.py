@@ -29,6 +29,7 @@ from sparkrun.runtimes._util import default_env_hf_offline
 from sparkrun.runtimes.base import RuntimePlugin
 
 if TYPE_CHECKING:
+    from sparkrun.core.config import SparkrunConfig
     from sparkrun.core.recipe import Recipe
     from sparkrun.orchestration.comm_env import ClusterCommEnv
 
@@ -122,6 +123,21 @@ class AtlasRuntime(RuntimePlugin):
 
     def get_common_env(self):
         return default_env_hf_offline()
+
+    def prepare(
+        self,
+        recipe: Recipe,
+        hosts: list[str],
+        config: "SparkrunConfig | None" = None,
+        dry_run: bool = False,
+        transfer_mode: str = "auto",
+        overrides: dict[str, Any] | None = None,
+    ) -> None:
+        """Pre-sync the speculative draft model when configured."""
+        # noinspection PyProtectedMember
+        draft_model = recipe._effective_default("draft_model")
+        if draft_model:
+            recipe.distribution_config.add_model(str(draft_model))
 
     # --- Command generation ---
 
