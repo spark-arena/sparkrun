@@ -135,6 +135,11 @@ def benchmark(ctx):
 @click.option("--output", "output_file", default=None, type=click.Path(), help="Output file for results YAML")
 @click.option("-b", "--benchmark-option", "bench_options", multiple=True, help="Override benchmark arg: -b key=value (repeatable)")
 @click.option(
+    "--api-key-env",
+    default=None,
+    help="Name of the environment variable to read the API key from (e.g. OPENAI_API_KEY).",
+)
+@click.option(
     "--exit-on-first-fail/--no-exit-on-first-fail",
     "exit_on_first_fail",
     default=True,
@@ -180,6 +185,7 @@ def benchmark_run(
     framework,
     output_file,
     bench_options,
+    api_key_env,
     exit_on_first_fail,
     no_stop,
     skip_run,
@@ -211,6 +217,7 @@ def benchmark_run(
         framework,
         output_file,
         bench_options,
+        api_key_env,
         exit_on_first_fail,
         no_stop,
         skip_run,
@@ -464,6 +471,7 @@ def _run_benchmark(
     framework,
     output_file,
     bench_options,
+    api_key_env,
     exit_on_first_fail,
     no_stop,
     skip_run,
@@ -571,18 +579,22 @@ def _run_benchmark(
             sys.exit(1)
         bench_args[stripped_key] = fw.interpret_arg(stripped_key, val.strip())
 
-    if "api_key" not in bench_args:
+    if "api_key" not in bench_args and api_key_env:
         import os
-        api_key = os.environ.get("OPENAI_API_KEY")
+        api_key = os.environ.get(api_key_env)
         if not api_key:
             try:
                 from dotenv import load_dotenv
                 load_dotenv()
-                api_key = os.environ.get("OPENAI_API_KEY")
+                api_key = os.environ.get(api_key_env)
             except ImportError:
                 pass
         if api_key:
             bench_args["api_key"] = api_key
+        else:
+            click.echo(
+                f"Warning: --api-key-env '{api_key_env}' specified, but not found in environment.", err=True
+            )
 
     if exit_on_first_fail:
         bench_args["exit_on_first_fail"] = True
