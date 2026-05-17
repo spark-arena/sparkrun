@@ -1341,6 +1341,7 @@ class RegistryManager:
         host: str,
         ssh_kwargs: dict | None = None,
         dry_run: bool = False,
+        extra_sparse_paths: list[str] | None = None,
     ) -> str:
         """Clone or update a registry's git repo on a remote head node.
 
@@ -1356,6 +1357,10 @@ class RegistryManager:
             host: Remote head node hostname.
             ssh_kwargs: SSH connection kwargs.
             dry_run: When True, return the would-be path without acting.
+            extra_sparse_paths: Additional sparse-checkout paths to union
+                with the URL's normal set. Used by the eugr fallback to
+                guarantee ``mods/`` is checked out even when the local
+                registry entry predates the ``mods_subpath`` field.
 
         Returns:
             Absolute path on the remote host where the registry is checked out.
@@ -1366,25 +1371,33 @@ class RegistryManager:
         from sparkrun.utils.shell import quote
 
         entry = self.get_registry(name)
-        sparse_paths = self._sparse_checkout_paths_for_url(entry.url)
+        sparse_paths = list(self._sparse_checkout_paths_for_url(entry.url))
+        if extra_sparse_paths:
+            for p in extra_sparse_paths:
+                if p and p not in sparse_paths:
+                    sparse_paths.append(p)
         url_hash = hashlib.sha256(entry.url.encode()).hexdigest()[:12]
         remote_clone_dir = "~/.cache/sparkrun/registries/_url_%s" % url_hash
         sparse_args = " ".join(quote(p) for p in sparse_paths) if sparse_paths else ""
 
+        # Redirect git's chatty output to stderr (1>&2) so stdout stays clean,
+        # then emit the resolved path via a printf sentinel.  Parsing the
+        # sentinel is robust even if some SSH config merges streams or a
+        # future change adds more shell noise.
         script = (
             "set -e\n"
             "REPO_DIR=%(path)s\n"
             'if [ -d "$REPO_DIR/.git" ]; then\n'
-            '  git -C "$REPO_DIR" fetch origin\n'
-            '  git -C "$REPO_DIR" reset --hard FETCH_HEAD\n'
+            '  git -C "$REPO_DIR" fetch origin 1>&2\n'
+            '  git -C "$REPO_DIR" reset --hard FETCH_HEAD 1>&2\n'
             "else\n"
             '  mkdir -p "$(dirname "$REPO_DIR")"\n'
-            '  git clone --filter=blob:none --sparse %(url)s "$REPO_DIR"\n'
+            '  git clone --filter=blob:none --sparse %(url)s "$REPO_DIR" 1>&2\n'
             "fi\n"
         ) % {"path": remote_clone_dir, "url": quote(entry.url)}
         if sparse_args:
-            script += 'git -C "$REPO_DIR" sparse-checkout set %s\n' % sparse_args
-        script += 'echo "$REPO_DIR"\n'
+            script += 'git -C "$REPO_DIR" sparse-checkout set %s 1>&2\n' % sparse_args
+        script += 'printf "__SPARKRUN_REPO_DIR__%s\\n" "$REPO_DIR"\n'
 
         logger.info("Ensuring registry %r on head node %s...", name, host)
         if dry_run:
@@ -1395,8 +1408,15 @@ class RegistryManager:
             raise RegistryError(
                 "Failed to ensure registry %r on %s: %s" % (name, host, result.stderr.strip() if result.stderr else "(no output)")
             )
-        # Strip trailing newlines and return the resolved path
-        return result.stdout.strip() if result.stdout else remote_clone_dir
+        # Scan stdout in reverse for the sentinel line so any unexpected
+        # preceding output (e.g. SSH config merging stderr into stdout) is
+        # ignored.  Fall back to the computed path if the sentinel is absent.
+        marker = "__SPARKRUN_REPO_DIR__"
+        if result.stdout:
+            for line in reversed(result.stdout.splitlines()):
+                if line.startswith(marker):
+                    return line[len(marker) :].strip()
+        return remote_clone_dir
 
     def _benchmark_dir(self, entry: RegistryEntry) -> Path | None:
         """Get benchmark directory within a cached registry.

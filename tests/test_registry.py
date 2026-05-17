@@ -1646,3 +1646,49 @@ class TestClearCache:
     def test_returns_zero_on_empty_cache(self, mgr):
         """clear_cache returns 0 when cache is already empty."""
         assert mgr.clear_cache() == 0
+
+
+class TestEnsureRegistryOnHost:
+    """Path extraction in ensure_registry_on_host (issue #181)."""
+
+    def _setup(self, mgr):
+        entry = RegistryEntry(
+            name="alt",
+            url="https://github.com/example/recipes.git",
+            subpath="recipes",
+            mods_subpath="mods",
+        )
+        mgr._save_registries([entry])
+        return entry
+
+    def test_extracts_path_with_sentinel_despite_git_stderr_noise(self, mgr):
+        """A noisy stdout (e.g. git output bleeding through) must not corrupt the path."""
+        self._setup(mgr)
+        noisy_stdout = (
+            "From github.com:example/recipes\n"
+            " * branch            HEAD       -> FETCH_HEAD\n"
+            "HEAD is now at 8eeea34 update container names\n"
+            "__SPARKRUN_REPO_DIR__/home/user/.cache/sparkrun/registries/_url_abcdef012345\n"
+        )
+        fake_result = mock.Mock(success=True, stdout=noisy_stdout, stderr="")
+        with mock.patch("sparkrun.orchestration.primitives.run_script_on_host", return_value=fake_result):
+            path = mgr.ensure_registry_on_host("alt", "head-host", ssh_kwargs={})
+        assert path == "/home/user/.cache/sparkrun/registries/_url_abcdef012345"
+        assert "\n" not in path
+        assert "HEAD is now at" not in path
+
+    def test_extracts_path_when_only_sentinel_present(self, mgr):
+        """Normal happy path — stdout is just the sentinel line."""
+        self._setup(mgr)
+        fake_result = mock.Mock(success=True, stdout="__SPARKRUN_REPO_DIR__/remote/repo\n", stderr="")
+        with mock.patch("sparkrun.orchestration.primitives.run_script_on_host", return_value=fake_result):
+            path = mgr.ensure_registry_on_host("alt", "head-host", ssh_kwargs={})
+        assert path == "/remote/repo"
+
+    def test_falls_back_to_computed_path_when_sentinel_absent(self, mgr):
+        """Defensive fallback if the sentinel is somehow stripped."""
+        self._setup(mgr)
+        fake_result = mock.Mock(success=True, stdout="something else\n", stderr="")
+        with mock.patch("sparkrun.orchestration.primitives.run_script_on_host", return_value=fake_result):
+            path = mgr.ensure_registry_on_host("alt", "head-host", ssh_kwargs={})
+        assert path.startswith("~/.cache/sparkrun/registries/_url_")

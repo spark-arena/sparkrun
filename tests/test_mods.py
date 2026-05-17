@@ -314,7 +314,10 @@ def test_pre_exec_entries_shape_delegated_scoped(tmp_path: Path):
 
     recipe = _recipe_with_mods(["@alt/foo"])
 
-    with mock.patch.object(RegistryManager, "ensure_registry_on_host", return_value="/remote/registries/_url_abc") as mock_ensure:
+    with (
+        mock.patch.object(RegistryManager, "ensure_registry_on_host", return_value="/remote/registries/_url_abc") as mock_ensure,
+        mock.patch("sparkrun.core.mods.run_script_on_host", return_value=mock.Mock(success=True)),
+    ):
         resolve_and_inject_mods(recipe, mgr, transfer_mode="delegated", head="head-host", ssh_kwargs={})
 
     mock_ensure.assert_called_once()
@@ -467,6 +470,114 @@ def test_recipe_getstate_setstate_roundtrips_mods():
 
     restored = Recipe._deserialize(state)
     assert restored.mods == ["foo", "mods/bar"]
+
+
+# ---------------------------------------------------------------------------
+# Delegated existence verification & 4-stage fall-through
+# ---------------------------------------------------------------------------
+
+
+def _ensure_registry_side_effect(name, host, ssh_kwargs=None, dry_run=False, extra_sparse_paths=None) -> str:
+    """Distinct remote roots per registry so existence-probe paths are unambiguous."""
+    return "/remote/%s" % name
+
+
+def _make_exists_probe(present_paths: set[str]):
+    """Return a run_script_on_host stub keyed on `test -d <path>` substrings."""
+
+    def _stub(host, script, ssh_kwargs=None, timeout=None):
+        for p in present_paths:
+            if p in script:
+                return mock.Mock(success=True)
+        return mock.Mock(success=False)
+
+    return _stub
+
+
+def test_delegated_stage3_falls_through_to_eugr_on_missing_mod(tmp_path: Path):
+    """Stage 3 returning a path that doesn't exist on head must fall through to @eugr."""
+    official = RegistryEntry(name="official", url="https://example/off.git", subpath="recipes", mods_subpath="official-mods")
+    eugr = RegistryEntry(name="eugr", url="https://example/eugr.git", subpath="recipes", mods_subpath="mods")
+    mgr = _make_registry_manager(tmp_path, [official, eugr])
+
+    recipe = _recipe_with_mods(["mods/fix-qwen3-coder-next"])
+    recipe.source_registry = "official"
+
+    eugr_path = "/remote/eugr/mods/fix-qwen3-coder-next"
+    probe = _make_exists_probe(present_paths={eugr_path})
+
+    with (
+        mock.patch.object(RegistryManager, "ensure_registry_on_host", side_effect=_ensure_registry_side_effect),
+        mock.patch("sparkrun.core.mods.run_script_on_host", side_effect=probe) as mock_probe,
+    ):
+        resolve_and_inject_mods(recipe, mgr, transfer_mode="delegated", head="head-host", ssh_kwargs={})
+
+    # Both stage 3 (official) and stage 4 (eugr) were probed
+    probed_scripts = [call.args[1] if len(call.args) > 1 else call.kwargs.get("script", "") for call in mock_probe.call_args_list]
+    assert any("/remote/official/official-mods/fix-qwen3-coder-next" in s for s in probed_scripts)
+    assert any(eugr_path in s for s in probed_scripts)
+
+    copy_entry = recipe.pre_exec[0]
+    assert copy_entry["copy"] == eugr_path
+    assert copy_entry["source_host"] == "head-host"
+
+
+def test_delegated_stage4_forces_mods_into_sparse_checkout(tmp_path: Path):
+    """Stage 4 must pass extra_sparse_paths so legacy eugr entries still get mods/."""
+    # Note: eugr_entry has no mods_subpath here (legacy registries.yaml shape).
+    official = RegistryEntry(name="official", url="https://example/off.git", subpath="recipes")
+    eugr = RegistryEntry(name="eugr", url="https://example/eugr.git", subpath="recipes")
+    mgr = _make_registry_manager(tmp_path, [official, eugr])
+
+    recipe = _recipe_with_mods(["mods/some-mod"])
+    recipe.source_registry = "official"
+
+    with (
+        mock.patch.object(RegistryManager, "ensure_registry_on_host", side_effect=_ensure_registry_side_effect) as mock_ensure,
+        mock.patch("sparkrun.core.mods.run_script_on_host", return_value=mock.Mock(success=True)),
+    ):
+        resolve_and_inject_mods(recipe, mgr, transfer_mode="delegated", head="head-host", ssh_kwargs={})
+
+    # The eugr call must include `mods` in extra_sparse_paths.
+    eugr_calls = [c for c in mock_ensure.call_args_list if c.args[0] == "eugr"]
+    assert eugr_calls, "expected eugr to be ensured on head"
+    assert eugr_calls[0].kwargs.get("extra_sparse_paths") == ["mods"]
+
+
+def test_delegated_stage1_scoped_raises_when_mod_missing(tmp_path: Path):
+    """Stage 1 (@registry/<rel>) must fail loudly when the explicit path is absent."""
+    alt = RegistryEntry(name="alt", url="https://example/alt.git", subpath="recipes", mods_subpath="mods")
+    mgr = _make_registry_manager(tmp_path, [alt])
+
+    recipe = _recipe_with_mods(["@alt/missing"])
+
+    with (
+        mock.patch.object(RegistryManager, "ensure_registry_on_host", side_effect=_ensure_registry_side_effect),
+        mock.patch("sparkrun.core.mods.run_script_on_host", return_value=mock.Mock(success=False)),
+        pytest.raises(ModNotFoundError, match="missing"),
+    ):
+        resolve_and_inject_mods(recipe, mgr, transfer_mode="delegated", head="head-host", ssh_kwargs={})
+
+
+def test_delegated_stage4_raises_when_eugr_also_missing(tmp_path: Path):
+    """If stage 3 and stage 4 both miss, ModNotFoundError lists every tried path."""
+    official = RegistryEntry(name="official", url="https://example/off.git", subpath="recipes", mods_subpath="official-mods")
+    eugr = RegistryEntry(name="eugr", url="https://example/eugr.git", subpath="recipes", mods_subpath="mods")
+    mgr = _make_registry_manager(tmp_path, [official, eugr])
+
+    recipe = _recipe_with_mods(["mods/nope"])
+    recipe.source_registry = "official"
+
+    with (
+        mock.patch.object(RegistryManager, "ensure_registry_on_host", side_effect=_ensure_registry_side_effect),
+        mock.patch("sparkrun.core.mods.run_script_on_host", return_value=mock.Mock(success=False)),
+        pytest.raises(ModNotFoundError) as exc_info,
+    ):
+        resolve_and_inject_mods(recipe, mgr, transfer_mode="delegated", head="head-host", ssh_kwargs={})
+
+    msg = str(exc_info.value)
+    assert "/remote/official/official-mods/nope" in msg
+    assert "/remote/eugr/mods/nope" in msg
 
 
 # ---------------------------------------------------------------------------
