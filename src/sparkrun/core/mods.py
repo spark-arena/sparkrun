@@ -36,8 +36,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from sparkrun.orchestration.primitives import run_script_on_host
 from sparkrun.orchestration.ssh import run_rsync
 from sparkrun.utils import parse_scoped_name
+from sparkrun.utils.shell import safe_remote_path
 
 if TYPE_CHECKING:
     from sparkrun.core.config import SparkrunConfig
@@ -274,6 +276,29 @@ def _rsync_to_head(
     return dest
 
 
+def _mod_exists_on_head(
+    remote_path: str,
+    head: str,
+    ssh_kwargs: dict | None,
+    dry_run: bool,
+) -> bool:
+    """Check that ``remote_path`` is a mod directory on *head* (has a ``run.sh``).
+
+    Mirrors :func:`_mod_dir_if_valid` semantics over SSH so the delegated
+    resolver can fall through to later stages when an earlier stage's
+    candidate path doesn't actually exist on the head node.
+
+    Skipped (returns ``True``) during ``dry_run`` so resolution proceeds
+    without contacting the head.
+    """
+    if dry_run:
+        return True
+    safe = safe_remote_path(remote_path)
+    script = 'test -d "%s" && test -e "%s/run.sh"\n' % (safe, safe)
+    result = run_script_on_host(head, script, ssh_kwargs=ssh_kwargs, timeout=30)
+    return result.success
+
+
 def _resolve_delegated(
     ref: str,
     recipe: Recipe,
@@ -288,14 +313,28 @@ def _resolve_delegated(
     Registry-backed mods are materialized via
     ``RegistryManager.ensure_registry_on_host``; adjacent recipes' mods
     are rsynced to a staging directory on the head node.
+
+    Each registry-backed stage probes the head with a single
+    ``test -d <path>/run.sh`` round-trip after ensuring the registry is
+    on disk, so resolution falls through to the next stage when the
+    candidate is absent (e.g. the @eugr safety net at stage 4 for
+    legacy mods).
     """
 
-    def _ensure_registry(name: str) -> str:
+    def _ensure_registry(name: str, extra_sparse_paths: list[str] | None = None) -> str:
         path = ensured_registries.get(name)
         if path is None:
-            path = registry_mgr.ensure_registry_on_host(name, head, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
+            path = registry_mgr.ensure_registry_on_host(
+                name,
+                head,
+                ssh_kwargs=ssh_kwargs,
+                dry_run=dry_run,
+                extra_sparse_paths=extra_sparse_paths,
+            )
             ensured_registries[name] = path
         return path
+
+    tried: list[str] = []
 
     # rule 1: explicit @registry/...
     registry_name, rel = parse_scoped_name(ref)
@@ -309,17 +348,22 @@ def _resolve_delegated(
         remote_root = _ensure_registry(registry_name)
         rel_clean = _normalize_ref(rel)
         remote_path = "%s/%s/%s" % (remote_root, entry.mods_subpath, rel_clean)
+        tried.append(remote_path + " (on %s)" % head)
+        if not _mod_exists_on_head(remote_path, head, ssh_kwargs, dry_run):
+            raise ModNotFoundError(ref, tried)
         name = Path(rel_clean).name
         return ResolvedMod(name=name, source_path=remote_path, source_host=head)
 
     # rule 2: adjacent to recipe (local) -> rsync to head
-    tried: list[str] = []
     local_hit = _resolve_adjacent(ref, recipe.source_path, tried)
     if local_hit is not None:
         staged = _rsync_to_head(str(local_hit.resolve()), local_hit.name, head, ssh_kwargs, dry_run)
         return ResolvedMod(name=local_hit.name, source_path=staged, source_host=head)
 
-    # rule 3: same registry as recipe
+    # rule 3: same registry as recipe — verify the candidate actually
+    # exists on the head so missing mods (e.g. in a registry whose
+    # mods_subpath is empty or not yet populated) fall through to the
+    # eugr fallback at stage 4.
     if recipe.source_registry:
         try:
             entry = registry_mgr.get_registry(recipe.source_registry)
@@ -330,11 +374,8 @@ def _resolve_delegated(
             rel_clean = _normalize_ref(ref)
             remote_path = "%s/%s/%s" % (remote_root, entry.mods_subpath, rel_clean)
             tried.append(remote_path + " (on %s)" % head)
-            # Trust delegated existence — if missing the docker cp will fail
-            # with a clear error; we cannot easily stat over SSH per-mod
-            # without paying a round-trip per ref. Verify only at the
-            # registry level (ensure_registry_on_host succeeded).
-            return ResolvedMod(name=Path(rel_clean).name, source_path=remote_path, source_host=head)
+            if _mod_exists_on_head(remote_path, head, ssh_kwargs, dry_run):
+                return ResolvedMod(name=Path(rel_clean).name, source_path=remote_path, source_host=head)
 
     # rule 4: eugr fallback — default subpath to "mods" so legacy
     # registries.yaml files (no mods_subpath field) still work.
@@ -345,11 +386,15 @@ def _resolve_delegated(
         tried.append("@%s (registry not registered)" % EUGR_FALLBACK_REGISTRY)
     if eugr_entry is not None:
         eugr_subpath = eugr_entry.mods_subpath or "mods"
-        remote_root = _ensure_registry(EUGR_FALLBACK_REGISTRY)
+        # Force the eugr mods subpath into sparse-checkout so legacy
+        # registries.yaml files (whose eugr entry lacks ``mods_subpath``)
+        # still produce a working ``mods/`` directory on the head.
+        remote_root = _ensure_registry(EUGR_FALLBACK_REGISTRY, extra_sparse_paths=[eugr_subpath])
         rel_clean = _normalize_ref(ref)
         remote_path = "%s/%s/%s" % (remote_root, eugr_subpath, rel_clean)
         tried.append(remote_path + " (on %s)" % head)
-        return ResolvedMod(name=Path(rel_clean).name, source_path=remote_path, source_host=head)
+        if _mod_exists_on_head(remote_path, head, ssh_kwargs, dry_run):
+            return ResolvedMod(name=Path(rel_clean).name, source_path=remote_path, source_host=head)
 
     raise ModNotFoundError(ref, tried)
 
