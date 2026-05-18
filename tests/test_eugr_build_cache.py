@@ -512,6 +512,7 @@ class TestPrepareImageCacheIntegration:
             mock.patch.object(builder, "ensure_repo", return_value=tmp_path / "repo"),
             mock.patch.object(builder, "_can_skip_build", return_value=False),
             mock.patch.object(builder, "_build_image") as mock_build,
+            mock.patch.object(builder, "_verify_image_imports"),
             mock.patch.object(builder, "_save_build_metadata") as mock_save,
             mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False),
         ):
@@ -599,6 +600,7 @@ class TestPrepareImageCacheIntegration:
             mock.patch.object(builder, "_ensure_repo_remote", return_value="/remote/path"),
             mock.patch.object(builder, "_can_skip_build", return_value=False),
             mock.patch.object(builder, "_build_image_remote") as mock_build,
+            mock.patch.object(builder, "_verify_image_imports"),
             mock.patch.object(builder, "_save_build_metadata") as mock_save,
             mock.patch.object(builder, "_image_exists_on_host", return_value=False),
         ):
@@ -620,6 +622,7 @@ class TestPrepareImageCacheIntegration:
             "head1",
             {"user": "u"},
             False,
+            config=config,
         )
         # _save_build_metadata receives the canonical args (without --cleanup) so the
         # cache entry remains comparable to future recipe-driven cache checks.

@@ -944,13 +944,12 @@ class TestEugrPrepare:
         )
         with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
             with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
-                with mock.patch("subprocess.run") as mock_run:
-                    mock_run.return_value = mock.Mock(returncode=0)
-                    with mock.patch.object(builder, "_save_build_metadata"):
-                        builder.prepare_image("my-image", recipe, ["10.0.0.1"])
+                with mock.patch("sparkrun.builders.eugr._run_build_capturing", return_value=(0, "")) as mock_build:
+                    with mock.patch.object(builder, "_verify_image_imports"):
+                        with mock.patch.object(builder, "_save_build_metadata"):
+                            builder.prepare_image("my-image", recipe, ["10.0.0.1"])
 
-                    # Should call build-and-copy.sh with -t and build_args
-                    cmd = mock_run.call_args[0][0]
+                    cmd = mock_build.call_args[0][0]
                     assert str(repo_dir / "build-and-copy.sh") in cmd[0]
                     assert "-t" in cmd
                     assert "my-image" in cmd
@@ -985,12 +984,12 @@ class TestEugrPrepare:
         )
         with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
             with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
-                with mock.patch("subprocess.run") as mock_run:
-                    mock_run.return_value = mock.Mock(returncode=0)
-                    with mock.patch.object(builder, "_save_build_metadata"):
-                        builder.prepare_image("my-image", recipe, ["10.0.0.1"])
-                    mock_run.assert_called_once()
-                    cmd = mock_run.call_args[0][0]
+                with mock.patch("sparkrun.builders.eugr._run_build_capturing", return_value=(0, "")) as mock_build:
+                    with mock.patch.object(builder, "_verify_image_imports"):
+                        with mock.patch.object(builder, "_save_build_metadata"):
+                            builder.prepare_image("my-image", recipe, ["10.0.0.1"])
+                    mock_build.assert_called_once()
+                    cmd = mock_build.call_args[0][0]
                     assert str(repo_dir / "build-and-copy.sh") in cmd[0]
                     assert "-t" in cmd
                     assert "my-image" in cmd
@@ -1008,10 +1007,9 @@ class TestEugrPrepare:
         )
         with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
             with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
-                with mock.patch("subprocess.run") as mock_run:
+                with mock.patch("sparkrun.builders.eugr._run_build_capturing") as mock_build:
                     builder.prepare_image("vllm-node", recipe, ["10.0.0.1"], dry_run=True)
-                    # subprocess.run should not be called in dry-run
-                    mock_run.assert_not_called()
+                    mock_build.assert_not_called()
 
     # Note: mod -> pre_exec injection moved out of the eugr builder into the
     # generic core/mods.py resolver. See tests/test_mods.py for that coverage.
@@ -1027,11 +1025,14 @@ class TestEugrPrepare:
                 "runtime_config": {"build_args": ["--flag"]},
             }
         )
-        with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
-            with mock.patch("subprocess.run") as mock_run:
-                mock_run.return_value = mock.Mock(returncode=1)
-                with pytest.raises(RuntimeError, match="eugr container build failed"):
-                    builder.prepare_image("vllm-node", recipe, ["10.0.0.1"])
+        with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
+            with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
+                with mock.patch(
+                    "sparkrun.builders.eugr._run_build_capturing",
+                    return_value=(1, "FlashInfer build failed — restoring previous wheels...\n"),
+                ):
+                    with pytest.raises(RuntimeError, match="eugr container build failed"):
+                        builder.prepare_image("vllm-node", recipe, ["10.0.0.1"])
 
 
 class TestEugrPreServe:

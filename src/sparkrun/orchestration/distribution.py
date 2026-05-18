@@ -137,6 +137,11 @@ def _distribute_from_head(
     2. If single host, return (done).
     3. Run *distribute_script* on head to stream to remaining hosts.
 
+    Both remote scripts use streaming SSH so progress (e.g. ``huggingface-cli``
+    tqdm bars during model download, ``docker pull`` layer pulls, rsync
+    transfer counts) is visible in real time at INFO+ verbosity.  At default
+    verbosity the output is captured silently and surfaced on failure.
+
     Args:
         head: Head hostname (``hosts[0]``).
         hosts: Full cluster host list (head + workers).
@@ -152,10 +157,14 @@ def _distribute_from_head(
     Returns:
         List of hostnames where distribution failed (empty = full success).
     """
-    from sparkrun.orchestration.ssh import run_remote_script
+    from sparkrun.orchestration.ssh import run_remote_script_streaming
+
+    # Default verbosity captures silently; INFO+ streams to terminal so long-running
+    # operations (model downloads, image pulls) show progress instead of hanging mute.
+    _quiet = not logging.getLogger().isEnabledFor(logging.INFO)
 
     # Step 1: ensure resource on head
-    ensure_result = run_remote_script(
+    ensure_result = run_remote_script_streaming(
         head,
         ensure_script,
         ssh_user=ssh_user,
@@ -163,9 +172,16 @@ def _distribute_from_head(
         ssh_options=ssh_options,
         timeout=timeout,
         dry_run=dry_run,
+        quiet=_quiet,
     )
     if not ensure_result.success:
-        logger.error("Failed to ensure %s on head %s", resource_label, head)
+        logger.error("Failed to ensure %s on head %s (rc=%d)", resource_label, head, ensure_result.returncode)
+        if _quiet:
+            # Surface captured output so the user can diagnose silent-mode failures.
+            if ensure_result.stdout:
+                logger.error("stdout:\n%s", ensure_result.stdout[-2000:])
+            if ensure_result.stderr:
+                logger.error("stderr:\n%s", ensure_result.stderr[-2000:])
         return list(hosts)
 
     # Step 2: if single host, we're done
@@ -174,7 +190,7 @@ def _distribute_from_head(
         return []
 
     # Step 3: distribute from head to remaining hosts
-    dist_result = run_remote_script(
+    dist_result = run_remote_script_streaming(
         head,
         distribute_script,
         ssh_user=ssh_user,
@@ -182,6 +198,7 @@ def _distribute_from_head(
         ssh_options=ssh_options,
         timeout=timeout,
         dry_run=dry_run,
+        quiet=_quiet,
     )
 
     if dist_result.success:
@@ -192,6 +209,11 @@ def _distribute_from_head(
 
     # Report failure using management hostnames
     logger.warning("%s distribution from head failed (rc=%d)", resource_label, dist_result.returncode)
+    if _quiet:
+        if dist_result.stdout:
+            logger.error("stdout:\n%s", dist_result.stdout[-2000:])
+        if dist_result.stderr:
+            logger.error("stderr:\n%s", dist_result.stderr[-2000:])
     return list(hosts[1:])
 
 
@@ -475,6 +497,7 @@ def distribute_resources(
         ib_ip_map = _ib_validated or {}
         if ib_ip_map and not _use_mgmt:
             transfer_hosts = [ib_result.ib_ip_map.get(h, h) for h in host_list]
+            logger.debug("ib_ip_map=%r host_list=%r transfer_hosts=%r", ib_result.ib_ip_map, host_list, transfer_hosts)
             logger.info(
                 "Using IB network for transfers (%d/%d hosts)",
                 len(ib_result.ib_ip_map),
@@ -805,6 +828,25 @@ def distribute_from_config(
     return comm_env, ib_ip_map, mgmt_ip_map
 
 
+def _subset_transfer_hosts(
+    host_subset_source: list[str],
+    transfer_hosts: list[str] | None,
+    target_set: set[str],
+) -> list[str] | None:
+    """Return the slice of *transfer_hosts* whose paired entry in *host_subset_source*
+    is in *target_set*.
+
+    *transfer_hosts* is positionally aligned with *host_subset_source* (one entry per
+    host).  The two lists may carry different values per host (e.g. mgmt IPs vs IB IPs),
+    so filtering must compare against *host_subset_source* and emit the matching
+    *transfer_hosts* entry — comparing *transfer_hosts* values directly against
+    *target_set* would silently miss whenever the values differ, defeating IB routing.
+    """
+    if not transfer_hosts:
+        return None
+    return [t for h, t in zip(host_subset_source, transfer_hosts) if h in target_set]
+
+
 def _distribute_single_image(
     image: str,
     targets: list[str],
@@ -819,10 +861,14 @@ def _distribute_single_image(
     """Distribute a single image to a subset of hosts."""
     from sparkrun.containers.distribute import distribute_image_from_local, distribute_image_from_head
 
-    # Map transfer hosts to target subset
+    # Map transfer hosts to target subset.  transfer_hosts is positionally aligned with
+    # full_hosts (one entry per host, value = IB IP or mgmt IP), so we filter by index
+    # against the target subset rather than by value (which would compare IB IPs against
+    # mgmt-IP target names and always miss — see issue notes on IB falling back to mgmt).
     target_set = set(targets)
-    t_hosts = [h for h in transfer_hosts if h in target_set] if transfer_hosts else None
-    w_hosts = [h for h in worker_transfer_hosts if h in target_set] if worker_transfer_hosts else None
+    t_hosts = _subset_transfer_hosts(full_hosts, transfer_hosts, target_set)
+    # worker_transfer_hosts is aligned with full_hosts[1:] (workers only).
+    w_hosts = _subset_transfer_hosts(full_hosts[1:], worker_transfer_hosts, target_set)
 
     if transfer_mode == "local":
         return distribute_image_from_local(image, targets, transfer_hosts=t_hosts, dry_run=dry_run, **ssh_kwargs)
@@ -866,9 +912,10 @@ def _distribute_single_model(
     """Distribute a single model to a subset of hosts."""
     from sparkrun.models.distribute import distribute_model_from_local, distribute_model_from_head
 
+    # Position-aligned subset (see _subset_transfer_hosts docstring).
     target_set = set(targets)
-    t_hosts = [h for h in transfer_hosts if h in target_set] if transfer_hosts else None
-    w_hosts = [h for h in worker_transfer_hosts if h in target_set] if worker_transfer_hosts else None
+    t_hosts = _subset_transfer_hosts(full_hosts, transfer_hosts, target_set)
+    w_hosts = _subset_transfer_hosts(full_hosts[1:], worker_transfer_hosts, target_set)
 
     if transfer_mode == "local":
         return distribute_model_from_local(

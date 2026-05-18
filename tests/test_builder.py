@@ -139,18 +139,20 @@ class TestEugrPrepareImage:
         )
         with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
             with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
-                with mock.patch("subprocess.run") as mock_run:
-                    mock_run.return_value = mock.Mock(returncode=0)
-                    with mock.patch.object(builder, "_save_build_metadata"):
-                        result = builder.prepare_image("my-image", recipe, ["10.0.0.1"])
+                with mock.patch("sparkrun.builders.eugr._run_build_capturing", return_value=(0, "")) as mock_build:
+                    with mock.patch.object(builder, "_verify_image_imports"):
+                        with mock.patch.object(builder, "_save_build_metadata"):
+                            result = builder.prepare_image("my-image", recipe, ["10.0.0.1"])
 
         assert result == "my-image"
-        mock_run.assert_called_once()
-        cmd = mock_run.call_args[0][0]
+        mock_build.assert_called_once()
+        cmd = mock_build.call_args[0][0]
         assert str(repo_dir / "build-and-copy.sh") in cmd[0]
         assert "-t" in cmd
         assert "my-image" in cmd
         assert "--some-flag" in cmd
+        # --cleanup is always appended to the effective build args (issue #164)
+        assert "--cleanup" in cmd
 
     def test_eugr_prepare_without_build_args_image_exists(self, eugr_builder_with_repo):
         """prepare_image() is a no-op when no build_args/mods and image exists locally."""
@@ -182,13 +184,13 @@ class TestEugrPrepareImage:
         )
         with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
             with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
-                with mock.patch("subprocess.run") as mock_run:
-                    mock_run.return_value = mock.Mock(returncode=0)
-                    with mock.patch.object(builder, "_save_build_metadata"):
-                        result = builder.prepare_image("my-image", recipe, ["10.0.0.1"])
+                with mock.patch("sparkrun.builders.eugr._run_build_capturing", return_value=(0, "")) as mock_build:
+                    with mock.patch.object(builder, "_verify_image_imports"):
+                        with mock.patch.object(builder, "_save_build_metadata"):
+                            result = builder.prepare_image("my-image", recipe, ["10.0.0.1"])
 
-        mock_run.assert_called_once()
-        cmd = mock_run.call_args[0][0]
+        mock_build.assert_called_once()
+        cmd = mock_build.call_args[0][0]
         assert str(repo_dir / "build-and-copy.sh") in cmd[0]
         assert "-t" in cmd
         assert "my-image" in cmd
@@ -207,10 +209,12 @@ class TestEugrPrepareImage:
         )
         with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
             with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
-                with mock.patch("subprocess.run") as mock_run:
-                    builder.prepare_image("vllm-node", recipe, ["10.0.0.1"], dry_run=True)
+                with mock.patch("sparkrun.builders.eugr._run_build_capturing") as mock_build:
+                    with mock.patch.object(builder, "_verify_image_imports") as mock_verify:
+                        builder.prepare_image("vllm-node", recipe, ["10.0.0.1"], dry_run=True)
 
-        mock_run.assert_not_called()
+        mock_build.assert_not_called()
+        mock_verify.assert_not_called()
 
     # Note: mod -> pre_exec injection moved out of the eugr builder into the
     # generic core/mods.py resolver. See tests/test_mods.py for that coverage.
@@ -226,11 +230,104 @@ class TestEugrPrepareImage:
                 "runtime_config": {"build_args": ["--flag"]},
             }
         )
-        with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
-            with mock.patch("subprocess.run") as mock_run:
-                mock_run.return_value = mock.Mock(returncode=1)
-                with pytest.raises(RuntimeError, match="eugr container build failed"):
-                    builder.prepare_image("vllm-node", recipe, ["10.0.0.1"])
+        # Simulate FlashInfer download exhausting all options.
+        captured_output = (
+            "Phase 1\n"
+            "Could not fetch release metadata for 'prebuilt-flashinfer-current' — skipping download.\n"
+            "No FlashInfer wheels available (download failed) — building...\n"
+            "FlashInfer build failed — restoring previous wheels...\n"
+        )
+        with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
+            with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
+                with mock.patch(
+                    "sparkrun.builders.eugr._run_build_capturing",
+                    return_value=(1, captured_output),
+                ):
+                    with pytest.raises(RuntimeError) as excinfo:
+                        builder.prepare_image("vllm-node", recipe, ["10.0.0.1"])
+
+        msg = str(excinfo.value)
+        assert "eugr container build failed" in msg
+        # Phase identification should pick up the explicit failure marker.
+        assert "flashinfer-build (failed)" in msg
+
+    def test_eugr_prepare_appends_cleanup_without_duplicates(self, eugr_builder_with_repo):
+        """`--cleanup` is not duplicated if already present in build_args."""
+        builder, repo_dir = eugr_builder_with_repo
+        recipe = Recipe.from_dict(
+            {
+                "name": "test",
+                "model": "some/model",
+                "runtime": "eugr-vllm",
+                "container": "my-image",
+                "runtime_config": {"build_args": ["--cleanup", "--flag"]},
+            }
+        )
+        with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
+            with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
+                with mock.patch("sparkrun.builders.eugr._run_build_capturing", return_value=(0, "")) as mock_build:
+                    with mock.patch.object(builder, "_verify_image_imports"):
+                        with mock.patch.object(builder, "_save_build_metadata"):
+                            builder.prepare_image("my-image", recipe, ["10.0.0.1"])
+
+        cmd = mock_build.call_args[0][0]
+        # Exactly one --cleanup, regardless of recipe ordering.
+        assert cmd.count("--cleanup") == 1
+
+    def test_eugr_prepare_cleanup_not_persisted_to_cache(self, eugr_builder_with_repo):
+        """`--cleanup` is appended to the build invocation but NOT to the cached build_args.
+
+        This keeps the build cache identity tied to the recipe's canonical args so
+        subsequent cache lookups still hit when nothing else changed (commit 110aca7).
+        """
+        builder, repo_dir = eugr_builder_with_repo
+        recipe = Recipe.from_dict(
+            {
+                "name": "test",
+                "model": "some/model",
+                "runtime": "eugr-vllm",
+                "container": "my-image",
+                "runtime_config": {"build_args": ["--tf5"]},
+            }
+        )
+        with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
+            with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
+                with mock.patch("sparkrun.builders.eugr._run_build_capturing", return_value=(0, "")):
+                    with mock.patch.object(builder, "_verify_image_imports"):
+                        with mock.patch.object(builder, "_save_build_metadata") as mock_save:
+                            builder.prepare_image("my-image", recipe, ["10.0.0.1"])
+
+        # _save_build_metadata is called with the recipe's original build_args (no --cleanup).
+        args, kwargs = mock_save.call_args
+        # Signature: _save_build_metadata(image, build_args, config, host=..., ssh_kwargs=...)
+        saved_build_args = args[1]
+        assert saved_build_args == ["--tf5"]
+
+    def test_eugr_prepare_smoke_failure_removes_tag_and_skips_cache(self, eugr_builder_with_repo):
+        """If the post-build flashinfer smoke test fails, the tag is removed and cache is not updated."""
+        builder, repo_dir = eugr_builder_with_repo
+        recipe = Recipe.from_dict(
+            {
+                "name": "test",
+                "model": "some/model",
+                "runtime": "eugr-vllm",
+                "container": "my-image",
+                "runtime_config": {"build_args": ["--flag"]},
+            }
+        )
+        with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
+            with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
+                with mock.patch("sparkrun.builders.eugr._run_build_capturing", return_value=(0, "")):
+                    with mock.patch.object(builder, "_remove_image") as mock_rmi:
+                        # Make the smoke test report missing flashinfer_jit_cache.
+                        smoke_proc = mock.Mock(returncode=1, stderr="ModuleNotFoundError: flashinfer_jit_cache\n")
+                        with mock.patch("subprocess.run", return_value=smoke_proc):
+                            with mock.patch.object(builder, "_save_build_metadata") as mock_save:
+                                with pytest.raises(RuntimeError, match="without flashinfer"):
+                                    builder.prepare_image("my-image", recipe, ["10.0.0.1"])
+
+        mock_rmi.assert_called_once_with("my-image", host=None, ssh_kwargs=None)
+        mock_save.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -403,22 +500,25 @@ class TestEugrDelegatedMode:
         )
         with mock.patch.object(builder, "_ensure_repo_remote", return_value="/remote/repo"):
             with mock.patch.object(builder, "_build_image_remote") as mock_remote_build:
-                result = builder.prepare_image(
-                    "my-image",
-                    recipe,
-                    ["head-host"],
-                    transfer_mode="delegated",
-                    ssh_kwargs={"ssh_user": "u"},
-                )
+                with mock.patch.object(builder, "_verify_image_imports"):
+                    with mock.patch.object(builder, "_save_build_metadata"):
+                        result = builder.prepare_image(
+                            "my-image",
+                            recipe,
+                            ["head-host"],
+                            transfer_mode="delegated",
+                            ssh_kwargs={"ssh_user": "u"},
+                        )
         mock_remote_build.assert_called_once_with(
             "my-image",
             [
                 "--flag",
-                "--cleanup",  # cleanup flag is injected!
+                "--cleanup",  # cleanup flag is injected (issue #164)
             ],
             "head-host",
             {"ssh_user": "u"},
             False,
+            config=None,
         )
         assert result == "my-image"
 
@@ -562,3 +662,211 @@ class TestEugrDelegatedMode:
                 result = builder.prepare_image("my-image", recipe, ["10.0.0.1"])
         mock_run.assert_not_called()
         assert result == "my-image"
+
+
+# ---------------------------------------------------------------------------
+# EugrBuilder — build logging and phase identification helpers (issue #164)
+# ---------------------------------------------------------------------------
+
+
+class TestEugrBuildLogging:
+    """Tests for build-log capture and phase-aware error context."""
+
+    def test_safe_image_name_replaces_unsafe_chars(self):
+        from sparkrun.builders.eugr import _safe_image_name
+
+        assert _safe_image_name("ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest") == ("ghcr.io-spark-arena-dgx-vllm-eugr-nightly-latest")
+        # Already-safe input is preserved (modulo trailing strip).
+        assert _safe_image_name("sparkrun-eugr-vllm") == "sparkrun-eugr-vllm"
+        assert _safe_image_name("///") == "image"
+
+    def test_identify_phase_flashinfer_build_failure(self):
+        from sparkrun.builders.eugr import _identify_build_phase
+
+        output = (
+            "Cleaning up wheels directory...\n"
+            "FlashInfer build command: docker build --target flashinfer-export ...\n"
+            "FlashInfer build failed — restoring previous wheels...\n"
+        )
+        assert _identify_build_phase(output) == "flashinfer-build (failed)"
+
+    def test_identify_phase_vllm_build_failure(self):
+        from sparkrun.builders.eugr import _identify_build_phase
+
+        output = (
+            "FlashInfer wheels ready.\n"
+            "vLLM build command: docker build --target vllm-export ...\n"
+            "vLLM build failed — restoring previous wheels...\n"
+        )
+        assert _identify_build_phase(output) == "vllm-build (failed)"
+
+    def test_identify_phase_no_assets(self):
+        from sparkrun.builders.eugr import _identify_build_phase
+
+        output = "Could not fetch release metadata for 'prebuilt-flashinfer-current' — skipping download.\n"
+        assert _identify_build_phase(output) == "wheel-download (release metadata)"
+
+    def test_identify_phase_runner_no_wheels(self):
+        from sparkrun.builders.eugr import _identify_build_phase
+
+        output = "FlashInfer wheels ready.\nvLLM wheels ready.\nError: No wheel files found in ./wheels/ — cannot build runner image.\n"
+        assert _identify_build_phase(output) == "runner-build (no wheels)"
+
+    def test_identify_phase_latest_marker_wins_when_no_explicit_failure(self):
+        from sparkrun.builders.eugr import _identify_build_phase
+
+        # No failure marker -> falls back to the last phase reached.
+        output = "Cleaning up wheels directory...\nFlashInfer wheels ready.\nvLLM build command: docker build ...\n"
+        assert _identify_build_phase(output) == "vllm-build"
+
+    def test_build_error_tail_returns_last_n_nonempty_lines(self):
+        from sparkrun.builders.eugr import _build_error_tail
+
+        output = "first\n\nsecond\nthird\n\nfourth\n"
+        assert _build_error_tail(output, n=2) == "third\nfourth"
+        assert _build_error_tail(output, n=10) == "first\nsecond\nthird\nfourth"
+
+    def test_run_build_capturing_writes_log_file(self, tmp_path):
+        """_run_build_capturing captures combined output to memory and to disk."""
+        from sparkrun.builders.eugr import _run_build_capturing
+
+        log = tmp_path / "build.log"
+        rc, out = _run_build_capturing(
+            ["bash", "-c", "echo hello; echo error >&2; exit 0"],
+            log_path=log,
+            stream=False,
+        )
+        assert rc == 0
+        assert "hello" in out
+        assert "error" in out  # stderr merged into stdout
+        # log file contains the same content
+        assert "hello" in log.read_text()
+        assert "error" in log.read_text()
+
+    def test_run_build_capturing_handles_nonzero_exit(self, tmp_path):
+        from sparkrun.builders.eugr import _run_build_capturing
+
+        rc, out = _run_build_capturing(
+            ["bash", "-c", "echo phase-marker; exit 5"],
+            log_path=tmp_path / "x.log",
+            stream=False,
+        )
+        assert rc == 5
+        assert "phase-marker" in out
+
+    def test_run_build_capturing_tolerates_unwritable_log(self, tmp_path):
+        """If the log file can't be opened, the build still runs and returns output."""
+        from sparkrun.builders.eugr import _run_build_capturing
+
+        # Point at a directory that doesn't exist and can't be created (read-only parent).
+        # Use a file *as* a parent so the mkdir fails.
+        not_a_dir = tmp_path / "not-a-dir"
+        not_a_dir.write_text("blocker")
+        bad_log = not_a_dir / "child" / "build.log"
+
+        rc, out = _run_build_capturing(
+            ["bash", "-c", "echo ok"],
+            log_path=bad_log,
+            stream=False,
+        )
+        assert rc == 0
+        assert "ok" in out
+
+    def test_build_log_path_uses_cache_dir(self, tmp_path):
+        from sparkrun.builders.eugr import EugrBuilder
+
+        builder = EugrBuilder()
+        with mock.patch.object(builder, "_resolve_cache_dir", return_value=tmp_path):
+            p = builder._build_log_path("ghcr.io/foo:bar")
+        assert p is not None
+        assert p.parent == tmp_path / "eugr-builds"
+        assert p.suffix == ".log"
+        assert "ghcr.io-foo-bar" in p.name
+
+    def test_build_log_path_returns_none_when_no_cache(self):
+        from sparkrun.builders.eugr import EugrBuilder
+
+        builder = EugrBuilder()
+        with mock.patch.object(builder, "_resolve_cache_dir", return_value=None):
+            assert builder._build_log_path("img") is None
+
+    def test_build_log_path_includes_host_for_remote(self, tmp_path):
+        from sparkrun.builders.eugr import EugrBuilder
+
+        builder = EugrBuilder()
+        with mock.patch.object(builder, "_resolve_cache_dir", return_value=tmp_path):
+            p = builder._build_log_path("img", host="head.example.com")
+        assert p is not None
+        assert "remote-head.example.com" in p.name
+
+
+# ---------------------------------------------------------------------------
+# EugrBuilder — flashinfer smoke test (_verify_image_imports)
+# ---------------------------------------------------------------------------
+
+
+class TestEugrVerifyImageImports:
+    """Tests for the post-build flashinfer importability check."""
+
+    def test_verify_image_imports_local_success(self):
+        from sparkrun.builders.eugr import EugrBuilder
+
+        builder = EugrBuilder()
+        with mock.patch("subprocess.run", return_value=mock.Mock(returncode=0, stderr="")) as mock_run:
+            builder._verify_image_imports("my-image")
+        # Verify the command shape: docker run --rm --entrypoint= <image> python3 -c "<imports>"
+        cmd = mock_run.call_args[0][0]
+        assert cmd[:4] == ["docker", "run", "--rm", "--entrypoint="]
+        assert cmd[4] == "my-image"
+        assert cmd[5:7] == ["python3", "-c"]
+        check = cmd[7]
+        assert "import flashinfer" in check
+        assert "import flashinfer_cubin" in check
+        assert "import flashinfer_jit_cache" in check
+
+    def test_verify_image_imports_local_failure_raises_and_removes_image(self):
+        from sparkrun.builders.eugr import EugrBuilder
+
+        builder = EugrBuilder()
+        bad = mock.Mock(returncode=1, stderr="ModuleNotFoundError: flashinfer_jit_cache")
+        with mock.patch("subprocess.run", return_value=bad):
+            with mock.patch.object(builder, "_remove_image") as mock_rmi:
+                with pytest.raises(RuntimeError, match="without flashinfer"):
+                    builder._verify_image_imports("my-image")
+        mock_rmi.assert_called_once_with("my-image", host=None, ssh_kwargs=None)
+
+    def test_verify_image_imports_local_timeout_treated_as_failure(self):
+        import subprocess as _sp
+
+        from sparkrun.builders.eugr import EugrBuilder
+
+        builder = EugrBuilder()
+        with mock.patch("subprocess.run", side_effect=_sp.TimeoutExpired(cmd="docker", timeout=60)):
+            with mock.patch.object(builder, "_remove_image"):
+                with pytest.raises(RuntimeError, match="without flashinfer"):
+                    builder._verify_image_imports("my-image")
+
+    def test_verify_image_imports_remote_success(self):
+        from sparkrun.builders.eugr import EugrBuilder
+        from sparkrun.orchestration.ssh import RemoteResult
+
+        builder = EugrBuilder()
+        ok = RemoteResult(host="head", returncode=0, stdout="", stderr="")
+        with mock.patch("sparkrun.orchestration.primitives.run_script_on_host", return_value=ok) as mock_ssh:
+            builder._verify_image_imports("my-image", host="head", ssh_kwargs={"ssh_user": "u"})
+        script = mock_ssh.call_args[0][1]
+        assert "docker run --rm --entrypoint=" in script
+        assert "python3 -c" in script
+        assert "import flashinfer" in script
+
+    def test_verify_image_imports_remote_failure_removes_image(self):
+        from sparkrun.builders.eugr import EugrBuilder
+        from sparkrun.orchestration.ssh import RemoteResult
+
+        builder = EugrBuilder()
+        bad = RemoteResult(host="head", returncode=1, stdout="", stderr="ModuleNotFoundError: flashinfer")
+        with mock.patch("sparkrun.orchestration.primitives.run_script_on_host", return_value=bad):
+            with mock.patch.object(builder, "_remove_image") as mock_rmi:
+                with pytest.raises(RuntimeError, match="without flashinfer"):
+                    builder._verify_image_imports("my-image", host="head", ssh_kwargs={"ssh_user": "u"})
+        mock_rmi.assert_called_once_with("my-image", host="head", ssh_kwargs={"ssh_user": "u"})
