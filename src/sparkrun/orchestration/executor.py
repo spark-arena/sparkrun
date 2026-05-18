@@ -29,7 +29,7 @@ EXECUTOR_DEFAULTS = {
     "privileged": True,
     "gpus": "all",
     "ipc": "host",
-    "shm_size": "10.24gb",
+    "shm_size": "32gb",
     "network": "host",
     "user": None,
     "security_opt": None,
