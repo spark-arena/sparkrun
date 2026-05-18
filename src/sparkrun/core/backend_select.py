@@ -1,10 +1,10 @@
 """Map a :class:`HostHardware` fingerprint to a concrete backend bundle.
 
-Phase 6: the selector resolves the combination of components a host
-needs to run (collective backend + executor accelerator vendor flag).
+Resolves the combination of components a host needs to run (collective
+backend + executor accelerator vendor flag) from its detected hardware.
 If no matching backend exists, :class:`NoMatchingBackendError` lists
-both what was detected and which backends are known, so users have an
-actionable error instead of silent NVIDIA fallback.
+both what was detected and which backends are known, so users get an
+actionable error instead of a silent NVIDIA fallback.
 """
 
 from __future__ import annotations

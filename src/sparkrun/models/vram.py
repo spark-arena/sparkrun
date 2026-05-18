@@ -82,13 +82,13 @@ _PARAM_SUFFIXES = {
 # Usable GPU memory depends on gpu_memory_utilization and OS overhead.
 # We use 121 GiB as an "available for inference" figure.
 #
-# Phase 3 of the hardware-agnostic refactor: this constant is the default
-# per-host VRAM budget used by the legacy single-platform fit path
-# (:attr:`VRAMEstimate.fits_dgx_spark`).  For heterogeneous-cluster fits,
-# use :func:`sparkrun.models.fit.check_fit` instead, which reads
-# ``memory_gb`` from each host's :class:`~sparkrun.core.hardware.HostHardware`.
+# Used as the default per-host VRAM budget by the single-platform fit
+# path (:attr:`VRAMEstimate.fits_dgx_spark`).  Heterogeneous-cluster
+# fits should call :func:`sparkrun.models.fit.check_fit` instead, which
+# reads ``memory_gb`` from each host's
+# :class:`~sparkrun.core.hardware.HostHardware`.
 DEFAULT_VRAM_GB = 121.0
-DGX_SPARK_VRAM_GB = DEFAULT_VRAM_GB  # back-compat alias; prefer DEFAULT_VRAM_GB
+DGX_SPARK_VRAM_GB = DEFAULT_VRAM_GB  # alias retained for callers that pre-date DEFAULT_VRAM_GB
 
 
 @dataclass

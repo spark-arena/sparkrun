@@ -38,7 +38,7 @@ class RuntimePlugin(Plugin):
     runtime_name: str = ""
     default_image_prefix: str = ""
 
-    # --- Hardware compatibility (Phase 7) ---
+    # --- Hardware compatibility ---
     requires_capability: frozenset[str] = frozenset()
     """Capabilities or accelerator-model names every placed host must advertise.
 

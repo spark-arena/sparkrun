@@ -1,14 +1,14 @@
 """Cluster-aware fit check between a model VRAM estimate and a placement.
 
-Phase 3 of the hardware-agnostic refactor: splits "model VRAM requirement"
-(an intrinsic property of model + parallelism, computed by
-:func:`sparkrun.models.vram.estimate_vram`) from "does it fit on this
-cluster" (a property of the placement against per-host accelerator
-memory captured in :class:`~sparkrun.core.hardware.HostHardware`).
+Splits "model VRAM requirement" (an intrinsic property of model +
+parallelism, computed by :func:`sparkrun.models.vram.estimate_vram`)
+from "does it fit on this cluster" (a property of the placement against
+per-host accelerator memory captured in
+:class:`~sparkrun.core.hardware.HostHardware`).
 
-The legacy :attr:`VRAMEstimate.fits_dgx_spark` property stays for
-back-compat with single-platform CLI output, but heterogeneous clusters
-must use :func:`check_fit` because per-host budgets vary.
+:attr:`VRAMEstimate.fits_dgx_spark` is retained for the single-platform
+CLI output path; heterogeneous clusters must use :func:`check_fit`
+since per-host budgets vary.
 """
 
 from __future__ import annotations
@@ -113,7 +113,7 @@ def check_fit(
     Hosts without ``memory_gb`` metadata are reported ``ok=True`` with a
     warning — sparkrun can't verify the fit but won't block the launch
     on missing data.  Use ``sparkrun cluster update --infer-hardware``
-    (Phase 6) to populate it.
+    to populate it.
 
     Args:
         estimate: Result of :func:`sparkrun.models.vram.estimate_vram`.

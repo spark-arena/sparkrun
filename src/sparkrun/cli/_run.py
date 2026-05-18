@@ -160,9 +160,9 @@ def run(
     host_list, cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, sctx=sctx)
 
     # Resolve the named cluster definition when one is in play.  Carries
-    # per-host hardware metadata (Phase 1) so downstream code can compute
-    # placement, fit, and per-host backend selection.  Falls back to None
-    # for explicit --hosts / --hosts-file (legacy host-list-only path).
+    # per-host hardware metadata so downstream code can compute placement,
+    # fit, and per-host backend selection.  Falls back to None for
+    # explicit --hosts / --hosts-file (host-list-only path).
     cluster_def = None
     if cluster_mgr is not None and not hosts and not hosts_file:
         _name = cluster_name or cluster_mgr.get_default()

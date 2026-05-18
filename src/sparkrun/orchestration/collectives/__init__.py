@@ -1,16 +1,12 @@
 """Collective communication backend abstraction.
 
-Phase 5 of the hardware-agnostic refactor: introduces the
-:class:`CollectiveBackend` seam so AMD (RCCL) and Intel Gaudi (HCCL)
-can plug in alongside NVIDIA NCCL without ad-hoc branching in every
-runtime.  The default :class:`~.nccl.NcclBackend` delegates straight
-back to :mod:`sparkrun.orchestration.infiniband` so DGX Spark output
-is byte-identical to pre-Phase-5.
-
-Other backends ship as scaffolds that raise
-:class:`NotImplementedError` with an actionable message; the seam
-exists so contributors can fill them in without re-plumbing the
-runtimes.
+:class:`CollectiveBackend` is the seam that lets AMD (RCCL) and Intel
+Gaudi (HCCL) plug in alongside NVIDIA NCCL without ad-hoc branching in
+every runtime.  The default :class:`~.nccl.NcclBackend` delegates
+straight to :mod:`sparkrun.orchestration.infiniband` so NVIDIA-host
+output is unchanged.  RCCL and HCCL ship as scaffolds that raise
+:class:`NotImplementedError` with actionable messages — contributors
+can fill them in without re-plumbing runtimes.
 """
 
 from __future__ import annotations

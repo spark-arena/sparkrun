@@ -1,15 +1,13 @@
 """Rank-to-host placement for heterogeneous clusters.
 
-Phase 2 of the hardware-agnostic refactor: defines the placement engine
-that maps a :class:`ParallelismConfig` onto a concrete cluster, honoring
-an optional :class:`RecipeLayout` and per-host hardware capacity from
+Maps a :class:`ParallelismConfig` onto a concrete cluster, honoring an
+optional :class:`RecipeLayout` and per-host hardware capacity from
 :class:`HostHardware`.
 
-The pre-refactor assumption was "1 GPU per host", baked into
-``ParallelismConfig.total_nodes`` and every runtime's ``hosts[i]``
-indexing.  This engine generalizes that to "rank → (host, local-GPU
-index)" while preserving identical output for the homogeneous DGX
-Spark case so all existing runtimes continue to function unchanged.
+The engine treats placement as "rank → (host, local-GPU index)" rather
+than the "1 GPU per host" assumption baked into older code paths, while
+preserving identical output for the homogeneous DGX Spark case so
+runtimes that index by host position continue to work unchanged.
 
 Resolution algorithm:
 

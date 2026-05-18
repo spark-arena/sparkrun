@@ -40,13 +40,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Backwards-compat: legacy global defaults symbol.
-# ---------------------------------------------------------------------------
-
-#: Re-export of :data:`DockerExecutor.default_config()` for older callers
-#: (and tests) that used to import ``EXECUTOR_DEFAULTS`` from this module.
-#: New code should call :meth:`DockerExecutor.default_config` directly.
+#: Alias for :data:`DockerExecutor.default_config()`.  Importable from
+#: this module so that callers and tests have a stable public name for
+#: the Docker-flavoured defaults without reaching into the
+#: implementation package.
 EXECUTOR_DEFAULTS = DOCKER_DEFAULTS
 
 

@@ -1,4 +1,4 @@
-"""Hardware platform plugins (Phase 8).
+"""Hardware platform plugins.
 
 A :class:`HardwarePlatformPlugin` binds an accelerator vendor to a
 collective backend, executor accelerator flag, and per-runtime default
@@ -8,10 +8,10 @@ container images.  Built-in platforms are ordered most-specific first
 NVIDIA hosts.
 
 External packages can register additional platforms via
-:func:`register_platform`; SAF entry-point discovery is deferred to a
-follow-up sub-phase, since today there are no in-tree callers that
-need to consult the registry — the building blocks from Phases 1–7
-already cover the runtime hot path.
+:func:`register_platform`.  SAF entry-point discovery is not yet wired
+up — today nothing in tree consults the registry for plugin-style
+lookup, the hot-path already uses the collective backend + executor
+accelerator flag directly.
 """
 
 from __future__ import annotations

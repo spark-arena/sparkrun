@@ -16,7 +16,7 @@ from sparkrun.platforms.base import HardwarePlatformPlugin
 # Upstream defaults for generic NVIDIA hosts (H100, H200, B200, RTX
 # workstations, etc.).  ``None`` means "no default — set
 # recipe.container explicitly".  Atlas / eugr stay DGX-Spark-only via
-# their own ``requires_capability`` gates from Phase 7.
+# their own ``requires_capability`` gates on the runtime plugin.
 _NVIDIA_GENERIC_DEFAULTS: dict[str, str | None] = {
     "vllm-distributed": "vllm/vllm-openai:latest",
     "vllm-ray": "vllm/vllm-openai:latest",

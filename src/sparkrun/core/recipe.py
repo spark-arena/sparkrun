@@ -672,7 +672,8 @@ class Recipe:
         self.distribution_config: DistributionConfig = _parse_distribution_config(data)
 
         # Explicit placement layout for heterogeneous clusters (optional).
-        # Parsed permissively in Phase 1; placement engine in Phase 2 will validate.
+        # Parsed permissively here; the placement engine in
+        # :mod:`sparkrun.core.placement` validates at apply time.
         raw_layout = data.get("layout")
         self.layout: RecipeLayout | None = RecipeLayout.from_dict(raw_layout) if isinstance(raw_layout, dict) else None
 
@@ -1249,7 +1250,7 @@ class Recipe:
         if self._raw.get("cluster_only"):
             d["cluster_only"] = True
 
-        # -- Explicit placement layout (Phase 1; optional) --
+        # -- Explicit placement layout (optional) --
         if self.layout is not None:
             layout_dict = self.layout.to_dict()
             if layout_dict:
