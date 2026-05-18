@@ -147,6 +147,47 @@ class SparkrunConfig:
                 return default
         return current
 
+    def _get_defaults_section(self, section: str, name: str) -> dict[str, Any]:
+        """Return ``defaults.<section>.<name>`` as a dict, or ``{}`` when missing or malformed."""
+        defaults = self._data.get("defaults", {})
+        if not isinstance(defaults, dict):
+            return {}
+        bucket = defaults.get(section, {})
+        if not isinstance(bucket, dict):
+            return {}
+        entry = bucket.get(name, {})
+        return entry if isinstance(entry, dict) else {}
+
+    def get_defaults_builder(self, name: str) -> dict[str, Any]:
+        """Return per-builder defaults from ``defaults.builders.<name>``.
+
+        Example user config::
+
+            defaults:
+              builders:
+                eugr:
+                  use_sentinel_image: false
+
+        Builders should treat the returned dict as a soft default — recipe
+        fields and explicit overrides still win.
+        """
+        return self._get_defaults_section("builders", name)
+
+    def get_defaults_runtime(self, name: str) -> dict[str, Any]:
+        """Return per-runtime defaults from ``defaults.runtimes.<name>``.
+
+        Example user config::
+
+            defaults:
+              runtimes:
+                vllm-distributed:
+                  some_option: value
+
+        Runtimes should treat the returned dict as a soft default — recipe
+        fields and explicit overrides still win.
+        """
+        return self._get_defaults_section("runtimes", name)
+
     @property
     def monitor_backend(self) -> str | None:
         """Monitoring backend preference: ``"bash"`` or ``"nv-monitor"``."""

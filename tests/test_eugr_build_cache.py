@@ -145,6 +145,11 @@ def _write_cache(tmp_path, image="sparkrun-eugr-vllm", entry=None):
 def _mock_config(tmp_path):
     cfg = mock.MagicMock()
     cfg.cache_dir = str(tmp_path)
+    # Return an empty dict so builders see their canonical "no overrides" defaults
+    # (use_sentinel_image=True, save_build_logs=False) instead of inheriting
+    # MagicMock's truthy auto-generated attributes.
+    cfg.get_defaults_builder = mock.Mock(return_value={})
+    cfg.get_defaults_runtime = mock.Mock(return_value={})
     return cfg
 
 
@@ -623,6 +628,7 @@ class TestPrepareImageCacheIntegration:
             {"user": "u"},
             False,
             config=config,
+            save_logs=False,
         )
         # _save_build_metadata receives the canonical args (without --cleanup) so the
         # cache entry remains comparable to future recipe-driven cache checks.

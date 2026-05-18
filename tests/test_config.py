@@ -331,6 +331,72 @@ def test_config_empty_defaults_section(tmp_path: Path):
     assert config.default_transformers_tag == "t4"  # Default value
 
 
+def test_get_defaults_builder_returns_dict(tmp_path: Path):
+    """`defaults.builders.<name>` is returned as a dict for builders that read soft defaults."""
+    config_file = tmp_path / "config.yaml"
+    yaml.dump(
+        {
+            "defaults": {
+                "builders": {
+                    "eugr": {"use_sentinel_image": False, "extra_flag": "x"},
+                    "docker-pull": {},
+                },
+            },
+        },
+        open(config_file, "w"),
+    )
+
+    config = SparkrunConfig(config_path=config_file)
+    assert config.get_defaults_builder("eugr") == {"use_sentinel_image": False, "extra_flag": "x"}
+    assert config.get_defaults_builder("docker-pull") == {}
+    # Missing builder name returns an empty dict (not None).
+    assert config.get_defaults_builder("does-not-exist") == {}
+
+
+def test_get_defaults_runtime_returns_dict(tmp_path: Path):
+    """`defaults.runtimes.<name>` is returned as a dict."""
+    config_file = tmp_path / "config.yaml"
+    yaml.dump(
+        {
+            "defaults": {
+                "runtimes": {
+                    "vllm-distributed": {"some_option": 42},
+                },
+            },
+        },
+        open(config_file, "w"),
+    )
+
+    config = SparkrunConfig(config_path=config_file)
+    assert config.get_defaults_runtime("vllm-distributed") == {"some_option": 42}
+    assert config.get_defaults_runtime("sglang") == {}
+
+
+def test_get_defaults_section_handles_missing_or_malformed(tmp_path: Path):
+    """Missing `defaults` section or non-dict bucket values return empty dict, not crash."""
+    cf = tmp_path / "config.yaml"
+    # No defaults section at all.
+    yaml.dump({"cache_dir": "/tmp"}, open(cf, "w"))
+    config = SparkrunConfig(config_path=cf)
+    assert config.get_defaults_builder("eugr") == {}
+    assert config.get_defaults_runtime("vllm") == {}
+
+    # Malformed: defaults is a non-dict.
+    yaml.dump({"defaults": "not-a-dict"}, open(cf, "w"))
+    config = SparkrunConfig(config_path=cf)
+    assert config.get_defaults_builder("eugr") == {}
+
+    # Malformed: bucket is a non-dict.
+    yaml.dump({"defaults": {"builders": "not-a-dict"}}, open(cf, "w"))
+    config = SparkrunConfig(config_path=cf)
+    assert config.get_defaults_builder("eugr") == {}
+
+    # Malformed: entry itself is a non-dict.
+    yaml.dump({"defaults": {"builders": {"eugr": "not-a-dict"}}}, open(cf, "w"))
+    config = SparkrunConfig(config_path=cf)
+    assert config.get_defaults_builder("eugr") == {}
+
+
 def test_get_config_root_without_variables():
     """get_config_root without Variables returns DEFAULT_CONFIG_DIR."""
     from sparkrun.core.config import get_config_root, DEFAULT_CONFIG_DIR
