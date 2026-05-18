@@ -89,6 +89,17 @@ def init_sparkrun(v: Variables | None = None, log_level: str = "WARNING") -> Var
         except (ValueError, TypeError) as e:
             logger.debug("Skipping builder %s: %s", builder_cls.__name__, e)
 
+    # Auto-discover all Executor subclasses in sparkrun.orchestration.executors
+    from sparkrun.orchestration.executors._base import Executor as _ExecutorPlugin
+
+    discovered_executors = list(find_types_in_modules("sparkrun.orchestration.executors", _ExecutorPlugin))
+    for executor_cls in discovered_executors:
+        try:
+            register_plugin(executor_cls, v=v)
+            logger.debug("Registered executor: %s", executor_cls.__name__)
+        except (ValueError, TypeError) as e:
+            logger.debug("Skipping executor %s: %s", executor_cls.__name__, e)
+
     return v
 
 

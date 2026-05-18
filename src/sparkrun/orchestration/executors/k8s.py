@@ -40,7 +40,7 @@ from __future__ import annotations
 import logging
 import re
 
-from sparkrun.orchestration.executor import Executor
+from sparkrun.orchestration.executors._base import Executor
 from sparkrun.utils.shell import b64_wrap_bash, quote
 
 logger = logging.getLogger(__name__)
@@ -55,6 +55,11 @@ class K8sExecutor(Executor):
     have ``kubectl`` on PATH and a current context that points at a
     cluster reachable from the script's execution host.
     """
+
+    executor_name = "k8s"
+
+    # No Docker-flavoured defaults; ``--privileged`` / ``--shm-size``
+    # etc. don't apply.  No rootless/auto_user handling either.
 
     # ------------------------------------------------------------------
     # Common kubectl prefix
@@ -325,15 +330,13 @@ class K8sExecutor(Executor):
     def generate_ray_head_script(self, *args, **kwargs) -> str:
         """K8sExecutor does not support Ray clustering in the draft."""
         raise NotImplementedError(
-            "K8sExecutor draft does not support Ray cluster strategy. "
-            "Use a native runtime (e.g. vllm-distributed, sglang) or DockerExecutor."
+            "K8sExecutor draft does not support Ray cluster strategy. Use a native runtime (e.g. vllm-distributed, sglang) or DockerExecutor."
         )
 
     def generate_ray_worker_script(self, *args, **kwargs) -> str:
         """K8sExecutor does not support Ray clustering in the draft."""
         raise NotImplementedError(
-            "K8sExecutor draft does not support Ray cluster strategy. "
-            "Use a native runtime (e.g. vllm-distributed, sglang) or DockerExecutor."
+            "K8sExecutor draft does not support Ray cluster strategy. Use a native runtime (e.g. vllm-distributed, sglang) or DockerExecutor."
         )
 
 

@@ -22,11 +22,11 @@ from scitrera_app_framework.api import EnvPlacement, Variables
 from sparkrun.orchestration.executor import (
     EXECUTOR_DEFAULTS,
     ExecutorConfig,
-    build_executor,
+    resolve_executor,
 )
-from sparkrun.orchestration.executor_docker import DockerExecutor
-from sparkrun.orchestration.executor_k8s import K8sExecutor
-from sparkrun.orchestration.executor_local import LocalExecutor
+from sparkrun.orchestration.executors.docker import DockerExecutor
+from sparkrun.orchestration.executors.k8s import K8sExecutor
+from sparkrun.orchestration.executors.local import LocalExecutor
 
 
 # ---------------------------------------------------------------------------
@@ -66,18 +66,22 @@ class TestExecutorConfigK8sFields:
 
 
 # ---------------------------------------------------------------------------
-# build_executor factory: k8s dispatch
+# resolve_executor dispatch (k8s-flavoured cases)
 # ---------------------------------------------------------------------------
 
 
-class TestBuildExecutorK8s:
-    def test_factory_returns_k8s_executor(self):
-        ex = build_executor("k8s", {"k8s_namespace": "inf"})
+class TestResolveExecutorK8sDispatch:
+    def test_k8s_via_cli_overrides(self):
+        ex = resolve_executor(
+            cli_overrides={"executor": "k8s", "k8s_namespace": "inf"},
+            rootless=False,
+            auto_user=False,
+        )
         assert isinstance(ex, K8sExecutor)
         assert ex.config.k8s_namespace == "inf"
 
-    def test_factory_selector_in_cfg(self):
-        ex = build_executor(None, {"executor": "k8s"})
+    def test_k8s_via_executor_key_in_cfg(self):
+        ex = resolve_executor(cli_overrides={"executor": "k8s"}, rootless=False, auto_user=False)
         assert isinstance(ex, K8sExecutor)
 
 
@@ -342,19 +346,25 @@ class TestRuntimePluginDefaultExecutor:
 
 
 # ---------------------------------------------------------------------------
-# Cross-executor: factory still dispatches Docker by default
+# Cross-executor: resolve_executor still dispatches Docker by default
 # ---------------------------------------------------------------------------
 
 
-class TestFactoryFullMatrix:
+class TestResolveExecutorFullMatrix:
     def test_docker_default(self):
-        assert isinstance(build_executor(None, None), DockerExecutor)
+        assert isinstance(resolve_executor(), DockerExecutor)
 
     def test_local(self):
-        assert isinstance(build_executor("local", None), LocalExecutor)
+        assert isinstance(
+            resolve_executor(cli_overrides={"executor": "local"}, rootless=False, auto_user=False),
+            LocalExecutor,
+        )
 
     def test_k8s(self):
-        assert isinstance(build_executor("k8s", None), K8sExecutor)
+        assert isinstance(
+            resolve_executor(cli_overrides={"executor": "k8s"}, rootless=False, auto_user=False),
+            K8sExecutor,
+        )
 
     def test_unknown_falls_back_to_docker(self):
-        assert isinstance(build_executor("wasm", None), DockerExecutor)
+        assert isinstance(resolve_executor(cli_overrides={"executor": "wasm"}), DockerExecutor)

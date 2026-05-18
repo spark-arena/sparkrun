@@ -60,6 +60,11 @@ tool-eval-bench = "sparkrun.benchmarking.tool_eval_bench:ToolEvalBenchFramework"
 docker-pull = "sparkrun.builders.docker_pull:DockerPullBuilder"
 eugr = "sparkrun.builders.eugr:EugrBuilder"
 
+[project.entry-points."sparkrun.executors"]
+docker = "sparkrun.orchestration.executors.docker:DockerExecutor"
+local = "sparkrun.orchestration.executors.local:LocalExecutor"
+k8s = "sparkrun.orchestration.executors.k8s:K8sExecutor"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

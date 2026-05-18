@@ -1,7 +1,7 @@
 """Unit tests for sparkrun.orchestration.scripts module."""
 
 from sparkrun.orchestration.scripts import generate_ip_detect_script
-from sparkrun.orchestration.executor_docker import DockerExecutor
+from sparkrun.orchestration.executors.docker import DockerExecutor
 from sparkrun.utils.shell import b64_encode_cmd
 
 _executor = DockerExecutor()

@@ -337,7 +337,10 @@ class BaseTuner:
         """Step 1: Launch a tuning container with sleep infinity."""
         import time
         from sparkrun.orchestration.primitives import build_volumes, run_script_on_host
-        from sparkrun.orchestration.executor_docker import DockerExecutor
+        from sparkrun.orchestration.executor import get_executor
+
+        # TODO: switch to being resolved executor instance?
+        DockerExecutor = get_executor("docker")
 
         t0 = time.monotonic()
         logger.info("Step 1/5: Launching tuning container on %s...", self.host)

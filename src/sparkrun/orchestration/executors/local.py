@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 import re
 
-from sparkrun.orchestration.executor import Executor
+from sparkrun.orchestration.executors._base import Executor
 from sparkrun.utils.shell import quote
 
 logger = logging.getLogger(__name__)
@@ -50,6 +50,11 @@ class LocalExecutor(Executor):
     Process-group kill (``kill -- -<pgid>``) is used to clean up the
     whole tree including any workers the runtime forks.
     """
+
+    executor_name = "local"
+
+    # No Docker-style defaults; the dataclass field defaults are
+    # appropriate.  No rootless/auto_user concerns either.
 
     # ------------------------------------------------------------------
     # Path resolution helpers
