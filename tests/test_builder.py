@@ -329,6 +329,71 @@ class TestEugrPrepareImage:
         mock_rmi.assert_called_once_with("my-image", host=None, ssh_kwargs=None)
         mock_save.assert_not_called()
 
+    def test_eugr_prepare_respects_use_sentinel_image_false(self, eugr_builder_with_repo):
+        """When `defaults.builders.eugr.use_sentinel_image=false`, `:latest` is NOT remapped.
+
+        Power-user escape hatch: the user opts out of the historical force-rebuild
+        behavior so `:latest` is treated as a regular pullable GHCR image.
+        """
+        builder, repo_dir = eugr_builder_with_repo
+        recipe = Recipe.from_dict(
+            {
+                "name": "test",
+                "model": "some/model",
+                "runtime": "eugr-vllm",
+                "container": "ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest",
+            }
+        )
+        config = mock.Mock()
+        config.get_defaults_builder = mock.Mock(return_value={"use_sentinel_image": False})
+
+        with mock.patch.object(builder, "ensure_repo") as mock_ensure:
+            with mock.patch("sparkrun.builders.eugr._run_build_capturing") as mock_build:
+                with mock.patch.object(builder, "_verify_image_imports") as mock_verify:
+                    result = builder.prepare_image(
+                        "ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest",
+                        recipe,
+                        ["10.0.0.1"],
+                        config=config,
+                    )
+
+        # No remap, no build, no smoke test: image flows through as pullable.
+        assert result == "ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest"
+        mock_ensure.assert_not_called()
+        mock_build.assert_not_called()
+        mock_verify.assert_not_called()
+        config.get_defaults_builder.assert_called_with("eugr")
+
+    def test_eugr_prepare_sentinel_default_is_on(self, eugr_builder_with_repo, tmp_path):
+        """With config returning empty builder defaults, sentinel behavior stays ON."""
+        builder, repo_dir = eugr_builder_with_repo
+        recipe = Recipe.from_dict(
+            {
+                "name": "test",
+                "model": "some/model",
+                "runtime": "eugr-vllm",
+                "container": "ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest",
+            }
+        )
+        config = mock.Mock()
+        config.cache_dir = tmp_path  # real path so Path(config.cache_dir) works
+        config.get_defaults_builder = mock.Mock(return_value={})
+
+        with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
+            with mock.patch("sparkrun.builders.eugr._run_build_capturing", return_value=(0, "")) as mock_build:
+                with mock.patch.object(builder, "_verify_image_imports"):
+                    with mock.patch.object(builder, "_save_build_metadata"):
+                        result = builder.prepare_image(
+                            "ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest",
+                            recipe,
+                            ["10.0.0.1"],
+                            config=config,
+                        )
+
+        # Sentinel remap fired: image renamed to local tag, build happened.
+        assert result == "sparkrun-eugr-vllm"
+        mock_build.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # Bootstrap integration — get_builder / list_builders

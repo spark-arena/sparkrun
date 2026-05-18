@@ -287,8 +287,21 @@ class EugrBuilder(BuilderPlugin):
         build_args = recipe.runtime_config.get("build_args", [])
         needs_build = False  # assume False at first
 
+        # Builder-level user defaults from `defaults.builders.eugr` in the user config.
+        # `use_sentinel_image` (default True) controls whether ":latest" tags on the
+        # eugr nightly GHCR images are interpreted as "build locally from upstream
+        # wheels" (the historical behavior) — power users can set this to False to
+        # treat ":latest" as a regular pullable image instead.
+        builder_defaults = config.get_defaults_builder("eugr") if config is not None else {}
+        use_sentinel_image = bool(builder_defaults.get("use_sentinel_image", True))
+
         # ~~ SPECIAL CASES: map pullable eugr nightly images to use direct build ~~~
-        if image.strip() == GHCR_EUGR_NIGHTLY_TF5 + ":latest" and (build_args == ["--tf5"] or not build_args):
+        if not use_sentinel_image:
+            logger.debug(
+                "eugr sentinel image handling disabled (defaults.builders.eugr.use_sentinel_image=false); "
+                "':latest' will be treated as a regular pullable image"
+            )
+        elif image.strip() == GHCR_EUGR_NIGHTLY_TF5 + ":latest" and (build_args == ["--tf5"] or not build_args):
             # use sparkrun prefixed names to avoid collisions with other user images
             image = LOCAL_EUGR_NIGHTLY_TF5
             build_args = ["--tf5"]
