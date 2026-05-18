@@ -235,15 +235,19 @@ class EugrBuilder(BuilderPlugin):
 
         # Build image if needed
         if needs_build:
-            if "--cleanup" not in build_args:
-                build_args.append("--cleanup")
+            # `--cleanup` is an unconditional builder-hygiene flag — keep it out of the
+            # cached build_args so cache identity remains tied to the recipe's canonical
+            # build_args (otherwise every subsequent cache check would miss).
+            effective_build_args = list(build_args)
+            if "--cleanup" not in effective_build_args:
+                effective_build_args.append("--cleanup")
 
             if delegated:
-                self._build_image_remote(image, build_args, head, ssh_kwargs, dry_run)
+                self._build_image_remote(image, effective_build_args, head, ssh_kwargs, dry_run)
                 if not dry_run:
                     self._save_build_metadata(image, build_args, config, host=head, ssh_kwargs=ssh_kwargs)
             else:
-                self._build_image(image, build_args, dry_run)
+                self._build_image(image, effective_build_args, dry_run)
                 if not dry_run:
                     self._save_build_metadata(image, build_args, config)
 

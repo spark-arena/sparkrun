@@ -412,7 +412,10 @@ class TestEugrDelegatedMode:
                 )
         mock_remote_build.assert_called_once_with(
             "my-image",
-            ["--flag"],
+            [
+                "--flag",
+                "--cleanup",  # cleanup flag is injected!
+            ],
             "head-host",
             {"ssh_user": "u"},
             False,
