@@ -57,9 +57,9 @@ class RuntimePlugin(Plugin):
     def executor(self) -> Executor:
         """Return the executor, lazily defaulting to DockerExecutor."""
         if self._executor is None:
-            from sparkrun.orchestration.executor_docker import DockerExecutor
+            from sparkrun.orchestration.executor import get_executor
 
-            self._executor = DockerExecutor()
+            self._executor = get_executor("docker")()
         return self._executor
 
     @executor.setter

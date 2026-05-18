@@ -20,10 +20,10 @@ import pytest
 from sparkrun.orchestration.executor import (
     EXECUTOR_DEFAULTS,
     ExecutorConfig,
-    build_executor,
+    resolve_executor,
 )
-from sparkrun.orchestration.executor_docker import DockerExecutor
-from sparkrun.orchestration.executor_local import LocalExecutor
+from sparkrun.orchestration.executors.docker import DockerExecutor
+from sparkrun.orchestration.executors.local import LocalExecutor
 
 
 # ---------------------------------------------------------------------------
@@ -88,29 +88,36 @@ class TestExecutorConfigLocalFields:
 
 
 # ---------------------------------------------------------------------------
-# build_executor factory
+# resolve_executor dispatch (Local-flavoured cases)
 # ---------------------------------------------------------------------------
 
 
-class TestBuildExecutorFactory:
+class TestResolveExecutorLocalDispatch:
+    """Lightweight cases that exercise the Local path through ``resolve_executor``.
+
+    More exhaustive coverage of the resolution chain lives in
+    ``tests/test_executor_resolution.py`` — these are the
+    Local-executor-flavoured slices.
+    """
+
     def test_default_returns_docker(self):
-        ex = build_executor(None, None)
+        ex = resolve_executor()
         assert isinstance(ex, DockerExecutor)
         assert ex.config.executor_type == "docker"
 
-    def test_explicit_docker(self):
-        ex = build_executor("docker", {})
+    def test_explicit_docker_via_cli_overrides(self):
+        ex = resolve_executor(cli_overrides={"executor": "docker"})
         assert isinstance(ex, DockerExecutor)
 
-    def test_local_selector(self):
-        ex = build_executor("local", {"log_dir": "/tmp/x", "pid_dir": "/tmp/y"})
+    def test_local_selector_via_cli_overrides(self):
+        ex = resolve_executor(
+            cli_overrides={"executor": "local", "log_dir": "/tmp/x", "pid_dir": "/tmp/y"},
+            rootless=False,
+            auto_user=False,
+        )
         assert isinstance(ex, LocalExecutor)
         assert ex.config.log_dir == "/tmp/x"
         assert ex.config.pid_dir == "/tmp/y"
-
-    def test_selector_in_config_dict_works(self):
-        ex = build_executor(None, {"executor": "local"})
-        assert isinstance(ex, LocalExecutor)
 
 
 # ---------------------------------------------------------------------------
@@ -421,5 +428,5 @@ class TestLauncherFactoryDispatch:
 
         r = Recipe.from_dict({"model": "m", "runtime": "vllm", "container": "img"})
         assert r.executor == ""
-        ex = build_executor(r.executor or None, r.executor_config)
+        ex = resolve_executor(recipe=r)
         assert isinstance(ex, DockerExecutor)

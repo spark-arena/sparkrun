@@ -17,7 +17,7 @@ from sparkrun.orchestration.executor import (
     Executor,
     ExecutorConfig,
 )
-from sparkrun.orchestration.executor_docker import DockerExecutor
+from sparkrun.orchestration.executors.docker import DockerExecutor
 from sparkrun.utils.shell import b64_encode_cmd
 
 

@@ -455,62 +455,21 @@ def launch_inference(
     if topology is not None:
         run_kwargs["topology"] = topology
 
-    # Build executor from layered config: CLI → recipe → defaults
-    from scitrera_app_framework.api import Variables, EnvPlacement
-    from sparkrun.orchestration.executor import EXECUTOR_DEFAULTS, ExecutorConfig
-    from sparkrun.orchestration.executor_docker import DockerExecutor
+    # Build executor via the unified resolution chain (single source of
+    # truth shared with cli._stop_logs).  Order: CLI → recipe → runtime
+    # → per-executor adjustments (Docker reads rootless/auto_user here)
+    # → SparkrunConfig → per-executor defaults → dataclass field defaults.
+    from sparkrun.orchestration.executor import resolve_executor
 
-    exec_adjustments = {}
-    if rootless:
-        exec_adjustments["privileged"] = False
-        exec_adjustments["security_opt"] = ["no-new-privileges"]
-        exec_adjustments["cap_add"] = []
-        exec_adjustments["ulimit"] = [
-            "memlock=-1:-1",
-            "stack=67108864",
-        ]
-        # TODO: confirm existence and/or adjust? (for future heterogeneous support??)
-        exec_adjustments["devices"] = [
-            "/dev/infiniband",
-        ]
-    if auto_user:
-        exec_adjustments["user"] = "$SHELL_USER"  # auto hint to use ssh user+group
-
-    recipe_executor_config = getattr(recipe, "executor_config", None)
-    if not isinstance(recipe_executor_config, dict):
-        recipe_executor_config = {}
-    # Recipe-level ``executor`` field (experimental) flows into the
-    # config chain alongside the rest of ``executor_config``.
-    recipe_executor_selector = getattr(recipe, "executor", "") or ""
-    if recipe_executor_selector and "executor" not in recipe_executor_config:
-        recipe_executor_config = {**recipe_executor_config, "executor": recipe_executor_selector}
-    cli_exec_opts = executor_config if isinstance(executor_config, dict) else {}
-    # Runtime-declared fallback (sits below recipe, above global defaults).
-    # Lets specialised runtimes ship a sensible non-Docker default
-    # without requiring every recipe to set it explicitly.
-    runtime_default_exec = runtime.default_executor() if hasattr(runtime, "default_executor") else None
-    runtime_exec_defaults = {"executor": runtime_default_exec} if runtime_default_exec else {}
-    exec_chain = Variables(
-        sources=(
-            cli_exec_opts,  # CLI flags (highest priority)
-            recipe_executor_config,  # recipe YAML
-            runtime_exec_defaults,  # runtime-declared fallback
-            exec_adjustments,  # executor adjustments
-            EXECUTOR_DEFAULTS,  # hardcoded defaults
-        ),
-        env_placement=EnvPlacement.IGNORED,
+    executor = resolve_executor(
+        recipe=recipe,
+        runtime=runtime,
+        config=config,
+        cli_overrides=executor_config if isinstance(executor_config, dict) else None,
+        rootless=rootless,
+        auto_user=auto_user,
+        v=v,
     )
-    exec_cfg = ExecutorConfig.from_chain(exec_chain)
-    if exec_cfg.executor_type == "local":
-        from sparkrun.orchestration.executor_local import LocalExecutor
-
-        executor = LocalExecutor(exec_cfg)
-    elif exec_cfg.executor_type == "k8s":
-        from sparkrun.orchestration.executor_k8s import K8sExecutor
-
-        executor = K8sExecutor(exec_cfg)
-    else:
-        executor = DockerExecutor(exec_cfg)
 
     # Launch
     rc = runtime.run(

@@ -6,7 +6,7 @@ import pytest
 
 from sparkrun.core.hardware import AcceleratorSpec, HostHardware
 from sparkrun.orchestration.executor import ExecutorConfig, accelerator_vendor_for
-from sparkrun.orchestration.executor_docker import DockerExecutor
+from sparkrun.orchestration.executors.docker import DockerExecutor
 
 
 def _build_opts(vendor: str | None = None, gpus: str = "all") -> list[str]:

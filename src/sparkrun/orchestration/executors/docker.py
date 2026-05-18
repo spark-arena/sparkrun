@@ -1,21 +1,79 @@
 """Docker implementation of the Executor abstraction.
 
 ``DockerExecutor`` generates Docker CLI command strings from
-``ExecutorConfig`` settings.  It replaces the hardcoded
-``_DEFAULT_DOCKER_OPTS`` list in ``docker.py``.
+``ExecutorConfig`` settings.  The Docker-flavoured global defaults
+(``privileged``, ``ipc=host``, ``shm_size``, ...) and the
+``rootless``/``auto_user`` adjustment layer live here — they are not
+shared concerns of other executors.
 """
 
 from __future__ import annotations
 
 import logging
-from sparkrun.orchestration.executor import Executor
-from sparkrun.utils.shell import b64_wrap_bash, quote, args_list_to_shell_str
+
+from sparkrun.orchestration.executors._base import Executor
+from sparkrun.utils.shell import args_list_to_shell_str, b64_wrap_bash, quote
 
 logger = logging.getLogger(__name__)
 
 
+# Per-executor defaults for the resolution chain — lowest layer above
+# the dataclass field defaults.  Was ``EXECUTOR_DEFAULTS`` at module
+# scope; now scoped to the executor it belongs to.
+DOCKER_DEFAULTS = {
+    "auto_remove": True,
+    "restart_policy": None,
+    "privileged": True,
+    "gpus": "all",
+    "ipc": "host",
+    "shm_size": "32gb",
+    "network": "host",
+    "user": None,
+    "security_opt": None,
+    "cap_add": None,
+    "ulimit": None,
+    "devices": None,
+}
+
+
 class DockerExecutor(Executor):
     """Docker-based executor for container operations."""
+
+    executor_name = "docker"
+
+    # --- Resolution chain hooks ---
+
+    @classmethod
+    def default_config(cls) -> dict:
+        """Docker-flavoured defaults — shm_size, ipc=host, network=host, ...."""
+        return dict(DOCKER_DEFAULTS)
+
+    @classmethod
+    def apply_runtime_adjustments(cls, *, rootless: bool = True, auto_user: bool = True, **kwargs) -> dict:
+        """Docker reads ``rootless`` and ``auto_user`` here.
+
+        Sits above SparkrunConfig and below recipe overrides in the
+        resolution chain, so users can still pin specific values in
+        the recipe to override the rootless/auto_user defaults.
+        """
+        adjustments: dict = {}
+        if rootless:
+            adjustments["privileged"] = False
+            adjustments["security_opt"] = ["no-new-privileges"]
+            adjustments["cap_add"] = []
+            adjustments["ulimit"] = [
+                "memlock=-1:-1",
+                "stack=67108864",
+            ]
+            # TODO: confirm existence and/or adjust? (for future heterogeneous support??)
+            adjustments["devices"] = [
+                "/dev/infiniband",
+            ]
+        if auto_user:
+            adjustments["user"] = "$SHELL_USER"  # auto hint to use ssh user+group
+        return adjustments
+
+    # --- Internal command-string builders ---
 
     def _accelerator_opts(self) -> list[str]:
         """Emit accelerator device flags based on ``config.accelerator_vendor``.
@@ -96,6 +154,8 @@ class DockerExecutor(Executor):
                 opts.extend(["--label", quote(lbl)])
 
         return opts
+
+    # --- Low-level command generators (Executor ABC) ---
 
     def run_cmd(
         self,

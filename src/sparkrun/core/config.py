@@ -115,6 +115,29 @@ class SparkrunConfig:
         return defaults.get("transformers", "t4")
 
     @property
+    def default_executor(self) -> str | None:
+        """System-wide executor pin (``"docker"`` / ``"local"`` / ``"k8s"``).
+
+        Falls below recipe-level ``executor:`` and the runtime's
+        ``default_executor()`` in the resolution chain — so a user can
+        set a sane site-wide default without overriding per-recipe
+        choices.  ``None`` (default) means "no opinion".
+        """
+        defaults = self._data.get("defaults", {})
+        val = defaults.get("executor") or self._data.get("default_executor")
+        return str(val).strip().lower() if val else None
+
+    @property
+    def executor_config(self) -> dict[str, Any]:
+        """System-wide ``executor_config`` overrides (e.g. ``k8s_namespace``).
+
+        Merged into the executor resolution chain below recipe overrides
+        and runtime adjustments.  Empty dict when unset.
+        """
+        cfg = self._data.get("executor_config")
+        return dict(cfg) if isinstance(cfg, dict) else {}
+
+    @property
     def ssh_user(self) -> str | None:
         if hasattr(self, "_ssh_user_override"):
             return self._ssh_user_override

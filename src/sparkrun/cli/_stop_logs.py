@@ -180,13 +180,14 @@ def _stop_local_workload(host_list, container_names, meta, *, ssh_kwargs, dry_ru
     Uses the executor's own ``stop_cmd`` to keep pidfile / process-group
     semantics consistent with how the workload was launched.
     """
-    from sparkrun.orchestration.executor import build_executor
+    from sparkrun.orchestration.executor import resolve_executor
     from sparkrun.orchestration.primitives import run_script_on_host
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    executor = build_executor(
-        executor_selector=meta.get("executor"),
-        executor_config_dict=meta.get("executor_config"),
+    executor = resolve_executor(
+        cli_overrides=_metadata_executor_overrides(meta),
+        rootless=False,
+        auto_user=False,
     )
     # One script per host: stop every container_name we know about
     # (most will be no-ops on hosts that didn't run that role).
@@ -385,15 +386,16 @@ def _follow_local_logs(host_list, cluster_id, meta, config, *, tail: int = 100) 
     logfile.  Falls through silently if the file is missing — the user
     will see ``tail`` complain, which is the right signal.
     """
-    from sparkrun.orchestration.executor import build_executor
+    from sparkrun.orchestration.executor import resolve_executor
     from sparkrun.orchestration.primitives import build_ssh_kwargs
     from sparkrun.orchestration.ssh import build_ssh_cmd
     import subprocess
 
     head_name = ("%s_solo" % cluster_id) if len(host_list) <= 1 else ("%s_node_0" % cluster_id)
-    executor = build_executor(
-        executor_selector=meta.get("executor"),
-        executor_config_dict=meta.get("executor_config"),
+    executor = resolve_executor(
+        cli_overrides=_metadata_executor_overrides(meta),
+        rootless=False,
+        auto_user=False,
     )
     tail_cmd = executor.logs_cmd(head_name, follow=True, tail=tail)
 
@@ -405,3 +407,24 @@ def _follow_local_logs(host_list, cluster_id, meta, config, *, tail: int = 100) 
         subprocess.run(ssh_cmd, check=False)
     except KeyboardInterrupt:
         pass
+
+
+def _metadata_executor_overrides(meta: dict | None) -> dict:
+    """Flatten job-metadata's executor selector + config into a ``cli_overrides`` dict.
+
+    Used by lifecycle paths (``sparkrun stop`` / ``sparkrun logs``) that
+    only have a job-metadata dict — no live Recipe object.  Treating
+    these as CLI-style overrides funnels everything through the
+    canonical :func:`resolve_executor` chain (no parallel ``build_executor``
+    path).
+    """
+    if not meta:
+        return {}
+    overrides: dict = {}
+    selector = meta.get("executor")
+    if isinstance(selector, str) and selector:
+        overrides["executor"] = selector
+    exec_cfg = meta.get("executor_config")
+    if isinstance(exec_cfg, dict):
+        overrides.update(exec_cfg)
+    return overrides
