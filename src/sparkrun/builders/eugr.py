@@ -235,6 +235,9 @@ class EugrBuilder(BuilderPlugin):
 
         # Build image if needed
         if needs_build:
+            if "--cleanup" not in build_args:
+                build_args.append("--cleanup")
+
             if delegated:
                 self._build_image_remote(image, build_args, head, ssh_kwargs, dry_run)
                 if not dry_run:
