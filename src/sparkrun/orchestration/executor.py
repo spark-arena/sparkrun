@@ -39,6 +39,38 @@ EXECUTOR_DEFAULTS = {
 }
 
 
+def build_executor(
+    executor_selector: str | None,
+    executor_config_dict: dict | None = None,
+) -> "Executor":
+    """Build an :class:`Executor` from a recipe-style selector + config dict.
+
+    Mirrors the launcher's resolution path but operates from cached
+    job-metadata (or other downstream sources) where the full
+    rootless/auto_user adjustment layer isn't available.  Returns a
+    :class:`DockerExecutor` by default; ``"local"`` opts into
+    :class:`LocalExecutor`.
+    """
+    from scitrera_app_framework.api import Variables, EnvPlacement
+
+    cfg = dict(executor_config_dict or {})
+    if executor_selector and "executor" not in cfg:
+        cfg["executor"] = executor_selector
+    chain = Variables(sources=(cfg, EXECUTOR_DEFAULTS), env_placement=EnvPlacement.IGNORED)
+    exec_cfg = ExecutorConfig.from_chain(chain)
+    if exec_cfg.executor_type == "local":
+        from sparkrun.orchestration.executor_local import LocalExecutor
+
+        return LocalExecutor(exec_cfg)
+    if exec_cfg.executor_type == "k8s":
+        from sparkrun.orchestration.executor_k8s import K8sExecutor
+
+        return K8sExecutor(exec_cfg)
+    from sparkrun.orchestration.executor_docker import DockerExecutor
+
+    return DockerExecutor(exec_cfg)
+
+
 def accelerator_vendor_for(host_hardware) -> str | None:
     """Return the single shared accelerator vendor on *host_hardware*, or ``None``.
 
@@ -95,6 +127,31 @@ class ExecutorConfig:
     For all non-NVIDIA values, ``gpus`` is ignored.
     """
 
+    # Executor selector (experimental).  ``"docker"`` (default) uses
+    # :class:`DockerExecutor`; ``"local"`` opts into the experimental
+    # :class:`LocalExecutor` that runs the serve command as a native
+    # subprocess (no container).
+    executor_type: str = "docker"
+
+    # LocalExecutor-only fields (ignored by DockerExecutor).
+    working_dir: str | None = None
+    log_dir: str | None = None
+    log_file: str | None = None
+    pid_dir: str | None = None
+    pid_file: str | None = None
+    env_file: str | None = None
+    command_prefix: str | None = None
+
+    # K8sExecutor-only fields (ignored by Docker/Local). All
+    # experimental — the K8s executor is a draft pending real-world
+    # validation.  Empty values fall back to whatever ``kubectl`` picks
+    # up from its current context.
+    k8s_namespace: str | None = None
+    k8s_context: str | None = None
+    k8s_node_selector: str | None = None
+    k8s_image_pull_policy: str | None = None
+    kubeconfig: str | None = None
+
     @classmethod
     def from_chain(cls, chain) -> ExecutorConfig:
         """Build from a config chain or plain dict."""
@@ -123,6 +180,17 @@ class ExecutorConfig:
             logger.debug("ExecutorConfig resolve: %s=%r (from chain: %r)", key, val, v)
             return val
 
+        # Executor selector: prefer the recipe-level ``executor`` key,
+        # fall back to ``executor_type`` for forward compat.  Unknown
+        # values warn and degrade to ``"docker"``.
+        exec_type_raw = chain.get("executor")
+        if exec_type_raw is None:
+            exec_type_raw = chain.get("executor_type")
+        executor_type = str(exec_type_raw).strip().lower() if exec_type_raw else "docker"
+        if executor_type not in ("docker", "local", "k8s"):
+            logger.warning("Unknown executor type %r; falling back to 'docker'", executor_type)
+            executor_type = "docker"
+
         return cls(
             auto_remove=ext_parse_bool(_get("auto_remove")),
             restart_policy=chain.get("restart_policy") or None,
@@ -138,6 +206,19 @@ class ExecutorConfig:
             devices=raw_devices or None,
             memory_limit=chain.get("memory_limit") or None,
             labels=raw_labels or None,
+            executor_type=executor_type,
+            working_dir=chain.get("working_dir") or None,
+            log_dir=chain.get("log_dir") or None,
+            log_file=chain.get("log_file") or None,
+            pid_dir=chain.get("pid_dir") or None,
+            pid_file=chain.get("pid_file") or None,
+            env_file=chain.get("env_file") or None,
+            command_prefix=chain.get("command_prefix") or None,
+            k8s_namespace=chain.get("k8s_namespace") or None,
+            k8s_context=chain.get("k8s_context") or None,
+            k8s_node_selector=chain.get("k8s_node_selector") or None,
+            k8s_image_pull_policy=chain.get("k8s_image_pull_policy") or None,
+            kubeconfig=chain.get("kubeconfig") or None,
         )
 
     def __post_init__(self):
@@ -197,6 +278,17 @@ class Executor(ABC):
         tail: int | None = None,
     ) -> str:
         """Generate a container logs command string."""
+        ...
+
+    @abstractmethod
+    def status_cmd(self, container_name: str) -> str:
+        """Generate a command that exits 0 iff *container_name* is alive.
+
+        Docker: runs ``docker ps --filter name=... -q`` and checks output.
+        Local: runs ``kill -0 $(cat <pid_file>)``.
+
+        The command must be safe to run inside ``bash -c``.
+        """
         ...
 
     @abstractmethod

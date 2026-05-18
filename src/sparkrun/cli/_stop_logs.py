@@ -151,16 +151,59 @@ def _stop_by_cluster_id(target, hosts, hosts_file, cluster_name, config, dry_run
     ssh_kwargs = build_ssh_kwargs(config)
     container_names = enumerate_cluster_containers(cluster_id, len(host_list))
 
-    is_local = len(host_list) == 1 and should_run_locally(host_list[0], ssh_kwargs.get("ssh_user"))
-    if is_local:
-        cleanup_containers_local(container_names, dry_run=dry_run)
+    # Experimental: workloads launched with executor: local need a
+    # different teardown path (kill PID instead of docker rm).
+    if meta and (meta.get("executor") or "").lower() == "local":
+        _stop_local_workload(
+            host_list,
+            container_names,
+            meta,
+            ssh_kwargs=ssh_kwargs,
+            dry_run=dry_run,
+        )
     else:
-        cleanup_containers(host_list, container_names, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
+        is_local = len(host_list) == 1 and should_run_locally(host_list[0], ssh_kwargs.get("ssh_user"))
+        if is_local:
+            cleanup_containers_local(container_names, dry_run=dry_run)
+        else:
+            cleanup_containers(host_list, container_names, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
 
     if not dry_run:
         remove_job_metadata(cluster_id, cache_dir=str(config.cache_dir))
 
     click.echo("Workload stopped on %d host(s)." % len(host_list))
+
+
+def _stop_local_workload(host_list, container_names, meta, *, ssh_kwargs, dry_run):
+    """Stop a LocalExecutor-launched workload by killing its tracked PIDs.
+
+    Uses the executor's own ``stop_cmd`` to keep pidfile / process-group
+    semantics consistent with how the workload was launched.
+    """
+    from sparkrun.orchestration.executor import build_executor
+    from sparkrun.orchestration.primitives import run_script_on_host
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    executor = build_executor(
+        executor_selector=meta.get("executor"),
+        executor_config_dict=meta.get("executor_config"),
+    )
+    # One script per host: stop every container_name we know about
+    # (most will be no-ops on hosts that didn't run that role).
+    script = "#!/bin/bash\nset -uo pipefail\n" + "\n".join(executor.stop_cmd(n) for n in container_names) + "\n"
+
+    if not host_list:
+        return
+    with ThreadPoolExecutor(max_workers=len(host_list)) as pool:
+        futures = {
+            pool.submit(run_script_on_host, host, script, ssh_kwargs=ssh_kwargs, dry_run=dry_run, timeout=30): host for host in host_list
+        }
+        for fut in as_completed(futures):
+            host = futures[fut]
+            try:
+                fut.result()
+            except Exception as exc:  # pragma: no cover - exceptional path
+                click.echo("Warning: local stop failed on %s: %s" % (host, exc), err=True)
 
 
 def _stop_recipe(recipe_name, hosts, hosts_file, cluster_name, config, tp_override, dry_run, port=None, served_model_name=None):
@@ -270,6 +313,12 @@ def logs_cmd(ctx, target, hosts, hosts_file, cluster_name, tp_override, port, se
             sctx=sctx,
         )
 
+        # Experimental: LocalExecutor logs live in a host-side file, not in
+        # docker logs.  Detect via metadata and tail the resolved logfile.
+        if meta and (meta.get("executor") or "").lower() == "local":
+            _follow_local_logs(host_list, cluster_id, meta, config, tail=tail)
+            return
+
         if runtime is not None:
             runtime.follow_logs(
                 hosts=host_list,
@@ -326,3 +375,33 @@ def logs_cmd(ctx, target, hosts, hosts_file, cluster_name, tp_override, port, se
         config=config,
         tail=tail,
     )
+
+
+def _follow_local_logs(host_list, cluster_id, meta, config, *, tail: int = 100) -> None:
+    """Tail a LocalExecutor-launched workload's logfile via SSH/local exec.
+
+    Picks the head container name (``<cluster_id>_solo`` for single-host,
+    ``<cluster_id>_node_0`` for multi-host) and streams the corresponding
+    logfile.  Falls through silently if the file is missing — the user
+    will see ``tail`` complain, which is the right signal.
+    """
+    from sparkrun.orchestration.executor import build_executor
+    from sparkrun.orchestration.primitives import build_ssh_kwargs
+    from sparkrun.orchestration.ssh import build_ssh_cmd
+    import subprocess
+
+    head_name = ("%s_solo" % cluster_id) if len(host_list) <= 1 else ("%s_node_0" % cluster_id)
+    executor = build_executor(
+        executor_selector=meta.get("executor"),
+        executor_config_dict=meta.get("executor_config"),
+    )
+    tail_cmd = executor.logs_cmd(head_name, follow=True, tail=tail)
+
+    ssh_kwargs = build_ssh_kwargs(config)
+    target_host = host_list[0] if host_list else "localhost"
+    ssh_cmd = build_ssh_cmd(target_host, **ssh_kwargs) + ["bash", "-c", tail_cmd]
+    click.echo("Following LocalExecutor log: %s on %s" % (head_name, target_host))
+    try:
+        subprocess.run(ssh_cmd, check=False)
+    except KeyboardInterrupt:
+        pass

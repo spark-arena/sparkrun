@@ -204,6 +204,23 @@ class RuntimePlugin(Plugin):
         """
         return "ray"
 
+    def default_executor(self) -> str | None:
+        """Return the runtime's preferred executor when nothing else is set.
+
+        Sits *below* the recipe-level ``executor`` field and CLI overrides
+        in the executor resolution chain, and *above* the hardcoded
+        global default (``"docker"``).  Allows specialised runtimes to
+        opt into a non-Docker default — for example, a future
+        Apple-MLX runtime could return ``"local"`` because there is no
+        sensible Docker image for it.
+
+        Returns:
+            ``None`` (default) — defer to the global default (``"docker"``).
+            ``"docker"`` / ``"local"`` / ``"k8s"`` — pin a specific executor
+            unless overridden by recipe or CLI.
+        """
+        return None
+
     def get_family(self) -> str:
         """Return the canonical runtime family name.
 

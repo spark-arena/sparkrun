@@ -253,6 +253,16 @@ def save_job_metadata(
     if container_image:
         meta["effective_container_image"] = container_image
 
+    # Persist executor selection so stop/logs can reproduce the same
+    # executor (Docker vs experimental local) without re-running the
+    # launcher's resolution logic.
+    executor_selector = getattr(recipe, "executor", "") or ""
+    if executor_selector:
+        meta["executor"] = executor_selector
+    recipe_exec_cfg = getattr(recipe, "executor_config", None)
+    if isinstance(recipe_exec_cfg, dict) and recipe_exec_cfg:
+        meta["executor_config"] = dict(recipe_exec_cfg)
+
     # Full overrides dict for export reconstruction
     if overrides:
         meta["overrides"] = dict(overrides)
