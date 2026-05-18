@@ -120,6 +120,18 @@ def _build_error_tail(output: str, n: int = _BUILD_ERROR_TAIL_LINES) -> str:
     return "\n".join(lines[-n:])
 
 
+def _build_log_hint(log_path: Path | None) -> str:
+    """Format the trailing log-file hint included in build failure messages.
+
+    When the log was persisted, point the user at the file.  Otherwise nudge them
+    toward enabling ``defaults.builders.eugr.save_build_logs`` so the next run
+    captures a complete record on disk.
+    """
+    if log_path is not None:
+        return "\n(full log: %s)" % log_path
+    return "\n(set defaults.builders.eugr.save_build_logs: true in ~/.config/sparkrun/config.yaml to persist the full log on the next run)"
+
+
 def _run_build_capturing(
     cmd: list[str],
     cwd: str | None = None,
@@ -292,8 +304,14 @@ class EugrBuilder(BuilderPlugin):
         # eugr nightly GHCR images are interpreted as "build locally from upstream
         # wheels" (the historical behavior) — power users can set this to False to
         # treat ":latest" as a regular pullable image instead.
+        # `save_build_logs` (default False) controls whether build-and-copy.sh output
+        # is persisted to a log file under <cache_dir>/eugr-builds/.  When False the
+        # output is still captured in memory so failure-mode error context is intact;
+        # enable it before re-running when a build is misbehaving and you want a
+        # persistent record to investigate.
         builder_defaults = config.get_defaults_builder("eugr") if config is not None else {}
         use_sentinel_image = bool(builder_defaults.get("use_sentinel_image", True))
+        save_build_logs = bool(builder_defaults.get("save_build_logs", False))
 
         # ~~ SPECIAL CASES: map pullable eugr nightly images to use direct build ~~~
         if not use_sentinel_image:
@@ -379,7 +397,7 @@ class EugrBuilder(BuilderPlugin):
                 effective_build_args.append("--cleanup")
 
             if delegated:
-                self._build_image_remote(image, effective_build_args, head, ssh_kwargs, dry_run, config=config)
+                self._build_image_remote(image, effective_build_args, head, ssh_kwargs, dry_run, config=config, save_logs=save_build_logs)
                 # Verify the freshly built image has flashinfer before we cache the
                 # metadata — a missing flashinfer triplet is the most common silent
                 # corruption mode the rebuild path produces (see issue #164).
@@ -387,7 +405,7 @@ class EugrBuilder(BuilderPlugin):
                     self._verify_image_imports(image, host=head, ssh_kwargs=ssh_kwargs)
                     self._save_build_metadata(image, build_args, config, host=head, ssh_kwargs=ssh_kwargs)
             else:
-                self._build_image(image, effective_build_args, dry_run, config=config)
+                self._build_image(image, effective_build_args, dry_run, config=config, save_logs=save_build_logs)
                 if not dry_run:
                     self._verify_image_imports(image)
                     self._save_build_metadata(image, build_args, config)
@@ -949,6 +967,7 @@ class EugrBuilder(BuilderPlugin):
         build_args: list[str],
         dry_run: bool = False,
         config: SparkrunConfig | None = None,
+        save_logs: bool = False,
     ) -> None:
         """Build container image via eugr's build-and-copy.sh.
 
@@ -957,6 +976,9 @@ class EugrBuilder(BuilderPlugin):
             build_args: Additional build arguments forwarded to the script.
             dry_run: Show what would be done without executing.
             config: SparkrunConfig (for resolving the build log directory).
+            save_logs: When True, persist the captured build output to a per-build
+                log file under ``<cache_dir>/eugr-builds/``.  Default False —
+                output is still captured in memory for failure error context.
         """
         build_script = self._repo_dir / "build-and-copy.sh"
         if not build_script.exists():
@@ -968,7 +990,7 @@ class EugrBuilder(BuilderPlugin):
         if dry_run:
             return
 
-        log_path = self._build_log_path(image, config=config)
+        log_path = self._build_log_path(image, config=config) if save_logs else None
         stream = logging.getLogger().isEnabledFor(logging.INFO)
         if log_path is not None:
             logger.info("Build log: %s", log_path)
@@ -978,7 +1000,7 @@ class EugrBuilder(BuilderPlugin):
         if rc != 0:
             phase = _identify_build_phase(captured)
             tail = _build_error_tail(captured)
-            log_hint = ("\n(full log: %s)" % log_path) if log_path else ""
+            log_hint = _build_log_hint(log_path)
             # Surface failure context at ERROR level so the user sees it even at default verbosity.
             logger.error(
                 "eugr container build failed (exit %d); phase=%s%s\n--- last %d lines ---\n%s",
@@ -1077,6 +1099,7 @@ class EugrBuilder(BuilderPlugin):
         ssh_kwargs: dict | None = None,
         dry_run: bool = False,
         config: SparkrunConfig | None = None,
+        save_logs: bool = False,
     ) -> None:
         """Build container image on the head node via SSH.
 
@@ -1087,6 +1110,10 @@ class EugrBuilder(BuilderPlugin):
             ssh_kwargs: SSH connection kwargs.
             dry_run: Show what would be done without executing.
             config: SparkrunConfig (for resolving the build log directory).
+            save_logs: When True, persist the captured remote build output to a
+                per-build log file under ``<cache_dir>/eugr-builds/`` on the
+                control machine.  Default False — output is still captured in
+                memory for failure error context.
         """
         from sparkrun.orchestration.ssh import run_remote_script_streaming
 
@@ -1107,7 +1134,7 @@ class EugrBuilder(BuilderPlugin):
         if dry_run:
             return
 
-        log_path = self._build_log_path(image, config=config, host=head)
+        log_path = self._build_log_path(image, config=config, host=head) if save_logs else None
         if log_path is not None:
             logger.info("Build log: %s", log_path)
 
@@ -1142,7 +1169,7 @@ class EugrBuilder(BuilderPlugin):
         if not result.success:
             phase = _identify_build_phase(captured)
             tail = _build_error_tail(captured)
-            log_hint = ("\n(full log: %s)" % log_path) if log_path else ""
+            log_hint = _build_log_hint(log_path)
             logger.error(
                 "eugr remote container build failed on %s (exit %d); phase=%s%s\n--- last %d lines ---\n%s",
                 head,

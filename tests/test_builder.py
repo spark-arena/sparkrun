@@ -364,6 +364,57 @@ class TestEugrPrepareImage:
         mock_verify.assert_not_called()
         config.get_defaults_builder.assert_called_with("eugr")
 
+    def test_eugr_prepare_save_build_logs_default_off(self, eugr_builder_with_repo, tmp_path):
+        """By default, `_build_image` is called with save_logs=False (no log file written)."""
+        builder, repo_dir = eugr_builder_with_repo
+        recipe = Recipe.from_dict(
+            {
+                "name": "test",
+                "model": "some/model",
+                "runtime": "eugr-vllm",
+                "container": "my-image",
+                "runtime_config": {"build_args": ["--flag"]},
+            }
+        )
+        config = mock.Mock()
+        config.cache_dir = tmp_path
+        config.get_defaults_builder = mock.Mock(return_value={})
+
+        with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
+            with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
+                with mock.patch.object(builder, "_build_image") as mock_build:
+                    with mock.patch.object(builder, "_verify_image_imports"):
+                        with mock.patch.object(builder, "_save_build_metadata"):
+                            builder.prepare_image("my-image", recipe, ["10.0.0.1"], config=config)
+
+        mock_build.assert_called_once()
+        assert mock_build.call_args.kwargs["save_logs"] is False
+
+    def test_eugr_prepare_save_build_logs_when_enabled(self, eugr_builder_with_repo, tmp_path):
+        """With `defaults.builders.eugr.save_build_logs: true`, `_build_image` gets save_logs=True."""
+        builder, repo_dir = eugr_builder_with_repo
+        recipe = Recipe.from_dict(
+            {
+                "name": "test",
+                "model": "some/model",
+                "runtime": "eugr-vllm",
+                "container": "my-image",
+                "runtime_config": {"build_args": ["--flag"]},
+            }
+        )
+        config = mock.Mock()
+        config.cache_dir = tmp_path
+        config.get_defaults_builder = mock.Mock(return_value={"save_build_logs": True})
+
+        with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
+            with mock.patch.object(builder, "ensure_repo", return_value=repo_dir):
+                with mock.patch.object(builder, "_build_image") as mock_build:
+                    with mock.patch.object(builder, "_verify_image_imports"):
+                        with mock.patch.object(builder, "_save_build_metadata"):
+                            builder.prepare_image("my-image", recipe, ["10.0.0.1"], config=config)
+
+        assert mock_build.call_args.kwargs["save_logs"] is True
+
     def test_eugr_prepare_sentinel_default_is_on(self, eugr_builder_with_repo, tmp_path):
         """With config returning empty builder defaults, sentinel behavior stays ON."""
         builder, repo_dir = eugr_builder_with_repo
@@ -584,6 +635,7 @@ class TestEugrDelegatedMode:
             {"ssh_user": "u"},
             False,
             config=None,
+            save_logs=False,
         )
         assert result == "my-image"
 
@@ -863,6 +915,84 @@ class TestEugrBuildLogging:
             p = builder._build_log_path("img", host="head.example.com")
         assert p is not None
         assert "remote-head.example.com" in p.name
+
+    def test_build_log_hint_when_persisted(self, tmp_path):
+        from sparkrun.builders.eugr import _build_log_hint
+
+        path = tmp_path / "build.log"
+        hint = _build_log_hint(path)
+        assert str(path) in hint
+        assert "save_build_logs" not in hint
+
+    def test_build_log_hint_when_not_persisted(self):
+        from sparkrun.builders.eugr import _build_log_hint
+
+        hint = _build_log_hint(None)
+        assert "save_build_logs" in hint
+        assert "defaults.builders.eugr" in hint
+
+    def test_build_image_writes_log_when_save_logs_true(self, tmp_path):
+        """`_build_image` with save_logs=True populates the per-build log file."""
+        from sparkrun.builders.eugr import EugrBuilder
+
+        builder = EugrBuilder()
+        builder._repo_dir = tmp_path / "repo"
+        builder._repo_dir.mkdir()
+        (builder._repo_dir / "build-and-copy.sh").write_text("#!/bin/bash\nexit 0\n")
+        (builder._repo_dir / "build-and-copy.sh").chmod(0o755)
+
+        config = mock.Mock()
+        with mock.patch.object(builder, "_resolve_cache_dir", return_value=tmp_path):
+            with mock.patch(
+                "sparkrun.builders.eugr._run_build_capturing", return_value=(0, "Cleaning up wheels directory...\n")
+            ) as mock_run:
+                builder._build_image("my-image", ["--cleanup"], config=config, save_logs=True)
+
+        # The helper got a real Path (not None) → log file persistence requested.
+        log_path = mock_run.call_args.kwargs["log_path"]
+        assert log_path is not None
+        assert "eugr-builds" in str(log_path)
+
+    def test_build_image_skips_log_when_save_logs_false(self, tmp_path):
+        """`_build_image` with save_logs=False passes log_path=None (no file written)."""
+        from sparkrun.builders.eugr import EugrBuilder
+
+        builder = EugrBuilder()
+        builder._repo_dir = tmp_path / "repo"
+        builder._repo_dir.mkdir()
+        (builder._repo_dir / "build-and-copy.sh").write_text("#!/bin/bash\nexit 0\n")
+        (builder._repo_dir / "build-and-copy.sh").chmod(0o755)
+
+        config = mock.Mock()
+        with mock.patch.object(builder, "_resolve_cache_dir", return_value=tmp_path):
+            with mock.patch("sparkrun.builders.eugr._run_build_capturing", return_value=(0, "")) as mock_run:
+                builder._build_image("my-image", ["--cleanup"], config=config, save_logs=False)
+
+        # log_path is None → _run_build_capturing won't write to disk.
+        assert mock_run.call_args.kwargs["log_path"] is None
+
+    def test_build_image_failure_message_includes_enable_hint_when_logs_off(self, tmp_path):
+        """When save_logs is off and the build fails, the error mentions how to enable logs."""
+        from sparkrun.builders.eugr import EugrBuilder
+
+        builder = EugrBuilder()
+        builder._repo_dir = tmp_path / "repo"
+        builder._repo_dir.mkdir()
+        (builder._repo_dir / "build-and-copy.sh").write_text("#!/bin/bash\nexit 1\n")
+        (builder._repo_dir / "build-and-copy.sh").chmod(0o755)
+
+        config = mock.Mock()
+        with mock.patch.object(builder, "_resolve_cache_dir", return_value=tmp_path):
+            with mock.patch(
+                "sparkrun.builders.eugr._run_build_capturing",
+                return_value=(1, "FlashInfer build failed — restoring previous wheels...\n"),
+            ):
+                with pytest.raises(RuntimeError) as excinfo:
+                    builder._build_image("my-image", ["--cleanup"], config=config, save_logs=False)
+
+        msg = str(excinfo.value)
+        assert "save_build_logs" in msg
+        assert "defaults.builders.eugr" in msg
 
 
 # ---------------------------------------------------------------------------
