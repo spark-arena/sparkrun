@@ -698,7 +698,7 @@ class TestDistributeImageTransferHosts:
 class TestDistributeImageFromHead:
     """Test distribute_image_from_head."""
 
-    @mock.patch("sparkrun.orchestration.ssh.run_remote_script")
+    @mock.patch("sparkrun.orchestration.ssh.run_remote_script_streaming")
     def test_single_host(self, mock_run):
         """Single host: pull only, no distribution."""
         mock_run.return_value = RemoteResult(
@@ -713,7 +713,7 @@ class TestDistributeImageFromHead:
         assert failed == []
         assert mock_run.call_count == 1
 
-    @mock.patch("sparkrun.orchestration.ssh.run_remote_script")
+    @mock.patch("sparkrun.orchestration.ssh.run_remote_script_streaming")
     def test_multi_host(self, mock_run):
         """Multi host: pull on head, then distribute script."""
         mock_run.return_value = RemoteResult(
@@ -733,7 +733,7 @@ class TestDistributeImageFromHead:
         assert "w1" in dist_script
         assert "w2" in dist_script
 
-    @mock.patch("sparkrun.orchestration.ssh.run_remote_script")
+    @mock.patch("sparkrun.orchestration.ssh.run_remote_script_streaming")
     def test_pull_fails(self, mock_run):
         """If pull on head fails, all hosts are returned as failed."""
         mock_run.return_value = RemoteResult(
@@ -747,7 +747,7 @@ class TestDistributeImageFromHead:
         failed = distribute_image_from_head("img:latest", ["head", "w1"])
         assert failed == ["head", "w1"]
 
-    @mock.patch("sparkrun.orchestration.ssh.run_remote_script")
+    @mock.patch("sparkrun.orchestration.ssh.run_remote_script_streaming")
     def test_distribute_fails(self, mock_run):
         """If distribution script fails, target hosts are returned as failed."""
         mock_run.side_effect = [
@@ -765,7 +765,7 @@ class TestDistributeImageFromHead:
         failed = distribute_image_from_head("img:latest", [])
         assert failed == []
 
-    @mock.patch("sparkrun.orchestration.ssh.run_remote_script")
+    @mock.patch("sparkrun.orchestration.ssh.run_remote_script_streaming")
     def test_ssh_params_forwarded(self, mock_run):
         """SSH parameters are forwarded to remote script calls."""
         mock_run.return_value = RemoteResult(
@@ -786,7 +786,7 @@ class TestDistributeImageFromHead:
         assert call_kwargs["ssh_user"] == "admin"
         assert call_kwargs["ssh_key"] == "/mykey"
 
-    @mock.patch("sparkrun.orchestration.ssh.run_remote_script")
+    @mock.patch("sparkrun.orchestration.ssh.run_remote_script_streaming")
     def test_worker_transfer_hosts(self, mock_run):
         """worker_transfer_hosts are used for distribution targets."""
         mock_run.return_value = RemoteResult(
@@ -877,7 +877,7 @@ class TestDistributeImageFromHead:
         assert call_kwargs["hosts"] == ["head", "w1", "w2"]
 
     @mock.patch("sparkrun.containers.distribute._check_remote_image_identities")
-    @mock.patch("sparkrun.orchestration.ssh.run_remote_script")
+    @mock.patch("sparkrun.orchestration.ssh.run_remote_script_streaming")
     def test_dry_run_skips_precheck(self, mock_run, mock_check):
         """dry_run skips the pre-check entirely."""
         mock_run.return_value = RemoteResult(
@@ -1025,7 +1025,7 @@ class TestDistributeModelFromLocal:
 class TestDistributeModelFromHead:
     """Test distribute_model_from_head."""
 
-    @mock.patch("sparkrun.orchestration.ssh.run_remote_script")
+    @mock.patch("sparkrun.orchestration.ssh.run_remote_script_streaming")
     def test_single_host(self, mock_run):
         """Single host: download only, no distribution."""
         mock_run.return_value = RemoteResult(
@@ -1040,7 +1040,7 @@ class TestDistributeModelFromHead:
         assert failed == []
         assert mock_run.call_count == 1
 
-    @mock.patch("sparkrun.orchestration.ssh.run_remote_script")
+    @mock.patch("sparkrun.orchestration.ssh.run_remote_script_streaming")
     def test_multi_host(self, mock_run):
         """Multi host: download on head, then distribute script."""
         mock_run.return_value = RemoteResult(
@@ -1060,7 +1060,7 @@ class TestDistributeModelFromHead:
         assert "w2" in dist_script
         assert "models--org--model" in dist_script
 
-    @mock.patch("sparkrun.orchestration.ssh.run_remote_script")
+    @mock.patch("sparkrun.orchestration.ssh.run_remote_script_streaming")
     def test_download_fails(self, mock_run):
         """If download on head fails, all hosts are returned as failed."""
         mock_run.return_value = RemoteResult(
@@ -1074,7 +1074,7 @@ class TestDistributeModelFromHead:
         failed = distribute_model_from_head("org/model", ["head", "w1"])
         assert failed == ["head", "w1"]
 
-    @mock.patch("sparkrun.orchestration.ssh.run_remote_script")
+    @mock.patch("sparkrun.orchestration.ssh.run_remote_script_streaming")
     def test_distribute_fails(self, mock_run):
         """If distribution script fails, target hosts are returned as failed."""
         mock_run.side_effect = [
@@ -1092,7 +1092,7 @@ class TestDistributeModelFromHead:
         failed = distribute_model_from_head("org/model", [])
         assert failed == []
 
-    @mock.patch("sparkrun.orchestration.ssh.run_remote_script")
+    @mock.patch("sparkrun.orchestration.ssh.run_remote_script_streaming")
     def test_worker_transfer_hosts(self, mock_run):
         """worker_transfer_hosts are used for distribution targets."""
         mock_run.return_value = RemoteResult(
@@ -1801,3 +1801,104 @@ class TestDistributeResourcesTransferMode:
         )
         mock_mdl_head.assert_called_once()
         mock_mdl_push.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# _subset_transfer_hosts + _distribute_single_image IB routing
+# Regression: a positional-vs-value confusion was silently downgrading
+# local-mode transfers from IB IPs to management IPs.
+# ---------------------------------------------------------------------------
+
+
+class TestSubsetTransferHosts:
+    def test_subset_returns_none_when_no_transfer_hosts(self):
+        from sparkrun.orchestration.distribution import _subset_transfer_hosts
+
+        assert _subset_transfer_hosts(["a", "b"], None, {"a"}) is None
+        assert _subset_transfer_hosts(["a", "b"], [], {"a"}) is None
+
+    def test_subset_filters_by_paired_host_value(self):
+        """When the source host is in target_set, the *aligned* transfer entry is kept."""
+        from sparkrun.orchestration.distribution import _subset_transfer_hosts
+
+        # mgmt IPs → IB IPs, positionally aligned.
+        host_list = ["10.24.11.13", "10.24.11.14"]
+        transfer_hosts = ["192.168.11.13", "192.168.11.14"]
+
+        # Subset = entire cluster
+        out = _subset_transfer_hosts(host_list, transfer_hosts, set(host_list))
+        assert out == ["192.168.11.13", "192.168.11.14"]
+
+        # Subset = single host
+        out = _subset_transfer_hosts(host_list, transfer_hosts, {"10.24.11.13"})
+        assert out == ["192.168.11.13"]
+
+        # Subset = empty intersection (e.g. transfer_hosts values mistakenly compared)
+        out = _subset_transfer_hosts(host_list, transfer_hosts, {"192.168.11.13"})
+        assert out == []  # not None, but empty (no mgmt-IP match)
+
+    def test_subset_handles_workers_only_slice(self):
+        from sparkrun.orchestration.distribution import _subset_transfer_hosts
+
+        # full_hosts[1:] is the worker slice; aligned with worker_transfer_hosts
+        worker_hosts = ["10.24.11.14", "10.24.11.15"]
+        worker_transfer = ["192.168.11.14", "192.168.11.15"]
+        out = _subset_transfer_hosts(worker_hosts, worker_transfer, {"10.24.11.15"})
+        assert out == ["192.168.11.15"]
+
+
+class TestDistributeSingleImageIbRouting:
+    """Regression: local-mode image distribution must SSH to IB IPs, not mgmt IPs."""
+
+    def test_local_mode_passes_ib_transfer_hosts_to_distribute_image_from_local(self):
+        from sparkrun.orchestration.distribution import _distribute_single_image
+
+        targets = ["10.24.11.13"]
+        full_hosts = ["10.24.11.13"]
+        transfer_hosts = ["192.168.11.13"]  # IB IP, positionally aligned with full_hosts
+
+        with mock.patch(
+            "sparkrun.containers.distribute.distribute_image_from_local",
+            return_value=[],
+        ) as mock_dist:
+            _distribute_single_image(
+                "img:latest",
+                targets,
+                full_hosts,
+                transfer_mode="local",
+                transfer_hosts=transfer_hosts,
+                worker_transfer_hosts=None,
+                ssh_kwargs={},
+                dry_run=False,
+                auto_delegated=False,
+            )
+
+        # Critical assertion: the IB IP was forwarded as transfer_hosts.
+        kwargs = mock_dist.call_args.kwargs
+        assert kwargs["transfer_hosts"] == ["192.168.11.13"]
+
+    def test_local_mode_subsets_transfer_hosts_to_targets(self):
+        """When targets is a strict subset of full_hosts, the matching IB IPs are kept."""
+        from sparkrun.orchestration.distribution import _distribute_single_image
+
+        full_hosts = ["10.24.11.13", "10.24.11.14"]
+        transfer_hosts = ["192.168.11.13", "192.168.11.14"]
+        targets = ["10.24.11.14"]  # only the worker
+
+        with mock.patch(
+            "sparkrun.containers.distribute.distribute_image_from_local",
+            return_value=[],
+        ) as mock_dist:
+            _distribute_single_image(
+                "img:latest",
+                targets,
+                full_hosts,
+                transfer_mode="local",
+                transfer_hosts=transfer_hosts,
+                worker_transfer_hosts=None,
+                ssh_kwargs={},
+                dry_run=False,
+                auto_delegated=False,
+            )
+
+        assert mock_dist.call_args.kwargs["transfer_hosts"] == ["192.168.11.14"]

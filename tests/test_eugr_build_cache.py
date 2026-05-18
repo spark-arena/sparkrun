@@ -512,6 +512,7 @@ class TestPrepareImageCacheIntegration:
             mock.patch.object(builder, "ensure_repo", return_value=tmp_path / "repo"),
             mock.patch.object(builder, "_can_skip_build", return_value=False),
             mock.patch.object(builder, "_build_image") as mock_build,
+            mock.patch.object(builder, "_verify_image_imports"),
             mock.patch.object(builder, "_save_build_metadata") as mock_save,
             mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False),
         ):
@@ -584,7 +585,11 @@ class TestPrepareImageCacheIntegration:
         mock_build.assert_not_called()
 
     def test_delegated_build_saves_metadata(self, tmp_path):
-        """After a delegated build, metadata is saved with host param."""
+        """After a delegated build, metadata is saved with host param.
+
+        The cache stores the recipe's canonical build_args (without the implicit
+        ``--cleanup`` hygiene flag) so subsequent cache checks can match.
+        """
         builder = EugrBuilder()
         recipe = mock.MagicMock()
         recipe.runtime_config = {"build_args": [], "mods": []}
@@ -595,6 +600,7 @@ class TestPrepareImageCacheIntegration:
             mock.patch.object(builder, "_ensure_repo_remote", return_value="/remote/path"),
             mock.patch.object(builder, "_can_skip_build", return_value=False),
             mock.patch.object(builder, "_build_image_remote") as mock_build,
+            mock.patch.object(builder, "_verify_image_imports"),
             mock.patch.object(builder, "_save_build_metadata") as mock_save,
             mock.patch.object(builder, "_image_exists_on_host", return_value=False),
         ):
@@ -608,7 +614,18 @@ class TestPrepareImageCacheIntegration:
                 ssh_kwargs={"user": "u"},
             )
 
-        mock_build.assert_called_once()
+        # _build_image_remote receives the augmented args (with --cleanup) so the
+        # actual build still gets the hygiene flag.
+        mock_build.assert_called_once_with(
+            "my-image",
+            ["--cleanup"],
+            "head1",
+            {"user": "u"},
+            False,
+            config=config,
+        )
+        # _save_build_metadata receives the canonical args (without --cleanup) so the
+        # cache entry remains comparable to future recipe-driven cache checks.
         mock_save.assert_called_once_with(
             "my-image",
             [],
@@ -616,3 +633,42 @@ class TestPrepareImageCacheIntegration:
             host="head1",
             ssh_kwargs={"user": "u"},
         )
+        # The recipe's build_args list must not be mutated by the implicit append.
+        assert recipe.runtime_config["build_args"] == []
+
+    def test_cache_round_trip_survives_implicit_cleanup(self, tmp_path):
+        """Regression: a build → save → check cycle must produce a cache hit.
+
+        Before this fix, the implicit ``--cleanup`` append was written into the cache
+        entry's build_args, causing every subsequent _can_skip_build check (driven
+        by the recipe's original build_args=[]) to mismatch and force a rebuild.
+        """
+        builder = _make_builder(tmp_path)
+        config = _mock_config(tmp_path)
+
+        with (
+            mock.patch("subprocess.run") as mock_run,
+            mock.patch("sparkrun.containers.registry.get_image_id", return_value="sha256:img"),
+            mock.patch.object(
+                builder,
+                "process_version_info",
+                return_value={
+                    "build_vllm_commit": "cd7643015",
+                    "build_flashinfer_commit": "ede7a275",
+                },
+            ),
+        ):
+            mock_run.return_value = mock.MagicMock(returncode=0, stdout="abc123def456\n")
+            builder._save_build_metadata("sparkrun-eugr-vllm", [], config)
+
+        # Subsequent cache check with the recipe's original build_args must hit.
+        with (
+            mock.patch("sparkrun.containers.registry.get_image_id", return_value="sha256:img"),
+            mock.patch("subprocess.run") as mock_run,
+            mock.patch(
+                "sparkrun.builders.eugr._fetch_upstream_wheel_hashes",
+                return_value={"vllm_commit": "cd7643015", "flashinfer_commit": "ede7a275"},
+            ),
+        ):
+            mock_run.return_value = mock.MagicMock(returncode=0, stdout="abc123def456\n")
+            assert builder._can_skip_build("sparkrun-eugr-vllm", [], config) is True

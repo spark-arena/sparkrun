@@ -56,6 +56,129 @@ _RE_FLASHINFER_COMMIT = re.compile(r"\([\d.]+\w*-([0-9a-f]{6,})-d\d{8}\)")
 # build_args values that are eligible for cache skip checks
 _CACHEABLE_BUILD_ARGS: list[list[str]] = [[], ["--tf5"]]
 
+# Subdirectory under the sparkrun cache dir where per-build log files are written
+EUGR_BUILD_LOG_DIR = "eugr-builds"
+
+# Number of trailing lines from the build log to include in error messages
+_BUILD_ERROR_TAIL_LINES = 80
+
+# build-and-copy.sh phase markers — used to identify which phase failed.
+# Order matters: later markers shadow earlier ones when both appear.
+_BUILD_PHASE_MARKERS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"^Cleaning up wheels directory\.\.\.", re.MULTILINE), "cleanup"),
+    (re.compile(r"^Rebuilding FlashInfer wheels", re.MULTILINE), "flashinfer-rebuild"),
+    (re.compile(r"^FlashInfer build command:", re.MULTILINE), "flashinfer-build"),
+    (re.compile(r"^FlashInfer wheels ready\.", re.MULTILINE), "flashinfer-ready"),
+    (re.compile(r"^No FlashInfer wheels available", re.MULTILINE), "flashinfer-download-failed"),
+    (re.compile(r"^Rebuilding vLLM wheels", re.MULTILINE), "vllm-rebuild"),
+    (re.compile(r"^vLLM build command:", re.MULTILINE), "vllm-build"),
+    (re.compile(r"^vLLM wheels ready\.", re.MULTILINE), "vllm-ready"),
+    (re.compile(r"^No vLLM wheels available", re.MULTILINE), "vllm-download-failed"),
+    (re.compile(r"^Building runner image with command:", re.MULTILINE), "runner-build"),
+    (re.compile(r"^Building image with command:", re.MULTILINE), "mxfp4-build"),
+    (re.compile(r"^Saving image locally", re.MULTILINE), "image-save"),
+    (re.compile(r"^Loading image into", re.MULTILINE), "image-copy"),
+]
+
+# Explicit failure signatures — when present, override the phase inference.
+_BUILD_FAILURE_MARKERS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"^FlashInfer build failed", re.MULTILINE), "flashinfer-build (failed)"),
+    (re.compile(r"^vLLM build failed", re.MULTILINE), "vllm-build (failed)"),
+    (re.compile(r"^Error: No wheel files found", re.MULTILINE), "runner-build (no wheels)"),
+    (re.compile(r"^GPU arch .* not supported", re.MULTILINE), "wheel-download (gpu arch)"),
+    (re.compile(r"^Could not fetch release metadata", re.MULTILINE), "wheel-download (release metadata)"),
+    (re.compile(r"^Failed to download", re.MULTILINE), "wheel-download (asset)"),
+    (re.compile(r"^Copy to .* failed", re.MULTILINE), "image-copy (failed)"),
+]
+
+
+def _safe_image_name(image: str) -> str:
+    """Convert an image reference into a filesystem-safe slug."""
+    return re.sub(r"[^A-Za-z0-9._-]", "-", image).strip("-") or "image"
+
+
+def _identify_build_phase(output: str) -> str:
+    """Return a short phase identifier inferred from build-and-copy.sh output.
+
+    Failure markers take precedence over phase markers (a "FlashInfer build
+    failed" message overrides the earlier "FlashInfer build command:" so the
+    error context is more actionable).
+    """
+    for pat, label in _BUILD_FAILURE_MARKERS:
+        if pat.search(output):
+            return label
+    last_phase = "unknown"
+    for pat, label in _BUILD_PHASE_MARKERS:
+        if pat.search(output):
+            last_phase = label
+    return last_phase
+
+
+def _build_error_tail(output: str, n: int = _BUILD_ERROR_TAIL_LINES) -> str:
+    """Return the last *n* non-empty lines from *output* for error reporting."""
+    lines = [ln for ln in output.splitlines() if ln.strip()]
+    return "\n".join(lines[-n:])
+
+
+def _run_build_capturing(
+    cmd: list[str],
+    cwd: str | None = None,
+    log_path: Path | None = None,
+    stream: bool = False,
+) -> tuple[int, str]:
+    """Run *cmd*, capturing combined stdout+stderr to memory and (optionally) a file.
+
+    When *stream* is True, each line is also echoed to the parent stdout in
+    real time so the user can watch a long-running build. The full output is
+    captured regardless so callers always have something to parse on failure.
+
+    Args:
+        cmd: Command argv to execute.
+        cwd: Working directory.
+        log_path: Optional file path to tee output into. Creation failures are
+            logged at WARNING but do not abort the build.
+        stream: If True, echo each line to ``sys.stdout`` as it's read.
+
+    Returns:
+        Tuple of ``(returncode, captured_output)``.
+    """
+    import sys
+
+    log_file = None
+    if log_path is not None:
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_file = open(log_path, "w", encoding="utf-8", errors="replace")
+        except OSError as e:
+            logger.warning("Could not open build log %s: %s", log_path, e)
+            log_file = None
+
+    captured_lines: list[str] = []
+    try:
+        with subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        ) as proc:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                captured_lines.append(line)
+                if log_file is not None:
+                    log_file.write(line)
+                    log_file.flush()
+                if stream:
+                    sys.stdout.write(line)
+                    sys.stdout.flush()
+            rc = proc.wait()
+    finally:
+        if log_file is not None:
+            log_file.close()
+
+    return rc, "".join(captured_lines)
+
 
 def _load_build_cache(cache_dir: Path) -> dict:
     """Load the eugr build cache from disk."""
@@ -235,13 +358,25 @@ class EugrBuilder(BuilderPlugin):
 
         # Build image if needed
         if needs_build:
+            # `--cleanup` is an unconditional builder-hygiene flag — keep it out of the
+            # cached build_args so cache identity remains tied to the recipe's canonical
+            # build_args (otherwise every subsequent cache check would miss).
+            effective_build_args = list(build_args)
+            if "--cleanup" not in effective_build_args:
+                effective_build_args.append("--cleanup")
+
             if delegated:
-                self._build_image_remote(image, build_args, head, ssh_kwargs, dry_run)
+                self._build_image_remote(image, effective_build_args, head, ssh_kwargs, dry_run, config=config)
+                # Verify the freshly built image has flashinfer before we cache the
+                # metadata — a missing flashinfer triplet is the most common silent
+                # corruption mode the rebuild path produces (see issue #164).
                 if not dry_run:
+                    self._verify_image_imports(image, host=head, ssh_kwargs=ssh_kwargs)
                     self._save_build_metadata(image, build_args, config, host=head, ssh_kwargs=ssh_kwargs)
             else:
-                self._build_image(image, build_args, dry_run)
+                self._build_image(image, effective_build_args, dry_run, config=config)
                 if not dry_run:
+                    self._verify_image_imports(image)
                     self._save_build_metadata(image, build_args, config)
 
         # TODO: potentially inject metadata flags as needed into recipe?
@@ -509,6 +644,122 @@ class EugrBuilder(BuilderPlugin):
         except Exception:
             return None
 
+    def _build_log_path(
+        self,
+        image: str,
+        config: SparkrunConfig | None = None,
+        host: str | None = None,
+    ) -> Path | None:
+        """Return a per-build log file path under the sparkrun cache dir.
+
+        Returns ``None`` if the cache dir cannot be resolved — callers should
+        treat logging to disk as best-effort.
+        """
+        cache_dir = self._resolve_cache_dir(config)
+        if cache_dir is None:
+            return None
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        suffix = "-remote-%s" % _safe_image_name(host) if host else ""
+        name = "%s-%s%s.log" % (_safe_image_name(image), ts, suffix)
+        return cache_dir / EUGR_BUILD_LOG_DIR / name
+
+    # --- Post-build smoke test ---
+
+    # Three sub-packages from the upstream flashinfer release. All three must be
+    # importable for the runner image to be considered healthy.
+    _FLASHINFER_SMOKE_IMPORTS = ("flashinfer", "flashinfer_cubin", "flashinfer_jit_cache")
+
+    def _verify_image_imports(
+        self,
+        image: str,
+        host: str | None = None,
+        ssh_kwargs: dict | None = None,
+    ) -> None:
+        """Run a flashinfer import smoke test inside the freshly built image.
+
+        Catches the silent-corruption failure mode where build-and-copy.sh
+        produces a runner image that tagged successfully but lacks one or more
+        flashinfer wheels (see issue #164).
+
+        On failure: best-effort remove the broken tag (so the next launch
+        retries from scratch) and raise ``RuntimeError`` with the captured
+        ``ImportError`` so users can tell *which* sub-package is missing.
+
+        Args:
+            image: Image reference to test.
+            host: When set, run the test on this remote host via SSH.
+            ssh_kwargs: SSH connection kwargs for the remote case.
+        """
+        py_check = "; ".join("import %s" % mod for mod in self._FLASHINFER_SMOKE_IMPORTS)
+        logger.info("Verifying flashinfer imports in %s ...", image)
+
+        if host:
+            from sparkrun.orchestration.primitives import run_script_on_host
+
+            script = "docker run --rm --entrypoint= %s python3 -c %s" % (
+                quote(image),
+                quote(py_check),
+            )
+            result = run_script_on_host(host, script, ssh_kwargs=ssh_kwargs, timeout=60)
+            rc = 0 if result.success else (result.returncode or 1)
+            stderr = result.stderr if isinstance(result.stderr, str) else ""
+        else:
+            try:
+                proc = subprocess.run(
+                    ["docker", "run", "--rm", "--entrypoint=", image, "python3", "-c", py_check],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+                rc = proc.returncode
+                stderr = proc.stderr or ""
+            except subprocess.TimeoutExpired:
+                rc = 124
+                stderr = "smoke test timed out after 60s"
+
+        if rc == 0:
+            logger.debug("flashinfer import smoke test passed for %s", image)
+            return
+
+        stderr_tail = "\n".join(stderr.strip().splitlines()[-20:]) if stderr.strip() else "(no stderr)"
+        logger.error(
+            "flashinfer import smoke test FAILED for %s (rc=%d):\n%s",
+            image,
+            rc,
+            stderr_tail,
+        )
+
+        # Remove the poisoned tag so the next launch doesn't reuse it.
+        self._remove_image(image, host=host, ssh_kwargs=ssh_kwargs)
+
+        raise RuntimeError(
+            "eugr build produced an image without flashinfer (rc=%d): %s\n"
+            "(broken wheel split or missing prebuilt asset; check the build log)" % (rc, stderr_tail)
+        )
+
+    @staticmethod
+    def _remove_image(image: str, host: str | None = None, ssh_kwargs: dict | None = None) -> None:
+        """Best-effort ``docker rmi`` to drop a tag we no longer trust."""
+        try:
+            if host:
+                from sparkrun.orchestration.primitives import run_script_on_host
+
+                run_script_on_host(
+                    host,
+                    "docker rmi -f %s >/dev/null 2>&1 || true" % quote(image),
+                    ssh_kwargs=ssh_kwargs,
+                    timeout=30,
+                )
+            else:
+                subprocess.run(
+                    ["docker", "rmi", "-f", image],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+        except Exception:
+            logger.debug("Failed to remove image %s (continuing)", image, exc_info=True)
+
     def _can_skip_build(
         self,
         image: str,
@@ -679,13 +930,20 @@ class EugrBuilder(BuilderPlugin):
 
     # --- Image building ---
 
-    def _build_image(self, image: str, build_args: list[str], dry_run: bool = False) -> None:
+    def _build_image(
+        self,
+        image: str,
+        build_args: list[str],
+        dry_run: bool = False,
+        config: SparkrunConfig | None = None,
+    ) -> None:
         """Build container image via eugr's build-and-copy.sh.
 
         Args:
             image: Target image name (passed as ``-t``).
             build_args: Additional build arguments forwarded to the script.
             dry_run: Show what would be done without executing.
+            config: SparkrunConfig (for resolving the build log directory).
         """
         build_script = self._repo_dir / "build-and-copy.sh"
         if not build_script.exists():
@@ -697,18 +955,27 @@ class EugrBuilder(BuilderPlugin):
         if dry_run:
             return
 
-        # Stream build output only at INFO+ (i.e. -v); at default verbosity capture silently
+        log_path = self._build_log_path(image, config=config)
         stream = logging.getLogger().isEnabledFor(logging.INFO)
-        if stream:
-            result = subprocess.run(cmd, cwd=str(self._repo_dir))
-        else:
-            result = subprocess.run(cmd, cwd=str(self._repo_dir), capture_output=True, text=True)
-            if result.stdout and isinstance(result.stdout, str):
-                logger.debug("Build stdout:\n%s", result.stdout[-2000:])
-            if result.stderr and isinstance(result.stderr, str):
-                logger.debug("Build stderr:\n%s", result.stderr[-2000:])
-        if result.returncode != 0:
-            raise RuntimeError("eugr container build failed (exit %d)" % result.returncode)
+        if log_path is not None:
+            logger.info("Build log: %s", log_path)
+
+        rc, captured = _run_build_capturing(cmd, cwd=str(self._repo_dir), log_path=log_path, stream=stream)
+
+        if rc != 0:
+            phase = _identify_build_phase(captured)
+            tail = _build_error_tail(captured)
+            log_hint = ("\n(full log: %s)" % log_path) if log_path else ""
+            # Surface failure context at ERROR level so the user sees it even at default verbosity.
+            logger.error(
+                "eugr container build failed (exit %d); phase=%s%s\n--- last %d lines ---\n%s",
+                rc,
+                phase,
+                log_hint,
+                _BUILD_ERROR_TAIL_LINES,
+                tail,
+            )
+            raise RuntimeError("eugr container build failed (exit %d); phase=%s%s" % (rc, phase, log_hint))
 
     # --- Remote / delegated helpers ---
 
@@ -796,6 +1063,7 @@ class EugrBuilder(BuilderPlugin):
         head: str,
         ssh_kwargs: dict | None = None,
         dry_run: bool = False,
+        config: SparkrunConfig | None = None,
     ) -> None:
         """Build container image on the head node via SSH.
 
@@ -805,13 +1073,17 @@ class EugrBuilder(BuilderPlugin):
             head: Head node hostname.
             ssh_kwargs: SSH connection kwargs.
             dry_run: Show what would be done without executing.
+            config: SparkrunConfig (for resolving the build log directory).
         """
         from sparkrun.orchestration.ssh import run_remote_script_streaming
 
         # TODO: hard-coded inline script
         remote_path = "~/.cache/sparkrun/eugr-spark-vllm-docker"
         args_str = args_list_to_shell_str(build_args)
-        script = "set -e\ncd %(path)s\nchmod +x build-and-copy.sh\n./build-and-copy.sh -t %(image)s %(args)s\n" % {
+        # set -o pipefail + ${PIPESTATUS[0]} preserves the build script's true rc when piping
+        # through tee on the remote side; we redirect 2>&1 so phase markers in either stream
+        # land in the captured log.
+        script = ("set -eo pipefail\ncd %(path)s\nchmod +x build-and-copy.sh\n./build-and-copy.sh -t %(image)s %(args)s 2>&1\n") % {
             "path": remote_path,
             "image": quote(image),
             "args": args_str,
@@ -822,7 +1094,12 @@ class EugrBuilder(BuilderPlugin):
         if dry_run:
             return
 
+        log_path = self._build_log_path(image, config=config, host=head)
+        if log_path is not None:
+            logger.info("Build log: %s", log_path)
+
         kw = ssh_kwargs or {}
+        # Always capture (quiet=True); we'll write to the log file and optionally echo to terminal.
         result = run_remote_script_streaming(
             head,
             script,
@@ -830,10 +1107,41 @@ class EugrBuilder(BuilderPlugin):
             ssh_key=kw.get("ssh_key"),
             ssh_options=kw.get("ssh_options"),
             timeout=1800,
-            quiet=not logging.getLogger().isEnabledFor(logging.INFO),
+            quiet=True,
         )
+
+        # Persist captured output to the local log file (best-effort)
+        captured = result.stdout if isinstance(result.stdout, str) else ""
+        if log_path is not None:
+            try:
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                log_path.write_text(captured, encoding="utf-8", errors="replace")
+            except OSError as e:
+                logger.warning("Could not write remote build log %s: %s", log_path, e)
+
+        # Echo to terminal at INFO+ verbosity so the user can see what happened.
+        if captured and logging.getLogger().isEnabledFor(logging.INFO):
+            import sys
+
+            sys.stdout.write(captured)
+            sys.stdout.flush()
+
         if not result.success:
-            raise RuntimeError("eugr remote container build failed on %s (exit %d)" % (head, result.returncode))
+            phase = _identify_build_phase(captured)
+            tail = _build_error_tail(captured)
+            log_hint = ("\n(full log: %s)" % log_path) if log_path else ""
+            logger.error(
+                "eugr remote container build failed on %s (exit %d); phase=%s%s\n--- last %d lines ---\n%s",
+                head,
+                result.returncode,
+                phase,
+                log_hint,
+                _BUILD_ERROR_TAIL_LINES,
+                tail,
+            )
+            raise RuntimeError(
+                "eugr remote container build failed on %s (exit %d); phase=%s%s" % (head, result.returncode, phase, log_hint)
+            )
 
     # --- Repo management ---
 
