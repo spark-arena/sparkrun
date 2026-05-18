@@ -64,6 +64,7 @@ _KNOWN_KEYS = {
     "stop_after_post",
     "builder",
     "builder_config",
+    "executor",
     "executor_config",
     "distribution_config",
     "layout",
@@ -662,6 +663,11 @@ class Recipe:
         raw_exec = data.get("executor_config", {})
         self.executor_config: dict[str, Any] = dict(raw_exec) if isinstance(raw_exec, dict) else {}
 
+        # Experimental executor selector.  ``""`` (default) → DockerExecutor.
+        # ``"local"`` → native-subprocess LocalExecutor (no container).
+        # No CLI surface; recipe-only.
+        self.executor: str = str(data.get("executor", "") or "")
+
         # Distribution config (auto-generated default, mutable by runtimes)
         self.distribution_config: DistributionConfig = _parse_distribution_config(data)
 
@@ -1102,6 +1108,7 @@ class Recipe:
             "mods": list(self.mods),
             "builder": self.builder,
             "builder_config": dict(self.builder_config),
+            "executor": self.executor,
             "executor_config": dict(self.executor_config),
             "distribution_config": dataclass_asdict(self.distribution_config),
             "layout": self.layout.to_dict() if self.layout else None,
@@ -1140,6 +1147,7 @@ class Recipe:
         self.mods = list(state.get("mods") or [])
         self.builder = state.get("builder", "")
         self.builder_config = dict(state.get("builder_config") or {})
+        self.executor = str(state.get("executor", "") or "")
         self.executor_config = dict(state.get("executor_config") or {})
         self._applied_overrides = dict(state.get("_applied_overrides") or {})
         dist_cfg: dict | None = state.get("distribution_config", None)

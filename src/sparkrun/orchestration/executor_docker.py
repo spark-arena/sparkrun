@@ -194,6 +194,12 @@ class DockerExecutor(Executor):
         parts.append(container_name)
         return args_list_to_shell_str(parts)
 
+    def status_cmd(self, container_name: str) -> str:
+        """Exit 0 iff a container named *container_name* is currently running."""
+        # Anchored filter so name=foo doesn't match foo_solo etc.
+        filter_arg = quote("name=^%s$" % container_name)
+        return "[ -n \"$(docker ps --filter %s --format '{{.ID}}')\" ]" % filter_arg
+
     def inspect_exists_cmd(self, image: str) -> str:
         """Generate a command to check if a docker image exists locally."""
         return "docker image inspect %s >/dev/null 2>&1" % quote(image)
