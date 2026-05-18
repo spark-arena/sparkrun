@@ -1,17 +1,16 @@
-"""Hardware platform plugin abstraction (Phase 8).
+"""Hardware platform plugin abstraction.
 
-A :class:`HardwarePlatformPlugin` is the consolidation layer for the
-machinery built in Phases 1–7: it binds an accelerator vendor to a
+A :class:`HardwarePlatformPlugin` binds an accelerator vendor to a
 concrete :class:`CollectiveBackend`, an executor accelerator flag, and
 a per-runtime default image.  Recipes and clusters can identify a
 platform by name; the registry in :mod:`sparkrun.platforms` resolves
 the right plugin from per-host :class:`HostHardware`.
 
-This is intentionally a thin shell — every method delegates straight
-to the primitives introduced earlier (``accelerator_vendor_for``,
-``get_backend``).  The seam exists so future work (SAF entry-point
-discovery, per-host executor construction, platform-aware container
-selection) has a single integration point.
+Methods delegate straight to the underlying primitives
+(``accelerator_vendor_for``, ``get_backend``).  Keeping the surface
+this thin means platform-aware features (entry-point discovery,
+per-host executor construction, platform-aware container selection)
+have a single integration point to grow from.
 """
 
 from __future__ import annotations

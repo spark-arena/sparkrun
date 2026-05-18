@@ -207,7 +207,7 @@ def _refuse_unsupported_collectives(ctx: ClusterContext) -> None:
                 vendors.add(a.vendor)
 
     if not vendors or vendors == {"nvidia"}:
-        return  # NCCL default path is byte-identical to pre-Phase-X.
+        return  # NCCL is the default; no extra collective bootstrap.
 
     if len(vendors) > 1:
         raise RuntimeError(

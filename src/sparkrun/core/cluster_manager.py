@@ -58,10 +58,9 @@ class ClusterDefinition:
     def hardware_for(self, host: str) -> HostHardware:
         """Return hardware metadata for *host*, defaulting to DGX Spark.
 
-        Phase 1 fallback: when a host has no explicit entry, behave as
-        if it were a DGX Spark (1× GB10, 121 GB unified memory).  This
-        preserves the pre-refactor assumption that every cluster host
-        is a DGX Spark.
+        When a host has no explicit entry, behave as if it were a DGX
+        Spark (1× GB10, 121 GB unified memory).  Keeps homogeneous DGX
+        clusters working without per-host metadata blocks.
         """
         hw = self.hosts_hardware.get(host)
         if hw is None:

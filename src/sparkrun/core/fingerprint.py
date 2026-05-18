@@ -1,9 +1,9 @@
 """Per-host hardware fingerprinting over SSH.
 
-Phase 6 of the hardware-agnostic refactor: introspects a host's
-accelerators (NVIDIA / AMD / Intel Gaudi / Apple Silicon) plus IB
-adapters, returning a :class:`~sparkrun.core.hardware.HostHardware`
-plus a stable fingerprint hash.
+Introspects a host's accelerators (NVIDIA / AMD / Intel Gaudi / Apple
+Silicon) plus IB adapters, returning a
+:class:`~sparkrun.core.hardware.HostHardware` plus a stable fingerprint
+hash.
 
 The probe runs a single normalised bash script over SSH (mirroring the
 :mod:`sparkrun.orchestration.infiniband` ``ib_detect.sh`` pattern):

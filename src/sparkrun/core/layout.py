@@ -1,9 +1,8 @@
 """Recipe layout primitives for explicit placement on heterogeneous clusters.
 
-Phase 1 of the hardware-agnostic refactor: defines the data model only.
-Nothing consumes :class:`RecipeLayout` yet beyond parse / round-trip;
-the placement engine in :mod:`sparkrun.core.placement` (Phase 2) will
-honor it.
+Data model only.  :class:`RecipeLayout` is parsed (and round-tripped) by
+the recipe loader and consumed by the placement engine in
+:mod:`sparkrun.core.placement`.
 
 A recipe may declare a ``layout`` block to:
 
@@ -62,8 +61,8 @@ class Placement:
     local_gpus: tuple[int, ...] = ()
     """Local accelerator indices on this host (one per rank).
 
-    Empty means "use indices ``0..len(ranks)-1``"; the placement engine
-    materializes the default in Phase 2.
+    Empty means "use indices ``0..len(ranks)-1``"; the placement
+    engine materializes that default at apply time.
     """
 
     def to_dict(self) -> dict[str, Any]:

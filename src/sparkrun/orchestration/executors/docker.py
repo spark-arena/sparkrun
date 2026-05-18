@@ -17,9 +17,11 @@ from sparkrun.utils.shell import args_list_to_shell_str, b64_wrap_bash, quote
 logger = logging.getLogger(__name__)
 
 
-# Per-executor defaults for the resolution chain — lowest layer above
-# the dataclass field defaults.  Was ``EXECUTOR_DEFAULTS`` at module
-# scope; now scoped to the executor it belongs to.
+# Per-executor defaults for the resolution chain — sits just above
+# the :class:`ExecutorConfig` dataclass field defaults and below
+# everything else.  Lives with :class:`DockerExecutor` because every
+# value here is Docker-specific (``--privileged``, ``--shm-size``,
+# ``--ipc=host`` etc.).
 DOCKER_DEFAULTS = {
     "auto_remove": True,
     "restart_policy": None,
@@ -78,13 +80,12 @@ class DockerExecutor(Executor):
     def _accelerator_opts(self) -> list[str]:
         """Emit accelerator device flags based on ``config.accelerator_vendor``.
 
-        - ``None`` (default) or ``"nvidia"`` → ``--gpus <cfg.gpus>``
-          (legacy behavior; output is byte-identical to pre-Phase-4).
+        - ``None`` (default) or ``"nvidia"`` → ``--gpus <cfg.gpus>``.
         - ``"amd"`` → ROCm device + render-group flags.
         - ``"intel"`` → Intel Gaudi device flag.
         - ``"apple"`` / ``"cpu"`` → no device flag.  Apple MLX cannot
           run inside Docker; callers should route such hosts to a
-          non-Docker executor (future Phase).
+          non-Docker executor.
         """
         cfg = self.config
         vendor = (cfg.accelerator_vendor or "").lower()

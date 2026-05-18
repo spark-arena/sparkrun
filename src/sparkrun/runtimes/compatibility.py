@@ -1,4 +1,4 @@
-"""Runtime ↔ host compatibility checks (Phase 7).
+"""Runtime ↔ host compatibility checks.
 
 Pairs a :class:`~sparkrun.runtimes.base.RuntimePlugin`'s
 ``requires_capability`` set with each host's

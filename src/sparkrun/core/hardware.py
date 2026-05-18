@@ -3,10 +3,9 @@
 Defines :class:`AcceleratorSpec` (a single accelerator on a host) and
 :class:`HostHardware` (all accelerators + fingerprint on one host).
 
-Phase 1 of the hardware-agnostic refactor: this module is additive.
-Nothing reads the metadata yet beyond display and YAML round-trip.
-A missing per-host entry is treated as DGX Spark via
-:func:`default_dgx_spark_hardware`, preserving current behavior.
+Hosts without an explicit metadata entry default to DGX Spark via
+:func:`default_dgx_spark_hardware` so existing single-platform clusters
+keep working without recipe / cluster-file changes.
 """
 
 from __future__ import annotations
@@ -70,7 +69,7 @@ class HostHardware:
     """Ordered list of accelerators present on this host."""
 
     fingerprint: str | None = None
-    """Stable hash identifying the detected hardware (populated by fingerprinting in Phase 6)."""
+    """Stable hash identifying the detected hardware (populated by detection)."""
 
     notes: str = ""
     """Free-form notes for users (e.g. ``"manually configured"`` or ``"detected 2026-05-14"``)."""
@@ -122,8 +121,9 @@ _DGX_SPARK_VRAM_GB = 121.0
 def default_dgx_spark_hardware() -> HostHardware:
     """Default ``HostHardware`` for hosts without explicit metadata.
 
-    Preserves pre-Phase-1 behavior: every host is assumed to be a DGX Spark
-    (1× GB10, 121 GB unified memory, CUDA + RoCEv2 RDMA).
+    Treats every host as a DGX Spark (1× GB10, 121 GB unified memory,
+    CUDA + RoCEv2 RDMA) so clusters that don't ship per-host hardware
+    blocks keep working unchanged.
     """
     return HostHardware(
         accelerators=[
