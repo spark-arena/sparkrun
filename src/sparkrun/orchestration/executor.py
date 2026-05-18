@@ -235,8 +235,8 @@ class Executor(ABC):
 
         template = read_script("container_launch.sh")
         return template.format(
-            container_name=container_name,
-            image=image,
+            container_name=quote(container_name),
+            image=quote(image),
             cleanup_cmd=cleanup,
             run_cmd=run,
         )
