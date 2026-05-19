@@ -6,6 +6,7 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 from sparkrun.core.config import SparkrunConfig
+from sparkrun.runtimes._util import parse_api_key_from_command
 from sparkrun.runtimes.base import RuntimePlugin
 
 if TYPE_CHECKING:
@@ -26,6 +27,7 @@ _LLAMA_CPP_FLAG_MAP = {
     "reasoning_format": "--reasoning-format",
     "split_mode": "--split-mode",
     "served_model_name": "--alias",
+    "api_key": "--api-key",
 }
 
 # Defaults injected when not set in recipe config
@@ -83,6 +85,34 @@ class LlamaCppRuntime(RuntimePlugin):
     def cluster_strategy(self) -> str:
         """llama.cpp uses native RPC-based distribution, not Ray."""
         return "native"
+
+    def resolve_api_key(
+        self,
+        recipe: "Recipe",
+        overrides: dict | None = None,
+    ) -> str | None:
+        """Resolve the llama-server ``--api-key`` value for proxy/discovery use.
+
+        Checks, in order: CLI override, ``defaults.api_key`` (also
+        emitted as ``--api-key`` via :data:`_LLAMA_CPP_FLAG_MAP` for
+        structured commands), ``env.LLAMA_API_KEY``, and finally a
+        literal ``--api-key`` flag parsed from the recipe's ``command``
+        field.  Returns ``None`` when none are set.
+        """
+        if overrides:
+            val = overrides.get("api_key")
+            if val:
+                return str(val)
+        val = recipe.defaults.get("api_key")
+        if val:
+            return str(val)
+        val = recipe.env.get("LLAMA_API_KEY")
+        if val:
+            return str(val)
+        parsed = parse_api_key_from_command(recipe.command)
+        if parsed:
+            return parsed
+        return None
 
     # --- Parallelism helpers ---
 

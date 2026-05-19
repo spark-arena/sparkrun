@@ -1636,6 +1636,110 @@ def test_llama_cpp_cluster_strategy():
     assert runtime.cluster_strategy() == "native"
 
 
+# --- llama.cpp resolve_api_key Tests ---
+
+
+def test_llama_cpp_resolve_api_key_from_defaults():
+    """defaults.api_key is the recommended source for llama.cpp too."""
+    recipe = Recipe.from_dict(
+        {
+            "name": "r",
+            "model": "Qwen/Qwen3-1.7B-GGUF:Q4_K_M",
+            "runtime": "llama-cpp",
+            "defaults": {"api_key": "sk-default"},
+        }
+    )
+    assert LlamaCppRuntime().resolve_api_key(recipe) == "sk-default"
+
+
+def test_llama_cpp_resolve_api_key_from_env():
+    """env.LLAMA_API_KEY is honored when defaults.api_key is absent."""
+    recipe = Recipe.from_dict(
+        {
+            "name": "r",
+            "model": "Qwen/Qwen3-1.7B-GGUF:Q4_K_M",
+            "runtime": "llama-cpp",
+            "env": {"LLAMA_API_KEY": "sk-env"},
+        }
+    )
+    assert LlamaCppRuntime().resolve_api_key(recipe) == "sk-env"
+
+
+def test_llama_cpp_resolve_api_key_overrides_take_priority():
+    """CLI override beats defaults and env."""
+    recipe = Recipe.from_dict(
+        {
+            "name": "r",
+            "model": "Qwen/Qwen3-1.7B-GGUF:Q4_K_M",
+            "runtime": "llama-cpp",
+            "defaults": {"api_key": "sk-default"},
+            "env": {"LLAMA_API_KEY": "sk-env"},
+        }
+    )
+    assert LlamaCppRuntime().resolve_api_key(recipe, {"api_key": "sk-cli"}) == "sk-cli"
+
+
+def test_llama_cpp_resolve_api_key_defaults_beat_env():
+    """defaults.api_key takes precedence over env.LLAMA_API_KEY."""
+    recipe = Recipe.from_dict(
+        {
+            "name": "r",
+            "model": "Qwen/Qwen3-1.7B-GGUF:Q4_K_M",
+            "runtime": "llama-cpp",
+            "defaults": {"api_key": "sk-default"},
+            "env": {"LLAMA_API_KEY": "sk-env"},
+        }
+    )
+    assert LlamaCppRuntime().resolve_api_key(recipe) == "sk-default"
+
+
+def test_llama_cpp_resolve_api_key_none_when_unset():
+    """Returns None when no api_key is configured anywhere."""
+    recipe = Recipe.from_dict({"name": "r", "model": "Qwen/Qwen3-1.7B-GGUF:Q4_K_M", "runtime": "llama-cpp"})
+    assert LlamaCppRuntime().resolve_api_key(recipe) is None
+
+
+def test_llama_cpp_resolve_api_key_parses_inline_command_flag():
+    """Literal --api-key in a fixed command string is extracted."""
+    recipe = Recipe.from_dict(
+        {
+            "name": "r",
+            "model": "Qwen/Qwen3-1.7B-GGUF:Q4_K_M",
+            "runtime": "llama-cpp",
+            "command": "llama-server -hf m --api-key sk-inline --port 8080",
+        }
+    )
+    assert LlamaCppRuntime().resolve_api_key(recipe) == "sk-inline"
+
+
+def test_llama_cpp_resolve_api_key_ignores_placeholder_in_command():
+    """`--api-key {api_key}` placeholder is ignored — defaults path handles it."""
+    recipe = Recipe.from_dict(
+        {
+            "name": "r",
+            "model": "Qwen/Qwen3-1.7B-GGUF:Q4_K_M",
+            "runtime": "llama-cpp",
+            "command": "llama-server -hf m --api-key {api_key} --port 8080",
+            "defaults": {"api_key": "sk-default"},
+        }
+    )
+    assert LlamaCppRuntime().resolve_api_key(recipe) == "sk-default"
+
+
+def test_llama_cpp_api_key_emitted_as_flag_for_structured_command():
+    """defaults.api_key auto-emits as --api-key on structured (no-template) commands."""
+    recipe = Recipe.from_dict(
+        {
+            "name": "r",
+            "model": "Qwen/Qwen3-1.7B-GGUF:Q4_K_M",
+            "runtime": "llama-cpp",
+            "defaults": {"port": 8080, "api_key": "sk-flag"},
+        }
+    )
+    cmd = LlamaCppRuntime().generate_command(recipe, {}, is_cluster=False)
+    assert "--api-key sk-flag" in cmd
+
+
 def test_llama_cpp_resolve_container_from_recipe():
     """Recipe with container field."""
     recipe_data = {
