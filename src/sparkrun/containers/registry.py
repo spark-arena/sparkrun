@@ -111,17 +111,23 @@ def get_image_id(image: str) -> str | None:
     return get_image_identity(image)[0]
 
 
-def ensure_image(image: str, dry_run: bool = False) -> int:
+def ensure_image(image: str, dry_run: bool = False, force_pull: bool = False) -> int:
     """Ensure an image exists locally, pulling if needed.
 
     Args:
         image: Image reference.
         dry_run: If True, show what would be done without executing.
+        force_pull: If True, force pull even if it exists locally.
 
     Returns:
         Exit code (0 = success).
     """
-    if image_exists_locally(image):
-        logger.info("Image already available: %s", image)
-        return 0
+    is_latest_or_nightly = image.endswith(":latest") or "nightly" in image
+    if not force_pull and not is_latest_or_nightly:
+        if image_exists_locally(image):
+            logger.info("Image already available: %s", image)
+            return 0
+    elif is_latest_or_nightly:
+        logger.info("Image uses 'latest' or 'nightly' tag; forcing pull: %s", image)
+    
     return pull_image(image, dry_run=dry_run)
