@@ -3,11 +3,40 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import TYPE_CHECKING
 from sparkrun.runtimes._util import default_env_hf_offline
 
 if TYPE_CHECKING:
     from sparkrun.core.recipe import Recipe
+
+
+# `--api-key value` or `--api-key=value`.  Stops at whitespace, line
+# continuation backslash, or shell metacharacters that wouldn't appear
+# in a real key.
+_VLLM_API_KEY_RE = re.compile(r"--api-key(?:=|\s+)([^\s\\]+)")
+
+
+def _parse_api_key_from_command(command: str | None) -> str | None:
+    """Extract a literal ``--api-key <value>`` value from a vLLM command.
+
+    Returns ``None`` when no flag is present, or when the value is a
+    ``{placeholder}`` (the defaults path handles those).  Surrounding
+    quotes are stripped.
+    """
+    if not command:
+        return None
+    match = _VLLM_API_KEY_RE.search(command)
+    if not match:
+        return None
+    val = match.group(1).strip()
+    if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
+        val = val[1:-1]
+    if not val:
+        return None
+    if val.startswith("{") and val.endswith("}"):
+        return None
+    return val
 
 
 class VllmMixin:
@@ -46,8 +75,11 @@ class VllmMixin:
     ) -> str | None:
         """Resolve the vLLM ``--api-key`` value for proxy/discovery use.
 
-        Checks, in order: CLI override, ``defaults.api_key`` placeholder,
-        and ``env.VLLM_API_KEY``.  Returns ``None`` when none are set.
+        Checks, in order: CLI override, ``defaults.api_key`` (also
+        emitted as ``--api-key`` via :data:`VLLM_FLAG_MAP` for structured
+        commands), ``env.VLLM_API_KEY``, and finally a literal
+        ``--api-key`` flag parsed from the recipe's ``command`` field.
+        Returns ``None`` when none are set.
         """
         if overrides:
             val = overrides.get("api_key")
@@ -59,6 +91,9 @@ class VllmMixin:
         val = recipe.env.get("VLLM_API_KEY")
         if val:
             return str(val)
+        parsed = _parse_api_key_from_command(recipe.command)
+        if parsed:
+            return parsed
         return None
 
     def detect_spec_config_draft_model(self, recipe: "Recipe") -> str | None:
@@ -93,6 +128,7 @@ VLLM_FLAG_MAP = {
     "data_parallel": "--data-parallel-size",
     "kv_cache_dtype": "--kv-cache-dtype",
     "otlp_traces_endpoint": "--otlp-traces-endpoint",
+    "api_key": "--api-key",
 }
 
 # Boolean flags (present = True, absent = False)
