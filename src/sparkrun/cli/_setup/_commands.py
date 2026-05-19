@@ -1273,6 +1273,23 @@ def setup_docker_group(ctx, hosts, hosts_file, cluster_name, user, dry_run):
         click.echo("Note: Users newly added to the docker group must re-login")
         click.echo("(or run 'newgrp docker') for the change to take effect.")
 
+    # Storage-driver consistency probe (issue #152).  Heterogeneous
+    # drivers across hosts cause the same registry image to land with
+    # different local Image IDs, which trips unnecessary container
+    # re-syncs; warn so the user can normalize on overlay2.
+    if not dry_run and len(host_list) > 1:
+        from sparkrun.orchestration.docker_info import (
+            check_driver_consistency,
+            detect_docker_drivers,
+            format_driver_warning,
+        )
+
+        driver_map = detect_docker_drivers(host_list, ssh_kwargs=ssh_kwargs)
+        consistent, groups = check_driver_consistency(driver_map)
+        if not consistent:
+            click.echo()
+            click.echo(format_driver_warning(groups), err=True)
+
     if fail_count:
         sys.exit(1)
 

@@ -794,6 +794,23 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                             r = dg_result_map.get(h)
                             if r and r.success:
                                 click.echo("  %s: %s" % (h, _docker_group_summary(r.stdout, user=user)))
+
+                        # Storage-driver consistency probe (issue #152) —
+                        # warn when hosts use different drivers so users
+                        # can normalize on overlay2 before image syncs.
+                        if dg_ok and not dry_run and len(host_list) > 1:
+                            from sparkrun.orchestration.docker_info import (
+                                check_driver_consistency,
+                                detect_docker_drivers,
+                                format_driver_warning,
+                            )
+
+                            driver_map = detect_docker_drivers(host_list, ssh_kwargs=ssh_kwargs)
+                            consistent, groups = check_driver_consistency(driver_map)
+                            if not consistent:
+                                click.echo()
+                                click.echo(format_driver_warning(groups), err=True)
+                                results["docker"] = "%s (driver drift)" % results["docker"]
                 except Exception as e:
                     results["docker"] = "failed"
                     click.echo("Docker group error: %s" % e, err=True)
