@@ -109,7 +109,7 @@ def resolve_auto_transfer_mode(
     from sparkrun.orchestration.infiniband import detect_ib_for_hosts, validate_ib_connectivity
 
     ib_result = detect_ib_for_hosts(host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run, topology=topology)
-    ib_validated = validate_ib_connectivity(ib_result.ib_ip_map, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
+    ib_validated = validate_ib_connectivity(ib_result.ib_candidates, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
 
     if ib_validated:
         logger.info("Auto-detected transfer mode: local (external control, IB reachable)")
@@ -452,7 +452,7 @@ def distribute_resources(
         _ib_validated: dict[str, str] | None = None
         if transfer_mode in ("auto", "local"):
             _ib_validated = validate_ib_connectivity(
-                ib_result.ib_ip_map,
+                ib_result.ib_candidates,
                 ssh_kwargs=ssh_kwargs,
                 dry_run=dry_run,
             )
@@ -732,7 +732,7 @@ def distribute_from_config(
         ib_result = detect_ib_for_hosts(host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run, topology=topology)
         _ib_validated = None
         if transfer_mode in ("auto", "local"):
-            _ib_validated = validate_ib_connectivity(ib_result.ib_ip_map, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
+            _ib_validated = validate_ib_connectivity(ib_result.ib_candidates, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
         _auto_delegated = False
         if transfer_mode == "auto":
             _cu = _is_cross_user(ssh_kwargs)

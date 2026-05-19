@@ -41,6 +41,19 @@ class IBDetectionResult:
     """Mapping of queried host → first IB interface IP.
 
     Empty for hosts where no IB was detected or no IB IP was found.
+    For switched fabrics this single IP is reachable from anywhere on
+    the fabric; for mesh/ring topologies it's only the *first* detected
+    candidate and may not be reachable from a given peer — see
+    :attr:`ib_candidates` for the full per-host list used by
+    :func:`validate_ib_connectivity` to find a working IP.
+    """
+    ib_candidates: dict[str, list[str]] = field(default_factory=dict)
+    """Mapping of queried host → all detected IB interface IPs, in detection order.
+
+    For switched topologies all entries are reachable from anywhere on
+    the fabric; for mesh/ring topologies only specific IPs are reachable
+    from specific peers, so :func:`validate_ib_connectivity` probes each
+    candidate rather than assuming the first one works.
     """
     mgmt_ip_map: dict[str, str] = field(default_factory=dict)
     """Mapping of queried host → management interface IP.
@@ -198,57 +211,122 @@ def extract_ib_ips(ib_info: dict[str, str]) -> list[str]:
 
 
 def validate_ib_connectivity(
-    ib_ip_map: dict[str, str],
+    ib_candidates: dict[str, str] | dict[str, list[str]],
     ssh_kwargs: dict | None = None,
     dry_run: bool = False,
 ) -> dict[str, str]:
     """Validate that the control machine can reach detected IB IPs.
 
-    Tests SSH connectivity from the control machine to a sample IB IP.
-    If the control machine is not on the InfiniBand network, the IB IPs
-    are unreachable and transfers must fall back to management IPs.
+    Tests SSH connectivity from the control machine to candidate IB
+    interface IPs.  In switched fabrics every IB IP is reachable from
+    anywhere on the fabric, so a single working probe suffices.  In
+    mesh/ring topologies each host has multiple IB IPs (one/two per
+    point-to-point link) and only some are reachable from a given
+    peer; this function iterates the per-host candidates and records
+    the first one that responds.
 
-    Only one IB IP is tested since all are on the same subnet — if one
-    is reachable, the rest should be too.
+    Accepts either the legacy ``dict[host, str]`` (single best-guess
+    IP per host) or the new ``dict[host, list[str]]`` (full per-host
+    candidate list from :class:`IBDetectionResult.ib_candidates`).
+    Returns an empty dict — signalling management-network fallback —
+    only when *every* host has zero reachable candidates.
 
     Args:
-        ib_ip_map: Mapping of management host → IB IP (from detection).
+        ib_candidates: Mapping of management host → candidate IB IP(s).
         ssh_kwargs: SSH connection parameters (user, key, options).
-        dry_run: Skip the check and return the map unchanged.
+        dry_run: Skip the check and return a single-IP-per-host map
+            without probing.
 
     Returns:
-        The original *ib_ip_map* if connectivity is confirmed, or an
-        empty dict if the IB network is unreachable from the control
-        machine (signalling fallback to management network).
+        Mapping of host → verified-reachable IB IP, or an empty dict
+        when no host has any reachable IB IP.
     """
-    if not ib_ip_map or dry_run:
-        return ib_ip_map
+    if not ib_candidates:
+        return {}
+
+    # Normalize legacy single-IP shape to per-host list.
+    normalized: dict[str, list[str]] = {}
+    for host, val in ib_candidates.items():
+        if isinstance(val, str):
+            normalized[host] = [val] if val else []
+        else:
+            normalized[host] = [ip for ip in val if ip]
+
+    if dry_run:
+        # Preserve legacy behavior: return a single-IP-per-host map
+        # without performing probes.
+        return {host: ips[0] for host, ips in normalized.items() if ips}
+
+    from concurrent.futures import ThreadPoolExecutor
 
     from sparkrun.orchestration.ssh import run_remote_command
 
-    # Test connectivity to the first IB IP
-    test_host, test_ip = next(iter(ib_ip_map.items()))
     kw = ssh_kwargs or {}
+    logger.info("Verifying IB network reachability from control machine...")
 
-    logger.info("Verifying IB network reachability from control machine (testing %s)...", test_ip)
-    result = run_remote_command(
-        test_ip,
-        "true",
-        connect_timeout=5,
-        timeout=10,
-        **kw,
-    )
+    # Flatten to (host, ip) work items so every candidate is probed
+    # concurrently — important for mesh/ring where the "wrong" candidate
+    # takes the full SSH timeout to fail and serial probing would stack
+    # 10s of latency per extra candidate per host.
+    work: list[tuple[str, str]] = []
+    for host, cands in normalized.items():
+        for ip in cands:
+            work.append((host, ip))
 
-    if result.success:
-        logger.info("  IB network reachable — will use IB IPs for transfers")
-        return ib_ip_map
+    probe_results: dict[tuple[str, str], bool] = {}
+    if work:
 
-    logger.warning(
-        "  Control machine cannot reach IB network (tested %s for host %s) — falling back to management network for transfers",
-        test_ip,
-        test_host,
-    )
-    return {}
+        def _probe(host_ip: tuple[str, str]) -> tuple[tuple[str, str], bool]:
+            _host, _ip = host_ip
+            result = run_remote_command(_ip, "true", connect_timeout=5, timeout=10, **kw)
+            return host_ip, result.success
+
+        # TODO: review parallelism limits!
+        with ThreadPoolExecutor(max_workers=len(work)) as pool:
+            for host_ip, ok in pool.map(_probe, work):
+                probe_results[host_ip] = ok
+
+    # For each host, pick the first candidate (in detection order) that
+    # responded; record the rest as unreachable for diagnostic logging.
+    verified: dict[str, str] = {}
+    unreachable: dict[str, list[str]] = {}
+    for host, cands in normalized.items():
+        if not cands:
+            unreachable[host] = []
+            continue
+        working = next((ip for ip in cands if probe_results.get((host, ip))), None)
+        if working is None:
+            unreachable[host] = list(cands)
+            continue
+        verified[host] = working
+        primary = cands[0]
+        if working == primary:
+            logger.info("  %s reachable via %s", host, working)
+        else:
+            logger.info("  %s reachable via %s", host, working)
+            failed_before = [ip for ip in cands if ip != working and not probe_results.get((host, ip))]
+            logger.debug(
+                "  %s reachable via %s (primary candidate %s unreachable)",
+                host,
+                working,
+                ", ".join(failed_before) if failed_before else primary,
+            )
+
+    if unreachable:
+        for host, tried in unreachable.items():
+            if tried:
+                logger.warning(
+                    "  Control machine cannot reach any IB IP for host %s (tried %s)",
+                    host,
+                    ", ".join(tried),
+                )
+            else:
+                logger.warning("  No IB candidates available for host %s", host)
+        logger.warning("  Falling back to management network for transfers")
+        return {}
+
+    logger.info("  IB network reachable — will use IB IPs for transfers")
+    return verified
 
 
 def detect_ib_for_hosts(
@@ -291,6 +369,7 @@ def detect_ib_for_hosts(
 
     per_host_env: dict[str, dict[str, str]] = {}
     ib_ip_map: dict[str, str] = {}
+    ib_candidates: dict[str, list[str]] = {}
     mgmt_ip_map: dict[str, str] = {}
 
     for result in ib_results:
@@ -305,11 +384,18 @@ def detect_ib_for_hosts(
             if result.host == head_host:
                 logger.info("  InfiniBand detected on %s, comm env configured", head_host)
 
-        # IB IP for transfer routing
+        # IB IP for transfer routing.  Preserve all detected IPs as
+        # candidates so validate_ib_connectivity() can try alternates
+        # in mesh/ring topologies where only specific point-to-point
+        # links are reachable from any given peer.
         ib_ips = extract_ib_ips(ib_info)
         if ib_ips:
             ib_ip_map[result.host] = ib_ips[0]
-            logger.debug("  %s IB transfer IP: %s", result.host, ib_ips[0])
+            ib_candidates[result.host] = list(ib_ips)
+            if len(ib_ips) > 1:
+                logger.debug("  %s IB transfer IP candidates: %s", result.host, ib_ips)
+            else:
+                logger.debug("  %s IB transfer IP: %s", result.host, ib_ips[0])
 
         # Management IP (from default route interface)
         mgmt_ip = ib_info.get("DETECTED_MGMT_IP", "").strip()
@@ -329,5 +415,6 @@ def detect_ib_for_hosts(
     return IBDetectionResult(
         comm_env=comm_env,
         ib_ip_map=ib_ip_map,
+        ib_candidates=ib_candidates,
         mgmt_ip_map=mgmt_ip_map,
     )
