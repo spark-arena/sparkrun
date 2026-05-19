@@ -122,12 +122,28 @@ def ensure_image(image: str, dry_run: bool = False, force_pull: bool = False) ->
     Returns:
         Exit code (0 = success).
     """
-    is_latest_or_nightly = image.endswith(":latest") or "nightly" in image
-    if not force_pull and not is_latest_or_nightly:
-        if image_exists_locally(image):
-            logger.info("Image already available: %s", image)
-            return 0
-    elif is_latest_or_nightly:
-        logger.info("Image uses 'latest' or 'nightly' tag; forcing pull: %s", image)
-    
+    # if force_pull, then we pull regardless of local presence or tag; failure to pull on explicit force_pull is an error
+    if force_pull:
+        logger.info("Force pull requested for image: %s", image)
+        return pull_image(image, dry_run=dry_run)
+
+    is_latest = image.endswith(":latest") or ":" not in image  # latest if explicit ":latest" or no tag
+    exists_locally = image_exists_locally(image)
+
+    # if image exists and uses latest tag, then we can opportunistically pull it but not failure mode without force_pull
+    if exists_locally and is_latest:
+        logger.info("Image uses 'latest' tag, attempting non-critical pull: %s", image)
+        attempt = pull_image(image, dry_run=dry_run)
+        if attempt == 0:
+            logger.info("Fresh Image pulled: %s", image)
+        else:
+            logger.warning("Failed to pull updated image: %s", image)
+        return 0
+
+    # if otherwise image exists and not force_pull, then we're happy
+    if exists_locally:
+        logger.info("Image already available: %s", image)
+        return 0
+
+    # otherwise, we need to pull
     return pull_image(image, dry_run=dry_run)
