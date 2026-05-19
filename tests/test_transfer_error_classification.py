@@ -22,7 +22,7 @@ def _r(host: str, returncode: int, stderr: str = "") -> RemoteResult:
 
 
 def test_classify_no_space():
-    """Issue #168: rsync's 'No space left on device' is recognized."""
+    """rsync's 'No space left on device' is recognized."""
     result = _r(
         "h1",
         11,

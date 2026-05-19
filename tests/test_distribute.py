@@ -956,7 +956,7 @@ class TestDistributeModelFromLocal:
     @mock.patch("sparkrun.models.distribute.run_rsync_parallel")
     @mock.patch("sparkrun.models.distribute.download_model")
     def test_out_of_space_failure_is_classified(self, mock_dl, mock_rsync):
-        """Issue #168: rsync 'No space left on device' is classified clearly."""
+        """rsync 'No space left on device' is classified clearly."""
         mock_dl.return_value = 0
         mock_rsync.return_value = [
             RemoteResult(

@@ -14,6 +14,67 @@ RUNTIME_DISPLAY: dict[str, str] = {
 
 if TYPE_CHECKING:
     from sparkrun.core.monitoring import HostMonitorState
+    from sparkrun.orchestration.disk_info import CacheStatus
+
+
+def format_cache_status_table(
+    host_status: dict[str, "CacheStatus"],
+    local_status: "CacheStatus | None" = None,
+    highlight_hosts: list[str] | set[str] | None = None,
+) -> str:
+    """Render the cache-status table used by ``cluster inspect``.
+
+    Layout matches the existing ``cluster inspect`` output so the same
+    eyes that have learned to read it work for the error-path display
+    in :func:`sparkrun.models.distribute.distribute_model_from_local`.
+
+    Args:
+        host_status: ``host → CacheStatus`` from
+            :func:`sparkrun.orchestration.disk_info.probe_cache_status`.
+        local_status: Optional ``(local)`` row from
+            :func:`sparkrun.orchestration.disk_info.probe_local_cache_status`.
+            Rendered first when present.
+        highlight_hosts: Hosts to mark with a leading ``→`` (typically
+            the ones that ran out of space).
+    """
+    if not host_status and local_status is None:
+        return ""
+
+    highlight = set(highlight_hosts or ())
+
+    # Width 30 matches the legacy cluster_inspect convention so the
+    # output is visually identical to what users already know.
+    row_fmt = "  %-2s %-30s %-10s %-10s %-10s %-10s %-12s %s"
+    lines: list[str] = []
+    lines.append(row_fmt % ("", "Host", "SR exists", "SR size", "HF exists", "HF size", "Free Space", "HF path"))
+    lines.append("  " + "-" * 112)
+
+    def _emit(status: "CacheStatus", marker: str) -> None:
+        if status.error:
+            lines.append("  %-2s %-30s Error: %s" % (marker, status.host, status.error))
+            return
+        lines.append(
+            row_fmt
+            % (
+                marker,
+                status.host,
+                "yes" if status.sparkrun_exists else "no",
+                status.sparkrun_size,
+                "yes" if status.hf_exists else "no",
+                status.hf_size,
+                status.free_space,
+                status.hf_dir,
+            )
+        )
+
+    if local_status is not None:
+        _emit(local_status, "  " if local_status.host not in highlight else "→ ")
+
+    for host in sorted(host_status):
+        marker = "→ " if host in highlight else "  "
+        _emit(host_status[host], marker)
+
+    return "\n".join(lines)
 
 
 def format_recipe_table(
