@@ -580,21 +580,19 @@ def _run_benchmark(
         bench_args[stripped_key] = fw.interpret_arg(stripped_key, val.strip())
 
     if "api_key" not in bench_args and api_key_env:
-        import os
-        api_key = os.environ.get(api_key_env)
+        api_key = v.get(api_key_env)
         if not api_key:
+            from scitrera_app_framework import add_env_file_source
+
             try:
-                from dotenv import load_dotenv
-                load_dotenv()
-                api_key = os.environ.get(api_key_env)
+                add_env_file_source(".env", v)
+                api_key = v.get(api_key_env)
             except ImportError:
                 pass
         if api_key:
             bench_args["api_key"] = api_key
         else:
-            click.echo(
-                f"Warning: --api-key-env '{api_key_env}' specified, but not found in environment.", err=True
-            )
+            click.echo(f"Warning: --api-key-env '{api_key_env}' specified, but not found in environment.", err=True)
 
     if exit_on_first_fail:
         bench_args["exit_on_first_fail"] = True
