@@ -63,7 +63,7 @@ def build_litellm_config(
                     "litellm_params": {
                         "model": "openai/%s" % model_name,
                         "api_base": "http://%s:%d/v1" % (ep.host, ep.port),
-                        "api_key": "not-needed",
+                        "api_key": ep.api_key or "not-needed",
                     },
                 }
             )
@@ -387,7 +387,7 @@ class ProxyEngine:
                 "litellm_params": {
                     "model": "openai/%s" % model_name,
                     "api_base": "http://%s:%d/v1" % (endpoint.host, endpoint.port),
-                    "api_key": "not-needed",
+                    "api_key": endpoint.api_key or "not-needed",
                 },
             }
 
@@ -522,7 +522,7 @@ class ProxyEngine:
                 "litellm_params": {
                     "model": "openai/%s" % target_model,
                     "api_base": api_base,
-                    "api_key": "not-needed",
+                    "api_key": params.get("api_key") or "not-needed",
                 },
             }
             try:
