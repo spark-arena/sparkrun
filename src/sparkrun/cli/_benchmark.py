@@ -907,9 +907,12 @@ def _run_benchmark(
         # Pass served_model_name as an argument if defined, satisfying llama-benchy's
         # requirement to maintain the original huggingface model ID for tokenization.
         # Check config_chain to capture both CLI overrides and recipe definitions natively.
-        served_model_name = config_chain.get("served_model_name")
-        if served_model_name and "served_model_name" not in bench_args:
+        if (served_model_name := config_chain.get("served_model_name")) and "served_model_name" not in bench_args:
             bench_args["served_model_name"] = served_model_name
+
+        # pass api key to model if specified by recipe and not already in bench_args (e.g., via --api-key-env)
+        if (api_key := runtime.resolve_api_key(recipe, overrides)) and "api_key" not in bench_args:
+            bench_args["api_key"] = api_key
 
         stdout_text = ""
         stderr_text = ""
