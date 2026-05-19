@@ -3,40 +3,11 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import TYPE_CHECKING
-from sparkrun.runtimes._util import default_env_hf_offline
+from sparkrun.runtimes._util import default_env_hf_offline, parse_api_key_from_command
 
 if TYPE_CHECKING:
     from sparkrun.core.recipe import Recipe
-
-
-# `--api-key value` or `--api-key=value`.  Stops at whitespace, line
-# continuation backslash, or shell metacharacters that wouldn't appear
-# in a real key.
-_VLLM_API_KEY_RE = re.compile(r"--api-key(?:=|\s+)([^\s\\]+)")
-
-
-def _parse_api_key_from_command(command: str | None) -> str | None:
-    """Extract a literal ``--api-key <value>`` value from a vLLM command.
-
-    Returns ``None`` when no flag is present, or when the value is a
-    ``{placeholder}`` (the defaults path handles those).  Surrounding
-    quotes are stripped.
-    """
-    if not command:
-        return None
-    match = _VLLM_API_KEY_RE.search(command)
-    if not match:
-        return None
-    val = match.group(1).strip()
-    if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
-        val = val[1:-1]
-    if not val:
-        return None
-    if val.startswith("{") and val.endswith("}"):
-        return None
-    return val
 
 
 class VllmMixin:
@@ -91,7 +62,7 @@ class VllmMixin:
         val = recipe.env.get("VLLM_API_KEY")
         if val:
             return str(val)
-        parsed = _parse_api_key_from_command(recipe.command)
+        parsed = parse_api_key_from_command(recipe.command)
         if parsed:
             return parsed
         return None

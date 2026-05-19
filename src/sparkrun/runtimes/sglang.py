@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, TYPE_CHECKING
 
-from sparkrun.runtimes._util import default_env_hf_offline
+from sparkrun.runtimes._util import default_env_hf_offline, parse_api_key_from_command
 from sparkrun.runtimes.base import RuntimePlugin
 
 if TYPE_CHECKING:
@@ -32,6 +32,7 @@ _SGLANG_FLAG_MAP = {
     "kv_cache_dtype": "--kv-cache-dtype",
     "tokenizer_path": "--tokenizer-path",
     "speculative_draft_model_path": "--speculative-draft-model-path",
+    "api_key": "--api-key",
 }
 
 _SGLANG_BOOL_FLAGS = {
@@ -55,6 +56,34 @@ class SglangRuntime(RuntimePlugin):
     def cluster_strategy(self) -> str:
         """SGLang uses native multi-node distribution, not Ray."""
         return "native"
+
+    def resolve_api_key(
+        self,
+        recipe: "Recipe",
+        overrides: dict | None = None,
+    ) -> str | None:
+        """Resolve the SGLang ``--api-key`` value for proxy/discovery use.
+
+        Checks, in order: CLI override, ``defaults.api_key`` (also
+        emitted as ``--api-key`` via :data:`_SGLANG_FLAG_MAP` for
+        structured commands), ``env.SGLANG_API_KEY``, and finally a
+        literal ``--api-key`` flag parsed from the recipe's ``command``
+        field.  Returns ``None`` when none are set.
+        """
+        if overrides:
+            val = overrides.get("api_key")
+            if val:
+                return str(val)
+        val = recipe.defaults.get("api_key")
+        if val:
+            return str(val)
+        val = recipe.env.get("SGLANG_API_KEY")
+        if val:
+            return str(val)
+        parsed = parse_api_key_from_command(recipe.command)
+        if parsed:
+            return parsed
+        return None
 
     def prepare(
         self,

@@ -281,6 +281,75 @@ def test_vllm_resolve_api_key_none_when_unset():
     assert VllmRayRuntime().resolve_api_key(recipe) is None
 
 
+def test_vllm_resolve_api_key_parses_inline_command_flag():
+    """Literal --api-key in a fixed command string is extracted."""
+    recipe = Recipe.from_dict(
+        {
+            "name": "r",
+            "model": "m",
+            "runtime": "vllm",
+            "command": "vllm serve m --api-key sk-inline --port 8000",
+        }
+    )
+    assert VllmRayRuntime().resolve_api_key(recipe) == "sk-inline"
+
+
+def test_vllm_resolve_api_key_parses_equals_form():
+    """`--api-key=value` form is also extracted."""
+    recipe = Recipe.from_dict(
+        {
+            "name": "r",
+            "model": "m",
+            "runtime": "vllm",
+            "command": "vllm serve m --api-key=sk-eq --port 8000",
+        }
+    )
+    assert VllmRayRuntime().resolve_api_key(recipe) == "sk-eq"
+
+
+def test_vllm_resolve_api_key_ignores_placeholder_in_command():
+    """`--api-key {api_key}` placeholder is ignored — defaults path handles it."""
+    recipe = Recipe.from_dict(
+        {
+            "name": "r",
+            "model": "m",
+            "runtime": "vllm",
+            "command": "vllm serve m --api-key {api_key} --port 8000",
+            "defaults": {"api_key": "sk-default"},
+        }
+    )
+    # defaults.api_key wins over the (rejected) placeholder
+    assert VllmRayRuntime().resolve_api_key(recipe) == "sk-default"
+
+
+def test_vllm_resolve_api_key_defaults_beat_inline_command():
+    """defaults.api_key takes precedence over inline --api-key in command."""
+    recipe = Recipe.from_dict(
+        {
+            "name": "r",
+            "model": "m",
+            "runtime": "vllm",
+            "command": "vllm serve m --api-key sk-inline",
+            "defaults": {"api_key": "sk-default"},
+        }
+    )
+    assert VllmRayRuntime().resolve_api_key(recipe) == "sk-default"
+
+
+def test_vllm_api_key_emitted_as_flag_for_structured_command():
+    """defaults.api_key auto-emits as --api-key on structured (no-template) commands."""
+    recipe = Recipe.from_dict(
+        {
+            "name": "r",
+            "model": "m",
+            "runtime": "vllm",
+            "defaults": {"port": 8000, "api_key": "sk-flag"},
+        }
+    )
+    cmd = VllmRayRuntime().generate_command(recipe, {}, is_cluster=False)
+    assert "--api-key sk-flag" in cmd
+
+
 # --- SglangRuntime Tests ---
 
 
@@ -348,6 +417,110 @@ def test_sglang_cluster_env():
     env = runtime.get_cluster_env(head_ip="192.168.1.100", num_nodes=2)
 
     assert env["NCCL_CUMEM_ENABLE"] == "0"
+
+
+# --- SGLang resolve_api_key Tests ---
+
+
+def test_sglang_resolve_api_key_from_defaults():
+    """defaults.api_key is the recommended source for sglang too."""
+    recipe = Recipe.from_dict(
+        {
+            "name": "r",
+            "model": "m",
+            "runtime": "sglang",
+            "defaults": {"api_key": "sk-default"},
+        }
+    )
+    assert SglangRuntime().resolve_api_key(recipe) == "sk-default"
+
+
+def test_sglang_resolve_api_key_from_env():
+    """env.SGLANG_API_KEY is honored when defaults.api_key is absent."""
+    recipe = Recipe.from_dict(
+        {
+            "name": "r",
+            "model": "m",
+            "runtime": "sglang",
+            "env": {"SGLANG_API_KEY": "sk-env"},
+        }
+    )
+    assert SglangRuntime().resolve_api_key(recipe) == "sk-env"
+
+
+def test_sglang_resolve_api_key_overrides_take_priority():
+    """CLI override beats defaults and env."""
+    recipe = Recipe.from_dict(
+        {
+            "name": "r",
+            "model": "m",
+            "runtime": "sglang",
+            "defaults": {"api_key": "sk-default"},
+            "env": {"SGLANG_API_KEY": "sk-env"},
+        }
+    )
+    assert SglangRuntime().resolve_api_key(recipe, {"api_key": "sk-cli"}) == "sk-cli"
+
+
+def test_sglang_resolve_api_key_defaults_beat_env():
+    """defaults.api_key takes precedence over env.SGLANG_API_KEY."""
+    recipe = Recipe.from_dict(
+        {
+            "name": "r",
+            "model": "m",
+            "runtime": "sglang",
+            "defaults": {"api_key": "sk-default"},
+            "env": {"SGLANG_API_KEY": "sk-env"},
+        }
+    )
+    assert SglangRuntime().resolve_api_key(recipe) == "sk-default"
+
+
+def test_sglang_resolve_api_key_none_when_unset():
+    """Returns None when no api_key is configured anywhere."""
+    recipe = Recipe.from_dict({"name": "r", "model": "m", "runtime": "sglang"})
+    assert SglangRuntime().resolve_api_key(recipe) is None
+
+
+def test_sglang_resolve_api_key_parses_inline_command_flag():
+    """Literal --api-key in a fixed command string is extracted."""
+    recipe = Recipe.from_dict(
+        {
+            "name": "r",
+            "model": "m",
+            "runtime": "sglang",
+            "command": "python -m sglang.launch_server --model-path m --api-key sk-inline --port 30000",
+        }
+    )
+    assert SglangRuntime().resolve_api_key(recipe) == "sk-inline"
+
+
+def test_sglang_resolve_api_key_ignores_placeholder_in_command():
+    """`--api-key {api_key}` placeholder is ignored — defaults path handles it."""
+    recipe = Recipe.from_dict(
+        {
+            "name": "r",
+            "model": "m",
+            "runtime": "sglang",
+            "command": "python -m sglang.launch_server --api-key {api_key} --port 30000",
+            "defaults": {"api_key": "sk-default"},
+        }
+    )
+    assert SglangRuntime().resolve_api_key(recipe) == "sk-default"
+
+
+def test_sglang_api_key_emitted_as_flag_for_structured_command():
+    """defaults.api_key auto-emits as --api-key on structured (no-template) commands."""
+    recipe = Recipe.from_dict(
+        {
+            "name": "r",
+            "model": "m",
+            "runtime": "sglang",
+            "defaults": {"port": 30000, "api_key": "sk-flag"},
+        }
+    )
+    cmd = SglangRuntime().generate_command(recipe, {}, is_cluster=False)
+    assert "--api-key sk-flag" in cmd
 
 
 def test_sglang_validate_recipe():
