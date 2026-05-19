@@ -11,22 +11,21 @@ def default_env_hf_offline(env: dict[str, str] = None, **kwargs) -> dict[str, st
     }
 
 
-# `--api-key value` or `--api-key=value`.  Stops at whitespace, line
-# continuation backslash, or shell metacharacters that wouldn't appear
-# in a real key.  Both vLLM and SGLang use the same flag spelling.
-_API_KEY_RE = re.compile(r"--api-key(?:=|\s+)([^\s\\]+)")
+def parse_flag_value_from_command(command: str | None, flag: str) -> str | None:
+    """Extract a literal ``<flag> <value>`` or ``<flag>=<value>`` from a command.
 
+    Matches the value up to the next whitespace or line-continuation
+    backslash.  Returns ``None`` when *flag* is absent, when the value
+    is empty, or when the value is a ``{placeholder}`` (the defaults
+    path handles those).  Surrounding quotes are stripped.
 
-def parse_api_key_from_command(command: str | None) -> str | None:
-    """Extract a literal ``--api-key <value>`` value from a serve command.
-
-    Returns ``None`` when no flag is present, or when the value is a
-    ``{placeholder}`` (the defaults path handles those).  Surrounding
-    quotes are stripped.
+    Used to recover an api/auth key from recipes that embed it directly
+    in their ``command:`` text rather than going through ``defaults``.
     """
     if not command:
         return None
-    match = _API_KEY_RE.search(command)
+    pattern = re.escape(flag) + r"(?:=|\s+)([^\s\\]+)"
+    match = re.search(pattern, command)
     if not match:
         return None
     val = match.group(1).strip()
@@ -37,3 +36,8 @@ def parse_api_key_from_command(command: str | None) -> str | None:
     if val.startswith("{") and val.endswith("}"):
         return None
     return val
+
+
+def parse_api_key_from_command(command: str | None) -> str | None:
+    """Backward-compatible alias for ``parse_flag_value_from_command(command, "--api-key")``."""
+    return parse_flag_value_from_command(command, "--api-key")
