@@ -814,12 +814,10 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
         sys.exit(1)
     if name:
         cluster_name = name
-    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     from sparkrun.core.cluster_manager import resolve_cluster_config
     from sparkrun.core.launcher import resolve_effective_cache_dir
     from sparkrun.orchestration.primitives import build_ssh_kwargs
-    from sparkrun.orchestration.ssh import run_remote_command
 
     config = _get_context(ctx).config
     host_list, cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config)
@@ -867,67 +865,27 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
         click.echo("[dry-run] Would inspect cluster config and cache dirs on %d host(s)" % len(host_list))
         return
 
-    # Build a script that checks existence and disk usage for both dirs.
-    # We derive remote sparkrun cache the same way: ~/.cache/sparkrun on the remote user.
+    # TODO: remote sparkrun cache path should go through same effective route as remote hf cache resolution
+    # Resolve remote sparkrun cache path the same way as before: explicit
+    # for a known cluster user, otherwise $HOME-relative.
     if cluster_cfg.user:
         remote_sparkrun = "/home/%s/.cache/sparkrun" % cluster_cfg.user
     else:
         remote_sparkrun = "$HOME/.cache/sparkrun"
 
-    check_cmd = (
-        'sr_dir="%s"; hf_dir="%s"; '
-        'sr_exists="no"; hf_exists="no"; sr_du="-"; hf_du="-"; '
-        'if [ -d "$sr_dir" ]; then sr_exists="yes"; sr_du=$(du -sh "$sr_dir" 2>/dev/null | cut -f1); fi; '
-        'if [ -d "$hf_dir" ]; then hf_exists="yes"; hf_du=$(du -sh "$hf_dir" 2>/dev/null | cut -f1); fi; '
-        'free_space=$(df -h / 2>/dev/null | awk "NR==2{print \\$4}"); '
-        'echo "sr_exists=$sr_exists|sr_du=$sr_du|hf_exists=$hf_exists|hf_du=$hf_du|sr_dir=$sr_dir|hf_dir=$hf_dir|free_space=${free_space:--}"'
-    ) % (remote_sparkrun, remote_hf)
+    from sparkrun.orchestration.disk_info import probe_cache_status, probe_local_cache_status
+    from sparkrun.utils.cli_formatters import format_cache_status_table
 
-    # Query all hosts in parallel
-    host_info: dict[str, dict] = {}
-    with ThreadPoolExecutor(max_workers=len(host_list)) as executor:
-        futures = {
-            executor.submit(
-                run_remote_command,
-                host,
-                check_cmd,
-                ssh_user=ssh_kwargs.get("ssh_user"),
-                ssh_key=ssh_kwargs.get("ssh_key"),
-                ssh_options=ssh_kwargs.get("ssh_options"),
-                timeout=15,
-            ): host
-            for host in host_list
-        }
-        for future in as_completed(futures):
-            host = futures[future]
-            result = future.result()
-            if result.success and result.stdout.strip():
-                parts = dict(kv.split("=", 1) for kv in result.stdout.strip().split("|") if "=" in kv)
-                host_info[host] = parts
-            else:
-                host_info[host] = {"error": result.stderr.strip() or "SSH failed"}
-
-    # Check local directories
-    import os
-    import subprocess as _sp
-
-    def _local_dir_info(path: str) -> tuple[str, str]:
-        if not os.path.isdir(path):
-            return "no", "-"
-        du_result = _sp.run(["du", "-sh", path], capture_output=True, text=True)
-        size = du_result.stdout.split()[0] if du_result.returncode == 0 and du_result.stdout.strip() else "-"
-        return "yes", size
-
-    local_sr_exists, local_sr_du = _local_dir_info(local_sparkrun)
-    local_hf_exists, local_hf_du = _local_dir_info(local_hf)
-
-    # Local free space on root partition
-    _df_result = _sp.run(["df", "-h", "/"], capture_output=True, text=True)
-    local_free_space = "-"
-    if _df_result.returncode == 0 and _df_result.stdout.strip():
-        _df_lines = _df_result.stdout.strip().splitlines()
-        if len(_df_lines) >= 2:
-            local_free_space = _df_lines[1].split()[3]
+    host_status = probe_cache_status(
+        host_list,
+        hf_cache_dir=remote_hf,
+        sparkrun_cache_dir=remote_sparkrun,
+        ssh_kwargs=ssh_kwargs,
+    )
+    local_status = probe_local_cache_status(
+        hf_cache_dir=local_hf,
+        sparkrun_cache_dir=local_sparkrun,
+    )
 
     # Collect effective config summary
     effective_config = {
@@ -949,25 +907,25 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
             "config": effective_config,
             "hosts": list(host_list),
             "local": {
-                "sparkrun_cache": {"path": local_sparkrun, "exists": local_sr_exists == "yes", "size": local_sr_du},
-                "hf_cache": {"path": local_hf, "exists": local_hf_exists == "yes", "size": local_hf_du},
-                "free_space": local_free_space,
+                "sparkrun_cache": {
+                    "path": local_status.sparkrun_dir,
+                    "exists": local_status.sparkrun_exists,
+                    "size": local_status.sparkrun_size,
+                },
+                "hf_cache": {"path": local_status.hf_dir, "exists": local_status.hf_exists, "size": local_status.hf_size},
+                "free_space": local_status.free_space,
             },
             "remote": {},
         }
         for h in host_list:
-            info = host_info.get(h, {})
-            if "error" in info:
-                data["remote"][h] = {"error": info["error"]}
+            status = host_status.get(h)
+            if status is None or status.error:
+                data["remote"][h] = {"error": (status.error if status else "no result")}
             else:
                 data["remote"][h] = {
-                    "sparkrun_cache": {
-                        "path": info.get("sr_dir", "?"),
-                        "exists": info.get("sr_exists") == "yes",
-                        "size": info.get("sr_du", "-"),
-                    },
-                    "hf_cache": {"path": info.get("hf_dir", "?"), "exists": info.get("hf_exists") == "yes", "size": info.get("hf_du", "-")},
-                    "free_space": info.get("free_space", "-"),
+                    "sparkrun_cache": {"path": status.sparkrun_dir, "exists": status.sparkrun_exists, "size": status.sparkrun_size},
+                    "hf_cache": {"path": status.hf_dir, "exists": status.hf_exists, "size": status.hf_size},
+                    "free_space": status.free_space,
                 }
         print_json(data)
         return
@@ -1012,25 +970,7 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
         click.echo("  ⚠ local and remote HF cache paths differ")
     click.echo()
 
-    # Directory status table
+    # Directory status table (shared formatter — also used by the
+    # distribute_model_from_local error path on out-of-space failures).
     click.echo("Directory Status:")
-    click.echo(
-        "  %-30s %-10s %-10s %-10s %-10s %-12s %s" % ("Host", "SR exists", "SR size", "HF exists", "HF size", "Free Space", "HF path")
-    )
-    click.echo("  " + "-" * 112)
-    click.echo(
-        "  %-30s %-10s %-10s %-10s %-10s %-12s %s"
-        % ("(local)", local_sr_exists, local_sr_du, local_hf_exists, local_hf_du, local_free_space, local_hf)
-    )
-    for h in host_list:
-        info = host_info.get(h, {})
-        if "error" in info:
-            click.echo("  %-30s %s" % (h, "Error: %s" % info["error"]))
-        else:
-            sr_exists = info.get("sr_exists", "?")
-            sr_du = info.get("sr_du", "-")
-            hf_exists = info.get("hf_exists", "?")
-            hf_du = info.get("hf_du", "-")
-            free_space = info.get("free_space", "-")
-            hf_dir = info.get("hf_dir", "?")
-            click.echo("  %-30s %-10s %-10s %-10s %-10s %-12s %s" % (h, sr_exists, sr_du, hf_exists, hf_du, free_space, hf_dir))
+    click.echo(format_cache_status_table(host_status, local_status=local_status))

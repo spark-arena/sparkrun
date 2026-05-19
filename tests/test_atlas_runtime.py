@@ -350,3 +350,85 @@ def test_atlas_draft_model_flag_still_renders():
     recipe = _recipe(defaults={"draft_model": "Sehyo/Qwen3.5-35B-Draft", "speculative": True})
     cmd = runtime.generate_command(recipe, {}, is_cluster=False)
     assert "--draft-model Sehyo/Qwen3.5-35B-Draft" in cmd
+
+
+# --- Atlas resolve_api_key / --auth-token ---
+
+
+def test_atlas_resolve_api_key_from_defaults_api_key():
+    """defaults.api_key (portable key) is honored."""
+    recipe = _recipe(defaults={"api_key": "sk-portable"})
+    assert AtlasRuntime().resolve_api_key(recipe) == "sk-portable"
+
+
+def test_atlas_resolve_api_key_from_defaults_auth_token_alias():
+    """defaults.auth_token (runtime-native alias) is honored."""
+    recipe = _recipe(defaults={"auth_token": "sk-native"})
+    assert AtlasRuntime().resolve_api_key(recipe) == "sk-native"
+
+
+def test_atlas_resolve_api_key_canonical_beats_alias():
+    """api_key wins over auth_token when both are set."""
+    recipe = _recipe(defaults={"api_key": "sk-portable", "auth_token": "sk-native"})
+    assert AtlasRuntime().resolve_api_key(recipe) == "sk-portable"
+
+
+def test_atlas_resolve_api_key_overrides_take_priority():
+    """CLI override beats defaults."""
+    recipe = _recipe(defaults={"api_key": "sk-default"})
+    assert AtlasRuntime().resolve_api_key(recipe, {"api_key": "sk-cli"}) == "sk-cli"
+
+
+def test_atlas_resolve_api_key_none_when_unset():
+    """Returns None when no auth source is configured."""
+    assert AtlasRuntime().resolve_api_key(_recipe()) is None
+
+
+def test_atlas_resolve_api_key_no_env_fallback():
+    """Atlas has no documented env-var equivalent — env is not consulted."""
+    recipe = _recipe(env={"ATLAS_API_KEY": "sk-env"})
+    assert AtlasRuntime().resolve_api_key(recipe) is None
+
+
+def test_atlas_resolve_api_key_parses_inline_auth_token_flag():
+    """Literal --auth-token in a fixed command string is extracted."""
+    recipe = _recipe(
+        command="spark serve m --auth-token sk-inline --port 8080",
+    )
+    assert AtlasRuntime().resolve_api_key(recipe) == "sk-inline"
+
+
+def test_atlas_resolve_api_key_ignores_placeholder_in_command():
+    """`--auth-token {api_key}` placeholder is ignored — defaults path handles it."""
+    recipe = _recipe(
+        command="spark serve m --auth-token {api_key}",
+        defaults={"api_key": "sk-default"},
+    )
+    assert AtlasRuntime().resolve_api_key(recipe) == "sk-default"
+
+
+def test_atlas_api_key_emitted_as_auth_token_flag():
+    """defaults.api_key auto-emits as --auth-token on structured commands."""
+    runtime = AtlasRuntime()
+    recipe = _recipe(defaults={"port": 8080, "api_key": "sk-flag"})
+    cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+    assert "--auth-token sk-flag" in cmd
+
+
+def test_atlas_auth_token_alias_emitted_as_auth_token_flag():
+    """defaults.auth_token alias also auto-emits as --auth-token."""
+    runtime = AtlasRuntime()
+    recipe = _recipe(defaults={"port": 8080, "auth_token": "sk-alias"})
+    cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+    assert "--auth-token sk-alias" in cmd
+
+
+def test_atlas_no_duplicate_auth_token_when_both_keys_set():
+    """When both api_key and auth_token are set, --auth-token is emitted once."""
+    runtime = AtlasRuntime()
+    recipe = _recipe(defaults={"api_key": "sk-canonical", "auth_token": "sk-alias"})
+    cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+    assert cmd.count("--auth-token") == 1
+    # Canonical api_key wins
+    assert "--auth-token sk-canonical" in cmd
+    assert "sk-alias" not in cmd

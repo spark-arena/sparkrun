@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 from typing import Any, TYPE_CHECKING
 
-from sparkrun.runtimes._util import default_env_hf_offline
+from sparkrun.runtimes._util import default_env_hf_offline, parse_flag_value_from_command
 from sparkrun.runtimes.base import RuntimePlugin
 
 if TYPE_CHECKING:
@@ -84,6 +84,11 @@ _ATLAS_FLAG_MAP = {
     "disable_thinking": "--disable-thinking",
     "high_speed_swap": "--high-speed-swap",
     "require_auth": "--require-auth",
+    # Atlas calls the proxy auth credential ``--auth-token``.  We accept
+    # the cross-runtime portable name ``api_key`` as the canonical key;
+    # ``auth_token`` is supported as an alias and folded into ``api_key``
+    # by ``_normalize_config`` before flag-map iteration.
+    "api_key": "--auth-token",
 }
 
 _ATLAS_BOOL_FLAGS = frozenset(
@@ -117,6 +122,39 @@ class AtlasRuntime(RuntimePlugin):
         """Atlas handles its own multi-rank distribution via NCCL, not Ray."""
         return "native"
 
+    def resolve_api_key(
+        self,
+        recipe: "Recipe",
+        overrides: dict | None = None,
+    ) -> str | None:
+        """Resolve the Atlas ``--auth-token`` value for proxy/discovery use.
+
+        Atlas uses ``--auth-token`` (not ``--api-key``) on the wire, but
+        sparkrun accepts the portable ``api_key`` recipe key and the
+        runtime-native ``auth_token`` alias as equivalent sources.
+
+        Checks, in order: CLI override (``api_key`` then ``auth_token``),
+        ``defaults.api_key`` then ``defaults.auth_token``, and finally a
+        literal ``--auth-token`` flag parsed from the recipe's ``command``
+        field.  The ``auth_token`` alias is folded into ``api_key`` by
+        :meth:`_normalize_config` before flag emission, so structured
+        commands always emit ``--auth-token`` exactly once.  Atlas has
+        no documented env-var equivalent, so ``env`` is not consulted.
+        """
+        if overrides:
+            for key in ("api_key", "auth_token"):
+                val = overrides.get(key)
+                if val:
+                    return str(val)
+        for key in ("api_key", "auth_token"):
+            val = recipe.defaults.get(key)
+            if val:
+                return str(val)
+        parsed = parse_flag_value_from_command(recipe.command, "--auth-token")
+        if parsed:
+            return parsed
+        return None
+
     def prefer_ib_for_init_addr(self) -> bool:
         """Added to give option to usb IB IP for Atlas instead of MGMT IP during troubleshooting"""
         return False
@@ -141,6 +179,19 @@ class AtlasRuntime(RuntimePlugin):
 
     # --- Command generation ---
 
+    @staticmethod
+    def _normalize_config(config) -> None:
+        """Apply pre-render config normalizations (auth-token alias).
+
+        Accepts ``auth_token`` as an alias for the canonical ``api_key``
+        key so users can use either in recipe defaults; flag emission
+        only looks at the canonical key.
+        """
+        if not config.get("api_key"):
+            alias = config.get("auth_token")
+            if alias:
+                config.set("api_key", alias)
+
     def generate_command(
         self,
         recipe: Recipe,
@@ -156,6 +207,7 @@ class AtlasRuntime(RuntimePlugin):
         ranks are produced by :meth:`generate_node_command`.
         """
         config = recipe.build_config_chain(overrides)
+        self._normalize_config(config)
 
         rendered = recipe.render_command(config)
         if rendered:
@@ -193,6 +245,7 @@ class AtlasRuntime(RuntimePlugin):
         the HTTP listener — only rank 0 exposes the OpenAI API.
         """
         config = recipe.build_config_chain(overrides)
+        self._normalize_config(config)
 
         rendered = recipe.render_command(config)
         if rendered:

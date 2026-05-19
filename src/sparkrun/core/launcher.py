@@ -294,6 +294,7 @@ def launch_inference(
                 cache_dir=str(config.cache_dir),
                 recipe_ref=recipe_ref,
                 container_image=container_image,
+                runtime=runtime,
             )
         except Exception:
             logger.debug("Failed to save job metadata: %s", cluster_id, exc_info=True)
@@ -343,6 +344,7 @@ def launch_inference(
                     ib_ip_map=ib_ip_map,
                     mgmt_ip_map=mgmt_ip_map,
                     recipe_ref=recipe_ref,
+                    runtime=runtime,
                 )
             except Exception:
                 logger.debug("Failed to update job metadata: %s", cluster_id, exc_info=True)
@@ -559,6 +561,7 @@ def launch_inference(
                         recipe_ref=recipe_ref,
                         runtime_info=runtime_info,
                         container_image=container_image,
+                        runtime=runtime,
                     )
                 except Exception:
                     logger.debug("Failed to save runtime_info to job metadata", exc_info=True)

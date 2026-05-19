@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 
 from sparkrun.containers.registry import ensure_image, get_image_identity
-from sparkrun.orchestration.primitives import map_transfer_failures
+from sparkrun.orchestration.transfer import map_transfer_failures
 from sparkrun.orchestration.ssh import (
     RemoteResult,
     build_ssh_opts_string,

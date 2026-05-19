@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import TYPE_CHECKING
-from sparkrun.runtimes._util import default_env_hf_offline
+from sparkrun.runtimes._util import default_env_hf_offline, parse_api_key_from_command
 
 if TYPE_CHECKING:
     from sparkrun.core.recipe import Recipe
@@ -39,6 +39,34 @@ class VllmMixin:
         cmds["vllm"] = "python3 -c 'import vllm; print(vllm.__version__)' 2>/dev/null || echo unknown"
         return cmds
 
+    def resolve_api_key(
+        self,
+        recipe: "Recipe",
+        overrides: dict | None = None,
+    ) -> str | None:
+        """Resolve the vLLM ``--api-key`` value for proxy/discovery use.
+
+        Checks, in order: CLI override, ``defaults.api_key`` (also
+        emitted as ``--api-key`` via :data:`VLLM_FLAG_MAP` for structured
+        commands), ``env.VLLM_API_KEY``, and finally a literal
+        ``--api-key`` flag parsed from the recipe's ``command`` field.
+        Returns ``None`` when none are set.
+        """
+        if overrides:
+            val = overrides.get("api_key")
+            if val:
+                return str(val)
+        val = recipe.defaults.get("api_key")
+        if val:
+            return str(val)
+        val = recipe.env.get("VLLM_API_KEY")
+        if val:
+            return str(val)
+        parsed = parse_api_key_from_command(recipe.command)
+        if parsed:
+            return parsed
+        return None
+
     def detect_spec_config_draft_model(self, recipe: "Recipe") -> str | None:
         try:
             # TODO: support various ways that speculative config can be specified
@@ -71,6 +99,7 @@ VLLM_FLAG_MAP = {
     "data_parallel": "--data-parallel-size",
     "kv_cache_dtype": "--kv-cache-dtype",
     "otlp_traces_endpoint": "--otlp-traces-endpoint",
+    "api_key": "--api-key",
 }
 
 # Boolean flags (present = True, absent = False)

@@ -38,6 +38,7 @@ class DiscoveredEndpoint:
     actual_models: list[str] = field(default_factory=list)
     recipe_name: str = ""
     tensor_parallel: int = 1
+    api_key: str | None = None
 
 
 def discover_endpoints(
@@ -158,6 +159,7 @@ def _endpoint_from_meta(
         healthy=False,
         recipe_name=meta.get("recipe", meta.get("recipe_ref", "")),
         tensor_parallel=int(meta.get("tensor_parallel", 1)),
+        api_key=meta.get("api_key") or None,
     )
 
 
@@ -244,6 +246,7 @@ def _discover_from_metadata(
             healthy=False,
             recipe_name=recipe_name,
             tensor_parallel=tp,
+            api_key=meta.get("api_key") or None,
         )
 
     endpoints = list(candidates.values())
@@ -307,12 +310,18 @@ def _deduplicate_by_identity(endpoints: list[DiscoveredEndpoint]) -> list[Discov
 def _check_single_health(ep: DiscoveredEndpoint) -> tuple[bool, list[str]]:
     """Check a single endpoint's health via GET /v1/models.
 
+    Sends an ``Authorization: Bearer`` header when the endpoint has an
+    ``api_key`` set, so backends that require auth still report healthy.
+
     Returns:
         Tuple of (healthy, list_of_model_ids).
     """
     url = "http://%s:%d/v1/models" % (ep.host, ep.port)
+    headers: dict[str, str] = {}
+    if ep.api_key:
+        headers["Authorization"] = "Bearer %s" % ep.api_key
     try:
-        req = urllib.request.Request(url, method="GET")
+        req = urllib.request.Request(url, method="GET", headers=headers)
         with urllib.request.urlopen(req, timeout=_HEALTH_TIMEOUT) as resp:
             if resp.status == 200:
                 body = json.loads(resp.read())

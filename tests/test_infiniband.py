@@ -235,7 +235,11 @@ class TestValidateIbConnectivity:
 
     @patch("sparkrun.orchestration.ssh.run_remote_command")
     def test_reachable_returns_original_map(self, mock_cmd):
-        """When IB IP is reachable, returns the original map."""
+        """When every host's first IB IP is reachable, returns the original map.
+
+        Probes once per host; in a switched fabric this confirms each
+        host is reachable on the IB network.
+        """
         mock_cmd.return_value = RemoteResult(
             host="10.0.0.1",
             returncode=0,
@@ -246,13 +250,10 @@ class TestValidateIbConnectivity:
         result = validate_ib_connectivity(ib_map, ssh_kwargs={"ssh_user": "user"})
 
         assert result == ib_map
-        mock_cmd.assert_called_once_with(
-            "10.0.0.1",
-            "true",
-            connect_timeout=5,
-            timeout=10,
-            ssh_user="user",
-        )
+        # Each host gets its own probe; both first-IP probes succeed.
+        assert mock_cmd.call_count == 2
+        probed_ips = {call.args[0] for call in mock_cmd.call_args_list}
+        assert probed_ips == {"10.0.0.1", "10.0.0.2"}
 
     @patch("sparkrun.orchestration.ssh.run_remote_command")
     def test_unreachable_returns_empty(self, mock_cmd):
@@ -267,6 +268,94 @@ class TestValidateIbConnectivity:
         result = validate_ib_connectivity(ib_map)
 
         assert result == {}
+
+    @patch("sparkrun.orchestration.ssh.run_remote_command")
+    def test_first_candidate_works(self, mock_cmd):
+        """Per-host candidate list: first IP responds → returned map uses first IP.
+
+        With parallel within-host probing every candidate is probed
+        simultaneously, but the result is still the first candidate
+        (in detection order) that responded.
+        """
+        mock_cmd.return_value = RemoteResult(host="x", returncode=0, stdout="", stderr="")
+        candidates = {"spark1": ["192.168.2.1", "192.168.3.1"]}
+
+        result = validate_ib_connectivity(candidates)
+
+        assert result == {"spark1": "192.168.2.1"}
+        probed = {c.args[0] for c in mock_cmd.call_args_list}
+        assert probed == {"192.168.2.1", "192.168.3.1"}
+
+    @patch("sparkrun.orchestration.ssh.run_remote_command")
+    def test_second_candidate_works_after_first_fails(self, mock_cmd):
+        """Regression for #176: first IP times out, second responds → map uses second IP."""
+
+        def _probe(ip, _cmd, **_kw):
+            if ip == "192.168.2.1":
+                return RemoteResult(host=ip, returncode=255, stdout="", stderr="timeout")
+            return RemoteResult(host=ip, returncode=0, stdout="", stderr="")
+
+        mock_cmd.side_effect = _probe
+        candidates = {"spark1": ["192.168.2.1", "192.168.3.1"]}
+
+        result = validate_ib_connectivity(candidates)
+
+        # The verified IP is the second candidate, not the first.
+        assert result == {"spark1": "192.168.3.1"}
+        probed = {c.args[0] for c in mock_cmd.call_args_list}
+        assert probed == {"192.168.2.1", "192.168.3.1"}
+
+    @patch("sparkrun.orchestration.ssh.run_remote_command")
+    def test_all_candidates_fail_for_host_returns_empty(self, mock_cmd):
+        """When every candidate for any host fails, returns {} (mgmt fallback)."""
+        mock_cmd.return_value = RemoteResult(host="x", returncode=255, stdout="", stderr="timeout")
+        candidates = {"spark1": ["192.168.2.1", "192.168.3.1"]}
+
+        result = validate_ib_connectivity(candidates)
+
+        assert result == {}
+        # All candidates were tried before giving up.
+        probed = {c.args[0] for c in mock_cmd.call_args_list}
+        assert probed == {"192.168.2.1", "192.168.3.1"}
+
+    @patch("sparkrun.orchestration.ssh.run_remote_command")
+    def test_mixed_reachable_and_unreachable_hosts_returns_empty(self, mock_cmd):
+        """All-or-nothing: one host with no reachable IB → entire map falls back."""
+
+        def _probe(ip, _cmd, **_kw):
+            # spark1 candidates reachable, spark2 candidates all unreachable
+            if ip.startswith("192.168.2."):
+                return RemoteResult(host=ip, returncode=0, stdout="", stderr="")
+            return RemoteResult(host=ip, returncode=255, stdout="", stderr="timeout")
+
+        mock_cmd.side_effect = _probe
+        candidates = {
+            "spark1": ["192.168.2.1"],
+            "spark2": ["192.168.3.2", "192.168.4.2"],
+        }
+        result = validate_ib_connectivity(candidates)
+
+        assert result == {}
+
+    @patch("sparkrun.orchestration.ssh.run_remote_command")
+    def test_per_host_candidates_each_resolved(self, mock_cmd):
+        """Multi-host mesh: each host's verified IP is the first working candidate."""
+
+        def _probe(ip, _cmd, **_kw):
+            # Per-host: simulate that only the *second* candidate is reachable
+            unreachable = {"192.168.2.1", "192.168.3.2"}
+            if ip in unreachable:
+                return RemoteResult(host=ip, returncode=255, stdout="", stderr="timeout")
+            return RemoteResult(host=ip, returncode=0, stdout="", stderr="")
+
+        mock_cmd.side_effect = _probe
+        candidates = {
+            "spark1": ["192.168.2.1", "192.168.3.1"],
+            "spark2": ["192.168.3.2", "192.168.2.2"],
+        }
+        result = validate_ib_connectivity(candidates)
+
+        assert result == {"spark1": "192.168.3.1", "spark2": "192.168.2.2"}
 
 
 # ---------------------------------------------------------------------------

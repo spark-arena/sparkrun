@@ -11,7 +11,10 @@ import logging
 
 from sparkrun.core.config import resolve_hf_cache_home
 from sparkrun.models.download import download_model, model_cache_path
-from sparkrun.orchestration.primitives import map_transfer_failures
+from sparkrun.orchestration.transfer import (
+    TransferFailure,
+    map_transfer_failures_detailed,
+)
 from sparkrun.orchestration.ssh import (
     build_ssh_opts_string,
     run_remote_scripts_parallel,
@@ -83,7 +86,7 @@ def distribute_model_from_local(
     timeout: int | None = None,
     dry_run: bool = False,
     transfer_hosts: list[str] | None = None,
-) -> list[str]:
+) -> list[TransferFailure]:
     """Download a model locally then rsync it to all hosts.
 
     1. Download the model to the local HF cache via :func:`download_model`.
@@ -113,8 +116,10 @@ def distribute_model_from_local(
             Falls back to *hosts* when ``None``.
 
     Returns:
-        List of hostnames (from *hosts*) where distribution failed
-        (empty = full success).
+        List of :class:`TransferFailure` records, one per host that
+        failed (empty = full success).  Each carries a classified
+        ``reason`` (e.g. "out of disk space on destination") so callers
+        can surface meaningful errors instead of bare host names.
     """
     local_cache = resolve_hf_cache_home(local_cache_dir or cache_dir)
     remote_cache = resolve_hf_cache_home(cache_dir)
@@ -124,7 +129,7 @@ def distribute_model_from_local(
     rc = download_model(model_id, cache_dir=local_cache, token=token, revision=revision, dry_run=dry_run)
     if rc != 0:
         logger.error("Failed to download model '%s' locally — aborting distribution", model_id)
-        return list(hosts)
+        return [TransferFailure(host=h, reason="local model download failed") for h in hosts]
 
     if not hosts:
         return []
@@ -161,14 +166,36 @@ def distribute_model_from_local(
         dry_run=dry_run,
     )
 
-    # Map transfer IPs back to management hosts for failure reporting
-    failed = map_transfer_failures(results, xfer, hosts)
-    if failed:
-        logger.warning("Model distribution failed on hosts: %s", failed)
+    # Map transfer IPs back to management hosts for failure reporting,
+    # and classify each failure (out of disk space, permission denied, …)
+    # so the caller can surface a meaningful error instead of a bare host
+    # name.
+    failures = map_transfer_failures_detailed(results, xfer, hosts)
+    if failures:
+        for f in failures:
+            logger.error("  rsync failed on %s: %s", f.host, f.reason)
+        # When any failure was "out of disk space", probe free space on
+        # every cluster host and emit a small table so the user can see
+        # who's full and how much room the healthy hosts have.
+        oos_hosts = [f.host for f in failures if "disk space" in f.reason or "quota" in f.reason]
+        if oos_hosts:
+            from sparkrun.orchestration.disk_info import probe_cache_status
+            from sparkrun.utils.cli_formatters import format_cache_status_table
+
+            cache_status = probe_cache_status(
+                hosts,
+                hf_cache_dir=remote_cache,
+                ssh_kwargs={"ssh_user": ssh_user, "ssh_key": ssh_key, "ssh_options": ssh_options},
+            )
+            if cache_status:
+                logger.error(
+                    "  Cluster cache status:\n%s",
+                    format_cache_status_table(cache_status, highlight_hosts=oos_hosts),
+                )
     else:
         logger.log(PROGRESS, "  Model synced to %d host(s)", len(hosts))
 
-    return failed
+    return failures
 
 
 def distribute_model_from_head(
@@ -183,7 +210,7 @@ def distribute_model_from_head(
     timeout: int | None = None,
     dry_run: bool = False,
     worker_transfer_hosts: list[str] | None = None,
-) -> list[str]:
+) -> list[TransferFailure]:
     """Download a model on the head node then distribute to remaining hosts.
 
     1. Download on ``hosts[0]`` using the existing ``model_sync.sh``.
@@ -256,7 +283,7 @@ def distribute_model_from_head(
         ssh_user=ssh_user or "",
     )
 
-    return _distribute_from_head(
+    failed_hosts = _distribute_from_head(
         head=head,
         hosts=hosts,
         ensure_script=ensure_script,
@@ -268,3 +295,8 @@ def distribute_model_from_head(
         timeout=timeout,
         dry_run=dry_run,
     )
+    # _distribute_from_head doesn't expose per-host rsync stderr, so we
+    # can't classify the cause here.  Surface a generic reason and let
+    # users consult the head's rsync log (already echoed above) for
+    # detail like "No space left on device".
+    return [TransferFailure(host=h, reason="rsync from head failed (see log above for stderr)") for h in failed_hosts]

@@ -171,30 +171,6 @@ def sync_resource_to_hosts(
     return failed
 
 
-def map_transfer_failures(
-    results: list[RemoteResult],
-    transfer_hosts: list[str],
-    management_hosts: list[str],
-) -> list[str]:
-    """Map failed transfer-host results back to management hostnames.
-
-    When fast-network IPs (InfiniBand) are used for data transfer,
-    failures are reported against those IPs. This maps them back to
-    the corresponding management hostnames for user-facing reporting.
-
-    Args:
-        results: Remote execution results (keyed by transfer host).
-        transfer_hosts: IPs/hostnames used for the actual transfer.
-        management_hosts: Corresponding management hostnames for reporting.
-
-    Returns:
-        List of management hostnames where transfer failed.
-    """
-    xfer_to_host = dict(zip(transfer_hosts, management_hosts))
-    failed = [xfer_to_host.get(r.host, r.host) for r in results if not r.success]
-    return failed
-
-
 # ---------------------------------------------------------------------------
 # InfiniBand detection flow
 # ---------------------------------------------------------------------------

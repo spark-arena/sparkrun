@@ -316,6 +316,63 @@ class TestSaveJobMetadata:
         assert "port" not in meta
         assert "served_model_name" not in meta
 
+    def test_api_key_persisted_via_runtime(self, tmp_path: Path):
+        """Runtime's resolve_api_key result is persisted to metadata."""
+        from sparkrun.orchestration.job_metadata import save_job_metadata, load_job_metadata
+
+        recipe = _make_recipe(defaults={"api_key": "sk-abc"})
+
+        class _Rt:
+            def resolve_api_key(self, recipe, overrides=None):
+                return recipe.defaults.get("api_key")
+
+        save_job_metadata(
+            "sparkrun_authkey",
+            recipe,
+            ["10.0.0.1"],
+            cache_dir=str(tmp_path),
+            runtime=_Rt(),
+        )
+        meta = load_job_metadata("sparkrun_authkey", cache_dir=str(tmp_path))
+        assert meta is not None
+        assert meta["api_key"] == "sk-abc"
+
+    def test_api_key_omitted_when_runtime_returns_none(self, tmp_path: Path):
+        """No api_key field when resolve_api_key returns None."""
+        from sparkrun.orchestration.job_metadata import save_job_metadata, load_job_metadata
+
+        recipe = _make_recipe()
+
+        class _Rt:
+            def resolve_api_key(self, recipe, overrides=None):
+                return None
+
+        save_job_metadata(
+            "sparkrun_nokey",
+            recipe,
+            ["10.0.0.1"],
+            cache_dir=str(tmp_path),
+            runtime=_Rt(),
+        )
+        meta = load_job_metadata("sparkrun_nokey", cache_dir=str(tmp_path))
+        assert meta is not None
+        assert "api_key" not in meta
+
+    def test_api_key_skipped_when_no_runtime(self, tmp_path: Path):
+        """Backward compat: no runtime arg means no api_key resolution."""
+        from sparkrun.orchestration.job_metadata import save_job_metadata, load_job_metadata
+
+        recipe = _make_recipe(defaults={"api_key": "sk-ignored"})
+        save_job_metadata(
+            "sparkrun_noruntime",
+            recipe,
+            ["10.0.0.1"],
+            cache_dir=str(tmp_path),
+        )
+        meta = load_job_metadata("sparkrun_noruntime", cache_dir=str(tmp_path))
+        assert meta is not None
+        assert "api_key" not in meta
+
 
 # =====================================================================
 # Tests: Discovery
@@ -424,6 +481,95 @@ class TestDiscovery:
         healthy = [ep for ep in endpoints if ep.healthy]
         assert len(healthy) == 2
         assert "Qwen/Qwen3-1.7B" in healthy[0].actual_models
+
+    def test_api_key_threaded_into_endpoint(self, jobs_dir: Path):
+        """api_key from job metadata flows into DiscoveredEndpoint."""
+        from sparkrun.proxy.discovery import discover_endpoints
+
+        meta = {
+            "cluster_id": "sparkrun_apikey",
+            "recipe": "vllm-auth",
+            "model": "Org/Authed",
+            "runtime": "vllm",
+            "hosts": ["10.0.0.5"],
+            "port": 8000,
+            "api_key": "sk-upstream",
+        }
+        with open(jobs_dir / "apikey.yaml", "w") as f:
+            yaml.safe_dump(meta, f)
+
+        endpoints = discover_endpoints(
+            cache_dir=str(jobs_dir.parent),
+            check_health=False,
+        )
+        assert len(endpoints) == 1
+        assert endpoints[0].api_key == "sk-upstream"
+
+    def test_health_check_sends_bearer_header(self, jobs_dir: Path):
+        """Health check uses Bearer auth when api_key is set on the endpoint."""
+        from sparkrun.proxy.discovery import discover_endpoints
+
+        meta = {
+            "cluster_id": "sparkrun_authed",
+            "recipe": "vllm-auth",
+            "model": "Org/Authed",
+            "runtime": "vllm",
+            "hosts": ["10.0.0.7"],
+            "port": 8000,
+            "api_key": "sk-bearer",
+        }
+        with open(jobs_dir / "authed.yaml", "w") as f:
+            yaml.safe_dump(meta, f)
+
+        mock_response = MagicMock()
+        mock_response.status = 200
+        mock_response.read.return_value = json.dumps({"data": [{"id": "Org/Authed"}]}).encode()
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+
+        captured: list = []
+
+        def _spy(req, timeout=None):
+            captured.append(req)
+            return mock_response
+
+        with patch("sparkrun.proxy.discovery.urllib.request.urlopen", side_effect=_spy):
+            endpoints = discover_endpoints(
+                cache_dir=str(jobs_dir.parent),
+                check_health=True,
+            )
+
+        healthy = [ep for ep in endpoints if ep.healthy]
+        assert len(healthy) == 1
+        assert captured, "urlopen was not called"
+        # urllib normalises header keys: Authorization → "Authorization"
+        auth_value = captured[0].get_header("Authorization")
+        assert auth_value == "Bearer sk-bearer"
+
+    def test_health_check_no_auth_when_no_api_key(self, populated_jobs_dir: Path):
+        """No Authorization header is sent when endpoint has no api_key."""
+        from sparkrun.proxy.discovery import discover_endpoints
+
+        mock_response = MagicMock()
+        mock_response.status = 200
+        mock_response.read.return_value = json.dumps({"data": []}).encode()
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+
+        captured: list = []
+
+        def _spy(req, timeout=None):
+            captured.append(req)
+            return mock_response
+
+        with patch("sparkrun.proxy.discovery.urllib.request.urlopen", side_effect=_spy):
+            discover_endpoints(
+                cache_dir=str(populated_jobs_dir),
+                check_health=True,
+            )
+
+        for req in captured:
+            assert req.get_header("Authorization") is None
 
     def test_health_check_failure(self, populated_jobs_dir: Path):
         """Failed health check sets healthy=False."""
@@ -800,6 +946,39 @@ class TestEngineConfig:
         config = build_litellm_config(endpoints)
         assert len(config["model_list"]) == 1
         assert config["model_list"][0]["model_name"] == "model-a"
+
+    def test_build_config_uses_endpoint_api_key(self):
+        """Endpoint api_key flows through to litellm_params; absent → 'not-needed'."""
+        from sparkrun.proxy.discovery import DiscoveredEndpoint
+        from sparkrun.proxy.engine import build_litellm_config
+
+        endpoints = [
+            DiscoveredEndpoint(
+                cluster_id="sparkrun_auth",
+                model="Org/Authed",
+                served_model_name=None,
+                runtime="vllm",
+                host="10.0.0.5",
+                port=8000,
+                healthy=True,
+                actual_models=["Org/Authed"],
+                api_key="sk-upstream",
+            ),
+            DiscoveredEndpoint(
+                cluster_id="sparkrun_open",
+                model="Org/Open",
+                served_model_name=None,
+                runtime="vllm",
+                host="10.0.0.6",
+                port=8000,
+                healthy=True,
+                actual_models=["Org/Open"],
+            ),
+        ]
+
+        config = build_litellm_config(endpoints)
+        keys = {m["model_name"]: m["litellm_params"]["api_key"] for m in config["model_list"]}
+        assert keys == {"Org/Authed": "sk-upstream", "Org/Open": "not-needed"}
 
     def test_build_config_deduplicates(self):
         """Same model on same host:port is deduplicated."""

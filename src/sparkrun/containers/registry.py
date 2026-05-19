@@ -13,12 +13,13 @@ import subprocess
 logger = logging.getLogger(__name__)
 
 
-def pull_image(image: str, dry_run: bool = False) -> int:
+def pull_image(image: str, dry_run: bool = False, required: bool = True) -> int:
     """Pull a container image from a registry.
 
     Args:
         image: Image reference to pull (e.g. ``"nvcr.io/nvidia/vllm:latest"``).
         dry_run: If True, show what would be done without executing.
+        required: If False, suppress error output since this isn't "required"
 
     Returns:
         Exit code (0 = success).
@@ -34,7 +35,10 @@ def pull_image(image: str, dry_run: bool = False) -> int:
         text=True,
     )
     if result.returncode != 0:
-        logger.error("Failed to pull image %s: %s", image, result.stderr[:200])
+        if required:
+            logger.error("Failed to pull image %s: %s", image, result.stderr[:200])
+        else:
+            logger.info("[NON-CRITICAL] Failed to pull image %s: %s", image, result.stderr[:200])
     return result.returncode
 
 
@@ -111,17 +115,40 @@ def get_image_id(image: str) -> str | None:
     return get_image_identity(image)[0]
 
 
-def ensure_image(image: str, dry_run: bool = False) -> int:
+def ensure_image(image: str, dry_run: bool = False, force_pull: bool = False) -> int:
     """Ensure an image exists locally, pulling if needed.
 
     Args:
         image: Image reference.
         dry_run: If True, show what would be done without executing.
+        force_pull: If True, force pull even if it exists locally.
 
     Returns:
         Exit code (0 = success).
     """
-    if image_exists_locally(image):
+    # if force_pull, then we pull regardless of local presence or tag; failure to pull on explicit force_pull is an error
+    if force_pull:
+        logger.info("Force pull requested for image: %s", image)
+        return pull_image(image, dry_run=dry_run)
+
+    # latest if explicit ":latest" or no tag AND can be tied to registry (has slash)
+    is_latest = "/" in image and (image.endswith(":latest") or ":" not in image)
+    exists_locally = image_exists_locally(image)
+
+    # if image exists and uses latest tag, then we can opportunistically pull it but not failure mode without force_pull
+    if exists_locally and is_latest:
+        logger.info("Image uses 'latest' tag, attempting non-critical pull: %s", image)
+        attempt = pull_image(image, dry_run=dry_run, required=False)
+        if attempt == 0:
+            logger.info("Fresh Image pulled: %s", image)
+        else:
+            logger.warning("Failed to pull updated image: %s", image)
+        return 0
+
+    # if otherwise image exists and not force_pull, then we're happy
+    if exists_locally:
         logger.info("Image already available: %s", image)
         return 0
+
+    # otherwise, we need to pull
     return pull_image(image, dry_run=dry_run)

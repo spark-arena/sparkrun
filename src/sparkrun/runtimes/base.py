@@ -166,6 +166,21 @@ class RuntimePlugin(Plugin):
         """
         return self.runtime_name
 
+    # noinspection PyMethodMayBeStatic,PyUnusedLocal
+    def resolve_api_key(
+        self,
+        recipe: Recipe,
+        overrides: dict[str, Any] | None = None,
+    ) -> str | None:
+        """Return the upstream API key the proxy should use to reach this runtime, or None.
+
+        Base implementation returns ``None``.  Runtimes that accept an
+        api-key on their serve command (e.g. vLLM's ``--api-key``) should
+        override this to surface the configured value so proxy discovery
+        can health-check the endpoint and register it with litellm.
+        """
+        return None
+
     def generate_node_command(
         self,
         recipe: Recipe,

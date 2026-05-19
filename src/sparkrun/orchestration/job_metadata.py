@@ -17,6 +17,7 @@ import yaml
 
 if TYPE_CHECKING:
     from sparkrun.core.recipe import Recipe
+    from sparkrun.runtimes.base import RuntimePlugin
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +181,7 @@ def save_job_metadata(
     recipe_ref: str | None = None,
     runtime_info: dict[str, str] | None = None,
     container_image: Optional[str] = None,
+    runtime: "RuntimePlugin | None" = None,
 ) -> None:
     """Persist job metadata so ``cluster status`` can display recipe info.
 
@@ -229,6 +231,18 @@ def save_job_metadata(
         served_name = recipe.defaults.get("served_model_name")
     if served_name is not None:
         meta["served_model_name"] = str(served_name)
+
+    # Resolve upstream API key via the runtime plugin so proxy discovery
+    # can authenticate to the inference endpoint.  Runtimes that don't
+    # support api-keys return None from resolve_api_key().
+    if runtime is not None:
+        try:
+            api_key = runtime.resolve_api_key(recipe, overrides)
+        except Exception:
+            logger.debug("resolve_api_key failed for %s", cluster_id, exc_info=True)
+            api_key = None
+        if api_key:
+            meta["api_key"] = str(api_key)
 
     if ib_ip_map:
         meta["ib_ip_map"] = ib_ip_map

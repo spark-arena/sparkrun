@@ -220,11 +220,19 @@ def fetch_safetensors_size(
     revision: str | None = None,
     cache_dir: str | None = None,
 ) -> int | None:
-    """Fetch total parameter storage size from safetensors index metadata.
+    """Fetch total parameter storage size from safetensors metadata.
 
-    Downloads only the small ``model.safetensors.index.json`` file, which
-    contains a ``metadata.total_size`` field giving the total bytes of all
-    parameter tensors on disk.
+    Only consults metadata endpoints — never downloads weight files.  In
+    order of preference:
+
+    1. ``model.safetensors.index.json`` (small file) plus ``list_repo_tree``
+       LFS sizes for sharded models.
+    2. ``list_repo_tree`` for the size of a single ``model.safetensors`` file.
+    3. The HuggingFace ``model_info`` API for per-dtype byte counts.
+
+    The ``model_info`` per-dtype counts can be inaccurate for packed quant
+    formats, so the raw LFS file size from ``list_repo_tree`` is preferred
+    when available.
 
     Args:
         model_id: HuggingFace model identifier.
@@ -246,6 +254,10 @@ def fetch_safetensors_size(
             hub_kwargs["revision"] = revision
         if cache_dir:
             hub_kwargs["cache_dir"] = _hub_cache(cache_dir)
+
+        tree_kwargs: dict[str, Any] = {"repo_id": model_id}
+        if revision:
+            tree_kwargs["revision"] = revision
 
         _SAFETENSORS_DTYPE_BYTES: dict[str, int] = {
             "F64": 8,
@@ -303,9 +315,6 @@ def fetch_safetensors_size(
                 try:
                     from huggingface_hub import list_repo_tree
 
-                    tree_kwargs: dict[str, Any] = {"repo_id": model_id}
-                    if revision:
-                        tree_kwargs["revision"] = revision
                     file_total = 0
                     matched = 0
                     for entry in list_repo_tree(**tree_kwargs):
@@ -333,60 +342,32 @@ def fetch_safetensors_size(
         except Exception as e:
             logger.debug("safetensors index failed for %s: %s", model_id, e)
 
-        # Try 2: single-file model — read safetensors header for total param size
+        # Try 2: list_repo_tree for single-file model.safetensors size.
+        # Metadata-only LFS lookup — no weight files are downloaded.  Preferred
+        # over the model_info API because the on-disk file size reflects packed
+        # quant formats (e.g. NVFP4) accurately, whereas the API's per-dtype
+        # counts can mis-report for non-standard dtypes.
         try:
-            import os
+            from huggingface_hub import list_repo_tree
 
-            disable_progress_bars()
-            try:
-                sf_path = hf_hub_download(**hub_kwargs, filename="model.safetensors")
-            finally:
-                enable_progress_bars()
-            # safetensors header: first 8 bytes = header size (u64 LE),
-            # then JSON header with tensor metadata including shape/dtype
-            import struct
-
-            with open(sf_path, "rb") as f:
-                header_size = struct.unpack("<Q", f.read(8))[0]
-                header = json.loads(f.read(header_size))
-
-            total_bytes = 0
-            for key, info in header.items():
-                if key == "__metadata__":
-                    continue
-                shape = info.get("shape", [])
-                dtype = info.get("dtype", "")
-                elem_size = _SAFETENSORS_DTYPE_BYTES.get(dtype, 2)
-                num_elements = 1
-                for dim in shape:
-                    num_elements *= dim
-                total_bytes += num_elements * elem_size
-            if total_bytes > 0:
-                return total_bytes
+            for entry in list_repo_tree(**tree_kwargs):
+                if hasattr(entry, "rfilename") and entry.rfilename == "model.safetensors":
+                    if entry.size and entry.size > 0:
+                        logger.debug(
+                            "Using single-file size %d from list_repo_tree for %s",
+                            entry.size,
+                            model_id,
+                        )
+                        return int(entry.size)
+                    break
         except Exception as e:
-            logger.debug("safetensors header parse failed for %s: %s", model_id, e)
+            logger.debug("list_repo_tree single-file lookup failed for %s: %s", model_id, e)
 
-        # Try 3: API per-dtype for models without index or header
+        # Try 3: API per-dtype as a last resort when LFS metadata is unavailable.
         api_bytes = _compute_api_bytes()
         if api_bytes is not None:
             logger.debug("Got %d bytes from model_info API for %s", api_bytes, model_id)
             return api_bytes
-
-        # Try 4: fall back to file size as rough approximation
-        try:
-            import os
-
-            disable_progress_bars()
-            try:
-                sf_path = hf_hub_download(**hub_kwargs, filename="model.safetensors")
-            finally:
-                enable_progress_bars()
-            size = os.path.getsize(sf_path)
-            if size > 0:
-                logger.debug("Using file size as param size estimate for %s", model_id)
-                return size
-        except Exception as e:
-            logger.debug("safetensors file size fallback failed for %s: %s", model_id, e)
 
     except Exception as e:
         logger.debug("Could not fetch safetensors size for %s: %s", model_id, e)
