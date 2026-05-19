@@ -39,6 +39,28 @@ class VllmMixin:
         cmds["vllm"] = "python3 -c 'import vllm; print(vllm.__version__)' 2>/dev/null || echo unknown"
         return cmds
 
+    def resolve_api_key(
+        self,
+        recipe: "Recipe",
+        overrides: dict | None = None,
+    ) -> str | None:
+        """Resolve the vLLM ``--api-key`` value for proxy/discovery use.
+
+        Checks, in order: CLI override, ``defaults.api_key`` placeholder,
+        and ``env.VLLM_API_KEY``.  Returns ``None`` when none are set.
+        """
+        if overrides:
+            val = overrides.get("api_key")
+            if val:
+                return str(val)
+        val = recipe.defaults.get("api_key")
+        if val:
+            return str(val)
+        val = recipe.env.get("VLLM_API_KEY")
+        if val:
+            return str(val)
+        return None
+
     def detect_spec_config_draft_model(self, recipe: "Recipe") -> str | None:
         try:
             # TODO: support various ways that speculative config can be specified

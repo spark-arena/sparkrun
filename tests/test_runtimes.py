@@ -204,6 +204,83 @@ def test_vllm_cluster_env():
     assert env["RAY_memory_monitor_refresh_ms"] == "0"
 
 
+# --- resolve_api_key Tests ---
+
+
+def test_base_resolve_api_key_returns_none():
+    """Base RuntimePlugin returns None — runtimes opt in by overriding."""
+
+    class _Stub(RuntimePlugin):
+        runtime_name = "stub"
+
+        def generate_command(self, *args, **kwargs):
+            return ""
+
+    recipe = Recipe.from_dict({"name": "r", "model": "m", "runtime": "stub", "defaults": {"api_key": "abc"}})
+    assert _Stub().resolve_api_key(recipe) is None
+
+
+def test_vllm_resolve_api_key_from_defaults():
+    """defaults.api_key is the recommended source."""
+    recipe = Recipe.from_dict(
+        {
+            "name": "r",
+            "model": "m",
+            "runtime": "vllm",
+            "defaults": {"api_key": "sk-default"},
+        }
+    )
+    assert VllmRayRuntime().resolve_api_key(recipe) == "sk-default"
+    assert VllmDistributedRuntime().resolve_api_key(recipe) == "sk-default"
+
+
+def test_vllm_resolve_api_key_from_env():
+    """env.VLLM_API_KEY is honored when defaults.api_key is absent."""
+    recipe = Recipe.from_dict(
+        {
+            "name": "r",
+            "model": "m",
+            "runtime": "vllm",
+            "env": {"VLLM_API_KEY": "sk-env"},
+        }
+    )
+    assert VllmRayRuntime().resolve_api_key(recipe) == "sk-env"
+
+
+def test_vllm_resolve_api_key_overrides_take_priority():
+    """CLI override beats defaults and env."""
+    recipe = Recipe.from_dict(
+        {
+            "name": "r",
+            "model": "m",
+            "runtime": "vllm",
+            "defaults": {"api_key": "sk-default"},
+            "env": {"VLLM_API_KEY": "sk-env"},
+        }
+    )
+    assert VllmRayRuntime().resolve_api_key(recipe, {"api_key": "sk-cli"}) == "sk-cli"
+
+
+def test_vllm_resolve_api_key_defaults_beat_env():
+    """defaults.api_key takes precedence over env.VLLM_API_KEY."""
+    recipe = Recipe.from_dict(
+        {
+            "name": "r",
+            "model": "m",
+            "runtime": "vllm",
+            "defaults": {"api_key": "sk-default"},
+            "env": {"VLLM_API_KEY": "sk-env"},
+        }
+    )
+    assert VllmRayRuntime().resolve_api_key(recipe) == "sk-default"
+
+
+def test_vllm_resolve_api_key_none_when_unset():
+    """Returns None when no api_key is configured anywhere."""
+    recipe = Recipe.from_dict({"name": "r", "model": "m", "runtime": "vllm"})
+    assert VllmRayRuntime().resolve_api_key(recipe) is None
+
+
 # --- SglangRuntime Tests ---
 
 
