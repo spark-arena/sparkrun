@@ -936,7 +936,8 @@ class TestDistributeModelFromLocal:
         from sparkrun.models.distribute import distribute_model_from_local
 
         failed = distribute_model_from_local("org/model", ["h1", "h2"])
-        assert failed == ["h1", "h2"]
+        assert [f.host for f in failed] == ["h1", "h2"]
+        assert all("download" in f.reason for f in failed)
         mock_rsync.assert_not_called()
 
     @mock.patch("sparkrun.models.distribute.run_rsync_parallel")
@@ -950,7 +951,27 @@ class TestDistributeModelFromLocal:
         from sparkrun.models.distribute import distribute_model_from_local
 
         failed = distribute_model_from_local("org/model", ["h1", "h2"])
-        assert failed == ["h2"]
+        assert [f.host for f in failed] == ["h2"]
+
+    @mock.patch("sparkrun.models.distribute.run_rsync_parallel")
+    @mock.patch("sparkrun.models.distribute.download_model")
+    def test_out_of_space_failure_is_classified(self, mock_dl, mock_rsync):
+        """Issue #168: rsync 'No space left on device' is classified clearly."""
+        mock_dl.return_value = 0
+        mock_rsync.return_value = [
+            RemoteResult(
+                host="h2",
+                returncode=11,
+                stdout="",
+                stderr='rsync: [receiver] write failed on "/path": No space left on device (28)',
+            ),
+        ]
+        from sparkrun.models.distribute import distribute_model_from_local
+
+        failed = distribute_model_from_local("org/model", ["h2"])
+        assert len(failed) == 1
+        assert failed[0].host == "h2"
+        assert "disk space" in failed[0].reason
 
     @mock.patch("sparkrun.models.distribute.run_rsync_parallel")
     @mock.patch("sparkrun.models.distribute.download_model")
@@ -1019,7 +1040,7 @@ class TestDistributeModelFromLocal:
             ["mgmt1", "mgmt2"],
             transfer_hosts=["10.0.0.1", "10.0.0.2"],
         )
-        assert failed == ["mgmt2"]
+        assert [f.host for f in failed] == ["mgmt2"]
 
 
 class TestDistributeModelFromHead:
@@ -1072,7 +1093,7 @@ class TestDistributeModelFromHead:
         from sparkrun.models.distribute import distribute_model_from_head
 
         failed = distribute_model_from_head("org/model", ["head", "w1"])
-        assert failed == ["head", "w1"]
+        assert [f.host for f in failed] == ["head", "w1"]
 
     @mock.patch("sparkrun.orchestration.ssh.run_remote_script_streaming")
     def test_distribute_fails(self, mock_run):
@@ -1084,7 +1105,7 @@ class TestDistributeModelFromHead:
         from sparkrun.models.distribute import distribute_model_from_head
 
         failed = distribute_model_from_head("org/model", ["head", "w1", "w2"])
-        assert set(failed) == {"w1", "w2"}
+        assert {f.host for f in failed} == {"w1", "w2"}
 
     def test_empty_hosts(self):
         from sparkrun.models.distribute import distribute_model_from_head
@@ -1384,8 +1405,10 @@ class TestDistributeModelPush:
     @mock.patch("sparkrun.models.distribute.distribute_model_from_head")
     @mock.patch("sparkrun.models.distribute.distribute_model_from_local")
     def test_head_push_fails(self, mock_local, mock_head):
-        """If push to head fails, all hosts are returned as failed."""
-        mock_local.return_value = ["head"]
+        """If push to head fails, all hosts are returned as failed with the head's classified reason."""
+        from sparkrun.orchestration.transfer import TransferFailure
+
+        mock_local.return_value = [TransferFailure(host="head", reason="out of disk space on destination")]
         from sparkrun.orchestration.distribution import _distribute_model_push
 
         failed = _distribute_model_push(
@@ -1396,7 +1419,11 @@ class TestDistributeModelPush:
             ssh_kwargs={},
             dry_run=False,
         )
-        assert failed == ["head", "w1"]
+        assert [f.host for f in failed] == ["head", "w1"]
+        # Head's classified reason propagates to all targets so the
+        # final user-facing error mentions disk space rather than a
+        # bare host name.
+        assert all("disk space" in f.reason for f in failed)
         mock_head.assert_not_called()
 
 

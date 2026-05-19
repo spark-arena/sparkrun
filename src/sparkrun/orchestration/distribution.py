@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.orchestration.comm_env import ClusterCommEnv
     from sparkrun.orchestration.infiniband import IBDetectionResult
+    from sparkrun.orchestration.transfer import TransferFailure
     from sparkrun.core.recipe import Recipe
 
 logger = logging.getLogger(__name__)
@@ -274,7 +275,7 @@ def _distribute_model_push(
     hf_token: str | None = None,
     dry_run: bool = False,
     local_cache_dir: str | None = None,
-) -> list[str]:
+) -> list["TransferFailure"]:
     """Push-mode model distribution: local → head, then head → workers via IB.
 
     1. Download model locally and rsync to head over management network.
@@ -282,10 +283,11 @@ def _distribute_model_push(
        workers over IB.
 
     Returns:
-        List of hostnames where distribution failed.
+        List of :class:`TransferFailure` records (empty = full success).
     """
     from sparkrun.models.distribute import distribute_model_from_local
     from sparkrun.models.distribute import distribute_model_from_head
+    from sparkrun.orchestration.transfer import TransferFailure
 
     head = hosts[0]
 
@@ -303,11 +305,15 @@ def _distribute_model_push(
     )
     if head_failed:
         logger.error("Push mode: failed to push model to head %s", head)
-        return list(hosts)
+        # Propagate the head-rsync classification to all hosts so the
+        # final error message still tells the user *why* (e.g. out of
+        # disk space) rather than just listing every host.
+        head_reason = head_failed[0].reason
+        return [TransferFailure(host=h, reason=head_reason) for h in hosts]
 
     # Step 2: if workers, distribute from head to workers
     if len(hosts) > 1:
-        worker_failed = distribute_model_from_head(
+        return distribute_model_from_head(
             model,
             hosts,
             cache_dir=cache_dir,
@@ -317,7 +323,6 @@ def _distribute_model_push(
             dry_run=dry_run,
             **ssh_kwargs,
         )
-        return worker_failed
 
     return []
 
@@ -633,7 +638,9 @@ def distribute_resources(
                 )
 
         if mdl_failed:
-            raise DistributionError("Model distribution failed on: %s" % ", ".join(mdl_failed))
+            from sparkrun.orchestration.transfer import format_transfer_failures
+
+            raise DistributionError("Model distribution failed: %s" % format_transfer_failures(mdl_failed))
 
     logger.info("Distribution complete.")
     return comm_env, ib_ip_map, mgmt_ip_map
@@ -822,7 +829,9 @@ def distribute_from_config(
                     _auto_delegated,
                 )
             if mdl_failed:
-                raise DistributionError("Model distribution failed on: %s" % ", ".join(mdl_failed))
+                from sparkrun.orchestration.transfer import format_transfer_failures
+
+                raise DistributionError("Model distribution failed: %s" % format_transfer_failures(mdl_failed))
 
     logger.info("Distribution complete.")
     return comm_env, ib_ip_map, mgmt_ip_map
@@ -908,9 +917,13 @@ def _distribute_single_model(
     hf_token: str | None,
     dry_run: bool,
     auto_delegated: bool,
-) -> list[str]:
-    """Distribute a single model to a subset of hosts."""
+) -> list["TransferFailure"]:
+    """Distribute a single model to a subset of hosts.
+
+    Returns the classified per-host failures; empty list means success.
+    """
     from sparkrun.models.distribute import distribute_model_from_local, distribute_model_from_head
+    from sparkrun.orchestration.transfer import TransferFailure
 
     # Position-aligned subset (see _subset_transfer_hosts docstring).
     target_set = set(targets)
@@ -943,7 +956,8 @@ def _distribute_single_model(
             **ssh_kwargs,
         )
         if head_failed:
-            return list(targets)
+            head_reason = head_failed[0].reason
+            return [TransferFailure(host=h, reason=head_reason) for h in targets]
         if len(targets) > 1:
             return distribute_model_from_head(
                 model,
