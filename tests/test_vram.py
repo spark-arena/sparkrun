@@ -787,8 +787,41 @@ class TestFetchSafetensorsSizeOrder:
         assert result == 20_000_000_000  # index total_size
         assert api_called == []  # API not called when index succeeds
 
-    def test_api_used_when_no_index(self):
-        """API should work when index file is unavailable."""
+    def test_list_repo_tree_preferred_over_api_for_single_file(self):
+        """list_repo_tree LFS size preferred over model_info API (more accurate
+        for packed quant formats).
+        """
+        api_called = []
+
+        def _fake_model_info(**kwargs):
+            api_called.append(1)
+            return _FakeModelInfo(safetensors=None)
+
+        class _Entry:
+            def __init__(self, rfilename, size):
+                self.rfilename = rfilename
+                self.size = size
+
+        tree = [
+            _Entry("config.json", 1024),
+            _Entry("model.safetensors", 17_500_000_000),
+            _Entry("tokenizer.json", 2048),
+        ]
+
+        with (
+            mock.patch("huggingface_hub.model_info", side_effect=_fake_model_info),
+            mock.patch("huggingface_hub.list_repo_tree", return_value=iter(tree)),
+            mock.patch("huggingface_hub.hf_hub_download", side_effect=Exception("no index")),
+            mock.patch("huggingface_hub.utils.disable_progress_bars"),
+            mock.patch("huggingface_hub.utils.enable_progress_bars"),
+        ):
+            result = fetch_safetensors_size("org/single-file-model")
+
+        assert result == 17_500_000_000
+        assert api_called == []  # API not called when tree size succeeds
+
+    def test_api_used_when_no_index_and_no_tree(self):
+        """API is the last-resort metadata source when list_repo_tree yields nothing."""
         st_info = _FakeSafeTensorsInfo(
             parameters={"BF16": 7_000_000_000},
             total=7_000_000_000,
@@ -797,6 +830,7 @@ class TestFetchSafetensorsSizeOrder:
 
         with (
             mock.patch("huggingface_hub.model_info", return_value=mi),
+            mock.patch("huggingface_hub.list_repo_tree", return_value=iter([])),
             mock.patch("huggingface_hub.hf_hub_download", side_effect=Exception("not found")),
             mock.patch("huggingface_hub.utils.disable_progress_bars"),
             mock.patch("huggingface_hub.utils.enable_progress_bars"),
@@ -805,3 +839,46 @@ class TestFetchSafetensorsSizeOrder:
 
         # BF16 = 2 bytes per element → 7B * 2 = 14B bytes
         assert result == 14_000_000_000
+
+    def test_no_weight_file_download_when_index_missing(self):
+        """Regression for #186: missing index must not trigger model.safetensors download.
+
+        For quantized single-file models (e.g. NVFP4) without an
+        ``index.json``, falling through to ``hf_hub_download(model.safetensors)``
+        would download many GB of weights just to read a header, hanging the
+        CLI.  Only ``model.safetensors.index.json`` is an acceptable file
+        download from this function.
+        """
+        downloaded: list[str] = []
+
+        def _fake_download(**kwargs):
+            downloaded.append(kwargs.get("filename", ""))
+            raise FileNotFoundError("no index here")
+
+        class _Entry:
+            def __init__(self, rfilename, size):
+                self.rfilename = rfilename
+                self.size = size
+
+        tree = [
+            _Entry("config.json", 1024),
+            _Entry("model.safetensors", 17_500_000_000),
+        ]
+
+        st_info = _FakeSafeTensorsInfo(
+            parameters={"F8_E4M3": 35_000_000_000},
+            total=35_000_000_000,
+        )
+        mi = _FakeModelInfo(safetensors=st_info)
+
+        with (
+            mock.patch("huggingface_hub.model_info", return_value=mi),
+            mock.patch("huggingface_hub.list_repo_tree", return_value=iter(tree)),
+            mock.patch("huggingface_hub.hf_hub_download", side_effect=_fake_download),
+            mock.patch("huggingface_hub.utils.disable_progress_bars"),
+            mock.patch("huggingface_hub.utils.enable_progress_bars"),
+        ):
+            result = fetch_safetensors_size("org/nvfp4-single-file")
+
+        assert result == 17_500_000_000  # LFS size from tree, not API params
+        assert downloaded == ["model.safetensors.index.json"]
