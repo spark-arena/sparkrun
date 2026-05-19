@@ -13,12 +13,13 @@ import subprocess
 logger = logging.getLogger(__name__)
 
 
-def pull_image(image: str, dry_run: bool = False) -> int:
+def pull_image(image: str, dry_run: bool = False, required: bool = True) -> int:
     """Pull a container image from a registry.
 
     Args:
         image: Image reference to pull (e.g. ``"nvcr.io/nvidia/vllm:latest"``).
         dry_run: If True, show what would be done without executing.
+        required: If False, suppress error output since this isn't "required"
 
     Returns:
         Exit code (0 = success).
@@ -34,7 +35,10 @@ def pull_image(image: str, dry_run: bool = False) -> int:
         text=True,
     )
     if result.returncode != 0:
-        logger.error("Failed to pull image %s: %s", image, result.stderr[:200])
+        if required:
+            logger.error("Failed to pull image %s: %s", image, result.stderr[:200])
+        else:
+            logger.info("[NON-CRITICAL] Failed to pull image %s: %s", image, result.stderr[:200])
     return result.returncode
 
 
@@ -127,13 +131,14 @@ def ensure_image(image: str, dry_run: bool = False, force_pull: bool = False) ->
         logger.info("Force pull requested for image: %s", image)
         return pull_image(image, dry_run=dry_run)
 
-    is_latest = image.endswith(":latest") or ":" not in image  # latest if explicit ":latest" or no tag
+    # latest if explicit ":latest" or no tag AND can be tied to registry (has slash)
+    is_latest = "/" in image and (image.endswith(":latest") or ":" not in image)
     exists_locally = image_exists_locally(image)
 
     # if image exists and uses latest tag, then we can opportunistically pull it but not failure mode without force_pull
     if exists_locally and is_latest:
         logger.info("Image uses 'latest' tag, attempting non-critical pull: %s", image)
-        attempt = pull_image(image, dry_run=dry_run)
+        attempt = pull_image(image, dry_run=dry_run, required=False)
         if attempt == 0:
             logger.info("Fresh Image pulled: %s", image)
         else:
