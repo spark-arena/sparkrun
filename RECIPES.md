@@ -209,7 +209,23 @@ Any key can appear in `defaults` — there is no fixed schema. Runtime-specific 
 
 ## Executor Config
 
-Controls container engine behavior. Layered: **CLI flags → recipe `executor_config` → built-in defaults**.
+Controls how the workload is launched. Layered:
+**CLI flags → recipe `executor` / `executor_config` → runtime defaults → `SparkrunConfig` → per-executor defaults → dataclass field defaults.**
+
+### Selecting an executor
+
+The `executor:` field picks which executor backend handles the launch. See
+[`docs/EXECUTORS.md`](docs/EXECUTORS.md) for the full reference.
+
+```yaml
+executor: docker      # default. Docker-driven (production path).
+# executor: local     # experimental. Native subprocess. No container.
+# executor: k8s       # experimental draft. kubectl run-driven.
+```
+
+Recipes that omit `executor:` fall back to whatever `SparkrunConfig.default_executor` is, then to `docker`.
+
+### Docker executor fields (default)
 
 ```yaml
 executor_config:
@@ -227,10 +243,72 @@ executor_config:
 | `ipc`            | string | `"host"`    | `--ipc`        | IPC namespace                                                                                                       |
 | `shm_size`       | string | `"10.24gb"` | `--shm-size`   | Shared memory size                                                                                                  |
 | `network`        | string | `"host"`    | `--network`    | Network mode                                                                                                        |
+| `user`           | string | `null`      | `--user`       | UID:GID or `$SHELL_USER` (auto: `$(id -u):$(id -g)` + mount passwd/group)                                           |
+| `security_opt`   | list   | `null`      | `--security-opt` | Repeated. Defaults to `[no-new-privileges]` in rootless mode.                                                     |
+| `cap_add`        | list   | `null`      | `--cap-add`    | Repeated.                                                                                                           |
+| `ulimit`         | list   | `null`      | `--ulimit`     | Repeated. Rootless adds `memlock=-1:-1`, `stack=67108864`.                                                           |
+| `devices`        | list   | `null`      | `--device`     | Repeated. Rootless adds `/dev/infiniband`.                                                                          |
+| `memory_limit`   | string | `null`      | `--memory`     | Container memory cap.                                                                                               |
+| `labels`         | list   | `null`      | `--label`      | Repeated.                                                                                                           |
+
+### LocalExecutor fields (experimental, `executor: local`)
+
+`LocalExecutor` runs the runtime's serve command as a native subprocess on the
+target host — there is no Docker container in the loop. **Limitations**: no
+image, no volumes, no Ray strategy, GPU visibility only honors `gpus: all` or
+`gpus: device=0,2`.
+
+```yaml
+executor: local
+executor_config:
+  working_dir: /opt/myproject
+  log_dir: /var/log/sparkrun
+  pid_dir: /var/run/sparkrun
+  env_file: /etc/sparkrun.env
+  command_prefix: nice -n 10
+  gpus: "device=0,2"            # → CUDA_VISIBLE_DEVICES=0,2
+```
+
+| Key              | Default                                        | Description                                                                       |
+|------------------|------------------------------------------------|-----------------------------------------------------------------------------------|
+| `working_dir`    | `null`                                         | `cd <working_dir>` before launch.                                                 |
+| `log_dir`        | `$HOME/.cache/sparkrun/local/logs`             | Per-container `<log_dir>/<container_name>.log`.                                   |
+| `log_file`       | `null`                                         | Overrides `<log_dir>/...` entirely.                                               |
+| `pid_dir`        | `$HOME/.cache/sparkrun/local/pids`             | Per-container `<pid_dir>/<container_name>.pid`.                                   |
+| `pid_file`       | `null`                                         | Overrides `<pid_dir>/...` entirely.                                               |
+| `env_file`       | `null`                                         | Sourced via `set -a; . <env_file>; set +a` before launch.                         |
+| `command_prefix` | `null`                                         | Prepended verbatim (e.g. `nice -n 10 ionice -c2`).                                |
+
+### K8sExecutor fields (experimental draft, `executor: k8s`)
+
+`K8sExecutor` launches workloads as Kubernetes Pods via `kubectl run`. **Limitations**:
+`kubectl run` (not full manifests) so init containers / sidecars / volume claims
+are unreachable; Docker-specific options (`privileged`, `shm_size`, `ipc`,
+`network`) are silently dropped; no Ray cluster strategy.
+
+```yaml
+executor: k8s
+executor_config:
+  k8s_namespace: ml-prod
+  k8s_context: prod-east
+  k8s_node_selector: nodepool=dgx-spark
+  k8s_image_pull_policy: IfNotPresent
+  kubeconfig: /etc/k8s/admin.conf
+  memory_limit: 128Gi
+```
+
+| Key                      | Default | Description                                                                                          |
+|--------------------------|---------|------------------------------------------------------------------------------------------------------|
+| `k8s_namespace`          | `null`  | `kubectl -n <ns>`.                                                                                   |
+| `k8s_context`            | `null`  | `kubectl --context <ctx>`.                                                                           |
+| `k8s_node_selector`      | `null`  | `key=value[,key=value]`. Emitted as `--overrides` JSON.                                              |
+| `k8s_image_pull_policy`  | `null`  | `--image-pull-policy`.                                                                               |
+| `kubeconfig`             | `null`  | `--kubeconfig`.                                                                                      |
 
 **CLI override:** `sparkrun run --no-rm --restart always my-recipe`
 
-All runtimes automatically inherit executor settings — no per-runtime changes needed.
+All runtimes automatically inherit executor settings — no per-runtime changes
+needed.
 
 ---
 
@@ -249,6 +327,21 @@ All runtimes automatically inherit executor settings — no per-runtime changes 
 8. post_commands                    — on CONTROL MACHINE
 9. [stop_after_post]                — optional auto-stop
 ```
+
+### Trust model
+
+`pre_exec`, `post_exec`, and `post_commands` execute shell commands derived
+from the recipe. A recipe is **trusted** (hooks run without prompting) when
+any of these hold:
+
+- the user passed `--trust` on the CLI;
+- the recipe was loaded from a **local path** (no `source_registry`);
+- the recipe came from one of the **default registries** (`@official`,
+  `@sparkrun-transitional`, `@community`).
+
+Otherwise the user is prompted before each hook surface runs. See
+[`docs/SECURITY.md`](docs/SECURITY.md) for the full trust model and the list
+of privileged recipe fields that are **not** allowlisted by trust gating.
 
 ### pre_exec
 
