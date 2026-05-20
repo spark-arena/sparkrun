@@ -74,6 +74,19 @@ class HostHardware:
     notes: str = ""
     """Free-form notes for users (e.g. ``"manually configured"`` or ``"detected 2026-05-14"``)."""
 
+    ib_info: dict | None = None
+    """Raw InfiniBand detection results from the combined probe script.
+
+    Populated by :func:`sparkrun.core.hardware_probe.probe_host` when both
+    the accelerator fingerprint and IB detection run in a single SSH
+    round-trip.  ``None`` when hardware was loaded from a cluster YAML file
+    or constructed without an IB probe.
+
+    .. todo::
+        Convert to a proper dataclass (``IbProbeResult``) in a follow-up
+        once the dict shape has stabilised across all callers.
+    """
+
     @property
     def total_gpus(self) -> int:
         """Total accelerator count across all ``accelerators`` entries."""
@@ -95,6 +108,8 @@ class HostHardware:
             d["fingerprint"] = self.fingerprint
         if self.notes:
             d["notes"] = self.notes
+        # ib_info is intentionally not serialised to YAML — it is ephemeral
+        # probe data, not stored cluster metadata.
         return d
 
     @classmethod

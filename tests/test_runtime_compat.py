@@ -202,3 +202,216 @@ def test_assert_runtime_cluster_compatibility_no_op_when_compatible():
     cluster = ClusterDefinition(name="dgx", hosts=["s1"])
     # Should not raise.
     assert_runtime_cluster_compatibility(_UnrestrictedRuntime(), cluster)
+
+
+# --------------------------------------------------------------------------
+# Launcher-level compatibility gate (A4)
+# --------------------------------------------------------------------------
+
+
+def _make_launch_monkeypatches(monkeypatch, tmp_path):
+    """Apply the standard set of no-op monkeypatches used for launch_inference tests."""
+    from sparkrun.core import launcher
+
+    monkeypatch.setattr(
+        "sparkrun.orchestration.distribution.resolve_auto_transfer_mode",
+        lambda *a, **kw: type("R", (), {"mode": "local"})(),
+    )
+    monkeypatch.setattr(
+        "sparkrun.orchestration.distribution.distribute_from_config",
+        lambda *a, **kw: (None, {}, {}),
+    )
+    monkeypatch.setattr(
+        "sparkrun.orchestration.job_metadata.save_job_metadata",
+        lambda *a, **kw: None,
+    )
+    monkeypatch.setattr(
+        "sparkrun.orchestration.job_metadata.generate_cluster_id",
+        lambda *a, **kw: "sparkrun_testabc12345",
+    )
+    monkeypatch.setattr(
+        "sparkrun.orchestration.primitives.build_ssh_kwargs",
+        lambda *a, **kw: {},
+    )
+    monkeypatch.setattr(
+        launcher,
+        "resolve_effective_cache_dir",
+        lambda *a, **kw: str(tmp_path),
+    )
+    monkeypatch.setattr("sparkrun.orchestration.primitives.try_clear_page_cache", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        "sparkrun.orchestration.executor.resolve_executor",
+        lambda **kw: type("Ex", (), {})(),
+    )
+
+
+class _StubRuntime:
+    """Minimal RuntimePlugin-ish stub for launcher-level compatibility tests."""
+
+    runtime_name = "stub"
+    requires_capability: frozenset = frozenset()
+    run_called: bool = False
+
+    def is_delegating_runtime(self):
+        return False
+
+    def resolve_container(self, recipe, overrides=None):
+        return "stub:latest"
+
+    def prepare(self, *args, **kwargs):
+        return None
+
+    def get_head_container_name(self, cluster_id, is_solo=False):
+        return "%s_solo" % cluster_id
+
+    def generate_command(self, **kwargs):
+        return "echo serve"
+
+    def resolve_api_key(self, recipe, overrides=None):
+        return None
+
+    def _collect_runtime_info(self, *args, **kwargs):
+        return {}
+
+    def run(self, **kwargs):
+        type(self).run_called = True
+        return 0
+
+
+class _CudaOnlyStubRuntime(_StubRuntime):
+    runtime_name = "cuda-only-stub"
+    requires_capability = frozenset({"cuda"})
+
+
+class _FakeConfig:
+    def __init__(self, tmp_path):
+        self.hf_cache_dir = tmp_path / "hf"
+        self.cache_dir = tmp_path / "cache"
+
+    def get_registry_manager(self):
+        return None
+
+
+class _FakeRecipe:
+    runtime = "stub"
+    model = "stub-model"
+    env = {}
+    builder = None
+    mods = []
+    source_registry = None
+    source_registry_url = None
+    defaults = {"port": 8000}
+    pre_exec = []
+    post_exec = []
+    post_commands = []
+    layout = None
+    stop_after_post = False
+    executor = ""
+    executor_config = None
+    qualified_name = "stub-recipe"
+    name = "stub-recipe"
+    container = "stub:latest"
+    model_revision = None
+
+    def build_config_chain(self, overrides=None):
+        class _CC:
+            def get(self, k, default=None):
+                return (overrides or {}).get(k, {"port": 8000}.get(k, default))
+
+        return _CC()
+
+
+def test_launcher_blocks_incompatible_host_before_run(monkeypatch, tmp_path):
+    """launch_inference raises IncompatibleHardwareError before runtime.run() for incompatible hardware."""
+    from sparkrun.core.launcher import launch_inference
+    from sparkrun.runtimes.compatibility import IncompatibleHardwareError
+
+    _make_launch_monkeypatches(monkeypatch, tmp_path)
+
+    runtime = _CudaOnlyStubRuntime()
+    _CudaOnlyStubRuntime.run_called = False
+
+    # AMD host without "cuda" capability
+    amd_hw = _hw("amd", "mi300x", caps=frozenset({"rocm"}))
+    cluster = ClusterDefinition(
+        name="amd-cluster",
+        hosts=["amd-box"],
+        hosts_hardware={"amd-box": amd_hw},
+    )
+
+    with pytest.raises(IncompatibleHardwareError) as ei:
+        launch_inference(
+            recipe=_FakeRecipe(),
+            runtime=runtime,
+            host_list=["amd-box"],
+            overrides={},
+            config=_FakeConfig(tmp_path),
+            cluster=cluster,
+            is_solo=True,
+            dry_run=True,
+            sync_tuning=False,
+        )
+
+    err = ei.value
+    assert err.runtime_name == "cuda-only-stub"
+    assert any("cuda" in e for e in err.errors)
+    # runtime.run() must NOT have been called
+    assert not _CudaOnlyStubRuntime.run_called
+
+
+def test_launcher_allows_compatible_hosts(monkeypatch, tmp_path):
+    """launch_inference succeeds (no exception) when all hosts satisfy runtime requirements."""
+    from sparkrun.core.launcher import launch_inference
+
+    _make_launch_monkeypatches(monkeypatch, tmp_path)
+
+    runtime = _CudaOnlyStubRuntime()
+    _CudaOnlyStubRuntime.run_called = False
+
+    nvidia_hw = _hw("nvidia", "gb10", caps=frozenset({"cuda"}))
+    cluster = ClusterDefinition(
+        name="nvidia-cluster",
+        hosts=["nv-box"],
+        hosts_hardware={"nv-box": nvidia_hw},
+    )
+
+    result = launch_inference(
+        recipe=_FakeRecipe(),
+        runtime=runtime,
+        host_list=["nv-box"],
+        overrides={},
+        config=_FakeConfig(tmp_path),
+        cluster=cluster,
+        is_solo=True,
+        dry_run=True,
+        sync_tuning=False,
+    )
+
+    assert result.rc == 0
+    assert _CudaOnlyStubRuntime.run_called
+
+
+def test_launcher_skips_check_when_hardware_unknown(monkeypatch, tmp_path):
+    """When cluster is None (--hosts / --hosts-file bypass), the compatibility gate is skipped."""
+    from sparkrun.core.launcher import launch_inference
+
+    _make_launch_monkeypatches(monkeypatch, tmp_path)
+
+    runtime = _CudaOnlyStubRuntime()
+    _CudaOnlyStubRuntime.run_called = False
+
+    # No cluster supplied — fingerprint data unavailable, gate must not crash.
+    result = launch_inference(
+        recipe=_FakeRecipe(),
+        runtime=runtime,
+        host_list=["unknown-host"],
+        overrides={},
+        config=_FakeConfig(tmp_path),
+        cluster=None,
+        is_solo=True,
+        dry_run=True,
+        sync_tuning=False,
+    )
+
+    assert result.rc == 0
+    assert _CudaOnlyStubRuntime.run_called

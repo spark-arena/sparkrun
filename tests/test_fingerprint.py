@@ -220,12 +220,23 @@ def test_compute_fingerprint_hash_empty_is_stable():
 
 
 def test_fingerprint_host_success(monkeypatch):
-    """fingerprint_host wires SSH stdout into the parser pipeline."""
+    """fingerprint_host delegates to probe_host and parses combined output."""
     from sparkrun.core import fingerprint as fp_mod
+    from sparkrun.core.hardware_probe import _ACCEL_END, _ACCEL_START, _IB_END, _IB_START
+
+    # Wrap the legacy stub output in combined-probe sentinels so the
+    # new combined parser can locate the accelerator section.
+    combined_stdout = "%s\n%s\n%s\n%s\nIB_DETECTED=0\n%s" % (
+        _ACCEL_START,
+        _probe_dgx_spark().strip(),
+        _ACCEL_END,
+        _IB_START,
+        _IB_END,
+    )
 
     class _Result:
         success = True
-        stdout = _probe_dgx_spark()
+        stdout = combined_stdout
         stderr = ""
 
     def _fake_run(host, script, timeout=None, **kwargs):
@@ -253,4 +264,5 @@ def test_fingerprint_host_failure_returns_empty_with_note(monkeypatch):
     monkeypatch.setattr("sparkrun.orchestration.ssh.run_remote_script", _fake_run)
     hw = fp_mod.fingerprint_host("dead-host")
     assert hw.accelerators == []
-    assert "fingerprint probe failed" in hw.notes
+    # fingerprint_host now delegates to probe_host — note text reflects that
+    assert "probe failed" in hw.notes

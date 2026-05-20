@@ -383,6 +383,25 @@ def launch_inference(
     # empty dict means runtimes fall back to the legacy resolve_ib_env path.
     backends = resolve_per_host_backends(host_list, cluster=cluster)
 
+    # Pre-placement compatibility gate: verify the runtime can target every
+    # placed host before any side effects (container pull, model sync, etc.).
+    # Skipped when no cluster hardware is available (e.g. --hosts / --hosts-file
+    # bypass, or a host without fingerprint data); a missing hardware entry in
+    # ClusterDefinition.hardware_for() falls back to DGX Spark defaults, so
+    # only runtimes with requires_capability constraints are affected.
+    if cluster is not None and runtime.requires_capability:
+        from sparkrun.runtimes.compatibility import (
+            IncompatibleHardwareError,
+            check_runtime_host_compatibility,
+        )
+
+        compat_errors: list[str] = []
+        for host in host_list:
+            hw = cluster.hardware_for(host)
+            compat_errors.extend(check_runtime_host_compatibility(runtime, host, hw))
+        if compat_errors:
+            raise IncompatibleHardwareError(runtime.runtime_name, compat_errors)
+
     # Save job metadata
     if not dry_run:
         try:

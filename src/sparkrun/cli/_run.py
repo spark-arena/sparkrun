@@ -9,6 +9,7 @@ from typing import Any
 import click
 
 from sparkrun.orchestration.distribution import DistributionError
+from sparkrun.runtimes.compatibility import IncompatibleHardwareError
 
 from ._common import (
     RECIPE_NAME,
@@ -238,21 +239,6 @@ def run(
     if recipe.mode == "cluster" and is_solo and not solo:
         click.echo("Warning: Recipe requires cluster mode but only one host specified", err=True)
 
-    # Pre-flight: refuse if the runtime can't safely target a placed host
-    # (e.g. Atlas/eugr against non-GB10 hardware).  Skipped when the user
-    # bypassed the cluster registry via --hosts / --hosts-file.
-    if cluster_def is not None and not is_solo:
-        from sparkrun.runtimes.compatibility import (
-            IncompatibleHardwareError,
-            assert_runtime_cluster_compatibility,
-        )
-
-        try:
-            assert_runtime_cluster_compatibility(runtime, cluster_def)
-        except IncompatibleHardwareError as e:
-            click.echo("Error: %s" % e, err=True)
-            sys.exit(1)
-
     # --ensure: check if job is already running, exit 0 if so
     if ensure:
         from sparkrun.orchestration.job_metadata import check_job_running as _check_job, generate_cluster_id
@@ -420,6 +406,14 @@ def run(
             trust=trust,
         )
     except DistributionError as e:
+        if diag:
+            diag.phase_end("launch", error=str(e))
+            diag.emit_error("launch", e)
+            diag.emit_summary()
+            diag.close()
+        click.echo("Error: %s" % e, err=True)
+        sys.exit(1)
+    except IncompatibleHardwareError as e:
         if diag:
             diag.phase_end("launch", error=str(e))
             diag.emit_error("launch", e)
