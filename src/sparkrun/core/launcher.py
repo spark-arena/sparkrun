@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from sparkrun.core.backend_select import BackendBundle
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.core.context import SparkrunContext
     from sparkrun.core.progress import LaunchProgress
@@ -46,6 +47,15 @@ class LaunchResult:
     serve_command: str = ""
     runtime_info: dict[str, str] = field(default_factory=dict)
     builder: BuilderPlugin | None = None
+    backends: dict[str, "BackendBundle"] = field(default_factory=dict)
+    """Per-host backend bundles resolved from fingerprint/hardware metadata.
+
+    Populated when at least one host's hardware resolved cleanly through
+    :func:`sparkrun.core.backend_select.select_backends`.  Empty dict
+    when no resolution was performed (e.g. caller bypassed cluster
+    threading) — runtimes then fall back to the legacy
+    :func:`resolve_ib_env` path.
+    """
 
 
 def resolve_recipe_trust(recipe: Recipe, trust_cli: bool) -> bool:
@@ -115,6 +125,48 @@ def resolve_effective_cache_dir(
         return probe_remote_hf_cache(head, dry_run=dry_run, **ssh_kwargs)
 
     return str(config.hf_cache_dir)
+
+
+def resolve_per_host_backends(
+    host_list: list[str],
+    cluster=None,
+) -> dict[str, "BackendBundle"]:
+    """Resolve a :class:`BackendBundle` per host via :func:`select_backends`.
+
+    For each host in *host_list*, calls
+    :meth:`ClusterDefinition.hardware_for` (or defaults to DGX Spark
+    when *cluster* is ``None``) and routes the result through
+    :func:`sparkrun.core.backend_select.select_backends`.
+
+    Hosts whose hardware fails to resolve a backend (unknown vendor,
+    multi-vendor host, etc.) are silently skipped: runtimes fall back
+    to the legacy :func:`resolve_ib_env` path for those hosts.  This
+    keeps the cluster-launch surface live for partial-vendor coverage
+    rather than failing-fast on a single bad fingerprint.
+
+    Args:
+        host_list: Resolved cluster hosts.
+        cluster: Optional :class:`ClusterDefinition` carrying per-host
+            hardware metadata.
+
+    Returns:
+        Mapping host -> :class:`BackendBundle`.  Empty dict when no
+        host resolved successfully (e.g. all-Apple or all-CPU cluster).
+    """
+    from sparkrun.core.backend_select import NoMatchingBackendError, select_backends
+    from sparkrun.core.hardware import default_dgx_spark_hardware
+
+    backends: dict[str, BackendBundle] = {}
+    for host in host_list:
+        if cluster is not None:
+            hw = cluster.hardware_for(host)
+        else:
+            hw = default_dgx_spark_hardware()
+        try:
+            backends[host] = select_backends(hw)
+        except NoMatchingBackendError as e:
+            logger.debug("No backend resolved for host %s: %s", host, e)
+    return backends
 
 
 def launch_inference(
@@ -326,6 +378,11 @@ def launch_inference(
         if p:
             p.phase_skip(2, "no builder")
 
+    # Resolve per-host backends from cluster hardware (or DGX Spark default).
+    # Used by NCCL/RCCL/HCCL env emission inside the cluster orchestrator;
+    # empty dict means runtimes fall back to the legacy resolve_ib_env path.
+    backends = resolve_per_host_backends(host_list, cluster=cluster)
+
     # Save job metadata
     if not dry_run:
         try:
@@ -338,6 +395,7 @@ def launch_inference(
                 recipe_ref=recipe_ref,
                 container_image=container_image,
                 runtime=runtime,
+                backends=backends,
             )
         except Exception:
             logger.debug("Failed to save job metadata: %s", cluster_id, exc_info=True)
@@ -388,6 +446,7 @@ def launch_inference(
                     mgmt_ip_map=mgmt_ip_map,
                     recipe_ref=recipe_ref,
                     runtime=runtime,
+                    backends=backends,
                 )
             except Exception:
                 logger.debug("Failed to update job metadata: %s", cluster_id, exc_info=True)
@@ -530,6 +589,7 @@ def launch_inference(
         progress=progress,
         extra_docker_opts=extra_docker_opts,
         cluster=cluster,
+        backends=backends or None,
         trust=recipe_trusted,
         **run_kwargs,
     )
@@ -586,6 +646,7 @@ def launch_inference(
                         runtime_info=runtime_info,
                         container_image=container_image,
                         runtime=runtime,
+                        backends=backends,
                     )
                 except Exception:
                     logger.debug("Failed to save runtime_info to job metadata", exc_info=True)
@@ -610,6 +671,7 @@ def launch_inference(
         serve_command=serve_command,
         runtime_info=runtime_info,
         builder=builder,
+        backends=backends,
     )
 
 

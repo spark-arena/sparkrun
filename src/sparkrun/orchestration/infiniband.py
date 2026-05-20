@@ -9,10 +9,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from sparkrun.orchestration.comm_env import ClusterCommEnv
 from sparkrun.scripts import read_script
 from sparkrun.utils import parse_kv_output
+
+if TYPE_CHECKING:
+    from sparkrun.core.backend_select import BackendBundle
 
 logger = logging.getLogger(__name__)
 
@@ -334,6 +338,7 @@ def detect_ib_for_hosts(
     ssh_kwargs: dict | None = None,
     dry_run: bool = False,
     topology: str | None = None,
+    backends: "dict[str, BackendBundle] | None" = None,
 ) -> IBDetectionResult:
     """Run IB detection on all hosts and return aggregated results.
 
@@ -345,6 +350,13 @@ def detect_ib_for_hosts(
         hosts: Management hostnames/IPs.
         ssh_kwargs: SSH connection parameters.
         dry_run: Log without executing.
+        topology: Optional cluster topology hint (e.g. ``"ring"``).
+        backends: Optional per-host :class:`BackendBundle`.  When
+            provided, each host's env block is produced by
+            ``backends[host].collective.env_for_host(ib_info, topology=...)``.
+            Hosts missing from *backends* fall back to the legacy
+            :func:`generate_nccl_env` (NCCL) path.  When *backends* is
+            ``None`` every host uses the legacy path.
 
     Returns:
         :class:`IBDetectionResult` with NCCL env and IB IP mapping.
@@ -377,8 +389,14 @@ def detect_ib_for_hosts(
             continue
         ib_info = parse_ib_detect_output(result.stdout)
 
-        # Per-host comm env (so heterogeneous socket interfaces work)
-        host_env = generate_nccl_env(ib_info, topology=topology)
+        # Per-host comm env: route through backend when provided so
+        # NCCL/RCCL/HCCL hosts emit the right env block.  Hosts missing
+        # from *backends* (or all hosts when *backends* is None) use the
+        # legacy NCCL generator — byte-identical to NcclBackend on NVIDIA.
+        if backends is not None and result.host in backends:
+            host_env = backends[result.host].collective.env_for_host(ib_info, topology=topology)
+        else:
+            host_env = generate_nccl_env(ib_info, topology=topology)
         if host_env:
             per_host_env[result.host] = host_env
             if result.host == head_host:

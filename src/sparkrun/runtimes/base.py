@@ -10,6 +10,7 @@ from typing import Any, TYPE_CHECKING
 from scitrera_app_framework import Plugin, Variables, ext_parse_bool
 
 if TYPE_CHECKING:
+    from sparkrun.core.backend_select import BackendBundle
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.core.recipe import Recipe
     from sparkrun.orchestration.comm_env import ClusterCommEnv
@@ -243,6 +244,105 @@ class RuntimePlugin(Plugin):
         can health-check the endpoint and register it with litellm.
         """
         return None
+
+    @staticmethod
+    def _resolve_master_addr(
+        head_ip: str,
+        node_rank: int,
+        replica_size: int,
+        hosts: list[str] | None = None,
+        placement=None,
+    ) -> str:
+        """Resolve the master-address for *node_rank* under hybrid tp+dp.
+
+        For pure DP (``replica_size == 1``) or pure TP (``replica_size ==
+        num_nodes``) this always returns *head_ip*.  For hybrid tp+dp
+        clusters, the master-addr points at the *first* host of the
+        current node's data-parallel replica (rank
+        ``dp_rank * replica_size``).
+
+        Resolution priority for the replica head:
+
+        1. ``placement.host_for_rank(dp_rank * replica_size)`` when a
+           placement object is supplied (multi-rank-per-host topologies).
+        2. ``hosts[dp_rank * replica_size]`` when a host list is supplied
+           (1-GPU-per-host topologies).
+        3. *head_ip* as final fallback (unit-test / solo paths).
+
+        Args:
+            head_ip: The cluster head node IP.
+            node_rank: Global rank for this node.
+            replica_size: ``tp * pp`` — number of ranks per DP replica.
+                Pass ``1`` when no replica grouping applies.
+            hosts: Optional list of hosts ordered by rank.
+            placement: Optional :class:`RankAssignment` from the
+                placement engine.
+        """
+        if replica_size <= 0:
+            replica_size = 1
+        dp_rank = node_rank // replica_size
+        if placement is not None and placement.total_ranks >= (dp_rank + 1) * replica_size:
+            return placement.host_for_rank(dp_rank * replica_size)
+        if hosts and len(hosts) >= (dp_rank + 1) * replica_size:
+            return hosts[dp_rank * replica_size]
+        return head_ip
+
+    def _make_node_command_args(
+        self,
+        head_ip: str,
+        num_nodes: int,
+        node_rank: int,
+        init_port: int,
+        hosts: list[str] | None = None,
+        placement=None,
+        replica_size: int = 1,
+    ) -> dict[str, str]:
+        """Return the canonical per-node distributed-init arg dict.
+
+        Computes the four values every native multi-node runtime needs
+        when emitting a node-specific serve command:
+
+        * ``num_nodes`` — total participating nodes (``--nnodes`` /
+          ``--world-size``).
+        * ``node_rank`` — this node's rank within the cluster (or within
+          its DP replica when *replica_size* > 1).
+        * ``master_addr`` — the rendezvous host for *node_rank* (see
+          :meth:`_resolve_master_addr`).
+        * ``master_port`` — the rendezvous port.
+
+        Runtimes layer their own flag spelling on top — e.g. SGLang emits
+        ``--dist-init-addr HOST:PORT`` + ``--nnodes`` + ``--node-rank``;
+        vLLM-distributed emits ``--nnodes`` + ``--node-rank`` +
+        ``--master-addr`` + ``--master-port``; Atlas emits ``--world-size``
+        + ``--rank`` + ``--master-addr`` + ``--master-port``.
+
+        Args:
+            head_ip: The cluster head node IP (fallback master_addr).
+            num_nodes: Total node count.  When *replica_size* > 1, this
+                stays as the *global* node count; callers wanting the
+                intra-replica nnodes pass *replica_size* explicitly via
+                the returned dict's ``num_nodes`` value-override pattern.
+            node_rank: Global rank for this node.
+            init_port: Master coordination port.
+            hosts: Optional host list (1-GPU-per-host topologies).
+            placement: Optional :class:`RankAssignment`.
+            replica_size: ``tp * pp`` when hybrid tp+dp is in play; the
+                value used to compute the per-replica master address.
+                Pass ``1`` (default) for pure DP / pure TP.
+        """
+        master_addr = self._resolve_master_addr(
+            head_ip=head_ip,
+            node_rank=node_rank,
+            replica_size=replica_size,
+            hosts=hosts,
+            placement=placement,
+        )
+        return {
+            "num_nodes": str(num_nodes),
+            "node_rank": str(node_rank),
+            "master_addr": master_addr,
+            "master_port": str(init_port),
+        }
 
     def generate_node_command(
         self,
@@ -738,6 +838,7 @@ class RuntimePlugin(Plugin):
         skip_keys: set[str] | frozenset[str] = frozenset(),
         executor: Executor | None = None,
         extra_docker_opts: list[str] | None = None,
+        backends: "dict[str, BackendBundle] | None" = None,
         trust: bool = False,
         **kwargs,
     ) -> int:
@@ -770,6 +871,13 @@ class RuntimePlugin(Plugin):
                 the pre-built *serve_command*).
             executor: Container executor (defaults to DockerExecutor).
             extra_docker_opts: Additional docker run arguments (e.g., ports).
+            backends: Optional per-host :class:`BackendBundle` map (one
+                entry per host in *hosts*).  When provided, the cluster
+                orchestrator uses ``backends[host].collective.env_for_host``
+                to emit NCCL/RCCL/HCCL env vars; ``None`` keeps the
+                legacy :func:`sparkrun.runtimes._cluster_ops.resolve_ib_env`
+                behaviour for back-compat with callers that haven't
+                threaded backends through yet.
             trust: When True, suppress the interactive confirmation
                 prompt for recipe-defined ``pre_exec`` hooks.  Resolved
                 upstream by :func:`sparkrun.core.launcher.resolve_recipe_trust`
@@ -805,6 +913,7 @@ class RuntimePlugin(Plugin):
                 overrides=overrides,
                 progress=progress,
                 extra_docker_opts=extra_docker_opts,
+                backends=backends,
                 trust=trust,
                 # TODO: kwargs?
             )
@@ -825,6 +934,7 @@ class RuntimePlugin(Plugin):
             skip_keys=skip_keys,
             progress=progress,
             extra_docker_opts=extra_docker_opts,
+            backends=backends,
             trust=trust,
             **kwargs,
         )
@@ -909,6 +1019,7 @@ class RuntimePlugin(Plugin):
         overrides: dict[str, Any] | None = None,
         progress=None,
         extra_docker_opts: list[str] | None = None,
+        backends: "dict[str, BackendBundle] | None" = None,
         trust: bool = False,
     ) -> int:
         """Launch a single-node inference workload.
@@ -917,6 +1028,14 @@ class RuntimePlugin(Plugin):
         1. Detect InfiniBand on the target host (optional).
         2. Launch container with ``sleep infinity``.
         3. Execute the serve command inside the container.
+
+        The optional *backends* mapping is accepted for API symmetry
+        with :meth:`_run_cluster` but isn't consumed: solo IB detection
+        already routes the head host's NCCL env through
+        :func:`detect_infiniband` (NCCL output) which is byte-identical
+        to ``backends[host].collective.env_for_host`` for NVIDIA hosts.
+        Non-NVIDIA solo launches would need to convert *backends* into
+        an explicit env block — out of scope for this back-compat shim.
         """
         import time
         from sparkrun.orchestration.primitives import (
@@ -1205,6 +1324,7 @@ class RuntimePlugin(Plugin):
         node_label: str = "node",
         progress=None,
         extra_docker_opts: list[str] | None = None,
+        backends: "dict[str, BackendBundle] | None" = None,
         trust: bool = False,
         **kwargs,
     ) -> int:
@@ -1277,6 +1397,7 @@ class RuntimePlugin(Plugin):
             follow=kwargs.get("follow", True),
             progress=progress,
             extra_docker_opts=extra_docker_opts,
+            backends=backends,
             trust=trust,
         )
 

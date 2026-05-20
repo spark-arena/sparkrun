@@ -453,11 +453,13 @@ class TrtllmRuntime(RuntimePlugin):
             ClusterContext,
             cleanup_ranked_containers,
             launch_containers_parallel,
+            resolve_comm_env,
             resolve_ib_env,
         )
 
         progress = kwargs.pop("progress", None)
         cluster = kwargs.pop("cluster", None)
+        backends = kwargs.pop("backends", None)
 
         ctx = ClusterContext.build(
             self,
@@ -500,7 +502,13 @@ class TrtllmRuntime(RuntimePlugin):
             progress.step("Detecting InfiniBand")
         else:
             logger.info("Step 2/7: InfiniBand detection...")
-        comm_env = resolve_ib_env(ctx, comm_env)
+        # New path uses CollectiveBackend.env_for_host via backends; the
+        # deprecated resolve_ib_env wrapper is kept for one release for
+        # callers that haven't threaded backends through.
+        if backends is not None:
+            comm_env = resolve_comm_env(ctx, comm_env, backends=backends)
+        else:
+            comm_env = resolve_ib_env(ctx, comm_env)
         logger.info("Step 2/7: IB step done (%.1fs)", time.monotonic() - t0)
 
         # Step 3: Detect management IPs on all hosts

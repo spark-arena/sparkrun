@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, TYPE_CHECKING
 
-from sparkrun.runtimes._util import default_env_hf_offline, parse_api_key_from_command
+from sparkrun.runtimes._util import default_env_hf_offline, resolve_api_key
 from sparkrun.runtimes.base import RuntimePlugin
 
 if TYPE_CHECKING:
@@ -64,26 +64,10 @@ class SglangRuntime(RuntimePlugin):
     ) -> str | None:
         """Resolve the SGLang ``--api-key`` value for proxy/discovery use.
 
-        Checks, in order: CLI override, ``defaults.api_key`` (also
-        emitted as ``--api-key`` via :data:`_SGLANG_FLAG_MAP` for
-        structured commands), ``env.SGLANG_API_KEY``, and finally a
-        literal ``--api-key`` flag parsed from the recipe's ``command``
-        field.  Returns ``None`` when none are set.
+        Delegates to :func:`sparkrun.runtimes._util.resolve_api_key` with
+        ``env_var="SGLANG_API_KEY"`` and ``flag_name="--api-key"``.
         """
-        if overrides:
-            val = overrides.get("api_key")
-            if val:
-                return str(val)
-        val = recipe.defaults.get("api_key")
-        if val:
-            return str(val)
-        val = recipe.env.get("SGLANG_API_KEY")
-        if val:
-            return str(val)
-        parsed = parse_api_key_from_command(recipe.command)
-        if parsed:
-            return parsed
-        return None
+        return resolve_api_key(recipe, overrides, "SGLANG_API_KEY", "--api-key")
 
     def prepare(
         self,
@@ -193,12 +177,24 @@ class SglangRuntime(RuntimePlugin):
         else:
             base = self._build_base_command(recipe, config, skip_keys=skip_keys)
 
-        # Append sglang multi-node arguments
+        # Canonical distributed-init args (sglang has a flat topology —
+        # no DP replica grouping at this layer — so replica_size=1).
+        node_args = self._make_node_command_args(
+            head_ip=head_ip,
+            num_nodes=num_nodes,
+            node_rank=node_rank,
+            init_port=init_port,
+            hosts=hosts,
+            placement=placement,
+        )
+
+        # Append sglang multi-node arguments.  SGLang combines master_addr
+        # and master_port into a single --dist-init-addr HOST:PORT flag.
         parts = [
             base,
-            "--dist-init-addr %s:%d" % (head_ip, init_port),
-            "--nnodes %d" % num_nodes,
-            "--node-rank %d" % node_rank,
+            "--dist-init-addr %s:%s" % (node_args["master_addr"], node_args["master_port"]),
+            "--nnodes %s" % node_args["num_nodes"],
+            "--node-rank %s" % node_args["node_rank"],
         ]
         return " ".join(parts)
 

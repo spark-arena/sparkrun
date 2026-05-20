@@ -16,6 +16,7 @@ from typing import Any, TYPE_CHECKING, Optional
 import yaml
 
 if TYPE_CHECKING:
+    from sparkrun.core.backend_select import BackendBundle
     from sparkrun.core.recipe import Recipe
     from sparkrun.runtimes.base import RuntimePlugin
 
@@ -182,11 +183,17 @@ def save_job_metadata(
     runtime_info: dict[str, str] | None = None,
     container_image: Optional[str] = None,
     runtime: "RuntimePlugin | None" = None,
+    backends: "dict[str, BackendBundle] | None" = None,
 ) -> None:
     """Persist job metadata so ``cluster status`` can display recipe info.
 
     Writes a small YAML file to ``{cache_dir}/jobs/{hash}.yaml`` where
     *hash* is the 12-char hex portion of *cluster_id*.
+
+    Args:
+        backends: Per-host backend bundles resolved by the launcher.
+            Persisted as ``{host: {vendor, backend}}`` so ``stop``/``logs``
+            can recover the collective backend without re-probing.
     """
     if cache_dir is None:
         from sparkrun.core.config import DEFAULT_CACHE_DIR
@@ -252,6 +259,14 @@ def save_job_metadata(
         meta["runtime_info"] = runtime_info
     if container_image:
         meta["effective_container_image"] = container_image
+
+    # Persist per-host backend bundle so stop/logs can recover collective
+    # backend selection without re-probing hardware.  Schema:
+    #   backends: { host: { vendor, backend } }
+    if backends:
+        meta["backends"] = {
+            host: {"vendor": bundle.accelerator_vendor, "backend": bundle.collective.name} for host, bundle in backends.items()
+        }
 
     # Persist executor selection so stop/logs can reproduce the same
     # executor (Docker vs experimental local) without re-running the
