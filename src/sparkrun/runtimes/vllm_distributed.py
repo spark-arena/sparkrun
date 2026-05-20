@@ -124,24 +124,27 @@ class VllmDistributedRuntime(VllmMixin, RuntimePlugin):
         p = extract_parallelism(config)
         replica_size = p.tensor_parallel * p.pipeline_parallel
         dp = p.data_parallel
+        if replica_size <= 0:
+            replica_size = 1  # defensive: tp or pp misconfigured as 0
 
         # Rank math — see CLAUDE.md / plan "Rank math" section.
         # When dp == 1 this collapses to node_rank = global rank, tp_master = head_ip.
-        if replica_size <= 0:
-            replica_size = 1  # defensive: tp or pp misconfigured as 0
         dp_rank = node_rank // replica_size
         intra_replica_rank = node_rank % replica_size
-        # Placement-aware lookup (Phase X threading) — accounts for
-        # multi-GPU hosts where ``ranks[dp_rank * replica_size]`` may
-        # share a host with adjacent ranks.  Falls back to the legacy
-        # ``hosts[i]`` indexing when no placement is threaded through.
-        if placement is not None and placement.total_ranks >= (dp_rank + 1) * replica_size:
-            tp_master_addr = placement.host_for_rank(dp_rank * replica_size)
-        elif hosts and len(hosts) >= (dp_rank + 1) * replica_size:
-            tp_master_addr = hosts[dp_rank * replica_size]
-        else:
-            # Fallback: no host list available (solo / unit tests).
-            tp_master_addr = head_ip
+
+        # Canonical distributed-init args.  We pass the *global* node_rank
+        # + replica_size so _resolve_master_addr can pick the correct
+        # replica head; the emitted --nnodes/--node-rank values below use
+        # the intra-replica numbers, not the global ones.
+        node_args = self._make_node_command_args(
+            head_ip=head_ip,
+            num_nodes=replica_size,
+            node_rank=node_rank,
+            init_port=init_port,
+            hosts=hosts,
+            placement=placement,
+            replica_size=replica_size,
+        )
 
         # If recipe has an explicit command template, render it
         rendered = recipe.render_command(config)
@@ -166,13 +169,15 @@ class VllmDistributedRuntime(VllmMixin, RuntimePlugin):
         parts = [base]
 
         # Torch-distributed coordination for cross-node tp/pp (intra-replica).
+        # ``node_args["node_rank"]`` is the *global* rank (used by
+        # _resolve_master_addr); --node-rank emits the intra-replica rank.
         if replica_size > 1:
             parts.extend(
                 [
-                    "--nnodes %d" % replica_size,
+                    "--nnodes %s" % node_args["num_nodes"],
                     "--node-rank %d" % intra_replica_rank,
-                    "--master-addr %s" % tp_master_addr,
-                    "--master-port %d" % init_port,
+                    "--master-addr %s" % node_args["master_addr"],
+                    "--master-port %s" % node_args["master_port"],
                 ]
             )
             if intra_replica_rank > 0:
@@ -195,50 +200,6 @@ class VllmDistributedRuntime(VllmMixin, RuntimePlugin):
             )
 
         return " ".join(parts)
-
-    def _build_base_command(self, recipe: Recipe, config, skip_keys: set[str] | frozenset[str] = frozenset()) -> str:
-        """Build the vllm serve command without cluster-specific arguments."""
-        parts = ["vllm", "serve", recipe.model]
-
-        tp = config.get("tensor_parallel")
-        if tp:
-            parts.extend(["-tp", str(tp)])
-
-        # Add flags from defaults (skip tp and distributed_executor_backend)
-        skip = {"tensor_parallel", "distributed_executor_backend"}
-        skip.update(skip_keys)
-        parts.extend(
-            self.build_flags_from_map(
-                config,
-                VLLM_FLAG_MAP,
-                bool_keys=VLLM_BOOL_FLAGS,
-                skip_keys=skip,
-            )
-        )
-
-        return " ".join(parts)
-
-    def _build_command(
-        self,
-        recipe: Recipe,
-        config,
-        is_cluster: bool,
-        num_nodes: int,
-        head_ip: str | None = None,
-        skip_keys: set[str] | frozenset[str] = frozenset(),
-    ) -> str:
-        """Build the vllm serve command from structured config.
-
-        For cluster mode, includes ``--nnodes``, ``--master-addr``, and
-        ``--master-port`` but NOT ``--node-rank`` (that is added per-node
-        by :meth:`generate_node_command`).
-        """
-        base = self._build_base_command(recipe, config, skip_keys=skip_keys)
-
-        if is_cluster and head_ip:
-            base += " --nnodes %d --master-addr %s --master-port 25000" % (num_nodes, head_ip)
-
-        return base
 
     def get_cluster_env(self, head_ip: str, num_nodes: int) -> dict[str, str]:
         """Return vLLM distributed-specific cluster environment variables.

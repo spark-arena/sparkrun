@@ -89,40 +89,14 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
             return rendered
 
         # Otherwise, build command from structured defaults
-        return self._build_command(recipe, config, is_cluster, num_nodes, skip_keys=skip_keys)
-
-    def _build_command(
-        self, recipe: Recipe, config, is_cluster: bool, num_nodes: int, skip_keys: set[str] | frozenset[str] = frozenset()
-    ) -> str:
-        """Build the vllm serve command from structured config."""
-        parts = ["vllm", "serve", recipe.model]
-
-        # Auto-inject cluster args
-        if is_cluster:
-            tp = config.get("tensor_parallel")
-            if tp:
-                parts.extend(["-tp", str(tp)])
-            parts.extend(["--distributed-executor-backend", "ray"])
-        else:
-            tp = config.get("tensor_parallel")
-            if tp:
-                parts.extend(["-tp", str(tp)])
-
-        # Add flags from defaults (skip tp since handled above)
-        skip = {"tensor_parallel"}
-        if is_cluster:
-            skip.add("distributed_executor_backend")
-        skip.update(skip_keys)
-        parts.extend(
-            self.build_flags_from_map(
-                config,
-                VLLM_FLAG_MAP,
-                bool_keys=VLLM_BOOL_FLAGS,
-                skip_keys=skip,
-            )
+        return self._build_command(
+            recipe,
+            config,
+            is_cluster,
+            num_nodes,
+            skip_keys=skip_keys,
+            cluster_backend="ray",
         )
-
-        return " ".join(parts)
 
     def get_cluster_env(self, head_ip: str, num_nodes: int) -> dict[str, str]:
         """Return ray vLLM-specific cluster environment variables."""
@@ -262,6 +236,7 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
         from sparkrun.runtimes._cluster_ops import (
             ClusterContext,
             cleanup_named_containers,
+            resolve_comm_env,
             resolve_ib_env,
             find_port,
             run_pre_serve_hooks,
@@ -271,6 +246,7 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
 
         progress = kwargs.pop("progress", None)
         cluster = kwargs.pop("cluster", None)
+        backends = kwargs.pop("backends", None)
         trust = kwargs.pop("trust", False)
         combined_docker_opts = (self.get_extra_docker_opts() or []) + (extra_docker_opts or [])
 
@@ -307,7 +283,14 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
             progress.step("Detecting InfiniBand")
         else:
             logger.info("Step 2/5: InfiniBand detection...")
-        comm_env = resolve_ib_env(ctx, comm_env)
+        # When the launcher resolved per-host backends, route through
+        # CollectiveBackend.env_for_host via resolve_comm_env; otherwise
+        # fall through to the deprecated legacy resolver for callers
+        # that haven't threaded backends yet.
+        if backends is not None:
+            comm_env = resolve_comm_env(ctx, comm_env, backends=backends)
+        else:
+            comm_env = resolve_ib_env(ctx, comm_env)
         logger.info("Step 2/5: IB step done (%.1fs)", time.monotonic() - t0)
 
         # Auto-detect available ports to avoid collisions with running instances

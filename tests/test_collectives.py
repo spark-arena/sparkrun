@@ -74,6 +74,34 @@ def test_nccl_backend_matches_legacy_generator():
     assert via_backend == legacy
 
 
+def test_nccl_backend_matches_resolve_ib_env_legacy():
+    """A1 back-compat contract: NcclBackend on a canonical NVIDIA+IB host
+    emits the exact env dict that ``resolve_ib_env`` would produce.
+
+    The legacy resolve_ib_env path routes detection output through
+    :func:`generate_nccl_env`, so for NVIDIA hosts both code paths
+    must produce a byte-identical env block.  Asserts both the *keys*
+    and *values* match — including every optional NCCL tunable
+    (HCA list, GID index, socket interface, UCX devices).
+    """
+    legacy_env = generate_nccl_env(_IB_DETECTED, topology=None)
+    new_env = get_backend("nvidia").env_for_host(_IB_DETECTED, topology=None)
+
+    # Sanity: legacy actually emits the expected NCCL tunables for this fixture.
+    assert legacy_env["NCCL_IB_HCA"] == _IB_DETECTED["DETECTED_HCA_LIST"]
+    assert legacy_env["NCCL_IB_GID_INDEX"] == _IB_DETECTED["DETECTED_GID_INDEX"]
+    assert "NCCL_SOCKET_IFNAME" in legacy_env  # head-of-list mgmt + IB nets
+    assert legacy_env["UCX_NET_DEVICES"] == _IB_DETECTED["DETECTED_UCX_LIST"]
+
+    # Byte-identical to the legacy generator
+    assert new_env == legacy_env
+    # Same key set (nothing dropped, nothing added)
+    assert set(new_env.keys()) == set(legacy_env.keys())
+    # Same values for every key
+    for k in legacy_env:
+        assert new_env[k] == legacy_env[k], "Parity mismatch on %s: legacy=%r backend=%r" % (k, legacy_env[k], new_env[k])
+
+
 def test_nccl_backend_ring_topology_matches_legacy():
     legacy = generate_nccl_env(_IB_DETECTED, topology="ring")
     via_backend = get_backend("nvidia").env_for_host(_IB_DETECTED, topology="ring")

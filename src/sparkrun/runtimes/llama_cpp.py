@@ -6,7 +6,7 @@ import logging
 from typing import Any, TYPE_CHECKING
 
 from sparkrun.core.config import SparkrunConfig
-from sparkrun.runtimes._util import parse_api_key_from_command
+from sparkrun.runtimes._util import resolve_api_key
 from sparkrun.runtimes.base import RuntimePlugin
 
 if TYPE_CHECKING:
@@ -93,26 +93,10 @@ class LlamaCppRuntime(RuntimePlugin):
     ) -> str | None:
         """Resolve the llama-server ``--api-key`` value for proxy/discovery use.
 
-        Checks, in order: CLI override, ``defaults.api_key`` (also
-        emitted as ``--api-key`` via :data:`_LLAMA_CPP_FLAG_MAP` for
-        structured commands), ``env.LLAMA_API_KEY``, and finally a
-        literal ``--api-key`` flag parsed from the recipe's ``command``
-        field.  Returns ``None`` when none are set.
+        Delegates to :func:`sparkrun.runtimes._util.resolve_api_key` with
+        ``env_var="LLAMA_API_KEY"`` and ``flag_name="--api-key"``.
         """
-        if overrides:
-            val = overrides.get("api_key")
-            if val:
-                return str(val)
-        val = recipe.defaults.get("api_key")
-        if val:
-            return str(val)
-        val = recipe.env.get("LLAMA_API_KEY")
-        if val:
-            return str(val)
-        parsed = parse_api_key_from_command(recipe.command)
-        if parsed:
-            return parsed
-        return None
+        return resolve_api_key(recipe, overrides, "LLAMA_API_KEY", "--api-key")
 
     # --- Parallelism helpers ---
 
@@ -475,6 +459,7 @@ class LlamaCppRuntime(RuntimePlugin):
 
         progress = kwargs.pop("progress", None)
         cluster = kwargs.pop("cluster", None)
+        backends = kwargs.pop("backends", None)
         trust = kwargs.pop("trust", False)
 
         ctx = ClusterContext.build(
@@ -519,7 +504,7 @@ class LlamaCppRuntime(RuntimePlugin):
             progress.step("Detecting InfiniBand")
         else:
             logger.info("Step 2/6: InfiniBand detection...")
-        comm_env, ib_ip_map = detect_ib_with_ips(ctx, comm_env, ib_ip_map)
+        comm_env, ib_ip_map = detect_ib_with_ips(ctx, comm_env, ib_ip_map, backends=backends)
         logger.info("Step 2/6: IB step done (%.1fs)", time.monotonic() - t0)
 
         # Resolve worker RPC addresses: prefer IB IPs for high-speed fabric

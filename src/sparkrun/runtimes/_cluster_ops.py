@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from sparkrun.core.backend_select import BackendBundle
     from sparkrun.core.cluster_manager import ClusterDefinition
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.core.placement import RankAssignment
@@ -234,16 +235,17 @@ def _refuse_unsupported_collectives(ctx: ClusterContext) -> None:
         ) from e
 
 
-def resolve_ib_env(
+def resolve_comm_env(
     ctx: ClusterContext,
     comm_env: ClusterCommEnv | None,
+    backends: "dict[str, BackendBundle] | None" = None,
 ) -> ClusterCommEnv:
     """Resolve the cluster comm env: reuse pre-detected or probe.
 
-    Returns a :class:`ClusterCommEnv` carrying both shared and
-    per-host inter-node comm env vars.  Per-host entries let
-    heterogeneous management interfaces (e.g. wired on the head, wifi
-    on a worker) each bind the correct ``*_SOCKET_IFNAME`` values.
+    Successor to :func:`resolve_ib_env`.  Emits per-host env via
+    ``backends[host].collective.env_for_host`` when *backends* is
+    supplied; otherwise falls back to the legacy NCCL generator
+    (byte-identical for NVIDIA hosts).
     """
     from sparkrun.orchestration.comm_env import ClusterCommEnv as _CCE
 
@@ -261,6 +263,70 @@ def resolve_ib_env(
         ssh_kwargs=ctx.ssh_kwargs,
         dry_run=ctx.dry_run,
         topology=ctx.topology,
+        backends=backends,
+    )
+    if ib_result.comm_env.is_empty():
+        logger.info("  No InfiniBand detected, using default networking")
+        return _CCE.empty()
+    return ib_result.comm_env
+
+
+def resolve_ib_env(
+    ctx: ClusterContext,
+    comm_env: ClusterCommEnv | None,
+    backends: "dict[str, BackendBundle] | None" = None,
+) -> ClusterCommEnv:
+    """Resolve the cluster comm env: reuse pre-detected or probe.
+
+    Returns a :class:`ClusterCommEnv` carrying both shared and
+    per-host inter-node comm env vars.  Per-host entries let
+    heterogeneous management interfaces (e.g. wired on the head, wifi
+    on a worker) each bind the correct ``*_SOCKET_IFNAME`` values.
+
+    .. deprecated::
+        Pass a ``backends`` mapping (per-host
+        :class:`~sparkrun.core.backend_select.BackendBundle`) and call
+        ``backends[host].collective.env_for_host(ib_info)`` directly —
+        see :func:`sparkrun.orchestration.infiniband.detect_ib_for_hosts`
+        which accepts *backends* natively.  This wrapper is kept for
+        one release so downstream callers continue to compile, but
+        will be removed thereafter.
+
+    Args:
+        ctx: Cluster context.
+        comm_env: Pre-detected comm env (skip probe if non-None).
+        backends: Optional per-host :class:`BackendBundle`.  When
+            provided, IB env vars are emitted via
+            ``backends[host].collective.env_for_host``; otherwise the
+            legacy NCCL generator is used (byte-identical for NVIDIA).
+    """
+    import warnings
+
+    warnings.warn(
+        "resolve_ib_env is deprecated; pass `backends` and call "
+        "CollectiveBackend.env_for_host via BackendBundle (see "
+        "sparkrun.orchestration.infiniband.detect_ib_for_hosts)",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
+    from sparkrun.orchestration.comm_env import ClusterCommEnv as _CCE
+
+    _refuse_unsupported_collectives(ctx)
+
+    if comm_env is not None:
+        logger.info("Using pre-detected comm env (%d vars)", len(comm_env))
+        return comm_env
+
+    from sparkrun.orchestration.infiniband import detect_ib_for_hosts
+
+    logger.info("Detecting InfiniBand on %d host(s)...", len(ctx.hosts))
+    ib_result = detect_ib_for_hosts(
+        ctx.hosts,
+        ssh_kwargs=ctx.ssh_kwargs,
+        dry_run=ctx.dry_run,
+        topology=ctx.topology,
+        backends=backends,
     )
     if ib_result.comm_env.is_empty():
         logger.info("  No InfiniBand detected, using default networking")
@@ -272,8 +338,18 @@ def detect_ib_with_ips(
     ctx: ClusterContext,
     comm_env: ClusterCommEnv | None,
     ib_ip_map: dict[str, str] | None,
+    backends: "dict[str, BackendBundle] | None" = None,
 ) -> tuple[ClusterCommEnv, dict[str, str]]:
     """Detect comm env and IP map (for runtimes needing IB addresses).
+
+    Args:
+        ctx: Cluster context.
+        comm_env: Pre-detected comm env (skip probe if non-None).
+        ib_ip_map: Pre-detected IB IPs (preserved if non-None).
+        backends: Optional per-host :class:`BackendBundle`.  When
+            provided, IB env vars are emitted through the host's
+            collective backend (NCCL/RCCL/HCCL); otherwise the legacy
+            NCCL generator is used (byte-identical for NVIDIA hosts).
 
     Returns ``(comm_env, ib_ip_map)``.
     """
@@ -295,6 +371,7 @@ def detect_ib_with_ips(
         ssh_kwargs=ctx.ssh_kwargs,
         dry_run=ctx.dry_run,
         topology=ctx.topology,
+        backends=backends,
     )
     return ib_result.comm_env, ib_result.ib_ip_map
 
@@ -507,6 +584,7 @@ def run_native_cluster(
     follow: bool = True,
     progress=None,
     extra_docker_opts: list[str] | None = None,
+    backends: "dict[str, BackendBundle] | None" = None,
     trust: bool = False,
 ) -> int:
     """Orchestrate a multi-node native cluster.
@@ -552,7 +630,7 @@ def run_native_cluster(
         progress.step("Detecting InfiniBand")
     else:
         logger.info("Step 2/7: InfiniBand detection...")
-    comm_env, ib_ip_map = detect_ib_with_ips(ctx, comm_env, ib_ip_map)
+    comm_env, ib_ip_map = detect_ib_with_ips(ctx, comm_env, ib_ip_map, backends=backends)
     logger.info("Step 2/7: IB step done (%.1fs)", time.monotonic() - t0)
 
     # Step 3: Detect head node IP
