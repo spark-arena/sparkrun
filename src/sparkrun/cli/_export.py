@@ -27,6 +27,10 @@ from ._common import (
     print_json,
 )
 
+# NOTE: _resolve_hosts_or_exit is retained in _export.py because the internal
+# helpers (_resolve_recipe_for_systemd, export_running) use it conditionally
+# and do not map cleanly to the @with_host_context decorator pattern.
+
 logger = logging.getLogger(__name__)
 
 

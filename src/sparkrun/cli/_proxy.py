@@ -10,7 +10,6 @@ from ._common import (
     RECIPE_NAME,
     _apply_recipe_overrides,
     _load_recipe,
-    _resolve_hosts_or_exit,
     dry_run_option,
     host_options,
     json_option,
@@ -18,6 +17,7 @@ from ._common import (
     recipe_override_options,
     resolve_cluster_config,
     validate_and_prepare_hosts,
+    with_host_context,
 )
 
 
@@ -508,6 +508,7 @@ def alias_list(output_json):
 @click.option("--solo", is_flag=True, help="Force single-node mode")
 @click.option("--port", type=int, default=None, help="Override serve port")
 @dry_run_option
+@with_host_context
 def load_cmd(
     recipe_name,
     hosts,
@@ -523,6 +524,8 @@ def load_cmd(
     solo,
     port,
     dry_run,
+    host_list=None,
+    cluster_mgr=None,
 ):
     """Load a model via sparkrun run and register with proxy.
 
@@ -571,9 +574,6 @@ def load_cmd(
     except ValueError as e:
         click.echo("Error: %s" % e, err=True)
         sys.exit(1)
-
-    # Resolve hosts
-    host_list, cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, sctx=sctx)
 
     # Node count validation, max_nodes enforcement, and solo mode determination
     host_list, is_solo = validate_and_prepare_hosts(host_list, recipe, overrides, runtime, solo=solo)

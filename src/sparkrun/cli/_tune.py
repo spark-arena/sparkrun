@@ -11,10 +11,10 @@ from ._common import (
     RECIPE_NAME,
     _get_context,
     _load_recipe,
-    _resolve_hosts_or_exit,
     dry_run_option,
     host_options,
     resolve_cluster_config,
+    with_host_context,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,6 +37,7 @@ def tune(ctx):
 @click.option("--parallel", "-j", type=int, default=1, help="Run N tuning jobs concurrently (default: 1 = sequential)")
 @dry_run_option
 @click.pass_context
+@with_host_context
 def tune_sglang(
     ctx,
     recipe_name,
@@ -50,6 +51,8 @@ def tune_sglang(
     parallel,
     dry_run,
     config_path=None,
+    host_list=None,
+    cluster_mgr=None,
 ):
     """Tune SGLang fused MoE Triton kernels for DGX Spark.
 
@@ -87,8 +90,7 @@ def tune_sglang(
     runtime = get_runtime(recipe.runtime, v)
     container_image = image or runtime.resolve_container(recipe)
 
-    # Resolve hosts — only use the first host
-    host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, sctx=sctx)
+    # host_list injected by @with_host_context; only use the first host
     target_host = host_list[0]
     if len(host_list) > 1:
         logger.info("Tuning runs on a single host; using first host: %s", target_host)
@@ -99,7 +101,7 @@ def tune_sglang(
     from sparkrun.core.launcher import resolve_effective_cache_dir
     from sparkrun.orchestration.primitives import build_ssh_kwargs
 
-    cluster_cfg = resolve_cluster_config(cluster_name, hosts, hosts_file, _cluster_mgr)
+    cluster_cfg = resolve_cluster_config(cluster_name, hosts, hosts_file, cluster_mgr)
     remote_cache_dir = resolve_effective_cache_dir(
         cluster_cfg.cache_dir,
         host_list,
@@ -139,6 +141,7 @@ VLLM_RUNTIMES = {"vllm-ray", "vllm-distributed", "eugr-vllm"}
 @click.option("--parallel", "-j", type=int, default=1, help="Run N tuning jobs concurrently (default: 1 = sequential)")
 @dry_run_option
 @click.pass_context
+@with_host_context
 def tune_vllm(
     ctx,
     recipe_name,
@@ -152,6 +155,8 @@ def tune_vllm(
     parallel,
     dry_run,
     config_path=None,
+    host_list=None,
+    cluster_mgr=None,
 ):
     """Tune vLLM fused MoE Triton kernels for DGX Spark.
 
@@ -189,8 +194,7 @@ def tune_vllm(
     runtime = get_runtime(recipe.runtime, v)
     container_image = image or runtime.resolve_container(recipe)
 
-    # Resolve hosts — only use the first host
-    host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, sctx=sctx)
+    # host_list injected by @with_host_context; only use the first host
     target_host = host_list[0]
     if len(host_list) > 1:
         logger.info("Tuning runs on a single host; using first host: %s", target_host)
@@ -201,7 +205,7 @@ def tune_vllm(
     from sparkrun.core.launcher import resolve_effective_cache_dir
     from sparkrun.orchestration.primitives import build_ssh_kwargs
 
-    cluster_cfg = resolve_cluster_config(cluster_name, hosts, hosts_file, _cluster_mgr)
+    cluster_cfg = resolve_cluster_config(cluster_name, hosts, hosts_file, cluster_mgr)
     remote_cache_dir = resolve_effective_cache_dir(
         cluster_cfg.cache_dir,
         host_list,

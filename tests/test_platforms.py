@@ -204,3 +204,95 @@ def test_register_platform_does_not_disturb_existing_resolution(_isolate_registr
     """Appending leaves NVIDIA resolution unchanged."""
     register_platform(_FakePlatform())
     assert isinstance(resolve_platform(_nvidia("gb10")), DgxSparkPlatform)
+
+
+# --------------------------------------------------------------------------
+# validate_host — base default
+# --------------------------------------------------------------------------
+
+
+class _MinimalPlatform(HardwarePlatformPlugin):
+    """Stub that uses only the base-class validate_host (no override)."""
+
+    platform_name = "minimal-stub"
+    vendors = frozenset({"nvidia"})
+
+    def matches(self, host_hardware):
+        return True
+
+    def accelerator_vendor(self):
+        return "nvidia"
+
+    def collective_backend(self):
+        from sparkrun.orchestration.collectives import NcclBackend
+
+        return NcclBackend()
+
+
+def test_validate_host_default_returns_empty():
+    """Base-class default implementation always returns an empty list."""
+    hw = HostHardware(accelerators=[AcceleratorSpec(vendor="nvidia", model="h100")])
+    assert _MinimalPlatform().validate_host(hw) == []
+
+
+# --------------------------------------------------------------------------
+# validate_host — DgxSparkPlatform
+# --------------------------------------------------------------------------
+
+
+def _dgx_spark_hw(*, with_roce: bool = True) -> HostHardware:
+    caps = frozenset({"cuda", "unified-memory", "rdma:roce-v2"}) if with_roce else frozenset({"cuda", "unified-memory"})
+    return HostHardware(accelerators=[AcceleratorSpec(vendor="nvidia", model="gb10", memory_gb=121.0, capabilities=caps)])
+
+
+def test_dgx_spark_validate_host_happy_path():
+    """GB10 + RoCEv2 → no warnings."""
+    assert DgxSparkPlatform().validate_host(_dgx_spark_hw(with_roce=True)) == []
+
+
+def test_dgx_spark_validate_host_missing_roce():
+    """GB10 without RoCEv2 capability → exactly one warning mentioning ConnectX-7."""
+    warnings = DgxSparkPlatform().validate_host(_dgx_spark_hw(with_roce=False))
+    assert len(warnings) == 1
+    assert "rdma:roce-v2" in warnings[0]
+    assert "ConnectX-7" in warnings[0]
+
+
+def test_dgx_spark_validate_host_wrong_model():
+    """Non-GB10 NVIDIA host matched (edge case) → warning about unexpected model."""
+    hw = HostHardware(accelerators=[AcceleratorSpec(vendor="nvidia", model="h100", capabilities=frozenset({"cuda"}))])
+    warnings = DgxSparkPlatform().validate_host(hw)
+    assert len(warnings) >= 1
+    assert "h100" in warnings[0]
+
+
+def test_dgx_spark_validate_host_default_hardware_is_clean():
+    """default_dgx_spark_hardware() should validate cleanly — it has RoCEv2."""
+    assert DgxSparkPlatform().validate_host(default_dgx_spark_hardware()) == []
+
+
+# --------------------------------------------------------------------------
+# validate_host — GenericNvidiaPlatform
+# --------------------------------------------------------------------------
+
+
+def test_nvidia_generic_validate_host_happy_path():
+    """Any NVIDIA host → no warnings."""
+    assert GenericNvidiaPlatform().validate_host(_nvidia("h100")) == []
+
+
+def test_nvidia_generic_validate_host_amd_vendor():
+    """Non-NVIDIA host (e.g. AMD) passed to GenericNvidiaPlatform → warning."""
+    hw = _amd("mi300x")
+    warnings = GenericNvidiaPlatform().validate_host(hw)
+    assert len(warnings) == 1
+    assert "amd" in warnings[0]
+    assert "NVIDIA" in warnings[0]
+
+
+def test_nvidia_generic_validate_host_no_accelerators():
+    """Host with no accelerators → warning about missing vendor."""
+    hw = HostHardware()
+    warnings = GenericNvidiaPlatform().validate_host(hw)
+    assert len(warnings) == 1
+    assert "none" in warnings[0]

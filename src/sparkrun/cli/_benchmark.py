@@ -23,13 +23,13 @@ from ._common import (
     _get_context,
     _is_recipe_url,
     _load_recipe,
-    _resolve_hosts_or_exit,
     _simplify_recipe_ref,
     dry_run_option,
     host_options,
     recipe_override_options,
     resolve_cluster_config,
     validate_and_prepare_hosts,
+    with_host_context,
     HIDE_ADVANCED_OPTIONS,
 )
 
@@ -166,6 +166,7 @@ def benchmark(ctx):
 )
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
+@with_host_context
 def benchmark_run(
     ctx,
     recipe_name,
@@ -196,6 +197,8 @@ def benchmark_run(
     dry_run,
     executor_args,
     extra_args,
+    host_list=None,
+    cluster_mgr=None,
 ):
     """Run a benchmark against an inference recipe."""
     return _run_benchmark(
@@ -228,6 +231,8 @@ def benchmark_run(
         executor_args,
         extra_args,
         fresh=fresh,
+        host_list=host_list,
+        cluster_mgr=cluster_mgr,
     )
 
 
@@ -484,6 +489,8 @@ def _run_benchmark(
     export_results_files=True,
     fresh: bool = False,
     submission_id_for_extras: str | None = None,
+    host_list=None,
+    cluster_mgr=None,
 ):
     """Execute the full benchmark flow: launch inference -> benchmark -> stop.
 
@@ -638,7 +645,13 @@ def _run_benchmark(
     for issue in runtime_issues:
         click.echo("Warning: %s" % issue, err=True)
 
-    host_list, cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, sctx=sctx)
+    # Use pre-resolved values when provided (e.g. from @with_host_context on benchmark_run);
+    # fall back to inline resolution for callers that invoke _run_benchmark directly
+    # (e.g. arena benchmark) without going through the decorated command.
+    if host_list is None:
+        from ._common import _resolve_hosts_or_exit
+
+        host_list, cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, sctx=sctx)
 
     # Node count validation, max_nodes enforcement, and solo mode determination
     host_list, is_solo = validate_and_prepare_hosts(host_list, recipe, overrides, runtime, solo=solo)

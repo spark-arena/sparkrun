@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from importlib import resources
 
+from sparkrun.utils.resource_loader import load_resource
+
 
 def read_script(name: str) -> str:
     """Read a bash script from the scripts package.
@@ -18,7 +20,7 @@ def read_script(name: str) -> str:
     Returns:
         Script content as a string.
     """
-    return resources.files(__package__).joinpath(name).read_text(encoding="utf-8")
+    return load_resource(__package__, name)
 
 
 def get_script_path(name: str):

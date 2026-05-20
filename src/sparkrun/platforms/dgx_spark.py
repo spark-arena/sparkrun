@@ -40,3 +40,40 @@ class DgxSparkPlatform(HardwarePlatformPlugin):
 
     def default_image(self, runtime_name: str) -> str | None:
         return _DGX_SPARK_DEFAULTS.get(runtime_name)
+
+    def validate_host(self, host_hardware: HostHardware) -> list[str]:
+        """Validate that a host looks like a healthy DGX Spark (GB10 + RoCEv2).
+
+        Checks performed:
+
+        * At least one accelerator is NVIDIA with model ``"gb10"`` — warns if
+          the host matched via :meth:`matches` but carries a different model
+          name (unlikely in practice, guards against fingerprint drift).
+        * RoCEv2 RDMA capability (``"rdma:roce-v2"``) is present on the GB10
+          accelerator — warns when missing because multi-node collectives over
+          the ConnectX-7 fabric require RoCEv2.
+
+        Returns a list of human-readable warning strings; empty means healthy.
+        """
+        warnings: list[str] = []
+
+        gb10_accels = [a for a in host_hardware.accelerators if a.vendor == "nvidia" and a.model == "gb10"]
+        if not gb10_accels:
+            # matches() returned True but no GB10 found — should not happen in
+            # normal usage, but guard against stale fingerprint data.
+            nvidia_models = [a.model for a in host_hardware.accelerators if a.vendor == "nvidia"]
+            warnings.append(
+                "Expected NVIDIA GB10 accelerator but found: %s — hardware may not be a DGX Spark"
+                % (", ".join(nvidia_models) if nvidia_models else "none")
+            )
+            return warnings
+
+        # Check for RoCEv2 on at least one GB10 entry
+        has_roce = any("rdma:roce-v2" in a.capabilities for a in gb10_accels)
+        if not has_roce:
+            warnings.append(
+                "DGX Spark GB10 accelerator is missing 'rdma:roce-v2' capability — "
+                "multi-node collective communication over ConnectX-7 fabric may fail"
+            )
+
+        return warnings
