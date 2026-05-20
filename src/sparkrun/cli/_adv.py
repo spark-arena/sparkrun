@@ -6,11 +6,11 @@ import click
 
 from ._common import (
     _get_context,
-    _resolve_hosts_or_exit,
     dry_run_option,
     host_options,
     json_option,
     print_json,
+    with_host_context,
     HIDE_ADVANCED_OPTIONS,
 )
 
@@ -28,7 +28,8 @@ def adv(ctx):
 @dry_run_option
 @json_option()
 @click.pass_context
-def adv_compare_images(ctx, image, hosts, hosts_file, cluster_name, dry_run, output_json):
+@with_host_context
+def adv_compare_images(ctx, image, hosts, hosts_file, cluster_name, dry_run, output_json, host_list=None, cluster_mgr=None):
     """Compare a container image ID across local machine and cluster hosts.
 
     Useful for debugging image distribution mismatches — shows the Docker
@@ -45,7 +46,6 @@ def adv_compare_images(ctx, image, hosts, hosts_file, cluster_name, dry_run, out
 
     sctx = _get_context(ctx)
     config = sctx.config
-    host_list, _ = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config)
     ssh_kwargs = build_ssh_kwargs(config)
 
     if dry_run:

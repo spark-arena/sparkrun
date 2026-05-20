@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import sys
@@ -441,6 +442,66 @@ def _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v=None, sctx
     if cluster_user:
         config.ssh_user = cluster_user
     return host_list, cluster_mgr
+
+
+def with_host_context(func):
+    """Decorator that resolves hosts and cluster manager before the command runs.
+
+    Reads ``hosts``, ``hosts_file``, and ``cluster_name`` from the Click
+    kwargs already present (supplied by :func:`host_options`), calls
+    :func:`_resolve_hosts_or_exit`, and injects the results as additional
+    keyword arguments:
+
+    - ``host_list``   — resolved list of host strings
+    - ``cluster_mgr`` — :class:`ClusterManager` instance
+
+    The decorated function must accept ``**kwargs`` or declare ``host_list``
+    and ``cluster_mgr`` as explicit keyword parameters.
+
+    Usage::
+
+        @click.command()
+        @host_options
+        @with_host_context
+        def my_cmd(hosts, hosts_file, cluster_name, host_list, cluster_mgr):
+            ...
+    """
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        hosts = kwargs.get("hosts")
+        hosts_file = kwargs.get("hosts_file")
+        cluster_name = kwargs.get("cluster_name")
+
+        # Resolve sctx from Click context.  Two cases:
+        # 1. @click.pass_context — ctx is the first positional arg.
+        # 2. No @click.pass_context — use click.get_current_context() fallback.
+        sctx = None
+        ctx = None
+        if args and hasattr(args[0], "ensure_object"):
+            ctx = args[0]
+        else:
+            try:
+                ctx = click.get_current_context()
+            except RuntimeError:
+                pass
+
+        config = kwargs.get("config")
+        if config is None:
+            if ctx is not None:
+                sctx = _get_context(ctx)
+                config = sctx.config
+            else:
+                from sparkrun.core.config import SparkrunConfig
+
+                config = SparkrunConfig()
+
+        host_list, cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, sctx=sctx)
+        kwargs["host_list"] = host_list
+        kwargs["cluster_mgr"] = cluster_mgr
+        return func(*args, **kwargs)
+
+    return wrapper
 
 
 def _resolve_setup_context(hosts, hosts_file, cluster_name, config, user=None):

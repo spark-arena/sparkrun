@@ -19,13 +19,13 @@ from ._common import (
     _get_context,
     _is_recipe_url,
     _load_recipe,
-    _resolve_hosts_or_exit,
     _simplify_recipe_ref,
     dry_run_option,
     host_options,
     recipe_override_options,
     resolve_cluster_config,
     validate_and_prepare_hosts,
+    with_host_context,
     HIDE_ADVANCED_OPTIONS,
 )
 
@@ -92,6 +92,7 @@ logger = logging.getLogger(__name__)
 )
 @click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
+@with_host_context
 def run(
     ctx,
     recipe_name,
@@ -129,6 +130,8 @@ def run(
     executor_args,
     extra_args,
     config_path=None,
+    host_list=None,
+    cluster_mgr=None,
 ):
     """Run an inference recipe.
 
@@ -156,9 +159,6 @@ def run(
     # warn that --solo flag is not recommended if solo==True at this point
     if solo:
         click.echo("Notice: --solo flag is not recommended; it is better to explicitly specify parallelism via e.g. --tp 1", err=True)
-
-    # Determine hosts
-    host_list, cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, sctx=sctx)
 
     # Resolve the named cluster definition when one is in play.  Carries
     # per-host hardware metadata so downstream code can compute placement,

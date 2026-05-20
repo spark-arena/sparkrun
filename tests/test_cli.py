@@ -5466,3 +5466,78 @@ class TestRegistryListJson:
             assert "name" in data[0]
             assert "url" in data[0]
             assert "enabled" in data[0]
+
+
+class TestWithHostContext:
+    """Unit tests for the @with_host_context decorator."""
+
+    def test_injects_host_list_and_cluster_mgr(self, monkeypatch):
+        """Decorated function receives host_list and cluster_mgr kwargs."""
+        from sparkrun.cli._common import with_host_context
+
+        captured = {}
+
+        @with_host_context
+        def dummy(hosts=None, hosts_file=None, cluster_name=None, host_list=None, cluster_mgr=None):
+            captured["host_list"] = host_list
+            captured["cluster_mgr"] = cluster_mgr
+
+        monkeypatch.setattr(
+            "sparkrun.cli._common._resolve_hosts_or_exit",
+            lambda *args, **kwargs: (["10.0.0.1", "10.0.0.2"], object()),
+        )
+
+        dummy(hosts="10.0.0.1,10.0.0.2", hosts_file=None, cluster_name=None)
+
+        assert captured["host_list"] == ["10.0.0.1", "10.0.0.2"]
+        assert captured["cluster_mgr"] is not None
+
+    def test_exit_on_empty_hosts(self, monkeypatch):
+        """Decorator exits with code 1 when no hosts are resolved."""
+        from sparkrun.cli._common import with_host_context
+
+        def _mock_resolve(*args, **kwargs):
+            # Simulate the exit that _resolve_hosts_or_exit does on no hosts
+            raise SystemExit(1)
+
+        monkeypatch.setattr("sparkrun.cli._common._resolve_hosts_or_exit", _mock_resolve)
+
+        @with_host_context
+        def dummy(hosts=None, hosts_file=None, cluster_name=None, host_list=None, cluster_mgr=None):
+            pass  # pragma: no cover
+
+        with pytest.raises(SystemExit) as exc_info:
+            dummy(hosts=None, hosts_file=None, cluster_name=None)
+        assert exc_info.value.code == 1
+
+    def test_preserves_function_metadata(self):
+        """functools.wraps preserves __name__ and __doc__."""
+        from sparkrun.cli._common import with_host_context
+
+        @with_host_context
+        def my_command(hosts=None, hosts_file=None, cluster_name=None, host_list=None, cluster_mgr=None):
+            """My docstring."""
+
+        assert my_command.__name__ == "my_command"
+        assert my_command.__doc__ == "My docstring."
+
+    def test_passes_through_other_kwargs(self, monkeypatch):
+        """Extra kwargs from Click options are forwarded unchanged."""
+        from sparkrun.cli._common import with_host_context
+
+        captured = {}
+
+        @with_host_context
+        def dummy(hosts=None, hosts_file=None, cluster_name=None, dry_run=False, host_list=None, cluster_mgr=None):
+            captured["dry_run"] = dry_run
+            captured["host_list"] = host_list
+
+        monkeypatch.setattr(
+            "sparkrun.cli._common._resolve_hosts_or_exit",
+            lambda *args, **kwargs: (["localhost"], None),
+        )
+
+        dummy(hosts="localhost", hosts_file=None, cluster_name=None, dry_run=True)
+
+        assert captured["dry_run"] is True
+        assert captured["host_list"] == ["localhost"]

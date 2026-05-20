@@ -233,3 +233,120 @@ def test_launch_inference_threads_backends_to_runtime_run(monkeypatch, tmp_path)
     assert threaded is not None
     assert "nv-host" in threaded
     assert isinstance(threaded["nv-host"].collective, NcclBackend)
+
+
+# ---------------------------------------------------------------------------
+# Platform validate_host warnings are logged but do not raise
+# ---------------------------------------------------------------------------
+
+
+def test_launch_inference_logs_platform_warnings_without_raising(monkeypatch, tmp_path, caplog):
+    """validate_host warnings appear in the log at WARNING level but do not abort launch."""
+    import logging
+
+    from sparkrun.core import launcher
+    from sparkrun.core.launcher import launch_inference
+
+    monkeypatch.setattr(
+        "sparkrun.orchestration.distribution.resolve_auto_transfer_mode",
+        lambda *a, **kw: type("R", (), {"mode": "local"})(),
+    )
+    monkeypatch.setattr(
+        "sparkrun.orchestration.distribution.distribute_from_config",
+        lambda *a, **kw: (None, {}, {}),
+    )
+    monkeypatch.setattr(
+        "sparkrun.orchestration.job_metadata.save_job_metadata",
+        lambda *a, **kw: None,
+    )
+    monkeypatch.setattr(
+        "sparkrun.orchestration.job_metadata.generate_cluster_id",
+        lambda *a, **kw: "sparkrun_testabc12345",
+    )
+    monkeypatch.setattr(
+        "sparkrun.orchestration.primitives.build_ssh_kwargs",
+        lambda *a, **kw: {},
+    )
+    monkeypatch.setattr(
+        launcher,
+        "resolve_effective_cache_dir",
+        lambda *a, **kw: str(tmp_path),
+    )
+    monkeypatch.setattr("sparkrun.orchestration.primitives.try_clear_page_cache", lambda *a, **kw: None)
+    monkeypatch.setattr(
+        "sparkrun.orchestration.executor.resolve_executor",
+        lambda **kw: type("Ex", (), {})(),
+    )
+
+    # Build a host with a GB10 accelerator but WITHOUT RoCEv2 — DgxSparkPlatform
+    # will emit a warning about the missing capability.
+    from sparkrun.core.cluster_manager import ClusterDefinition
+    from sparkrun.core.hardware import AcceleratorSpec, HostHardware
+
+    hw_no_roce = HostHardware(accelerators=[AcceleratorSpec(vendor="nvidia", model="gb10", capabilities=frozenset({"cuda"}))])
+    cluster = ClusterDefinition(
+        name="warn-test",
+        hosts=["dgx-host"],
+        hosts_hardware={"dgx-host": hw_no_roce},
+    )
+
+    class _Cfg:
+        hf_cache_dir = tmp_path / "hf"
+        cache_dir = tmp_path / "cache"
+
+        def get_registry_manager(self):
+            return None
+
+    class _Recipe:
+        runtime = "stub"
+        model = "stub-model"
+        env = {}
+        builder = None
+        mods = []
+        source_registry = None
+        source_registry_url = None
+        defaults = {"port": 8000}
+        pre_exec = []
+        post_exec = []
+        post_commands = []
+        layout = None
+        stop_after_post = False
+        executor = ""
+        executor_config = None
+        qualified_name = "stub-recipe"
+        name = "stub-recipe"
+        container = "stub:latest"
+        model_revision = None
+        requires_capability: frozenset = frozenset()
+
+        def build_config_chain(self, overrides=None):
+            class _CC:
+                def get(self, k, default=None):
+                    return (overrides or {}).get(k, self_outer.defaults.get(k, default))
+
+            self_outer = self
+            return _CC()
+
+    runtime = _StubRuntime()
+
+    with caplog.at_level(logging.WARNING, logger="sparkrun.core.launcher"):
+        result = launch_inference(
+            recipe=_Recipe(),
+            runtime=runtime,
+            host_list=["dgx-host"],
+            overrides={},
+            config=_Cfg(),
+            cluster=cluster,
+            is_solo=True,
+            dry_run=True,
+            sync_tuning=False,
+        )
+
+    # Launch must succeed (return 0 from stub runtime)
+    assert result.rc == 0
+
+    # At least one warning mentioning the host and the missing capability
+    warning_texts = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("dgx-host" in w and "rdma:roce-v2" in w for w in warning_texts), (
+        "Expected a warning about missing rdma:roce-v2 for dgx-host, got: %s" % warning_texts
+    )

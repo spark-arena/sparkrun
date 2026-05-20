@@ -402,6 +402,25 @@ def launch_inference(
         if compat_errors:
             raise IncompatibleHardwareError(runtime.runtime_name, compat_errors)
 
+    # Per-host platform validation: emit warnings for vendor-specific concerns
+    # (missing RoCEv2 on DGX Spark, non-NVIDIA on generic platform, etc.).
+    # This runs regardless of whether a cluster was threaded — hosts without
+    # explicit metadata fall back to DGX Spark defaults so the check always
+    # has something sensible to validate against.
+    from sparkrun.platforms import resolve_platform
+
+    for host in host_list:
+        if cluster is not None:
+            _hw = cluster.hardware_for(host)
+        else:
+            from sparkrun.core.hardware import default_dgx_spark_hardware
+
+            _hw = default_dgx_spark_hardware()
+        _platform = resolve_platform(_hw)
+        if _platform is not None:
+            for _warn in _platform.validate_host(_hw):
+                logger.warning("Host %s: %s", host, _warn)
+
     # Save job metadata
     if not dry_run:
         try:

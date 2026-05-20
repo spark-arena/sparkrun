@@ -43,3 +43,25 @@ class GenericNvidiaPlatform(HardwarePlatformPlugin):
 
     def default_image(self, runtime_name: str) -> str | None:
         return _NVIDIA_GENERIC_DEFAULTS.get(runtime_name)
+
+    def validate_host(self, host_hardware: HostHardware) -> list[str]:
+        """Validate that a host carries at least one NVIDIA accelerator.
+
+        The generic platform is intentionally lenient — it accepts any NVIDIA
+        GPU, so the only check worth making is confirming the vendor is
+        actually NVIDIA (guards against :meth:`matches` being called on a
+        host that slipped through without accelerator metadata).
+
+        Returns a list of human-readable warning strings; empty means healthy.
+        """
+        warnings: list[str] = []
+
+        nvidia_accels = [a for a in host_hardware.accelerators if a.vendor == "nvidia"]
+        if not nvidia_accels:
+            non_nvidia = sorted({a.vendor for a in host_hardware.accelerators})
+            warnings.append(
+                "GenericNvidiaPlatform selected but no NVIDIA accelerator found — "
+                "detected vendor(s): %s" % (", ".join(non_nvidia) if non_nvidia else "none")
+            )
+
+        return warnings

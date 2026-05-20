@@ -95,3 +95,15 @@ class HardwarePlatformPlugin(Plugin):
         DGX Spark, upstream vLLM/SGLang images for generic NVIDIA).
         """
         return None
+
+    def validate_host(self, host_hardware: HostHardware) -> list[str]:
+        """Return a list of warning strings about this host's hardware.
+
+        Empty list means the host looks healthy for this platform.  Non-empty
+        means there are concerns the user should be aware of (e.g. missing
+        RoCEv2 capability on DGX Spark, mismatched accelerator family).
+
+        Default implementation returns an empty list — subclasses may
+        override to add platform-specific validation.
+        """
+        return []
