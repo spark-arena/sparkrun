@@ -189,8 +189,8 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
         """Stop a vLLM Ray cluster."""
         from sparkrun.orchestration.primitives import build_ssh_kwargs, cleanup_containers
 
-        head_container = self.executor.container_name(cluster_id, "head")
-        worker_container = self.executor.container_name(cluster_id, "worker")
+        head_container = self._resolve_executor().container_name(cluster_id, "head")
+        worker_container = self._resolve_executor().container_name(cluster_id, "worker")
         ssh_kwargs = build_ssh_kwargs(config)
 
         cleanup_containers(
@@ -262,8 +262,8 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
             cluster=cluster,
             recipe=recipe,
         )
-        head_container = self.executor.container_name(cluster_id, "head")
-        worker_container = self.executor.container_name(cluster_id, "worker")
+        head_container = self._resolve_executor().container_name(cluster_id, "head")
+        worker_container = self._resolve_executor().container_name(cluster_id, "worker")
 
         if progress:
             progress.begin_runtime_steps(5)
@@ -315,7 +315,7 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
         else:
             logger.info("Step 3/5: Launching Ray head on %s...", ctx.head_host)
         head_nccl_env = comm_env.get_env(ctx.head_host) if comm_env else None
-        head_script = self.executor.generate_ray_head_script(
+        head_script = self._resolve_executor().generate_ray_head_script(
             image=image,
             container_name=head_container,
             ray_port=ray_port,
@@ -385,7 +385,7 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
                 _wfutures = {}
                 for _whost in ctx.worker_hosts:
                     _whost_env = comm_env.get_env(_whost) if comm_env else None
-                    _wscript = self.executor.generate_ray_worker_script(
+                    _wscript = self._resolve_executor().generate_ray_worker_script(
                         image=image,
                         container_name=worker_container,
                         head_ip=head_ip,
@@ -458,7 +458,7 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
                 ctx.head_host,
                 head_container,
             )
-        exec_script = self.executor.generate_exec_serve_script(
+        exec_script = self._resolve_executor().generate_exec_serve_script(
             container_name=head_container,
             serve_command=serve_command,
             env=ctx.all_env,

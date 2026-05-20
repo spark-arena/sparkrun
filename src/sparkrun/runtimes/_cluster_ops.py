@@ -609,7 +609,7 @@ def run_native_cluster(
         stop_log_capture,
     )
 
-    executor = runtime.executor
+    executor = runtime._resolve_executor()
 
     if progress:
         progress.begin_runtime_steps(7)
