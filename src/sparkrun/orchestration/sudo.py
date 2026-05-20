@@ -7,7 +7,7 @@ import subprocess
 
 from sparkrun.orchestration import ssh as _ssh
 from sparkrun.orchestration.ssh import RemoteResult
-from sparkrun.utils.shell import b64_encode_cmd, b64_wrap_python
+from sparkrun.utils.shell import b64_encode_cmd, b64_wrap_python, validate_unix_username
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +131,8 @@ def run_indirect_sudo_script(
     Returns:
         RemoteResult with returncode, stdout, stderr.
     """
+    validate_unix_username(sudo_user)
+
     if dry_run:
         logger.info("[dry-run] Would execute indirect sudo on %s (via su %s)", host, sudo_user)
         return RemoteResult(host=host, returncode=0, stdout="[dry-run]", stderr="")

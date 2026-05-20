@@ -48,6 +48,35 @@ class LaunchResult:
     builder: BuilderPlugin | None = None
 
 
+def resolve_recipe_trust(recipe: Recipe, trust_cli: bool) -> bool:
+    """Decide whether recipe hooks (pre_exec/post_exec/post_commands) are trusted.
+
+    A recipe is trusted when any of these hold:
+
+    * the user passed ``--trust`` on the CLI (``trust_cli=True``);
+    * the recipe was loaded from a local path (no ``source_registry``);
+    * the recipe came from a registry whose URL is in
+      :data:`sparkrun.core.registry.DEFAULT_REGISTRIES_GIT`.
+
+    Args:
+        recipe: The loaded recipe (used for ``source_registry`` /
+            ``source_registry_url`` introspection).
+        trust_cli: CLI ``--trust`` flag value.
+
+    Returns:
+        True when the hook commands may run without per-launch
+        confirmation, False when they should be gated by an interactive
+        prompt.
+    """
+    from sparkrun.core.registry import DEFAULT_REGISTRIES_GIT
+
+    return (
+        trust_cli
+        or recipe.source_registry is None  # local recipe
+        or (recipe.source_registry_url is not None and recipe.source_registry_url in DEFAULT_REGISTRIES_GIT)
+    )
+
+
 def resolve_effective_cache_dir(
     cache_dir: str | None,
     host_list: list[str],
@@ -128,6 +157,11 @@ def launch_inference(
     # metadata).  When None, the runtime falls back to the legacy
     # host-list-only path (1 GPU / host, no per-host hardware lookups).
     cluster=None,
+    # When True, suppress the interactive confirmation prompt for
+    # recipe-defined pre_exec hooks (and post_exec/post_commands run in
+    # post_launch_lifecycle).  CLI flag --trust + local/official-registry
+    # recipes set this to True via resolve_recipe_trust().
+    trust: bool = False,
 ) -> LaunchResult:
     """Launch an inference workload.
 
@@ -194,6 +228,11 @@ def launch_inference(
     # -- Phase 1: Prepare --
     if p:
         p.phase(1)
+
+    # Resolve the recipe-wide trust flag once so pre_exec (here) and
+    # post_exec/post_commands (post_launch_lifecycle) make the same
+    # decision for the same recipe.
+    recipe_trusted = resolve_recipe_trust(recipe, trust)
 
     ssh_kwargs = build_ssh_kwargs(config)
     effective_local_cache = local_cache_dir or str(config.hf_cache_dir)
@@ -491,6 +530,7 @@ def launch_inference(
         progress=progress,
         extra_docker_opts=extra_docker_opts,
         cluster=cluster,
+        trust=recipe_trusted,
         **run_kwargs,
     )
 
@@ -678,22 +718,28 @@ def post_launch_lifecycle(
         cache_dir=remote_cache_dir,
     )
 
+    # Resolve trust once for both post_exec (inside head container) and
+    # post_commands (on control machine).  Same gate as the pre_exec
+    # decision computed in launch_inference().
+    _is_trusted = resolve_recipe_trust(recipe, trust)
+
     try:
         # Run post_exec inside head container
         if recipe.post_exec:
             click.echo("Running post_exec commands...")
-            run_post_exec(head_host, head_container, recipe.post_exec, hook_context, ssh_kwargs=_ssh_kw, dry_run=dry_run)
+            run_post_exec(
+                head_host,
+                head_container,
+                recipe.post_exec,
+                hook_context,
+                ssh_kwargs=_ssh_kw,
+                dry_run=dry_run,
+                trust=_is_trusted,
+            )
 
         # Run post_commands on control machine
         if recipe.post_commands:
             click.echo("Running post_commands on control machine...")
-            from sparkrun.core.registry import DEFAULT_REGISTRIES_GIT
-
-            _is_trusted = (
-                trust
-                or recipe.source_registry is None  # local recipe
-                or (recipe.source_registry_url is not None and recipe.source_registry_url in DEFAULT_REGISTRIES_GIT)
-            )
             run_post_commands(recipe.post_commands, hook_context, dry_run=dry_run, trust=_is_trusted)
     except RuntimeError as e:
         click.echo("Error in post hooks: %s" % e, err=True)

@@ -271,6 +271,7 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
 
         progress = kwargs.pop("progress", None)
         cluster = kwargs.pop("cluster", None)
+        trust = kwargs.pop("trust", False)
         combined_docker_opts = (self.get_extra_docker_opts() or []) + (extra_docker_opts or [])
 
         ctx = ClusterContext.build(
@@ -449,7 +450,7 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
         all_containers = [(ctx.head_host, head_container)]
         for worker in ctx.worker_hosts:
             all_containers.append((worker, worker_container))
-        run_pre_serve_hooks(self, ctx, all_containers, recipe, overrides)
+        run_pre_serve_hooks(self, ctx, all_containers, recipe, overrides, trust=trust)
 
         # Prevent vLLM Ray from propagating per-host NCCL/transport env
         # vars from head to workers (GitHub issue #135).  Must run BEFORE

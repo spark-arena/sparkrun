@@ -97,6 +97,30 @@ def quote_dict(d: dict) -> dict:
     return {k: shlex.quote(v) if isinstance(v, str) else v for k, v in d.items()}
 
 
+def validate_hostname(host: str) -> str:
+    """Validate and return a hostname or IP address, or raise ValueError.
+
+    Accepts RFC-1123-style hostnames and IPv4/IPv6 addresses.  The pattern
+    allows letters, digits, hyphens, underscores, and dots — no shell
+    metacharacters.  Labels must start and end with an alphanumeric character.
+
+    Args:
+        host: Hostname or IP address string to validate.
+
+    Returns:
+        The validated hostname (unchanged).
+
+    Raises:
+        ValueError: If *host* contains characters outside the allowed set or
+            does not match the expected structure.
+    """
+    if not host:
+        raise ValueError("Hostname must not be empty")
+    if not re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9._-]{0,253}[a-zA-Z0-9])?", host):
+        raise ValueError("Invalid hostname %r — contains shell-unsafe characters or bad structure" % host)
+    return host
+
+
 def validate_unix_username(user: str) -> str:
     """Validate and return a Unix username, or raise ValueError.
 
@@ -161,6 +185,38 @@ def safe_remote_path(value: str) -> str:
     if value == "~":
         return "$HOME"
     return value
+
+
+_ALLOWED_GIT_URL_SCHEMES = ("https://", "git@", "ssh://", "file://")
+
+
+def validate_git_url(url: str) -> str:
+    """Validate a git URL against an allowlist of safe schemes.
+
+    Rejects URLs that could be interpreted as git command-line options (dash-
+    leading strings), use unsafe schemes like ``http://``, or are empty.
+    This mitigates CVE-2017-1000117-style option injection via URL arguments.
+
+    Allowed schemes: ``https://``, ``git@``, ``ssh://``, ``file://``.
+
+    Args:
+        url: The git URL to validate.
+
+    Returns:
+        The URL (stripped of leading/trailing whitespace) if valid.
+
+    Raises:
+        ValueError: If *url* is empty, starts with a dash, or uses a
+            disallowed scheme.
+    """
+    url = url.strip()
+    if not url:
+        raise ValueError("Git URL must not be empty")
+    if url.startswith("-"):
+        raise ValueError("Git URL must not start with '-' (option injection risk): %r" % url)
+    if not any(url.startswith(scheme) for scheme in _ALLOWED_GIT_URL_SCHEMES):
+        raise ValueError("Git URL %r uses a disallowed scheme. Allowed schemes: %s" % (url, ", ".join(_ALLOWED_GIT_URL_SCHEMES)))
+    return url
 
 
 def render_args_as_flags(args: dict[str, Any]) -> list[str]:

@@ -124,12 +124,57 @@ def render_hook_commands(
     return rendered
 
 
+def _confirm_hook_execution(hook_label: str, commands: list, trust: bool) -> None:
+    """Shared trust-gating prompt for hook commands.
+
+    When *trust* is True, returns immediately (no prompt).
+    When *trust* is False:
+    - Logs the commands as a warning,
+    - Refuses to proceed if stdin is not a TTY (raises RuntimeError),
+    - Otherwise asks the user to confirm via click.confirm.
+
+    Args:
+        hook_label: Human-readable hook name (e.g. ``"pre_exec"``).
+        commands: Hook command list (string entries are logged; dict
+            entries are summarized).
+        trust: When True, bypass confirmation entirely.
+
+    Raises:
+        RuntimeError: If *trust* is False and either stdin is not a TTY
+            or the user declines.
+    """
+    import sys
+
+    if trust:
+        return
+
+    logger.warning("Recipe %s will execute inside containers:", hook_label)
+    for i, cmd in enumerate(commands, 1):
+        if isinstance(cmd, str):
+            logger.warning("  [%d] %s", i, cmd)
+        elif isinstance(cmd, dict) and "copy" in cmd:
+            logger.warning("  [%d] copy %s -> %s", i, cmd.get("copy"), cmd.get("dest", "<default>"))
+        else:
+            logger.warning("  [%d] %r", i, cmd)
+
+    if not sys.stdin.isatty():
+        raise RuntimeError(
+            "%s require confirmation but stdin is not a TTY. Use --trust to allow %s from third-party registries."
+            % (hook_label, hook_label)
+        )
+    import click
+
+    if not click.confirm("Allow these %s to run inside containers?" % hook_label, default=False):
+        raise RuntimeError("%s execution cancelled by user." % hook_label)
+
+
 def run_pre_exec(
     hosts_containers: list[tuple[str, str]],
     commands: list[str | dict[str, str]],
     config_chain,
     ssh_kwargs: dict | None = None,
     dry_run: bool = False,
+    trust: bool = False,
 ) -> None:
     """Execute pre_exec commands inside containers.
 
@@ -140,18 +185,27 @@ def run_pre_exec(
     - A string: executed as ``docker exec <container> bash -c '<cmd>'``
     - A dict with ``copy`` key: file injection via ``docker cp``
 
+    When *trust* is False (the default), commands from third-party
+    registries require explicit user confirmation before executing.
+    If stdin is not a TTY, execution is refused and a RuntimeError is
+    raised directing the user to pass ``--trust``.
+
     Args:
         hosts_containers: List of (host, container_name) pairs.
         commands: Pre_exec command list from recipe.
         config_chain: Config chain for template substitution.
         ssh_kwargs: SSH connection kwargs.
         dry_run: Show what would be done without executing.
+        trust: Skip confirmation prompt (auto-trust the commands).
 
     Raises:
-        RuntimeError: If any command fails (fail-fast).
+        RuntimeError: If any command fails (fail-fast), or if *trust*
+            is False and stdin is not a TTY.
     """
     if not commands:
         return
+
+    _confirm_hook_execution("pre_exec", commands, trust)
 
     # Build context from config chain for rendering
     ctx: dict[str, str] = {}
@@ -182,10 +236,16 @@ def run_post_exec(
     context: dict[str, str],
     ssh_kwargs: dict | None = None,
     dry_run: bool = False,
+    trust: bool = False,
 ) -> None:
     """Execute post_exec commands inside the head container.
 
     Runs after server is confirmed healthy.  Sequential, fail-fast.
+
+    When *trust* is False (the default), commands from third-party
+    registries require explicit user confirmation before executing.
+    If stdin is not a TTY, execution is refused and a RuntimeError is
+    raised directing the user to pass ``--trust``.
 
     Args:
         head_host: Head node hostname.
@@ -194,12 +254,16 @@ def run_post_exec(
         context: Extended variable dict for substitution.
         ssh_kwargs: SSH connection kwargs.
         dry_run: Show what would be done without executing.
+        trust: Skip confirmation prompt (auto-trust the commands).
 
     Raises:
-        RuntimeError: If any command fails (fail-fast).
+        RuntimeError: If any command fails (fail-fast), or if *trust*
+            is False and stdin is not a TTY.
     """
     if not commands:
         return
+
+    _confirm_hook_execution("post_exec", commands, trust)
 
     rendered = render_hook_commands(commands, context)
 
@@ -455,6 +519,10 @@ def _run_delegated_copy(
         final ``docker cp`` script.
     """
     from sparkrun.orchestration.primitives import run_script_on_host
+    from sparkrun.utils.shell import safe_remote_path, validate_hostname
+
+    validate_hostname(source_host)
+    dest = safe_remote_path(dest)
 
     basename = Path(source).name
     kw = ssh_kwargs or {}
