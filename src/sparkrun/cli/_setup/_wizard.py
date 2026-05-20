@@ -540,6 +540,12 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                 alt_default = default_user if sudo_user != default_user else ""
                 click.echo("  Sudo failed for '%s'. Specify a user with sudo access." % sudo_user)
                 alt_user = click.prompt("Sudo user", default=alt_default)
+                try:
+                    from sparkrun.utils.shell import validate_unix_username
+
+                    validate_unix_username(alt_user)
+                except ValueError as exc:
+                    raise click.BadParameter(str(exc), param_hint="'Sudo user'") from exc
                 sudo_password = click.prompt("[sudo] password for %s" % alt_user, hide_input=True)
 
                 # Use indirect sudo: SSH as cluster user, su to alt_user

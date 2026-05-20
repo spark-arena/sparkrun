@@ -315,6 +315,7 @@ class RuntimePlugin(Plugin):
         dry_run: bool,
         recipe: Recipe | None = None,
         config_chain=None,
+        trust: bool = False,
     ) -> None:
         """Hook called after containers are launched but before serve command.
 
@@ -329,11 +330,21 @@ class RuntimePlugin(Plugin):
             dry_run: Dry-run mode.
             recipe: The loaded recipe (for pre_exec commands).
             config_chain: Config chain for template substitution.
+            trust: When True, bypass the pre_exec confirmation prompt.
+                Resolved upstream in ``launch_inference`` via
+                :func:`sparkrun.core.launcher.resolve_recipe_trust`.
         """
         if recipe and recipe.pre_exec:
             from sparkrun.orchestration.hooks import run_pre_exec
 
-            run_pre_exec(hosts_containers, recipe.pre_exec, config_chain, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
+            run_pre_exec(
+                hosts_containers,
+                recipe.pre_exec,
+                config_chain,
+                ssh_kwargs=ssh_kwargs,
+                dry_run=dry_run,
+                trust=trust,
+            )
 
     def get_extra_volumes(self) -> dict[str, str]:
         """Return additional volume mounts for this runtime.
@@ -727,6 +738,7 @@ class RuntimePlugin(Plugin):
         skip_keys: set[str] | frozenset[str] = frozenset(),
         executor: Executor | None = None,
         extra_docker_opts: list[str] | None = None,
+        trust: bool = False,
         **kwargs,
     ) -> int:
         """Launch a workload -- delegates to solo or cluster implementation.
@@ -758,6 +770,10 @@ class RuntimePlugin(Plugin):
                 the pre-built *serve_command*).
             executor: Container executor (defaults to DockerExecutor).
             extra_docker_opts: Additional docker run arguments (e.g., ports).
+            trust: When True, suppress the interactive confirmation
+                prompt for recipe-defined ``pre_exec`` hooks.  Resolved
+                upstream by :func:`sparkrun.core.launcher.resolve_recipe_trust`
+                (CLI ``--trust`` OR local recipe OR default-registry).
             **kwargs: Runtime-specific keyword arguments (e.g. ray_port,
                 dashboard_port, init_port, rpc_port).
 
@@ -789,6 +805,7 @@ class RuntimePlugin(Plugin):
                 overrides=overrides,
                 progress=progress,
                 extra_docker_opts=extra_docker_opts,
+                trust=trust,
                 # TODO: kwargs?
             )
         return self._run_cluster(
@@ -808,6 +825,7 @@ class RuntimePlugin(Plugin):
             skip_keys=skip_keys,
             progress=progress,
             extra_docker_opts=extra_docker_opts,
+            trust=trust,
             **kwargs,
         )
 
@@ -891,6 +909,7 @@ class RuntimePlugin(Plugin):
         overrides: dict[str, Any] | None = None,
         progress=None,
         extra_docker_opts: list[str] | None = None,
+        trust: bool = False,
     ) -> int:
         """Launch a single-node inference workload.
 
@@ -981,7 +1000,14 @@ class RuntimePlugin(Plugin):
 
         # Pre-serve hook (e.g., apply mods to container, run pre_exec)
         config_chain = recipe.build_config_chain(overrides) if recipe else None
-        self._pre_serve([(host, container_name)], ssh_kwargs, dry_run, recipe=recipe, config_chain=config_chain)
+        self._pre_serve(
+            [(host, container_name)],
+            ssh_kwargs,
+            dry_run,
+            recipe=recipe,
+            config_chain=config_chain,
+            trust=trust,
+        )
 
         # Step 3: Execute serve command
         t0 = time.monotonic()
@@ -1179,6 +1205,7 @@ class RuntimePlugin(Plugin):
         node_label: str = "node",
         progress=None,
         extra_docker_opts: list[str] | None = None,
+        trust: bool = False,
         **kwargs,
     ) -> int:
         """Orchestrate a multi-node native cluster (shared by SGLang, vLLM distributed).
@@ -1250,6 +1277,7 @@ class RuntimePlugin(Plugin):
             follow=kwargs.get("follow", True),
             progress=progress,
             extra_docker_opts=extra_docker_opts,
+            trust=trust,
         )
 
     def _print_connection_info(self, hosts, cluster_id, *, per_node_logs=False):

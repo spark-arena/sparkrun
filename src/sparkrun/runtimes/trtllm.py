@@ -240,7 +240,7 @@ class TrtllmRuntime(RuntimePlugin):
             [
                 '    *) echo "Unknown host: $HOST" >&2; exit 1 ;;',
                 "esac",
-                "exec ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \\",
+                "exec ssh -o StrictHostKeyChecking=accept-new \\",  # TOFU: matches codebase convention, provides MITM protection after first connection
                 '  -i %s "$HOST" docker exec "$CONTAINER" "$@"' % ssh_key_path,
             ]
         )
@@ -334,6 +334,7 @@ class TrtllmRuntime(RuntimePlugin):
         dry_run: bool,
         recipe: Recipe | None = None,
         config_chain=None,
+        trust: bool = False,
     ) -> None:
         """Write extra-llm-api-config.yml into containers before serve.
 
@@ -342,7 +343,14 @@ class TrtllmRuntime(RuntimePlugin):
         every container.  This is the solo-mode counterpart of the config
         injection that ``_run_cluster`` performs in step 6.
         """
-        super()._pre_serve(hosts_containers, ssh_kwargs, dry_run, recipe=recipe, config_chain=config_chain)
+        super()._pre_serve(
+            hosts_containers,
+            ssh_kwargs,
+            dry_run,
+            recipe=recipe,
+            config_chain=config_chain,
+            trust=trust,
+        )
 
         if recipe is None:
             return

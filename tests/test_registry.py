@@ -1692,3 +1692,117 @@ class TestEnsureRegistryOnHost:
         with mock.patch("sparkrun.orchestration.primitives.run_script_on_host", return_value=fake_result):
             path = mgr.ensure_registry_on_host("alt", "head-host", ssh_kwargs={})
         assert path.startswith("~/.cache/sparkrun/registries/_url_")
+
+
+class TestValidateGitUrl:
+    """Tests for validate_git_url URL allowlist enforcement (security B5)."""
+
+    def test_valid_https_url(self):
+        """https:// URLs must pass through unchanged (stripped)."""
+        from sparkrun.utils.shell import validate_git_url
+
+        result = validate_git_url("https://github.com/spark-arena/recipes.git")
+        assert result == "https://github.com/spark-arena/recipes.git"
+
+    def test_valid_git_at_url(self):
+        """git@ SSH URLs must be accepted."""
+        from sparkrun.utils.shell import validate_git_url
+
+        result = validate_git_url("git@github.com:spark-arena/recipes.git")
+        assert result == "git@github.com:spark-arena/recipes.git"
+
+    def test_valid_ssh_url(self):
+        """ssh:// URLs must be accepted."""
+        from sparkrun.utils.shell import validate_git_url
+
+        result = validate_git_url("ssh://git@github.com/spark-arena/recipes.git")
+        assert result == "ssh://git@github.com/spark-arena/recipes.git"
+
+    def test_valid_file_url(self):
+        """file:// URLs must be accepted (local dev / test use-case)."""
+        from sparkrun.utils.shell import validate_git_url
+
+        result = validate_git_url("file:///tmp/local-repo")
+        assert result == "file:///tmp/local-repo"
+
+    def test_dash_leading_url_raises(self):
+        """A URL starting with '-' must be rejected (option injection risk)."""
+        from sparkrun.utils.shell import validate_git_url
+
+        with pytest.raises(ValueError, match="must not start with"):
+            validate_git_url("-c protocol.ext.allow=always /tmp/evil")
+
+    def test_http_scheme_raises(self):
+        """http:// is not in the allowlist and must be rejected."""
+        from sparkrun.utils.shell import validate_git_url
+
+        with pytest.raises(ValueError, match="disallowed scheme"):
+            validate_git_url("http://insecure.example.com/repo.git")
+
+    def test_empty_url_raises(self):
+        """Empty string must be rejected."""
+        from sparkrun.utils.shell import validate_git_url
+
+        with pytest.raises(ValueError, match="must not be empty"):
+            validate_git_url("")
+
+    def test_whitespace_only_url_raises(self):
+        """Whitespace-only string must be rejected."""
+        from sparkrun.utils.shell import validate_git_url
+
+        with pytest.raises(ValueError, match="must not be empty"):
+            validate_git_url("   ")
+
+    def test_leading_whitespace_stripped(self):
+        """Leading/trailing whitespace is stripped before validation."""
+        from sparkrun.utils.shell import validate_git_url
+
+        result = validate_git_url("  https://github.com/example/repo.git  ")
+        assert result == "https://github.com/example/repo.git"
+
+    def test_double_dash_injection_via_upload_pack_raises(self):
+        """--upload-pack=... style injection must be rejected (starts with dash)."""
+        from sparkrun.utils.shell import validate_git_url
+
+        with pytest.raises(ValueError, match="must not start with"):
+            validate_git_url("--upload-pack=evil /tmp/target")
+
+    def test_clone_subprocess_args_contain_double_dash(self, mgr, sample_entry):
+        """Confirm that git clone subprocess calls include '--' before the URL."""
+        mgr._save_registries([sample_entry])
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.Mock(returncode=0, stderr="", stdout="")
+            mgr.update(sample_entry.name)
+        # Only match calls whose args list contains both "git" and "clone" as elements
+        clone_calls = [c for c in mock_run.call_args_list if c.args and "clone" in c.args[0] and "git" in c.args[0]]
+        assert clone_calls, "Expected at least one git clone subprocess call"
+        for call in clone_calls:
+            args = call.args[0]  # first positional arg is the command list
+            assert "--" in args, "Expected '--' in git clone args: %r" % args
+            url_index = args.index("--") + 1
+            assert args[url_index] == sample_entry.url
+
+    def test_add_registry_rejects_http_url(self, mgr):
+        """add_registry must raise RegistryError for http:// URLs."""
+        bad_entry = RegistryEntry(
+            name="bad-registry",
+            url="http://insecure.example.com/repo.git",
+            subpath="recipes",
+        )
+        with pytest.raises(RegistryError, match="Invalid registry URL"):
+            mgr.add_registry(bad_entry)
+
+    def test_add_registry_rejects_dash_url(self, mgr):
+        """add_registry must raise RegistryError for dash-leading URLs."""
+        bad_entry = RegistryEntry(
+            name="bad-registry",
+            url="-c protocol.ext.allow=always /tmp/evil",
+            subpath="recipes",
+        )
+        with pytest.raises(RegistryError, match="Invalid registry URL"):
+            mgr.add_registry(bad_entry)
+
+    def test_add_registry_from_url_rejects_http(self, mgr):
+        """add_registry_from_url must raise RegistryError for http:// URLs."""
+        with pytest.raises(RegistryError, match="Invalid registry URL"):
+            mgr.add_registry_from_url("http://insecure.example.com/repo.git")

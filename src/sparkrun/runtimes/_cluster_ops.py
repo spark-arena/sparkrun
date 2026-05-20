@@ -412,10 +412,22 @@ def run_pre_serve_hooks(
     hosts_containers: list[tuple[str, str]],
     recipe: Recipe | None,
     overrides: dict[str, Any] | None,
+    trust: bool = False,
 ) -> None:
-    """Build config chain and invoke runtime._pre_serve."""
+    """Build config chain and invoke runtime._pre_serve.
+
+    *trust* controls whether the pre_exec confirmation prompt is
+    suppressed (see :meth:`RuntimePlugin._pre_serve`).
+    """
     config_chain = recipe.build_config_chain(overrides) if recipe else None
-    runtime._pre_serve(hosts_containers, ctx.ssh_kwargs, ctx.dry_run, recipe=recipe, config_chain=config_chain)
+    runtime._pre_serve(
+        hosts_containers,
+        ctx.ssh_kwargs,
+        ctx.dry_run,
+        recipe=recipe,
+        config_chain=config_chain,
+        trust=trust,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -495,6 +507,7 @@ def run_native_cluster(
     follow: bool = True,
     progress=None,
     extra_docker_opts: list[str] | None = None,
+    trust: bool = False,
 ) -> int:
     """Orchestrate a multi-node native cluster.
 
@@ -631,7 +644,7 @@ def run_native_cluster(
     else:
         logger.info("Step 5/7: Running pre-serve hooks...")
     hosts_containers = [(host, cname) for host, _rank, cname in all_nodes]
-    run_pre_serve_hooks(runtime, ctx, hosts_containers, recipe, overrides)
+    run_pre_serve_hooks(runtime, ctx, hosts_containers, recipe, overrides, trust=trust)
     logger.info("Step 5/7: Pre-serve hooks done (%.1fs)", time.monotonic() - t0)
 
     # Step 6: Exec head serve command and wait for init port

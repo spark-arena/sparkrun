@@ -16,6 +16,8 @@ import yaml
 
 from vpd.next.util import read_yaml
 
+from sparkrun.utils.shell import validate_git_url
+
 logger = logging.getLogger(__name__)
 
 
@@ -518,8 +520,9 @@ class RegistryManager:
             else:
                 # Fresh sparse clone
                 clone_dir.mkdir(parents=True, exist_ok=True)
+                validate_git_url(url)
                 result = subprocess.run(
-                    ["git", "clone", "--filter=blob:none", "--sparse", str(url), str(clone_dir)],
+                    ["git", "clone", "--filter=blob:none", "--sparse", "--", url, str(clone_dir)],
                     capture_output=True,
                     text=True,
                     timeout=120,
@@ -633,6 +636,7 @@ class RegistryManager:
                 cache_dir.mkdir(parents=True, exist_ok=True)
 
                 # Shallow clone with blob filtering
+                validate_git_url(entry.url)
                 result = subprocess.run(
                     [
                         "git",
@@ -641,6 +645,7 @@ class RegistryManager:
                         "1",
                         "--filter=blob:none",
                         "--sparse",
+                        "--",
                         entry.url,
                         str(cache_dir),
                     ],
@@ -713,8 +718,13 @@ class RegistryManager:
 
         Raises:
             RegistryError: If a registry with the same name already exists,
-                or uses a reserved name prefix from a non-allowed URL.
+                uses a reserved name prefix from a non-allowed URL, or has
+                an invalid/unsafe git URL.
         """
+        try:
+            validate_git_url(entry.url)
+        except ValueError as exc:
+            raise RegistryError("Invalid registry URL: %s" % exc) from exc
         validate_registry_name(entry.name, entry.url)
         registries = self._load_registries()
         if any(r.name == entry.name for r in registries):
@@ -742,8 +752,9 @@ class RegistryManager:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp) / "repo"
             git_env = self._git_env()
+            validate_git_url(url)
             result = subprocess.run(
-                ["git", "clone", "--depth=1", "--single-branch", str(url), str(tmp_path)],
+                ["git", "clone", "--depth=1", "--single-branch", "--", url, str(tmp_path)],
                 capture_output=True,
                 text=True,
                 timeout=60,
@@ -793,8 +804,12 @@ class RegistryManager:
             List of RegistryEntry objects added.
 
         Raises:
-            RegistryError: If clone fails or no manifest found.
+            RegistryError: If clone fails, no manifest found, or URL is invalid.
         """
+        try:
+            validate_git_url(url)
+        except ValueError as exc:
+            raise RegistryError("Invalid registry URL: %s" % exc) from exc
         entries = self._discover_manifest_entries(url)
         added = []
         for entry in entries:
@@ -1371,6 +1386,7 @@ class RegistryManager:
         from sparkrun.utils.shell import quote
 
         entry = self.get_registry(name)
+        validate_git_url(entry.url)
         sparse_paths = list(self._sparse_checkout_paths_for_url(entry.url))
         if extra_sparse_paths:
             for p in extra_sparse_paths:

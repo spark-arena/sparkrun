@@ -417,6 +417,7 @@ def run(
             rootless=not rootful,
             auto_user=not rootful,
             cluster=cluster_def,
+            trust=trust,
         )
     except DistributionError as e:
         if diag:
