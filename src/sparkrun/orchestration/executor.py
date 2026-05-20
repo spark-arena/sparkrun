@@ -6,14 +6,24 @@ re-exports the ABC + config + extension point, and adds the
 resolution helpers used by both the launcher and the lifecycle
 commands (``sparkrun stop`` / ``sparkrun logs``).
 
-Single source of truth for "give me an executor":
+**The unified executor path.**  This module is the only sanctioned
+entry point for selecting an :class:`Executor`.  Callers must go
+through one of:
 
-- :func:`resolve_executor` — layered config chain (CLI → recipe →
-  runtime → per-executor adjustments → SparkrunConfig → per-executor
-  defaults).  Used by ``core.launcher`` and the lifecycle helpers in
+- :func:`resolve_executor` — full resolution chain (CLI → recipe →
+  runtime.default_executor() → per-executor adjustments →
+  SparkrunConfig → per-executor defaults → dataclass field defaults).
+  Used by ``core.launcher`` and the lifecycle helpers in
   ``cli._stop_logs``.
-- :func:`get_executor` — look up a registered executor class by
+- :func:`get_executor` — look up a registered executor *class* by
   ``executor_name``.  Mirrors :func:`get_runtime` / :func:`get_builder`.
+  Returns the class (not the SAF singleton) because executors carry
+  per-launch state on ``self.config``.
+- :func:`list_executors` — enumerate registered executor names.
+
+The hardcoded ``_KNOWN_EXECUTORS`` set has been retired; the set of
+valid executor selectors is now whatever SAF has discovered under the
+``sparkrun.executor`` extension point (see ``core.bootstrap``).
 """
 
 from __future__ import annotations
@@ -184,17 +194,47 @@ def _config_exec_dict(config: "SparkrunConfig | None") -> dict:
     return cfg
 
 
+def _known_executor_names(v: Variables | None = None) -> set[str]:
+    """Return the set of executor names registered via SAF.
+
+    The static fallback covers test paths that bypass ``init_sparkrun``
+    (and the SAF registry).  Mirrors :func:`get_executor`'s fallback so
+    the two stay in lockstep.
+    """
+    if v is None:
+        try:
+            from sparkrun.core.bootstrap import get_variables
+
+            v = get_variables()
+        except Exception:  # pragma: no cover - degraded path
+            v = None
+
+    if v is not None:
+        try:
+            all_executors = get_extensions(EXT_EXECUTOR, v=v)
+            names = {plugin.executor_name for plugin in all_executors.values() if getattr(plugin, "executor_name", "")}
+            if names:
+                return names
+        except Exception:
+            logger.debug("Falling back to static executor name set", exc_info=True)
+
+    # Static fallback (matches get_executor's hardcoded branch).
+    return {"docker", "local", "k8s"}
+
+
 def _resolve_executor_name(
     *,
     cli_overrides: dict | None,
     recipe: "Recipe | None",
     runtime: "RuntimePlugin | None",
     config: "SparkrunConfig | None",
+    v: Variables | None = None,
 ) -> str:
     """Pick the executor name from the chain (CLI → recipe → runtime → config → docker).
 
     Unknown names log a warning and fall back to ``"docker"``.
     """
+    known: set[str] | None = None
     for layer in (
         cli_overrides,
         _recipe_exec_dict(recipe),
@@ -208,7 +248,9 @@ def _resolve_executor_name(
         if not name:
             continue
         name = name.strip().lower()
-        if name in ExecutorConfig._KNOWN_EXECUTORS:
+        if known is None:
+            known = _known_executor_names(v)
+        if name in known:
             return name
         logger.warning("Unknown executor name %r; falling back to 'docker'", name)
         return "docker"
@@ -247,6 +289,7 @@ def resolve_executor(
         recipe=recipe,
         runtime=runtime,
         config=config,
+        v=v,
     )
     cls = get_executor(name, v)
 

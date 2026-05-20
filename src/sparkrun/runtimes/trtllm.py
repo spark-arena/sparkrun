@@ -363,7 +363,7 @@ class TrtllmRuntime(RuntimePlugin):
         write_cmd = ("cat > %s << 'SPARKRUN_EOF'\n%sSPARKRUN_EOF") % (_EXTRA_CONFIG_PATH, extra_yaml)
 
         for host, container_name in hosts_containers:
-            exec_cmd = self.executor.exec_cmd(container_name, write_cmd)
+            exec_cmd = self._resolve_executor().exec_cmd(container_name, write_cmd)
             result = run_remote_command(
                 host,
                 exec_cmd,
@@ -525,7 +525,7 @@ class TrtllmRuntime(RuntimePlugin):
             except RuntimeError as e:
                 logger.error("%s", e)
                 return 1
-            container_name = self.executor.node_container_name(cluster_id, rank)
+            container_name = self._resolve_executor().node_container_name(cluster_id, rank)
             host_ip_map[ip] = container_name
             host_ips.append(ip)
             logger.info("  Rank %d: %s -> %s (IP: %s)", rank, host, container_name, ip)
@@ -537,7 +537,7 @@ class TrtllmRuntime(RuntimePlugin):
             progress.step("Launching containers")
         else:
             logger.info("Step 4/7: Launching %d container(s) with sleep infinity...", ctx.num_nodes)
-        containers = [(host, self.executor.node_container_name(cluster_id, rank)) for rank, host in enumerate(hosts)]
+        containers = [(host, self._resolve_executor().node_container_name(cluster_id, rank)) for rank, host in enumerate(hosts)]
         combined_docker_opts = (self.get_extra_docker_opts() or []) + (extra_docker_opts or [])
         rc = launch_containers_parallel(
             ctx,
@@ -558,7 +558,7 @@ class TrtllmRuntime(RuntimePlugin):
             logger.info("Step 5/7: Verifying containers are running...")
         if not dry_run:
             for rank, host in enumerate(hosts):
-                container_name = self.executor.node_container_name(cluster_id, rank)
+                container_name = self._resolve_executor().node_container_name(cluster_id, rank)
                 if not is_container_running(host, container_name, ssh_kwargs=ctx.ssh_kwargs):
                     logger.error(
                         "Container %s not running on %s (rank %d)",
@@ -574,7 +574,7 @@ class TrtllmRuntime(RuntimePlugin):
         # Step 6: Write rsh wrapper + extra config into head container
         t0 = time.monotonic()
         head_host = hosts[0]
-        head_container = self.executor.node_container_name(cluster_id, 0)
+        head_container = self._resolve_executor().node_container_name(cluster_id, 0)
         if progress:
             progress.step("Writing rsh wrapper")
         else:
@@ -595,7 +595,7 @@ class TrtllmRuntime(RuntimePlugin):
             "cat > /tmp/sparkrun-rsh-wrapper.sh << 'SPARKRUN_EOF'\n%sSPARKRUN_EOF\nchmod +x /tmp/sparkrun-rsh-wrapper.sh"
         ) % rsh_wrapper
 
-        exec_write = self.executor.exec_cmd(head_container, write_wrapper_cmd)
+        exec_write = self._resolve_executor().exec_cmd(head_container, write_wrapper_cmd)
         result = run_remote_command(
             head_host,
             exec_write,
@@ -612,7 +612,7 @@ class TrtllmRuntime(RuntimePlugin):
             extra_config_yaml = self._build_extra_config(recipe, overrides)
             if extra_config_yaml:
                 write_config_cmd = ("cat > %s << 'SPARKRUN_EOF'\n%sSPARKRUN_EOF") % (_EXTRA_CONFIG_PATH, extra_config_yaml)
-                exec_config = self.executor.exec_cmd(head_container, write_config_cmd)
+                exec_config = self._resolve_executor().exec_cmd(head_container, write_config_cmd)
                 result = run_remote_command(
                     head_host,
                     exec_config,
@@ -668,7 +668,7 @@ class TrtllmRuntime(RuntimePlugin):
             logger.info("  %s", line)
 
         # Exec mpirun on head container
-        exec_mpirun = self.executor.exec_cmd(
+        exec_mpirun = self._resolve_executor().exec_cmd(
             container_name=head_container,
             command=mpirun_cmd,
             detach=detached,

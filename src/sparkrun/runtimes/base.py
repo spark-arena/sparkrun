@@ -52,20 +52,34 @@ class RuntimePlugin(Plugin):
     """
 
     # --- Executor ---
-    _executor: Executor | None = None
+    #
+    # The active executor is set by :meth:`run` (which receives one
+    # from :func:`sparkrun.orchestration.executor.resolve_executor`
+    # in the launcher).  Lifecycle paths (``sparkrun stop`` /
+    # ``sparkrun logs``) that don't go through :meth:`run` either
+    # assign one explicitly or let :meth:`_resolve_executor` resolve
+    # the default via the unified chain.  No lazy DockerExecutor
+    # fallback property — selection always flows through
+    # :func:`sparkrun.orchestration.executor.resolve_executor`.
+    executor: Executor | None = None
 
-    @property
-    def executor(self) -> Executor:
-        """Return the executor, lazily defaulting to DockerExecutor."""
-        if self._executor is None:
-            from sparkrun.orchestration.executor import get_executor
+    def _resolve_executor(self) -> Executor:
+        """Return the active executor, resolving via the unified chain if unset.
 
-            self._executor = get_executor("docker")()
-        return self._executor
+        Internal helper for runtime methods that may run *outside* the
+        :meth:`run` call (notably :meth:`follow_logs`, :meth:`stop`,
+        and naming helpers like :meth:`get_head_container_name`).
+        When :attr:`executor` has been explicitly set (the common
+        ``run()`` path), return it as-is.  Otherwise resolve a fresh
+        one from :func:`resolve_executor` so naming + lifecycle helpers
+        keep working under the new "no lazy default" contract.
+        """
+        if self.executor is not None:
+            return self.executor
+        from sparkrun.orchestration.executor import resolve_executor
 
-    @executor.setter
-    def executor(self, value: Executor) -> None:
-        self._executor = value
+        self.executor = resolve_executor(runtime=self, rootless=False, auto_user=False)
+        return self.executor
 
     # --- SAF Plugin interface ---
 
@@ -720,7 +734,7 @@ class RuntimePlugin(Plugin):
             from sparkrun.orchestration.ssh import stream_container_file_logs
 
             host = hosts[0] if hosts else "localhost"
-            container_name = self.executor.container_name(cluster_id, "solo")
+            container_name = self._resolve_executor().container_name(cluster_id, "solo")
             ssh_kwargs = build_ssh_kwargs(config)
             stream_container_file_logs(
                 host,
@@ -783,7 +797,7 @@ class RuntimePlugin(Plugin):
         ``{cluster_id}_node_0`` for SGLang and vLLM distributed).
         """
         if is_solo:
-            return self.executor.container_name(cluster_id, "solo")
+            return self._resolve_executor().container_name(cluster_id, "solo")
         return self._head_container_name(cluster_id)
 
     def _head_container_name(self, cluster_id: str) -> str:
@@ -794,8 +808,8 @@ class RuntimePlugin(Plugin):
         to ``{cluster_id}_head``.  Subclasses can still override.
         """
         if self.cluster_strategy() == "native":
-            return self.executor.node_container_name(cluster_id, 0)
-        return self.executor.container_name(cluster_id, "head")
+            return self._resolve_executor().node_container_name(cluster_id, 0)
+        return self._resolve_executor().container_name(cluster_id, "head")
 
     def _cluster_log_mode(self) -> str:
         """Return the log tailing mode for cluster containers.
@@ -889,7 +903,7 @@ class RuntimePlugin(Plugin):
             Exit code (0 = success).
         """
         if executor is not None:
-            self._executor = executor
+            self.executor = executor
 
         # Extract progress from kwargs (flows through from launcher)
         progress = kwargs.pop("progress", None)
@@ -1050,7 +1064,7 @@ class RuntimePlugin(Plugin):
 
         ssh_kwargs = build_ssh_kwargs(config)
         is_local = should_run_locally(host, ssh_kwargs.get("ssh_user"))
-        container_name = self.executor.container_name(cluster_id, "solo")
+        container_name = self._resolve_executor().container_name(cluster_id, "solo")
         volumes = build_volumes(cache_dir, extra=self.get_extra_volumes())
         all_env = merge_env(
             self.get_common_env(),  # base env
@@ -1096,7 +1110,7 @@ class RuntimePlugin(Plugin):
                 host,
                 image,
             )
-        launch_script = self.executor.generate_launch_script(
+        launch_script = self._resolve_executor().generate_launch_script(
             image=image,
             container_name=container_name,
             command="sleep infinity",
@@ -1135,7 +1149,7 @@ class RuntimePlugin(Plugin):
         else:
             logger.info("Step 3/3: Executing serve command in %s...", container_name)
         logger.debug("Serve command: %s", serve_command)
-        exec_script = self.executor.generate_exec_serve_script(
+        exec_script = self._resolve_executor().generate_exec_serve_script(
             container_name=container_name,
             serve_command=serve_command,
             env=all_env,
@@ -1180,7 +1194,7 @@ class RuntimePlugin(Plugin):
             should_run_locally,
         )
 
-        container_name = self.executor.container_name(cluster_id, "solo")
+        container_name = self._resolve_executor().container_name(cluster_id, "solo")
         ssh_kwargs = build_ssh_kwargs(config)
         is_local = should_run_locally(host, ssh_kwargs.get("ssh_user"))
 
@@ -1222,7 +1236,7 @@ class RuntimePlugin(Plugin):
         Returns:
             Complete bash script as a string.
         """
-        return self.executor.generate_node_script(
+        return self._resolve_executor().generate_node_script(
             image=image,
             container_name=container_name,
             serve_command=serve_command,
@@ -1289,10 +1303,10 @@ class RuntimePlugin(Plugin):
 
         ssh_kwargs = build_ssh_kwargs(config)
         for rank, host in enumerate(hosts):
-            container_name = self.executor.node_container_name(cluster_id, rank)
+            container_name = self._resolve_executor().node_container_name(cluster_id, rank)
             run_remote_command(
                 host,
-                self.executor.stop_cmd(container_name),
+                self._resolve_executor().stop_cmd(container_name),
                 timeout=30,
                 dry_run=dry_run,
                 **ssh_kwargs,
@@ -1422,7 +1436,7 @@ class RuntimePlugin(Plugin):
                     "  Node %d: ssh %s 'docker logs %s'",
                     rank,
                     host,
-                    self.executor.node_container_name(cluster_id, rank),
+                    self._resolve_executor().node_container_name(cluster_id, rank),
                 )
         logger.info("=" * 60)
 
@@ -1482,7 +1496,7 @@ class RuntimePlugin(Plugin):
         # Pass the inner script via the executor's exec context.
         # This replaces the hardcoded `docker exec` and correctly utilizes
         # b64_wrap_bash internally (for DockerExecutor) to avoid quoting issues.
-        outer_script = self.executor.exec_cmd(
+        outer_script = self._resolve_executor().exec_cmd(
             container_name=container_name,
             command=inner_script,
             detach=False,

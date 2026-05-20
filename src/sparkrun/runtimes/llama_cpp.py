@@ -379,7 +379,7 @@ class LlamaCppRuntime(RuntimePlugin):
         head_container = self._container_name(cluster_id, "head")
         run_remote_command(
             hosts[0],
-            self.executor.stop_cmd(head_container),
+            self._resolve_executor().stop_cmd(head_container),
             timeout=30,
             dry_run=dry_run,
             **ssh_kwargs,
@@ -390,7 +390,7 @@ class LlamaCppRuntime(RuntimePlugin):
             worker_container = self._container_name(cluster_id, "worker")
             run_remote_command(
                 host,
-                self.executor.stop_cmd(worker_container),
+                self._resolve_executor().stop_cmd(worker_container),
                 timeout=30,
                 dry_run=dry_run,
                 **ssh_kwargs,
@@ -563,7 +563,7 @@ class LlamaCppRuntime(RuntimePlugin):
             with ThreadPoolExecutor(max_workers=len(ctx.worker_hosts)) as pool:
                 futures = {}
                 for host in ctx.worker_hosts:
-                    exec_script = self.executor.generate_exec_serve_script(
+                    exec_script = self._resolve_executor().generate_exec_serve_script(
                         container_name=worker_container_name,
                         serve_command=rpc_worker_command,
                         env=ctx.all_env,

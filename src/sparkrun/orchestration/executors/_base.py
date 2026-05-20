@@ -16,7 +16,7 @@ from abc import abstractmethod
 from dataclasses import dataclass
 from typing import ClassVar
 
-from scitrera_app_framework import Plugin, Variables, ext_parse_bool
+from scitrera_app_framework import Plugin, Variables, ext_parse_bool, get_extensions
 
 from sparkrun.scripts import read_script
 from sparkrun.utils import merge_env
@@ -25,6 +25,35 @@ from sparkrun.utils.shell import b64_encode_cmd, quote
 logger = logging.getLogger(__name__)
 
 EXT_EXECUTOR = "sparkrun.executor"
+
+
+def _registered_executor_names() -> set[str]:
+    """Return executor selectors registered with SAF under :data:`EXT_EXECUTOR`.
+
+    Falls back to the built-in static set when SAF isn't initialized
+    (e.g. test paths that build :class:`ExecutorConfig` directly without
+    going through ``init_sparkrun``).
+    """
+    try:
+        from sparkrun.core.bootstrap import get_variables
+
+        v = get_variables()
+    except Exception:  # pragma: no cover - degraded path
+        v = None
+
+    if v is not None:
+        try:
+            plugins = get_extensions(EXT_EXECUTOR, v=v)
+            names = {p.executor_name for p in plugins.values() if getattr(p, "executor_name", "")}
+            if names:
+                return names
+        except Exception:
+            logger.debug("Falling back to static executor name set", exc_info=True)
+
+    # Static fallback — keeps the validation logic functioning for
+    # in-tree tests that import :class:`ExecutorConfig` directly without
+    # bootstrapping the SAF plugin registry.
+    return {"docker", "local", "k8s"}
 
 
 @dataclass
@@ -93,11 +122,6 @@ class ExecutorConfig:
     k8s_image_pull_policy: str | None = None
     kubeconfig: str | None = None
 
-    # Set of executor_type values accepted by ``from_chain``.  Updated
-    # at module import time by each concrete executor's
-    # ``executor_name`` ClassVar.
-    _KNOWN_EXECUTORS: ClassVar[set[str]] = {"docker", "local", "k8s"}
-
     @classmethod
     def from_chain(cls, chain) -> ExecutorConfig:
         """Build from a config chain or plain dict.
@@ -155,18 +179,21 @@ class ExecutorConfig:
             kwargs[key] = raw or None
 
         # Executor selector: prefer ``executor``, fall back to
-        # ``executor_type`` for forward compat.  Unknown values warn
-        # and degrade to ``"docker"``.
+        # ``executor_type`` for forward compat.  Validity is checked
+        # against the SAF plugin registry (see
+        # :func:`_registered_executor_names`); unknown values warn and
+        # degrade to ``"docker"``.
         exec_type_raw = chain.get("executor")
         if exec_type_raw is None:
             exec_type_raw = chain.get("executor_type")
         if exec_type_raw:
             executor_type = str(exec_type_raw).strip().lower()
-            if executor_type not in cls._KNOWN_EXECUTORS:
+            known = _registered_executor_names()
+            if executor_type not in known:
                 logger.warning(
                     "Unknown executor type %r; falling back to 'docker'. Known: %s",
                     executor_type,
-                    sorted(cls._KNOWN_EXECUTORS),
+                    sorted(known),
                 )
                 executor_type = "docker"
             kwargs["executor_type"] = executor_type
