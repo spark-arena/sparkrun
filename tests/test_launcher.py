@@ -99,6 +99,7 @@ class _StubRuntime:
     """Minimal RuntimePlugin-ish stub that records ``run()`` kwargs."""
 
     runtime_name = "stub"
+    requires_capability: frozenset = frozenset()
     last_kwargs: dict = {}
 
     def is_delegating_runtime(self):

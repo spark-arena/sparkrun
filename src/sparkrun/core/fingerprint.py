@@ -321,6 +321,13 @@ def _detection_note(parsed: dict[str, str]) -> str:
 def fingerprint_host(host: str, ssh_kwargs: dict[str, Any] | None = None) -> HostHardware:
     """Run the probe script over SSH and parse the result into ``HostHardware``.
 
+    .. deprecated::
+        Prefer :func:`sparkrun.core.hardware_probe.probe_host`, which runs
+        the accelerator fingerprint **and** InfiniBand detection in a single
+        SSH round-trip and populates :attr:`HostHardware.ib_info` as well.
+        This wrapper is kept for back-compat; it delegates to
+        :func:`~sparkrun.core.hardware_probe.probe_host` internally.
+
     Args:
         host: Hostname or IP.
         ssh_kwargs: Passed straight through to
@@ -332,17 +339,6 @@ def fingerprint_host(host: str, ssh_kwargs: dict[str, Any] | None = None) -> Hos
         runs but detects nothing — callers should treat this as
         "manual configuration required".
     """
-    from sparkrun.orchestration.ssh import run_remote_script
+    from sparkrun.core.hardware_probe import probe_host
 
-    result = run_remote_script(
-        host,
-        generate_fingerprint_script(),
-        timeout=30,
-        **(ssh_kwargs or {}),
-    )
-    if not result.success:
-        logger.warning("Fingerprint probe failed on %s: %s", host, result.stderr[:200])
-        return HostHardware(notes="fingerprint probe failed: %s" % result.stderr[:120])
-
-    parsed = parse_fingerprint_output(result.stdout)
-    return build_host_hardware(parsed)
+    return probe_host(host, ssh_kwargs=ssh_kwargs)
