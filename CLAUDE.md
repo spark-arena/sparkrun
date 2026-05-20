@@ -54,7 +54,8 @@ src/sparkrun/
 ├── cli/                # Click CLI package (see CLI Architecture below)
 ├── core/               # Core data models, bootstrap, and business logic (see below)
 ├── runtimes/           # Runtime plugins (see below)
-├── orchestration/      # SSH, Docker, InfiniBand, script execution primitives
+├── orchestration/      # SSH, Docker, InfiniBand, executors, collectives (see below)
+├── platforms/          # HardwarePlatformPlugin registry (DGX Spark + generic NVIDIA today)
 ├── models/             # HuggingFace model download, distribution, and VRAM estimation
 ├── containers/         # Container image distribution (docker save/load over SSH)
 ├── tuning/             # Triton fused MoE kernel tuning for SGLang and vLLM
@@ -73,7 +74,7 @@ Core domain logic extracted from the top-level package. All imports use `sparkru
 
 | Module                  | Purpose                                                                              |
 |-------------------------|--------------------------------------------------------------------------------------|
-| `bootstrap.py`          | SAF plugin initialization, runtime and benchmarking framework discovery              |
+| `bootstrap.py`          | SAF plugin initialization, runtime / benchmarking / builder / executor discovery     |
 | `config.py`             | `SparkrunConfig` — reads `~/.config/sparkrun/config.yaml`, cache dir resolution      |
 | `registry.py`           | `RegistryManager` — git-based recipe registry system (see Registry System below)     |
 | `recipe.py`             | `Recipe` loading, validation, v1→v2 migration, config chain via SAF Variables         |
@@ -81,6 +82,13 @@ Core domain logic extracted from the top-level package. All imports use `sparkru
 | `hosts.py`              | Host resolution priority chain (CLI → file → cluster → default)                      |
 | `pending_ops.py`        | PID-based lock files for in-progress operations                                      |
 | `benchmark_profiles.py` | Benchmark profile discovery, resolution, and rendering across registries             |
+| `hardware.py`           | `AcceleratorSpec` / `HostHardware` / `default_dgx_spark_hardware()`                  |
+| `hardware_probe.py`     | `probe_host` / `probe_hosts` — combined accelerator + InfiniBand SSH probe           |
+| `fingerprint.py`        | Thin shim — accelerator-only parsing on top of the combined probe                    |
+| `backend_select.py`     | `select_backends(HostHardware) -> BackendBundle`, `NoMatchingBackendError`           |
+| `placement.py`          | `compute_placement()` — rank → (host, local-GPU) honoring `RecipeLayout`             |
+| `layout.py`             | `RecipeLayout` / `Placement` dataclasses parsed from recipe `layout:` block          |
+| `launcher.py`           | `launch_inference()`, `resolve_per_host_backends()`, `resolve_recipe_trust()`        |
 
 ### CLI Architecture (`cli/`)
 
@@ -106,12 +114,24 @@ The CLI was split from a single `cli.py` into a package for maintainability. The
 ### Plugin System (SAF)
 
 sparkrun uses [scitrera-app-framework](https://github.com/scitrera/python-app-framework) (SAF) for plugin discovery and
-lifecycle. Runtimes and benchmarking frameworks register as multi-extension plugins. Discovery happens via Python entry
-points defined in `pyproject.toml`.
+lifecycle. Four extension points are registered:
+
+| Extension point        | Constant       | Module scanned                       | Base class              |
+|------------------------|----------------|--------------------------------------|-------------------------|
+| `sparkrun.runtime`     | `EXT_RUNTIME`  | `sparkrun.runtimes`                  | `RuntimePlugin`         |
+| `sparkrun.builder`     | `EXT_BUILDER`  | `sparkrun.builders`                  | `BuilderPlugin`         |
+| `sparkrun.benchmarking`| `EXT_BENCHMARKING` | `sparkrun.benchmarking`          | `BenchmarkingPlugin`    |
+| `sparkrun.executor`    | `EXT_EXECUTOR` | `sparkrun.orchestration.executors`   | `Executor`              |
 
 Key bootstrap flow: `cli/__init__.py` → `core.bootstrap.init_sparkrun()` → SAF `init_framework_desktop()` →
 `find_types_in_modules("sparkrun.runtimes", RuntimePlugin)` +
-`find_types_in_modules("sparkrun.benchmarking", BenchmarkingPlugin)` → `register_plugin()` for each discovered plugin.
+`find_types_in_modules("sparkrun.benchmarking", BenchmarkingPlugin)` +
+`find_types_in_modules("sparkrun.builders", BuilderPlugin)` +
+`find_types_in_modules("sparkrun.orchestration.executors", Executor)` → `register_plugin()` for each discovered plugin.
+
+The `EXT_PLATFORM` constant is defined in `platforms/base.py` for future SAF
+entry-point discovery; today `platforms/__init__.py` keeps an ordered
+in-process registry that callers iterate via `resolve_platform()`.
 
 ### Runtime Architecture
 
@@ -130,6 +150,33 @@ provides solo-mode orchestration; runtimes override `run()`/`stop()`/`follow_log
 Runtimes must implement `generate_command()` and `resolve_container()`. The `cluster_strategy()` return value determines
 which orchestration path the base class uses.
 
+**Node-command template** (`RuntimePlugin._make_node_command_args`): native
+multi-node runtimes (`vllm-distributed`, `sglang`, `trtllm`) emit rank-specific
+argv via this template rather than ad-hoc per-runtime construction. Subclasses
+override the hook methods (`_node_rank_args`, `_master_args`, etc.) and inherit
+the assembly.
+
+**Executor resolution** (`RuntimePlugin._resolve_executor`): runtimes do not
+construct executors directly. The base helper delegates to
+`orchestration.executor:resolve_executor()` — a single layered chain (CLI →
+recipe → `runtime.default_executor()` → per-executor adjustments →
+`SparkrunConfig` → per-executor defaults → dataclass field defaults). The
+previously-hardcoded `_KNOWN_EXECUTORS` set has been retired; selector
+validation queries SAF via `get_extensions(EXT_EXECUTOR)`.
+
+**Trust gating** (`launcher.py:resolve_recipe_trust`): each launch resolves a
+single trust verdict shared by `pre_exec` (inside `runtime.run()`) and
+`post_exec` / `post_commands` (inside `post_launch_lifecycle`). Local recipes
+and default-registry recipes are auto-trusted; third-party registry recipes
+prompt unless `--trust` is passed. See `docs/SECURITY.md`.
+
+**Backend bundle**: `RuntimePlugin.run()` accepts a keyword-only
+`backends: dict[str, BackendBundle] | None` resolved by
+`launcher.resolve_per_host_backends()`. Runtimes route per-host env emission
+through `_cluster_ops.resolve_comm_env(ctx, comm_env, backends)`; the legacy
+`resolve_ib_env(ctx, comm_env)` wrapper is deprecated (emits
+`DeprecationWarning`).
+
 ### Orchestration Layer (`orchestration/`)
 
 All remote operations use **SSH stdin piping** — scripts are generated as Python strings and piped to `ssh <host> bash -s`. No files are ever copied to remote hosts.
@@ -142,6 +189,10 @@ All remote operations use **SSH stdin piping** — scripts are generated as Pyth
 - **`networking.py`** — ConnectX-7 NIC detection, IP assignment planning, CX7 configuration script generation, host key distribution
 - **`primitives.py`** — Higher-level composition: `build_ssh_kwargs()`, `build_volumes()`, `merge_env()`, `detect_infiniband()`, `run_script_on_host()`, `cleanup_containers()`
 - **`job_metadata.py`** — Persistent job metadata (cluster_id → recipe mapping) stored in `~/.cache/sparkrun/jobs/`
+- **`executor.py`** — Public facade. Re-exports `Executor`, `ExecutorConfig`, `EXT_EXECUTOR`. `resolve_executor()` is the single sanctioned executor entry point.
+- **`executors/`** — Executor plugin package. `_base.py` (ABC + dataclass), `docker.py` (default), `local.py` (experimental, no container), `k8s.py` (experimental draft, `kubectl run`-driven). Discovered via SAF.
+- **`collectives/`** — `CollectiveBackend` ABC + implementations: `nccl.py` (default; wraps `infiniband.py`), `rccl.py` (AMD scaffold), `hccl.py` (Intel Gaudi scaffold). `get_backend(vendor)` is the lookup.
+- **`hooks.py`** — `pre_exec` / `post_exec` / `post_commands` runners. Trust gating via `_confirm_hook_execution(trust=...)`.
 
 ### Recipe System
 
