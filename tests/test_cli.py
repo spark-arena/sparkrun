@@ -963,6 +963,73 @@ class TestRunCommand:
         assert "max_nodes=1" in result.output
         assert "requires 2 nodes" in result.output
 
+    def test_run_platform_homogeneous_dgx_spark(self, runner, reset_bootstrap):
+        """Platform line shows homogeneous DGX Spark when all hosts have GB10 hardware."""
+        with mock.patch.object(SglangRuntime, "run", return_value=0):
+            with mock.patch("sparkrun.cli._run._summarize_platforms") as mock_sp:
+                mock_sp.return_value = ("DGX Spark (NVIDIA GB10, NCCL)", None)
+                result = runner.invoke(
+                    main,
+                    [
+                        "run",
+                        _TEST_RECIPE_NAME,
+                        "--dry-run",
+                        "--hosts",
+                        "10.0.0.1,10.0.0.2",
+                    ],
+                )
+
+        assert result.exit_code == 0
+        assert "Platform:  DGX Spark (NVIDIA GB10, NCCL)" in result.output
+
+    def test_run_platform_heterogeneous(self, runner, reset_bootstrap):
+        """Platform line shows 'mixed' with per-host details for heterogeneous clusters."""
+        with mock.patch.object(SglangRuntime, "run", return_value=0):
+            with mock.patch("sparkrun.cli._run._summarize_platforms") as mock_sp:
+                mock_sp.return_value = (
+                    "mixed",
+                    [
+                        ("10.0.0.1", "DGX Spark (NVIDIA GB10, NCCL)"),
+                        ("10.0.0.2", "Generic NVIDIA (NVIDIA H100, NCCL)"),
+                    ],
+                )
+                result = runner.invoke(
+                    main,
+                    [
+                        "run",
+                        _TEST_RECIPE_NAME,
+                        "--dry-run",
+                        "--hosts",
+                        "10.0.0.1,10.0.0.2",
+                    ],
+                )
+
+        assert result.exit_code == 0
+        assert "Platform:  mixed" in result.output
+        assert "10.0.0.1:" in result.output
+        assert "DGX Spark (NVIDIA GB10, NCCL)" in result.output
+        assert "10.0.0.2:" in result.output
+        assert "Generic NVIDIA (NVIDIA H100, NCCL)" in result.output
+
+    def test_run_platform_no_cluster_defaults_to_dgx_spark(self, runner, reset_bootstrap):
+        """Platform line falls back to DGX Spark hardware when no cluster is specified."""
+        with mock.patch.object(SglangRuntime, "run", return_value=0):
+            result = runner.invoke(
+                main,
+                [
+                    "run",
+                    _TEST_RECIPE_NAME,
+                    "--dry-run",
+                    "--hosts",
+                    "10.0.0.1,10.0.0.2",
+                ],
+            )
+
+        assert result.exit_code == 0
+        # No cluster => default_dgx_spark_hardware() => DGX Spark platform
+        assert "Platform:" in result.output
+        assert "DGX Spark" in result.output
+
 
 class TestStopCommand:
     """Test the stop command."""

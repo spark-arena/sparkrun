@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import logging
+
+import pytest
+
 from sparkrun.orchestration.ssh import RemoteResult
+
 from sparkrun.orchestration.transfer import (
+    TransferError,
     TransferFailure,
     classify_rsync_failure,
     format_transfer_failures,
     map_transfer_failures,
     map_transfer_failures_detailed,
+    present_and_raise_transfer_failure,
 )
 
 
@@ -149,3 +156,109 @@ def test_format_transfer_failures_empty_returns_empty_string():
 def test_format_transfer_failures_single_host():
     failures = [TransferFailure(host="m1", reason="out of disk space on destination")]
     assert format_transfer_failures(failures) == "out of disk space on destination on m1"
+
+
+# ---------------------------------------------------------------------------
+# present_and_raise_transfer_failure
+# ---------------------------------------------------------------------------
+
+
+def _make_logger() -> tuple[logging.Logger, list[str]]:
+    """Return a logger wired to a list so tests can inspect emitted messages."""
+    log = logging.getLogger("test_present_and_raise_%s" % id(object()))
+    log.setLevel(logging.DEBUG)
+    messages: list[str] = []
+
+    class _Handler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            messages.append(self.format(record))
+
+    log.addHandler(_Handler())
+    return log, messages
+
+
+def test_present_and_raise_transfer_failure_emits_classified_lines():
+    """Per-host classified lines are logged at ERROR level before raising."""
+    log, messages = _make_logger()
+    failures = [
+        TransferFailure(host="h1", reason="out of disk space"),
+        TransferFailure(host="h2", reason="permission denied"),
+    ]
+    with pytest.raises(TransferError, match="copy failed"):
+        present_and_raise_transfer_failure(
+            failures,
+            operation="copy failed",
+            label="copy",
+            _logger=log,
+        )
+    assert any("copy failed on h1: out of disk space" in m for m in messages)
+    assert any("copy failed on h2: permission denied" in m for m in messages)
+
+
+def test_present_and_raise_transfer_failure_emits_cache_table_on_oos():
+    """When OOS and cache_dir + cache_status_hosts are given, the cache-status table is logged."""
+    from unittest import mock
+
+    log, messages = _make_logger()
+    failures = [TransferFailure(host="h1", reason="out of disk space")]
+
+    fake_status = {"h1": object()}  # non-empty — triggers table emission
+    fake_table = "  Host   SR exists  ..."
+
+    with mock.patch("sparkrun.orchestration.disk_info.probe_cache_status", return_value=fake_status) as mock_probe:
+        with mock.patch("sparkrun.utils.cli_formatters.format_cache_status_table", return_value=fake_table) as mock_fmt:
+            with pytest.raises(TransferError):
+                present_and_raise_transfer_failure(
+                    failures,
+                    operation="copy failed",
+                    cache_status_hosts=["h1"],
+                    cache_dir="~/.cache/huggingface",
+                    ssh_kwargs={"ssh_user": "u"},
+                    label="copy",
+                    _logger=log,
+                )
+            mock_probe.assert_called_once()
+            mock_fmt.assert_called_once()
+
+    assert any(fake_table in m for m in messages)
+
+
+def test_present_and_raise_transfer_failure_skips_cache_table_when_cache_dir_none():
+    """When cache_dir is None, the table is skipped even for OOS failures."""
+    from unittest import mock
+
+    log, messages = _make_logger()
+    failures = [TransferFailure(host="h1", reason="out of disk space")]
+
+    with mock.patch("sparkrun.orchestration.disk_info.probe_cache_status") as mock_probe:
+        with pytest.raises(TransferError):
+            present_and_raise_transfer_failure(
+                failures,
+                operation="copy failed",
+                cache_status_hosts=["h1"],
+                cache_dir=None,  # explicitly None — table must be skipped
+                label="copy",
+                _logger=log,
+            )
+        mock_probe.assert_not_called()
+
+    # Classified line is still emitted
+    assert any("copy failed on h1: out of disk space" in m for m in messages)
+
+
+def test_present_and_raise_transfer_failure_raises_custom_exc_class():
+    """exc_class parameter controls the raised exception type."""
+
+    class MyError(TransferError):
+        pass
+
+    log, _ = _make_logger()
+    failures = [TransferFailure(host="h1", reason="permission denied")]
+
+    with pytest.raises(MyError):
+        present_and_raise_transfer_failure(
+            failures,
+            operation="op failed",
+            exc_class=MyError,
+            _logger=log,
+        )

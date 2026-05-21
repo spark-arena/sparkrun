@@ -335,6 +335,7 @@ class TrtllmRuntime(RuntimePlugin):
         recipe: Recipe | None = None,
         config_chain=None,
         trust: bool = False,
+        cache_dir: str | None = None,
     ) -> None:
         """Write extra-llm-api-config.yml into containers before serve.
 
@@ -350,6 +351,7 @@ class TrtllmRuntime(RuntimePlugin):
             recipe=recipe,
             config_chain=config_chain,
             trust=trust,
+            cache_dir=cache_dir,
         )
 
         if recipe is None:

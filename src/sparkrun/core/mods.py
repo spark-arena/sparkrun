@@ -272,7 +272,21 @@ def _rsync_to_head(
         timeout=120,
     )
     if not result.success:
-        raise RuntimeError("Failed to stage mod %r to %s: %s" % (name, head, result.stderr.strip() if result.stderr else "(no output)"))
+        from sparkrun.orchestration.transfer import TransferFailure, classify_rsync_failure, present_and_raise_transfer_failure
+
+        failure = TransferFailure(
+            host=head,
+            reason=classify_rsync_failure(result),
+            detail=(result.stderr or "")[:400],
+        )
+        present_and_raise_transfer_failure(
+            [failure],
+            operation="Failed to stage mod %r" % name,
+            cache_status_hosts=[head],
+            cache_dir="~/.cache/huggingface",
+            ssh_kwargs=ssh_kwargs,
+            label="copy",
+        )
     return dest
 
 

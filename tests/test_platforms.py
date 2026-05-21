@@ -85,7 +85,7 @@ def test_dgx_spark_accelerator_vendor():
 def test_dgx_spark_default_images():
     p = DgxSparkPlatform()
     assert p.default_image("atlas") == "avarok/atlas-gb10:latest"
-    assert p.default_image("vllm-distributed") == "ghcr.io/spark-arena/dgx-vllm-eugr-nightly-tf5:latest"
+    assert p.default_image("vllm-distributed") == "ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest"
     assert p.default_image("sglang") == "scitrera/dgx-spark-sglang:latest"
     assert p.default_image("nonexistent-runtime") is None
 

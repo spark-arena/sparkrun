@@ -835,6 +835,7 @@ def post_launch_lifecycle(
                 ssh_kwargs=_ssh_kw,
                 dry_run=dry_run,
                 trust=_is_trusted,
+                cache_dir=remote_cache_dir,
             )
 
         # Run post_commands on control machine

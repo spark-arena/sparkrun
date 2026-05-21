@@ -11,9 +11,26 @@ formatting summaries for error messages and logs.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, NoReturn
 
 from sparkrun.orchestration.ssh import RemoteResult
+
+if TYPE_CHECKING:
+    pass
+
+logger = logging.getLogger(__name__)
+
+
+class TransferError(Exception):
+    """User-facing error for any file-transfer (rsync) operation.
+
+    Raised by hooks, mods, tuning, and distribution layers when an
+    rsync-like operation fails.  The exception message is expected to
+    be already classified via :func:`format_transfer_failures` or
+    :func:`classify_rsync_failure` so the CLI can display it directly.
+    """
 
 
 @dataclass
@@ -129,3 +146,71 @@ def format_transfer_failures(failures: list[TransferFailure]) -> str:
     for reason, hosts in by_reason.items():
         parts.append("%s on %s" % (reason, ", ".join(hosts)))
     return "; ".join(parts)
+
+
+def present_and_raise_transfer_failure(
+    failures: list[TransferFailure],
+    *,
+    operation: str,
+    cache_status_hosts: list[str] | None = None,
+    cache_dir: str | None = None,
+    ssh_kwargs: dict | None = None,
+    label: str = "transfer",
+    exc_class: type[TransferError] = TransferError,
+    _logger: logging.Logger | None = None,
+) -> NoReturn:
+    """Log classified per-host failure lines, optionally emit a disk-space table, then raise.
+
+    This is the canonical "polish" path shared by model distribution,
+    hook copy commands, and mod staging.  It replaces the repetitive
+    inline ``for f in failures: logger.error(...)`` / OOS table blocks
+    that used to live in each call site.
+
+    Args:
+        failures: Non-empty list of classified failures.
+        operation: Human-readable operation label used in the raised
+            exception message, e.g. ``"pre_exec[1] copy failed"`` or
+            ``"Model distribution failed"``.
+        cache_status_hosts: Full host list to probe for the disk-space
+            table (may be larger than the failing hosts).  When ``None``
+            the table is skipped even for OOS failures.
+        cache_dir: Remote HuggingFace cache directory to probe.  When
+            ``None`` the table is skipped.
+        ssh_kwargs: SSH connection kwargs forwarded to
+            :func:`~sparkrun.orchestration.disk_info.probe_cache_status`.
+        label: Noun used in per-host log lines, e.g. ``"rsync"`` or
+            ``"copy"``.
+        exc_class: Exception class to raise — defaults to
+            :class:`TransferError` but callers that need
+            ``DistributionError`` pass it here.
+        _logger: Override the module-level logger (used by tests).
+
+    Raises:
+        TransferError: (or *exc_class*) Always.  The message is
+            ``"<operation>: <format_transfer_failures(failures)>"``.
+    """
+    log = _logger or logger
+
+    # Per-host classified lines (e.g. "ERROR:  rsync failed on h1: out of disk space")
+    for f in failures:
+        log.error("  %s failed on %s: %s", label, f.host, f.reason)
+
+    # If any failure is OOS and we have enough info, emit the cache-status table.
+    oos_hosts = [f.host for f in failures if "disk space" in f.reason or "quota" in f.reason]
+    if oos_hosts and cache_status_hosts is not None and cache_dir is not None:
+        from sparkrun.orchestration.disk_info import probe_cache_status
+        from sparkrun.utils.cli_formatters import format_cache_status_table
+
+        kw = ssh_kwargs or {}
+        cache_status = probe_cache_status(
+            cache_status_hosts,
+            hf_cache_dir=cache_dir,
+            ssh_kwargs=kw,
+        )
+        if cache_status:
+            log.error(
+                "  Cluster cache status:\n%s",
+                format_cache_status_table(cache_status, highlight_hosts=oos_hosts),
+            )
+
+    raise exc_class("%s: %s" % (operation, format_transfer_failures(failures)))

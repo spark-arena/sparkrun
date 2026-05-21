@@ -11,6 +11,8 @@ from sparkrun.core.config import resolve_hf_token as _get_hf_token
 from sparkrun.core.hosts import is_control_in_cluster
 from sparkrun.utils import is_local_host
 
+from sparkrun.orchestration.transfer import TransferError
+
 if TYPE_CHECKING:
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.orchestration.comm_env import ClusterCommEnv
@@ -21,7 +23,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class DistributionError(Exception):
+class DistributionError(TransferError):
     """Raised when resource distribution (image or model sync) fails."""
 
 
@@ -642,9 +644,17 @@ def distribute_resources(
                 )
 
         if mdl_failed:
-            from sparkrun.orchestration.transfer import format_transfer_failures
+            from sparkrun.orchestration.transfer import present_and_raise_transfer_failure
 
-            raise DistributionError("Model distribution failed: %s" % format_transfer_failures(mdl_failed))
+            present_and_raise_transfer_failure(
+                mdl_failed,
+                operation="Model distribution failed",
+                cache_status_hosts=host_list,
+                cache_dir=cache_dir,
+                ssh_kwargs=ssh_kwargs,
+                label="rsync",
+                exc_class=DistributionError,
+            )
 
     logger.info("Distribution complete.")
     return comm_env, ib_ip_map, mgmt_ip_map
@@ -836,9 +846,17 @@ def distribute_from_config(
                     _auto_delegated,
                 )
             if mdl_failed:
-                from sparkrun.orchestration.transfer import format_transfer_failures
+                from sparkrun.orchestration.transfer import present_and_raise_transfer_failure
 
-                raise DistributionError("Model distribution failed: %s" % format_transfer_failures(mdl_failed))
+                present_and_raise_transfer_failure(
+                    mdl_failed,
+                    operation="Model distribution failed",
+                    cache_status_hosts=targets,
+                    cache_dir=cache_dir,
+                    ssh_kwargs=ssh_kwargs,
+                    label="rsync",
+                    exc_class=DistributionError,
+                )
 
     logger.info("Distribution complete.")
     return comm_env, ib_ip_map, mgmt_ip_map

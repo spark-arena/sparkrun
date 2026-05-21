@@ -589,3 +589,78 @@ def test_resolved_mod_dataclass():
     r = ResolvedMod(name="foo", source_path="/x/foo", source_host=None)
     assert r.name == "foo"
     assert r.source_host is None
+
+
+# ---------------------------------------------------------------------------
+# _rsync_to_head error classification
+# ---------------------------------------------------------------------------
+
+
+class TestRsyncToHeadErrorClassification:
+    """_rsync_to_head raises TransferError with classified reason on failure."""
+
+    @mock.patch("sparkrun.core.mods.run_rsync")
+    def test_disk_space_raises_transfer_error(self, mock_rsync):
+        """Disk-space rsync failure yields TransferError with 'out of disk space'."""
+        from sparkrun.orchestration.ssh import RemoteResult
+        from sparkrun.orchestration.transfer import TransferError
+        from sparkrun.core.mods import _rsync_to_head
+
+        mock_rsync.return_value = RemoteResult(
+            host="head-01",
+            returncode=11,
+            stdout="",
+            stderr="rsync: [Receiver] mkdir failed: No space left on device (28)",
+        )
+
+        with pytest.raises(TransferError) as exc_info:
+            _rsync_to_head("/local/mods/mymod", "mymod", "head-01", ssh_kwargs={}, dry_run=False)
+
+        err = str(exc_info.value)
+        assert "out of disk space" in err
+        assert "head-01" in err
+        assert type(exc_info.value) is TransferError
+
+    @mock.patch("sparkrun.core.mods.run_rsync")
+    def test_permission_denied_classified(self, mock_rsync):
+        """Permission-denied rsync failure is classified correctly."""
+        from sparkrun.orchestration.ssh import RemoteResult
+        from sparkrun.orchestration.transfer import TransferError
+        from sparkrun.core.mods import _rsync_to_head
+
+        mock_rsync.return_value = RemoteResult(
+            host="head-01",
+            returncode=23,
+            stdout="",
+            stderr="rsync: send_files failed: permission denied",
+        )
+
+        with pytest.raises(TransferError) as exc_info:
+            _rsync_to_head("/local/mods/mymod", "mymod", "head-01", ssh_kwargs={}, dry_run=False)
+
+        assert "permission denied" in str(exc_info.value)
+
+    @mock.patch("sparkrun.core.mods.run_rsync")
+    def test_generic_failure_not_runtime_error(self, mock_rsync):
+        """Any rsync failure raises TransferError, never bare RuntimeError."""
+        from sparkrun.orchestration.ssh import RemoteResult
+        from sparkrun.orchestration.transfer import TransferError
+        from sparkrun.core.mods import _rsync_to_head
+
+        mock_rsync.return_value = RemoteResult(
+            host="head-01",
+            returncode=255,
+            stdout="",
+            stderr="some unexpected error",
+        )
+
+        with pytest.raises(TransferError):
+            _rsync_to_head("/local/mods/mymod", "mymod", "head-01", ssh_kwargs={}, dry_run=False)
+
+        # Explicitly confirm it is NOT a RuntimeError
+        try:
+            _rsync_to_head("/local/mods/mymod", "mymod", "head-01", ssh_kwargs={}, dry_run=False)
+        except TransferError:
+            pass
+        except RuntimeError:
+            pytest.fail("Should have raised TransferError, got RuntimeError")

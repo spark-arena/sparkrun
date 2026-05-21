@@ -95,6 +95,13 @@ def probe_cache_status(
         return {}
 
     sr_dir = sparkrun_cache_dir or "$HOME/.cache/sparkrun"
+    # The probe interpolates the path inside double-quoted bash test brackets
+    # (`[ -d "$hf_dir" ]`), which does NOT expand a leading `~/`.  Normalize
+    # to `$HOME/` so callers can pass either form without surprise.
+    if hf_cache_dir.startswith("~/"):
+        hf_cache_dir = "$HOME/" + hf_cache_dir[2:]
+    if sr_dir.startswith("~/"):
+        sr_dir = "$HOME/" + sr_dir[2:]
     cmd = _CACHE_STATUS_PROBE.format(sr_dir=sr_dir, hf_dir=hf_cache_dir)
 
     if dry_run:

@@ -490,11 +490,16 @@ def run_pre_serve_hooks(
     recipe: Recipe | None,
     overrides: dict[str, Any] | None,
     trust: bool = False,
+    cache_dir: str | None = None,
 ) -> None:
     """Build config chain and invoke runtime._pre_serve.
 
     *trust* controls whether the pre_exec confirmation prompt is
     suppressed (see :meth:`RuntimePlugin._pre_serve`).
+
+    *cache_dir* is the effective HuggingFace cache directory on remote
+    hosts, threaded from the launcher so disk-space failure messages
+    show the correct path.
     """
     config_chain = recipe.build_config_chain(overrides) if recipe else None
     runtime._pre_serve(
@@ -504,6 +509,7 @@ def run_pre_serve_hooks(
         recipe=recipe,
         config_chain=config_chain,
         trust=trust,
+        cache_dir=cache_dir,
     )
 
 
@@ -586,6 +592,7 @@ def run_native_cluster(
     extra_docker_opts: list[str] | None = None,
     backends: "dict[str, BackendBundle] | None" = None,
     trust: bool = False,
+    cache_dir: str | None = None,
 ) -> int:
     """Orchestrate a multi-node native cluster.
 
@@ -722,7 +729,7 @@ def run_native_cluster(
     else:
         logger.info("Step 5/7: Running pre-serve hooks...")
     hosts_containers = [(host, cname) for host, _rank, cname in all_nodes]
-    run_pre_serve_hooks(runtime, ctx, hosts_containers, recipe, overrides, trust=trust)
+    run_pre_serve_hooks(runtime, ctx, hosts_containers, recipe, overrides, trust=trust, cache_dir=cache_dir)
     logger.info("Step 5/7: Pre-serve hooks done (%.1fs)", time.monotonic() - t0)
 
     # Step 6: Exec head serve command and wait for init port
