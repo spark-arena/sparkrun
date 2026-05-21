@@ -44,57 +44,12 @@ class VllmMixin:
         recipe: "Recipe",
         overrides: dict,
     ) -> dict:
-        """Resolve ``max_model_len: "auto"`` to a concrete integer.
-
-        Checks the config chain for ``max_model_len``.  If the effective
-        value is the string ``"auto"``, runs the recipe's VRAM estimator
-        to calculate the maximum context length that fits within the GPU
-        memory budget, and returns a *new* overrides dict with that
-        integer injected so the config chain will pick it up.
-
-        If estimation fails (missing model metadata, etc.) the override
-        is left out — ``max_model_len`` will be ``None`` in the config
-        chain, which omits ``--max-model-len`` from the CLI and lets
-        vLLM pick its own default.
-
-        Returns:
-            A (possibly updated) overrides dict.
-        """
+        """Resolve ``max_model_len: "auto"`` by keeping it as the literal string "auto" directly."""
         config = recipe.build_config_chain(overrides)
         raw = config.get("max_model_len")
-        if raw is None or str(raw).lower() != "auto":
-            return overrides
-
-        import logging
-
-        log = logging.getLogger(__name__)
-        log.info("max_model_len is 'auto'; calculating from VRAM budget …")
-
-        try:
-            est = recipe.estimate_vram(cli_overrides=overrides, auto_detect=True)
-        except Exception:
-            log.warning(
-                "VRAM estimation failed; omitting --max-model-len "
-                "(vLLM will use its default)",
-                exc_info=True,
-            )
-            return {**overrides, "max_model_len": None}
-
-        if est.max_context_tokens is not None and est.max_context_tokens > 0:
-            log.info(
-                "Resolved max_model_len='auto' → %d tokens "
-                "(%.1f GB KV headroom on %.1f GB usable)",
-                est.max_context_tokens,
-                est.available_kv_gb or 0,
-                est.usable_gpu_memory_gb or 0,
-            )
-            return {**overrides, "max_model_len": est.max_context_tokens}
-
-        log.warning(
-            "VRAM estimation could not determine max_context_tokens; "
-            "omitting --max-model-len (vLLM will use its default)"
-        )
-        return {**overrides, "max_model_len": None}
+        if raw is not None and str(raw).lower() == "auto":
+            return {**overrides, "max_model_len": "auto"}
+        return overrides
 
     def detect_spec_config_draft_model(self, recipe: "Recipe") -> str | None:
         try:
