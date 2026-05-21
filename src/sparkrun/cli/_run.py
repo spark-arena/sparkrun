@@ -8,7 +8,7 @@ from typing import Any
 
 import click
 
-from sparkrun.orchestration.distribution import DistributionError
+from sparkrun.orchestration.transfer import TransferError
 from sparkrun.runtimes.compatibility import IncompatibleHardwareError
 
 from ._common import (
@@ -30,6 +30,69 @@ from ._common import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _summarize_platforms(
+    host_list: list[str],
+    cluster=None,
+) -> tuple[str, list[tuple[str, str]] | None]:
+    """Build a platform summary string for the ``sparkrun run`` output block.
+
+    For each host, resolves hardware (from *cluster* if available, else
+    :func:`~sparkrun.core.hardware.default_dgx_spark_hardware`), picks the
+    matching :class:`~sparkrun.platforms.base.HardwarePlatformPlugin`, and
+    selects a :class:`~sparkrun.core.backend_select.BackendBundle`.  The
+    display line for each host is built as::
+
+        "<display_name> (<VENDOR> <MODEL>, <COLLECTIVE>)"
+
+    When all hosts produce the same display string the function returns that
+    single string with ``None`` for the per-host list (homogeneous).  When
+    hosts differ it returns ``("mixed", [(host, display_line), ...])``
+    (heterogeneous).
+
+    Errors for any individual host are silently swallowed — the host's line
+    falls back to ``"Unknown"`` so a bad fingerprint never crashes the
+    pre-launch summary.
+
+    Args:
+        host_list: Resolved list of target hosts.
+        cluster: Optional :class:`~sparkrun.core.cluster_manager.ClusterDefinition`
+            carrying per-host hardware metadata.
+
+    Returns:
+        ``(summary, per_host_or_none)`` where *per_host_or_none* is a list of
+        ``(host, line)`` tuples when heterogeneous, ``None`` when homogeneous.
+    """
+    from sparkrun.core.backend_select import NoMatchingBackendError, select_backends
+    from sparkrun.core.hardware import default_dgx_spark_hardware
+    from sparkrun import platforms as _platforms
+
+    def _host_line(host: str) -> str:
+        try:
+            hw = cluster.hardware_for(host) if cluster is not None else default_dgx_spark_hardware()
+            platform = _platforms.resolve_platform(hw)
+            pname = platform.display_name if platform is not None else "Unknown"
+            if hw.accelerators:
+                a = hw.accelerators[0]
+                accel_str = "%s %s" % (a.vendor.upper(), a.model.upper())
+            else:
+                accel_str = "CPU"
+            try:
+                bundle = select_backends(hw)
+                collective_str = bundle.collective.name.upper()
+                return "%s (%s, %s)" % (pname, accel_str, collective_str)
+            except NoMatchingBackendError:
+                return "%s (%s)" % (pname, accel_str)
+        except Exception:
+            return "Unknown"
+
+    lines = [_host_line(h) for h in host_list]
+
+    if len(set(lines)) == 1:
+        return lines[0], None
+
+    return "mixed", list(zip(host_list, lines))
 
 
 @click.command()
@@ -273,6 +336,11 @@ def run(
         click.echo("Mode:      solo")
     else:
         click.echo("Mode:      cluster (%d nodes)" % len(host_list))
+    _platform_summary, _per_host = _summarize_platforms(host_list, cluster_def)
+    click.echo("Platform:  %s" % _platform_summary)
+    if _per_host is not None:
+        for _h, _line in _per_host:
+            click.echo("  %-8s %s" % (_h + ":", _line))
     if effective_transfer_mode not in ("auto", "local"):
         click.echo("Transfer:  %s" % effective_transfer_mode)
 
@@ -405,7 +473,7 @@ def run(
             cluster=cluster_def,
             trust=trust,
         )
-    except DistributionError as e:
+    except TransferError as e:
         if diag:
             diag.phase_end("launch", error=str(e))
             diag.emit_error("launch", e)

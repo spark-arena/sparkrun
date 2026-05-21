@@ -433,7 +433,7 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
         all_containers = [(ctx.head_host, head_container)]
         for worker in ctx.worker_hosts:
             all_containers.append((worker, worker_container))
-        run_pre_serve_hooks(self, ctx, all_containers, recipe, overrides, trust=trust)
+        run_pre_serve_hooks(self, ctx, all_containers, recipe, overrides, trust=trust, cache_dir=cache_dir)
 
         # Prevent vLLM Ray from propagating per-host NCCL/transport env
         # vars from head to workers (GitHub issue #135).  Must run BEFORE

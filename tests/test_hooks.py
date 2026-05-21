@@ -223,9 +223,9 @@ class TestRunPreExec:
         expected = base64.b64encode(b"echo hello").decode("utf-8")
         assert expected in script
 
-    @mock.patch("sparkrun.core.hosts.is_local_host", return_value=True)
+    @mock.patch("sparkrun.orchestration.primitives.should_run_locally", return_value=True)
     @mock.patch("sparkrun.orchestration.primitives.run_script_on_host")
-    def test_run_pre_exec_copy_commands(self, mock_run, mock_is_local):
+    def test_run_pre_exec_copy_commands(self, mock_run, mock_should_run_locally):
         """Dict with 'copy' key produces docker cp calls."""
         mock_run.return_value = self._make_success()
         run_pre_exec(
@@ -688,12 +688,13 @@ class TestRunCopyCommandDelegated:
 
     @mock.patch("sparkrun.orchestration.primitives.run_script_on_host")
     def test_copy_source_host_failure_raises(self, mock_run):
-        """RuntimeError raised when delegated copy fails."""
+        """TransferError raised when delegated copy fails."""
         from sparkrun.orchestration.hooks import _run_copy_command
+        from sparkrun.orchestration.transfer import TransferError
 
         mock_run.return_value = self._make_failure()
         cmd = {"copy": "/mods/patch", "dest": "/workspace/mods/patch", "source_host": "head"}
-        with pytest.raises(RuntimeError, match="copy failed"):
+        with pytest.raises(TransferError, match="copy failed"):
             _run_copy_command("head", "container1", cmd, ssh_kwargs={})
 
     def test_copy_source_host_dry_run(self):
@@ -787,3 +788,178 @@ class TestRunCopyCommandDelegatedSecurity:
         cmd["source_host"] = "10.0.0.5"
         _run_copy_command("worker", "container1", cmd, ssh_kwargs={})
         mock_run.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# Error classification for _run_copy_command (rsync path)
+# ---------------------------------------------------------------------------
+
+
+class TestRunCopyCommandErrorClassification:
+    """Verify _run_copy_command raises TransferError with classified reasons."""
+
+    def _make_result(self, host: str, returncode: int, stderr: str = "", stdout: str = "") -> RemoteResult:
+        return RemoteResult(host=host, returncode=returncode, stdout=stdout, stderr=stderr)
+
+    @mock.patch("sparkrun.orchestration.primitives.run_script_on_host")
+    @mock.patch("sparkrun.orchestration.ssh.run_rsync_parallel")
+    def test_disk_space_raises_transfer_error(self, mock_rsync, mock_run_script):
+        """rsync failure with 'No space left on device' raises TransferError with classified reason."""
+        from sparkrun.orchestration.hooks import _run_copy_command
+        from sparkrun.orchestration.transfer import TransferError
+
+        # mkdir succeeds
+        mock_run_script.return_value = self._make_result("spark-01", 0, stdout="")
+        # rsync fails with disk-space error
+        mock_rsync.return_value = [
+            self._make_result(
+                "spark-01",
+                11,
+                stderr='rsync: [Receiver] mkdir "/tmp/sparkrun_hook_patch/" failed: No space left on device (28)',
+            )
+        ]
+
+        cmd = {"copy": "/local/mods/patch"}
+        with pytest.raises(TransferError) as exc_info:
+            _run_copy_command("spark-01", "ctr1", cmd, ssh_kwargs={})
+
+        err = str(exc_info.value)
+        assert "out of disk space" in err
+        assert "spark-01" in err
+        # Must NOT be a bare RuntimeError
+        assert type(exc_info.value) is TransferError
+
+    @mock.patch("sparkrun.orchestration.primitives.run_script_on_host")
+    @mock.patch("sparkrun.orchestration.ssh.run_rsync_parallel")
+    def test_first_failure_wins_over_downstream_lstat(self, mock_rsync, mock_run_script):
+        """When mkdir fails (disk space) AND a later step would fail, the FIRST failure (mkdir) is reported."""
+        from sparkrun.orchestration.hooks import _run_copy_command
+        from sparkrun.orchestration.transfer import TransferError
+
+        # mkdir fails — this is the root cause
+        mock_run_script.return_value = self._make_result(
+            "spark-01",
+            1,
+            stderr="mkdir: cannot create directory '/tmp/sparkrun_hook_patch': No space left on device",
+        )
+        # rsync would not even be called, but set a downstream lstat error to be safe
+        mock_rsync.return_value = [
+            self._make_result(
+                "spark-01",
+                1,
+                stderr="lstat /tmp/sparkrun_hook_patch: no such file or directory",
+            )
+        ]
+
+        cmd = {"copy": "/local/mods/patch"}
+        with pytest.raises(TransferError) as exc_info:
+            _run_copy_command("spark-01", "ctr1", cmd, ssh_kwargs={})
+
+        err = str(exc_info.value)
+        # Should report the classified reason from mkdir stderr (root cause),
+        # NOT the lstat message from the downstream step.
+        # "No space left on device" → classified as "out of disk space"
+        assert "out of disk space" in err
+        assert "lstat" not in err
+        # rsync should never have been called because we failed early
+        mock_rsync.assert_not_called()
+
+    @mock.patch("sparkrun.orchestration.primitives.run_script_on_host")
+    @mock.patch("sparkrun.orchestration.ssh.run_rsync_parallel")
+    def test_transfer_error_not_runtime_error(self, mock_rsync, mock_run_script):
+        """Raised exception is TransferError, not bare RuntimeError."""
+        from sparkrun.orchestration.hooks import _run_copy_command
+        from sparkrun.orchestration.transfer import TransferError
+
+        mock_run_script.return_value = self._make_result("spark-01", 0)
+        mock_rsync.return_value = [self._make_result("spark-01", 23, stderr="permission denied")]
+
+        cmd = {"copy": "/local/mods/patch"}
+        with pytest.raises(TransferError):
+            _run_copy_command("spark-01", "ctr1", cmd, ssh_kwargs={})
+
+        # Confirm it is NOT a plain RuntimeError (TransferError != RuntimeError)
+        with pytest.raises(TransferError):
+            _run_copy_command("spark-01", "ctr1", cmd, ssh_kwargs={})
+
+    @mock.patch("sparkrun.orchestration.primitives.run_script_on_host")
+    @mock.patch("sparkrun.orchestration.ssh.run_rsync_parallel")
+    def test_permission_denied_classified(self, mock_rsync, mock_run_script):
+        """'permission denied' in rsync stderr is classified correctly."""
+        from sparkrun.orchestration.hooks import _run_copy_command
+        from sparkrun.orchestration.transfer import TransferError
+
+        mock_run_script.return_value = self._make_result("spark-02", 0)
+        mock_rsync.return_value = [
+            self._make_result("spark-02", 23, stderr="rsync: [sender] send_files failed to open ... permission denied")
+        ]
+
+        cmd = {"copy": "/local/mods/weights"}
+        with pytest.raises(TransferError) as exc_info:
+            _run_copy_command("spark-02", "ctr2", cmd, ssh_kwargs={})
+
+        assert "permission denied" in str(exc_info.value)
+        assert "spark-02" in str(exc_info.value)
+
+    @mock.patch("sparkrun.orchestration.primitives.run_script_on_host")
+    @mock.patch("sparkrun.orchestration.ssh.run_rsync_parallel")
+    def test_run_copy_command_emits_cache_status_table_on_oos(self, mock_rsync, mock_run_script):
+        """When rsync fails with disk-space, format_cache_status_table is invoked."""
+        from sparkrun.orchestration.hooks import _run_copy_command
+        from sparkrun.orchestration.transfer import TransferError
+
+        # mkdir succeeds, rsync fails with OOS
+        mock_run_script.return_value = self._make_result("spark-01", 0)
+        mock_rsync.return_value = [
+            self._make_result(
+                "spark-01",
+                11,
+                stderr="rsync: write failed: No space left on device (28)",
+            )
+        ]
+
+        fake_status = {"spark-01": object()}
+        fake_table = "  Host   Free Space\n  spark-01   0"
+
+        cmd = {"copy": "/local/mods/patch"}
+        with mock.patch("sparkrun.orchestration.disk_info.probe_cache_status", return_value=fake_status) as mock_probe:
+            with mock.patch("sparkrun.utils.cli_formatters.format_cache_status_table", return_value=fake_table) as mock_fmt:
+                with pytest.raises(TransferError) as exc_info:
+                    _run_copy_command("spark-01", "ctr1", cmd, ssh_kwargs={})
+
+                # The cache-status table must have been generated
+                mock_probe.assert_called_once()
+                mock_fmt.assert_called_once()
+
+        err = str(exc_info.value)
+        assert "out of disk space" in err
+        assert "spark-01" in err
+
+    @mock.patch("sparkrun.orchestration.primitives.run_script_on_host")
+    @mock.patch("sparkrun.orchestration.ssh.run_rsync_parallel")
+    def test_run_copy_command_uses_threaded_cache_dir(self, mock_rsync, mock_run_script):
+        """A custom cache_dir threaded into _run_copy_command flows to probe_cache_status."""
+        from sparkrun.orchestration.hooks import _run_copy_command
+        from sparkrun.orchestration.transfer import TransferError
+
+        mock_run_script.return_value = self._make_result("spark-01", 0)
+        mock_rsync.return_value = [
+            self._make_result(
+                "spark-01",
+                11,
+                stderr="rsync: write failed: No space left on device (28)",
+            )
+        ]
+
+        cmd = {"copy": "/local/mods/patch"}
+        with mock.patch("sparkrun.orchestration.disk_info.probe_cache_status", return_value={}) as mock_probe:
+            with pytest.raises(TransferError):
+                _run_copy_command(
+                    "spark-01",
+                    "ctr1",
+                    cmd,
+                    ssh_kwargs={},
+                    cache_dir="/opt/custom-hf-cache",
+                )
+            mock_probe.assert_called_once()
+            assert mock_probe.call_args.kwargs.get("hf_cache_dir") == "/opt/custom-hf-cache"

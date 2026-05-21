@@ -541,7 +541,7 @@ class LlamaCppRuntime(RuntimePlugin):
             progress.step("Running pre-serve hooks")
         else:
             logger.info("Step 4/6: Running pre-serve hooks...")
-        run_pre_serve_hooks(self, ctx, all_containers, recipe, overrides, trust=trust)
+        run_pre_serve_hooks(self, ctx, all_containers, recipe, overrides, trust=trust, cache_dir=cache_dir)
         logger.info("Step 4/6: Pre-serve hooks done (%.1fs)", time.monotonic() - t0)
 
         # Step 5: Exec RPC workers and wait for RPC ports

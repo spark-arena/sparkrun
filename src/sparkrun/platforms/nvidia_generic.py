@@ -30,6 +30,7 @@ class GenericNvidiaPlatform(HardwarePlatformPlugin):
     """Any NVIDIA host (H100/H200/B200, RTX workstations, generic CUDA boxes)."""
 
     platform_name = "nvidia-generic"
+    display_name = "Generic NVIDIA"
     vendors = frozenset({"nvidia"})
 
     def matches(self, host_hardware: HostHardware) -> bool:

@@ -430,6 +430,7 @@ class RuntimePlugin(Plugin):
         recipe: Recipe | None = None,
         config_chain=None,
         trust: bool = False,
+        cache_dir: str | None = None,
     ) -> None:
         """Hook called after containers are launched but before serve command.
 
@@ -447,6 +448,9 @@ class RuntimePlugin(Plugin):
             trust: When True, bypass the pre_exec confirmation prompt.
                 Resolved upstream in ``launch_inference`` via
                 :func:`sparkrun.core.launcher.resolve_recipe_trust`.
+            cache_dir: Effective HuggingFace cache directory on remote hosts.
+                Threaded from the launcher so disk-space failure messages
+                show the correct path.
         """
         if recipe and recipe.pre_exec:
             from sparkrun.orchestration.hooks import run_pre_exec
@@ -458,6 +462,7 @@ class RuntimePlugin(Plugin):
                 ssh_kwargs=ssh_kwargs,
                 dry_run=dry_run,
                 trust=trust,
+                cache_dir=cache_dir,
             )
 
     def get_extra_volumes(self) -> dict[str, str]:
@@ -1140,6 +1145,7 @@ class RuntimePlugin(Plugin):
             recipe=recipe,
             config_chain=config_chain,
             trust=trust,
+            cache_dir=cache_dir,
         )
 
         # Step 3: Execute serve command
@@ -1413,6 +1419,7 @@ class RuntimePlugin(Plugin):
             extra_docker_opts=extra_docker_opts,
             backends=backends,
             trust=trust,
+            cache_dir=cache_dir,
         )
 
     def _print_connection_info(self, hosts, cluster_id, *, per_node_logs=False):

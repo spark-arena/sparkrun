@@ -42,6 +42,9 @@ class HardwarePlatformPlugin(Plugin):
     platform_name: str = ""
     """Stable identifier, e.g. ``"dgx-spark"``, ``"nvidia-generic"``."""
 
+    display_name: str = "Unknown"
+    """Human-readable platform name shown in ``sparkrun run`` output (e.g. ``"DGX Spark"``)."""
+
     vendors: frozenset[str] = frozenset()
     """Accelerator vendors this platform serves (``"nvidia"`` / ``"amd"`` / ``"intel"``)."""
 

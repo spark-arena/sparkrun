@@ -171,28 +171,7 @@ def distribute_model_from_local(
     # so the caller can surface a meaningful error instead of a bare host
     # name.
     failures = map_transfer_failures_detailed(results, xfer, hosts)
-    if failures:
-        for f in failures:
-            logger.error("  rsync failed on %s: %s", f.host, f.reason)
-        # When any failure was "out of disk space", probe free space on
-        # every cluster host and emit a small table so the user can see
-        # who's full and how much room the healthy hosts have.
-        oos_hosts = [f.host for f in failures if "disk space" in f.reason or "quota" in f.reason]
-        if oos_hosts:
-            from sparkrun.orchestration.disk_info import probe_cache_status
-            from sparkrun.utils.cli_formatters import format_cache_status_table
-
-            cache_status = probe_cache_status(
-                hosts,
-                hf_cache_dir=remote_cache,
-                ssh_kwargs={"ssh_user": ssh_user, "ssh_key": ssh_key, "ssh_options": ssh_options},
-            )
-            if cache_status:
-                logger.error(
-                    "  Cluster cache status:\n%s",
-                    format_cache_status_table(cache_status, highlight_hosts=oos_hosts),
-                )
-    else:
+    if not failures:
         logger.log(PROGRESS, "  Model synced to %d host(s)", len(hosts))
 
     return failures
