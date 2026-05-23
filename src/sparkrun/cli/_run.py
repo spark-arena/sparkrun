@@ -31,7 +31,7 @@ from ._common import (
     host_options,
     recipe_override_options,
     resolve_cluster_config,
-    validate_and_prepare_hosts,
+    resolve_effective_hosts_for_recipe,
     with_host_context,
     HIDE_ADVANCED_OPTIONS,
 )
@@ -300,11 +300,19 @@ def run(
         else:
             host_source = "localhost"
 
-    # Node count validation, max_nodes enforcement, and solo mode determination.
-    # Passing ``cluster=cluster_def`` lets compute_required_nodes use the
-    # placement engine (multi-GPU hosts, recipe layout); legacy 1-GPU/host
-    # behaviour is preserved when cluster_def is None.
-    host_list, is_solo = validate_and_prepare_hosts(host_list, recipe, overrides, runtime, solo=solo, cluster=cluster_def)
+    # Resolve the effective host list via the scheduler (single source of
+    # truth): ``hosts_used`` IS the list run/stop/logs all share.  Applies
+    # solo / max_nodes as orthogonal constraints; multi-GPU hosts and
+    # explicit ``recipe.layout`` are honoured when ``cluster_def`` carries
+    # per-host hardware.
+    host_list, is_solo = resolve_effective_hosts_for_recipe(
+        host_list,
+        recipe,
+        overrides,
+        cluster_def=cluster_def,
+        sctx=sctx,
+        solo=solo,
+    )
     if recipe.mode == "cluster" and is_solo and not solo:
         click.echo("Warning: Recipe requires cluster mode but only one host specified", err=True)
 

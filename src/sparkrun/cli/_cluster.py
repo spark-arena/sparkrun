@@ -903,31 +903,36 @@ def cluster_check_job(ctx, target, hosts, hosts_file, cluster_name, tp_override,
         )
     else:
         # --- Recipe path ---
-        from sparkrun.cli._common import _apply_node_trimming, _load_recipe
-        from sparkrun.core.bootstrap import get_runtime
+        from sparkrun.cli._common import _load_recipe
+        from sparkrun.core.parallelism import extract_parallelism
+        from sparkrun.core.scheduler import SchedulingRequest
         from sparkrun.orchestration.job_metadata import generate_cluster_id
 
-        v = sctx.variables
         recipe, _recipe_path, _registry_mgr = _load_recipe(config, target)
         host_list, _ = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, sctx=sctx)
 
-        # Resolve runtime for node trimming
-        try:
-            runtime = get_runtime(recipe.runtime, v)
-        except ValueError:
-            runtime = None
-
-        try:
-            host_list = _apply_node_trimming(
-                host_list,
-                recipe,
-                tp_override=tp_override,
-                runtime=runtime,
-                quiet=True,
-            )
-        except ValueError as e:
-            click.echo("Error: %s" % e, err=True)
-            sys.exit(1)
+        # Derive the effective host list via the scheduler so the
+        # cluster_id matches what ``api.run`` would have produced.
+        # ``hosts_used`` IS the effective list — no separate trimming step.
+        trim_overrides: dict = {}
+        if tp_override is not None:
+            trim_overrides["tensor_parallel"] = tp_override
+        if len(host_list) > 1:
+            parallelism = extract_parallelism(recipe.build_config_chain(trim_overrides))
+            if any(getattr(parallelism, k) > 1 for k in ("tensor_parallel", "pipeline_parallel", "data_parallel")):
+                request = SchedulingRequest(
+                    parallelism=parallelism,
+                    hosts=tuple(host_list),
+                    host_hardware=None,
+                    layout=getattr(recipe, "layout", None),
+                    resources=None,
+                )
+                try:
+                    sched_result = api.schedule(request, sctx=sctx)
+                except api.SparkrunError as e:
+                    click.echo("Error: %s" % e, err=True)
+                    sys.exit(1)
+                host_list = list(sched_result.assignment.hosts_used)
 
         # Build overrides for cluster_id generation
         cid = generate_cluster_id(

@@ -16,7 +16,7 @@ from ._common import (
     print_json,
     recipe_override_options,
     resolve_cluster_config,
-    validate_and_prepare_hosts,
+    resolve_effective_hosts_for_recipe,
     with_host_context,
 )
 
@@ -576,7 +576,14 @@ def load_cmd(
         sys.exit(1)
 
     # Node count validation, max_nodes enforcement, and solo mode determination
-    host_list, is_solo = validate_and_prepare_hosts(host_list, recipe, overrides, runtime, solo=solo)
+    host_list, is_solo = resolve_effective_hosts_for_recipe(
+        host_list,
+        recipe,
+        overrides,
+        cluster_def=None,
+        sctx=sctx,
+        solo=solo,
+    )
 
     # Resolve cache dir, transfer mode, and transfer interface from cluster config
     cluster_cfg = resolve_cluster_config(cluster_name, hosts, hosts_file, cluster_mgr)

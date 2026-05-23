@@ -2171,85 +2171,87 @@ class TestTensorParallelValidation:
             assert call_kwargs["hosts"] == ["10.0.0.1"]
 
 
-class TestApplyNodeTrimming:
-    """Test _apply_node_trimming helper function."""
+class TestResolveEffectiveHostsForRecipe:
+    """Test :func:`sparkrun.cli._common.resolve_effective_hosts_for_recipe`.
 
-    def _make_recipe(self, defaults=None):
+    Replaces the legacy ``_apply_node_trimming`` tests; placement is now a
+    structural property derived from ``api.schedule``.
+    """
+
+    def _make_recipe(self, defaults=None, mode="auto", max_nodes=None):
         from sparkrun.core.recipe import Recipe
 
         data = {
             "name": "test",
             "runtime": "sglang",
             "model": "meta-llama/Llama-2-7b-hf",
+            "mode": mode,
         }
         if defaults:
             data["defaults"] = defaults
+        if max_nodes is not None:
+            data["max_nodes"] = max_nodes
         return Recipe.from_dict(data)
 
-    def test_with_runtime_trims_to_tp_times_pp(self):
-        """Runtime-aware trimming: tp=2, pp=2 → 4 nodes."""
-        from sparkrun.cli._common import _apply_node_trimming
+    def test_multi_host_trims_to_scheduler_hosts_used(self, reset_bootstrap):
+        """tp=2, pp=2, 6 hosts → scheduler picks 4."""
+        from sparkrun.cli._common import resolve_effective_hosts_for_recipe
 
-        recipe = self._make_recipe(
-            defaults={
-                "tensor_parallel": 2,
-                "pipeline_parallel": 2,
-            }
-        )
-        runtime = SglangRuntime()
+        recipe = self._make_recipe(defaults={"tensor_parallel": 2, "pipeline_parallel": 2})
         hosts = ["h1", "h2", "h3", "h4", "h5", "h6"]
-        result = _apply_node_trimming(hosts, recipe, runtime=runtime)
+        result, is_solo = resolve_effective_hosts_for_recipe(hosts, recipe, {})
         assert result == ["h1", "h2", "h3", "h4"]
+        assert is_solo is False
 
-    def test_without_runtime_trims_to_tp(self):
-        """Legacy path (no runtime): trims to TP only."""
-        from sparkrun.cli._common import _apply_node_trimming
-
-        recipe = self._make_recipe(
-            defaults={
-                "tensor_parallel": 2,
-                "pipeline_parallel": 2,
-            }
-        )
-        hosts = ["h1", "h2", "h3", "h4"]
-        # Without runtime, only TP is considered
-        result = _apply_node_trimming(hosts, recipe)
-        assert result == ["h1", "h2"]
-
-    def test_tp_override_combined_with_runtime_pp(self):
-        """tp_override is injected into overrides for runtime computation."""
-        from sparkrun.cli._common import _apply_node_trimming
-
-        recipe = self._make_recipe(defaults={"pipeline_parallel": 2})
-        runtime = SglangRuntime()
-        hosts = ["h1", "h2", "h3", "h4", "h5", "h6"]
-        # tp_override=3, pp=2 → 6 nodes
-        result = _apply_node_trimming(
-            hosts,
-            recipe,
-            runtime=runtime,
-            tp_override=3,
-        )
-        assert result == hosts  # 6 == 6, no trimming
-
-    def test_single_host_no_trimming(self):
-        """Single host is never trimmed."""
-        from sparkrun.cli._common import _apply_node_trimming
-
-        recipe = self._make_recipe(defaults={"tensor_parallel": 4})
-        runtime = SglangRuntime()
-        hosts = ["h1"]
-        result = _apply_node_trimming(hosts, recipe, runtime=runtime)
-        assert result == ["h1"]
-
-    def test_backward_compat_alias(self):
-        """_apply_tp_trimming still works as backward-compat alias."""
-        from sparkrun.cli._common import _apply_tp_trimming
+    def test_tp_only_trims_to_tp(self, reset_bootstrap):
+        """tp=2, 4 hosts → scheduler picks 2."""
+        from sparkrun.cli._common import resolve_effective_hosts_for_recipe
 
         recipe = self._make_recipe(defaults={"tensor_parallel": 2})
         hosts = ["h1", "h2", "h3", "h4"]
-        result = _apply_tp_trimming(hosts, recipe)
+        result, is_solo = resolve_effective_hosts_for_recipe(hosts, recipe, {})
         assert result == ["h1", "h2"]
+        assert is_solo is False
+
+    def test_tp_override_combined_with_recipe_pp(self, reset_bootstrap):
+        """tp override + recipe pp=2 → 6 nodes (no trim because exact fit)."""
+        from sparkrun.cli._common import resolve_effective_hosts_for_recipe
+
+        recipe = self._make_recipe(defaults={"pipeline_parallel": 2})
+        hosts = ["h1", "h2", "h3", "h4", "h5", "h6"]
+        result, is_solo = resolve_effective_hosts_for_recipe(hosts, recipe, {"tensor_parallel": 3})
+        assert result == hosts  # 6 == 6, no trimming
+        assert is_solo is False
+
+    def test_single_host_no_scheduler_call(self, reset_bootstrap):
+        """Single host short-circuits the scheduler and is reported as solo."""
+        from sparkrun.cli._common import resolve_effective_hosts_for_recipe
+
+        recipe = self._make_recipe(defaults={"tensor_parallel": 4})
+        hosts = ["h1"]
+        result, is_solo = resolve_effective_hosts_for_recipe(hosts, recipe, {})
+        assert result == ["h1"]
+        assert is_solo is True
+
+    def test_solo_flag_forces_one_host(self, reset_bootstrap):
+        """--solo trims to 1 host regardless of parallelism."""
+        from sparkrun.cli._common import resolve_effective_hosts_for_recipe
+
+        recipe = self._make_recipe(defaults={"tensor_parallel": 4})
+        hosts = ["h1", "h2", "h3", "h4"]
+        result, is_solo = resolve_effective_hosts_for_recipe(hosts, recipe, {}, solo=True)
+        assert result == ["h1"]
+        assert is_solo is True
+
+    def test_max_nodes_caps_host_count(self, reset_bootstrap):
+        """recipe.max_nodes enforces an upper bound after scheduling."""
+        from sparkrun.cli._common import resolve_effective_hosts_for_recipe
+
+        recipe = self._make_recipe(max_nodes=2)
+        hosts = ["h1", "h2", "h3", "h4"]
+        result, is_solo = resolve_effective_hosts_for_recipe(hosts, recipe, {})
+        assert result == ["h1", "h2"]
+        assert is_solo is False
 
 
 class TestOptionOverrides:

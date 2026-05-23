@@ -479,37 +479,32 @@ def _resolve_recipe_for_systemd(
 
 
 def _trim_hosts_via_api(host_list, recipe, overrides):
-    """Trim ``host_list`` to the scheduler's effective hosts via ``api.schedule``.
+    """Resolve ``host_list`` to the scheduler's effective hosts via ``api.schedule``.
 
     Mirrors the placement-driven host selection ``api.run`` performs so
     the systemd export targets the same hosts the launcher would have
-    used.  Falls back to the original list on any scheduling failure
-    (e.g. solo recipes with no parallelism)."""
+    used.  Returns the original list when there is no multi-host
+    parallelism to schedule.
+    """
     if len(host_list) <= 1:
         return host_list
-    try:
-        import sparkrun.api as api
-        from sparkrun.core.parallelism import extract_parallelism
-        from sparkrun.core.scheduler import SchedulingRequest
 
-        parallelism = extract_parallelism(recipe.build_config_chain(overrides))
-        if not any(getattr(parallelism, k) > 1 for k in ("tensor_parallel", "pipeline_parallel", "data_parallel")):
-            return host_list
-        request = SchedulingRequest(
-            parallelism=parallelism,
-            hosts=tuple(host_list),
-            host_hardware=None,
-            layout=getattr(recipe, "layout", None),
-            resources=None,
-        )
-        result = api.schedule(request)
-        return list(result.assignment.hosts_used)
-    except Exception:
-        # Fall back to legacy behaviour — preserves the original host
-        # list when the scheduler can't be invoked.
-        from ._common import _apply_node_trimming
+    import sparkrun.api as api
+    from sparkrun.core.parallelism import extract_parallelism
+    from sparkrun.core.scheduler import SchedulingRequest
 
-        return _apply_node_trimming(host_list, recipe, overrides=overrides)
+    parallelism = extract_parallelism(recipe.build_config_chain(overrides))
+    if not any(getattr(parallelism, k) > 1 for k in ("tensor_parallel", "pipeline_parallel", "data_parallel")):
+        return host_list
+    request = SchedulingRequest(
+        parallelism=parallelism,
+        hosts=tuple(host_list),
+        host_hardware=None,
+        layout=getattr(recipe, "layout", None),
+        resources=None,
+    )
+    result = api.schedule(request)
+    return list(result.assignment.hosts_used)
 
 
 def _build_cluster_yaml(cluster_name, hosts, ssh_user=None):

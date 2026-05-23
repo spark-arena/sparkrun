@@ -45,7 +45,7 @@ def test_run_with_name_override(monkeypatch):
     mock_runtime.resolve_container.return_value = "img:latest"
     mock_runtime.validate_recipe.return_value = []
     monkeypatch.setattr("sparkrun.core.bootstrap.get_runtime", lambda *args, **kwargs: mock_runtime)
-    monkeypatch.setattr("sparkrun.cli._run.validate_and_prepare_hosts", lambda *args, **kwargs: (["localhost"], True))
+    monkeypatch.setattr("sparkrun.cli._run.resolve_effective_hosts_for_recipe", lambda *args, **kwargs: (["localhost"], True))
     monkeypatch.setattr("sparkrun.cli._run._display_vram_estimate", lambda *args, **kwargs: None)
 
     result = runner.invoke(main, ["run", "test-recipe", "--container-name", "custom-cluster-id", "--solo"])
