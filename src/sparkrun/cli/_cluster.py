@@ -6,6 +6,8 @@ import sys
 
 import click
 
+import sparkrun.api as api
+
 from ._common import (
     CLUSTER_NAME,
     TARGET,
@@ -20,6 +22,30 @@ from ._common import (
     print_json,
     HIDE_ADVANCED_OPTIONS,
 )
+
+
+def _parse_executor_opts(opts: tuple[str, ...]) -> dict:
+    """Parse repeated -o/--executor-opt key=value pairs into a dict.
+
+    Values are auto-coerced to int/float/bool where possible via
+    :func:`sparkrun.utils.coerce_value`.  Exits with an error message
+    on malformed entries.
+    """
+    from sparkrun.utils import coerce_value
+
+    result: dict = {}
+    for opt in opts:
+        if "=" not in opt:
+            click.echo("Error: --executor-opt must be key=value, got: %s" % opt, err=True)
+            sys.exit(1)
+        key, _, value = opt.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            click.echo("Error: --executor-opt has empty key: %s" % opt, err=True)
+            sys.exit(1)
+        result[key] = coerce_value(value)
+    return result
 
 
 @click.group()
@@ -48,9 +74,35 @@ def cluster(ctx):
     type=click.Choice(["auto", "cx7", "mgmt"], case_sensitive=False),
     help="Network interface for transfers (auto=default, cx7=InfiniBand, mgmt=management)",
 )
+@click.option(
+    "--executor",
+    "executor_name",
+    default=None,
+    help="Default executor selector for workloads on this cluster (e.g. docker, local, k8s)",
+)
+@click.option(
+    "--executor-opt",
+    "-o",
+    "executor_opts",
+    multiple=True,
+    help="Executor option (repeatable): -o key=value (e.g. -o privileged=false -o shm_size=16g)",
+)
 @click.option("--default", "set_default", is_flag=True, default=False, help="Set as the default cluster")
 @click.pass_context
-def cluster_create(ctx, name, hosts, hosts_file, description, user, cache_dir, transfer_mode, transfer_interface, set_default):
+def cluster_create(
+    ctx,
+    name,
+    hosts,
+    hosts_file,
+    description,
+    user,
+    cache_dir,
+    transfer_mode,
+    transfer_interface,
+    executor_name,
+    executor_opts,
+    set_default,
+):
     """Create a new named cluster."""
     from sparkrun.core.cluster_manager import ClusterError
     from sparkrun.core.hosts import parse_hosts_file
@@ -67,10 +119,21 @@ def cluster_create(ctx, name, hosts, hosts_file, description, user, cache_dir, t
         click.echo("Error: No hosts provided.", err=True)
         sys.exit(1)
 
-    mgr = _get_cluster_manager()
+    executor_config = _parse_executor_opts(executor_opts) if executor_opts else None
+
+    sctx = _get_context(ctx)
+    mgr = _get_cluster_manager(sctx=sctx)
     try:
         mgr.create(
-            name, host_list, description, user=user, cache_dir=cache_dir, transfer_mode=transfer_mode, transfer_interface=transfer_interface
+            name,
+            host_list,
+            description,
+            user=user,
+            cache_dir=cache_dir,
+            transfer_mode=transfer_mode,
+            transfer_interface=transfer_interface,
+            executor=executor_name,
+            executor_config=executor_config,
         )
         click.echo(f"Cluster '{name}' created with {len(host_list)} host(s).")
         if set_default:
@@ -113,6 +176,25 @@ def cluster_create(ctx, name, hosts, hosts_file, description, user, cache_dir, t
     is_flag=True,
     help="SSH into each cluster host, detect accelerators (NVIDIA/AMD/Intel/Apple) + IB, and persist per-host hardware metadata",
 )
+@click.option(
+    "--executor",
+    "executor_name",
+    default=None,
+    help="Default executor selector for workloads on this cluster (e.g. docker, local, k8s). Pass empty string to clear.",
+)
+@click.option(
+    "--executor-opt",
+    "-o",
+    "executor_opts",
+    multiple=True,
+    help="Executor option (repeatable): -o key=value. Pass once with no value to clear.",
+)
+@click.option(
+    "--clear-executor-config",
+    is_flag=True,
+    default=False,
+    help="Remove all executor config options from the cluster",
+)
 @click.pass_context
 def cluster_update(
     ctx,
@@ -128,6 +210,9 @@ def cluster_update(
     transfer_interface,
     topology,
     infer_hardware,
+    executor_name,
+    executor_opts,
+    clear_executor_config,
 ):
     """Update an existing cluster.
 
@@ -164,6 +249,8 @@ def cluster_update(
     transfer_mode_provided = ctx.get_parameter_source("transfer_mode") == ParameterSource.COMMANDLINE
     transfer_interface_provided = ctx.get_parameter_source("transfer_interface") == ParameterSource.COMMANDLINE
     topology_provided = ctx.get_parameter_source("topology") == ParameterSource.COMMANDLINE
+    executor_provided = ctx.get_parameter_source("executor_name") == ParameterSource.COMMANDLINE
+    executor_opts_provided = bool(executor_opts) or clear_executor_config
 
     has_host_change = host_list is not None or add_host or remove_host
     if (
@@ -175,16 +262,20 @@ def cluster_update(
         and not transfer_interface_provided
         and not topology_provided
         and not infer_hardware
+        and not executor_provided
+        and not executor_opts_provided
     ):
         click.echo(
             "Error: Nothing to update. Provide --hosts, --hosts-file, --add-host, "
             "--remove-host, -d, --user, --cache-dir, --transfer-mode, "
-            "--transfer-interface, --topology, or --infer-hardware.",
+            "--transfer-interface, --topology, --infer-hardware, --executor, "
+            "--executor-opt, or --clear-executor-config.",
             err=True,
         )
         sys.exit(1)
 
-    mgr = _get_cluster_manager()
+    sctx = _get_context(ctx)
+    mgr = _get_cluster_manager(sctx=sctx)
 
     # Handle --add-host / --remove-host by modifying the current host list
     if add_host or remove_host:
@@ -237,6 +328,13 @@ def cluster_update(
             update_kwargs["topology"] = "switch"
         else:
             update_kwargs["topology"] = topology
+    if executor_provided:
+        # Empty string clears the executor selector
+        update_kwargs["executor"] = executor_name if executor_name else None
+    if clear_executor_config:
+        update_kwargs["executor_config"] = None
+    elif executor_opts:
+        update_kwargs["executor_config"] = _parse_executor_opts(executor_opts)
 
     if infer_hardware:
         from sparkrun.core.fingerprint import fingerprint_host
@@ -254,7 +352,6 @@ def cluster_update(
                 click.echo(f"Error: {e}", err=True)
                 sys.exit(1)
 
-        sctx = _get_context(ctx)
         ssh_kwargs = build_ssh_kwargs(sctx.config)
         click.echo("Fingerprinting %d host(s)..." % len(probe_hosts))
         hosts_hardware: dict = {}
@@ -360,6 +457,12 @@ def cluster_show(ctx, name, output_json):
         click.echo(f"Xfer iface:  {c.transfer_interface}")
     if c.topology:
         click.echo(f"Topology:    {c.topology}")
+    if c.executor:
+        click.echo(f"Executor:    {c.executor}")
+    if c.executor_config:
+        click.echo("Executor config:")
+        for k, v in sorted(c.executor_config.items()):
+            click.echo(f"  {k}: {v}")
     click.echo(f"Default:     {'yes' if c.name == default_name else 'no'}")
     click.echo(f"Hosts ({len(c.hosts)}):")
     for h in c.hosts:
@@ -619,8 +722,9 @@ def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, output_json, c
     from sparkrun.utils.cli_formatters import format_job_label, format_job_commands, format_host_display
     from sparkrun.orchestration.primitives import build_ssh_kwargs
 
-    config = _get_context(ctx).config
-    host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config)
+    sctx = _get_context(ctx)
+    config = sctx.config
+    host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, sctx=sctx)
 
     ssh_kwargs = build_ssh_kwargs(config)
 
@@ -629,7 +733,13 @@ def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, output_json, c
         click.echo("[dry-run] Would run on %d host(s): %s" % (len(host_list), docker_cmd))
         return
 
-    # Query and classify — business logic lives in cluster_manager
+    # Query and classify — business logic lives in cluster_manager.
+    # NOTE: ``query_cluster_status`` is the CLI-display-oriented
+    # aggregator that adds per-container (role/status/image) detail,
+    # idle-host classification, and pending operations on top of the
+    # raw container snapshot.  :func:`sparkrun.api.status` exposes the
+    # leaner ``ClusterStatus`` shape (host occupancy + aggregated
+    # workloads) for non-CLI consumers and future scheduling.
     result = query_cluster_status(
         host_list,
         ssh_kwargs=ssh_kwargs,
@@ -758,14 +868,28 @@ def cluster_check_job(ctx, target, hosts, hosts_file, cluster_name, tp_override,
     if _is_cluster_id(target) is not None:
         # --- Cluster ID path ---
         cid = _is_cluster_id(target)
-        from sparkrun.orchestration.job_metadata import load_job_metadata
+        # Look up persisted metadata via the API (purely on-disk job
+        # cache enumeration — no executor needed).  We still fall back
+        # to ``load_job_metadata`` when the API enumeration misses
+        # (older job files without started_at, etc.).
+        meta: dict | None = None
+        try:
+            jobs = api.list_jobs(sctx=sctx)
+        except Exception:
+            jobs = []
+        for j in jobs:
+            if j.cluster_id == cid:
+                meta = dict(j.metadata)
+                break
+        if meta is None:
+            from sparkrun.orchestration.job_metadata import load_job_metadata
 
-        meta = load_job_metadata(cid, cache_dir=str(config.cache_dir))
+            meta = load_job_metadata(cid, cache_dir=str(config.cache_dir))
 
         # Resolve hosts: CLI flags > metadata > default cluster (None means "let check_job_running decide")
         host_list = None
         if hosts or hosts_file or cluster_name:
-            host_list, _ = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config)
+            host_list, _ = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, sctx=sctx)
         elif meta and meta.get("hosts"):
             host_list = meta["hosts"]
 

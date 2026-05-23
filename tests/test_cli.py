@@ -1662,6 +1662,132 @@ class TestClusterCommands:
         assert data["name"] == "test-cluster"
         assert data["default"] is True
 
+    def test_cluster_create_with_executor(self, runner, tmp_path, monkeypatch):
+        """Test creating a cluster with --executor and -o option."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.core.config
+
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+
+        result = runner.invoke(
+            main,
+            [
+                "cluster",
+                "create",
+                "exec-cluster",
+                "--hosts",
+                "h1,h2",
+                "--executor",
+                "docker",
+                "-o",
+                "privileged=false",
+                "-o",
+                "shm_size=16g",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+        # Verify persisted state
+        from sparkrun.core.cluster_manager import ClusterManager
+
+        mgr = ClusterManager(config_root)
+        c = mgr.get("exec-cluster")
+        assert c.executor == "docker"
+        assert c.executor_config == {"privileged": False, "shm_size": "16g"}
+
+    def test_cluster_create_executor_show(self, runner, tmp_path, monkeypatch):
+        """Test that cluster show renders executor + executor_config."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.core.config
+
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+
+        runner.invoke(
+            main,
+            [
+                "cluster",
+                "create",
+                "show-exec",
+                "--hosts",
+                "h1",
+                "--executor",
+                "k8s",
+                "-o",
+                "namespace=ml",
+            ],
+        )
+        result = runner.invoke(main, ["cluster", "show", "show-exec"])
+        assert result.exit_code == 0
+        assert "Executor:    k8s" in result.output
+        assert "namespace: ml" in result.output
+
+    def test_cluster_update_executor(self, runner, cluster_setup):
+        """Test updating cluster executor selector + opts."""
+        result = runner.invoke(
+            main,
+            [
+                "cluster",
+                "update",
+                "test-cluster",
+                "--executor",
+                "local",
+                "-o",
+                "user=ubuntu",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+        result = runner.invoke(main, ["cluster", "show", "test-cluster"])
+        assert "Executor:    local" in result.output
+        assert "user: ubuntu" in result.output
+
+    def test_cluster_update_clear_executor(self, runner, cluster_setup):
+        """Test clearing executor selector with empty string."""
+        runner.invoke(main, ["cluster", "update", "test-cluster", "--executor", "docker"])
+        result = runner.invoke(main, ["cluster", "update", "test-cluster", "--executor", ""])
+        assert result.exit_code == 0, result.output
+
+        result = runner.invoke(main, ["cluster", "show", "test-cluster"])
+        assert "Executor:" not in result.output
+
+    def test_cluster_update_clear_executor_config(self, runner, cluster_setup):
+        """Test clearing executor_config with --clear-executor-config."""
+        runner.invoke(
+            main,
+            ["cluster", "update", "test-cluster", "--executor", "docker", "-o", "shm_size=8g"],
+        )
+        result = runner.invoke(main, ["cluster", "update", "test-cluster", "--clear-executor-config"])
+        assert result.exit_code == 0, result.output
+
+        result = runner.invoke(main, ["cluster", "show", "test-cluster"])
+        assert "Executor:    docker" in result.output
+        assert "Executor config:" not in result.output
+
+    def test_cluster_create_invalid_executor_opt(self, runner, tmp_path, monkeypatch):
+        """Test that -o without = is rejected."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.core.config
+
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+
+        result = runner.invoke(
+            main,
+            [
+                "cluster",
+                "create",
+                "bad-opt",
+                "--hosts",
+                "h1",
+                "-o",
+                "privileged",  # missing =
+            ],
+        )
+        assert result.exit_code != 0
+        assert "key=value" in result.output
+
 
 class TestClusterMonitor:
     """Test cluster monitor subcommand."""
