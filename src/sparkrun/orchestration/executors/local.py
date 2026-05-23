@@ -25,11 +25,22 @@ from __future__ import annotations
 
 import logging
 import re
+import time
+from typing import Mapping, TYPE_CHECKING
 
 from sparkrun.orchestration.executors._base import Executor
 from sparkrun.utils.shell import quote
 
+if TYPE_CHECKING:
+    from sparkrun.core.cluster_status import ClusterStatus
+    from sparkrun.core.hardware import HostHardware
+
 logger = logging.getLogger(__name__)
+
+# Same name pattern as DockerExecutor — sparkrun's container_name helpers
+# emit ``sparkrun_<digest>_(solo|head|worker|node_<rank>)``.  LocalExecutor
+# uses the container_name as the pidfile basename so the same parse works.
+_PID_NAME_RE = re.compile(r"^(?P<cluster>sparkrun_[0-9a-f]{12})_(?P<role>solo|head|worker|node_(?P<rank>\d+))$")
 
 # Where pidfiles/logfiles land when no explicit override is provided.
 # Lives under ``~/.cache/sparkrun/local/`` so it follows the same
@@ -368,6 +379,144 @@ class LocalExecutor(Executor):
         raise NotImplementedError(
             "LocalExecutor does not support Ray cluster strategy. Use a native runtime (e.g. vllm-distributed, sglang) or DockerExecutor."
         )
+
+    # ------------------------------------------------------------------
+    # Status introspection
+    # ------------------------------------------------------------------
+
+    def query_status(
+        self,
+        hosts: list[str],
+        *,
+        ssh_kwargs: dict | None = None,
+        host_hardware: "Mapping[str, HostHardware] | None" = None,
+    ) -> "ClusterStatus":
+        """Snapshot sparkrun-launched native subprocesses across *hosts*.
+
+        Reads pidfiles under :data:`_DEFAULT_PID_DIR` over SSH and
+        ``kill -0``-checks each PID.  Workloads whose pidfile name
+        matches the canonical ``sparkrun_<digest>_<role>`` convention
+        are surfaced.  Unreachable hosts are omitted.
+        """
+        from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy
+        from sparkrun.core.hardware import default_dgx_spark_hardware
+        from sparkrun.orchestration.ssh import run_remote_scripts_parallel
+
+        if not hosts:
+            return ClusterStatus(hosts=(), queried_at=time.time(), executor=self.executor_name)
+
+        pid_dir = self.config.pid_dir or _DEFAULT_PID_DIR
+        # Print "<name>\t<pid>" for each pidfile whose PID is alive.
+        script = (
+            "shopt -s nullglob\n"
+            "for f in %s/*.pid; do\n"
+            '  [ -f "$f" ] || continue\n'
+            '  name=$(basename "$f" .pid)\n'
+            '  pid=$(cat "$f" 2>/dev/null || true)\n'
+            '  [ -n "$pid" ] || continue\n'
+            '  kill -0 "$pid" 2>/dev/null || continue\n'
+            '  printf "%%s\\t%%s\\n" "$name" "$pid"\n'
+            "done\n"
+        ) % pid_dir
+
+        ssh_kwargs = ssh_kwargs or {}
+        results = run_remote_scripts_parallel(
+            hosts,
+            script,
+            ssh_user=ssh_kwargs.get("ssh_user"),
+            ssh_key=ssh_kwargs.get("ssh_key"),
+            ssh_options=ssh_kwargs.get("ssh_options"),
+            timeout=ssh_kwargs.get("timeout", 15),
+            quiet=True,
+        )
+        by_host = {r.host: r for r in results}
+        host_entries: list[HostOccupancy] = []
+
+        for host in hosts:
+            r = by_host.get(host)
+            if r is None or r.returncode != 0:
+                logger.debug("query_status: skipping unreachable host %r (rc=%s)", host, getattr(r, "returncode", "n/a"))
+                continue
+
+            hw = (host_hardware or {}).get(host) or default_dgx_spark_hardware()
+            capacity = hw.total_gpus
+
+            workloads, used = _parse_local_pidfile_output(r.stdout)
+            host_entries.append(
+                HostOccupancy(
+                    host=host,
+                    workloads=tuple(workloads),
+                    used_slots=used,
+                    free_slots=max(capacity - used, 0),
+                )
+            )
+
+        return ClusterStatus(
+            hosts=tuple(host_entries),
+            queried_at=time.time(),
+            executor=self.executor_name,
+        )
+
+
+# --------------------------------------------------------------------------
+# query_status helpers (module-level so they're unit-testable)
+# --------------------------------------------------------------------------
+
+
+def _parse_local_pidfile_output(stdout: str) -> tuple[list, int]:
+    """Parse ``<name>\\t<pid>`` lines into RunningWorkloads.
+
+    Returns ``(workloads, used_slots)``.  Lines whose name doesn't
+    match the sparkrun convention are ignored.  Workloads are
+    aggregated by cluster_id so a multi-rank workload on this host
+    contributes a single :class:`RunningWorkload` with
+    ``ranks_on_host`` reflecting the count.
+    """
+    from sparkrun.core.cluster_status import RunningWorkload
+
+    by_cluster: dict[str, dict] = {}
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        name, _, _pid = line.partition("\t")
+        m = _PID_NAME_RE.match(name)
+        if not m:
+            continue
+        cluster_id = m.group("cluster")
+        rank_str = m.group("rank")
+        rank = int(rank_str) if rank_str is not None else 0
+        bucket = by_cluster.setdefault(cluster_id, {"ranks": set()})
+        bucket["ranks"].add(rank)
+
+    workloads: list[RunningWorkload] = []
+    total = 0
+    for cluster_id, bucket in by_cluster.items():
+        ranks_on_host = len(bucket["ranks"])
+        total += ranks_on_host
+        meta = _load_metadata_safely(cluster_id)
+        recipe_name = meta.get("recipe") if meta else None
+        runtime_name = meta.get("runtime") if meta else None
+        workloads.append(
+            RunningWorkload(
+                cluster_id=cluster_id,
+                recipe_name=recipe_name,
+                runtime_name=runtime_name,
+                ranks_on_host=ranks_on_host,
+            )
+        )
+    return workloads, total
+
+
+def _load_metadata_safely(cluster_id: str) -> dict | None:
+    """Best-effort job-metadata lookup that never raises."""
+    try:
+        from sparkrun.orchestration.job_metadata import load_job_metadata
+
+        return load_job_metadata(cluster_id)
+    except Exception:  # pragma: no cover - defensive
+        logger.debug("query_status: load_job_metadata failed for %s", cluster_id, exc_info=True)
+        return None
 
 
 def _bash_safe_command(command: str) -> str:
