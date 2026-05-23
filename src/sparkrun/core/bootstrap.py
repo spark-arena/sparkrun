@@ -100,6 +100,17 @@ def init_sparkrun(v: Variables | None = None, log_level: str = "WARNING") -> Var
         except (ValueError, TypeError) as e:
             logger.debug("Skipping executor %s: %s", executor_cls.__name__, e)
 
+    # Auto-discover all Scheduler subclasses in sparkrun.schedulers
+    from sparkrun.core.scheduler import Scheduler as _SchedulerPlugin
+
+    discovered_schedulers = list(find_types_in_modules("sparkrun.schedulers", _SchedulerPlugin))
+    for scheduler_cls in discovered_schedulers:
+        try:
+            register_plugin(scheduler_cls, v=v)
+            logger.debug("Registered scheduler: %s", scheduler_cls.__name__)
+        except (ValueError, TypeError) as e:
+            logger.debug("Skipping scheduler %s: %s", scheduler_cls.__name__, e)
+
     return v
 
 
