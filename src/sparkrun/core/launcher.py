@@ -599,6 +599,7 @@ def launch_inference(
 
     executor = resolve_executor(
         recipe=recipe,
+        cluster=cluster,
         runtime=runtime,
         config=config,
         cli_overrides=executor_config if isinstance(executor_config, dict) else None,
