@@ -156,100 +156,6 @@ class TestBaseFollowLogs:
         assert args[0][1] == "test0_head"
 
 
-# --- compute_required_nodes Tests ---
-
-
-class TestComputeRequiredNodes:
-    """Test base RuntimePlugin.compute_required_nodes()."""
-
-    def _make_recipe(self, defaults=None):
-        data = {
-            "name": "test",
-            "runtime": "vllm",
-            "model": "meta-llama/Llama-2-7b-hf",
-        }
-        if defaults:
-            data["defaults"] = defaults
-        return Recipe.from_dict(data)
-
-    def test_returns_tp_value(self):
-        """Base class returns tensor_parallel as required nodes."""
-        recipe = self._make_recipe(defaults={"tensor_parallel": 4})
-        runtime = _StubRuntime()
-        assert runtime.compute_required_nodes(recipe) == 4
-
-    def test_returns_none_when_no_tp(self):
-        """Returns None when tensor_parallel is not set."""
-        recipe = self._make_recipe()
-        runtime = _StubRuntime()
-        assert runtime.compute_required_nodes(recipe) is None
-
-    def test_overrides_take_precedence(self):
-        """CLI overrides override recipe defaults."""
-        recipe = self._make_recipe(defaults={"tensor_parallel": 2})
-        runtime = _StubRuntime()
-        assert runtime.compute_required_nodes(recipe, {"tensor_parallel": 8}) == 8
-
-    def test_pp_only(self):
-        """PP=3 with no explicit TP → 1*3 = 3 nodes."""
-        recipe = self._make_recipe(defaults={"pipeline_parallel": 3})
-        runtime = _StubRuntime()
-        assert runtime.compute_required_nodes(recipe) == 3
-
-    def test_tp_times_pp(self):
-        """TP=2, PP=2 → 4 nodes."""
-        recipe = self._make_recipe(
-            defaults={
-                "tensor_parallel": 2,
-                "pipeline_parallel": 2,
-            }
-        )
-        runtime = _StubRuntime()
-        assert runtime.compute_required_nodes(recipe) == 4
-
-    def test_tp_no_pp(self):
-        """TP=2, no PP → 2 nodes (backward compat)."""
-        recipe = self._make_recipe(defaults={"tensor_parallel": 2})
-        runtime = _StubRuntime()
-        assert runtime.compute_required_nodes(recipe) == 2
-
-    def test_returns_none_with_empty_overrides(self):
-        """Empty overrides don't change None result."""
-        recipe = self._make_recipe()
-        runtime = _StubRuntime()
-        assert runtime.compute_required_nodes(recipe, {}) is None
-
-    def test_dp_only(self):
-        """DP=2 alone → requires 2 nodes (one per replica on DGX Spark)."""
-        recipe = self._make_recipe(defaults={"data_parallel": 2})
-        runtime = _StubRuntime()
-        assert runtime.compute_required_nodes(recipe) == 2
-
-    def test_tp_times_dp(self):
-        """TP=2, DP=2 → 4 nodes (2 nodes × 2 replicas)."""
-        recipe = self._make_recipe(defaults={"tensor_parallel": 2, "data_parallel": 2})
-        runtime = _StubRuntime()
-        assert runtime.compute_required_nodes(recipe) == 4
-
-    def test_tp_pp_dp_combined(self):
-        """TP=2, PP=2, DP=3 → 12 nodes."""
-        recipe = self._make_recipe(
-            defaults={
-                "tensor_parallel": 2,
-                "pipeline_parallel": 2,
-                "data_parallel": 3,
-            }
-        )
-        runtime = _StubRuntime()
-        assert runtime.compute_required_nodes(recipe) == 12
-
-    def test_dp_override(self):
-        """CLI --dp override is honored."""
-        recipe = self._make_recipe(defaults={"tensor_parallel": 1})
-        runtime = _StubRuntime()
-        assert runtime.compute_required_nodes(recipe, {"data_parallel": 4}) == 4
-
-
 # --- _augment_served_model_name tests ---
 
 
@@ -615,3 +521,35 @@ class TestResolveHostsForInit:
         )
         assert "127.0.0.1" not in cmd
         assert "--master-addr 10.0.0.4" in cmd
+
+
+# --- world_size hook (default) ---
+
+
+class TestRuntimeWorldSize:
+    """Base runtime ``world_size`` returns ``parallelism.total_gpus``."""
+
+    def test_default_returns_total_gpus(self):
+        from sparkrun.core.cluster_manager import ClusterDefinition
+        from sparkrun.core.parallelism import ParallelismConfig
+        from sparkrun.core.recipe import Recipe
+
+        runtime = _StubRuntime()
+        parallelism = ParallelismConfig(tensor_parallel=2, pipeline_parallel=3, data_parallel=4)
+        cluster = ClusterDefinition(name="c", hosts=["h"])
+        recipe = Recipe({"sparkrun_version": "2", "runtime": "stub", "model": "m"})
+        # total_gpus = tp * pp * dp = 2 * 3 * 4 = 24
+        assert runtime.world_size(parallelism, recipe=recipe, cluster=cluster) == 24
+
+    def test_default_ignores_expert_parallel(self):
+        """Default base implementation does NOT factor in ep (Atlas overrides this)."""
+        from sparkrun.core.cluster_manager import ClusterDefinition
+        from sparkrun.core.parallelism import ParallelismConfig
+        from sparkrun.core.recipe import Recipe
+
+        runtime = _StubRuntime()
+        parallelism = ParallelismConfig(tensor_parallel=2, expert_parallel=8)
+        cluster = ClusterDefinition(name="c", hosts=["h"])
+        recipe = Recipe({"sparkrun_version": "2", "runtime": "stub", "model": "m"})
+        # Base default uses total_gpus = tp * pp * dp = 2 * 1 * 1 = 2 (ep absent).
+        assert runtime.world_size(parallelism, recipe=recipe, cluster=cluster) == 2

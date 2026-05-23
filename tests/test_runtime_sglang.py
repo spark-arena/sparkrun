@@ -354,66 +354,6 @@ class TestSglangFollowLogs:
         assert args[0][1] == "mycluster_node_0"
 
 
-class TestSglangComputeRequiredNodes:
-    """Test SglangRuntime inherits base tp*pp (no override needed)."""
-
-    def _make_recipe(self, defaults=None):
-        data = {
-            "name": "test",
-            "runtime": "sglang",
-            "model": "meta-llama/Llama-2-7b-hf",
-        }
-        if defaults:
-            data["defaults"] = defaults
-        return Recipe.from_dict(data)
-
-    def test_tp_only(self):
-        """TP=4, no PP → requires 4 nodes."""
-        recipe = self._make_recipe(defaults={"tensor_parallel": 4})
-        runtime = SglangRuntime()
-        assert runtime.compute_required_nodes(recipe) == 4
-
-    def test_tp_times_pp(self):
-        """TP=2, PP=2 → requires 4 nodes."""
-        recipe = self._make_recipe(
-            defaults={
-                "tensor_parallel": 2,
-                "pipeline_parallel": 2,
-            }
-        )
-        runtime = SglangRuntime()
-        assert runtime.compute_required_nodes(recipe) == 4
-
-    def test_pp_only(self):
-        """PP=3 with no explicit TP → 1*3 = 3 nodes."""
-        recipe = self._make_recipe(defaults={"pipeline_parallel": 3})
-        runtime = SglangRuntime()
-        assert runtime.compute_required_nodes(recipe) == 3
-
-    def test_no_parallelism_returns_none(self):
-        """Neither TP nor PP set → None."""
-        recipe = self._make_recipe()
-        runtime = SglangRuntime()
-        assert runtime.compute_required_nodes(recipe) is None
-
-    def test_overrides_pp(self):
-        """CLI overrides PP value."""
-        recipe = self._make_recipe(defaults={"tensor_parallel": 2})
-        runtime = SglangRuntime()
-        assert runtime.compute_required_nodes(recipe, {"pipeline_parallel": 3}) == 6
-
-    def test_overrides_both(self):
-        """CLI overrides both TP and PP."""
-        recipe = self._make_recipe(
-            defaults={
-                "tensor_parallel": 2,
-                "pipeline_parallel": 2,
-            }
-        )
-        runtime = SglangRuntime()
-        assert runtime.compute_required_nodes(recipe, {"tensor_parallel": 4, "pipeline_parallel": 3}) == 12
-
-
 def test_sglang_pp_size_in_generated_command():
     """SGLang --pp-size flag appears in generated command."""
     recipe_data = {

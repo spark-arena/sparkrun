@@ -29,7 +29,9 @@ from sparkrun.runtimes._util import default_env_hf_offline, parse_flag_value_fro
 from sparkrun.runtimes.base import RuntimePlugin
 
 if TYPE_CHECKING:
+    from sparkrun.core.cluster_manager import ClusterDefinition
     from sparkrun.core.config import SparkrunConfig
+    from sparkrun.core.parallelism import ParallelismConfig
     from sparkrun.core.recipe import Recipe
     from sparkrun.orchestration.comm_env import ClusterCommEnv
 
@@ -337,32 +339,64 @@ class AtlasRuntime(RuntimePlugin):
 
     # --- Parallelism ---
 
-    def compute_required_nodes(self, recipe: Recipe, overrides: dict[str, Any] | None = None, *, cluster=None) -> int | None:
-        """Atlas world_size = max(tp*ep, tp, ep).
+    def validate_recipe(self, recipe: Recipe) -> list[str]:
+        """Validate Atlas-specific recipe fields.
 
-        Atlas supports overlapping ``tp == ep`` topology (both groups
-        live on the same physical ranks) as well as the orthogonal
-        ``tp * ep`` mesh. Sparkrun's stock ``compute_required_nodes``
-        only considers ``tensor_parallel * pipeline_parallel *
-        data_parallel``, so we override to factor in ``ep_size``.
+        Atlas composes tensor parallelism (``tensor_parallel``) and
+        expert parallelism (``ep_size``) on either an overlapping
+        (``tp == ep``) or orthogonal (``tp * ep``) mesh. The current
+        sparkrun integration only supports a single-node Atlas
+        deployment, so any combination that would produce ``world_size
+        > 1`` is rejected here. Multi-node Atlas support is planned;
+        when it lands this check should be relaxed.
         """
-        config = recipe.build_config_chain(overrides or {})
-        tp = _coerce_int(config.get("tensor_parallel"), default=1)
-        ep = _coerce_int(config.get("ep_size"), default=1)
+        issues = super().validate_recipe(recipe)
+        defaults = recipe.defaults or {}
+        tp = _coerce_int(defaults.get("tensor_parallel"), default=1)
+        ep = _coerce_int(defaults.get("ep_size"), default=1)
 
         if tp <= 1 and ep <= 1:
-            return None
+            return issues
 
         if tp == ep and tp > 1:
-            # Overlapping groups: both TP and EP share the same ranks.
-            result = tp
+            world_size = tp
         else:
-            result = tp * ep
+            world_size = tp * ep
 
-        if result > 1:
-            raise ValueError("Atlas runtime currently only supports single node. Support for multiple nodes is coming soon.")
+        if world_size > 1:
+            issues.append(
+                "[atlas] Atlas runtime currently only supports single node; "
+                "tensor_parallel=%d ep_size=%d implies world_size=%d. "
+                "Support for multiple nodes is coming soon." % (tp, ep, world_size)
+            )
+        return issues
 
-        return result
+    def world_size(
+        self,
+        parallelism: ParallelismConfig,
+        *,
+        recipe: Recipe,
+        cluster: ClusterDefinition,
+    ) -> int:
+        """Atlas world size = ``tensor_parallel * expert_parallel``.
+
+        Atlas composes TP and EP on an orthogonal mesh (see module
+        docstring), so the rank count is ``tp * ep`` rather than the
+        ``tp * pp * dp`` product the base class computes.
+
+        Note: :meth:`validate_recipe` still rejects ``world_size > 1``
+        because multi-node Atlas launch isn't ready yet.  This override
+        exists so the scheduler-side math is correct when that
+        validation relaxes.
+        """
+        tp = parallelism.tensor_parallel
+        ep = parallelism.expert_parallel
+
+        if tp == ep and tp > 1:
+            world_size = tp  # shared tp+ep case
+        else:
+            world_size = tp * ep
+        return world_size
 
     # --- Cluster env ---
 

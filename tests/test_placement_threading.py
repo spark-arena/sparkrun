@@ -212,6 +212,9 @@ def test_api_run_passes_placement_to_launch_inference():
         runtime_name = "vllm"
         executor = None
 
+        def world_size(self, parallelism, *, recipe, cluster):
+            return parallelism.total_gpus
+
     captured: dict = {}
 
     def _capture(**kwargs):
@@ -276,6 +279,9 @@ def test_api_run_passes_placement_when_multi_host_with_parallelism():
     class _FakeRuntime:
         runtime_name = "vllm"
         executor = None
+
+        def world_size(self, parallelism, *, recipe, cluster):
+            return parallelism.total_gpus
 
     captured: dict = {}
 

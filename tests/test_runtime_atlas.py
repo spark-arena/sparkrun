@@ -169,36 +169,44 @@ def test_atlas_generate_node_command_worker_binds_port_zero():
     assert "--rank 1" in worker
 
 
-# --- compute_required_nodes ---
+# --- validate_recipe ---
 
 
-def test_atlas_compute_required_nodes_solo():
-    """No parallelism → None (= use whatever hosts the user provided)."""
+def test_atlas_validate_recipe_solo():
+    """No parallelism → no validation issues (solo deployment is fine)."""
     runtime = AtlasRuntime()
-    assert runtime.compute_required_nodes(_recipe()) is None
+    assert runtime.validate_recipe(_recipe()) == []
 
 
-# TODO: re-enable tests with multi-node / distributed support
-#
-# def test_atlas_compute_required_nodes_pure_ep():
-#     """ep_size=2, tp=1 → 2 nodes."""
-#     runtime = AtlasRuntime()
-#     recipe = _recipe(defaults={"ep_size": 2})
-#     assert runtime.compute_required_nodes(recipe) == 2
-#
-#
-# def test_atlas_compute_required_nodes_overlapping_tp_ep():
-#     """tp=2, ep=2 → 2 nodes (overlapping groups, not 4)."""
-#     runtime = AtlasRuntime()
-#     recipe = _recipe(defaults={"tensor_parallel": 2, "ep_size": 2})
-#     assert runtime.compute_required_nodes(recipe) == 2
-#
-#
-# def test_atlas_compute_required_nodes_orthogonal_tp_ep():
-#     """tp=2, ep=4 → 8 nodes (orthogonal mesh)."""
-#     runtime = AtlasRuntime()
-#     recipe = _recipe(defaults={"tensor_parallel": 2, "ep_size": 4})
-#     assert runtime.compute_required_nodes(recipe) == 8
+def test_atlas_validate_recipe_overlapping_tp_eq_ep_flagged():
+    """tp=2, ep=2 → world_size=2, currently single-node-only → flagged."""
+    runtime = AtlasRuntime()
+    recipe = _recipe(defaults={"tensor_parallel": 2, "ep_size": 2})
+    issues = runtime.validate_recipe(recipe)
+    assert any("atlas" in issue and "single node" in issue for issue in issues)
+
+
+def test_atlas_validate_recipe_pure_ep_flagged():
+    """ep_size=2 alone → world_size=2 → flagged (single-node-only)."""
+    runtime = AtlasRuntime()
+    recipe = _recipe(defaults={"ep_size": 2})
+    issues = runtime.validate_recipe(recipe)
+    assert any("atlas" in issue and "single node" in issue for issue in issues)
+
+
+def test_atlas_validate_recipe_orthogonal_tp_ep_flagged():
+    """tp=2, ep=4 → world_size=8 (orthogonal mesh) → flagged."""
+    runtime = AtlasRuntime()
+    recipe = _recipe(defaults={"tensor_parallel": 2, "ep_size": 4})
+    issues = runtime.validate_recipe(recipe)
+    assert any("atlas" in issue and "single node" in issue for issue in issues)
+
+
+def test_atlas_validate_recipe_tp_eq_1_ep_eq_1_passes():
+    """tp=1 and ep=1 are no-ops → not flagged."""
+    runtime = AtlasRuntime()
+    recipe = _recipe(defaults={"tensor_parallel": 1, "ep_size": 1})
+    assert runtime.validate_recipe(recipe) == []
 
 
 # --- Cluster env / docker opts ---
@@ -432,3 +440,45 @@ def test_atlas_no_duplicate_auth_token_when_both_keys_set():
     # Canonical api_key wins
     assert "--auth-token sk-canonical" in cmd
     assert "sk-alias" not in cmd
+
+
+# --- world_size hook ---
+
+
+def test_atlas_world_size_tp_times_ep():
+    """Atlas world_size = tp * ep (orthogonal MoE mesh)."""
+    from sparkrun.core.cluster_manager import ClusterDefinition
+    from sparkrun.core.parallelism import ParallelismConfig
+
+    runtime = AtlasRuntime()
+    parallelism = ParallelismConfig(tensor_parallel=2, expert_parallel=4)
+    cluster = ClusterDefinition(name="c", hosts=["h1", "h2"])
+    assert runtime.world_size(parallelism, recipe=_recipe(), cluster=cluster) == 8
+
+
+def test_atlas_world_size_single_dim_defaults_to_one():
+    """tp=1, ep=1 → world_size 1 (single-node Atlas)."""
+    from sparkrun.core.cluster_manager import ClusterDefinition
+    from sparkrun.core.parallelism import ParallelismConfig
+
+    runtime = AtlasRuntime()
+    parallelism = ParallelismConfig()  # all defaults = 1
+    cluster = ClusterDefinition(name="c", hosts=["h1"])
+    assert runtime.world_size(parallelism, recipe=_recipe(), cluster=cluster) == 1
+
+
+def test_atlas_world_size_ignores_pp_and_dp():
+    """Atlas mesh math is tp*ep — pp/dp do not contribute."""
+    from sparkrun.core.cluster_manager import ClusterDefinition
+    from sparkrun.core.parallelism import ParallelismConfig
+
+    runtime = AtlasRuntime()
+    parallelism = ParallelismConfig(
+        tensor_parallel=2,
+        expert_parallel=3,
+        pipeline_parallel=5,
+        data_parallel=7,
+    )
+    cluster = ClusterDefinition(name="c", hosts=["h1"])
+    # tp * ep == 6, regardless of pp and dp.
+    assert runtime.world_size(parallelism, recipe=_recipe(), cluster=cluster) == 6

@@ -86,9 +86,9 @@ def test_api_list_jobs_accepts_sctx_kwarg():
 # --------------------------------------------------------------------------
 
 
-def test_resolve_cluster_def_uses_sctx_cluster_manager(tmp_path):
-    """``resolve_cluster_def`` looks up cluster names via ``sctx.cluster_manager``."""
-    from sparkrun.api._resolve import resolve_cluster_def
+def test_resolve_cluster_uses_sctx_cluster_manager(tmp_path):
+    """``resolve_cluster`` looks up cluster names via ``sctx.cluster_manager``."""
+    from sparkrun.api._resolve import resolve_cluster
     from sparkrun.core.cluster_manager import ClusterManager
 
     # Build a custom ClusterManager and an sctx that exposes it.
@@ -101,15 +101,14 @@ def test_resolve_cluster_def_uses_sctx_cluster_manager(tmp_path):
         def cluster_manager(self):
             return mgr
 
-    resolved = resolve_cluster_def("custom-cluster", sctx=_StubSctx())  # type: ignore[arg-type]
-    assert resolved is not None
+    resolved = resolve_cluster("custom-cluster", sctx=_StubSctx())  # type: ignore[arg-type]
     assert resolved.name == "custom-cluster"
     assert resolved.hosts == ["h1", "h2"]
 
 
-def test_resolve_hosts_uses_sctx_config_default_hosts():
-    """``resolve_hosts`` falls back to ``sctx.config.default_hosts``."""
-    from sparkrun.api._resolve import resolve_hosts
+def test_resolve_cluster_uses_sctx_config_default_hosts():
+    """``resolve_cluster`` falls back to ``sctx.config.default_hosts`` when no hosts/cluster."""
+    from sparkrun.api._resolve import resolve_cluster
 
     class _StubConfig:
         default_hosts = ["fallback-1", "fallback-2"]
@@ -117,12 +116,14 @@ def test_resolve_hosts_uses_sctx_config_default_hosts():
     class _StubSctx:
         config = _StubConfig()
 
-    assert resolve_hosts(None, sctx=_StubSctx()) == ["fallback-1", "fallback-2"]  # type: ignore[arg-type]
+    resolved = resolve_cluster(None, None, sctx=_StubSctx())  # type: ignore[arg-type]
+    assert resolved.name == ""  # anonymous
+    assert resolved.hosts == ["fallback-1", "fallback-2"]
 
 
-def test_resolve_hosts_explicit_overrides_sctx_default():
+def test_resolve_cluster_explicit_overrides_sctx_default():
     """Explicit ``hosts_input`` wins over ``sctx.config.default_hosts``."""
-    from sparkrun.api._resolve import resolve_hosts
+    from sparkrun.api._resolve import resolve_cluster
 
     class _StubConfig:
         default_hosts = ["fallback-1"]
@@ -130,7 +131,8 @@ def test_resolve_hosts_explicit_overrides_sctx_default():
     class _StubSctx:
         config = _StubConfig()
 
-    assert resolve_hosts(["override"], sctx=_StubSctx()) == ["override"]  # type: ignore[arg-type]
+    resolved = resolve_cluster(None, ["override"], sctx=_StubSctx())  # type: ignore[arg-type]
+    assert resolved.hosts == ["override"]
 
 
 # --------------------------------------------------------------------------
@@ -155,6 +157,9 @@ def test_api_run_forwards_sctx_to_launch_inference():
     class _FakeRuntime:
         runtime_name = "vllm"
         executor = None
+
+        def world_size(self, parallelism, *, recipe, cluster):
+            return parallelism.total_gpus
 
     captured: dict = {}
 
@@ -207,6 +212,9 @@ def test_api_run_builds_default_sctx_when_omitted():
     class _FakeRuntime:
         runtime_name = "vllm"
         executor = None
+
+        def world_size(self, parallelism, *, recipe, cluster):
+            return parallelism.total_gpus
 
     captured: dict = {}
 

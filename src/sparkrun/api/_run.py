@@ -54,8 +54,7 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunRes
         :class:`SparkrunError`: For other launch failures.
     """
     from sparkrun.api._resolve import (
-        resolve_cluster_def,
-        resolve_hosts,
+        resolve_cluster,
         resolve_recipe,
         resolve_runtime,
     )
@@ -68,10 +67,12 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunRes
     started_at = time.time()
     config = sctx.config
 
-    # 1. Resolve inputs.
-    cluster_def = resolve_cluster_def(options.cluster, sctx=sctx)
+    # 1. Resolve inputs.  `resolve_cluster` always returns a populated
+    # ClusterDefinition (anonymous when only --hosts was given) so
+    # downstream code never has to branch on ``cluster is None``.
+    cluster_def = resolve_cluster(options.cluster, options.hosts, sctx=sctx, config=config)
     recipe = resolve_recipe(options.recipe, sctx=sctx, overrides=options.overrides)
-    hosts = resolve_hosts(options.hosts, sctx=sctx, cluster=cluster_def)
+    hosts = list(cluster_def.hosts)
     runtime = resolve_runtime(recipe, sctx=sctx)
 
     # Apply the cluster's SSH user (if any) to the config so downstream
@@ -79,7 +80,7 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunRes
     # log in as the right user.  Matches the CLI's resolution chain
     # where ``_resolve_hosts_or_exit`` applies ``cluster.user`` to
     # ``config.ssh_user`` before launch.
-    if cluster_def is not None and getattr(cluster_def, "user", None):
+    if getattr(cluster_def, "user", None):
         try:
             config.ssh_user = cluster_def.user
         except Exception:
@@ -91,12 +92,19 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunRes
     is_solo_request = bool(options.solo) or recipe.mode == "solo"
 
     if not is_solo_request and len(host_list) > 1:
+        import dataclasses
+
         parallelism = extract_parallelism(recipe.build_config_chain(options.overrides))
         if any(getattr(parallelism, k) > 1 for k in ("tensor_parallel", "pipeline_parallel", "data_parallel")):
+            # Bake the runtime-derived rank count into the parallelism config
+            # so the scheduler asks ``parallelism.world_size()`` and gets the
+            # right answer regardless of which runtime owns the workload.
+            total_ranks = runtime.world_size(parallelism, recipe=recipe, cluster=cluster_def)
+            parallelism = dataclasses.replace(parallelism, total_ranks=total_ranks)
             sched_request = SchedulingRequest(
                 parallelism=parallelism,
                 hosts=tuple(host_list),
-                host_hardware=(cluster_def.hosts_hardware if cluster_def is not None else None) or None,
+                host_hardware=cluster_def.hosts_hardware or None,
                 layout=getattr(recipe, "layout", None),
                 resources=None,
             )

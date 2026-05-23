@@ -5276,7 +5276,6 @@ class TestStopLogsClusterIdAndOverrides:
         """Verify --port is passed through to generate_cluster_id in logs."""
         mock_runtime = mock.Mock()
         mock_runtime.follow_logs = mock.Mock()
-        mock_runtime.compute_required_nodes = mock.Mock(return_value=2)
         with (
             mock.patch("sparkrun.core.bootstrap.get_runtime", return_value=mock_runtime),
             mock.patch("sparkrun.orchestration.job_metadata.generate_cluster_id", return_value="sparkrun_aabbccdd1122") as mock_gen,
