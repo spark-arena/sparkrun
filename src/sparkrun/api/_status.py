@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from sparkrun.core.cluster_manager import ClusterDefinition
     from sparkrun.core.cluster_status import ClusterStatus
+    from sparkrun.core.context import SparkrunContext
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,7 @@ def status(
     executor: str | None = None,
     cluster: "str | ClusterDefinition | None" = None,
     ssh_kwargs: dict | None = None,
+    sctx: "SparkrunContext | None" = None,
 ) -> "ClusterStatus":
     """Return a :class:`ClusterStatus` snapshot of *hosts*.
 
@@ -39,6 +41,8 @@ def status(
             hardware falls back to DGX Spark per host.
         ssh_kwargs: Optional SSH connection kwargs (forwarded to the
             executor's ``query_status``).
+        sctx: Optional shared :class:`SparkrunContext`.  Provides
+            cluster manager + SAF variables for chained-call sharing.
 
     Returns:
         A :class:`ClusterStatus` snapshot.  Unreachable hosts are
@@ -48,13 +52,14 @@ def status(
     from sparkrun.api._resolve import resolve_cluster_def
     from sparkrun.orchestration.executor import resolve_executor
 
-    cluster_def = resolve_cluster_def(cluster)
+    cluster_def = resolve_cluster_def(cluster, sctx=sctx)
     cli_overrides = {"executor": executor} if executor else None
     resolved = resolve_executor(
         cluster=cluster_def,
         cli_overrides=cli_overrides,
         rootless=False,
         auto_user=False,
+        v=sctx.variables if sctx is not None else None,
     )
     host_hardware = cluster_def.hosts_hardware if cluster_def is not None else None
     return resolved.query_status(

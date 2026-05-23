@@ -24,6 +24,7 @@ field additions are non-breaking, field removals are breaking.
 
 from __future__ import annotations
 
+from sparkrun.api._context import default_sctx
 from sparkrun.api._errors import (
     HostsUnreachable,
     InsufficientCapacity,
@@ -33,6 +34,7 @@ from sparkrun.api._errors import (
     SparkrunError,
     TrustRejected,
 )
+from sparkrun.core.context import SparkrunContext
 from sparkrun.api._jobs import list_jobs
 from sparkrun.api._logs import logs
 from sparkrun.api._models import (
@@ -48,6 +50,9 @@ from sparkrun.api._status import status
 from sparkrun.api._stop import stop
 
 __all__ = [
+    # Session context
+    "SparkrunContext",
+    "default_sctx",
     # Data models
     "RunOptions",
     "RunResult",

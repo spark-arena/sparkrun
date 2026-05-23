@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from sparkrun.api._errors import InsufficientCapacity, LayoutRequired, SparkrunError
 
 if TYPE_CHECKING:
+    from sparkrun.core.context import SparkrunContext
     from sparkrun.core.scheduler import SchedulingRequest, SchedulingResult
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,7 @@ def schedule(
     request: "SchedulingRequest",
     *,
     scheduler: str | None = None,
+    sctx: "SparkrunContext | None" = None,
 ) -> "SchedulingResult":
     """Run *request* through the named scheduler (or the default greedy one).
 
@@ -32,6 +34,9 @@ def schedule(
         request: The :class:`SchedulingRequest` describing the workload.
         scheduler: Registered scheduler name.  ``None`` or ``"default"``
             selects ``"greedy"``.
+        sctx: Optional shared :class:`SparkrunContext`.  When provided,
+            its ``variables`` are used for SAF scheduler lookup so
+            callers chaining api calls share the same plugin registry.
 
     Returns:
         A :class:`SchedulingResult` with the resolved
@@ -49,8 +54,9 @@ def schedule(
         get_scheduler,
     )
 
+    v = sctx.variables if sctx is not None else None
     try:
-        plugin = get_scheduler(scheduler)
+        plugin = get_scheduler(scheduler, v=v)
     except ValueError as e:
         raise SparkrunError(str(e)) from e
 

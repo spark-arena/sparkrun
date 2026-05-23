@@ -24,6 +24,7 @@ from sparkrun.api._models import StopResult
 
 if TYPE_CHECKING:
     from sparkrun.core.cluster_manager import ClusterDefinition
+    from sparkrun.core.context import SparkrunContext
     from sparkrun.core.recipe import Recipe
 
 logger = logging.getLogger(__name__)
@@ -37,11 +38,16 @@ def stop(
     overrides: dict | None = None,
     cluster: "str | ClusterDefinition | None" = None,
     cache_dir: str | None = None,
+    sctx: "SparkrunContext | None" = None,
 ) -> StopResult:
     """Stop a running sparkrun workload.
 
     Either ``cluster_id`` *or* (``recipe`` + a host source) is required.
     When both are provided, ``cluster_id`` wins.
+
+    Args:
+        sctx: Optional shared :class:`SparkrunContext` for chained
+            api calls (registry/cluster manager + config sharing).
     """
     from sparkrun.api._resolve import (
         resolve_cluster_def,
@@ -59,12 +65,19 @@ def stop(
     if not cluster_id:
         if recipe is None:
             raise SparkrunError("api.stop requires cluster_id or recipe+hosts")
-        cluster_def = resolve_cluster_def(cluster)
-        resolved_recipe = resolve_recipe(recipe)
-        resolved_hosts = resolve_hosts(hosts, cluster=cluster_def)
+        cluster_def = resolve_cluster_def(cluster, sctx=sctx)
+        resolved_recipe = resolve_recipe(recipe, sctx=sctx)
+        resolved_hosts = resolve_hosts(hosts, sctx=sctx, cluster=cluster_def)
         cluster_id = generate_cluster_id(resolved_recipe, resolved_hosts, overrides=overrides)
     else:
-        cluster_def = resolve_cluster_def(cluster)
+        cluster_def = resolve_cluster_def(cluster, sctx=sctx)
+
+    # Default cache_dir from sctx.config when not explicitly passed.
+    if cache_dir is None and sctx is not None:
+        try:
+            cache_dir = str(sctx.config.cache_dir)
+        except Exception:
+            cache_dir = None
 
     # Load metadata to recover the host list and executor selection.
     meta = load_job_metadata(cluster_id, cache_dir=cache_dir)
@@ -100,6 +113,7 @@ def stop(
         cli_overrides=cli_overrides,
         rootless=False,
         auto_user=False,
+        v=sctx.variables if sctx is not None else None,
     )
 
     container_names = executor.enumerate_containers(cluster_id, len(target_hosts))
@@ -109,7 +123,7 @@ def stop(
     # this keeps the api stop dispatch on the conventional path.
     from sparkrun.orchestration.primitives import build_ssh_kwargs, cleanup_containers
 
-    config = _maybe_load_config()
+    config = sctx.config if sctx is not None else _maybe_load_config()
     if config is not None and cluster_def is not None and cluster_def.user:
         # Apply cluster SSH user so downstream ssh_kwargs picks it up.
         try:
