@@ -28,7 +28,7 @@ from ._common import (
     host_options,
     recipe_override_options,
     resolve_cluster_config,
-    validate_and_prepare_hosts,
+    resolve_effective_hosts_for_recipe,
     with_host_context,
     HIDE_ADVANCED_OPTIONS,
 )
@@ -654,7 +654,14 @@ def _run_benchmark(
         host_list, cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, sctx=sctx)
 
     # Node count validation, max_nodes enforcement, and solo mode determination
-    host_list, is_solo = validate_and_prepare_hosts(host_list, recipe, overrides, runtime, solo=solo)
+    host_list, is_solo = resolve_effective_hosts_for_recipe(
+        host_list,
+        recipe,
+        overrides,
+        cluster_def=None,
+        sctx=sctx,
+        solo=solo,
+    )
 
     # Resolve cache dir, transfer mode, and transfer interface from cluster config
     cluster_cfg = resolve_cluster_config(cluster_name, hosts, hosts_file, cluster_mgr)

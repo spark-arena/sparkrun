@@ -526,6 +526,17 @@ class RuntimePlugin(Plugin):
     ) -> int | None:
         """Compute the number of nodes required to run this recipe.
 
+        .. deprecated:: 0.3
+            Prefer :func:`sparkrun.api.schedule` to derive the effective
+            host list.  ``api.schedule`` returns a
+            :class:`~sparkrun.core.scheduler.RankAssignment` whose
+            ``hosts_used`` IS the effective host list — no separate
+            "required nodes" step is needed.  This method survives as a
+            convenience for callers that only need a node count and as
+            an extension point for runtime-specific arithmetic (e.g.
+            llama.cpp split-mode validation, atlas TP*EP mesh).
+            Subclass overrides remain supported.
+
         Two paths:
 
         * **Cluster-aware** (``cluster`` is a

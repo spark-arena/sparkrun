@@ -195,29 +195,49 @@ def test_trtllm_mpirun_slot_count_scales_to_placement():
 
 
 # --------------------------------------------------------------------------
-# CLI: validate_and_prepare_hosts forwards cluster to compute_required_nodes
+# CLI: resolve_effective_hosts_for_recipe threads cluster into the scheduler
 # --------------------------------------------------------------------------
 
 
-def test_validate_and_prepare_hosts_threads_cluster(monkeypatch):
+def test_resolve_effective_hosts_for_recipe_threads_cluster(monkeypatch):
     from sparkrun.cli import _common
+    import sparkrun.api as api
 
     captured = {}
 
-    class _Runtime:
-        runtime_name = "stub"
+    def _stub_schedule(request, **kwargs):
+        from sparkrun.core.scheduler import RankAssignment, RankSlot, SchedulingResult
 
-        def compute_required_nodes(self, recipe, overrides, *, cluster=None):
-            captured["cluster"] = cluster
-            return 2
+        captured["host_hardware"] = request.host_hardware
+        captured["hosts"] = request.hosts
+        # Return a synthetic 2-host assignment to match the prior test's
+        # expectation that 3 input hosts trim down to 2.
+        assignment = RankAssignment(
+            by_rank=(RankSlot("a", 0), RankSlot("b", 0)),
+            hosts_used=("a", "b"),
+        )
+        return SchedulingResult(assignment=assignment, scheduler_name="greedy")
+
+    monkeypatch.setattr(api, "schedule", _stub_schedule)
 
     class _Recipe:
         max_nodes = None
         mode = "auto"
+        layout = None
+
+        def build_config_chain(self, overrides):
+            return {"tensor_parallel": 2}
 
     cluster = ClusterDefinition(name="c", hosts=["a", "b", "c"])
-    host_list, is_solo = _common.validate_and_prepare_hosts(["a", "b", "c"], _Recipe(), {}, _Runtime(), solo=False, cluster=cluster)
-    assert captured["cluster"] is cluster
+    host_list, is_solo = _common.resolve_effective_hosts_for_recipe(
+        ["a", "b", "c"],
+        _Recipe(),
+        {},
+        cluster_def=cluster,
+        solo=False,
+    )
+    # Hardware coming from the cluster threaded into the scheduling request.
+    assert captured["host_hardware"] == (cluster.hosts_hardware or None)
     assert len(host_list) == 2
     assert is_solo is False
 

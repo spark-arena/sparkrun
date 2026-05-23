@@ -186,98 +186,141 @@ def _get_config_and_registry(config_path=None):
     return config, registry_mgr
 
 
-def _apply_node_trimming(
+def resolve_effective_hosts_for_recipe(
     host_list: list[str],
     recipe,
     overrides: dict | None = None,
-    runtime=None,
-    tp_override: int | None = None,
-    quiet: bool = False,
-    cluster=None,
-) -> list[str]:
-    """Trim host list to match the runtime's required node count.
+    *,
+    cluster_def=None,
+    sctx: SparkrunContext | None = None,
+    solo: bool = False,
+) -> tuple[list[str], bool]:
+    """CLI-layer adapter around :func:`sparkrun.api.schedule`.
 
-    When *runtime* is provided, delegates to
-    ``runtime.compute_required_nodes()`` which accounts for all
-    parallelism dimensions (TP, PP, etc.).  Falls back to TP-only
-    logic when no runtime is available (legacy path).
+    Replaces the legacy ``validate_and_prepare_hosts`` helper.  Treats
+    placement as a *structural* property: the scheduler's
+    ``hosts_used`` IS the effective host list — there is no separate
+    "required node count" step.
 
-    Used by run, stop, and logs to ensure they all derive the same
-    effective host list (and therefore the same cluster_id).
+    The helper is responsible for the three orthogonal CLI/recipe
+    constraints that sit outside the scheduler:
+
+    * ``solo`` (or ``recipe.mode == 'solo'``): force a one-host run.
+    * ``recipe.max_nodes``: hard upper bound on host count.
+    * Single-host short-circuit: when only one host is supplied the
+      scheduler is bypassed entirely.
+
+    Echoes the same human-readable notes the prior CLI helpers did
+    (``"Note: N nodes required, using N of M hosts"`` etc.) so console
+    output remains stable for existing tests and users.
 
     Args:
-        host_list: Resolved hosts.
-        recipe: Loaded recipe (used for defaults).
-        overrides: Optional CLI overrides (from --option).
-        runtime: Optional runtime plugin instance.
-        tp_override: Explicit --tp value (takes precedence).
-        quiet: Suppress logging.
-        cluster: Optional :class:`ClusterDefinition` for hardware-aware
-            placement (multi-GPU hosts).  When ``None``, the legacy 1
-            GPU / host assumption is preserved.
+        host_list: Resolved hosts (CLI / cluster / file).
+        recipe: Loaded recipe.
+        overrides: CLI overrides (``-o key=value`` flattened).
+        cluster_def: Optional :class:`ClusterDefinition` carrying
+            per-host hardware (used by the scheduler for multi-GPU
+            placement).
+        sctx: Optional shared :class:`SparkrunContext`.
+        solo: ``--solo`` flag value.
 
     Returns:
-        Possibly trimmed host list.
+        ``(effective_host_list, is_solo)``.
+
+    Side effects:
+        ``click.echo``s human-readable summary lines and calls
+        ``sys.exit(1)`` on scheduler errors (mirroring legacy
+        behaviour).
     """
-    if len(host_list) <= 1:
-        return host_list
+    import sparkrun.api as api
+    from sparkrun.core.parallelism import extract_parallelism
+    from sparkrun.core.scheduler import SchedulingRequest
 
-    effective_overrides = dict(overrides or {})
-    if tp_override is not None:
-        effective_overrides["tensor_parallel"] = tp_override
+    overrides = overrides or {}
 
-    if runtime is not None:
-        required = runtime.compute_required_nodes(recipe, effective_overrides, cluster=cluster)
-    else:
-        # Legacy fallback: TP-only
-        if tp_override is not None:
-            required = tp_override
-        else:
-            config_chain = recipe.build_config_chain(effective_overrides)
-            tp_val = config_chain.get("tensor_parallel")
-            required = int(tp_val) if tp_val is not None else None
+    # ``solo`` here is the ``--solo`` CLI flag; ``recipe.mode`` is the
+    # recipe-declared mode.  Both feed into the final ``is_solo`` answer,
+    # but the multi-host scheduling pass only short-circuits on the CLI
+    # flag (matching legacy behaviour, where ``max_nodes`` is enforced
+    # even for solo-mode recipes when the user supplied multiple hosts).
+    config_chain = recipe.build_config_chain(overrides)
+    parallelism_configured = any(config_chain.get(k) is not None for k in ("tensor_parallel", "pipeline_parallel", "data_parallel"))
 
-    if required is None or required >= len(host_list):
-        return host_list
-
-    trimmed = host_list[:required]
-    if not quiet:
-        logger.info(
-            "Required nodes=%d < %d hosts; using first %d: %s",
-            required,
-            len(host_list),
-            required,
-            ", ".join(trimmed),
+    # Multi-host scheduling pass: defer to the scheduler whenever any
+    # parallelism dimension is configured and more than one host is in
+    # play.  ``hosts_used`` IS the effective host list.
+    if not solo and len(host_list) > 1 and parallelism_configured:
+        parallelism = extract_parallelism(config_chain)
+        request = SchedulingRequest(
+            parallelism=parallelism,
+            hosts=tuple(host_list),
+            host_hardware=(cluster_def.hosts_hardware if cluster_def is not None else None) or None,
+            layout=getattr(recipe, "layout", None),
+            resources=None,
         )
-    return trimmed
+        try:
+            result = api.schedule(request, sctx=sctx)
+        except api.InsufficientCapacity:
+            # Surface the legacy-shaped message so users see "requires
+            # N nodes, but only M hosts provided" rather than the
+            # scheduler's internal "slots" wording.
+            required = parallelism.total_nodes
+            click.echo(
+                "Error: runtime requires %d nodes, but only %d hosts provided" % (required, len(host_list)),
+                err=True,
+            )
+            sys.exit(1)
+        except api.LayoutRequired as e:
+            click.echo("Error: %s" % e, err=True)
+            sys.exit(1)
+        except api.SparkrunError as e:
+            click.echo("Error: %s" % e, err=True)
+            sys.exit(1)
 
+        scheduled_hosts = list(result.assignment.hosts_used)
 
-def _apply_tp_trimming(
-    host_list: list[str],
-    recipe,
-    overrides: dict | None = None,
-    tp_override: int | None = None,
-) -> list[str]:
-    """Trim host list to match tensor_parallel if TP < host count.
+        # max_nodes is a hard recipe constraint; if the scheduler picked
+        # more hosts than the recipe permits, fail rather than silently
+        # truncate (truncation would produce a non-functional placement).
+        if recipe.max_nodes is not None and len(scheduled_hosts) > recipe.max_nodes:
+            click.echo(
+                "Error: runtime requires %d nodes (from parallelism settings), "
+                "but recipe '%s' specifies max_nodes=%d" % (len(scheduled_hosts), recipe.qualified_name, recipe.max_nodes),
+                err=True,
+            )
+            sys.exit(1)
 
-    Backward-compatible alias for :func:`_apply_node_trimming` without
-    a runtime (TP-only legacy path).
+        if len(scheduled_hosts) < len(host_list):
+            click.echo("Note: %d nodes required, using %d of %d hosts" % (len(scheduled_hosts), len(scheduled_hosts), len(host_list)))
+        host_list = scheduled_hosts
 
-    Args:
-        host_list: Resolved hosts.
-        recipe: Loaded recipe (used for defaults).
-        overrides: Optional CLI overrides (from --option).
-        tp_override: Explicit --tp value (takes precedence).
+    # Enforce recipe.max_nodes as an orthogonal cap when scheduling did
+    # not run (solo CLI flag, single host, or no parallelism config).
+    if recipe.max_nodes is not None and len(host_list) > recipe.max_nodes:
+        # When parallelism is configured AND the implied node count
+        # exceeds max_nodes, treat it as a hard error rather than a
+        # silent truncation — runs that would be wrong as truncated are
+        # surfaced explicitly.
+        if parallelism_configured:
+            parallelism = extract_parallelism(config_chain)
+            required = parallelism.total_nodes
+            if required > recipe.max_nodes:
+                click.echo(
+                    "Error: runtime requires %d nodes (from parallelism settings), "
+                    "but recipe '%s' specifies max_nodes=%d" % (required, recipe.qualified_name, recipe.max_nodes),
+                    err=True,
+                )
+                sys.exit(1)
+        click.echo("Note: recipe max_nodes=%d, using %d of %d hosts" % (recipe.max_nodes, recipe.max_nodes, len(host_list)))
+        host_list = host_list[: recipe.max_nodes]
 
-    Returns:
-        Possibly trimmed host list.
-    """
-    return _apply_node_trimming(
-        host_list,
-        recipe,
-        overrides=overrides,
-        tp_override=tp_override,
-    )
+    # Determine final solo mode after scheduling / max_nodes.
+    is_solo = bool(solo) or recipe.mode == "solo" or len(host_list) <= 1
+    if is_solo and len(host_list) > 1:
+        click.echo("Note: solo mode enabled, using 1 of %d hosts" % len(host_list))
+        host_list = host_list[:1]
+
+    return host_list, is_solo
 
 
 def _get_cluster_manager(v=None, sctx: SparkrunContext | None = None):
@@ -969,76 +1012,6 @@ def _apply_recipe_overrides(
 def dry_run_option(f):
     """Common --dry-run flag."""
     return click.option("--dry-run", "-n", is_flag=True, help="Show what would be done")(f)
-
-
-def validate_and_prepare_hosts(
-    host_list: list[str],
-    recipe,
-    overrides: dict,
-    runtime,
-    solo: bool = False,
-    cluster=None,
-) -> tuple[list[str], bool]:
-    """Validate node count, enforce max_nodes, and determine solo mode.
-
-    Returns ``(trimmed_host_list, is_solo)``.
-    Exits with an error on invalid configurations.
-
-    When *cluster* is provided, node count is derived via the
-    placement engine (multi-GPU hosts and explicit recipe layouts are
-    honoured).  When ``None``, the legacy 1-GPU-per-host assumption
-    is preserved.
-    """
-    # Node count validation / trimming
-    if len(host_list) > 1 and not solo:
-        try:
-            required = runtime.compute_required_nodes(recipe, overrides, cluster=cluster)
-        except ValueError as e:
-            click.echo("Error: %s" % e, err=True)
-            sys.exit(1)
-        if required is not None:
-            if required > len(host_list):
-                click.echo(
-                    "Error: runtime requires %d nodes, but only %d hosts provided" % (required, len(host_list)),
-                    err=True,
-                )
-                sys.exit(1)
-            elif required < len(host_list):
-                original_count = len(host_list)
-                host_list = _apply_node_trimming(
-                    host_list,
-                    recipe,
-                    overrides,
-                    runtime=runtime,
-                    cluster=cluster,
-                )
-                click.echo("Note: %d nodes required, using %d of %d hosts" % (required, required, original_count))
-
-    # Enforce max_nodes
-    if recipe.max_nodes is not None and len(host_list) > recipe.max_nodes:
-        try:
-            req = runtime.compute_required_nodes(recipe, overrides, cluster=cluster)
-        except ValueError:
-            req = None
-        if req is not None and req > recipe.max_nodes:
-            click.echo(
-                "Error: runtime requires %d nodes (from parallelism settings), "
-                "but recipe '%s' specifies max_nodes=%d" % (req, recipe.qualified_name, recipe.max_nodes),
-                err=True,
-            )
-            sys.exit(1)
-        click.echo("Note: recipe max_nodes=%d, using %d of %d hosts" % (recipe.max_nodes, recipe.max_nodes, len(host_list)))
-        host_list = host_list[: recipe.max_nodes]
-
-    # Determine mode
-    is_solo = solo or len(host_list) <= 1
-    if recipe.mode == "solo":
-        is_solo = True
-    if is_solo and len(host_list) > 1:
-        click.echo("Note: solo mode enabled, using 1 of %d hosts" % len(host_list))
-        host_list = host_list[:1]
-
-    return host_list, is_solo
 
 
 def build_cluster_id_overrides(
