@@ -248,6 +248,7 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
         cluster = kwargs.pop("cluster", None)
         backends = kwargs.pop("backends", None)
         trust = kwargs.pop("trust", False)
+        placement = kwargs.pop("placement", None)
         combined_docker_opts = (self.get_extra_docker_opts() or []) + (extra_docker_opts or [])
 
         ctx = ClusterContext.build(
@@ -261,6 +262,7 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
             dry_run,
             cluster=cluster,
             recipe=recipe,
+            placement=placement,
         )
         head_container = self._resolve_executor().container_name(cluster_id, "head")
         worker_container = self._resolve_executor().container_name(cluster_id, "worker")

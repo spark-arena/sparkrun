@@ -86,14 +86,19 @@ class ClusterContext:
         *,
         cluster: ClusterDefinition | None = None,
         recipe: Recipe | None = None,
+        placement: "RankAssignment | None" = None,
     ) -> ClusterContext:
         """Build context from runtime hooks and config.
 
         Replaces the ~8-line setup boilerplate repeated in every
-        runtime's ``_run_cluster`` method.  ``cluster`` and ``recipe``
-        are optional; when both are present the placement engine
-        computes a :class:`RankAssignment` so runtimes can resolve
-        rank→host without indexing ``hosts[i]``.
+        runtime's ``_run_cluster`` method.
+
+        When *placement* is provided, it is used verbatim — this is the
+        path ``api.run`` and the refactored launcher follow so the
+        scheduler runs exactly once per launch.  When *placement* is
+        ``None``, and *cluster* + *recipe* are both available, the
+        method recomputes placement internally for back-compat with
+        callers that haven't been threaded yet.
         """
         from sparkrun.orchestration.primitives import build_ssh_kwargs, build_volumes
         from sparkrun.utils import merge_env
@@ -109,8 +114,7 @@ class ClusterContext:
             runtime.get_extra_env(),
         )
 
-        placement = None
-        if cluster is not None and recipe is not None:
+        if placement is None and cluster is not None and recipe is not None:
             try:
                 from sparkrun.core.parallelism import extract_parallelism
                 from sparkrun.core.placement import compute_placement

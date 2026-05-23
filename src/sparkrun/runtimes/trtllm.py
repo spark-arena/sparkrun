@@ -462,6 +462,7 @@ class TrtllmRuntime(RuntimePlugin):
         progress = kwargs.pop("progress", None)
         cluster = kwargs.pop("cluster", None)
         backends = kwargs.pop("backends", None)
+        placement = kwargs.pop("placement", None)
 
         ctx = ClusterContext.build(
             self,
@@ -474,6 +475,7 @@ class TrtllmRuntime(RuntimePlugin):
             dry_run,
             cluster=cluster,
             recipe=recipe,
+            placement=placement,
         )
         extra_docker_opts = self.get_extra_docker_opts()
 

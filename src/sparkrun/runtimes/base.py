@@ -1388,6 +1388,7 @@ class RuntimePlugin(Plugin):
 
         topology = kwargs.pop("topology", None)
         cluster = kwargs.pop("cluster", None)
+        placement = kwargs.pop("placement", None)
         ctx = ClusterContext.build(
             runtime=self,
             hosts=hosts,
@@ -1400,6 +1401,7 @@ class RuntimePlugin(Plugin):
             topology=topology,
             cluster=cluster,
             recipe=recipe,
+            placement=placement,
         )
         return run_native_cluster(
             runtime=self,
