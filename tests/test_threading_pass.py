@@ -245,7 +245,7 @@ def test_cluster_update_infer_hardware_persists_fingerprints(tmp_path, monkeypat
         return hw
 
     # Mock the cluster manager factory so the CLI uses our tmp_path manager
-    def _fake_get_mgr():
+    def _fake_get_mgr(*args, **kwargs):
         return mgr
 
     monkeypatch.setattr("sparkrun.core.fingerprint.fingerprint_host", _fake_fingerprint)

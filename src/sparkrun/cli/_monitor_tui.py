@@ -39,9 +39,11 @@ def _parse_container_jobs(container_names: list[str], cache_dir: str | None) -> 
     """Resolve container names to job metadata entries.
 
     Uses the same cluster-ID extraction logic as
-    :func:`sparkrun.core.cluster_manager.query_cluster_status`:
-    solo containers end with ``_solo``; clustered containers encode the
-    cluster_id as ``sparkrun_{12-char hash}`` followed by a role suffix.
+    :func:`sparkrun.core.cluster_manager.query_cluster_status` and the
+    Docker executor's ``query_status`` (consumed by
+    :func:`sparkrun.api.status`): solo containers end with ``_solo``;
+    clustered containers encode the cluster_id as ``sparkrun_{12-char
+    hash}`` followed by a role suffix.
 
     Returns a list of dicts, one per container, with keys:
         name, role, cluster_id, recipe, model, runtime, tp
