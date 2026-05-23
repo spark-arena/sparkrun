@@ -590,24 +590,23 @@ def test_explicit_local_cross_user_warns(mock_pop, mock_dist_local, mock_ssh_kw,
 
 @patch.dict("os.environ", {"USER": "drew"})
 def test_stop_by_cluster_id_cross_user_uses_ssh():
-    """_stop_by_cluster_id: localhost + different ssh_user → SSH cleanup path."""
-    from sparkrun.cli._stop_logs import _stop_by_cluster_id
+    """api.stop: localhost + different ssh_user → SSH cleanup path.
 
-    config_mock = MagicMock()
-    config_mock.cache_dir = "/tmp/cache"
-    config_mock.ssh_user = "dgxuser"
-    config_mock.ssh_key = None
-    config_mock.ssh_options = None
+    After Task 9, stop-by-cluster_id flows through ``sparkrun.api.stop``;
+    the CLI no longer owns the dispatch helper.  The cleanup is dispatched
+    via ``sparkrun.orchestration.primitives.cleanup_containers`` for the
+    cross-user case (i.e. localhost addressed via SSH because the SSH
+    login user differs from the local ``$USER``).
+    """
+    import sparkrun.api as api
 
     with (
         patch("sparkrun.orchestration.job_metadata.load_job_metadata", return_value={"hosts": ["127.0.0.1"]}),
         patch("sparkrun.orchestration.job_metadata.remove_job_metadata"),
-        patch("sparkrun.cli._stop_logs.resolve_hosts_with_metadata_fallback", return_value=["127.0.0.1"]),
-        patch("sparkrun.orchestration.docker.enumerate_cluster_containers", return_value=["c1_solo"]),
         patch("sparkrun.orchestration.primitives.cleanup_containers") as mock_remote,
         patch("sparkrun.orchestration.primitives.cleanup_containers_local") as mock_local,
     ):
-        _stop_by_cluster_id("abc12345", None, None, None, config_mock, dry_run=True)
+        api.stop(cluster_id="sparkrun_abc12345", hosts=("127.0.0.1",), cache_dir="/tmp/cache")
 
         mock_local.assert_not_called()
         mock_remote.assert_called_once()

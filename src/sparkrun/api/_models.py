@@ -101,6 +101,23 @@ class RunOptions:
     diagnostics_path: str | None = None
     """Path to write run-time diagnostics NDJSON.  ``None`` disables."""
 
+    # Additional launcher passthroughs (CLI-shaped knobs threaded into
+    # ``launch_inference`` for parity with the existing CLI command).
+    cluster_id_override: str | None = None
+    """Override the deterministic cluster ID (static container name)."""
+    transfer_interface: str | None = None
+    """Network interface used for resource transfers (e.g. ``cx7`` / ``mgmt``)."""
+    local_cache_dir: str | None = None
+    """Control-machine cache dir for downloads (defaults to the same as ``cache_dir``)."""
+    sync_tuning: bool = True
+    """Sync tuning configs from registries to local cache before launch."""
+    extra_docker_opts: tuple[str, ...] | None = None
+    """Extra arguments threaded through to the container executor (``docker run``)."""
+    topology: str | None = None
+    """Cluster topology hint (carried through to the runtime)."""
+    recipe_ref: str | None = None
+    """Simplified recipe reference for display (e.g. ``@spark-arena/UUID``)."""
+
 
 @dataclass(frozen=True)
 class RunResult:
@@ -124,8 +141,24 @@ class RunResult:
     """``True`` when the launch was a dry-run — no remote state changed."""
     is_solo: bool
     """``True`` when the launch ran in solo (single-host) mode."""
+    rc: int = 0
+    """Process return code reported by the runtime (``0`` on success)."""
+    serve_command: str = ""
+    """Effective serve command rendered by the runtime."""
+    container_image: str = ""
+    """Container image actually used for the launch."""
+    serve_port: int = 0
+    """Inference HTTP port the workload listens on."""
+    effective_cache_dir: str = ""
+    """Resolved HuggingFace cache directory on the launch target."""
+    runtime_info: dict[str, str] = field(default_factory=dict)
+    """Runtime-reported version strings (engine, framework, model server)."""
     metadata: dict[str, Any] = field(default_factory=dict)
     """Recipe-derived metadata (recipe qualified_name, model, image, …)."""
+    launch_result: Any = None
+    """Opaque handle to the underlying :class:`LaunchResult` for callers
+    that need the raw orchestration object (CLI ``post_launch_lifecycle``,
+    crash diagnostics).  External callers should treat this as private."""
 
 
 # --------------------------------------------------------------------------

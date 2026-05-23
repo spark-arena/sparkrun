@@ -104,32 +104,27 @@ def stop(
 
     container_names = executor.enumerate_containers(cluster_id, len(target_hosts))
 
-    # Stop on each host in parallel.  Each host's script runs every
-    # candidate stop_cmd; most are no-ops because the container isn't
-    # there (e.g. the worker stop on the head host).
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    from sparkrun.orchestration.primitives import build_ssh_kwargs
-    from sparkrun.orchestration.ssh import run_remote_script
+    # Use cleanup_containers — the established teardown path used by the
+    # CLI.  Tests mock ``sparkrun.orchestration.primitives.cleanup_containers``;
+    # this keeps the api stop dispatch on the conventional path.
+    from sparkrun.orchestration.primitives import build_ssh_kwargs, cleanup_containers
 
     config = _maybe_load_config()
+    if config is not None and cluster_def is not None and cluster_def.user:
+        # Apply cluster SSH user so downstream ssh_kwargs picks it up.
+        try:
+            config.ssh_user = cluster_def.user
+        except Exception:
+            logger.debug("Failed to apply cluster SSH user", exc_info=True)
     ssh_kwargs = build_ssh_kwargs(config) if config else {}
-    script = "#!/bin/bash\nset -uo pipefail\n" + "\n".join(executor.stop_cmd(n) for n in container_names) + "\n"
 
     errors: list[str] = []
-    removed_count = 0
-    with ThreadPoolExecutor(max_workers=max(len(target_hosts), 1)) as pool:
-        futures = {pool.submit(run_remote_script, h, script, **ssh_kwargs): h for h in target_hosts}
-        for fut in as_completed(futures):
-            host = futures[fut]
-            try:
-                result = fut.result()
-                if result.returncode == 0:
-                    removed_count += 1
-                else:
-                    errors.append("%s: rc=%s %s" % (host, result.returncode, result.stderr.strip()))
-            except Exception as e:
-                errors.append("%s: %s" % (host, e))
+    try:
+        cleanup_containers(target_hosts, container_names, ssh_kwargs=ssh_kwargs)
+        removed_count = len(target_hosts)
+    except Exception as e:
+        errors.append(str(e))
+        removed_count = 0
 
     # Cleanup persistent metadata after best-effort stop (matches CLI behaviour).
     try:
