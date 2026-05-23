@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 from abc import abstractmethod
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import ClassVar, Mapping, TYPE_CHECKING
 
 from scitrera_app_framework import Plugin, Variables, ext_parse_bool, get_extensions
 
@@ -22,9 +22,22 @@ from sparkrun.scripts import read_script
 from sparkrun.utils import merge_env
 from sparkrun.utils.shell import b64_encode_cmd, quote
 
+if TYPE_CHECKING:
+    from sparkrun.core.cluster_status import ClusterStatus
+    from sparkrun.core.hardware import HostHardware
+
 logger = logging.getLogger(__name__)
 
 EXT_EXECUTOR = "sparkrun.executor"
+
+# Canonical container/pod label schema for sparkrun-launched workloads.
+# Concrete executors emit these in their native annotation system
+# (Docker --label, k8s metadata.labels, etc.) and query_status reads
+# them back to enrich the ClusterStatus snapshot.
+LABEL_CLUSTER_ID = "sparkrun.cluster_id"
+LABEL_RECIPE = "sparkrun.recipe"
+LABEL_RANK = "sparkrun.rank"
+LABEL_RUNTIME = "sparkrun.runtime"
 
 
 def _registered_executor_names() -> set[str]:
@@ -344,6 +357,57 @@ class Executor(Plugin):
     def pull_cmd(self, image: str) -> str:
         """Generate an image pull command string."""
         ...
+
+    # --- Status introspection ---
+
+    def query_status(
+        self,
+        hosts: list[str],
+        *,
+        ssh_kwargs: dict | None = None,
+        host_hardware: "Mapping[str, HostHardware] | None" = None,
+    ) -> "ClusterStatus":
+        """Inspect sparkrun-launched workloads running on *hosts*.
+
+        Default implementation returns a zero-occupancy snapshot — every
+        host is treated as fully free with no running workloads.  This
+        is a safe degradation for executors that don't yet implement
+        introspection (e.g. the K8sExecutor draft); they satisfy the
+        contract without lying about state they can't see.
+
+        Concrete executors override to query their backend
+        (``docker ps``, ``kubectl get pods``, local process state).
+        """
+        from sparkrun.core.cluster_status import empty_status
+
+        return empty_status(hosts, executor=self.executor_name)
+
+    @classmethod
+    def workload_labels(
+        cls,
+        cluster_id: str,
+        recipe_name: str | None = None,
+        runtime_name: str | None = None,
+        rank: int | None = None,
+    ) -> dict[str, str]:
+        """Return the canonical sparkrun label set for a workload.
+
+        Used by run-script generators to tag containers/pods so
+        :meth:`query_status` can recover workload identity from the
+        backend's native introspection (``docker ps``, ``kubectl get``).
+
+        Returns a plain ``dict[str, str]``; concrete executors choose
+        how to emit them (``--label key=value`` for Docker, k8s
+        ``metadata.labels``, …).
+        """
+        labels: dict[str, str] = {LABEL_CLUSTER_ID: cluster_id}
+        if recipe_name:
+            labels[LABEL_RECIPE] = recipe_name
+        if runtime_name:
+            labels[LABEL_RUNTIME] = runtime_name
+        if rank is not None:
+            labels[LABEL_RANK] = str(rank)
+        return labels
 
     # --- Naming helpers (concrete, shared across executors) ---
 

@@ -29,6 +29,7 @@ class RunningWorkload:
 
     cluster_id: str
     recipe_name: str | None = None
+    runtime_name: str | None = None
     started_at: float | None = None
     ranks_on_host: int = 1
     container_ids: tuple[str, ...] = field(default_factory=tuple)

@@ -9,12 +9,31 @@ shared concerns of other executors.
 
 from __future__ import annotations
 
+import json
 import logging
+import re
+import time
+from typing import Mapping, TYPE_CHECKING
 
-from sparkrun.orchestration.executors._base import Executor
+from sparkrun.orchestration.executors._base import (
+    LABEL_RANK,
+    LABEL_RECIPE,
+    LABEL_RUNTIME,
+    Executor,
+)
 from sparkrun.utils.shell import args_list_to_shell_str, b64_wrap_bash, quote
 
+if TYPE_CHECKING:
+    from sparkrun.core.cluster_status import ClusterStatus
+    from sparkrun.core.hardware import HostHardware
+
 logger = logging.getLogger(__name__)
+
+
+# Matches the deterministic sparkrun container-name convention emitted by
+# :class:`Executor.container_name` / :class:`Executor.node_container_name`:
+# ``sparkrun_<12-hex>_(solo|head|worker|node_<rank>)``.
+_CONTAINER_NAME_RE = re.compile(r"^(?P<cluster>sparkrun_[0-9a-f]{12})_(?P<role>solo|head|worker|node_(?P<rank>\d+))$")
 
 
 # Per-executor defaults for the resolution chain — sits just above
@@ -268,3 +287,192 @@ class DockerExecutor(Executor):
     def pull_cmd(self, image: str) -> str:
         """Generate a ``docker pull`` command."""
         return "docker pull %s" % quote(image)
+
+    # --- Status introspection ---
+
+    def query_status(
+        self,
+        hosts: list[str],
+        *,
+        ssh_kwargs: dict | None = None,
+        host_hardware: "Mapping[str, HostHardware] | None" = None,
+    ) -> "ClusterStatus":
+        """Snapshot sparkrun-launched Docker containers across *hosts*.
+
+        Implementation: ``docker ps --no-trunc --format '{{json .}}'`` over
+        SSH (one parallel script per host), filtered by the canonical
+        sparkrun container-name pattern.  Workload identity is recovered
+        from the name (cluster_id + rank); recipe/runtime are read from
+        the optional sparkrun labels when present and enriched from
+        ``~/.cache/sparkrun/jobs/`` job metadata when the labels haven't
+        been emitted yet.
+
+        Unreachable hosts are omitted from :attr:`ClusterStatus.hosts`;
+        callers can detect this via ``status.for_host(h) is None``.
+        """
+        from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy
+        from sparkrun.core.hardware import default_dgx_spark_hardware
+        from sparkrun.orchestration.ssh import run_remote_scripts_parallel
+
+        if not hosts:
+            return ClusterStatus(hosts=(), queried_at=time.time(), executor=self.executor_name)
+
+        ssh_kwargs = ssh_kwargs or {}
+        script = "docker ps --no-trunc --format '{{json .}}' 2>/dev/null || true\n"
+        results = run_remote_scripts_parallel(
+            hosts,
+            script,
+            ssh_user=ssh_kwargs.get("ssh_user"),
+            ssh_key=ssh_kwargs.get("ssh_key"),
+            ssh_options=ssh_kwargs.get("ssh_options"),
+            timeout=ssh_kwargs.get("timeout", 15),
+            quiet=True,
+        )
+
+        # Map results back to input host order.
+        by_host = {r.host: r for r in results}
+        host_entries: list[HostOccupancy] = []
+
+        for host in hosts:
+            r = by_host.get(host)
+            if r is None or r.returncode != 0:
+                logger.debug("query_status: skipping unreachable host %r (rc=%s)", host, getattr(r, "returncode", "n/a"))
+                continue
+
+            hw = (host_hardware or {}).get(host) or default_dgx_spark_hardware()
+            capacity = hw.total_gpus
+
+            workloads, used = _parse_docker_ps_output(r.stdout, host)
+            host_entries.append(
+                HostOccupancy(
+                    host=host,
+                    workloads=tuple(workloads),
+                    used_slots=used,
+                    free_slots=max(capacity - used, 0),
+                )
+            )
+
+        return ClusterStatus(
+            hosts=tuple(host_entries),
+            queried_at=time.time(),
+            executor=self.executor_name,
+        )
+
+
+# --------------------------------------------------------------------------
+# query_status helpers (module-level so they're unit-testable)
+# --------------------------------------------------------------------------
+
+
+def _parse_docker_labels(raw: str) -> dict[str, str]:
+    """Parse Docker's ``--format`` Labels field: ``k1=v1,k2=v2``."""
+    out: dict[str, str] = {}
+    if not raw:
+        return out
+    for token in raw.split(","):
+        token = token.strip()
+        if not token or "=" not in token:
+            continue
+        key, _, value = token.partition("=")
+        out[key.strip()] = value.strip()
+    return out
+
+
+def _parse_docker_ps_output(stdout: str, host: str) -> tuple[list, int]:
+    """Parse ``docker ps --format '{{json .}}'`` output into RunningWorkloads.
+
+    Returns ``(workloads, used_slots)``.  Containers whose names don't
+    match the sparkrun convention are ignored.  Workloads are deduplicated
+    by ``(cluster_id, container_id)`` and aggregated by cluster so that a
+    cluster with multiple ranks on this host contributes one
+    :class:`RunningWorkload` with ``ranks_on_host`` reflecting the count.
+    """
+    from sparkrun.core.cluster_status import RunningWorkload
+
+    # Group sightings by cluster_id so we can aggregate ranks_on_host.
+    by_cluster: dict[str, dict] = {}
+
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except (ValueError, json.JSONDecodeError):
+            logger.debug("query_status: ignoring non-JSON docker ps line on %r: %r", host, line[:80])
+            continue
+
+        # ``Names`` can be a comma-separated list; sparkrun names don't
+        # include commas so any comma is an alias we ignore.
+        name = (entry.get("Names") or "").split(",", 1)[0].strip()
+        if not name:
+            continue
+        m = _CONTAINER_NAME_RE.match(name)
+        if not m:
+            continue
+
+        cluster_id = m.group("cluster")
+        rank_str = m.group("rank")
+        rank_from_name = int(rank_str) if rank_str is not None else 0
+
+        labels = _parse_docker_labels(entry.get("Labels") or "")
+        # Labels take precedence when present (future-proof for richer
+        # tagging); fall back to name-derived rank otherwise.
+        rank = int(labels[LABEL_RANK]) if LABEL_RANK in labels else rank_from_name
+        recipe_name = labels.get(LABEL_RECIPE)
+        runtime_name = labels.get(LABEL_RUNTIME)
+        container_id = entry.get("ID") or ""
+
+        bucket = by_cluster.setdefault(
+            cluster_id,
+            {
+                "ranks": set(),
+                "container_ids": [],
+                "recipe_name": None,
+                "runtime_name": None,
+            },
+        )
+        bucket["ranks"].add(rank)
+        if container_id:
+            bucket["container_ids"].append(container_id)
+        if recipe_name and bucket["recipe_name"] is None:
+            bucket["recipe_name"] = recipe_name
+        if runtime_name and bucket["runtime_name"] is None:
+            bucket["runtime_name"] = runtime_name
+
+    # Enrich missing recipe/runtime from cached job metadata when the
+    # labels haven't been emitted yet (today's state — labels emission
+    # follows in a later task).
+    workloads: list[RunningWorkload] = []
+    total_ranks_on_host = 0
+    for cluster_id, bucket in by_cluster.items():
+        if bucket["recipe_name"] is None or bucket["runtime_name"] is None:
+            meta = _load_metadata_safely(cluster_id)
+            if meta is not None:
+                bucket["recipe_name"] = bucket["recipe_name"] or meta.get("recipe")
+                bucket["runtime_name"] = bucket["runtime_name"] or meta.get("runtime")
+
+        ranks_on_host = len(bucket["ranks"])
+        total_ranks_on_host += ranks_on_host
+        workloads.append(
+            RunningWorkload(
+                cluster_id=cluster_id,
+                recipe_name=bucket["recipe_name"],
+                runtime_name=bucket["runtime_name"],
+                ranks_on_host=ranks_on_host,
+                container_ids=tuple(bucket["container_ids"]),
+            )
+        )
+
+    return workloads, total_ranks_on_host
+
+
+def _load_metadata_safely(cluster_id: str) -> dict | None:
+    """Best-effort job-metadata lookup that never raises."""
+    try:
+        from sparkrun.orchestration.job_metadata import load_job_metadata
+
+        return load_job_metadata(cluster_id)
+    except Exception:  # pragma: no cover - defensive
+        logger.debug("query_status: load_job_metadata failed for %s", cluster_id, exc_info=True)
+        return None
