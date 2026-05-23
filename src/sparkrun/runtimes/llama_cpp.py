@@ -143,45 +143,6 @@ class LlamaCppRuntime(RuntimePlugin):
             return "layer" if int(pp) > 1 else None
         return None
 
-    def compute_required_nodes(self, recipe, overrides=None, *, cluster=None):
-        """Compute required nodes from TP or PP (mutually exclusive).
-
-        In llama.cpp, ``--split-mode row`` (TP) and ``--split-mode layer``
-        (PP) both distribute across N nodes but cannot be combined.
-
-        Returns ``None`` when neither is configured.
-
-        Raises:
-            ValueError: If both tensor_parallel and pipeline_parallel
-                are set, or if data_parallel > 1 (llama.cpp has no native
-                multi-replica DP coordination).
-        """
-        config = recipe.build_config_chain(overrides or {})
-        # _resolve_split_mode validates mutual exclusivity
-        self._resolve_split_mode(config)
-
-        dp = config.get("data_parallel")
-        if dp is not None and int(dp) > 1:
-            raise ValueError("llama.cpp runtime does not support data_parallel > 1 (got %d)" % int(dp))
-
-        tp = config.get("tensor_parallel")
-        pp = config.get("pipeline_parallel")
-
-        if tp is not None and pp is not None:
-            # Both set — use whichever is > 1; if both are 1, return 1
-            tp_val, pp_val = int(tp), int(pp)
-            if tp_val > 1:
-                return tp_val
-            if pp_val > 1:
-                return pp_val
-            return 1
-
-        if tp is not None:
-            return int(tp)
-        if pp is not None:
-            return int(pp)
-        return None
-
     @staticmethod
     def _inject_split_mode_in_command(command: str, split_mode: str) -> str:
         """Strip existing ``--split-mode`` from *command* and append the correct one."""
@@ -342,7 +303,12 @@ class LlamaCppRuntime(RuntimePlugin):
         return cmds
 
     def validate_recipe(self, recipe: Recipe) -> list[str]:
-        """Validate llama.cpp-specific recipe fields."""
+        """Validate llama.cpp-specific recipe fields.
+
+        llama.cpp distributes across nodes via ``--split-mode row`` (TP)
+        or ``--split-mode layer`` (PP) but cannot combine the two on the
+        same job, and has no native multi-replica DP coordination.
+        """
         issues = super().validate_recipe(recipe)
         defaults = recipe.defaults or {}
         tp = defaults.get("tensor_parallel")
@@ -351,6 +317,11 @@ class LlamaCppRuntime(RuntimePlugin):
             issues.append(
                 "[llama-cpp] tensor_parallel and pipeline_parallel are mutually "
                 "exclusive; use one for --split-mode row (TP) or layer (PP), not both"
+            )
+        dp = defaults.get("data_parallel")
+        if dp is not None and int(dp) > 1:
+            issues.append(
+                "[llama-cpp] data_parallel > 1 is not supported (got %d); llama.cpp has no native multi-replica DP coordination" % int(dp)
             )
         return issues
 

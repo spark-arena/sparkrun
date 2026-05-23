@@ -50,8 +50,7 @@ def stop(
             api calls (registry/cluster manager + config sharing).
     """
     from sparkrun.api._resolve import (
-        resolve_cluster_def,
-        resolve_hosts,
+        resolve_cluster,
         resolve_recipe,
     )
     from sparkrun.orchestration.executor import resolve_executor
@@ -65,34 +64,43 @@ def stop(
     if not cluster_id:
         if recipe is None:
             raise SparkrunError("api.stop requires cluster_id or recipe+hosts")
-        cluster_def = resolve_cluster_def(cluster, sctx=sctx)
+        cluster_def = resolve_cluster(cluster, hosts, sctx=sctx)
         resolved_recipe = resolve_recipe(recipe, sctx=sctx)
-        resolved_hosts = resolve_hosts(hosts, sctx=sctx, cluster=cluster_def)
-        cluster_id = generate_cluster_id(resolved_recipe, resolved_hosts, overrides=overrides)
+        cluster_id = generate_cluster_id(resolved_recipe, list(cluster_def.hosts), overrides=overrides)
+        # Default cache_dir from sctx.config when not explicitly passed.
+        if cache_dir is None and sctx is not None:
+            try:
+                cache_dir = str(sctx.config.cache_dir)
+            except Exception:
+                cache_dir = None
+        meta = load_job_metadata(cluster_id, cache_dir=cache_dir)
+        target_hosts = list(cluster_def.hosts)
     else:
-        cluster_def = resolve_cluster_def(cluster, sctx=sctx)
+        # cluster_id given — load metadata to recover hosts/executor.
+        if cache_dir is None and sctx is not None:
+            try:
+                cache_dir = str(sctx.config.cache_dir)
+            except Exception:
+                cache_dir = None
+        meta = load_job_metadata(cluster_id, cache_dir=cache_dir)
+        if meta is None and not hosts and cluster is None:
+            raise JobNotFound("No job metadata found for cluster_id %r and no hosts provided" % cluster_id)
 
-    # Default cache_dir from sctx.config when not explicitly passed.
-    if cache_dir is None and sctx is not None:
-        try:
-            cache_dir = str(sctx.config.cache_dir)
-        except Exception:
-            cache_dir = None
+        # Determine target hosts: explicit > metadata > error.
+        if hosts:
+            target_hosts = list(hosts)
+        elif meta and meta.get("hosts"):
+            target_hosts = list(meta["hosts"])
+        else:
+            target_hosts = []
 
-    # Load metadata to recover the host list and executor selection.
-    meta = load_job_metadata(cluster_id, cache_dir=cache_dir)
-    if meta is None and not hosts:
-        raise JobNotFound("No job metadata found for cluster_id %r and no hosts provided" % cluster_id)
+        if not target_hosts:
+            raise JobNotFound("No hosts known for cluster_id %r" % cluster_id)
 
-    if hosts:
-        target_hosts = list(hosts)
-    elif meta and meta.get("hosts"):
-        target_hosts = list(meta["hosts"])
-    else:
-        target_hosts = []
-
-    if not target_hosts:
-        raise JobNotFound("No hosts known for cluster_id %r" % cluster_id)
+        # Now that we know the hosts, build a cluster definition for
+        # downstream consumers.  `resolve_cluster` synthesizes an
+        # anonymous one when no explicit cluster is given.
+        cluster_def = resolve_cluster(cluster, target_hosts, sctx=sctx)
 
     # Resolve the executor — prefer recipe-encoded selection from metadata
     # so we use the same executor that launched the workload.
@@ -124,7 +132,7 @@ def stop(
     from sparkrun.orchestration.primitives import build_ssh_kwargs, cleanup_containers
 
     config = sctx.config if sctx is not None else _maybe_load_config()
-    if config is not None and cluster_def is not None and cluster_def.user:
+    if config is not None and cluster_def.user:
         # Apply cluster SSH user so downstream ssh_kwargs picks it up.
         try:
             config.ssh_user = cluster_def.user

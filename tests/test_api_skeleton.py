@@ -138,58 +138,53 @@ def test_errors_are_catchable_as_sparkrun_error():
 # --------------------------------------------------------------------------
 
 
-def test_resolve_hosts_uses_explicit_list_first():
-    from sparkrun.api._resolve import resolve_hosts
+def test_resolve_cluster_synthesizes_anonymous_for_hosts_only():
+    """`hosts_input` alone synthesizes an anonymous ClusterDefinition (name='')."""
+    from sparkrun.api._resolve import resolve_cluster
 
-    assert resolve_hosts(["a", "b"]) == ["a", "b"]
+    cluster = resolve_cluster(None, ["a", "b"])
+    assert cluster.name == ""
+    assert cluster.hosts == ["a", "b"]
+    assert cluster.hosts_hardware == {}
 
 
-def test_resolve_hosts_falls_back_to_cluster_hosts():
-    from sparkrun.api._resolve import resolve_hosts
+def test_resolve_cluster_returns_loaded_cluster_unchanged():
+    """Pre-loaded ClusterDefinition is returned as-is when no hosts override."""
+    from sparkrun.api._resolve import resolve_cluster
     from sparkrun.core.cluster_manager import ClusterDefinition
 
     cluster = ClusterDefinition(name="c", hosts=["c1", "c2"])
-    assert resolve_hosts(None, cluster=cluster) == ["c1", "c2"]
+    assert resolve_cluster(cluster) is cluster
 
 
-def test_resolve_hosts_explicit_overrides_cluster_hosts():
-    from sparkrun.api._resolve import resolve_hosts
+def test_resolve_cluster_hosts_override_definition_hosts():
+    """Explicit hosts_input overrides the cluster's host list (other fields preserved)."""
+    from sparkrun.api._resolve import resolve_cluster
     from sparkrun.core.cluster_manager import ClusterDefinition
 
-    cluster = ClusterDefinition(name="c", hosts=["c1"])
-    assert resolve_hosts(["override-host"], cluster=cluster) == ["override-host"]
+    cluster = ClusterDefinition(name="c", hosts=["c1"], user="alice")
+    resolved = resolve_cluster(cluster, ["override-host"])
+    assert resolved.hosts == ["override-host"]
+    assert resolved.name == "c"
+    assert resolved.user == "alice"
 
 
-def test_resolve_hosts_raises_when_no_source():
-    from sparkrun.api._resolve import resolve_hosts
+def test_resolve_cluster_raises_when_no_source():
+    """No cluster, no hosts, no defaults → HostsUnreachable."""
+    from sparkrun.api._resolve import resolve_cluster
 
     with pytest.raises(api.HostsUnreachable):
-        resolve_hosts(None)
+        resolve_cluster(None, None)
 
 
-def test_resolve_cluster_def_none_returns_none():
-    from sparkrun.api._resolve import resolve_cluster_def
-
-    assert resolve_cluster_def(None) is None
-
-
-def test_resolve_cluster_def_passthrough_for_definition():
-    """Pre-loaded ClusterDefinition is returned as-is (no manager hit)."""
-    from sparkrun.api._resolve import resolve_cluster_def
-    from sparkrun.core.cluster_manager import ClusterDefinition
-
-    cluster = ClusterDefinition(name="c", hosts=["h"])
-    assert resolve_cluster_def(cluster) is cluster
-
-
-def test_resolve_cluster_def_by_name(tmp_path):
+def test_resolve_cluster_by_name(tmp_path):
     """A string cluster name uses the provided ClusterManager."""
-    from sparkrun.api._resolve import resolve_cluster_def
+    from sparkrun.api._resolve import resolve_cluster
     from sparkrun.core.cluster_manager import ClusterManager
 
     mgr = ClusterManager(tmp_path)
     mgr.create(name="prod", hosts=["h1"])
-    resolved = resolve_cluster_def("prod", cluster_mgr=mgr)
+    resolved = resolve_cluster("prod", cluster_mgr=mgr)
     assert resolved.name == "prod"
     assert resolved.hosts == ["h1"]
 

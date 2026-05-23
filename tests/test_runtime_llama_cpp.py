@@ -424,8 +424,15 @@ class TestLlamaCppFollowLogs:
         assert args[0][1] == "mycluster_head"
 
 
-class TestLlamaCppComputeRequiredNodes:
-    """Test LlamaCppRuntime.compute_required_nodes() — TP/PP are mutually exclusive."""
+class TestLlamaCppValidateRecipe:
+    """Test LlamaCppRuntime.validate_recipe() — TP/PP exclusion + DP rejection.
+
+    Node-count math is exercised via the scheduler (see ``test_scheduler.py``
+    and ``test_placement.py``). These tests only verify that llama.cpp
+    rejects recipe shapes the runtime cannot honor: TP and PP set
+    simultaneously (``--split-mode`` is single-valued) and any DP > 1
+    (llama.cpp has no multi-replica DP coordination).
+    """
 
     def _make_recipe(self, defaults=None):
         data = {
@@ -437,61 +444,49 @@ class TestLlamaCppComputeRequiredNodes:
             data["defaults"] = defaults
         return Recipe.from_dict(data)
 
-    def test_tp_returns_tp(self):
-        """TP=4 → 4 nodes (split_mode=row)."""
+    def test_tp_only_passes(self):
+        """TP=4 (no PP) is allowed → no issues."""
         recipe = self._make_recipe(defaults={"tensor_parallel": 4})
         runtime = LlamaCppRuntime()
-        assert runtime.compute_required_nodes(recipe) == 4
+        assert runtime.validate_recipe(recipe) == []
 
-    def test_pp_returns_pp(self):
-        """PP=3 → 3 nodes (split_mode=layer)."""
+    def test_pp_only_passes(self):
+        """PP=3 (no TP) is allowed → no issues."""
         recipe = self._make_recipe(defaults={"pipeline_parallel": 3})
         runtime = LlamaCppRuntime()
-        assert runtime.compute_required_nodes(recipe) == 3
+        assert runtime.validate_recipe(recipe) == []
 
-    def test_neither_returns_none(self):
-        """No TP/PP → None."""
+    def test_neither_passes(self):
+        """No TP/PP/DP is allowed → no issues."""
         recipe = self._make_recipe()
         runtime = LlamaCppRuntime()
-        assert runtime.compute_required_nodes(recipe) is None
+        assert runtime.validate_recipe(recipe) == []
 
-    def test_both_raises_value_error(self):
-        """TP + PP simultaneously → ValueError."""
-        recipe = self._make_recipe(
-            defaults={
-                "tensor_parallel": 2,
-                "pipeline_parallel": 2,
-            }
-        )
+    def test_tp_eq_1_and_pp_eq_1_passes(self):
+        """TP=1 and PP=1 are no-ops → not flagged as mutual exclusion."""
+        recipe = self._make_recipe(defaults={"tensor_parallel": 1, "pipeline_parallel": 1})
         runtime = LlamaCppRuntime()
-        with pytest.raises(ValueError, match="simultaneously"):
-            runtime.compute_required_nodes(recipe)
+        assert runtime.validate_recipe(recipe) == []
 
-    def test_overrides_tp(self):
-        """CLI --tp override."""
-        recipe = self._make_recipe()
+    def test_both_tp_and_pp_gt_1_flagged(self):
+        """TP>1 and PP>1 together → flagged as mutually exclusive."""
+        recipe = self._make_recipe(defaults={"tensor_parallel": 2, "pipeline_parallel": 2})
         runtime = LlamaCppRuntime()
-        assert runtime.compute_required_nodes(recipe, {"tensor_parallel": 2}) == 2
+        issues = runtime.validate_recipe(recipe)
+        assert any("mutually" in issue and "llama-cpp" in issue for issue in issues)
 
-    def test_overrides_pp(self):
-        """CLI --pp override."""
-        recipe = self._make_recipe()
-        runtime = LlamaCppRuntime()
-        assert runtime.compute_required_nodes(recipe, {"pipeline_parallel": 4}) == 4
-
-    def test_override_conflicts_with_default_raises(self):
-        """Recipe has TP, CLI passes PP → conflict → ValueError."""
-        recipe = self._make_recipe(defaults={"tensor_parallel": 2})
-        runtime = LlamaCppRuntime()
-        with pytest.raises(ValueError, match="simultaneously"):
-            runtime.compute_required_nodes(recipe, {"pipeline_parallel": 2})
-
-    def test_dp_gt_1_raises_value_error(self):
-        """llama.cpp has no DP support — dp>1 must raise."""
+    def test_dp_gt_1_flagged(self):
+        """data_parallel > 1 → flagged (llama.cpp has no native DP coordination)."""
         recipe = self._make_recipe(defaults={"data_parallel": 2})
         runtime = LlamaCppRuntime()
-        with pytest.raises(ValueError, match="data_parallel"):
-            runtime.compute_required_nodes(recipe)
+        issues = runtime.validate_recipe(recipe)
+        assert any("data_parallel" in issue and "llama-cpp" in issue for issue in issues)
+
+    def test_dp_eq_1_passes(self):
+        """data_parallel=1 is a no-op → not flagged."""
+        recipe = self._make_recipe(defaults={"data_parallel": 1})
+        runtime = LlamaCppRuntime()
+        assert runtime.validate_recipe(recipe) == []
 
 
 class TestLlamaCppSplitModeCommand:
@@ -601,31 +596,3 @@ class TestLlamaCppSplitModeCommand:
         runtime = LlamaCppRuntime()
         cmd = runtime.generate_command(recipe, {}, is_cluster=False)
         assert "--split-mode row" in cmd
-
-
-class TestLlamaCppValidateRecipe:
-    """Test validate_recipe catches TP+PP conflict in recipe defaults."""
-
-    def test_both_tp_pp_in_defaults_warns(self):
-        recipe_data = {
-            "name": "test",
-            "runtime": "llama-cpp",
-            "model": "Qwen/Qwen3-1.7B-GGUF:Q4_K_M",
-            "defaults": {"tensor_parallel": 2, "pipeline_parallel": 2},
-        }
-        recipe = Recipe.from_dict(recipe_data)
-        runtime = LlamaCppRuntime()
-        issues = runtime.validate_recipe(recipe)
-        assert any("mutually exclusive" in i for i in issues)
-
-    def test_tp_only_no_warning(self):
-        recipe_data = {
-            "name": "test",
-            "runtime": "llama-cpp",
-            "model": "Qwen/Qwen3-1.7B-GGUF:Q4_K_M",
-            "defaults": {"tensor_parallel": 2},
-        }
-        recipe = Recipe.from_dict(recipe_data)
-        runtime = LlamaCppRuntime()
-        issues = runtime.validate_recipe(recipe)
-        assert not any("mutually exclusive" in i for i in issues)

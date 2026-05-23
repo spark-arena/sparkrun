@@ -12,6 +12,14 @@ cluster managers.  When omitted, a fresh session is built via
 :func:`sparkrun.api._context.default_sctx`.  Callers that issue
 multiple ``api.*`` calls can construct one ``sctx`` and reuse it to
 share state (avoid re-reading config / re-scanning registries).
+
+The signature contract: :func:`resolve_cluster` *always* returns a
+populated :class:`ClusterDefinition`.  When the caller only supplied
+``hosts`` (no named cluster), the function synthesizes an *anonymous*
+cluster (``name=""``) carrying those hosts and empty per-host
+hardware — equivalent to "no overrides, use the DGX Spark hardware
+fallback per host".  Internal code paths therefore never see
+``cluster is None``.
 """
 
 from __future__ import annotations
@@ -106,66 +114,103 @@ def resolve_recipe(
     return recipe
 
 
-def resolve_cluster_def(
-    cluster_input: "str | ClusterDefinition | None",
+def resolve_cluster(
+    cluster_input: "str | ClusterDefinition | None" = None,
+    hosts_input: tuple[str, ...] | list[str] | None = None,
     *,
     sctx: "SparkrunContext | None" = None,
     cluster_mgr: "ClusterManager | None" = None,
-) -> "ClusterDefinition | None":
-    """Return a :class:`ClusterDefinition` or ``None``.
+    config: "SparkrunConfig | None" = None,
+) -> "ClusterDefinition":
+    """Always return a populated :class:`ClusterDefinition`.
 
-    Accepts a cluster name (looked up via *sctx.cluster_manager* or an
-    explicit *cluster_mgr*), a pre-loaded :class:`ClusterDefinition`,
-    or ``None`` (caller is using explicit hosts without a named cluster).
+    Priority:
+      1. *cluster_input* is a :class:`ClusterDefinition` → return it
+         (with *hosts_input* overriding ``cluster.hosts`` when both given).
+      2. *cluster_input* is a string → load via ``sctx.cluster_manager``
+         (or explicit *cluster_mgr*); override hosts with *hosts_input*
+         when both are given.
+      3. No cluster but *hosts_input* given → synthesize an anonymous
+         cluster (``name=""``) carrying those hosts.
+      4. No cluster, no *hosts_input*, but ``config.default_hosts`` → synthesize.
+      5. Otherwise → raise :class:`HostsUnreachable`.
 
-    *cluster_mgr* takes precedence over *sctx.cluster_manager* — it's a
-    per-call override useful for tests.  When both are absent, builds
-    a :class:`ClusterManager` from the default config root.
+    Synthesized anonymous clusters have ``name=""`` (empty string) and
+    empty ``hosts_hardware`` — equivalent to "no overrides, use the
+    DGX Spark hardware fallback per host".  All other fields default
+    to ``None`` / ``{}``.
+
+    Args:
+        cluster_input: Cluster name, pre-loaded definition, or ``None``.
+        hosts_input: Explicit host list (CLI ``--hosts`` equivalent).
+            When provided alongside a named/loaded cluster, overrides
+            the cluster's host list.
+        sctx: Optional shared session context.  Provides cluster manager
+            + config for chained-call sharing.
+        cluster_mgr: Per-call override of the cluster manager.  Takes
+            precedence over ``sctx.cluster_manager``.  Useful for tests.
+        config: Optional :class:`SparkrunConfig` override.  Used to
+            consult ``default_hosts`` when no other host source exists.
+
+    Raises:
+        HostsUnreachable: No host source could be determined.
     """
     from sparkrun.core.cluster_manager import ClusterDefinition
 
-    if cluster_input is None:
-        return None
-    if isinstance(cluster_input, ClusterDefinition):
+    # Distinguish "no hosts arg given" (None) from "explicit empty list".
+    # An empty list is a valid input (e.g. ``api.status([])``) — keep it.
+    explicit_hosts = list(hosts_input) if hosts_input is not None else None
+
+    if cluster_input is not None and not isinstance(cluster_input, str):
+        # Pre-loaded ClusterDefinition — return as-is (or with hosts overridden).
+        if explicit_hosts is not None:
+            return _replace_cluster_hosts(cluster_input, explicit_hosts)
         return cluster_input
-    if cluster_mgr is None and sctx is not None:
-        try:
-            cluster_mgr = sctx.cluster_manager
-        except Exception:
-            logger.debug("sctx.cluster_manager unavailable", exc_info=True)
-    if cluster_mgr is None:
-        from sparkrun.core.cluster_manager import ClusterManager
-        from sparkrun.core.config import get_config_root
 
-        cluster_mgr = ClusterManager(get_config_root())
-    return cluster_mgr.get(cluster_input)
+    if isinstance(cluster_input, str):
+        # Named cluster lookup.
+        if cluster_mgr is None and sctx is not None:
+            try:
+                cluster_mgr = sctx.cluster_manager
+            except Exception:
+                logger.debug("sctx.cluster_manager unavailable", exc_info=True)
+        if cluster_mgr is None:
+            from sparkrun.core.cluster_manager import ClusterManager
+            from sparkrun.core.config import get_config_root
 
+            cluster_mgr = ClusterManager(get_config_root())
+        loaded = cluster_mgr.get(cluster_input)
+        if explicit_hosts is not None:
+            return _replace_cluster_hosts(loaded, explicit_hosts)
+        return loaded
 
-def resolve_hosts(
-    hosts_input: tuple[str, ...] | list[str] | None,
-    *,
-    sctx: "SparkrunContext | None" = None,
-    cluster: "ClusterDefinition | None" = None,
-    config: "SparkrunConfig | None" = None,
-) -> list[str]:
-    """Resolve the working host list from API inputs.
+    # No cluster.  Need a host source.
+    if explicit_hosts is not None:
+        return ClusterDefinition(name="", hosts=explicit_hosts)
 
-    Priority chain (matches the CLI's behaviour):
-      1. Explicit *hosts_input* (CLI ``--hosts`` equivalent).
-      2. Hosts from *cluster*.
-      3. ``sctx.config.default_hosts`` (or explicit *config* override).
-
-    Raises:
-        HostsUnreachable: When no host source is configured.
-    """
-    if hosts_input:
-        return list(hosts_input)
-    if cluster is not None and cluster.hosts:
-        return list(cluster.hosts)
     effective_config = config if config is not None else (sctx.config if sctx is not None else None)
-    if effective_config is not None and getattr(effective_config, "default_hosts", None):
-        return list(effective_config.default_hosts)
+    default_hosts = getattr(effective_config, "default_hosts", None) if effective_config is not None else None
+    if default_hosts:
+        return ClusterDefinition(name="", hosts=list(default_hosts))
+
     raise HostsUnreachable("No hosts provided and no default hosts configured")
+
+
+def _replace_cluster_hosts(cluster: "ClusterDefinition", hosts: list[str]) -> "ClusterDefinition":
+    """Return a copy of *cluster* with ``hosts`` replaced.
+
+    Used when a caller provides both a named cluster and an explicit
+    ``hosts_input`` — the explicit list wins but the cluster's other
+    fields (per-host hardware, executor, user, …) are preserved.
+
+    Note: per-host hardware entries for hosts not in the new list are
+    kept in ``hosts_hardware``; the dict's purpose is *lookup by host*,
+    so stale entries are harmless and dropping them would complicate
+    round-tripping cluster definitions through this function.
+    """
+    from dataclasses import replace
+
+    return replace(cluster, hosts=list(hosts))
 
 
 def resolve_runtime(
@@ -195,7 +240,6 @@ def resolve_runtime(
 
 __all__ = [
     "resolve_recipe",
-    "resolve_cluster_def",
-    "resolve_hosts",
+    "resolve_cluster",
     "resolve_runtime",
 ]

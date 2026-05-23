@@ -11,7 +11,9 @@ from scitrera_app_framework import Plugin, Variables, ext_parse_bool
 
 if TYPE_CHECKING:
     from sparkrun.core.backend_select import BackendBundle
+    from sparkrun.core.cluster_manager import ClusterDefinition
     from sparkrun.core.config import SparkrunConfig
+    from sparkrun.core.parallelism import ParallelismConfig
     from sparkrun.core.recipe import Recipe
     from sparkrun.orchestration.comm_env import ClusterCommEnv
     from sparkrun.orchestration.executor import Executor
@@ -517,74 +519,36 @@ class RuntimePlugin(Plugin):
             issues.append("[%s] model is required" % self.runtime_name)
         return issues
 
-    def compute_required_nodes(
+    # noinspection PyUnusedLocal
+    def world_size(
         self,
-        recipe: Recipe,
-        overrides: dict[str, Any] | None = None,
+        parallelism: ParallelismConfig,
         *,
-        cluster=None,
-    ) -> int | None:
-        """Compute the number of nodes required to run this recipe.
+        recipe: Recipe,
+        cluster: ClusterDefinition,
+    ) -> int:
+        """Total rank count this runtime needs for *parallelism*.
 
-        .. deprecated:: 0.3
-            Prefer :func:`sparkrun.api.schedule` to derive the effective
-            host list.  ``api.schedule`` returns a
-            :class:`~sparkrun.core.scheduler.RankAssignment` whose
-            ``hosts_used`` IS the effective host list — no separate
-            "required nodes" step is needed.  This method survives as a
-            convenience for callers that only need a node count and as
-            an extension point for runtime-specific arithmetic (e.g.
-            llama.cpp split-mode validation, atlas TP*EP mesh).
-            Subclass overrides remain supported.
+        Default: ``parallelism.total_gpus`` (``tp * pp * dp``).  Override
+        when parallelism dimensions multiply differently (e.g. Atlas's
+        MoE mesh where ``world_size == tp * ep``) or when hardware
+        shape affects rank count.
 
-        Two paths:
-
-        * **Cluster-aware** (``cluster`` is a
-          :class:`~sparkrun.core.cluster_manager.ClusterDefinition`):
-          routes through :func:`sparkrun.core.placement.compute_placement`
-          so multi-GPU hosts and explicit ``recipe.layout`` are honored.
-          Returns the count of *hosts* actually used, which can be less
-          than ``total_gpus`` when a host carries multiple ranks.
-        * **Legacy (1 GPU per host)** (``cluster=None``): returns
-          ``tp * pp * dp``.  Correct for homogeneous DGX Spark clusters
-          and preserved for back-compat with callers that don't yet
-          thread a cluster through.
+        The result is threaded through
+        :attr:`sparkrun.core.scheduler.SchedulingRequest.total_ranks`
+        so schedulers stay agnostic to runtime-specific rank-count
+        semantics.
 
         Args:
-            recipe: The loaded recipe.
-            overrides: CLI override values (merged into config chain).
-            cluster: Optional cluster definition.  When provided, the
-                placement engine uses ``cluster.hosts_hardware`` and
-                ``recipe.layout`` to compute host count precisely.
-
-        Returns:
-            Required node count, or ``None`` if no parallelism config
-            is set (meaning "use all provided hosts, no trimming").
+            parallelism: Resolved parallelism dimensions.
+            recipe: The loaded recipe (passed by keyword for future use
+                — runtimes may inspect recipe fields to refine the
+                count).
+            cluster: The cluster the workload will run on (passed by
+                keyword for future use — runtimes may consult hardware
+                shape via ``cluster.hardware_for(host)``).
         """
-        from sparkrun.core.parallelism import extract_parallelism
-
-        config = recipe.build_config_chain(overrides or {})
-        # Check raw values first — return None when nothing is configured
-        tp_val = config.get("tensor_parallel")
-        pp_val = config.get("pipeline_parallel")
-        dp_val = config.get("data_parallel")
-        if tp_val is None and pp_val is None and dp_val is None:
-            return None
-        p = extract_parallelism(config)
-
-        if cluster is not None:
-            from sparkrun.core.placement import compute_placement
-
-            placement = compute_placement(
-                p,
-                cluster.hosts,
-                host_hardware=cluster.hosts_hardware or None,
-                layout=recipe.layout,
-            )
-            return len(placement.hosts_used)
-
-        # Legacy path: 1 GPU per host (DGX Spark default).
-        return p.total_nodes
+        return parallelism.total_gpus
 
     @staticmethod
     def _augment_served_model_name(

@@ -395,3 +395,75 @@ def test_extension_point_name_is_canonical():
 
     v = init_sparkrun()
     assert sched.extension_point_name(v) == EXT_SCHEDULER
+
+
+# --- ParallelismConfig.world_size + total_ranks override ---
+
+
+def test_parallelism_world_size_falls_back_to_total_gpus_when_no_override():
+    """``ParallelismConfig.world_size()`` returns ``total_gpus`` when override unset."""
+    p = ParallelismConfig(tensor_parallel=2, pipeline_parallel=2)
+    assert p.total_gpus == 4
+    assert p.world_size() == 4
+    assert p.total_ranks is None
+
+
+def test_parallelism_world_size_honors_total_ranks_override():
+    """When ``total_ranks`` is set, ``world_size()`` returns the override."""
+    p = ParallelismConfig(tensor_parallel=2, expert_parallel=4, total_ranks=8)
+    # The formula would say tp*pp*dp = 2, but the override wins.
+    assert p.total_gpus == 2
+    assert p.world_size() == 8
+
+
+def test_total_ranks_overrides_parallelism_total_gpus():
+    """``ParallelismConfig.total_ranks`` (set via ``dataclasses.replace``)
+    overrides the ``tp*pp*dp`` formula in scheduling."""
+    import dataclasses
+
+    sched = GreedyScheduler()
+    # Parallelism implies tp*pp*dp = 1 rank, but total_ranks asks for 4.
+    parallelism = ParallelismConfig(tensor_parallel=1)
+    parallelism = dataclasses.replace(parallelism, total_ranks=4)
+    req = SchedulingRequest(
+        parallelism=parallelism,
+        hosts=("h1", "h2", "h3", "h4"),
+    )
+    result = sched.schedule(req)
+    assert result.assignment.total_ranks == 4
+    assert len(result.assignment.hosts_used) == 4
+
+
+def test_total_ranks_none_falls_back_to_total_gpus():
+    """When ``total_ranks`` is unset the scheduler uses ``parallelism.total_gpus``."""
+    sched = GreedyScheduler()
+    req = SchedulingRequest(
+        parallelism=ParallelismConfig(tensor_parallel=2),
+        hosts=("h1", "h2"),
+    )
+    result = sched.schedule(req)
+    # total_gpus = tp * pp * dp = 2
+    assert result.assignment.total_ranks == 2
+
+
+def test_total_ranks_atlas_mesh_math():
+    """Mimic Atlas's tp*ep mesh math via the total_ranks override.
+
+    Atlas's :meth:`Runtime.world_size` returns ``tp * ep``; api.run bakes
+    that into the parallelism via ``dataclasses.replace``.  The scheduler
+    sees the override and packs 8 ranks, even though the base formula
+    would say 2.
+    """
+    import dataclasses
+
+    sched = GreedyScheduler()
+    parallelism = ParallelismConfig(tensor_parallel=2, expert_parallel=4)
+    # Atlas's world_size override would return tp * ep = 8.
+    parallelism = dataclasses.replace(parallelism, total_ranks=8)
+    req = SchedulingRequest(
+        parallelism=parallelism,
+        hosts=("h1", "h2", "h3", "h4", "h5", "h6", "h7", "h8"),
+    )
+    result = sched.schedule(req)
+    assert result.assignment.total_ranks == 8
+    assert len(result.assignment.hosts_used) == 8

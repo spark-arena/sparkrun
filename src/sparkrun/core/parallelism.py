@@ -8,23 +8,55 @@ from typing import Any
 
 @dataclass
 class ParallelismConfig:
-    """Parallelism dimensions for an inference workload."""
+    """Parallelism dimensions for an inference workload.
+
+    Carries both the recipe-extracted parallelism dimensions
+    (:attr:`tensor_parallel` etc.) and an optional runtime-derived
+    :attr:`total_ranks` override.  Callers asking "how many ranks does
+    the scheduler pack?" should call :meth:`world_size` — which returns
+    the override when set, else falls back to the :attr:`total_gpus`
+    formula.
+
+    The override is produced by ``Runtime.world_size(...)`` and baked
+    in via ``dataclasses.replace(parallelism, total_ranks=N)`` before
+    the config is handed to the scheduler.  Runtimes whose semantics
+    differ from the default formula (e.g., Atlas's ``tp * ep`` MoE
+    mesh) use this mechanism to express their actual slot count.
+    """
 
     tensor_parallel: int = 1
     pipeline_parallel: int = 1
     data_parallel: int = 1
     expert_parallel: int = 1
     context_parallel: int = 1
+    total_ranks: int | None = None
+    """Runtime-derived rank-count override.  ``None`` (default) means
+    "use the :attr:`total_gpus` formula".  Set via
+    :func:`dataclasses.replace` after consulting
+    ``Runtime.world_size(...)``."""
 
     @property
     def total_gpus(self) -> int:
-        """Total GPU count across the whole job = tp * pp * dp.
+        """Total GPU count from the standard formula = tp * pp * dp.
 
-        Each DP replica uses ``tp * pp`` GPUs; with ``dp`` replicas the full
-        job consumes ``tp * pp * dp`` GPUs.  On DGX Spark (1 GPU per node)
-        this equals :attr:`total_nodes`.
+        Each DP replica uses ``tp * pp`` GPUs; with ``dp`` replicas the
+        full job consumes ``tp * pp * dp`` GPUs.  This is the formula
+        only — for the canonical "ranks the scheduler packs" call
+        :meth:`world_size`, which honours runtime-derived overrides.
         """
         return self.tensor_parallel * self.pipeline_parallel * self.data_parallel
+
+    def world_size(self) -> int:
+        """Canonical rank count to schedule.
+
+        Returns :attr:`total_ranks` when explicitly set (runtime
+        adjustment baked in); otherwise falls back to the
+        :attr:`total_gpus` formula.  Higher layers (scheduler, launcher)
+        should ask this method rather than reading :attr:`total_gpus`
+        directly so runtime-specific math (e.g., Atlas's MoE mesh) is
+        honoured uniformly.
+        """
+        return self.total_ranks if self.total_ranks is not None else self.total_gpus
 
     @property
     def model_shard_factor(self) -> int:

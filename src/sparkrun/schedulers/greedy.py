@@ -84,8 +84,15 @@ def pack(
     Maps global ranks onto a cluster, honoring an optional explicit
     layout.  Raises placement-level exceptions on infeasibility.
 
+    The number of ranks packed is :meth:`ParallelismConfig.world_size`,
+    which honours :attr:`ParallelismConfig.total_ranks` overrides
+    (baked in by :meth:`Runtime.world_size` upstream) and falls back to
+    the ``tp * pp * dp`` formula when no override is set.
+
     Args:
-        parallelism: ``tp/pp/dp/ep/cp`` dimensions (``total_gpus = tp*pp*dp``).
+        parallelism: ``tp/pp/dp/ep/cp`` dimensions plus an optional
+            runtime-derived ``total_ranks`` override (consulted via
+            :meth:`ParallelismConfig.world_size`).
         hosts: Ordered host list.
         host_hardware: Optional per-host accelerator metadata.  Missing
             entries default to DGX Spark (1× GB10, 121 GB).
@@ -97,15 +104,15 @@ def pack(
             placed hosts) without an explicit layout.
         :class:`InsufficientCapacityError`: Cluster doesn't have enough slots
             for the requested parallelism (auto-fit path).
-        :class:`PlacementError`: Explicit layout doesn't cover ``total_gpus``
-            ranks or references unknown hosts.
+        :class:`PlacementError`: Explicit layout doesn't cover the requested
+            rank count or references unknown hosts.
     """
-    total_gpus = parallelism.total_gpus
+    effective_total = parallelism.world_size()
 
     if layout is not None and layout.placements:
-        return _placement_from_layout(layout, hosts, total_gpus)
+        return _placement_from_layout(layout, hosts, effective_total)
 
-    return _auto_pack(hosts, host_hardware, total_gpus)
+    return _auto_pack(hosts, host_hardware, effective_total)
 
 
 def _placement_from_layout(

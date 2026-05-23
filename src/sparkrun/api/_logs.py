@@ -49,11 +49,10 @@ def logs(
     Raises:
         JobNotFound: When no hosts can be determined for *cluster_id*.
     """
-    from sparkrun.api._resolve import resolve_cluster_def
+    from sparkrun.api._resolve import resolve_cluster
     from sparkrun.orchestration.executor import resolve_executor
     from sparkrun.orchestration.job_metadata import load_job_metadata
 
-    cluster_def = resolve_cluster_def(cluster, sctx=sctx)
     if cache_dir is None and sctx is not None:
         try:
             cache_dir = str(sctx.config.cache_dir)
@@ -67,6 +66,10 @@ def logs(
         target_hosts = list(meta["hosts"])
     else:
         raise JobNotFound("No hosts known for cluster_id %r" % cluster_id)
+
+    # Synthesize a cluster (possibly anonymous) carrying the target hosts
+    # so executor resolution always has a populated cluster row.
+    cluster_def = resolve_cluster(cluster, target_hosts, sctx=sctx)
 
     cli_overrides: dict | None = None
     if meta:

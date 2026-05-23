@@ -49,10 +49,12 @@ def status(
         omitted from :attr:`ClusterStatus.hosts`; callers can detect
         this with ``status.for_host(h) is None``.
     """
-    from sparkrun.api._resolve import resolve_cluster_def
+    from sparkrun.api._resolve import resolve_cluster
     from sparkrun.orchestration.executor import resolve_executor
 
-    cluster_def = resolve_cluster_def(cluster, sctx=sctx)
+    # Always end up with a populated ClusterDefinition; hosts are the
+    # explicit list passed in.
+    cluster_def = resolve_cluster(cluster, hosts, sctx=sctx)
     cli_overrides = {"executor": executor} if executor else None
     resolved = resolve_executor(
         cluster=cluster_def,
@@ -61,11 +63,10 @@ def status(
         auto_user=False,
         v=sctx.variables if sctx is not None else None,
     )
-    host_hardware = cluster_def.hosts_hardware if cluster_def is not None else None
     return resolved.query_status(
         list(hosts),
         ssh_kwargs=ssh_kwargs,
-        host_hardware=host_hardware or None,
+        host_hardware=cluster_def.hosts_hardware or None,
     )
 
 
