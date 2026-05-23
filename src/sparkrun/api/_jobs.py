@@ -10,24 +10,40 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sparkrun.api._models import JobInfo
+
+if TYPE_CHECKING:
+    from sparkrun.core.context import SparkrunContext
 
 logger = logging.getLogger(__name__)
 
 
-def list_jobs(*, cache_dir: str | Path | None = None) -> list[JobInfo]:
+def list_jobs(
+    *,
+    cache_dir: str | Path | None = None,
+    sctx: "SparkrunContext | None" = None,
+) -> list[JobInfo]:
     """Return a list of :class:`JobInfo` for every persisted job metadata file.
 
     Args:
-        cache_dir: Override for the sparkrun cache root.  ``None`` uses
-            :data:`sparkrun.core.config.DEFAULT_CACHE_DIR`.
+        cache_dir: Override for the sparkrun cache root.  Takes
+            precedence when set.  Otherwise falls back to
+            ``sctx.config.cache_dir`` (when *sctx* is provided), then
+            to :data:`sparkrun.core.config.DEFAULT_CACHE_DIR`.
+        sctx: Optional shared :class:`SparkrunContext`.
 
     Returns:
         :class:`JobInfo` entries sorted by ``started_at`` descending
         (most recent first); entries without a timestamp come last,
         ordered by ``cluster_id``.
     """
+    if cache_dir is None and sctx is not None:
+        try:
+            cache_dir = sctx.config.cache_dir
+        except Exception:
+            cache_dir = None
     if cache_dir is None:
         from sparkrun.core.config import DEFAULT_CACHE_DIR
 

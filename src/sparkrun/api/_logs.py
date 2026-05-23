@@ -16,6 +16,7 @@ from sparkrun.api._models import LogLine
 
 if TYPE_CHECKING:
     from sparkrun.core.cluster_manager import ClusterDefinition
+    from sparkrun.core.context import SparkrunContext
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,7 @@ def logs(
     follow: bool = False,
     tail: int | None = None,
     cache_dir: str | None = None,
+    sctx: "SparkrunContext | None" = None,
 ) -> Iterator[LogLine]:
     """Yield :class:`LogLine` records from the head container of *cluster_id*.
 
@@ -40,7 +42,9 @@ def logs(
         follow: When ``True``, stream new lines as they arrive
             (executor's native follow mode).
         tail: When set, start *tail* lines from the end of the log.
-        cache_dir: Override for the sparkrun cache root.
+        cache_dir: Override for the sparkrun cache root.  Defaults to
+            ``sctx.config.cache_dir`` when *sctx* is provided.
+        sctx: Optional shared :class:`SparkrunContext`.
 
     Raises:
         JobNotFound: When no hosts can be determined for *cluster_id*.
@@ -49,7 +53,12 @@ def logs(
     from sparkrun.orchestration.executor import resolve_executor
     from sparkrun.orchestration.job_metadata import load_job_metadata
 
-    cluster_def = resolve_cluster_def(cluster)
+    cluster_def = resolve_cluster_def(cluster, sctx=sctx)
+    if cache_dir is None and sctx is not None:
+        try:
+            cache_dir = str(sctx.config.cache_dir)
+        except Exception:
+            cache_dir = None
     meta = load_job_metadata(cluster_id, cache_dir=cache_dir)
 
     if hosts:
@@ -76,15 +85,25 @@ def logs(
         cli_overrides=cli_overrides,
         rootless=False,
         auto_user=False,
+        v=sctx.variables if sctx is not None else None,
     )
 
     head_host = target_hosts[0]
     head_name = ("%s_solo" % cluster_id) if len(target_hosts) <= 1 else ("%s_node_0" % cluster_id)
 
-    return _stream_logs(executor, head_host, head_name, follow=follow, tail=tail)
+    config = sctx.config if sctx is not None else None
+    return _stream_logs(executor, head_host, head_name, follow=follow, tail=tail, config=config)
 
 
-def _stream_logs(executor, head_host: str, container: str, *, follow: bool, tail: int | None) -> Iterator[LogLine]:
+def _stream_logs(
+    executor,
+    head_host: str,
+    container: str,
+    *,
+    follow: bool,
+    tail: int | None,
+    config=None,
+) -> Iterator[LogLine]:
     """Iterate :class:`LogLine` records by reading the executor's log command output.
 
     Spawned subprocess inherits the executor's ``logs_cmd`` semantics:
@@ -97,7 +116,8 @@ def _stream_logs(executor, head_host: str, container: str, *, follow: bool, tail
     from sparkrun.orchestration.primitives import build_ssh_kwargs
     from sparkrun.orchestration.ssh import build_ssh_cmd
 
-    config = SparkrunConfig()
+    if config is None:
+        config = SparkrunConfig()
     ssh_kwargs = build_ssh_kwargs(config)
     tail_cmd = executor.logs_cmd(container, follow=follow, tail=tail)
     ssh_cmd = build_ssh_cmd(head_host, **ssh_kwargs) + ["bash", "-c", tail_cmd]

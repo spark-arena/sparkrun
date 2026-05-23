@@ -6,10 +6,12 @@ discovery).  Those concerns belong to the *library* layer so the CLI
 becomes a thin click-wrapper around it.  This module hosts the pure
 versions — no ``click.echo``, no ``sys.exit``, no console I/O.
 
-Each helper accepts a piece of :class:`~sparkrun.api.RunOptions`
-input (which may be a raw string identifier or a pre-loaded object)
-and returns a fully-resolved object, raising a typed
-:class:`~sparkrun.api.SparkrunError` subclass on failure.
+Each helper accepts an optional ``sctx`` (:class:`SparkrunContext`)
+that bundles SAF Variables, :class:`SparkrunConfig`, cached registry/
+cluster managers.  When omitted, a fresh session is built via
+:func:`sparkrun.api._context.default_sctx`.  Callers that issue
+multiple ``api.*`` calls can construct one ``sctx`` and reuse it to
+share state (avoid re-reading config / re-scanning registries).
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from sparkrun.api._errors import HostsUnreachable, RecipeNotFound
 if TYPE_CHECKING:
     from sparkrun.core.cluster_manager import ClusterDefinition, ClusterManager
     from sparkrun.core.config import SparkrunConfig
+    from sparkrun.core.context import SparkrunContext
     from sparkrun.core.recipe import Recipe
 
 logger = logging.getLogger(__name__)
@@ -31,20 +34,25 @@ logger = logging.getLogger(__name__)
 def resolve_recipe(
     recipe_input: "str | Recipe",
     *,
+    sctx: "SparkrunContext | None" = None,
     config: "SparkrunConfig | None" = None,
     overrides: dict | None = None,
     local_files: list[Path] | None = None,
 ) -> "Recipe":
     """Return a resolved :class:`Recipe` from a name or pre-loaded object.
 
-    When *recipe_input* is already a :class:`Recipe`, returns it
-    unchanged (still applying *overrides* via ``recipe.resolve``).
-    When it's a string, looks up the recipe across the configured
-    registries.
+    When *recipe_input* is already a :class:`Recipe` (or any non-string
+    duck-typed object), returns it unchanged (still applying *overrides*
+    via ``recipe.resolve``).  When it's a string, looks up the recipe
+    across the configured registries.
 
     Args:
         recipe_input: Recipe name or pre-loaded ``Recipe`` instance.
-        config: Optional ``SparkrunConfig`` (built on demand if absent).
+        sctx: Optional shared session context.  When provided, its
+            ``registry_manager`` is used (avoids re-scanning registries).
+        config: Explicit override for the config (takes precedence over
+            ``sctx.config``).  Builds a default ``SparkrunConfig`` when
+            both are absent.
         overrides: Optional override dict applied via ``recipe.resolve``.
         local_files: Optional list of local recipe paths (e.g. CWD-
             discovered recipes) consulted alongside the configured
@@ -66,16 +74,22 @@ def resolve_recipe(
     elif isinstance(recipe_input, Recipe):
         recipe = recipe_input
     else:
-        # Build the registry manager from config so find_recipe can
-        # consult configured registries.
-        cfg = config or SparkrunConfig()
+        # Prefer sctx.registry_manager when available — it's cached on
+        # the session, so chained api calls don't re-scan registries.
         registry_mgr = None
-        try:
-            from sparkrun.core.registry import RegistryManager
+        if sctx is not None:
+            try:
+                registry_mgr = sctx.registry_manager
+            except Exception:
+                logger.debug("sctx.registry_manager unavailable", exc_info=True)
+        if registry_mgr is None:
+            cfg = config or (sctx.config if sctx is not None else SparkrunConfig())
+            try:
+                from sparkrun.core.registry import RegistryManager
 
-            registry_mgr = RegistryManager(cfg)
-        except Exception:
-            logger.debug("Failed to construct RegistryManager for recipe lookup", exc_info=True)
+                registry_mgr = RegistryManager(cfg)
+            except Exception:
+                logger.debug("Failed to construct RegistryManager for recipe lookup", exc_info=True)
 
         try:
             recipe_path = find_recipe(recipe_input, registry_manager=registry_mgr, local_files=local_files)
@@ -95,13 +109,18 @@ def resolve_recipe(
 def resolve_cluster_def(
     cluster_input: "str | ClusterDefinition | None",
     *,
+    sctx: "SparkrunContext | None" = None,
     cluster_mgr: "ClusterManager | None" = None,
 ) -> "ClusterDefinition | None":
     """Return a :class:`ClusterDefinition` or ``None``.
 
-    Accepts a cluster name (looked up via *cluster_mgr*), a
-    pre-loaded :class:`ClusterDefinition`, or ``None`` (caller is
-    using explicit hosts without a named cluster).
+    Accepts a cluster name (looked up via *sctx.cluster_manager* or an
+    explicit *cluster_mgr*), a pre-loaded :class:`ClusterDefinition`,
+    or ``None`` (caller is using explicit hosts without a named cluster).
+
+    *cluster_mgr* takes precedence over *sctx.cluster_manager* — it's a
+    per-call override useful for tests.  When both are absent, builds
+    a :class:`ClusterManager` from the default config root.
     """
     from sparkrun.core.cluster_manager import ClusterDefinition
 
@@ -109,6 +128,11 @@ def resolve_cluster_def(
         return None
     if isinstance(cluster_input, ClusterDefinition):
         return cluster_input
+    if cluster_mgr is None and sctx is not None:
+        try:
+            cluster_mgr = sctx.cluster_manager
+        except Exception:
+            logger.debug("sctx.cluster_manager unavailable", exc_info=True)
     if cluster_mgr is None:
         from sparkrun.core.cluster_manager import ClusterManager
         from sparkrun.core.config import get_config_root
@@ -120,6 +144,7 @@ def resolve_cluster_def(
 def resolve_hosts(
     hosts_input: tuple[str, ...] | list[str] | None,
     *,
+    sctx: "SparkrunContext | None" = None,
     cluster: "ClusterDefinition | None" = None,
     config: "SparkrunConfig | None" = None,
 ) -> list[str]:
@@ -128,7 +153,7 @@ def resolve_hosts(
     Priority chain (matches the CLI's behaviour):
       1. Explicit *hosts_input* (CLI ``--hosts`` equivalent).
       2. Hosts from *cluster*.
-      3. ``config.default_hosts``.
+      3. ``sctx.config.default_hosts`` (or explicit *config* override).
 
     Raises:
         HostsUnreachable: When no host source is configured.
@@ -137,13 +162,21 @@ def resolve_hosts(
         return list(hosts_input)
     if cluster is not None and cluster.hosts:
         return list(cluster.hosts)
-    if config is not None and getattr(config, "default_hosts", None):
-        return list(config.default_hosts)
+    effective_config = config if config is not None else (sctx.config if sctx is not None else None)
+    if effective_config is not None and getattr(effective_config, "default_hosts", None):
+        return list(effective_config.default_hosts)
     raise HostsUnreachable("No hosts provided and no default hosts configured")
 
 
-def resolve_runtime(recipe: "Recipe"):
+def resolve_runtime(
+    recipe: "Recipe",
+    *,
+    sctx: "SparkrunContext | None" = None,
+):
     """Return the :class:`RuntimePlugin` instance for *recipe.runtime*.
+
+    Uses ``sctx.variables`` when provided so SAF lookups consult the
+    same plugin registry the caller is sharing across api calls.
 
     Raises:
         sparkrun.api.SparkrunError: When the runtime name doesn't map
@@ -153,8 +186,9 @@ def resolve_runtime(recipe: "Recipe"):
     from sparkrun.api._errors import SparkrunError
     from sparkrun.core.bootstrap import get_runtime
 
+    v = sctx.variables if sctx is not None else None
     try:
-        return get_runtime(recipe.runtime)
+        return get_runtime(recipe.runtime, v=v)
     except ValueError as e:
         raise SparkrunError("Cannot resolve runtime %r: %s" % (recipe.runtime, e)) from e
 

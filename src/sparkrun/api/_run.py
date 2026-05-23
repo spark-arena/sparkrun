@@ -20,6 +20,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from sparkrun.api._context import resolve_sctx
 from sparkrun.api._errors import (
     InsufficientCapacity,
     LayoutRequired,
@@ -28,13 +29,21 @@ from sparkrun.api._errors import (
 from sparkrun.api._models import RunOptions, RunResult
 
 if TYPE_CHECKING:
+    from sparkrun.core.context import SparkrunContext
     from sparkrun.core.scheduler import RankAssignment
 
 logger = logging.getLogger(__name__)
 
 
-def run(options: RunOptions) -> RunResult:
+def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunResult:
     """Launch the workload described by *options* and return a :class:`RunResult`.
+
+    Args:
+        options: Inputs for the launch.
+        sctx: Optional shared :class:`SparkrunContext`.  When omitted a
+            fresh session is built; callers chaining multiple ``api.*``
+            calls can construct one ``sctx`` and pass it to share
+            config / registry-manager / cluster-manager state.
 
     Raises:
         :class:`InsufficientCapacity`: Scheduler can't fit the workload.
@@ -51,19 +60,19 @@ def run(options: RunOptions) -> RunResult:
         resolve_runtime,
     )
     from sparkrun.api._schedule import schedule
-    from sparkrun.core.config import SparkrunConfig
     from sparkrun.core.launcher import launch_inference
     from sparkrun.core.parallelism import extract_parallelism
     from sparkrun.core.scheduler import SchedulingRequest
 
+    sctx = resolve_sctx(sctx)
     started_at = time.time()
-    config = SparkrunConfig()
+    config = sctx.config
 
     # 1. Resolve inputs.
-    cluster_def = resolve_cluster_def(options.cluster)
-    recipe = resolve_recipe(options.recipe, config=config, overrides=options.overrides)
-    hosts = resolve_hosts(options.hosts, cluster=cluster_def, config=config)
-    runtime = resolve_runtime(recipe)
+    cluster_def = resolve_cluster_def(options.cluster, sctx=sctx)
+    recipe = resolve_recipe(options.recipe, sctx=sctx, overrides=options.overrides)
+    hosts = resolve_hosts(options.hosts, sctx=sctx, cluster=cluster_def)
+    runtime = resolve_runtime(recipe, sctx=sctx)
 
     # Apply the cluster's SSH user (if any) to the config so downstream
     # SSH operations (executor.run / distribution / build_ssh_kwargs)
@@ -91,7 +100,7 @@ def run(options: RunOptions) -> RunResult:
                 layout=getattr(recipe, "layout", None),
                 resources=None,
             )
-            sched_result = schedule(sched_request, scheduler=options.scheduler)
+            sched_result = schedule(sched_request, scheduler=options.scheduler, sctx=sctx)
             placement = sched_result.assignment
             host_list = list(placement.hosts_used)
             logger.debug("placement consumed %d of %d hosts", len(host_list), len(hosts))
@@ -114,6 +123,8 @@ def run(options: RunOptions) -> RunResult:
         "host_list": host_list,
         "overrides": dict(options.overrides),
         "config": config,
+        "v": sctx.variables,
+        "sctx": sctx,
         "is_solo": is_solo,
         "transfer_mode": options.transfer_mode,
         "transfer_interface": options.transfer_interface,
