@@ -209,6 +209,11 @@ def launch_inference(
     # metadata).  When None, the runtime falls back to the legacy
     # host-list-only path (1 GPU / host, no per-host hardware lookups).
     cluster=None,
+    # Precomputed placement from ``sparkrun.api.run`` (single source of
+    # truth for "what runs where").  When provided, the runtime layer
+    # uses it verbatim; when ``None``, the runtime recomputes locally
+    # for back-compat with callers that haven't been threaded yet.
+    placement=None,
     # When True, suppress the interactive confirmation prompt for
     # recipe-defined pre_exec hooks (and post_exec/post_commands run in
     # post_launch_lifecycle).  CLI flag --trust + local/official-registry
@@ -628,6 +633,7 @@ def launch_inference(
         progress=progress,
         extra_docker_opts=extra_docker_opts,
         cluster=cluster,
+        placement=placement,
         backends=backends or None,
         trust=recipe_trusted,
         **run_kwargs,

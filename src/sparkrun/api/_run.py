@@ -117,6 +117,7 @@ def run(options: RunOptions) -> RunResult:
         "rootless": not options.rootful,
         "auto_user": not options.rootful,
         "cluster": cluster_def,
+        "placement": placement,
         "trust": bool(options.trust),
     }
 
