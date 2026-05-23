@@ -34,6 +34,7 @@ from sparkrun.api._errors import (
     TrustRejected,
 )
 from sparkrun.api._jobs import list_jobs
+from sparkrun.api._logs import logs
 from sparkrun.api._models import (
     JobInfo,
     LogLine,
@@ -41,8 +42,10 @@ from sparkrun.api._models import (
     RunResult,
     StopResult,
 )
+from sparkrun.api._run import run
 from sparkrun.api._schedule import schedule
 from sparkrun.api._status import status
+from sparkrun.api._stop import stop
 
 __all__ = [
     # Data models
@@ -60,6 +63,9 @@ __all__ = [
     "JobNotFound",
     "TrustRejected",
     # Functions
+    "run",
+    "stop",
+    "logs",
     "schedule",
     "status",
     "list_jobs",
