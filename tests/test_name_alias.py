@@ -25,6 +25,13 @@ def test_run_with_name_override(monkeypatch):
     mock_recipe.model = "test-model"
     mock_recipe.validate.return_value = []
     mock_recipe.mode = "solo"
+    # Task 9: ``api.run`` reads ``recipe.max_nodes`` and ``recipe.layout``
+    # while resolving placement; pin them so the orthogonal-constraint
+    # short-circuit doesn't crash on MagicMock attribute access.
+    mock_recipe.max_nodes = None
+    mock_recipe.layout = None
+    mock_recipe.post_exec = None
+    mock_recipe.post_commands = None
     mock_recipe.build_config_chain.return_value = {"port": 8000}
     monkeypatch.setattr("sparkrun.cli._run._load_recipe", lambda *args, **kwargs: (mock_recipe, "path", None))
 

@@ -1,4 +1,10 @@
-"""sparkrun run command."""
+"""sparkrun run command — thin Click wrapper around :func:`sparkrun.api.run`.
+
+The CLI handles presentation concerns (banner, VRAM display, diagnostics
+emission, pre-launch summary, post-launch echoing) and delegates the
+actual launch orchestration to :func:`sparkrun.api.run`.  All
+``--option`` flags map onto :class:`sparkrun.api.RunOptions` fields.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +14,7 @@ from typing import Any
 
 import click
 
+import sparkrun.api as api
 from sparkrun.orchestration.transfer import TransferError
 from sparkrun.runtimes.compatibility import IncompatibleHardwareError
 
@@ -213,7 +220,6 @@ def run(
       sparkrun run my-recipe.yaml -o attention_backend=triton -o max_model_len=4096
     """
     from sparkrun.core.bootstrap import get_runtime
-    from sparkrun.core.launcher import launch_inference
 
     sctx = _get_context(ctx)
     v = sctx.variables
@@ -439,40 +445,49 @@ def run(
             diag.phase_end("spark_diagnostics", error=str(e))
             logger.warning("Spark diagnostics collection failed: %s", e)
 
-    # Launch via shared pipeline
+    # Build the typed RunOptions for the library API.  The CLI already
+    # resolved the recipe, host list, cluster_def, and overrides above
+    # (so the banner / VRAM block could render those before launch);
+    # passing the loaded objects through avoids re-resolution inside
+    # ``api.run`` and preserves the cwd-recipe discovery the CLI does
+    # through ``_load_recipe``.
+    run_options = api.RunOptions(
+        recipe=recipe,
+        hosts=tuple(host_list),
+        cluster=cluster_def,
+        overrides=dict(overrides),
+        solo=is_solo,
+        dry_run=dry_run,
+        follow=not no_follow,
+        detached=not foreground,
+        trust=trust,
+        transfer_mode=effective_transfer_mode,
+        transfer_interface=effective_transfer_interface,
+        cache_dir=remote_cache_dir,
+        local_cache_dir=local_cache_dir,
+        port=port,
+        ray_port=ray_port,
+        dashboard_port=dashboard_port,
+        dashboard=dashboard,
+        init_port=init_port,
+        executor_config=cli_executor_opts or None,
+        rootful=rootful,
+        diagnostics_path=diagnostics_path,
+        cluster_id_override=cluster_id_override,
+        sync_tuning=not no_sync_tuning,
+        extra_docker_opts=tuple(executor_args) if executor_args else None,
+        topology=cluster_cfg.topology,
+        recipe_ref=recipe_ref,
+    )
+
+    # Launch via the library API; the API call internally drives
+    # ``launch_inference`` (which calls ``runtime.run``).  Tests that
+    # mock ``runtime.run`` still observe the call because the runtime
+    # layer is unchanged.
     if diag:
         diag.phase_start("launch")
     try:
-        result = launch_inference(
-            recipe=recipe,
-            runtime=runtime,
-            host_list=host_list,
-            overrides=overrides,
-            sctx=sctx,
-            is_solo=is_solo,
-            cache_dir=remote_cache_dir,
-            local_cache_dir=local_cache_dir,
-            transfer_mode=effective_transfer_mode,
-            transfer_interface=effective_transfer_interface,
-            recipe_ref=recipe_ref,
-            registry_mgr=registry_mgr,
-            sync_tuning=not no_sync_tuning,
-            dry_run=dry_run,
-            detached=not foreground,
-            follow=not no_follow,
-            ray_port=ray_port,
-            dashboard_port=dashboard_port,
-            dashboard=dashboard,
-            init_port=init_port,
-            topology=cluster_cfg.topology,
-            cluster_id_override=cluster_id_override,
-            executor_config=cli_executor_opts,
-            extra_docker_opts=list(executor_args) if executor_args else None,
-            rootless=not rootful,
-            auto_user=not rootful,
-            cluster=cluster_def,
-            trust=trust,
-        )
+        run_result = api.run(run_options)
     except TransferError as e:
         if diag:
             diag.phase_end("launch", error=str(e))
@@ -489,6 +504,14 @@ def run(
             diag.close()
         click.echo("Error: %s" % e, err=True)
         sys.exit(1)
+    except api.SparkrunError as e:
+        if diag:
+            diag.phase_end("launch", error=str(e))
+            diag.emit_error("launch", e)
+            diag.emit_summary()
+            diag.close()
+        click.echo("Error: %s" % e, err=True)
+        sys.exit(1)
     except Exception as e:
         if diag:
             diag.phase_end("launch", error=str(e))
@@ -496,6 +519,10 @@ def run(
             diag.emit_summary()
             diag.close()
         raise
+
+    # ``RunResult.launch_result`` is the raw LaunchResult — used by
+    # diagnostics emission, post-launch lifecycle, and crash logs.
+    result = run_result.launch_result
 
     if diag:
         diag.phase_end("launch")

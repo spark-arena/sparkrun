@@ -65,6 +65,17 @@ def run(options: RunOptions) -> RunResult:
     hosts = resolve_hosts(options.hosts, cluster=cluster_def, config=config)
     runtime = resolve_runtime(recipe)
 
+    # Apply the cluster's SSH user (if any) to the config so downstream
+    # SSH operations (executor.run / distribution / build_ssh_kwargs)
+    # log in as the right user.  Matches the CLI's resolution chain
+    # where ``_resolve_hosts_or_exit`` applies ``cluster.user`` to
+    # ``config.ssh_user`` before launch.
+    if cluster_def is not None and getattr(cluster_def, "user", None):
+        try:
+            config.ssh_user = cluster_def.user
+        except Exception:
+            logger.debug("Failed to apply cluster SSH user to config", exc_info=True)
+
     # 2. Compute placement (single source of truth for the effective host list).
     placement: "RankAssignment | None" = None
     host_list = list(hosts)
@@ -105,7 +116,9 @@ def run(options: RunOptions) -> RunResult:
         "config": config,
         "is_solo": is_solo,
         "transfer_mode": options.transfer_mode,
+        "transfer_interface": options.transfer_interface,
         "cache_dir": options.cache_dir,
+        "local_cache_dir": options.local_cache_dir,
         "dry_run": options.dry_run,
         "detached": options.detached,
         "follow": options.follow,
@@ -114,11 +127,16 @@ def run(options: RunOptions) -> RunResult:
         "dashboard": options.dashboard,
         "init_port": options.init_port,
         "executor_config": _build_executor_overrides(options),
+        "extra_docker_opts": list(options.extra_docker_opts) if options.extra_docker_opts else None,
         "rootless": not options.rootful,
         "auto_user": not options.rootful,
         "cluster": cluster_def,
         "placement": placement,
         "trust": bool(options.trust),
+        "sync_tuning": options.sync_tuning,
+        "topology": options.topology,
+        "cluster_id_override": options.cluster_id_override,
+        "recipe_ref": options.recipe_ref,
     }
 
     # 5. Launch.
@@ -155,7 +173,14 @@ def run(options: RunOptions) -> RunResult:
         started_at=started_at,
         dry_run=options.dry_run,
         is_solo=result.is_solo,
+        rc=int(result.rc),
+        serve_command=result.serve_command or "",
+        container_image=result.container_image or "",
+        serve_port=int(result.serve_port or 0),
+        effective_cache_dir=result.effective_cache_dir or "",
+        runtime_info=dict(result.runtime_info or {}),
         metadata=metadata,
+        launch_result=result,
     )
 
 

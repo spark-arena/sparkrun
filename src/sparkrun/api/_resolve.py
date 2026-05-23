@@ -15,6 +15,7 @@ and returns a fully-resolved object, raising a typed
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sparkrun.api._errors import HostsUnreachable, RecipeNotFound
@@ -32,6 +33,7 @@ def resolve_recipe(
     *,
     config: "SparkrunConfig | None" = None,
     overrides: dict | None = None,
+    local_files: list[Path] | None = None,
 ) -> "Recipe":
     """Return a resolved :class:`Recipe` from a name or pre-loaded object.
 
@@ -40,14 +42,28 @@ def resolve_recipe(
     When it's a string, looks up the recipe across the configured
     registries.
 
+    Args:
+        recipe_input: Recipe name or pre-loaded ``Recipe`` instance.
+        config: Optional ``SparkrunConfig`` (built on demand if absent).
+        overrides: Optional override dict applied via ``recipe.resolve``.
+        local_files: Optional list of local recipe paths (e.g. CWD-
+            discovered recipes) consulted alongside the configured
+            registries — mirrors :func:`find_recipe`'s parameter so the
+            CLI's cwd-recipe shortcut works through the API.
+
     Raises:
         RecipeNotFound: When a string name doesn't resolve to any
-            recipe in the configured registries.
+            recipe in the configured registries or *local_files*.
     """
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.core.recipe import Recipe, find_recipe
 
-    if isinstance(recipe_input, Recipe):
+    # Any non-string input is treated as a pre-loaded recipe (Recipe
+    # instance, or a duck-typed object — supports tests that pass
+    # mocks).  Only bare strings flow through registry lookup.
+    if not isinstance(recipe_input, str):
+        recipe = recipe_input
+    elif isinstance(recipe_input, Recipe):
         recipe = recipe_input
     else:
         # Build the registry manager from config so find_recipe can
@@ -62,7 +78,7 @@ def resolve_recipe(
             logger.debug("Failed to construct RegistryManager for recipe lookup", exc_info=True)
 
         try:
-            recipe_path = find_recipe(recipe_input, registry_manager=registry_mgr)
+            recipe_path = find_recipe(recipe_input, registry_manager=registry_mgr, local_files=local_files)
         except Exception as e:
             raise RecipeNotFound("Recipe %r not found: %s" % (recipe_input, e)) from e
         if not recipe_path:
