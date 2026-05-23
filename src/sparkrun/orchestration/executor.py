@@ -43,6 +43,7 @@ from sparkrun.orchestration.executors._base import (
 from sparkrun.orchestration.executors.docker import DOCKER_DEFAULTS, DockerExecutor
 
 if TYPE_CHECKING:
+    from sparkrun.core.cluster_manager import ClusterDefinition
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.core.recipe import Recipe
     from sparkrun.runtimes.base import RuntimePlugin
@@ -168,6 +169,24 @@ def _recipe_exec_dict(recipe: "Recipe | None") -> dict:
     return cfg
 
 
+def _cluster_exec_dict(cluster: "ClusterDefinition | None") -> dict:
+    """Flatten a cluster definition's executor selector + config into a chain layer.
+
+    Cluster-level executor settings sit between the recipe and the runtime
+    in both the name-selection and config chains.  Rationale: a cluster's
+    declared executor (e.g. ``executor: k8s``) is sharper than the
+    runtime's generic default but should still defer to a recipe that
+    explicitly pins a different executor.
+    """
+    if cluster is None:
+        return {}
+    cfg = _coerce_dict(getattr(cluster, "executor_config", None))
+    selector = _coerce_str(getattr(cluster, "executor", "")) or ""
+    if selector and "executor" not in cfg:
+        cfg["executor"] = selector
+    return cfg
+
+
 def _runtime_exec_dict(runtime: "RuntimePlugin | None") -> dict:
     """Flatten ``runtime.default_executor()`` into a chain layer."""
     if runtime is None:
@@ -226,11 +245,12 @@ def _resolve_executor_name(
     *,
     cli_overrides: dict | None,
     recipe: "Recipe | None",
+    cluster: "ClusterDefinition | None",
     runtime: "RuntimePlugin | None",
     config: "SparkrunConfig | None",
     v: Variables | None = None,
 ) -> str:
-    """Pick the executor name from the chain (CLI → recipe → runtime → config → docker).
+    """Pick the executor name from the chain (CLI → recipe → cluster → runtime → config → docker).
 
     Unknown names log a warning and fall back to ``"docker"``.
     """
@@ -238,6 +258,7 @@ def _resolve_executor_name(
     for layer in (
         cli_overrides,
         _recipe_exec_dict(recipe),
+        _cluster_exec_dict(cluster),
         _runtime_exec_dict(runtime),
         _config_exec_dict(config),
     ):
@@ -260,6 +281,7 @@ def _resolve_executor_name(
 def resolve_executor(
     *,
     recipe: "Recipe | None" = None,
+    cluster: "ClusterDefinition | None" = None,
     runtime: "RuntimePlugin | None" = None,
     config: "SparkrunConfig | None" = None,
     cli_overrides: dict | None = None,
@@ -269,15 +291,21 @@ def resolve_executor(
 ) -> Executor:
     """Single entry point that produces an :class:`Executor` for a launch.
 
-    Layers the resolution chain (highest → lowest):
+    Layers the resolution chain (highest → lowest precedence):
 
         1. ``cli_overrides``
         2. ``recipe.executor`` + ``recipe.executor_config``
-        3. ``runtime.default_executor()``
-        4. ``cls.apply_runtime_adjustments(rootless=, auto_user=)``
-        5. ``config.default_executor`` + ``config.executor_config``
-        6. ``cls.default_config()``
-        7. :class:`ExecutorConfig` dataclass field defaults
+        3. ``cluster.executor`` + ``cluster.executor_config``
+        4. ``runtime.default_executor()``  *(name selection only)*
+        5. ``cls.apply_runtime_adjustments(rootless=, auto_user=)``
+        6. ``config.default_executor`` + ``config.executor_config``
+        7. ``cls.default_config()``
+        8. :class:`ExecutorConfig` dataclass field defaults
+
+    The cluster layer sits between the recipe (workload-specific) and
+    the runtime/config (generic) so a cluster's standing preferences
+    (e.g. ``executor: k8s``, ``executor_config.shm_size: 16g``) govern
+    unless a sharper layer overrides.
 
     The selected executor class comes from :func:`get_executor` (SAF
     plugin registry); the resulting :class:`ExecutorConfig` is built
@@ -287,6 +315,7 @@ def resolve_executor(
     name = _resolve_executor_name(
         cli_overrides=cli_overrides,
         recipe=recipe,
+        cluster=cluster,
         runtime=runtime,
         config=config,
         v=v,
@@ -297,6 +326,7 @@ def resolve_executor(
         sources=(
             cli_overrides or {},
             _recipe_exec_dict(recipe),
+            _cluster_exec_dict(cluster),
             _runtime_exec_dict(runtime),
             cls.apply_runtime_adjustments(rootless=rootless, auto_user=auto_user),
             _config_exec_dict(config),

@@ -390,6 +390,158 @@ class TestBackwardsCompat:
         assert EXECUTOR_DEFAULTS is DOCKER_DEFAULTS
 
 
+class TestClusterLayer:
+    """Cluster row in the resolution chain — Task 4.
+
+    The cluster row sits between recipe (workload-specific) and the
+    runtime/SparkrunConfig generic defaults, in both name-selection
+    and config chains.  Verified precedence:
+
+      CLI > recipe > **cluster** > runtime.default_executor() > SparkrunConfig > library defaults
+    """
+
+    @staticmethod
+    def _cluster(executor=None, executor_config=None):
+        from sparkrun.core.cluster_manager import ClusterDefinition
+
+        return ClusterDefinition(
+            name="test-cluster",
+            hosts=["h1"],
+            executor=executor,
+            executor_config=executor_config,
+        )
+
+    # ---- name selection ----
+
+    def test_cluster_executor_wins_over_runtime_default(self):
+        ex = resolve_executor(
+            cluster=self._cluster(executor="local"),
+            runtime=_FakeRuntime(default_executor="k8s"),
+        )
+        assert isinstance(ex, LocalExecutor)
+
+    def test_recipe_executor_wins_over_cluster(self):
+        ex = resolve_executor(
+            recipe=_FakeRecipe(executor="k8s"),
+            cluster=self._cluster(executor="docker"),
+            runtime=_FakeRuntime(default_executor="local"),
+        )
+        assert isinstance(ex, K8sExecutor)
+
+    def test_cli_wins_over_recipe_and_cluster(self):
+        ex = resolve_executor(
+            cli_overrides={"executor": "local"},
+            recipe=_FakeRecipe(executor="k8s"),
+            cluster=self._cluster(executor="docker"),
+            runtime=_FakeRuntime(default_executor="k8s"),
+        )
+        assert isinstance(ex, LocalExecutor)
+
+    def test_cluster_wins_over_sparkrun_config(self):
+        ex = resolve_executor(
+            cluster=self._cluster(executor="local"),
+            config=_FakeConfig(default_executor="docker"),
+        )
+        assert isinstance(ex, LocalExecutor)
+
+    def test_cluster_config_only_no_selector_falls_through(self):
+        """A cluster with executor_config but no executor selector
+        contributes config but does not name an executor — name falls
+        through to the next layer."""
+        ex = resolve_executor(
+            cluster=self._cluster(executor_config={"shm_size": "16g"}),
+            runtime=_FakeRuntime(default_executor="local"),
+        )
+        assert isinstance(ex, LocalExecutor)
+
+    def test_cluster_none_preserves_pre_task4_behavior(self):
+        """cluster=None must reproduce the pre-Task-4 chain exactly."""
+        ex = resolve_executor(
+            recipe=_FakeRecipe(executor="local"),
+            cluster=None,
+            runtime=_FakeRuntime(default_executor="k8s"),
+        )
+        assert isinstance(ex, LocalExecutor)
+
+    def test_cluster_unknown_executor_falls_back_to_docker(self):
+        ex = resolve_executor(cluster=self._cluster(executor="some-future-thing"))
+        assert isinstance(ex, DockerExecutor)
+
+    # ---- config chain ----
+
+    def test_cluster_executor_config_provides_baseline(self):
+        ex = resolve_executor(
+            cluster=self._cluster(executor="docker", executor_config={"shm_size": "16g"}),
+            rootless=False,
+            auto_user=False,
+        )
+        assert ex.config.shm_size == "16g"
+
+    def test_recipe_config_overrides_cluster_config(self):
+        ex = resolve_executor(
+            recipe=_FakeRecipe(executor="docker", executor_config={"shm_size": "64g"}),
+            cluster=self._cluster(executor="docker", executor_config={"shm_size": "16g"}),
+            rootless=False,
+            auto_user=False,
+        )
+        assert ex.config.shm_size == "64g"
+
+    def test_cli_overrides_cluster_config(self):
+        ex = resolve_executor(
+            cli_overrides={"shm_size": "256g"},
+            cluster=self._cluster(executor="docker", executor_config={"shm_size": "16g"}),
+            rootless=False,
+            auto_user=False,
+        )
+        assert ex.config.shm_size == "256g"
+
+    def test_cluster_config_overrides_sparkrun_config(self):
+        ex = resolve_executor(
+            cluster=self._cluster(executor="docker", executor_config={"shm_size": "16g"}),
+            config=_FakeConfig(
+                default_executor="docker",
+                executor_config={"shm_size": "4g"},
+            ),
+            rootless=False,
+            auto_user=False,
+        )
+        assert ex.config.shm_size == "16g"
+
+    def test_cluster_config_merges_independent_fields(self):
+        """Each layer contributes its own fields; the merge is by key."""
+        ex = resolve_executor(
+            recipe=_FakeRecipe(executor="docker", executor_config={"shm_size": "64g"}),
+            cluster=self._cluster(executor="docker", executor_config={"memory_limit": "100g"}),
+            rootless=False,
+            auto_user=False,
+        )
+        # shm_size from recipe; memory_limit from cluster.
+        assert ex.config.shm_size == "64g"
+        assert ex.config.memory_limit == "100g"
+
+    def test_cluster_executor_config_not_mutated(self):
+        """Resolution does not mutate the cluster's input dict."""
+        original = {"shm_size": "16g"}
+        cluster = self._cluster(executor="docker", executor_config=original)
+        resolve_executor(cluster=cluster, rootless=False, auto_user=False)
+        assert original == {"shm_size": "16g"}
+
+    def test_realistic_full_chain(self):
+        """Realistic scenario: cluster declares k8s + privileged=False,
+        recipe overrides shm_size, CLI tightens privileged back on."""
+        ex = resolve_executor(
+            cli_overrides={"privileged": True},
+            recipe=_FakeRecipe(executor_config={"shm_size": "100g"}),
+            cluster=self._cluster(executor="k8s", executor_config={"privileged": False, "shm_size": "16g"}),
+            runtime=_FakeRuntime(default_executor="docker"),
+        )
+        # Name: cluster wins (recipe doesn't pin an executor).
+        assert isinstance(ex, K8sExecutor)
+        # Config: CLI > recipe for shm_size; CLI overrides cluster's privileged.
+        assert ex.config.privileged is True
+        assert ex.config.shm_size == "100g"
+
+
 class TestRemovedShims:
     """The legacy ``orchestration.executor_*`` module paths are gone.
 
