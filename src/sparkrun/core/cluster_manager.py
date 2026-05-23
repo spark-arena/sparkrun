@@ -54,6 +54,23 @@ class ClusterDefinition:
     code should go through :meth:`hardware_for` rather than indexing
     this dict directly so the default fallback is preserved.
     """
+    executor: str | None = None
+    """Default executor selector for workloads on this cluster.
+
+    Inserted into the executor-name resolution chain between the
+    recipe's selector and ``runtime.default_executor()`` — see
+    :func:`sparkrun.orchestration.executor.resolve_executor`.  A
+    cluster that bakes ``executor: k8s`` here makes every recipe land
+    on the K8s executor unless the recipe (or CLI) overrides.
+    """
+    executor_config: dict[str, Any] | None = None
+    """Cluster-level executor option defaults (memory_limit, privileged, …).
+
+    Layered into the executor *config* resolution chain between the
+    recipe-level options and the global ``SparkrunConfig``.  Lets a
+    cluster express "every workload here gets these baseline executor
+    settings" while still letting recipes/CLI tighten things.
+    """
 
     def hardware_for(self, host: str) -> HostHardware:
         """Return hardware metadata for *host*, defaulting to DGX Spark.
@@ -82,6 +99,10 @@ class ClusterDefinition:
             d["topology"] = self.topology
         if self.hosts_hardware:
             d["hosts_hardware"] = {h: hw.to_dict() for h, hw in self.hosts_hardware.items()}
+        if self.executor:
+            d["executor"] = self.executor
+        if self.executor_config:
+            d["executor_config"] = dict(self.executor_config)
         return d
 
 
@@ -192,6 +213,8 @@ class ClusterManager:
         transfer_interface: str | None = None,
         topology: str | None = None,
         hosts_hardware: dict[str, HostHardware] | None = None,
+        executor: str | None = None,
+        executor_config: dict[str, Any] | None = None,
     ) -> None:
         """Create a new named cluster.
 
@@ -234,6 +257,8 @@ class ClusterManager:
             transfer_interface=transfer_interface,
             topology=topology,
             hosts_hardware=dict(hosts_hardware) if hosts_hardware else {},
+            executor=executor,
+            executor_config=dict(executor_config) if executor_config else None,
         )
         self._write_cluster(cluster_def)
         logger.info("Created cluster '%s' with %d hosts", name, len(hosts))
@@ -267,6 +292,8 @@ class ClusterManager:
         transfer_interface: str | None = _UNSET,
         topology: str | None = _UNSET,
         hosts_hardware: dict[str, HostHardware] | None = _UNSET,
+        executor: str | None = _UNSET,
+        executor_config: dict[str, Any] | None = _UNSET,
     ) -> None:
         """Update existing cluster definition.
 
@@ -325,6 +352,14 @@ class ClusterManager:
         if hosts_hardware is not _UNSET:
             cluster_def.hosts_hardware = dict(hosts_hardware) if hosts_hardware else {}
             logger.debug("Updated hosts_hardware for cluster '%s'", name)
+
+        if executor is not _UNSET:
+            cluster_def.executor = executor
+            logger.debug("Updated executor for cluster '%s'", name)
+
+        if executor_config is not _UNSET:
+            cluster_def.executor_config = dict(executor_config) if executor_config else None
+            logger.debug("Updated executor_config for cluster '%s'", name)
 
         # Write back
         self._write_cluster(cluster_def)
@@ -442,6 +477,10 @@ class ClusterManager:
             data["topology"] = cluster_def.topology
         if cluster_def.hosts_hardware:
             data["hosts_hardware"] = {h: hw.to_dict() for h, hw in cluster_def.hosts_hardware.items()}
+        if cluster_def.executor:
+            data["executor"] = cluster_def.executor
+        if cluster_def.executor_config:
+            data["executor_config"] = dict(cluster_def.executor_config)
 
         with cluster_path.open("w") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
@@ -464,6 +503,11 @@ class ClusterManager:
                 if isinstance(entry, dict):
                     hosts_hardware[str(host)] = HostHardware.from_dict(entry)
 
+        raw_exec_cfg = data.get("executor_config")
+        executor_config: dict[str, Any] | None = None
+        if isinstance(raw_exec_cfg, dict) and raw_exec_cfg:
+            executor_config = dict(raw_exec_cfg)
+
         return ClusterDefinition(
             name=data.get("name", cluster_path.stem),
             hosts=data.get("hosts", []),
@@ -474,6 +518,8 @@ class ClusterManager:
             transfer_interface=data.get("transfer_interface"),
             topology=data.get("topology"),
             hosts_hardware=hosts_hardware,
+            executor=data.get("executor"),
+            executor_config=executor_config,
         )
 
 
@@ -616,6 +662,14 @@ class ResolvedClusterConfig:
     transfer_mode: str | None = None
     transfer_interface: str | None = None
     topology: str | None = None
+    executor: str | None = None
+    """Cluster-level default executor selector — consumed by
+    :func:`sparkrun.orchestration.executor.resolve_executor` between
+    recipe and runtime in the name-selection chain."""
+    executor_config: dict[str, Any] | None = None
+    """Cluster-level default executor options — consumed by
+    :func:`sparkrun.orchestration.executor.resolve_executor` between
+    recipe and ``SparkrunConfig`` in the config chain."""
 
     def resolve_transfer_config(self, config, transfer_mode_override: str | None = None):
         """Resolve transfer configuration against defaults.
@@ -690,5 +744,13 @@ def resolve_cluster_config(
         cfg.topology = cluster_def.topology
     else:
         logger.debug("explicit hosts; not using cluster for transfer_mode, transfer_interface, cache_dir, and topology")
+
+    # Executor selector and config are cluster-deployment properties,
+    # not host-list properties — apply them whenever the cluster is
+    # named, even with explicit --hosts.  Rationale: if you tell sparkrun
+    # which cluster you're targeting, its executor defaults should
+    # govern regardless of how host addresses are supplied.
+    cfg.executor = cluster_def.executor
+    cfg.executor_config = dict(cluster_def.executor_config) if cluster_def.executor_config else None
 
     return cfg
