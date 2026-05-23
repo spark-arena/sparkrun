@@ -1,0 +1,188 @@
+"""``sparkrun.api.run`` — launch an inference workload from the library API.
+
+Orchestrates the full launch path:
+
+1. Resolve recipe / cluster / hosts / runtime.
+2. Apply overrides; resolve recipe (runtime selection finalized).
+3. Run the scheduler via :func:`sparkrun.api.schedule` to compute placement.
+4. Apply orthogonal constraints (solo, ``max_nodes``).
+5. Delegate to :func:`sparkrun.core.launcher.launch_inference`.
+6. Translate the launcher's :class:`LaunchResult` into :class:`RunResult`.
+
+The function raises :class:`~sparkrun.api.SparkrunError` (or a
+subclass) for any failure; on success it returns a populated
+:class:`RunResult`.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from typing import TYPE_CHECKING, Any
+
+from sparkrun.api._errors import (
+    InsufficientCapacity,
+    LayoutRequired,
+    SparkrunError,
+)
+from sparkrun.api._models import RunOptions, RunResult
+
+if TYPE_CHECKING:
+    from sparkrun.core.scheduler import RankAssignment
+
+logger = logging.getLogger(__name__)
+
+
+def run(options: RunOptions) -> RunResult:
+    """Launch the workload described by *options* and return a :class:`RunResult`.
+
+    Raises:
+        :class:`InsufficientCapacity`: Scheduler can't fit the workload.
+        :class:`LayoutRequired`: Cluster needs an explicit ``recipe.layout``.
+        :class:`~sparkrun.api.RecipeNotFound`: Recipe lookup failed.
+        :class:`~sparkrun.api.HostsUnreachable`: No usable host source.
+        :class:`~sparkrun.api.TrustRejected`: Recipe hooks rejected.
+        :class:`SparkrunError`: For other launch failures.
+    """
+    from sparkrun.api._resolve import (
+        resolve_cluster_def,
+        resolve_hosts,
+        resolve_recipe,
+        resolve_runtime,
+    )
+    from sparkrun.api._schedule import schedule
+    from sparkrun.core.config import SparkrunConfig
+    from sparkrun.core.launcher import launch_inference
+    from sparkrun.core.parallelism import extract_parallelism
+    from sparkrun.core.scheduler import SchedulingRequest
+
+    started_at = time.time()
+    config = SparkrunConfig()
+
+    # 1. Resolve inputs.
+    cluster_def = resolve_cluster_def(options.cluster)
+    recipe = resolve_recipe(options.recipe, config=config, overrides=options.overrides)
+    hosts = resolve_hosts(options.hosts, cluster=cluster_def, config=config)
+    runtime = resolve_runtime(recipe)
+
+    # 2. Compute placement (single source of truth for the effective host list).
+    placement: "RankAssignment | None" = None
+    host_list = list(hosts)
+    is_solo_request = bool(options.solo) or recipe.mode == "solo"
+
+    if not is_solo_request and len(host_list) > 1:
+        parallelism = extract_parallelism(recipe.build_config_chain(options.overrides))
+        if any(getattr(parallelism, k) > 1 for k in ("tensor_parallel", "pipeline_parallel", "data_parallel")):
+            sched_request = SchedulingRequest(
+                parallelism=parallelism,
+                hosts=tuple(host_list),
+                host_hardware=(cluster_def.hosts_hardware if cluster_def is not None else None) or None,
+                layout=getattr(recipe, "layout", None),
+                resources=None,
+            )
+            sched_result = schedule(sched_request, scheduler=options.scheduler)
+            placement = sched_result.assignment
+            host_list = list(placement.hosts_used)
+            logger.debug("placement consumed %d of %d hosts", len(host_list), len(hosts))
+
+    # 3. Apply orthogonal constraints (max_nodes is a recipe hard cap).
+    if recipe.max_nodes is not None and len(host_list) > recipe.max_nodes:
+        host_list = host_list[: recipe.max_nodes]
+        # Placement is now potentially stale; clear so the launcher recomputes.
+        placement = None
+
+    is_solo = is_solo_request or len(host_list) <= 1
+    if is_solo and len(host_list) > 1:
+        host_list = host_list[:1]
+        placement = None
+
+    # 4. Translate options → launch_inference kwargs.
+    launch_kwargs: dict[str, Any] = {
+        "recipe": recipe,
+        "runtime": runtime,
+        "host_list": host_list,
+        "overrides": dict(options.overrides),
+        "config": config,
+        "is_solo": is_solo,
+        "transfer_mode": options.transfer_mode,
+        "cache_dir": options.cache_dir,
+        "dry_run": options.dry_run,
+        "detached": options.detached,
+        "follow": options.follow,
+        "ray_port": options.ray_port,
+        "dashboard_port": options.dashboard_port,
+        "dashboard": options.dashboard,
+        "init_port": options.init_port,
+        "executor_config": _build_executor_overrides(options),
+        "rootless": not options.rootful,
+        "auto_user": not options.rootful,
+        "cluster": cluster_def,
+        "trust": bool(options.trust),
+    }
+
+    # 5. Launch.
+    try:
+        result = launch_inference(**launch_kwargs)
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except (InsufficientCapacity, LayoutRequired, SparkrunError):
+        # Typed API errors flow through unchanged.
+        raise
+    except Exception as e:
+        raise SparkrunError("launch_inference failed: %s" % e) from e
+
+    # 6. Build RunResult.
+    metadata: dict[str, Any] = {
+        "recipe": getattr(recipe, "qualified_name", None) or getattr(recipe, "name", None),
+        "model": getattr(recipe, "model", None),
+        "container_image": result.container_image,
+        "serve_port": result.serve_port,
+        "effective_cache_dir": result.effective_cache_dir,
+    }
+    if result.recipe_ref:
+        metadata["recipe_ref"] = result.recipe_ref
+    if result.runtime_info:
+        metadata["runtime_info"] = dict(result.runtime_info)
+
+    return RunResult(
+        cluster_id=result.cluster_id,
+        host_list=tuple(result.host_list),
+        placement=placement,
+        scheduler=options.scheduler or "greedy",
+        runtime=runtime.runtime_name,
+        executor=_executor_name_from_result(result),
+        started_at=started_at,
+        dry_run=options.dry_run,
+        is_solo=result.is_solo,
+        metadata=metadata,
+    )
+
+
+def _build_executor_overrides(options: RunOptions) -> dict[str, Any]:
+    """Flatten ``options.executor`` + ``options.executor_config`` into the
+    ``cli_overrides`` dict that ``launch_inference`` forwards to
+    :func:`sparkrun.orchestration.executor.resolve_executor`."""
+    overrides: dict[str, Any] = {}
+    if options.executor:
+        overrides["executor"] = options.executor
+    if options.executor_config:
+        for key, value in options.executor_config.items():
+            overrides[key] = value
+    return overrides
+
+
+def _executor_name_from_result(result) -> str:
+    """Recover the executor's name from the launcher's runtime, if it was set.
+
+    The launcher stamps ``runtime.executor`` during launch; we read its
+    ``executor_name`` attribute.  Falls back to ``"docker"`` (the
+    library default) when the launcher didn't populate it (e.g. dry-run
+    paths that short-circuit before executor resolution).
+    """
+    executor = getattr(result.runtime, "executor", None)
+    if executor is None:
+        return "docker"
+    return getattr(executor, "executor_name", "docker")
+
+
+__all__ = ["run"]
