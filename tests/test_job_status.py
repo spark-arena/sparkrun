@@ -6,6 +6,7 @@ from unittest import mock
 
 import pytest
 
+from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy, RunningWorkload
 from sparkrun.orchestration.job_metadata import check_job_running
 
 
@@ -20,109 +21,121 @@ def mock_recipe():
     return r
 
 
+def _status_running(cluster_id: str, hosts: list[str], executor_name: str = "docker") -> ClusterStatus:
+    """Build a ClusterStatus snapshot where *cluster_id* is running on every host."""
+    workload = RunningWorkload(cluster_id=cluster_id)
+    return ClusterStatus(
+        hosts=tuple(HostOccupancy(host=h, workloads=(workload,), used_slots=1) for h in hosts),
+        executor=executor_name,
+    )
+
+
+def _status_empty(hosts: list[str], executor_name: str = "docker") -> ClusterStatus:
+    """Build a ClusterStatus snapshot with no workloads on any host."""
+    return ClusterStatus(
+        hosts=tuple(HostOccupancy(host=h) for h in hosts),
+        executor=executor_name,
+    )
+
+
 class TestCheckJobRunning:
     """Tests for check_job_running()."""
 
     def test_check_running_solo_up(self):
         """Solo container running on head host."""
+        cid = "sparkrun_aabbccdd0011"
+        hosts = ["10.0.0.1"]
         with (
             mock.patch(
-                "sparkrun.orchestration.primitives.is_container_running",
-                side_effect=lambda host, name, **kw: name.endswith("_solo"),
-            ),
+                "sparkrun.orchestration.executor.resolve_executor",
+            ) as mock_resolve,
             mock.patch(
                 "sparkrun.orchestration.job_metadata.load_job_metadata",
-                return_value={"recipe": "test", "hosts": ["10.0.0.1"]},
+                return_value={"recipe": "test", "hosts": hosts},
             ),
         ):
-            status = check_job_running(
-                cluster_id="sparkrun_aabbccdd0011",
-                hosts=["10.0.0.1"],
-            )
+            mock_resolve.return_value.query_status.return_value = _status_running(cid, hosts)
+            status = check_job_running(cluster_id=cid, hosts=hosts)
         assert status.running is True
-        assert status.cluster_id == "sparkrun_aabbccdd0011"
+        assert status.cluster_id == cid
         assert status.container_statuses["sparkrun_aabbccdd0011_solo"] is True
 
     def test_check_running_solo_down(self):
         """Solo container not running."""
+        cid = "sparkrun_aabbccdd0011"
+        hosts = ["10.0.0.1"]
         with (
             mock.patch(
-                "sparkrun.orchestration.primitives.is_container_running",
-                return_value=False,
-            ),
+                "sparkrun.orchestration.executor.resolve_executor",
+            ) as mock_resolve,
             mock.patch(
                 "sparkrun.orchestration.job_metadata.load_job_metadata",
                 return_value=None,
             ),
         ):
-            status = check_job_running(
-                cluster_id="sparkrun_aabbccdd0011",
-                hosts=["10.0.0.1"],
-            )
+            mock_resolve.return_value.query_status.return_value = _status_empty(hosts)
+            status = check_job_running(cluster_id=cid, hosts=hosts)
         assert status.running is False
+        assert status.container_statuses["sparkrun_aabbccdd0011_solo"] is False
 
-    def test_check_running_multinode_native(self):
-        """Multi-node native: _node_0 running on head."""
-
-        def _is_running(host, name, **kw):
-            return name.endswith("_node_0")
-
+    def test_check_running_multinode_up(self):
+        """Multi-node: cluster has a workload on the head host -> running."""
+        cid = "sparkrun_aabbccdd0011"
+        hosts = ["10.0.0.1", "10.0.0.2"]
         with (
             mock.patch(
-                "sparkrun.orchestration.primitives.is_container_running",
-                side_effect=_is_running,
-            ),
+                "sparkrun.orchestration.executor.resolve_executor",
+            ) as mock_resolve,
             mock.patch(
                 "sparkrun.orchestration.job_metadata.load_job_metadata",
                 return_value=None,
             ),
         ):
-            status = check_job_running(
-                cluster_id="sparkrun_aabbccdd0011",
-                hosts=["10.0.0.1", "10.0.0.2"],
-            )
+            mock_resolve.return_value.query_status.return_value = _status_running(cid, hosts)
+            status = check_job_running(cluster_id=cid, hosts=hosts)
         assert status.running is True
+        # Candidate names for multi-node mode are both marked True when
+        # the cluster has a workload on the head host (we can't recover
+        # exact container names from a RunningWorkload).
         assert status.container_statuses["sparkrun_aabbccdd0011_node_0"] is True
-        assert status.container_statuses["sparkrun_aabbccdd0011_head"] is False
+        assert status.container_statuses["sparkrun_aabbccdd0011_head"] is True
 
-    def test_check_running_multinode_ray(self):
-        """Multi-node Ray: _head running (not _node_0)."""
-
-        def _is_running(host, name, **kw):
-            return name.endswith("_head")
-
+    def test_check_running_multinode_down(self):
+        """Multi-node: no workload on the head host -> not running."""
+        cid = "sparkrun_aabbccdd0011"
+        hosts = ["10.0.0.1", "10.0.0.2"]
         with (
             mock.patch(
-                "sparkrun.orchestration.primitives.is_container_running",
-                side_effect=_is_running,
-            ),
+                "sparkrun.orchestration.executor.resolve_executor",
+            ) as mock_resolve,
             mock.patch(
                 "sparkrun.orchestration.job_metadata.load_job_metadata",
                 return_value=None,
             ),
         ):
-            status = check_job_running(
-                cluster_id="sparkrun_aabbccdd0011",
-                hosts=["10.0.0.1", "10.0.0.2"],
-            )
-        assert status.running is True
-        assert status.container_statuses["sparkrun_aabbccdd0011_head"] is True
+            mock_resolve.return_value.query_status.return_value = _status_empty(hosts)
+            status = check_job_running(cluster_id=cid, hosts=hosts)
+        assert status.running is False
+        assert status.container_statuses["sparkrun_aabbccdd0011_node_0"] is False
+        assert status.container_statuses["sparkrun_aabbccdd0011_head"] is False
 
     def test_check_running_no_hosts_loads_metadata(self):
         """When hosts not provided, loads them from job metadata."""
+        cid = "sparkrun_aabbccdd0011"
+        hosts = ["10.0.0.1"]
         with (
             mock.patch(
-                "sparkrun.orchestration.primitives.is_container_running",
-                return_value=True,
-            ),
+                "sparkrun.orchestration.executor.resolve_executor",
+            ) as mock_resolve,
             mock.patch(
                 "sparkrun.orchestration.job_metadata.load_job_metadata",
-                return_value={"recipe": "test", "hosts": ["10.0.0.1"]},
+                return_value={"recipe": "test", "hosts": hosts},
             ),
         ):
-            status = check_job_running(cluster_id="sparkrun_aabbccdd0011")
+            mock_resolve.return_value.query_status.return_value = _status_running(cid, hosts)
+            status = check_job_running(cluster_id=cid)
         assert status.running is True
-        assert status.hosts == ["10.0.0.1"]
+        assert status.hosts == hosts
 
     def test_check_running_no_hosts_no_metadata(self):
         """No hosts provided and no metadata — returns not running."""
@@ -143,25 +156,26 @@ class TestCheckJobRunning:
 
         with (
             mock.patch(
-                "sparkrun.orchestration.primitives.is_container_running",
-                return_value=True,
-            ),
+                "sparkrun.orchestration.executor.resolve_executor",
+            ) as mock_resolve,
             mock.patch(
                 "sparkrun.orchestration.job_metadata.load_job_metadata",
                 return_value=None,
             ),
         ):
+            mock_resolve.return_value.query_status.return_value = _status_running(expected_cid, hosts)
             status = check_job_running(recipe=mock_recipe, hosts=hosts)
         assert status.cluster_id == expected_cid
         assert status.running is True
 
     def test_check_running_health_check_healthy(self):
         """Container running + health check passes."""
+        cid = "sparkrun_aabbccdd0011"
+        hosts = ["10.0.0.1"]
         with (
             mock.patch(
-                "sparkrun.orchestration.primitives.is_container_running",
-                return_value=True,
-            ),
+                "sparkrun.orchestration.executor.resolve_executor",
+            ) as mock_resolve,
             mock.patch(
                 "sparkrun.orchestration.job_metadata.load_job_metadata",
                 return_value={"port": 9000},
@@ -171,9 +185,10 @@ class TestCheckJobRunning:
                 return_value=True,
             ) as mock_health,
         ):
+            mock_resolve.return_value.query_status.return_value = _status_running(cid, hosts)
             status = check_job_running(
-                cluster_id="sparkrun_aabbccdd0011",
-                hosts=["10.0.0.1"],
+                cluster_id=cid,
+                hosts=hosts,
                 check_http_models=True,
             )
         assert status.running is True
@@ -185,11 +200,12 @@ class TestCheckJobRunning:
 
     def test_check_running_health_check_unhealthy(self):
         """Container running but health check fails."""
+        cid = "sparkrun_aabbccdd0011"
+        hosts = ["10.0.0.1"]
         with (
             mock.patch(
-                "sparkrun.orchestration.primitives.is_container_running",
-                return_value=True,
-            ),
+                "sparkrun.orchestration.executor.resolve_executor",
+            ) as mock_resolve,
             mock.patch(
                 "sparkrun.orchestration.job_metadata.load_job_metadata",
                 return_value=None,
@@ -199,9 +215,10 @@ class TestCheckJobRunning:
                 return_value=False,
             ),
         ):
+            mock_resolve.return_value.query_status.return_value = _status_running(cid, hosts)
             status = check_job_running(
-                cluster_id="sparkrun_aabbccdd0011",
-                hosts=["10.0.0.1"],
+                cluster_id=cid,
+                hosts=hosts,
                 check_http_models=True,
             )
         assert status.running is True
@@ -209,19 +226,21 @@ class TestCheckJobRunning:
 
     def test_check_running_health_check_not_running(self):
         """Container down — health check not attempted, healthy stays None."""
+        cid = "sparkrun_aabbccdd0011"
+        hosts = ["10.0.0.1"]
         with (
             mock.patch(
-                "sparkrun.orchestration.primitives.is_container_running",
-                return_value=False,
-            ),
+                "sparkrun.orchestration.executor.resolve_executor",
+            ) as mock_resolve,
             mock.patch(
                 "sparkrun.orchestration.job_metadata.load_job_metadata",
                 return_value=None,
             ),
         ):
+            mock_resolve.return_value.query_status.return_value = _status_empty(hosts)
             status = check_job_running(
-                cluster_id="sparkrun_aabbccdd0011",
-                hosts=["10.0.0.1"],
+                cluster_id=cid,
+                hosts=hosts,
                 check_http_models=True,
             )
         assert status.running is False
@@ -229,11 +248,12 @@ class TestCheckJobRunning:
 
     def test_check_running_explicit_port_overrides_metadata(self):
         """Explicit port param takes priority over metadata port."""
+        cid = "sparkrun_aabbccdd0011"
+        hosts = ["10.0.0.1"]
         with (
             mock.patch(
-                "sparkrun.orchestration.primitives.is_container_running",
-                return_value=True,
-            ),
+                "sparkrun.orchestration.executor.resolve_executor",
+            ) as mock_resolve,
             mock.patch(
                 "sparkrun.orchestration.job_metadata.load_job_metadata",
                 return_value={"port": 9000},
@@ -243,9 +263,10 @@ class TestCheckJobRunning:
                 return_value=True,
             ) as mock_health,
         ):
+            mock_resolve.return_value.query_status.return_value = _status_running(cid, hosts)
             check_job_running(
-                cluster_id="sparkrun_aabbccdd0011",
-                hosts=["10.0.0.1"],
+                cluster_id=cid,
+                hosts=hosts,
                 check_http_models=True,
                 port=7777,
             )
@@ -256,3 +277,25 @@ class TestCheckJobRunning:
         """Raises ValueError if neither cluster_id nor recipe+hosts given."""
         with pytest.raises(ValueError, match="cluster_id or both recipe and hosts"):
             check_job_running()
+
+    def test_check_running_uses_metadata_executor(self):
+        """When metadata records an executor, the override flows through resolve_executor."""
+        cid = "sparkrun_aabbccdd0011"
+        hosts = ["10.0.0.1"]
+        with (
+            mock.patch(
+                "sparkrun.orchestration.executor.resolve_executor",
+            ) as mock_resolve,
+            mock.patch(
+                "sparkrun.orchestration.job_metadata.load_job_metadata",
+                return_value={
+                    "hosts": hosts,
+                    "executor": "local",
+                    "executor_config": {"working_dir": "/tmp/x"},
+                },
+            ),
+        ):
+            mock_resolve.return_value.query_status.return_value = _status_empty(hosts)
+            check_job_running(cluster_id=cid)
+        kwargs = mock_resolve.call_args.kwargs
+        assert kwargs["cli_overrides"] == {"executor": "local", "working_dir": "/tmp/x"}
