@@ -276,3 +276,105 @@ def test_full_api_with_run_stop_logs_imports_without_click():
     )
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, "stdout=%s\nstderr=%s" % (result.stdout, result.stderr)
+
+
+# --------------------------------------------------------------------------
+# Scheduler resolution chain: CLI > recipe > cluster > greedy default
+# --------------------------------------------------------------------------
+
+
+def _run_with_scheduler_chain(*, options_scheduler, recipe_scheduler, cluster_scheduler):
+    """Exercise ``api.run`` with the three layers wired up; return the
+    ``RunResult.scheduler`` field (which mirrors ``effective_scheduler or 'greedy'``)."""
+    from sparkrun.core.cluster_manager import ClusterDefinition
+    from sparkrun.core.recipe import Recipe
+
+    recipe_data = {"sparkrun_version": "2", "runtime": "vllm", "model": "test/m"}
+    if recipe_scheduler is not None:
+        recipe_data["scheduler"] = recipe_scheduler
+    recipe = Recipe(recipe_data)
+
+    cluster_def = ClusterDefinition(name="test-cluster", hosts=["h1"], scheduler=cluster_scheduler)
+
+    opts = api.RunOptions(
+        recipe=recipe,
+        hosts=("h1",),
+        dry_run=True,
+        scheduler=options_scheduler,
+    )
+
+    class _FakeRuntime:
+        runtime_name = "vllm"
+        executor = None
+
+        def world_size(self, parallelism, recipe=None, cluster=None):
+            return 1
+
+    fake_result = type(
+        "FakeLaunchResult",
+        (),
+        {
+            "rc": 0,
+            "cluster_id": "sparkrun_schedtestcid",
+            "host_list": ["h1"],
+            "is_solo": True,
+            "runtime": _FakeRuntime(),
+            "recipe": recipe,
+            "overrides": {},
+            "container_image": "test:latest",
+            "effective_cache_dir": "/tmp/cache",
+            "serve_port": 8000,
+            "config": None,
+            "recipe_ref": None,
+            "comm_env": None,
+            "ib_ip_map": {},
+            "serve_command": "",
+            "runtime_info": {},
+            "builder": None,
+            "backends": {},
+        },
+    )()
+
+    with (
+        patch("sparkrun.core.launcher.launch_inference", return_value=fake_result),
+        patch("sparkrun.api._resolve.resolve_runtime", return_value=_FakeRuntime()),
+        patch("sparkrun.api._resolve.resolve_cluster", return_value=cluster_def),
+    ):
+        return api.run(opts)
+
+
+def test_scheduler_chain_cli_option_wins_over_all():
+    result = _run_with_scheduler_chain(
+        options_scheduler="from-cli",
+        recipe_scheduler="from-recipe",
+        cluster_scheduler="from-cluster",
+    )
+    assert result.scheduler == "from-cli"
+
+
+def test_scheduler_chain_recipe_wins_over_cluster():
+    result = _run_with_scheduler_chain(
+        options_scheduler=None,
+        recipe_scheduler="from-recipe",
+        cluster_scheduler="from-cluster",
+    )
+    assert result.scheduler == "from-recipe"
+
+
+def test_scheduler_chain_cluster_wins_over_default():
+    result = _run_with_scheduler_chain(
+        options_scheduler=None,
+        recipe_scheduler=None,
+        cluster_scheduler="from-cluster",
+    )
+    assert result.scheduler == "from-cluster"
+
+
+def test_scheduler_chain_all_unset_falls_back_to_greedy():
+    result = _run_with_scheduler_chain(
+        options_scheduler=None,
+        recipe_scheduler=None,
+        cluster_scheduler=None,
+    )
+    # RunResult.scheduler stamps "greedy" when effective_scheduler is falsy.
+    assert result.scheduler == "greedy"
