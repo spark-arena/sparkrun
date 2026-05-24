@@ -23,6 +23,7 @@ from sparkrun.core.cluster_status import ClusterStatus, RunningWorkload
 from sparkrun.core.hardware import AcceleratorSpec, HostHardware
 from sparkrun.orchestration.executors._base import (
     LABEL_CLUSTER_ID,
+    LABEL_INTENT_ID,
     LABEL_RANK,
     LABEL_RECIPE,
     LABEL_RUNTIME,
@@ -46,22 +47,39 @@ from sparkrun.orchestration.ssh import RemoteResult
 # --------------------------------------------------------------------------
 
 
-def test_workload_labels_minimal_has_cluster_id_only():
-    labels = Executor.workload_labels("sparkrun_abc123abc123")
-    assert labels == {LABEL_CLUSTER_ID: "sparkrun_abc123abc123"}
+def test_workload_labels_minimal_has_cluster_id_and_intent():
+    """The intent_id is auto-derived from the cluster_id when not provided.
+
+    Callers that hand in a canonical
+    ``sparkrun_<intent>_<placement_token>`` cluster_id always get
+    ``sparkrun.intent_id`` populated for free; this is the discovery
+    surface load-aware schedulers rely on at stop time.
+    """
+    labels = Executor.workload_labels("sparkrun_abc123abc123abc1_def456abcdef")
+    assert labels == {
+        LABEL_CLUSTER_ID: "sparkrun_abc123abc123abc1_def456abcdef",
+        LABEL_INTENT_ID: "abc123abc123abc1",
+    }
 
 
 def test_workload_labels_full_set():
     labels = Executor.workload_labels(
-        "sparkrun_abc123abc123",
+        "sparkrun_abc123abc123abc1_def456abcdef",
         recipe_name="@arena/qwen3-1.7b-vllm",
         runtime_name="vllm",
         rank=3,
     )
-    assert labels[LABEL_CLUSTER_ID] == "sparkrun_abc123abc123"
+    assert labels[LABEL_CLUSTER_ID] == "sparkrun_abc123abc123abc1_def456abcdef"
+    assert labels[LABEL_INTENT_ID] == "abc123abc123abc1"
     assert labels[LABEL_RECIPE] == "@arena/qwen3-1.7b-vllm"
     assert labels[LABEL_RUNTIME] == "vllm"
     assert labels[LABEL_RANK] == "3"
+
+
+def test_workload_labels_explicit_intent_id():
+    """Explicit intent_id wins over cluster_id-derived value."""
+    labels = Executor.workload_labels("sparkrun_unrecognized_form", intent_id="abc123abc123")
+    assert labels[LABEL_INTENT_ID] == "abc123abc123"
 
 
 def test_workload_labels_rank_zero_emitted():
@@ -141,12 +159,12 @@ def test_parse_docker_ps_empty_output():
 
 
 def test_parse_docker_ps_solo_container():
-    stdout = _docker_ps_line("sparkrun_abc123abc123_solo", container_id="cid-1")
+    stdout = _docker_ps_line("sparkrun_abc123abc123abc1_def456abcdef_solo", container_id="cid-1")
     workloads, used = _parse_docker_ps_output(stdout, "host-a")
     assert used == 1
     assert len(workloads) == 1
     w = workloads[0]
-    assert w.cluster_id == "sparkrun_abc123abc123"
+    assert w.cluster_id == "sparkrun_abc123abc123abc1_def456abcdef"
     assert w.ranks_on_host == 1
     assert "cid-1" in w.container_ids
 
@@ -155,8 +173,8 @@ def test_parse_docker_ps_multi_rank_aggregates():
     """Two ranks of the same cluster on one host = one workload with ranks_on_host=2."""
     stdout = "\n".join(
         [
-            _docker_ps_line("sparkrun_abc123abc123_node_0", container_id="c0"),
-            _docker_ps_line("sparkrun_abc123abc123_node_1", container_id="c1"),
+            _docker_ps_line("sparkrun_abc123abc123abc1_def456abcdef_node_0", container_id="c0"),
+            _docker_ps_line("sparkrun_abc123abc123abc1_def456abcdef_node_1", container_id="c1"),
         ]
     )
     workloads, used = _parse_docker_ps_output(stdout, "host-a")
@@ -169,32 +187,32 @@ def test_parse_docker_ps_multi_rank_aggregates():
 def test_parse_docker_ps_distinct_clusters_kept_separate():
     stdout = "\n".join(
         [
-            _docker_ps_line("sparkrun_aaa111aaa111_solo"),
-            _docker_ps_line("sparkrun_bbb222bbb222_solo"),
+            _docker_ps_line("sparkrun_aaa111aaa111aaa1_aaa222aaa222_solo"),
+            _docker_ps_line("sparkrun_bbb222bbb222bbb2_bbb333bbb333_solo"),
         ]
     )
     workloads, used = _parse_docker_ps_output(stdout, "host-a")
     assert used == 2
     cluster_ids = {w.cluster_id for w in workloads}
-    assert cluster_ids == {"sparkrun_aaa111aaa111", "sparkrun_bbb222bbb222"}
+    assert cluster_ids == {"sparkrun_aaa111aaa111aaa1_aaa222aaa222", "sparkrun_bbb222bbb222bbb2_bbb333bbb333"}
 
 
 def test_parse_docker_ps_ignores_non_sparkrun_names():
     stdout = "\n".join(
         [
             _docker_ps_line("my-postgres", container_id="pg"),
-            _docker_ps_line("sparkrun_abc123abc123_solo", container_id="sr"),
+            _docker_ps_line("sparkrun_abc123abc123abc1_def456abcdef_solo", container_id="sr"),
             _docker_ps_line("some-other-container"),
         ]
     )
     workloads, used = _parse_docker_ps_output(stdout, "host-a")
     assert used == 1
-    assert workloads[0].cluster_id == "sparkrun_abc123abc123"
+    assert workloads[0].cluster_id == "sparkrun_abc123abc123abc1_def456abcdef"
 
 
 def test_parse_docker_ps_labels_populate_recipe_and_runtime():
     stdout = _docker_ps_line(
-        "sparkrun_abc123abc123_solo",
+        "sparkrun_abc123abc123abc1_def456abcdef_solo",
         labels="%s=@arena/qwen3-vllm,%s=vllm" % (LABEL_RECIPE, LABEL_RUNTIME),
     )
     workloads, _ = _parse_docker_ps_output(stdout, "host-a")
@@ -205,7 +223,7 @@ def test_parse_docker_ps_labels_populate_recipe_and_runtime():
 def test_parse_docker_ps_labels_rank_override():
     """When sparkrun.rank label is present, it overrides the name-derived rank."""
     stdout = _docker_ps_line(
-        "sparkrun_abc123abc123_node_5",
+        "sparkrun_abc123abc123abc1_def456abcdef_node_5",
         labels="%s=7" % LABEL_RANK,
     )
     workloads, _ = _parse_docker_ps_output(stdout, "host-a")
@@ -217,7 +235,7 @@ def test_parse_docker_ps_ignores_non_json_lines():
     stdout = "\n".join(
         [
             "this is not json",
-            _docker_ps_line("sparkrun_abc123abc123_solo"),
+            _docker_ps_line("sparkrun_abc123abc123abc1_def456abcdef_solo"),
             "",
         ]
     )
@@ -238,8 +256,8 @@ def _mock_remote_results(per_host_stdout: dict[str, str], returncode: int = 0) -
 def test_docker_query_status_two_hosts_one_solo_each():
     executor = DockerExecutor()
     per_host = {
-        "host-a": _docker_ps_line("sparkrun_aaa111aaa111_solo"),
-        "host-b": _docker_ps_line("sparkrun_bbb222bbb222_solo"),
+        "host-a": _docker_ps_line("sparkrun_aaa111aaa111aaa1_aaa222aaa222_solo"),
+        "host-b": _docker_ps_line("sparkrun_bbb222bbb222bbb2_bbb333bbb333_solo"),
     }
     with patch(
         "sparkrun.orchestration.ssh.run_remote_scripts_parallel",
@@ -260,7 +278,7 @@ def test_docker_query_status_two_hosts_one_solo_each():
 def test_docker_query_status_unreachable_host_is_skipped():
     executor = DockerExecutor()
     results = [
-        RemoteResult(host="host-a", returncode=0, stdout=_docker_ps_line("sparkrun_aaaaaaaaaaaa_solo"), stderr=""),
+        RemoteResult(host="host-a", returncode=0, stdout=_docker_ps_line("sparkrun_aaaaaaaaaaaaaaaa_aaaaaaaaaaaa_solo"), stderr=""),
         RemoteResult(host="host-down", returncode=-1, stdout="", stderr="ssh: unreachable"),
     ]
     with patch(
@@ -279,8 +297,8 @@ def test_docker_query_status_respects_host_hardware_capacity():
     h200 = HostHardware(accelerators=[AcceleratorSpec(vendor="nvidia", model="h200", count=4, memory_gb=141.0)])
     stdout = "\n".join(
         [
-            _docker_ps_line("sparkrun_aaaaaaaaaaaa_node_0"),
-            _docker_ps_line("sparkrun_aaaaaaaaaaaa_node_1"),
+            _docker_ps_line("sparkrun_aaaaaaaaaaaaaaaa_aaaaaaaaaaaa_node_0"),
+            _docker_ps_line("sparkrun_aaaaaaaaaaaaaaaa_aaaaaaaaaaaa_node_1"),
         ]
     )
     with patch(
@@ -314,15 +332,15 @@ def test_parse_local_pidfile_output_empty():
 
 
 def test_parse_local_pidfile_output_single():
-    stdout = "sparkrun_abc123abc123_solo\t12345\n"
+    stdout = "sparkrun_abc123abc123abc1_def456abcdef_solo\t12345\n"
     workloads, used = _parse_local_pidfile_output(stdout)
     assert used == 1
-    assert workloads[0].cluster_id == "sparkrun_abc123abc123"
+    assert workloads[0].cluster_id == "sparkrun_abc123abc123abc1_def456abcdef"
     assert workloads[0].ranks_on_host == 1
 
 
 def test_parse_local_pidfile_output_multi_rank():
-    stdout = "sparkrun_abc123abc123_node_0\t100\nsparkrun_abc123abc123_node_1\t200\n"
+    stdout = "sparkrun_abc123abc123abc1_def456abcdef_node_0\t100\nsparkrun_abc123abc123abc1_def456abcdef_node_1\t200\n"
     workloads, used = _parse_local_pidfile_output(stdout)
     assert used == 2
     assert len(workloads) == 1
@@ -330,17 +348,17 @@ def test_parse_local_pidfile_output_multi_rank():
 
 
 def test_parse_local_pidfile_output_ignores_non_sparkrun():
-    stdout = "redis-server\t1\nsparkrun_abcabcabcabc_solo\t2\n"
+    stdout = "redis-server\t1\nsparkrun_abcabcabcabcabca_bcabcabcabca_solo\t2\n"
     workloads, used = _parse_local_pidfile_output(stdout)
     assert used == 1
-    assert workloads[0].cluster_id == "sparkrun_abcabcabcabc"
+    assert workloads[0].cluster_id == "sparkrun_abcabcabcabcabca_bcabcabcabca"
 
 
 def test_local_query_status_runs_ssh_script():
     executor = LocalExecutor()
     with patch(
         "sparkrun.orchestration.ssh.run_remote_scripts_parallel",
-        return_value=_mock_remote_results({"host-a": "sparkrun_abcdef012345_solo\t999\n"}),
+        return_value=_mock_remote_results({"host-a": "sparkrun_abcdef012345abcd_ef0123456789_solo\t999\n"}),
     ) as mock_ssh:
         status = executor.query_status(["host-a"])
     assert mock_ssh.called

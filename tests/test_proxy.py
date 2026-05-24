@@ -32,7 +32,7 @@ def jobs_dir(tmp_path: Path) -> Path:
 def sample_job_meta() -> dict[str, Any]:
     """A sample job metadata dict."""
     return {
-        "cluster_id": "sparkrun_abc123",
+        "cluster_id": "sparkrun_bbbbbbbbbbbbbbb1_bbbbbbbbbbb1",
         "recipe": "qwen3-1.7b-vllm",
         "model": "Qwen/Qwen3-1.7B",
         "runtime": "vllm",
@@ -46,7 +46,7 @@ def sample_job_meta() -> dict[str, Any]:
 def sample_job_meta_with_served_name() -> dict[str, Any]:
     """A sample job metadata with served_model_name."""
     return {
-        "cluster_id": "sparkrun_def456",
+        "cluster_id": "sparkrun_bbbbbbbbbbbbbbb2_bbbbbbbbbbb2",
         "recipe": "qwen3-custom",
         "model": "Qwen/Qwen3-1.7B",
         "runtime": "vllm",
@@ -97,147 +97,147 @@ def _make_recipe(name="test", model="Qwen/Qwen3-1.7B", runtime="vllm", defaults=
 
 
 # =====================================================================
-# Tests: generate_cluster_id with port/served_model_name
+# Tests: derive_cluster_id with port/served_model_name
 # =====================================================================
 
 
 class TestGenerateClusterId:
-    """Test generate_cluster_id() with port and served_model_name."""
+    """Test derive_cluster_id() with port and served_model_name."""
 
     def test_backward_compat_no_overrides(self):
         """Omitting overrides produces same hash as original behavior."""
-        from sparkrun.orchestration.job_metadata import generate_cluster_id
+        from sparkrun.orchestration.job_metadata import derive_cluster_id
 
         recipe = _make_recipe()
         hosts = ["10.0.0.1", "10.0.0.2"]
 
         # No overrides, no defaults with port/served_name
-        id1 = generate_cluster_id(recipe, hosts)
-        id2 = generate_cluster_id(recipe, hosts, overrides=None)
-        id3 = generate_cluster_id(recipe, hosts, overrides={})
+        id1 = derive_cluster_id(recipe, hosts)
+        id2 = derive_cluster_id(recipe, hosts, overrides=None)
+        id3 = derive_cluster_id(recipe, hosts, overrides={})
         assert id1 == id2 == id3
 
     def test_different_ports_different_ids(self):
         """Same model on different ports produces different IDs."""
-        from sparkrun.orchestration.job_metadata import generate_cluster_id
+        from sparkrun.orchestration.job_metadata import derive_cluster_id
 
         recipe = _make_recipe()
         hosts = ["10.0.0.1"]
 
-        id_8000 = generate_cluster_id(recipe, hosts, overrides={"port": 8000})
-        id_9000 = generate_cluster_id(recipe, hosts, overrides={"port": 9000})
+        id_8000 = derive_cluster_id(recipe, hosts, overrides={"port": 8000})
+        id_9000 = derive_cluster_id(recipe, hosts, overrides={"port": 9000})
         assert id_8000 != id_9000
 
     def test_different_served_names_different_ids(self):
         """Same model with different served names produces different IDs."""
-        from sparkrun.orchestration.job_metadata import generate_cluster_id
+        from sparkrun.orchestration.job_metadata import derive_cluster_id
 
         recipe = _make_recipe()
         hosts = ["10.0.0.1"]
 
-        id_a = generate_cluster_id(recipe, hosts, overrides={"served_model_name": "model-a"})
-        id_b = generate_cluster_id(recipe, hosts, overrides={"served_model_name": "model-b"})
+        id_a = derive_cluster_id(recipe, hosts, overrides={"served_model_name": "model-a"})
+        id_b = derive_cluster_id(recipe, hosts, overrides={"served_model_name": "model-b"})
         assert id_a != id_b
 
     def test_port_from_recipe_defaults(self):
         """Port from recipe defaults is included in hash."""
-        from sparkrun.orchestration.job_metadata import generate_cluster_id
+        from sparkrun.orchestration.job_metadata import derive_cluster_id
 
         recipe_with_port = _make_recipe(defaults={"port": 8080})
         recipe_no_port = _make_recipe()
         hosts = ["10.0.0.1"]
 
-        id_with = generate_cluster_id(recipe_with_port, hosts)
-        id_without = generate_cluster_id(recipe_no_port, hosts)
+        id_with = derive_cluster_id(recipe_with_port, hosts)
+        id_without = derive_cluster_id(recipe_no_port, hosts)
         assert id_with != id_without
 
     def test_override_takes_precedence_over_default(self):
         """Override port takes precedence over recipe default."""
-        from sparkrun.orchestration.job_metadata import generate_cluster_id
+        from sparkrun.orchestration.job_metadata import derive_cluster_id
 
         recipe = _make_recipe(defaults={"port": 8000})
         hosts = ["10.0.0.1"]
 
-        id_default = generate_cluster_id(recipe, hosts)
-        id_override = generate_cluster_id(recipe, hosts, overrides={"port": 9000})
+        id_default = derive_cluster_id(recipe, hosts)
+        id_override = derive_cluster_id(recipe, hosts, overrides={"port": 9000})
         assert id_default != id_override
 
     def test_same_override_matches_default(self):
         """When override equals default, ID matches no-override case."""
-        from sparkrun.orchestration.job_metadata import generate_cluster_id
+        from sparkrun.orchestration.job_metadata import derive_cluster_id
 
         recipe = _make_recipe(defaults={"port": 8000})
         hosts = ["10.0.0.1"]
 
-        id_default = generate_cluster_id(recipe, hosts)
-        id_same = generate_cluster_id(recipe, hosts, overrides={"port": 8000})
+        id_default = derive_cluster_id(recipe, hosts)
+        id_same = derive_cluster_id(recipe, hosts, overrides={"port": 8000})
         assert id_default == id_same
 
     def test_tp1_does_not_change_id(self):
         """tp=1 (default) should not change the cluster ID."""
-        from sparkrun.orchestration.job_metadata import generate_cluster_id
+        from sparkrun.orchestration.job_metadata import derive_cluster_id
 
         recipe = _make_recipe()
         hosts = ["10.0.0.1"]
 
-        id_no_tp = generate_cluster_id(recipe, hosts)
-        id_tp1 = generate_cluster_id(recipe, hosts, overrides={"tensor_parallel": 1})
+        id_no_tp = derive_cluster_id(recipe, hosts)
+        id_tp1 = derive_cluster_id(recipe, hosts, overrides={"tensor_parallel": 1})
         assert id_no_tp == id_tp1
 
     def test_different_tp_different_ids(self):
         """Different non-default TP values produce different IDs."""
-        from sparkrun.orchestration.job_metadata import generate_cluster_id
+        from sparkrun.orchestration.job_metadata import derive_cluster_id
 
         recipe = _make_recipe()
         hosts = ["10.0.0.1"]
 
-        id_tp2 = generate_cluster_id(recipe, hosts, overrides={"tensor_parallel": 2})
-        id_tp4 = generate_cluster_id(recipe, hosts, overrides={"tensor_parallel": 4})
+        id_tp2 = derive_cluster_id(recipe, hosts, overrides={"tensor_parallel": 2})
+        id_tp4 = derive_cluster_id(recipe, hosts, overrides={"tensor_parallel": 4})
         assert id_tp2 != id_tp4
 
     def test_tp_changes_id_vs_default(self):
         """Non-default TP should produce different ID than no TP."""
-        from sparkrun.orchestration.job_metadata import generate_cluster_id
+        from sparkrun.orchestration.job_metadata import derive_cluster_id
 
         recipe = _make_recipe()
         hosts = ["10.0.0.1"]
 
-        id_default = generate_cluster_id(recipe, hosts)
-        id_tp2 = generate_cluster_id(recipe, hosts, overrides={"tensor_parallel": 2})
+        id_default = derive_cluster_id(recipe, hosts)
+        id_tp2 = derive_cluster_id(recipe, hosts, overrides={"tensor_parallel": 2})
         assert id_default != id_tp2
 
     def test_pp_changes_id(self):
         """Non-default PP should produce different ID than no PP."""
-        from sparkrun.orchestration.job_metadata import generate_cluster_id
+        from sparkrun.orchestration.job_metadata import derive_cluster_id
 
         recipe = _make_recipe()
         hosts = ["10.0.0.1"]
 
-        id_default = generate_cluster_id(recipe, hosts)
-        id_pp2 = generate_cluster_id(recipe, hosts, overrides={"pipeline_parallel": 2})
+        id_default = derive_cluster_id(recipe, hosts)
+        id_pp2 = derive_cluster_id(recipe, hosts, overrides={"pipeline_parallel": 2})
         assert id_default != id_pp2
 
     def test_pp1_does_not_change_id(self):
         """pp=1 (default) should not change the cluster ID."""
-        from sparkrun.orchestration.job_metadata import generate_cluster_id
+        from sparkrun.orchestration.job_metadata import derive_cluster_id
 
         recipe = _make_recipe()
         hosts = ["10.0.0.1"]
 
-        id_no_pp = generate_cluster_id(recipe, hosts)
-        id_pp1 = generate_cluster_id(recipe, hosts, overrides={"pipeline_parallel": 1})
+        id_no_pp = derive_cluster_id(recipe, hosts)
+        id_pp1 = derive_cluster_id(recipe, hosts, overrides={"pipeline_parallel": 1})
         assert id_no_pp == id_pp1
 
     def test_tp_and_pp_from_defaults(self):
         """TP and PP from recipe defaults should affect cluster ID."""
-        from sparkrun.orchestration.job_metadata import generate_cluster_id
+        from sparkrun.orchestration.job_metadata import derive_cluster_id
 
         recipe_plain = _make_recipe()
         recipe_parallel = _make_recipe(defaults={"tensor_parallel": 2, "pipeline_parallel": 2})
         hosts = ["10.0.0.1"]
 
-        id_plain = generate_cluster_id(recipe_plain, hosts)
-        id_parallel = generate_cluster_id(recipe_parallel, hosts)
+        id_plain = derive_cluster_id(recipe_plain, hosts)
+        id_parallel = derive_cluster_id(recipe_parallel, hosts)
         assert id_plain != id_parallel
 
 
@@ -255,14 +255,14 @@ class TestSaveJobMetadata:
 
         recipe = _make_recipe()
         save_job_metadata(
-            "sparkrun_test123",
+            "sparkrun_aaaaaaaaaaaaaaa1_aaaaaaaaaaa1",
             recipe,
             ["10.0.0.1"],
             overrides={"port": 9000},
             cache_dir=str(tmp_path),
         )
 
-        meta = load_job_metadata("sparkrun_test123", cache_dir=str(tmp_path))
+        meta = load_job_metadata("sparkrun_aaaaaaaaaaaaaaa1_aaaaaaaaaaa1", cache_dir=str(tmp_path))
         assert meta is not None
         assert meta["port"] == 9000
 
@@ -272,14 +272,14 @@ class TestSaveJobMetadata:
 
         recipe = _make_recipe()
         save_job_metadata(
-            "sparkrun_test456",
+            "sparkrun_aaaaaaaaaaaaaaa2_aaaaaaaaaaa2",
             recipe,
             ["10.0.0.1"],
             overrides={"served_model_name": "my-model"},
             cache_dir=str(tmp_path),
         )
 
-        meta = load_job_metadata("sparkrun_test456", cache_dir=str(tmp_path))
+        meta = load_job_metadata("sparkrun_aaaaaaaaaaaaaaa2_aaaaaaaaaaa2", cache_dir=str(tmp_path))
         assert meta is not None
         assert meta["served_model_name"] == "my-model"
 
@@ -289,13 +289,13 @@ class TestSaveJobMetadata:
 
         recipe = _make_recipe(defaults={"port": 8080})
         save_job_metadata(
-            "sparkrun_test789",
+            "sparkrun_aaaaaaaaaaaaaaa3_aaaaaaaaaaa3",
             recipe,
             ["10.0.0.1"],
             cache_dir=str(tmp_path),
         )
 
-        meta = load_job_metadata("sparkrun_test789", cache_dir=str(tmp_path))
+        meta = load_job_metadata("sparkrun_aaaaaaaaaaaaaaa3_aaaaaaaaaaa3", cache_dir=str(tmp_path))
         assert meta is not None
         assert meta["port"] == 8080
 
@@ -305,13 +305,13 @@ class TestSaveJobMetadata:
 
         recipe = _make_recipe()
         save_job_metadata(
-            "sparkrun_noport",
+            "sparkrun_aaaaaaaaaaaaaaa4_aaaaaaaaaaa4",
             recipe,
             ["10.0.0.1"],
             cache_dir=str(tmp_path),
         )
 
-        meta = load_job_metadata("sparkrun_noport", cache_dir=str(tmp_path))
+        meta = load_job_metadata("sparkrun_aaaaaaaaaaaaaaa4_aaaaaaaaaaa4", cache_dir=str(tmp_path))
         assert meta is not None
         assert "port" not in meta
         assert "served_model_name" not in meta
@@ -327,13 +327,13 @@ class TestSaveJobMetadata:
                 return recipe.defaults.get("api_key")
 
         save_job_metadata(
-            "sparkrun_authkey",
+            "sparkrun_aaaaaaaaaaaaaaa5_aaaaaaaaaaa5",
             recipe,
             ["10.0.0.1"],
             cache_dir=str(tmp_path),
             runtime=_Rt(),
         )
-        meta = load_job_metadata("sparkrun_authkey", cache_dir=str(tmp_path))
+        meta = load_job_metadata("sparkrun_aaaaaaaaaaaaaaa5_aaaaaaaaaaa5", cache_dir=str(tmp_path))
         assert meta is not None
         assert meta["api_key"] == "sk-abc"
 
@@ -348,13 +348,13 @@ class TestSaveJobMetadata:
                 return None
 
         save_job_metadata(
-            "sparkrun_nokey",
+            "sparkrun_aaaaaaaaaaaaaaa6_aaaaaaaaaaa6",
             recipe,
             ["10.0.0.1"],
             cache_dir=str(tmp_path),
             runtime=_Rt(),
         )
-        meta = load_job_metadata("sparkrun_nokey", cache_dir=str(tmp_path))
+        meta = load_job_metadata("sparkrun_aaaaaaaaaaaaaaa6_aaaaaaaaaaa6", cache_dir=str(tmp_path))
         assert meta is not None
         assert "api_key" not in meta
 
@@ -364,12 +364,12 @@ class TestSaveJobMetadata:
 
         recipe = _make_recipe(defaults={"api_key": "sk-ignored"})
         save_job_metadata(
-            "sparkrun_noruntime",
+            "sparkrun_aaaaaaaaaaaaaaa7_aaaaaaaaaaa7",
             recipe,
             ["10.0.0.1"],
             cache_dir=str(tmp_path),
         )
-        meta = load_job_metadata("sparkrun_noruntime", cache_dir=str(tmp_path))
+        meta = load_job_metadata("sparkrun_aaaaaaaaaaaaaaa7_aaaaaaaaaaa7", cache_dir=str(tmp_path))
         assert meta is not None
         assert "api_key" not in meta
 
@@ -409,7 +409,7 @@ class TestDiscovery:
         from sparkrun.proxy.discovery import discover_endpoints
 
         meta = {
-            "cluster_id": "sparkrun_noport",
+            "cluster_id": "sparkrun_aaaaaaaaaaaaaaa4_aaaaaaaaaaa4",
             "recipe": "test",
             "model": "test/model",
             "runtime": "vllm",
@@ -708,7 +708,7 @@ class TestDiscovery:
 
         # Save metadata for the running cluster
         meta = {
-            "cluster_id": "sparkrun_abc123",
+            "cluster_id": "sparkrun_bbbbbbbbbbbbbbb1_bbbbbbbbbbb1",
             "recipe": "qwen3.5-0.8b-bf16-sglang",
             "model": "Qwen/Qwen3.5-0.8B",
             "runtime": "sglang",
@@ -737,8 +737,8 @@ class TestDiscovery:
         # Mock query_cluster_status to return only the running cluster
         mock_result = ClusterStatusResult(
             groups={
-                "sparkrun_abc123": ClusterGroup(
-                    cluster_id="sparkrun_abc123",
+                "sparkrun_bbbbbbbbbbbbbbb1_bbbbbbbbbbb1": ClusterGroup(
+                    cluster_id="sparkrun_bbbbbbbbbbbbbbb1_bbbbbbbbbbb1",
                     members=[
                         ("10.24.11.13", "node_0", "Up 5 minutes", "sglang:latest"),
                         ("10.24.11.14", "node_1", "Up 5 minutes", "sglang:latest"),
@@ -768,7 +768,7 @@ class TestDiscovery:
         # Only the actually-running cluster should appear
         assert len(endpoints) == 1
         ep = endpoints[0]
-        assert ep.cluster_id == "sparkrun_abc123"
+        assert ep.cluster_id == "sparkrun_bbbbbbbbbbbbbbb1_bbbbbbbbbbb1"
         assert ep.recipe_name == "qwen3.5-0.8b-bf16-sglang"
         assert ep.runtime == "sglang"
         assert ep.host == "10.24.11.13"
@@ -1509,7 +1509,7 @@ class TestLaunchInferenceAutoPort:
         with (
             patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={}),
             patch("sparkrun.orchestration.primitives.find_available_port", return_value=8000) as mock_fap,
-            patch("sparkrun.orchestration.job_metadata.generate_cluster_id", return_value="test_id"),
+            patch("sparkrun.orchestration.job_metadata.derive_cluster_id", return_value="test_id"),
             patch("sparkrun.orchestration.job_metadata.save_job_metadata"),
         ):
             result = launch_inference(
@@ -1535,7 +1535,7 @@ class TestLaunchInferenceAutoPort:
         with (
             patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={}),
             patch("sparkrun.orchestration.primitives.find_available_port", return_value=8002),
-            patch("sparkrun.orchestration.job_metadata.generate_cluster_id", return_value="test_id"),
+            patch("sparkrun.orchestration.job_metadata.derive_cluster_id", return_value="test_id"),
             patch("sparkrun.orchestration.job_metadata.save_job_metadata"),
         ):
             result = launch_inference(
@@ -1561,7 +1561,7 @@ class TestLaunchInferenceAutoPort:
         with (
             patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={}),
             patch("sparkrun.orchestration.primitives.find_available_port", return_value=9000) as mock_fap,
-            patch("sparkrun.orchestration.job_metadata.generate_cluster_id", return_value="test_id"),
+            patch("sparkrun.orchestration.job_metadata.derive_cluster_id", return_value="test_id"),
             patch("sparkrun.orchestration.job_metadata.save_job_metadata"),
         ):
             result = launch_inference(
@@ -1587,7 +1587,7 @@ class TestLaunchInferenceAutoPort:
 
         with (
             patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={}),
-            patch("sparkrun.orchestration.job_metadata.generate_cluster_id", return_value="test_id"),
+            patch("sparkrun.orchestration.job_metadata.derive_cluster_id", return_value="test_id"),
             patch("sparkrun.orchestration.job_metadata.save_job_metadata"),
         ):
             result = launch_inference(
@@ -1612,7 +1612,7 @@ class TestLaunchInferenceAutoPort:
         with (
             patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={}),
             patch("sparkrun.orchestration.primitives.find_available_port", return_value=8000) as mock_fap,
-            patch("sparkrun.orchestration.job_metadata.generate_cluster_id", return_value="test_id"),
+            patch("sparkrun.orchestration.job_metadata.derive_cluster_id", return_value="test_id"),
             patch("sparkrun.orchestration.job_metadata.save_job_metadata"),
         ):
             launch_inference(

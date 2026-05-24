@@ -93,8 +93,29 @@ def _job_info_from_file(meta_path: Path) -> JobInfo | None:
     except (TypeError, ValueError):
         started_at = None
 
+    # Decompose the cluster_id when the metadata didn't already record
+    # intent_id / placement_token (e.g. a job metadata file written by
+    # an older tool that doesn't persist these keys).  Non-canonical
+    # cluster_ids surface as ``None`` on both fields — a data-quality
+    # signal that callers can detect via :class:`JobInfo`.
+    intent_id = data.get("intent_id")
+    placement_token = data.get("placement_token")
+    if intent_id is None or placement_token is None:
+        try:
+            from sparkrun.orchestration.job_metadata import parse_cluster_id
+
+            parsed_intent, parsed_token = parse_cluster_id(str(cluster_id))
+            if intent_id is None:
+                intent_id = parsed_intent
+            if placement_token is None:
+                placement_token = parsed_token
+        except ValueError:
+            pass
+
     return JobInfo(
         cluster_id=str(cluster_id),
+        intent_id=intent_id,
+        placement_token=placement_token,
         recipe=data.get("recipe"),
         runtime=data.get("runtime"),
         hosts=hosts,

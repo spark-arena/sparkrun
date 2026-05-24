@@ -3,12 +3,35 @@
 Persists cluster_id → recipe mapping in ``~/.cache/sparkrun/jobs/`` so
 ``cluster status`` and other commands can display recipe info for
 running clusters.
+
+Identifier model
+----------------
+
+A *cluster_id* identifies a single workload execution and is the stable
+reference returned by ``sparkrun.api.run``. It is split into two pieces
+so load-aware schedulers (whose placement decisions are not reproducible
+from CLI inputs alone) can still recover workloads at stop / logs time:
+
+* ``intent_id`` — deterministic :data:`INTENT_ID_LEN`-char hex derived
+  from ``recipe.runtime`` + ``recipe.model`` + port + served-model-name +
+  every non-default parallelism dimension.  **Hosts are not hashed**, so
+  the same recipe + parallelism + port always produces the same
+  ``intent_id`` regardless of which hosts the scheduler picked.
+* ``placement_token`` — :data:`PLACEMENT_TOKEN_LEN`-char hex
+  (``secrets.token_hex(PLACEMENT_TOKEN_BYTES)``) generated at launch
+  time to disambiguate multiple parallel deployments of the same
+  intent.
+
+The composite ``cluster_id = "sparkrun_" + intent_id + "_" + placement_token``
+has two ``_`` separators (after ``sparkrun`` and after intent_id).
 """
 
 from __future__ import annotations
 
 import hashlib
 import logging
+import re
+import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TYPE_CHECKING, Optional
@@ -83,7 +106,7 @@ def check_job_running(
     if cluster_id is None:
         if recipe is None or hosts is None:
             raise ValueError("Either cluster_id or both recipe and hosts must be provided")
-        cluster_id = generate_cluster_id(recipe, hosts, overrides=overrides)
+        cluster_id = derive_cluster_id(recipe, hosts, overrides=overrides)
 
     # Load metadata
     meta = load_job_metadata(cluster_id, cache_dir=cache_dir)
@@ -173,31 +196,45 @@ def _resolve_override(key: str, overrides: dict | None, defaults: dict | None):
     return val
 
 
-# TODO: this might need to be based on host+ranks? we ditched early host trimming --
-#       what implications does that have for deterministic cluster IDs here
-def generate_cluster_id(recipe: "Recipe", hosts: list[str], overrides: dict | None = None) -> str:
-    """Deterministic cluster identifier from recipe, host set, and overrides.
+# Cluster-id format constants.  The composite cluster_id is
+# "sparkrun_<intent_id>_<placement_token>" where intent_id is
+# :data:`INTENT_ID_LEN` hex chars (sha256 prefix) and placement_token is
+# :data:`PLACEMENT_TOKEN_LEN` hex chars
+# (``secrets.token_hex(PLACEMENT_TOKEN_BYTES)``).
+INTENT_ID_LEN = 16
+PLACEMENT_TOKEN_BYTES = 6  # secrets.token_hex(PLACEMENT_TOKEN_BYTES) → PLACEMENT_TOKEN_LEN hex chars
+PLACEMENT_TOKEN_LEN = PLACEMENT_TOKEN_BYTES * 2
 
-    Hashes: runtime + model + sorted hosts + port + served_model_name +
-    non-default parallelism (every dimension in
-    :data:`sparkrun.core.parallelism.PARALLELISM_KEYS` — tp, pp, dp, ep, cp).
-    Port, served_model_name, and parallelism are resolved from
-    overrides -> recipe defaults so that two instances of the same model
-    on different ports or parallelism configs get distinct IDs.
+_INTENT_ID_RE = re.compile(r"^[0-9a-f]{%d}$" % INTENT_ID_LEN)
+_PLACEMENT_TOKEN_RE = re.compile(r"^[0-9a-f]{%d}$" % PLACEMENT_TOKEN_LEN)
+_NEW_CLUSTER_ID_RE = re.compile(r"^sparkrun_([0-9a-f]{%d})_([0-9a-f]{%d})$" % (INTENT_ID_LEN, PLACEMENT_TOKEN_LEN))
+
+
+def generate_intent_id(recipe: "Recipe", overrides: dict | None = None) -> str:
+    """Deterministic :data:`INTENT_ID_LEN`-char hex *intent* identifier (no ``sparkrun_`` prefix).
+
+    Hashes ``recipe.runtime`` + ``recipe.model`` + port + served-model-name
+    + every non-default parallelism dimension in
+    :data:`sparkrun.core.parallelism.PARALLELISM_KEYS` (tp, pp, dp, ep,
+    cp).  Hosts are **not** hashed — same recipe + parallelism + port
+    always yields the same intent_id regardless of scheduler placement.
+
+    Use :func:`generate_cluster_id` to compose this with a fresh
+    placement token at launch time.
     """
     from sparkrun.core.parallelism import PARALLELISM_KEYS
 
     port = _resolve_override("port", overrides, recipe.defaults)
     served_name = _resolve_override("served_model_name", overrides, recipe.defaults)
 
-    parts = [recipe.runtime, recipe.model] + sorted(hosts)
+    parts: list[str] = [recipe.runtime, recipe.model]
     if port is not None:
         parts.append("port=%s" % port)
     if served_name is not None:
         parts.append("name=%s" % served_name)
 
     # Include every non-default parallelism dimension in the hash so
-    # configs that differ only in dp/ep/cp also get distinct cluster IDs.
+    # configs that differ only in dp/ep/cp also get distinct intent IDs.
     # Iterating PARALLELISM_KEYS keeps this in lockstep with
     # save_job_metadata (single source of truth for parallelism dims).
     for long_key, short_key in PARALLELISM_KEYS:
@@ -206,8 +243,78 @@ def generate_cluster_id(recipe: "Recipe", hosts: list[str], overrides: dict | No
             parts.append("%s=%s" % (short_key, int(val)))
 
     key = "\0".join(parts)
-    digest = hashlib.sha256(key.encode()).hexdigest()[:12]
-    return "sparkrun_%s" % digest
+    return hashlib.sha256(key.encode()).hexdigest()[:INTENT_ID_LEN]
+
+
+def generate_placement_token() -> str:
+    """Generate a fresh placement token (:data:`PLACEMENT_TOKEN_LEN`-char hex string).
+
+    Each launch gets its own token so multiple parallel deployments of
+    the same intent on different host sets are distinguishable.  Format
+    is ``secrets.token_hex(PLACEMENT_TOKEN_BYTES)``.
+    """
+    return secrets.token_hex(PLACEMENT_TOKEN_BYTES)
+
+
+def derive_placement_token_from_hosts(hosts: "list[str] | tuple[str, ...]") -> str:
+    """Deterministic placement_token derived from a host set.
+
+    Used by lookup-style call sites (status / stop / logs / ensure)
+    that need a stable cluster_id from a ``(recipe, hosts)`` pair
+    without consulting a launcher.  Hosts are sorted before hashing so
+    ordering does not affect the result.
+    """
+    host_key = "\0".join(sorted(str(h) for h in hosts))
+    return hashlib.sha256(host_key.encode()).hexdigest()[:PLACEMENT_TOKEN_LEN]
+
+
+def derive_cluster_id(recipe: "Recipe", hosts: "list[str] | tuple[str, ...]", overrides: dict | None = None) -> str:
+    """Deterministic cluster_id from ``(recipe, hosts)``.
+
+    Convenience for lookup paths: composes :func:`generate_intent_id`
+    with :func:`derive_placement_token_from_hosts` so callers that need
+    the "same recipe + hosts → same cluster_id" lookup semantics don't
+    have to repeat the derivation themselves.  New launches via
+    :func:`sparkrun.api.run` use :func:`generate_placement_token`
+    instead, so derived and live cluster_ids occupy disjoint token
+    spaces and never collide.
+    """
+    intent_id = generate_intent_id(recipe, overrides=overrides)
+    placement_token = derive_placement_token_from_hosts(hosts)
+    return generate_cluster_id(intent_id, placement_token)
+
+
+def generate_cluster_id(intent_id: str, placement_token: str) -> str:
+    """Compose a sparkrun cluster identifier from *intent_id* and *placement_token*.
+
+    Returns ``"sparkrun_<intent_id>_<placement_token>"``.  Both inputs
+    are validated against :data:`INTENT_ID_LEN` / :data:`PLACEMENT_TOKEN_LEN`;
+    malformed values raise :class:`ValueError`.
+    """
+    if not isinstance(intent_id, str) or not _INTENT_ID_RE.fullmatch(intent_id):
+        raise ValueError("intent_id must be %d hex chars, got %r" % (INTENT_ID_LEN, intent_id))
+    if not isinstance(placement_token, str) or not _PLACEMENT_TOKEN_RE.fullmatch(placement_token):
+        raise ValueError("placement_token must be %d hex chars, got %r" % (PLACEMENT_TOKEN_LEN, placement_token))
+    return "sparkrun_%s_%s" % (intent_id, placement_token)
+
+
+def parse_cluster_id(cluster_id: str) -> tuple[str, str]:
+    """Decompose *cluster_id* into ``(intent_id, placement_token)``.
+
+    Accepts only the canonical
+    ``sparkrun_<intent_id>_<placement_token>`` form (with hex segments
+    of length :data:`INTENT_ID_LEN` / :data:`PLACEMENT_TOKEN_LEN`).
+    Raises :class:`ValueError` for anything else.
+    """
+    m = _NEW_CLUSTER_ID_RE.match(cluster_id)
+    if m:
+        return m.group(1), m.group(2)
+    raise ValueError("Not a sparkrun cluster_id: %r" % cluster_id)
+
+
+def is_cluster_id(cluster_id: str) -> bool:
+    """``True`` when *cluster_id* parses as the canonical sparkrun format."""
+    return _NEW_CLUSTER_ID_RE.fullmatch(cluster_id) is not None
 
 
 def save_job_metadata(
@@ -228,8 +335,9 @@ def save_job_metadata(
 ) -> None:
     """Persist job metadata so ``cluster status`` can display recipe info.
 
-    Writes a small YAML file to ``{cache_dir}/jobs/{hash}.yaml`` where
-    *hash* is the 12-char hex portion of *cluster_id*.
+    Writes a small YAML file to ``{cache_dir}/jobs/{digest}.yaml`` where
+    *digest* is the portion of *cluster_id* after the ``sparkrun_``
+    prefix.
 
     Args:
         backends: Per-host backend bundles resolved by the launcher.
@@ -241,7 +349,7 @@ def save_job_metadata(
     """
     cache_dir = _resolve_cache_dir(cache_dir, sctx)
 
-    digest = cluster_id.removeprefix("sparkrun_")
+    digest = _filename_digest(cluster_id)
     jobs_dir = Path(cache_dir) / "jobs"
     jobs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -255,6 +363,12 @@ def save_job_metadata(
     except Exception:
         _sparkrun_version = "unknown"
 
+    # Decompose cluster_id so callers can index by intent_id /
+    # placement_token without re-parsing.  Any non-canonical cluster_id
+    # is a caller bug; let the :class:`ValueError` from
+    # :func:`parse_cluster_id` propagate.
+    intent_id_meta, placement_token_meta = parse_cluster_id(cluster_id)
+
     meta: dict = {
         "sparkrun_version": _sparkrun_version,
         "cluster_id": cluster_id,
@@ -262,6 +376,8 @@ def save_job_metadata(
         "model": recipe.model,
         "runtime": recipe.runtime,
         "hosts": hosts,
+        "intent_id": intent_id_meta,
+        "placement_token": placement_token_meta,
     }
     if recipe_ref:
         meta["recipe_ref"] = recipe_ref
@@ -357,7 +473,7 @@ def remove_job_metadata(
     is provided) and falls back to :data:`DEFAULT_CACHE_DIR`.
     """
     cache_dir = _resolve_cache_dir(cache_dir, sctx)
-    digest = cluster_id.removeprefix("sparkrun_")
+    digest = _filename_digest(cluster_id)
     meta_path = Path(cache_dir) / "jobs" / f"{digest}.yaml"
     meta_path.unlink(missing_ok=True)
     logger.debug("Removed job metadata %s", meta_path)
@@ -381,7 +497,7 @@ def load_job_metadata(
     a version-mismatch policy can land here later.
     """
     cache_dir = _resolve_cache_dir(cache_dir, sctx)
-    digest = cluster_id.removeprefix("sparkrun_")
+    digest = _filename_digest(cluster_id)
     meta_path = Path(cache_dir) / "jobs" / f"{digest}.yaml"
     if not meta_path.exists():
         return None
@@ -393,6 +509,16 @@ def load_job_metadata(
     except Exception:
         logger.debug("Failed to load job metadata for %s", cluster_id, exc_info=True)
         return None
+
+
+def _filename_digest(cluster_id: str) -> str:
+    """Return the metadata filename stem for *cluster_id*.
+
+    Strips the ``sparkrun_`` prefix when present; otherwise returns
+    *cluster_id* verbatim so caller-supplied bare digests still
+    round-trip.
+    """
+    return cluster_id.removeprefix("sparkrun_")
 
 
 def _resolve_cache_dir(cache_dir: str | None, sctx: "SparkrunContext | None") -> str:

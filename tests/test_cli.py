@@ -4829,7 +4829,19 @@ class TestClusterUserInCLICommands:
         assert captured_kwargs.get("ssh_user") == "labadmin"
 
     def test_stop_recipe_uses_cluster_user(self, runner, cluster_with_user, monkeypatch):
-        """stop <recipe> with --cluster should use the cluster's SSH user."""
+        """stop <recipe> with --cluster should use the cluster's SSH user.
+
+        Under the 0.3 identifier model, ``stop <recipe>`` runs
+        status-driven discovery before invoking cleanup.  We stub
+        ``query_status`` to surface one matching cluster so the path
+        reaches ``cleanup_containers`` where the SSH user assertion
+        lives.  ``generate_intent_id`` is mocked so we don't depend on
+        the specific intent value the recipe would compute (the
+        identity isn't what's under test here — the SSH user is).
+        """
+        from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy, RunningWorkload
+        from sparkrun.orchestration.executors.docker import DockerExecutor
+
         captured_kwargs = {}
 
         def mock_cleanup(host_list, container_names, ssh_kwargs=None, dry_run=False):
@@ -4839,8 +4851,19 @@ class TestClusterUserInCLICommands:
             "sparkrun.orchestration.primitives.cleanup_containers",
             mock_cleanup,
         )
+        monkeypatch.setattr("sparkrun.orchestration.job_metadata.generate_intent_id", lambda *a, **kw: "aabbccdd1122")
         # Prevent real git clones when ensure_initialized sees empty cache
         monkeypatch.setattr("subprocess.run", lambda *a, **kw: mock.Mock(returncode=1, stderr="mocked"))
+
+        fake_cluster_id = "sparkrun_aabbccdd1122_0123456789abcdef"
+
+        def fake_query_status(self, hosts, **kw):
+            return ClusterStatus(
+                hosts=tuple(HostOccupancy(host=h, workloads=(RunningWorkload(cluster_id=fake_cluster_id),)) for h in hosts),
+                executor="docker",
+            )
+
+        monkeypatch.setattr(DockerExecutor, "query_status", fake_query_status)
 
         result = runner.invoke(
             main,
@@ -4851,7 +4874,7 @@ class TestClusterUserInCLICommands:
                 "userlab",
             ],
         )
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         assert captured_kwargs.get("ssh_user") == "labadmin"
 
     def test_logs_uses_cluster_user(self, runner, cluster_with_user, reset_bootstrap, monkeypatch):
@@ -5197,10 +5220,29 @@ class TestStopLogsClusterIdAndOverrides:
         return {"config_root": config_root, "cache_root": cache_root}
 
     def test_stop_with_port_override(self, runner, config_setup, reset_bootstrap):
-        """Verify --port is passed through to generate_cluster_id."""
+        """Verify --port is threaded through to ``generate_intent_id``.
+
+        Under the 0.3 identifier model, ``api.stop(recipe=...)`` derives
+        the intent_id from recipe + overrides (no hosts), then does
+        status-driven discovery to find the matching cluster_id.  We
+        mock ``generate_intent_id`` to capture the overrides passed and
+        stub ``query_status`` so the discovery completes successfully.
+        """
+        from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy, RunningWorkload
+        from sparkrun.orchestration.executors.docker import DockerExecutor
+
+        fake_cid = "sparkrun_aabbccdd1122_0123456789abcdef"
+
+        def fake_query_status(self, hosts, **kw):
+            return ClusterStatus(
+                hosts=tuple(HostOccupancy(host=h, workloads=(RunningWorkload(cluster_id=fake_cid),)) for h in hosts),
+                executor="docker",
+            )
+
         with (
             mock.patch("sparkrun.orchestration.primitives.cleanup_containers"),
-            mock.patch("sparkrun.orchestration.job_metadata.generate_cluster_id", return_value="sparkrun_aabbccdd1122") as mock_gen,
+            mock.patch("sparkrun.orchestration.job_metadata.generate_intent_id", return_value="aabbccdd1122") as mock_gen,
+            mock.patch.object(DockerExecutor, "query_status", fake_query_status),
             mock.patch("subprocess.run", return_value=mock.Mock(returncode=1, stderr="mocked")),
         ):
             result = runner.invoke(
@@ -5214,18 +5256,29 @@ class TestStopLogsClusterIdAndOverrides:
                     "8001",
                 ],
             )
-            assert result.exit_code == 0
-            # generate_cluster_id should have been called with overrides containing port
+            assert result.exit_code == 0, result.output
             call_kwargs = mock_gen.call_args
             overrides = call_kwargs.kwargs.get("overrides") or (call_kwargs[1].get("overrides") if len(call_kwargs) > 1 else None)
             assert overrides is not None
             assert overrides.get("port") == 8001
 
     def test_stop_with_served_model_name(self, runner, config_setup, reset_bootstrap):
-        """Verify --served-model-name is passed through to generate_cluster_id."""
+        """Verify --served-model-name is threaded through to ``generate_intent_id``."""
+        from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy, RunningWorkload
+        from sparkrun.orchestration.executors.docker import DockerExecutor
+
+        fake_cid = "sparkrun_aabbccdd1122_0123456789abcdef"
+
+        def fake_query_status(self, hosts, **kw):
+            return ClusterStatus(
+                hosts=tuple(HostOccupancy(host=h, workloads=(RunningWorkload(cluster_id=fake_cid),)) for h in hosts),
+                executor="docker",
+            )
+
         with (
             mock.patch("sparkrun.orchestration.primitives.cleanup_containers"),
-            mock.patch("sparkrun.orchestration.job_metadata.generate_cluster_id", return_value="sparkrun_aabbccdd1122") as mock_gen,
+            mock.patch("sparkrun.orchestration.job_metadata.generate_intent_id", return_value="aabbccdd1122") as mock_gen,
+            mock.patch.object(DockerExecutor, "query_status", fake_query_status),
             mock.patch("subprocess.run", return_value=mock.Mock(returncode=1, stderr="mocked")),
         ):
             result = runner.invoke(
@@ -5239,7 +5292,7 @@ class TestStopLogsClusterIdAndOverrides:
                     "my-model",
                 ],
             )
-            assert result.exit_code == 0
+            assert result.exit_code == 0, result.output
             call_kwargs = mock_gen.call_args
             overrides = call_kwargs.kwargs.get("overrides") or (call_kwargs[1].get("overrides") if len(call_kwargs) > 1 else None)
             assert overrides is not None
@@ -5273,12 +5326,12 @@ class TestStopLogsClusterIdAndOverrides:
         assert "No job metadata" in result.output
 
     def test_logs_with_port_override(self, runner, config_setup, reset_bootstrap):
-        """Verify --port is passed through to generate_cluster_id in logs."""
+        """Verify --port is passed through to derive_cluster_id in logs."""
         mock_runtime = mock.Mock()
         mock_runtime.follow_logs = mock.Mock()
         with (
             mock.patch("sparkrun.core.bootstrap.get_runtime", return_value=mock_runtime),
-            mock.patch("sparkrun.orchestration.job_metadata.generate_cluster_id", return_value="sparkrun_aabbccdd1122") as mock_gen,
+            mock.patch("sparkrun.orchestration.job_metadata.derive_cluster_id", return_value="sparkrun_aabbccdd1122") as mock_gen,
             mock.patch("subprocess.run", return_value=mock.Mock(returncode=1, stderr="mocked")),
         ):
             result = runner.invoke(

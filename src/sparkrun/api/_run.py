@@ -62,6 +62,12 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunRes
     from sparkrun.core.launcher import launch_inference
     from sparkrun.core.parallelism import extract_parallelism
     from sparkrun.core.scheduler import SchedulingRequest
+    from sparkrun.orchestration.job_metadata import (
+        generate_cluster_id,
+        generate_intent_id,
+        generate_placement_token,
+        parse_cluster_id,
+    )
 
     sctx = resolve_sctx(sctx)
     started_at = time.time()
@@ -124,6 +130,28 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunRes
         host_list = host_list[:1]
         placement = None
 
+    # 3a. Compute intent_id + placement_token; compose cluster_id.
+    # The launcher honours ``cluster_id_override`` so we hand it the
+    # composed cluster_id rather than letting it derive one from
+    # (recipe, hosts).  Per-launch uniqueness via placement_token
+    # ensures load-aware schedulers can place the same intent on
+    # different host sets without identifier collisions.
+    intent_id = generate_intent_id(recipe, options.overrides)
+    placement_token = generate_placement_token()
+    cluster_id_for_launch = options.cluster_id_override or generate_cluster_id(intent_id, placement_token)
+    # Recover intent + token from the override when one was supplied so
+    # the result still carries accurate metadata.
+    if options.cluster_id_override:
+        try:
+            parsed_intent, parsed_token = parse_cluster_id(options.cluster_id_override)
+            intent_id = parsed_intent
+            placement_token = parsed_token
+        except ValueError:
+            # Non-canonical override (e.g. a user-supplied label) — keep
+            # the freshly-computed intent_id but blank the token so
+            # downstream consumers don't surface a fake one.
+            placement_token = ""
+
     # 4. Translate options → launch_inference kwargs.
     launch_kwargs: dict[str, Any] = {
         "recipe": recipe,
@@ -154,7 +182,7 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunRes
         "trust": bool(options.trust),
         "sync_tuning": options.sync_tuning,
         "topology": options.topology,
-        "cluster_id_override": options.cluster_id_override,
+        "cluster_id_override": cluster_id_for_launch,
         "recipe_ref": options.recipe_ref,
     }
 
@@ -182,8 +210,26 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunRes
     if result.runtime_info:
         metadata["runtime_info"] = dict(result.runtime_info)
 
+    # Recover identifier components from the launcher's final cluster_id
+    # in case it differs from the one we composed (e.g. an external
+    # caller passed a non-canonical cluster_id_override through).
+    final_cluster_id = result.cluster_id
+    final_intent_id = intent_id
+    final_placement_token = placement_token
+    try:
+        parsed_intent, parsed_token = parse_cluster_id(final_cluster_id)
+        final_intent_id = parsed_intent
+        final_placement_token = parsed_token
+    except ValueError:
+        # Non-canonical cluster_id (manual override) — keep the values
+        # we computed pre-launch so RunResult still carries something
+        # meaningful.
+        pass
+
     return RunResult(
-        cluster_id=result.cluster_id,
+        cluster_id=final_cluster_id,
+        intent_id=final_intent_id,
+        placement_token=final_placement_token,
         host_list=tuple(result.host_list),
         placement=placement,
         scheduler=options.scheduler or "greedy",

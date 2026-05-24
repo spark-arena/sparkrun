@@ -906,7 +906,7 @@ def cluster_check_job(ctx, target, hosts, hosts_file, cluster_name, tp_override,
         from sparkrun.cli._common import _load_recipe
         from sparkrun.core.parallelism import extract_parallelism
         from sparkrun.core.scheduler import SchedulingRequest
-        from sparkrun.orchestration.job_metadata import generate_cluster_id
+        from sparkrun.orchestration.job_metadata import derive_cluster_id
 
         recipe, _recipe_path, _registry_mgr = _load_recipe(config, target)
         host_list, _ = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, sctx=sctx)
@@ -935,7 +935,7 @@ def cluster_check_job(ctx, target, hosts, hosts_file, cluster_name, tp_override,
                 host_list = list(sched_result.assignment.hosts_used)
 
         # Build overrides for cluster_id generation
-        cid = generate_cluster_id(
+        cid = derive_cluster_id(
             recipe, host_list, overrides=build_cluster_id_overrides(port=port, served_model_name=served_model_name, tp_override=tp_override)
         )
         status = check_job_running(

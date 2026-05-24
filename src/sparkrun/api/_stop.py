@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from sparkrun.api._errors import JobNotFound, SparkrunError
+from sparkrun.api._errors import AmbiguousWorkload, JobNotFound, SparkrunError
 from sparkrun.api._models import StopResult
 
 if TYPE_CHECKING:
@@ -55,7 +55,7 @@ def stop(
     )
     from sparkrun.orchestration.executor import resolve_executor
     from sparkrun.orchestration.job_metadata import (
-        generate_cluster_id,
+        generate_intent_id,
         load_job_metadata,
         remove_job_metadata,
     )
@@ -66,15 +66,30 @@ def stop(
             raise SparkrunError("api.stop requires cluster_id or recipe+hosts")
         cluster_def = resolve_cluster(cluster, hosts, sctx=sctx)
         resolved_recipe = resolve_recipe(recipe, sctx=sctx)
-        cluster_id = generate_cluster_id(resolved_recipe, list(cluster_def.hosts), overrides=overrides)
+        intent_id = generate_intent_id(resolved_recipe, overrides=overrides)
         # Default cache_dir from sctx.config when not explicitly passed.
         if cache_dir is None and sctx is not None:
             try:
                 cache_dir = str(sctx.config.cache_dir)
             except Exception:
                 cache_dir = None
-        meta = load_job_metadata(cluster_id, cache_dir=cache_dir)
         target_hosts = list(cluster_def.hosts)
+
+        # Status-driven discovery: ask the executor what's running on
+        # the supplied hosts and filter for cluster_ids matching the
+        # computed intent.  Load-aware schedulers may have placed the
+        # workload on a different host set than ``hosts`` — that's the
+        # whole point of separating intent from placement.  Here we
+        # accept that the *user's* host scope is the authoritative
+        # discovery range.
+        cluster_id = _discover_cluster_id_by_intent(
+            intent_id,
+            target_hosts,
+            cluster_def=cluster_def,
+            cache_dir=cache_dir,
+            sctx=sctx,
+        )
+        meta = load_job_metadata(cluster_id, cache_dir=cache_dir)
     else:
         # cluster_id given — load metadata to recover hosts/executor.
         if cache_dir is None and sctx is not None:
@@ -160,6 +175,51 @@ def stop(
         containers_removed=removed_count,
         errors=tuple(errors),
     )
+
+
+def _discover_cluster_id_by_intent(
+    intent_id: str,
+    target_hosts: list[str],
+    *,
+    cluster_def,
+    cache_dir: str | None,
+    sctx: "SparkrunContext | None",
+) -> str:
+    """Find the running cluster_id whose intent prefix matches *intent_id*.
+
+    Strategy: ask the configured executor for a :class:`ClusterStatus`
+    over *target_hosts*, then filter ``running_cluster_ids()`` for
+    those starting with ``"sparkrun_" + intent_id + "_"``.  Raises
+    :class:`JobNotFound` on zero matches and :class:`AmbiguousWorkload`
+    on more than one.
+    """
+    from sparkrun.orchestration.executor import resolve_executor
+    from sparkrun.orchestration.primitives import build_ssh_kwargs
+
+    executor = resolve_executor(
+        cluster=cluster_def,
+        cli_overrides=None,
+        rootless=False,
+        auto_user=False,
+        v=sctx.variables if sctx is not None else None,
+    )
+    config = sctx.config if sctx is not None else _maybe_load_config()
+    ssh_kwargs = build_ssh_kwargs(config) if config else {}
+
+    status = executor.query_status(target_hosts, ssh_kwargs=ssh_kwargs)
+    running_ids = status.running_cluster_ids()
+
+    new_prefix = "sparkrun_%s_" % intent_id
+    matches = sorted({cid for cid in running_ids if cid.startswith(new_prefix)})
+
+    if not matches:
+        raise JobNotFound("No running workload matches intent %s on hosts %s" % (intent_id, target_hosts))
+    if len(matches) > 1:
+        raise AmbiguousWorkload(
+            "Multiple workloads match this recipe/intent on hosts %s: %s. Re-invoke with an explicit cluster_id." % (target_hosts, matches),
+            cluster_ids=matches,
+        )
+    return matches[0]
 
 
 def _maybe_load_config():

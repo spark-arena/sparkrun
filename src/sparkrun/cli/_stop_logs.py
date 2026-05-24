@@ -99,6 +99,14 @@ def stop(ctx, target, hosts, hosts_file, cluster_name, stop_all, tp_override, po
                 cluster=cluster_name,
                 cache_dir=str(config.cache_dir),
             )
+    except api.AmbiguousWorkload as e:
+        click.echo(
+            "Error: Multiple workloads match this recipe/intent. Re-invoke with an explicit cluster_id (one of):",
+            err=True,
+        )
+        for cid in e.cluster_ids:
+            click.echo("  %s" % cid, err=True)
+        sys.exit(1)
     except api.JobNotFound as e:
         click.echo("Error: %s" % e, err=True)
         sys.exit(1)
@@ -284,7 +292,7 @@ def _follow_logs_by_cluster_id(sctx, cluster_id, target, hosts, hosts_file, clus
 def _follow_logs_by_recipe(sctx, recipe_name, hosts, hosts_file, cluster_name, overrides, tail):
     """Follow logs for a recipe target — uses the runtime's multi-container ``follow_logs``."""
     from sparkrun.core.bootstrap import get_runtime
-    from sparkrun.orchestration.job_metadata import generate_cluster_id
+    from sparkrun.orchestration.job_metadata import derive_cluster_id
 
     config = sctx.config
     v = sctx.variables
@@ -304,5 +312,5 @@ def _follow_logs_by_recipe(sctx, recipe_name, hosts, hosts_file, cluster_name, o
     # Derive cluster_id consistent with what api.run / api.schedule would
     # have produced — no separate trimming step; the host list as
     # supplied IS the effective list at the API boundary.
-    cluster_id = generate_cluster_id(recipe, host_list, overrides=overrides)
+    cluster_id = derive_cluster_id(recipe, host_list, overrides=overrides)
     runtime.follow_logs(hosts=host_list, cluster_id=cluster_id, config=config, tail=tail)

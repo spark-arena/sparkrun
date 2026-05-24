@@ -29,6 +29,7 @@ import time
 from typing import Mapping, TYPE_CHECKING
 
 from sparkrun.orchestration.executors._base import Executor
+from sparkrun.orchestration.job_metadata import INTENT_ID_LEN, PLACEMENT_TOKEN_LEN
 from sparkrun.utils.shell import quote
 
 if TYPE_CHECKING:
@@ -38,9 +39,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Same name pattern as DockerExecutor — sparkrun's container_name helpers
-# emit ``sparkrun_<digest>_(solo|head|worker|node_<rank>)``.  LocalExecutor
-# uses the container_name as the pidfile basename so the same parse works.
-_PID_NAME_RE = re.compile(r"^(?P<cluster>sparkrun_[0-9a-f]{12})_(?P<role>solo|head|worker|node_(?P<rank>\d+))$")
+# emit ``sparkrun_<intent>_<placement_token>_(solo|head|worker|node_<rank>)``.
+# LocalExecutor uses the container_name as the pidfile basename so the
+# same parse works.
+_PID_NAME_RE = re.compile(
+    r"^(?P<cluster>sparkrun_(?P<intent>[0-9a-f]{%d})_[0-9a-f]{%d})_(?P<role>solo|head|worker|node_(?P<rank>\d+))$"
+    % (INTENT_ID_LEN, PLACEMENT_TOKEN_LEN)
+)
 
 # Where pidfiles/logfiles land when no explicit override is provided.
 # Lives under ``~/.cache/sparkrun/local/`` so it follows the same
@@ -486,7 +491,7 @@ def _parse_local_pidfile_output(stdout: str) -> tuple[list, int]:
         cluster_id = m.group("cluster")
         rank_str = m.group("rank")
         rank = int(rank_str) if rank_str is not None else 0
-        bucket = by_cluster.setdefault(cluster_id, {"ranks": set()})
+        bucket = by_cluster.setdefault(cluster_id, {"ranks": set(), "intent_id": m.group("intent")})
         bucket["ranks"].add(rank)
 
     workloads: list[RunningWorkload] = []
@@ -497,9 +502,11 @@ def _parse_local_pidfile_output(stdout: str) -> tuple[list, int]:
         meta = _load_metadata_safely(cluster_id)
         recipe_name = meta.get("recipe") if meta else None
         runtime_name = meta.get("runtime") if meta else None
+        intent_id = (meta.get("intent_id") if meta else None) or bucket.get("intent_id")
         workloads.append(
             RunningWorkload(
                 cluster_id=cluster_id,
+                intent_id=intent_id,
                 recipe_name=recipe_name,
                 runtime_name=runtime_name,
                 ranks_on_host=ranks_on_host,
