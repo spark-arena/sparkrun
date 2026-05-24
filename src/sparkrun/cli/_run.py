@@ -153,6 +153,13 @@ def _summarize_platforms(
 @click.option(
     "--trust", is_flag=True, default=False, hidden=True, help="Trust post_commands from third-party registries without confirmation"
 )
+@click.option(
+    "--scheduler",
+    "scheduler_name",
+    default=None,
+    help="Registered scheduler name (e.g. 'greedy', 'occupancy-aware'). Defaults to the recipe's scheduler field, then 'greedy'.",
+    hidden=HIDE_ADVANCED_OPTIONS,
+)
 @click.option("--label", "labels_override", multiple=True, help="Set meta data on a container (e.g., --label com.example.key=value)")
 @click.option(
     "--executor-args",
@@ -195,6 +202,7 @@ def run(
     transfer_mode,
     diagnostics_path,
     trust,
+    scheduler_name,
     labels_override,
     options,
     executor_args,
@@ -459,11 +467,15 @@ def run(
     # passing the loaded objects through avoids re-resolution inside
     # ``api.run`` and preserves the cwd-recipe discovery the CLI does
     # through ``_load_recipe``.
+    # Scheduler selection chain: CLI flag → recipe.scheduler → None (greedy default).
+    effective_scheduler = scheduler_name or (recipe.scheduler or None)
+
     run_options = api.RunOptions(
         recipe=recipe,
         hosts=tuple(host_list),
         cluster=cluster_def,
         overrides=dict(overrides),
+        scheduler=effective_scheduler,
         solo=is_solo,
         dry_run=dry_run,
         follow=not no_follow,

@@ -66,6 +66,7 @@ _KNOWN_KEYS = {
     "builder_config",
     "executor",
     "executor_config",
+    "scheduler",
     "distribution_config",
     "layout",
 }
@@ -668,6 +669,11 @@ class Recipe:
         # No CLI surface; recipe-only.
         self.executor: str = str(data.get("executor", "") or "")
 
+        # Optional scheduler selector.  ``""`` (default) → GreedyScheduler.
+        # ``"occupancy-aware"`` opts in to occupancy + fractional GPU sharing.
+        # Overridden by ``--scheduler`` on the CLI / ``RunOptions.scheduler``.
+        self.scheduler: str = str(data.get("scheduler", "") or "")
+
         # Distribution config (auto-generated default, mutable by runtimes)
         self.distribution_config: DistributionConfig = _parse_distribution_config(data)
 
@@ -1111,6 +1117,7 @@ class Recipe:
             "builder_config": dict(self.builder_config),
             "executor": self.executor,
             "executor_config": dict(self.executor_config),
+            "scheduler": self.scheduler,
             "distribution_config": dataclass_asdict(self.distribution_config),
             "layout": self.layout.to_dict() if self.layout else None,
             "_applied_overrides": dict(self._applied_overrides),
@@ -1150,6 +1157,7 @@ class Recipe:
         self.builder_config = dict(state.get("builder_config") or {})
         self.executor = str(state.get("executor", "") or "")
         self.executor_config = dict(state.get("executor_config") or {})
+        self.scheduler = str(state.get("scheduler", "") or "")
         self._applied_overrides = dict(state.get("_applied_overrides") or {})
         dist_cfg: dict | None = state.get("distribution_config", None)
         self.distribution_config = _parse_distribution_config(self._raw) if dist_cfg is None else DistributionConfig.from_dict(dist_cfg)
@@ -1280,6 +1288,10 @@ class Recipe:
             d["builder"] = self.builder
         if self.builder_config:
             d["builder_config"] = dict(self.builder_config)
+
+        # -- Scheduler --
+        if self.scheduler:
+            d["scheduler"] = self.scheduler
 
         # -- Configuration --
         if self.defaults:

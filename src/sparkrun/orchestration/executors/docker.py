@@ -196,8 +196,18 @@ class DockerExecutor(Executor):
         env: dict[str, str] | None = None,
         volumes: dict[str, str] | None = None,
         extra_opts: list[str] | None = None,
+        *,
+        sparkrun_labels: dict[str, str] | None = None,
     ) -> str:
-        """Generate a ``docker run`` command string."""
+        """Generate a ``docker run`` command string.
+
+        ``sparkrun_labels`` is emitted as additional ``--label key=value``
+        flags so :meth:`query_status` (and any external observer using
+        ``docker ps --filter "label=sparkrun.intent_id=..."``) can recover
+        workload identity from the Docker daemon itself.  User-supplied
+        ``cfg.labels`` is still emitted in :meth:`_build_default_opts`;
+        both sets coexist on the resulting container.
+        """
         cfg = self.config
         parts = ["docker", "run"]
 
@@ -214,6 +224,10 @@ class DockerExecutor(Executor):
 
         if container_name:
             parts.extend(["--name", quote(container_name)])
+
+        if sparkrun_labels:
+            for key, value in sorted(sparkrun_labels.items()):
+                parts.extend(["--label", quote("%s=%s" % (key, value))])
 
         if env:
             for key, value in sorted(env.items()):

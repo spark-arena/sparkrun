@@ -1090,7 +1090,13 @@ class RuntimePlugin(Plugin):
                 host,
                 image,
             )
-        launch_script = self._resolve_executor().generate_launch_script(
+        executor = self._resolve_executor()
+        sparkrun_labels = executor.workload_labels_for_cluster(
+            cluster_id=cluster_id,
+            recipe=recipe,
+            runtime=self,
+        )
+        launch_script = executor.generate_launch_script(
             image=image,
             container_name=container_name,
             command="sleep infinity",
@@ -1098,6 +1104,7 @@ class RuntimePlugin(Plugin):
             volumes=volumes,
             nccl_env=comm_env.get_env(host) if comm_env else None,
             extra_docker_opts=combined_docker_opts or None,
+            sparkrun_labels=sparkrun_labels or None,
         )
         result = run_script_on_host(
             host,
@@ -1130,11 +1137,12 @@ class RuntimePlugin(Plugin):
         else:
             logger.info("Step 3/3: Executing serve command in %s...", container_name)
         logger.debug("Serve command: %s", serve_command)
-        exec_script = self._resolve_executor().generate_exec_serve_script(
+        exec_script = executor.generate_exec_serve_script(
             container_name=container_name,
             serve_command=serve_command,
             env=all_env,
             detached=detached,
+            sparkrun_labels=sparkrun_labels or None,
         )
         result = run_script_on_host(
             host,
@@ -1197,6 +1205,8 @@ class RuntimePlugin(Plugin):
         volumes: dict[str, str] | None = None,
         nccl_env: dict[str, str] | None = None,
         extra_docker_opts: list[str] | None = None,
+        *,
+        sparkrun_labels: dict[str, str] | None = None,
     ) -> str:
         """Generate a script that launches a container with a direct entrypoint command.
 
@@ -1226,6 +1236,7 @@ class RuntimePlugin(Plugin):
             volumes=volumes,
             nccl_env=nccl_env,
             extra_docker_opts=extra_docker_opts,
+            sparkrun_labels=sparkrun_labels,
         )
 
     # --- Banner / connection info ---

@@ -314,8 +314,21 @@ class Executor(Plugin):
         env: dict[str, str] | None = None,
         volumes: dict[str, str] | None = None,
         extra_opts: list[str] | None = None,
+        *,
+        sparkrun_labels: dict[str, str] | None = None,
     ) -> str:
-        """Generate a container run command string."""
+        """Generate a container run command string.
+
+        Args:
+            sparkrun_labels: Canonical sparkrun workload identity labels
+                (``sparkrun.cluster_id`` / ``sparkrun.intent_id`` / etc.)
+                from :meth:`workload_labels_for_cluster`.  Emitted as
+                ``--label key=value`` flags (Docker) or annotations
+                (K8s); ignored by executors that have no container
+                concept (LocalExecutor).  Distinct from
+                ``ExecutorConfig.labels`` (user-supplied), which still
+                gets emitted alongside.
+        """
         ...
 
     @abstractmethod
@@ -382,6 +395,42 @@ class Executor(Plugin):
         from sparkrun.core.cluster_status import empty_status
 
         return empty_status(hosts, executor=self.executor_name)
+
+    @classmethod
+    def workload_labels_for_cluster(
+        cls,
+        cluster_id: str,
+        recipe=None,
+        runtime=None,
+        rank: int | None = None,
+    ) -> dict[str, str]:
+        """Build the canonical sparkrun label dict from a cluster + recipe + runtime.
+
+        Convenience wrapper over :meth:`workload_labels` that pulls
+        ``recipe.qualified_name`` and ``runtime.runtime_name`` off the
+        objects callers already carry at launch time.  Returns an empty
+        dict only when *cluster_id* itself is falsy; otherwise the
+        cluster_id (and derived intent_id when canonical) is always
+        emitted.
+
+        Args:
+            cluster_id: Full sparkrun cluster identifier.
+            recipe: Optional :class:`Recipe` — :attr:`Recipe.qualified_name`
+                becomes ``sparkrun.recipe`` when truthy.
+            runtime: Optional :class:`RuntimePlugin` —
+                ``runtime.runtime_name`` becomes ``sparkrun.runtime``.
+            rank: Optional rank index.
+        """
+        if not cluster_id:
+            return {}
+        recipe_name = getattr(recipe, "qualified_name", None) if recipe is not None else None
+        runtime_name = getattr(runtime, "runtime_name", None) if runtime is not None else None
+        return cls.workload_labels(
+            cluster_id=cluster_id,
+            recipe_name=recipe_name,
+            runtime_name=runtime_name,
+            rank=rank,
+        )
 
     @classmethod
     def workload_labels(
@@ -465,6 +514,8 @@ class Executor(Plugin):
         nccl_env: dict[str, str] | None = None,
         detach: bool = True,
         extra_docker_opts: list[str] | None = None,
+        *,
+        sparkrun_labels: dict[str, str] | None = None,
     ) -> str:
         """Generate a script that cleans up then launches a container."""
 
@@ -478,6 +529,7 @@ class Executor(Plugin):
             env=all_env,
             volumes=volumes,
             extra_opts=extra_docker_opts,
+            sparkrun_labels=sparkrun_labels,
         )
 
         template = read_script("container_launch.sh")
@@ -494,8 +546,19 @@ class Executor(Plugin):
         serve_command: str,
         env: dict[str, str] | None = None,
         detached: bool = True,
+        *,
+        sparkrun_labels: dict[str, str] | None = None,
     ) -> str:
-        """Generate a script that executes the serve command inside a running container."""
+        """Generate a script that executes the serve command inside a running container.
+
+        ``sparkrun_labels`` is accepted for API symmetry with the other
+        generators; Docker exec does not support attaching labels (those
+        live on the parent container), so it is ignored here.  Callers
+        attach labels when the container itself is created via
+        ``generate_launch_script`` / ``generate_node_script`` /
+        ``generate_ray_*_script``.
+        """
+        del sparkrun_labels  # accepted but unused — exec inherits labels from the container
 
         env_exports = ""
         if env:
@@ -526,6 +589,8 @@ class Executor(Plugin):
         volumes: dict[str, str] | None = None,
         nccl_env: dict[str, str] | None = None,
         extra_docker_opts: list[str] | None = None,
+        *,
+        sparkrun_labels: dict[str, str] | None = None,
     ) -> str:
         """Generate a script that starts a Ray head node in a container."""
 
@@ -544,6 +609,7 @@ class Executor(Plugin):
             env=all_env,
             volumes=volumes,
             extra_opts=extra_docker_opts,
+            sparkrun_labels=sparkrun_labels,
         )
 
         template = read_script("ray_head.sh")
@@ -562,6 +628,8 @@ class Executor(Plugin):
         volumes: dict[str, str] | None = None,
         nccl_env: dict[str, str] | None = None,
         extra_docker_opts: list[str] | None = None,
+        *,
+        sparkrun_labels: dict[str, str] | None = None,
     ) -> str:
         """Generate a script that starts a Ray worker node."""
 
@@ -576,6 +644,7 @@ class Executor(Plugin):
             env=all_env,
             volumes=volumes,
             extra_opts=extra_docker_opts,
+            sparkrun_labels=sparkrun_labels,
         )
 
         template = read_script("ray_worker.sh")
@@ -596,6 +665,8 @@ class Executor(Plugin):
         volumes: dict[str, str] | None = None,
         nccl_env: dict[str, str] | None = None,
         extra_docker_opts: list[str] | None = None,
+        *,
+        sparkrun_labels: dict[str, str] | None = None,
     ) -> str:
         """Generate a script that launches a container with a direct entrypoint command."""
 
@@ -609,6 +680,7 @@ class Executor(Plugin):
             env=all_env,
             volumes=volumes,
             extra_opts=extra_docker_opts,
+            sparkrun_labels=sparkrun_labels,
         )
 
         return (

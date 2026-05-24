@@ -317,7 +317,13 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
         else:
             logger.info("Step 3/5: Launching Ray head on %s...", ctx.head_host)
         head_nccl_env = comm_env.get_env(ctx.head_host) if comm_env else None
-        head_script = self._resolve_executor().generate_ray_head_script(
+        executor = self._resolve_executor()
+        head_labels = executor.workload_labels_for_cluster(
+            cluster_id=cluster_id,
+            recipe=recipe,
+            runtime=self,
+        )
+        head_script = executor.generate_ray_head_script(
             image=image,
             container_name=head_container,
             ray_port=ray_port,
@@ -327,6 +333,7 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
             volumes=ctx.volumes,
             nccl_env=head_nccl_env,
             extra_docker_opts=combined_docker_opts or None,
+            sparkrun_labels=head_labels or None,
         )
         head_result = run_remote_script(
             ctx.head_host,
@@ -383,11 +390,18 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
             # right GLOO_SOCKET_IFNAME / NCCL_SOCKET_IFNAME / etc.
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
+            # Ray manages per-actor ranks internally; each host runs one
+            # ``{cluster_id}_worker`` container, so we omit the rank label.
+            _worker_labels = executor.workload_labels_for_cluster(
+                cluster_id=cluster_id,
+                recipe=recipe,
+                runtime=self,
+            )
             with ThreadPoolExecutor(max_workers=len(ctx.worker_hosts)) as _wpool:
                 _wfutures = {}
                 for _whost in ctx.worker_hosts:
                     _whost_env = comm_env.get_env(_whost) if comm_env else None
-                    _wscript = self._resolve_executor().generate_ray_worker_script(
+                    _wscript = executor.generate_ray_worker_script(
                         image=image,
                         container_name=worker_container,
                         head_ip=head_ip,
@@ -396,6 +410,7 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
                         volumes=ctx.volumes,
                         nccl_env=_whost_env,
                         extra_docker_opts=combined_docker_opts or None,
+                        sparkrun_labels=_worker_labels or None,
                     )
                     _wfutures[
                         _wpool.submit(
@@ -460,11 +475,12 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
                 ctx.head_host,
                 head_container,
             )
-        exec_script = self._resolve_executor().generate_exec_serve_script(
+        exec_script = executor.generate_exec_serve_script(
             container_name=head_container,
             serve_command=serve_command,
             env=ctx.all_env,
             detached=detached,
+            sparkrun_labels=head_labels or None,
         )
 
         self._print_connection_info(hosts, cluster_id, head_ip=head_ip, dashboard_port=dashboard_port)
