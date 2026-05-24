@@ -87,6 +87,12 @@ def cluster(ctx):
     multiple=True,
     help="Executor option (repeatable): -o key=value (e.g. -o privileged=false -o shm_size=16g)",
 )
+@click.option(
+    "--scheduler",
+    "scheduler_name",
+    default=None,
+    help="Default scheduler selector for workloads on this cluster (e.g. greedy, occupancy-aware)",
+)
 @click.option("--default", "set_default", is_flag=True, default=False, help="Set as the default cluster")
 @click.pass_context
 def cluster_create(
@@ -101,6 +107,7 @@ def cluster_create(
     transfer_interface,
     executor_name,
     executor_opts,
+    scheduler_name,
     set_default,
 ):
     """Create a new named cluster."""
@@ -134,6 +141,7 @@ def cluster_create(
             transfer_interface=transfer_interface,
             executor=executor_name,
             executor_config=executor_config,
+            scheduler=scheduler_name,
         )
         click.echo(f"Cluster '{name}' created with {len(host_list)} host(s).")
         if set_default:
@@ -195,6 +203,12 @@ def cluster_create(
     default=False,
     help="Remove all executor config options from the cluster",
 )
+@click.option(
+    "--scheduler",
+    "scheduler_name",
+    default=None,
+    help="Default scheduler selector for workloads on this cluster (e.g. greedy, occupancy-aware). Pass empty string to clear.",
+)
 @click.pass_context
 def cluster_update(
     ctx,
@@ -213,6 +227,7 @@ def cluster_update(
     executor_name,
     executor_opts,
     clear_executor_config,
+    scheduler_name,
 ):
     """Update an existing cluster.
 
@@ -251,6 +266,7 @@ def cluster_update(
     topology_provided = ctx.get_parameter_source("topology") == ParameterSource.COMMANDLINE
     executor_provided = ctx.get_parameter_source("executor_name") == ParameterSource.COMMANDLINE
     executor_opts_provided = bool(executor_opts) or clear_executor_config
+    scheduler_provided = ctx.get_parameter_source("scheduler_name") == ParameterSource.COMMANDLINE
 
     has_host_change = host_list is not None or add_host or remove_host
     if (
@@ -264,12 +280,13 @@ def cluster_update(
         and not infer_hardware
         and not executor_provided
         and not executor_opts_provided
+        and not scheduler_provided
     ):
         click.echo(
             "Error: Nothing to update. Provide --hosts, --hosts-file, --add-host, "
             "--remove-host, -d, --user, --cache-dir, --transfer-mode, "
             "--transfer-interface, --topology, --infer-hardware, --executor, "
-            "--executor-opt, or --clear-executor-config.",
+            "--executor-opt, --clear-executor-config, or --scheduler.",
             err=True,
         )
         sys.exit(1)
@@ -335,6 +352,9 @@ def cluster_update(
         update_kwargs["executor_config"] = None
     elif executor_opts:
         update_kwargs["executor_config"] = _parse_executor_opts(executor_opts)
+    if scheduler_provided:
+        # Empty string clears the scheduler selector
+        update_kwargs["scheduler"] = scheduler_name if scheduler_name else None
 
     if infer_hardware:
         from sparkrun.core.fingerprint import fingerprint_host
@@ -463,6 +483,8 @@ def cluster_show(ctx, name, output_json):
         click.echo("Executor config:")
         for k, v in sorted(c.executor_config.items()):
             click.echo(f"  {k}: {v}")
+    if c.scheduler:
+        click.echo(f"Scheduler:   {c.scheduler}")
     click.echo(f"Default:     {'yes' if c.name == default_name else 'no'}")
     click.echo(f"Hosts ({len(c.hosts)}):")
     for h in c.hosts:

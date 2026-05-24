@@ -71,6 +71,16 @@ class ClusterDefinition:
     cluster express "every workload here gets these baseline executor
     settings" while still letting recipes/CLI tighten things.
     """
+    scheduler: str | None = None
+    """Default scheduler selector for workloads on this cluster.
+
+    Inserted into the scheduler resolution chain between the recipe's
+    ``scheduler`` selector and the greedy emergency fallback — see
+    :func:`sparkrun.api.run` and :func:`sparkrun.api.schedule`.  A
+    cluster that bakes ``scheduler: occupancy-aware`` here makes every
+    recipe land on the occupancy-aware scheduler unless the recipe (or
+    CLI) overrides.
+    """
 
     def hardware_for(self, host: str) -> HostHardware:
         """Return hardware metadata for *host*, defaulting to DGX Spark.
@@ -103,6 +113,8 @@ class ClusterDefinition:
             d["executor"] = self.executor
         if self.executor_config:
             d["executor_config"] = dict(self.executor_config)
+        if self.scheduler:
+            d["scheduler"] = self.scheduler
         return d
 
 
@@ -215,6 +227,7 @@ class ClusterManager:
         hosts_hardware: dict[str, HostHardware] | None = None,
         executor: str | None = None,
         executor_config: dict[str, Any] | None = None,
+        scheduler: str | None = None,
     ) -> None:
         """Create a new named cluster.
 
@@ -259,6 +272,7 @@ class ClusterManager:
             hosts_hardware=dict(hosts_hardware) if hosts_hardware else {},
             executor=executor,
             executor_config=dict(executor_config) if executor_config else None,
+            scheduler=scheduler,
         )
         self._write_cluster(cluster_def)
         logger.info("Created cluster '%s' with %d hosts", name, len(hosts))
@@ -294,6 +308,7 @@ class ClusterManager:
         hosts_hardware: dict[str, HostHardware] | None = _UNSET,
         executor: str | None = _UNSET,
         executor_config: dict[str, Any] | None = _UNSET,
+        scheduler: str | None = _UNSET,
     ) -> None:
         """Update existing cluster definition.
 
@@ -360,6 +375,10 @@ class ClusterManager:
         if executor_config is not _UNSET:
             cluster_def.executor_config = dict(executor_config) if executor_config else None
             logger.debug("Updated executor_config for cluster '%s'", name)
+
+        if scheduler is not _UNSET:
+            cluster_def.scheduler = scheduler
+            logger.debug("Updated scheduler for cluster '%s'", name)
 
         # Write back
         self._write_cluster(cluster_def)
@@ -481,6 +500,8 @@ class ClusterManager:
             data["executor"] = cluster_def.executor
         if cluster_def.executor_config:
             data["executor_config"] = dict(cluster_def.executor_config)
+        if cluster_def.scheduler:
+            data["scheduler"] = cluster_def.scheduler
 
         with cluster_path.open("w") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
@@ -520,6 +541,7 @@ class ClusterManager:
             hosts_hardware=hosts_hardware,
             executor=data.get("executor"),
             executor_config=executor_config,
+            scheduler=data.get("scheduler"),
         )
 
 
@@ -670,6 +692,10 @@ class ResolvedClusterConfig:
     """Cluster-level default executor options — consumed by
     :func:`sparkrun.orchestration.executor.resolve_executor` between
     recipe and ``SparkrunConfig`` in the config chain."""
+    scheduler: str | None = None
+    """Cluster-level default scheduler selector — consumed by
+    :func:`sparkrun.api.run` between the recipe's ``scheduler`` and the
+    greedy emergency fallback in the resolution chain."""
 
     def resolve_transfer_config(self, config, transfer_mode_override: str | None = None):
         """Resolve transfer configuration against defaults.
@@ -752,5 +778,6 @@ def resolve_cluster_config(
     # govern regardless of how host addresses are supplied.
     cfg.executor = cluster_def.executor
     cfg.executor_config = dict(cluster_def.executor_config) if cluster_def.executor_config else None
+    cfg.scheduler = cluster_def.scheduler
 
     return cfg

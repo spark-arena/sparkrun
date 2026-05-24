@@ -81,9 +81,10 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunRes
     hosts = list(cluster_def.hosts)
     runtime = resolve_runtime(recipe, sctx=sctx)
 
-    # Scheduler selection chain: caller's options → recipe.scheduler → None
-    # (which ``api.schedule`` interprets as "greedy").
-    effective_scheduler = options.scheduler or (getattr(recipe, "scheduler", "") or None)
+    # Scheduler selection chain: caller > recipe > cluster > greedy default.
+    effective_scheduler = (
+        options.scheduler or (getattr(recipe, "scheduler", "") or None) or (getattr(cluster_def, "scheduler", None) or None)
+    )
 
     # Apply the cluster's SSH user (if any) to the config so downstream
     # SSH operations (executor.run / distribution / build_ssh_kwargs)

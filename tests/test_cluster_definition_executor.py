@@ -256,3 +256,126 @@ def test_resolve_cluster_config_executor_config_is_a_copy(tmp_path: Path):
     resolved.executor_config["shm_size"] = "MUTATED"
     # Re-load — should still be the original.
     assert mgr.get("c").executor_config == {"shm_size": "32g"}
+
+
+# --------------------------------------------------------------------------
+# ClusterDefinition.scheduler — mirrors the executor pattern above
+# --------------------------------------------------------------------------
+
+
+def test_cluster_definition_scheduler_defaults_none():
+    cluster = ClusterDefinition(name="c", hosts=["h1"])
+    assert cluster.scheduler is None
+
+
+def test_cluster_definition_carries_scheduler_field():
+    cluster = ClusterDefinition(name="c", hosts=["h1"], scheduler="occupancy-aware")
+    assert cluster.scheduler == "occupancy-aware"
+
+
+def test_to_dict_omits_scheduler_when_unset():
+    cluster = ClusterDefinition(name="c", hosts=["h1"])
+    assert "scheduler" not in cluster.to_dict()
+
+
+def test_to_dict_emits_scheduler_when_set():
+    cluster = ClusterDefinition(name="c", hosts=["h1"], scheduler="greedy")
+    assert cluster.to_dict()["scheduler"] == "greedy"
+
+
+def test_cluster_manager_yaml_round_trip_with_scheduler(tmp_path: Path):
+    mgr = ClusterManager(tmp_path)
+    mgr.create(name="prod", hosts=["h1", "h2"], scheduler="occupancy-aware")
+    loaded = mgr.get("prod")
+    assert loaded.scheduler == "occupancy-aware"
+
+
+def test_cluster_manager_yaml_round_trip_without_scheduler(tmp_path: Path):
+    """Cluster without scheduler field loads with None default."""
+    mgr = ClusterManager(tmp_path)
+    mgr.create(name="basic", hosts=["h1"])
+    assert mgr.get("basic").scheduler is None
+
+
+def test_cluster_manager_back_compat_with_legacy_yaml_no_scheduler(tmp_path: Path):
+    """Pre-existing cluster YAML without scheduler still loads cleanly."""
+    yaml_text = """
+name: legacy
+hosts:
+- spark-01
+description: pre-scheduler-field format
+""".strip()
+    (tmp_path / "clusters").mkdir()
+    (tmp_path / "clusters" / "legacy.yaml").write_text(yaml_text)
+
+    mgr = ClusterManager(tmp_path)
+    loaded = mgr.get("legacy")
+    assert loaded.name == "legacy"
+    assert loaded.scheduler is None
+
+
+def test_cluster_manager_create_persists_scheduler(tmp_path: Path):
+    mgr = ClusterManager(tmp_path)
+    mgr.create(name="c", hosts=["h1"], scheduler="greedy")
+    assert mgr.get("c").scheduler == "greedy"
+
+
+def test_cluster_manager_update_sets_scheduler(tmp_path: Path):
+    mgr = ClusterManager(tmp_path)
+    mgr.create(name="c", hosts=["h1"])
+    assert mgr.get("c").scheduler is None
+
+    mgr.update("c", scheduler="occupancy-aware")
+    assert mgr.get("c").scheduler == "occupancy-aware"
+
+
+def test_cluster_manager_update_clears_scheduler(tmp_path: Path):
+    """Passing ``scheduler=None`` explicitly clears the field."""
+    mgr = ClusterManager(tmp_path)
+    mgr.create(name="c", hosts=["h1"], scheduler="greedy")
+    assert mgr.get("c").scheduler == "greedy"
+
+    mgr.update("c", scheduler=None)
+    assert mgr.get("c").scheduler is None
+
+
+def test_cluster_manager_update_preserves_scheduler_when_unset(tmp_path: Path):
+    """Omitting scheduler in update keeps the prior value (UNSET sentinel)."""
+    mgr = ClusterManager(tmp_path)
+    mgr.create(name="c", hosts=["h1"], scheduler="occupancy-aware")
+    mgr.update("c", description="changed only the description")
+    assert mgr.get("c").scheduler == "occupancy-aware"
+
+
+def test_resolved_cluster_config_scheduler_defaults_none():
+    cfg = ResolvedClusterConfig()
+    assert cfg.scheduler is None
+
+
+def test_resolve_cluster_config_propagates_scheduler_from_named_cluster(tmp_path: Path):
+    mgr = ClusterManager(tmp_path)
+    mgr.create(name="prod", hosts=["h1"], scheduler="occupancy-aware")
+    resolved = resolve_cluster_config(
+        cluster_name="prod",
+        hosts=None,
+        hosts_file=None,
+        cluster_mgr=mgr,
+    )
+    assert resolved.scheduler == "occupancy-aware"
+
+
+def test_resolve_cluster_config_scheduler_applies_even_with_explicit_hosts(tmp_path: Path):
+    """Scheduler selection is a cluster-deployment property; it applies even
+    when --hosts is passed alongside --cluster (mirrors executor semantics)."""
+    mgr = ClusterManager(tmp_path)
+    mgr.create(name="prod", hosts=["h1"], scheduler="occupancy-aware")
+    resolved = resolve_cluster_config(
+        cluster_name="prod",
+        hosts="other-host",  # explicit --hosts
+        hosts_file=None,
+        cluster_mgr=mgr,
+    )
+    # Transfer-related fields should NOT be set (explicit --hosts wins),
+    # but the scheduler selector should propagate.
+    assert resolved.transfer_mode is None
+    assert resolved.scheduler == "occupancy-aware"

@@ -1788,6 +1788,70 @@ class TestClusterCommands:
         assert result.exit_code != 0
         assert "key=value" in result.output
 
+    def test_cluster_create_with_scheduler(self, runner, tmp_path, monkeypatch):
+        """Test creating a cluster with --scheduler persists the field."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.core.config
+
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+
+        result = runner.invoke(
+            main,
+            [
+                "cluster",
+                "create",
+                "sched-cluster",
+                "--hosts",
+                "h1,h2",
+                "--scheduler",
+                "occupancy-aware",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+        from sparkrun.core.cluster_manager import ClusterManager
+
+        mgr = ClusterManager(config_root)
+        c = mgr.get("sched-cluster")
+        assert c.scheduler == "occupancy-aware"
+
+    def test_cluster_show_renders_scheduler(self, runner, tmp_path, monkeypatch):
+        """``cluster show`` renders the Scheduler line when set."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.core.config
+
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+
+        runner.invoke(
+            main,
+            ["cluster", "create", "show-sched", "--hosts", "h1", "--scheduler", "greedy"],
+        )
+        result = runner.invoke(main, ["cluster", "show", "show-sched"])
+        assert result.exit_code == 0
+        assert "Scheduler:   greedy" in result.output
+
+    def test_cluster_update_scheduler(self, runner, cluster_setup):
+        """Test updating cluster scheduler selector."""
+        result = runner.invoke(
+            main,
+            ["cluster", "update", "test-cluster", "--scheduler", "greedy"],
+        )
+        assert result.exit_code == 0, result.output
+
+        result = runner.invoke(main, ["cluster", "show", "test-cluster"])
+        assert "Scheduler:   greedy" in result.output
+
+    def test_cluster_update_clear_scheduler(self, runner, cluster_setup):
+        """Test clearing scheduler selector with empty string."""
+        runner.invoke(main, ["cluster", "update", "test-cluster", "--scheduler", "greedy"])
+        result = runner.invoke(main, ["cluster", "update", "test-cluster", "--scheduler", ""])
+        assert result.exit_code == 0, result.output
+
+        result = runner.invoke(main, ["cluster", "show", "test-cluster"])
+        assert "Scheduler:" not in result.output
+
 
 class TestClusterMonitor:
     """Test cluster monitor subcommand."""
