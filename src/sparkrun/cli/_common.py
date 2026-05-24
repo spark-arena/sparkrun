@@ -274,15 +274,23 @@ def resolve_effective_hosts_for_recipe(
         )
         try:
             result = api.schedule(request, sctx=sctx)
-        except api.InsufficientCapacity:
-            # Surface the legacy-shaped message so users see "requires
-            # N nodes, but only M hosts provided" rather than the
-            # scheduler's internal "slots" wording.
+        except api.InsufficientCapacity as e:
+            # Distinguish "not enough hosts in the cluster" from "hosts
+            # are there but already full": only the former is a config
+            # error the user can fix by adding hosts; the latter is a
+            # state issue best diagnosed via the scheduler's message.
             required = parallelism.total_nodes
-            click.echo(
-                "Error: runtime requires %d nodes, but only %d hosts provided" % (required, len(host_list)),
-                err=True,
-            )
+            if len(host_list) < required:
+                msg = "runtime requires %d nodes, but only %d hosts provided" % (required, len(host_list))
+            else:
+                # Surface the scheduler's diagnostic (e.g. "Cluster cannot
+                # satisfy 2 ranks under current occupancy: only placed 0
+                # of 2 ranks across 4 host(s)") so the user sees that
+                # capacity, not host count, is the constraint.
+                detail = str(e) or "no free accelerator slots across %d host(s)" % len(host_list)
+                msg = "cluster has insufficient free capacity for %d node(s): %s" % (required, detail)
+            click.echo("Error: %s" % msg, err=True)
+            _render_capacity_diagnostics(cluster_status, host_list)
             sys.exit(1)
         except api.LayoutRequired as e:
             click.echo("Error: %s" % e, err=True)
@@ -335,6 +343,42 @@ def resolve_effective_hosts_for_recipe(
         host_list = host_list[:1]
 
     return host_list, is_solo
+
+
+def _render_capacity_diagnostics(cluster_status, host_list: list[str]) -> None:
+    """Echo a compact rundown of what's currently running, alongside a capacity error.
+
+    Uses the already-fetched :class:`ClusterStatus` snapshot — no new
+    SSH round-trip.  When the snapshot is missing (best-effort fetch
+    failed earlier) we point the user at the full ``cluster status``
+    command instead.
+    """
+    if cluster_status is None or not getattr(cluster_status, "hosts", ()):
+        click.echo("", err=True)
+        click.echo("Run `sparkrun cluster status` to see what's running on the cluster.", err=True)
+        return
+
+    has_workloads = any(host_occ.workloads for host_occ in cluster_status.hosts)
+    if not has_workloads:
+        click.echo("", err=True)
+        click.echo("No sparkrun workloads detected on these hosts (capacity may be reserved off-cluster).", err=True)
+        click.echo("Run `sparkrun cluster status` for full details.", err=True)
+        return
+
+    click.echo("", err=True)
+    click.echo("Currently running on this cluster:", err=True)
+    for host_occ in cluster_status.hosts:
+        if not host_occ.workloads:
+            click.echo("  %-24s idle" % host_occ.host, err=True)
+            continue
+        for workload in host_occ.workloads:
+            label = workload.recipe_name or workload.cluster_id
+            click.echo(
+                "  %-24s %s (cluster_id=%s, %d rank(s))" % (host_occ.host, label, workload.cluster_id, workload.ranks_on_host),
+                err=True,
+            )
+    click.echo("", err=True)
+    click.echo("Stop a running job with `sparkrun stop <cluster_id>` (or `sparkrun stop --all`).", err=True)
 
 
 def _get_cluster_manager(v=None, sctx: SparkrunContext | None = None):
