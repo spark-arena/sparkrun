@@ -6,8 +6,8 @@ ABC's ``query_status`` method — there is no separate extension point
 for status providers.  Each Executor knows how to inspect its own
 backend (Docker via ``docker ps``, K8s via ``kubectl get pods``, …).
 
-Consumers (the future ``OccupancyAwareScheduler``, the
-``sparkrun status`` CLI, the ``cluster monitor`` TUI) all flow
+Consumers (the ``occupancy-sparse`` and ``occupancy-dense`` schedulers,
+the ``sparkrun status`` CLI, the ``cluster monitor`` TUI) all flow
 through ``sparkrun.api.status`` → ``executor.query_status``.
 """
 
@@ -24,7 +24,7 @@ class RunningWorkload:
     per-workload resource accounting fields populated by status
     providers that can observe them (e.g. parsing ``nvidia-smi``).
     Fractional-capable schedulers read these to compute available
-    capacity for occupancy-aware placement.
+    capacity for occupancy-sparse / occupancy-dense placement.
     """
 
     cluster_id: str

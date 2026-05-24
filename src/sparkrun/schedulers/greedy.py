@@ -17,9 +17,10 @@ The algorithm is exposed in two forms:
   vocabulary (:class:`InfeasibleScheduleError` /
   :class:`LayoutConflictError`).
 
-Other schedulers (occupancy-aware, best-fit) are expected to write
-their own packing loops rather than reuse this one.  The greedy
-algorithm and the greedy scheduler are intentionally co-located.
+Other schedulers (occupancy-sparse, occupancy-dense, best-fit) are
+expected to write their own packing loops rather than reuse this one.
+The greedy algorithm and the greedy scheduler are intentionally
+co-located.
 """
 
 from __future__ import annotations
@@ -228,10 +229,11 @@ class GreedyScheduler(Scheduler):
     :class:`~sparkrun.core.scheduler.ResourceRequest`
     (``util_fraction < 1.0``) rather than silently treating them as
     whole-GPU.  Fractional sharing is the job of a separate scheduler
-    (e.g. a future ``OccupancyAwareScheduler``).
+    (e.g. ``SparsePackScheduler`` / ``DensePackScheduler``).
 
-    Also ignores :attr:`SchedulingRequest.status` — occupancy-aware
-    behavior is out of scope for this strategy.
+    Also ignores :attr:`SchedulingRequest.status` — load-aware behavior
+    is out of scope for this strategy (see ``occupancy-sparse`` /
+    ``occupancy-dense``).
     """
 
     scheduler_name = "greedy"

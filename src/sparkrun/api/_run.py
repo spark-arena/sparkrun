@@ -112,11 +112,19 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunRes
             # right answer regardless of which runtime owns the workload.
             total_ranks = runtime.world_size(parallelism, recipe=recipe, cluster=cluster_def)
             parallelism = dataclasses.replace(parallelism, total_ranks=total_ranks)
+            # Acquire a ClusterStatus snapshot so occupancy-sparse / occupancy-dense schedulers can
+            # subtract already-committed workloads from each host's capacity.
+            # Best-effort — a partially-unreachable cluster shouldn't crash the
+            # launch path; the scheduler falls through to its no-status
+            # behaviour (greedy-equivalent for OccupancyAware) when this is
+            # None.
+            cluster_status = _safe_acquire_status(host_list, cluster_def, sctx)
             sched_request = SchedulingRequest(
                 parallelism=parallelism,
                 hosts=tuple(host_list),
                 host_hardware=cluster_def.hosts_hardware or None,
                 layout=getattr(recipe, "layout", None),
+                status=cluster_status,
                 resources=None,
             )
             sched_result = schedule(sched_request, scheduler=effective_scheduler, sctx=sctx)
@@ -237,7 +245,7 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunRes
         placement_token=final_placement_token,
         host_list=tuple(result.host_list),
         placement=placement,
-        scheduler=effective_scheduler or "greedy",
+        scheduler=_resolve_scheduler_name(effective_scheduler, sctx),
         runtime=runtime.runtime_name,
         executor=_executor_name_from_result(result),
         started_at=started_at,
@@ -265,6 +273,45 @@ def _build_executor_overrides(options: RunOptions) -> dict[str, Any]:
         for key, value in options.executor_config.items():
             overrides[key] = value
     return overrides
+
+
+def _safe_acquire_status(host_list, cluster_def, sctx):
+    """Best-effort :class:`ClusterStatus` query for the active host list.
+
+    Failures (partial reachability, missing executor, transient SSH
+    errors) are swallowed and ``None`` is returned so the scheduling
+    path stays resilient.  Schedulers that don't consume occupancy
+    info (e.g. greedy) simply ignore the field; ``occupancy-sparse``
+    and ``occupancy-dense`` degrade to their no-status path.
+    """
+    try:
+        from sparkrun.api._status import status as get_status
+
+        return get_status(
+            list(host_list),
+            cluster=cluster_def,
+            sctx=sctx,
+        )
+    except Exception as e:
+        logger.debug("Cluster status query failed; scheduling without occupancy info: %s", e)
+        return None
+
+
+def _resolve_scheduler_name(effective_scheduler, sctx):
+    """Return the registered ``scheduler_name`` for *effective_scheduler*.
+
+    Looking up the scheduler plugin guarantees ``RunResult.scheduler``
+    carries the *actually-used* name (e.g. ``"occupancy-sparse"`` when
+    the caller relied on the project default) rather than echoing the
+    possibly-``None`` selector that was passed in.
+    """
+    from sparkrun.core.scheduler import FALLBACK_DEFAULT_SCHEDULER, get_scheduler
+
+    try:
+        plugin = get_scheduler(effective_scheduler, v=sctx.variables if sctx is not None else None)
+        return plugin.scheduler_name
+    except Exception:
+        return effective_scheduler or FALLBACK_DEFAULT_SCHEDULER
 
 
 def _executor_name_from_result(result) -> str:

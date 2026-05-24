@@ -105,6 +105,11 @@ def init_sparkrun(v: Variables | None = None, log_level: str = "WARNING") -> Var
 
     discovered_schedulers = list(find_types_in_modules("sparkrun.schedulers", _SchedulerPlugin))
     for scheduler_cls in discovered_schedulers:
+        # Skip private base classes that intentionally leave scheduler_name
+        # blank — they exist only to share logic between concrete plugins.
+        if not getattr(scheduler_cls, "scheduler_name", ""):
+            logger.debug("Skipping abstract/base scheduler: %s", scheduler_cls.__name__)
+            continue
         try:
             register_plugin(scheduler_cls, v=v)
             logger.debug("Registered scheduler: %s", scheduler_cls.__name__)

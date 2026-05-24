@@ -44,6 +44,8 @@ logger = logging.getLogger(__name__)
 
 EXT_SCHEDULER = "sparkrun.scheduler"
 
+FALLBACK_DEFAULT_SCHEDULER = "occupancy-sparse"
+
 
 # --------------------------------------------------------------------------
 # Errors — placement-level (raised by scheduler implementations)
@@ -105,8 +107,8 @@ class ResourceRequest:
     """Per-rank resource claim against an accelerator's capacity.
 
     Default values request a whole accelerator — today's behavior.  A
-    fractional-capable scheduler (e.g. a future
-    ``OccupancyAwareScheduler``) honors ``util_fraction < 1.0`` and packs
+    fractional-capable scheduler (e.g. ``SparsePackScheduler`` /
+    ``DensePackScheduler``) honors ``util_fraction < 1.0`` and packs
     multiple ranks onto one accelerator if their combined claims fit
     within ``memory_gb`` and ``util_fraction`` budgets.
 
@@ -304,9 +306,9 @@ def get_scheduler(name: str | None = None, v: Variables | None = None) -> Schedu
     if v is None:
         v = get_variables()
 
-    target = (name or "greedy").strip().lower()
+    target = (name or FALLBACK_DEFAULT_SCHEDULER).strip().lower()
     if target == "default":
-        target = "greedy"
+        target = FALLBACK_DEFAULT_SCHEDULER
 
     plugins = get_extensions(EXT_SCHEDULER, v=v)
     for plugin in plugins.values():

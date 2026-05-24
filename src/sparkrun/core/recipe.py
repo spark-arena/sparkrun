@@ -670,7 +670,8 @@ class Recipe:
         self.executor: str = str(data.get("executor", "") or "")
 
         # Optional scheduler selector.  ``""`` (default) → GreedyScheduler.
-        # ``"occupancy-aware"`` opts in to occupancy + fractional GPU sharing.
+        # ``"occupancy-sparse"`` / ``"occupancy-dense"`` opt in to
+        # occupancy-sparse / occupancy-dense placement + fractional GPU sharing.
         # Overridden by ``--scheduler`` on the CLI / ``RunOptions.scheduler``.
         self.scheduler: str = str(data.get("scheduler", "") or "")
 

@@ -111,6 +111,34 @@ def _cli_test_recipes(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(sparkrun.core.recipe, "discover_cwd_recipes", _patched_discover)
 
 
+@pytest.fixture(autouse=True)
+def _stub_cluster_status_in_cli_tests(monkeypatch):
+    """Default cluster-status acquisition to a no-op so CLI tests don't SSH out.
+
+    The v0.3 launch flow populates ``SchedulingRequest.status`` from
+    two call sites: :func:`sparkrun.api._run._safe_acquire_status`
+    (consumed by ``api.run``) and ``api.status`` (called from
+    :func:`sparkrun.cli._common.resolve_effective_hosts_for_recipe`).
+    Both dispatch to ``executor.query_status`` → SSH against the
+    supplied hosts.  In unit tests the hosts are unreachable mock IPs
+    — without these stubs each test waits the full SSH connect
+    timeout (~10s/host) before the best-effort wrappers swallow the
+    failure.
+
+    Tests that need a real (or richer) status snapshot should re-patch
+    the relevant call site directly.
+    """
+    from sparkrun.core.cluster_status import empty_status
+
+    _stub = lambda hosts, **kwargs: empty_status(list(hosts))  # noqa: E731
+    monkeypatch.setattr("sparkrun.api._run._safe_acquire_status", lambda *args, **kwargs: None)
+    monkeypatch.setattr("sparkrun.api._status.status", _stub)
+    # ``api/__init__`` re-binds ``status`` into the public namespace;
+    # CLI helpers call ``api.status(...)`` against that binding, so
+    # patch it directly too.
+    monkeypatch.setattr("sparkrun.api.status", _stub)
+
+
 class TestVersionAndHelp:
     """Test version and help output."""
 
@@ -1030,6 +1058,48 @@ class TestRunCommand:
         assert "Platform:" in result.output
         assert "DGX Spark" in result.output
 
+    def test_run_banner_shows_scheduler_line(self, runner, reset_bootstrap):
+        """The pre-launch banner shows the effective scheduler name so users
+        can see which scheduler is making placement decisions."""
+        with mock.patch.object(SglangRuntime, "run", return_value=0):
+            result = runner.invoke(
+                main,
+                [
+                    "run",
+                    _TEST_RECIPE_NAME,
+                    "--dry-run",
+                    "--hosts",
+                    "10.0.0.1,10.0.0.2",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        # Banner advertises the resolved scheduler name — defaults to
+        # FALLBACK_DEFAULT_SCHEDULER when neither CLI nor recipe override.
+        from sparkrun.core.scheduler import FALLBACK_DEFAULT_SCHEDULER
+
+        assert "Scheduler:" in result.output
+        assert FALLBACK_DEFAULT_SCHEDULER in result.output
+
+    def test_run_banner_scheduler_honors_cli_override(self, runner, reset_bootstrap):
+        """--scheduler flag is reflected in the banner line."""
+        with mock.patch.object(SglangRuntime, "run", return_value=0):
+            result = runner.invoke(
+                main,
+                [
+                    "run",
+                    _TEST_RECIPE_NAME,
+                    "--dry-run",
+                    "--hosts",
+                    "10.0.0.1,10.0.0.2",
+                    "--scheduler",
+                    "greedy",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Scheduler: greedy" in result.output
+
 
 class TestStopCommand:
     """Test the stop command."""
@@ -1805,7 +1875,7 @@ class TestClusterCommands:
                 "--hosts",
                 "h1,h2",
                 "--scheduler",
-                "occupancy-aware",
+                "occupancy-sparse",
             ],
         )
         assert result.exit_code == 0, result.output
@@ -1814,7 +1884,7 @@ class TestClusterCommands:
 
         mgr = ClusterManager(config_root)
         c = mgr.get("sched-cluster")
-        assert c.scheduler == "occupancy-aware"
+        assert c.scheduler == "occupancy-sparse"
 
     def test_cluster_show_renders_scheduler(self, runner, tmp_path, monkeypatch):
         """``cluster show`` renders the Scheduler line when set."""

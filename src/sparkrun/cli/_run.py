@@ -157,7 +157,7 @@ def _summarize_platforms(
     "--scheduler",
     "scheduler_name",
     default=None,
-    help="Registered scheduler name (e.g. 'greedy', 'occupancy-aware'). Defaults to the recipe's scheduler field, then 'greedy'.",
+    help="Registered scheduler name (e.g. 'greedy', 'occupancy-sparse', 'occupancy-dense'). Defaults to the recipe's scheduler field, then 'greedy'.",
     hidden=HIDE_ADVANCED_OPTIONS,
 )
 @click.option("--label", "labels_override", multiple=True, help="Set meta data on a container (e.g., --label com.example.key=value)")
@@ -345,6 +345,19 @@ def run(
         config, transfer_mode_override=transfer_mode
     )
 
+    # Resolve effective scheduler name for display + downstream RunOptions.
+    # Scheduler selection chain: CLI flag → recipe.scheduler → None (registry default).
+    # Look up the plugin so the banner reflects the *actually-resolved* name
+    # (e.g. ``"occupancy-sparse"`` when defaulted) rather than a possibly-``None``
+    # selector — matches what ``api.run`` stamps on ``RunResult.scheduler``.
+    from sparkrun.core.scheduler import FALLBACK_DEFAULT_SCHEDULER, get_scheduler
+
+    effective_scheduler = scheduler_name or (recipe.scheduler or None)
+    try:
+        display_scheduler = get_scheduler(effective_scheduler, v=v).scheduler_name
+    except Exception:
+        display_scheduler = effective_scheduler or FALLBACK_DEFAULT_SCHEDULER
+
     # Display summary before launch
     from sparkrun import __version__
 
@@ -363,6 +376,7 @@ def run(
     if _per_host is not None:
         for _h, _line in _per_host:
             click.echo("  %-8s %s" % (_h + ":", _line))
+    click.echo("Scheduler: %s" % display_scheduler)
     if effective_transfer_mode not in ("auto", "local"):
         click.echo("Transfer:  %s" % effective_transfer_mode)
 
@@ -466,9 +480,8 @@ def run(
     # (so the banner / VRAM block could render those before launch);
     # passing the loaded objects through avoids re-resolution inside
     # ``api.run`` and preserves the cwd-recipe discovery the CLI does
-    # through ``_load_recipe``.
-    # Scheduler selection chain: CLI flag → recipe.scheduler → None (greedy default).
-    effective_scheduler = scheduler_name or (recipe.scheduler or None)
+    # through ``_load_recipe``.  ``effective_scheduler`` was resolved
+    # above so the banner could display the actually-used name.
 
     run_options = api.RunOptions(
         recipe=recipe,

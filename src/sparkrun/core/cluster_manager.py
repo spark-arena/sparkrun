@@ -11,11 +11,20 @@ from typing import Any
 import yaml
 
 from sparkrun.core.hardware import HostHardware, default_dgx_spark_hardware
+from sparkrun.orchestration.job_metadata import INTENT_ID_LEN, PLACEMENT_TOKEN_LEN
 
 logger = logging.getLogger(__name__)
 
 # Name validation pattern: start with alphanumeric, contain alphanumeric/underscore/hyphen
 CLUSTER_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$")
+
+# Canonical sparkrun container name: ``sparkrun_<intent>_<placement>[_<role>]``.
+# Mirrors :data:`sparkrun.orchestration.executors.docker._CONTAINER_NAME_RE`
+# so distinct workloads sharing an intent_id (same recipe replayed) parse
+# into distinct cluster_ids rather than collapsing on the intent prefix.
+_SPARKRUN_CONTAINER_NAME_RE = re.compile(
+    r"^sparkrun_(?P<intent>[0-9a-f]{%d})_(?P<placement>[0-9a-f]{%d})(?:_(?P<role>.+))?$" % (INTENT_ID_LEN, PLACEMENT_TOKEN_LEN)
+)
 
 # Valid transfer modes for resource distribution
 VALID_TRANSFER_MODES = ("auto", "local", "push", "delegated")
@@ -77,8 +86,8 @@ class ClusterDefinition:
     Inserted into the scheduler resolution chain between the recipe's
     ``scheduler`` selector and the greedy emergency fallback — see
     :func:`sparkrun.api.run` and :func:`sparkrun.api.schedule`.  A
-    cluster that bakes ``scheduler: occupancy-aware`` here makes every
-    recipe land on the occupancy-aware scheduler unless the recipe (or
+    cluster that bakes ``scheduler: occupancy-sparse`` here makes every
+    recipe land on the occupancy-sparse scheduler unless the recipe (or
     CLI) overrides.
     """
 
@@ -625,15 +634,13 @@ def query_cluster_status(
             if name.endswith("_solo"):
                 raw_solo_entries.append((host, name, status, image))
             else:
-                # Extract cluster_id by stripping the role suffix.
-                # Patterns: sparkrun_hash_head, sparkrun_hash_worker,
-                #           sparkrun_hash_node_0 (SGLang)
-                # Strategy: find the cluster_id prefix (sparkrun_{12-char hash})
-                # and treat the rest as the role.
-                prefix_end = name.find("_", len("sparkrun_"))
-                if 0 < prefix_end < len(name) - 1:
-                    cluster_id = name[:prefix_end]
-                    role = name[prefix_end + 1 :]
+                # Canonical container name: sparkrun_<intent>_<placement>[_<role>].
+                # The cluster_id is the full sparkrun_<intent>_<placement>; the
+                # trailing token (head / worker / node_N) is the role.
+                m = _SPARKRUN_CONTAINER_NAME_RE.match(name)
+                if m is not None:
+                    cluster_id = "sparkrun_%s_%s" % (m.group("intent"), m.group("placement"))
+                    role = m.group("role") or "?"
                 else:
                     cluster_id = name
                     role = "?"
