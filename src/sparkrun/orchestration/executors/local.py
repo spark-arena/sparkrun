@@ -164,12 +164,19 @@ class LocalExecutor(Executor):
         env: dict[str, str] | None = None,
         volumes: dict[str, str] | None = None,
         extra_opts: list[str] | None = None,
+        *,
+        sparkrun_labels: dict[str, str] | None = None,
     ) -> str:
         """Emit a setsid-based native launcher.
 
         *image* and *volumes* are ignored — there is no container.
         *extra_opts* are docker-only and are silently dropped.
+        *sparkrun_labels* is accepted for API symmetry but ignored —
+        there is no container to tag.  Workload identity for the
+        LocalExecutor flows through the pidfile name + job metadata
+        cache instead (see :func:`_parse_local_pidfile_output`).
         """
+        del sparkrun_labels  # accepted but unused — no container to tag
         if not container_name:
             raise ValueError("LocalExecutor.run_cmd requires container_name")
         if not command:
@@ -285,6 +292,8 @@ class LocalExecutor(Executor):
         nccl_env: dict[str, str] | None = None,
         detach: bool = True,
         extra_docker_opts: list[str] | None = None,
+        *,
+        sparkrun_labels: dict[str, str] | None = None,
     ) -> str:
         """Preflight only — actual launch happens in :meth:`generate_exec_serve_script`.
 
@@ -293,7 +302,9 @@ class LocalExecutor(Executor):
         ``generate_exec_serve_script`` to inject the real serve command.
         For LocalExecutor there is no container to hold; we just clean
         up any stale pidfile so the subsequent launch is well-defined.
+        ``sparkrun_labels`` is ignored (no container).
         """
+        del sparkrun_labels  # accepted but unused — no container to tag
         cleanup = self.stop_cmd(container_name)
         return (
             "#!/bin/bash\n"
@@ -312,13 +323,17 @@ class LocalExecutor(Executor):
         serve_command: str,
         env: dict[str, str] | None = None,
         detached: bool = True,
+        *,
+        sparkrun_labels: dict[str, str] | None = None,
     ) -> str:
         """Actually launch the serve command via setsid.
 
         This is where the native subprocess starts.  ``detached`` is
         honored to match the docker behavior (always true in practice
-        for sparkrun's solo flow).
+        for sparkrun's solo flow).  ``sparkrun_labels`` is ignored
+        (no container to tag).
         """
+        del sparkrun_labels  # accepted but unused — no container to tag
         # ``run_cmd`` already writes the launcher.  Detached / foreground
         # is the same shape for native — the setsid + & ensures the
         # parent script exits while the workload keeps running.
@@ -340,13 +355,17 @@ class LocalExecutor(Executor):
         volumes: dict[str, str] | None = None,
         nccl_env: dict[str, str] | None = None,
         extra_docker_opts: list[str] | None = None,
+        *,
+        sparkrun_labels: dict[str, str] | None = None,
     ) -> str:
         """Per-rank native launch script (used by native cluster runtimes).
 
         Multi-host falls out for free because each host's
         ``container_name`` is ``<cluster_id>_node_<rank>`` — that's the
         basename for the per-rank pidfile and logfile.
+        ``sparkrun_labels`` is ignored (no container to tag).
         """
+        del sparkrun_labels  # accepted but unused — no container to tag
         from sparkrun.utils import merge_env
 
         all_env = merge_env(nccl_env, env)

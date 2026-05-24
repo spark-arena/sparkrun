@@ -81,6 +81,10 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunRes
     hosts = list(cluster_def.hosts)
     runtime = resolve_runtime(recipe, sctx=sctx)
 
+    # Scheduler selection chain: caller's options → recipe.scheduler → None
+    # (which ``api.schedule`` interprets as "greedy").
+    effective_scheduler = options.scheduler or (getattr(recipe, "scheduler", "") or None)
+
     # Apply the cluster's SSH user (if any) to the config so downstream
     # SSH operations (executor.run / distribution / build_ssh_kwargs)
     # log in as the right user.  Matches the CLI's resolution chain
@@ -114,7 +118,7 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunRes
                 layout=getattr(recipe, "layout", None),
                 resources=None,
             )
-            sched_result = schedule(sched_request, scheduler=options.scheduler, sctx=sctx)
+            sched_result = schedule(sched_request, scheduler=effective_scheduler, sctx=sctx)
             placement = sched_result.assignment
             host_list = list(placement.hosts_used)
             logger.debug("placement consumed %d of %d hosts", len(host_list), len(hosts))
@@ -232,7 +236,7 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunRes
         placement_token=final_placement_token,
         host_list=tuple(result.host_list),
         placement=placement,
-        scheduler=options.scheduler or "greedy",
+        scheduler=effective_scheduler or "greedy",
         runtime=runtime.runtime_name,
         executor=_executor_name_from_result(result),
         started_at=started_at,

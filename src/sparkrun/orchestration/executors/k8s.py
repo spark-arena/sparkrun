@@ -112,8 +112,16 @@ class K8sExecutor(Executor):
         env: dict[str, str] | None = None,
         volumes: dict[str, str] | None = None,
         extra_opts: list[str] | None = None,
+        *,
+        sparkrun_labels: dict[str, str] | None = None,
     ) -> str:
-        """Emit a ``kubectl run`` command that creates a single Pod."""
+        """Emit a ``kubectl run`` command that creates a single Pod.
+
+        ``sparkrun_labels`` are emitted as one ``--labels=key=value`` flag
+        per pair — kubectl run accepts comma-separated labels but
+        emitting separately sidesteps any quoting ambiguity in shell
+        contexts.  User-supplied ``cfg.labels`` is still emitted below.
+        """
         if not container_name:
             raise ValueError("K8sExecutor.run_cmd requires container_name (used as Pod name)")
         if not image:
@@ -145,6 +153,9 @@ class K8sExecutor(Executor):
         if cfg.labels:
             for lbl in cfg.labels:
                 parts.append("--labels=%s" % quote(lbl))
+        if sparkrun_labels:
+            for key, value in sorted(sparkrun_labels.items()):
+                parts.append("--labels=%s" % quote("%s=%s" % (key, value)))
         if extra_opts:
             # extra_opts are docker --run flags; pass through verbatim
             # only when they look like kubectl-compatible ``--key=val``.
@@ -234,14 +245,20 @@ class K8sExecutor(Executor):
         nccl_env: dict[str, str] | None = None,
         detach: bool = True,
         extra_docker_opts: list[str] | None = None,
+        *,
+        sparkrun_labels: dict[str, str] | None = None,
     ) -> str:
         """Preflight: delete any stale Pod with the same name.
 
         The actual workload Pod is created by
         :meth:`generate_exec_serve_script` so the serve command (which
         sparkrun knows after solo-mode runtimes resolve it) lands in the
-        Pod's primary container.
+        Pod's primary container.  ``sparkrun_labels`` is preserved by
+        forwarding through to :meth:`generate_exec_serve_script` —
+        callers thread the same dict into both calls so the Pod that
+        actually gets created carries the labels.
         """
+        del sparkrun_labels  # preflight only — labels attach at Pod-create time
         cleanup = self.stop_cmd(container_name)
         return (
             "#!/bin/bash\n"
@@ -260,6 +277,8 @@ class K8sExecutor(Executor):
         serve_command: str,
         env: dict[str, str] | None = None,
         detached: bool = True,
+        *,
+        sparkrun_labels: dict[str, str] | None = None,
     ) -> str:
         """Create the workload Pod with *serve_command* as its entrypoint.
 
@@ -271,6 +290,9 @@ class K8sExecutor(Executor):
         rely on a sentinel ``SPARKRUN_K8S_IMAGE`` environment variable
         passed in *env* — runtime authors who target K8s explicitly
         should set this in their generated env.
+
+        ``sparkrun_labels`` is forwarded to :meth:`run_cmd` so the
+        Pod manifest carries the canonical sparkrun label set.
         """
         image = (env or {}).get("SPARKRUN_K8S_IMAGE", "")
         if not image:
@@ -286,6 +308,7 @@ class K8sExecutor(Executor):
             container_name=container_name,
             detach=detached,
             env=env_for_pod,
+            sparkrun_labels=sparkrun_labels,
         )
 
     def generate_node_script(
@@ -298,6 +321,8 @@ class K8sExecutor(Executor):
         volumes: dict[str, str] | None = None,
         nccl_env: dict[str, str] | None = None,
         extra_docker_opts: list[str] | None = None,
+        *,
+        sparkrun_labels: dict[str, str] | None = None,
     ) -> str:
         """Per-rank Pod launcher for native cluster runtimes."""
         from sparkrun.utils import merge_env
@@ -311,6 +336,7 @@ class K8sExecutor(Executor):
             detach=True,
             env=all_env,
             extra_opts=extra_docker_opts,
+            sparkrun_labels=sparkrun_labels,
         )
         return (
             "#!/bin/bash\n"

@@ -542,6 +542,7 @@ class TrtllmRuntime(RuntimePlugin):
         else:
             logger.info("Step 4/7: Launching %d container(s) with sleep infinity...", ctx.num_nodes)
         containers = [(host, self._resolve_executor().node_container_name(cluster_id, rank)) for rank, host in enumerate(hosts)]
+        container_ranks = {self._resolve_executor().node_container_name(cluster_id, rank): rank for rank, _ in enumerate(hosts)}
         combined_docker_opts = (self.get_extra_docker_opts() or []) + (extra_docker_opts or [])
         rc = launch_containers_parallel(
             ctx,
@@ -549,6 +550,9 @@ class TrtllmRuntime(RuntimePlugin):
             self.executor,
             comm_env,
             extra_docker_opts=combined_docker_opts or None,
+            runtime=self,
+            recipe=recipe,
+            container_ranks=container_ranks,
         )
         if rc != 0:
             return rc

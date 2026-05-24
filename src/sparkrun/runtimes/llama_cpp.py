@@ -503,7 +503,18 @@ class LlamaCppRuntime(RuntimePlugin):
             all_containers.append((host, worker_container_name))
 
         combined_docker_opts = (self.get_extra_docker_opts() or []) + (extra_docker_opts or [])
-        rc = launch_containers_parallel(ctx, all_containers, self.executor, comm_env, extra_docker_opts=combined_docker_opts or None)
+        # llama.cpp uses role-based container names (head, worker) rather
+        # than ranked ones, so we don't emit per-container rank labels —
+        # workload_labels_for_cluster picks up cluster_id + recipe + runtime.
+        rc = launch_containers_parallel(
+            ctx,
+            all_containers,
+            self.executor,
+            comm_env,
+            extra_docker_opts=combined_docker_opts or None,
+            runtime=self,
+            recipe=recipe,
+        )
         if rc != 0:
             return rc
         logger.info("Step 3/6: All containers launched (%.1fs)", time.monotonic() - t0)

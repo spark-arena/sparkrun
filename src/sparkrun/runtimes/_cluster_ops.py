@@ -437,6 +437,10 @@ def launch_containers_parallel(
     executor: Executor,
     comm_env: ClusterCommEnv | None,
     extra_docker_opts: list[str] | None = None,
+    *,
+    runtime: RuntimePlugin | None = None,
+    recipe: Recipe | None = None,
+    container_ranks: dict[str, int] | None = None,
 ) -> int:
     """Launch sleep-infinity containers in parallel.
 
@@ -444,6 +448,14 @@ def launch_containers_parallel(
     block, so heterogeneous management interfaces (e.g. wired on the
     head, wifi on a worker) each see the right ``*_SOCKET_IFNAME``
     values instead of the head's interface being broadcast cluster-wide.
+
+    When *runtime* and *recipe* are provided, each container is tagged
+    with the canonical sparkrun label set via
+    :meth:`Executor.workload_labels_for_cluster` so ``docker ps --filter
+    "label=sparkrun.intent_id=<x>"`` becomes a working discovery
+    surface.  Per-container rank can be supplied via *container_ranks*
+    (keyed by container name); when absent the rank label is omitted
+    for that container.
 
     Returns 0 on success, 1 on first failure.
     """
@@ -453,6 +465,13 @@ def launch_containers_parallel(
         futures = {}
         for host, cname in containers:
             host_nccl_env = comm_env.get_env(host) if comm_env else None
+            rank = (container_ranks or {}).get(cname)
+            sparkrun_labels = executor.workload_labels_for_cluster(
+                cluster_id=ctx.cluster_id,
+                recipe=recipe,
+                runtime=runtime,
+                rank=rank,
+            )
             script = executor.generate_launch_script(
                 image=ctx.image,
                 container_name=cname,
@@ -461,6 +480,7 @@ def launch_containers_parallel(
                 volumes=ctx.volumes,
                 nccl_env=host_nccl_env,
                 extra_docker_opts=extra_docker_opts,
+                sparkrun_labels=sparkrun_labels or None,
             )
             future = pool.submit(
                 run_remote_script,
@@ -530,8 +550,15 @@ def exec_serve_on_container(
     command: str,
     *,
     detached: bool = True,
+    sparkrun_labels: dict[str, str] | None = None,
 ) -> int:
     """Generate and run an exec-serve script on a container.
+
+    *sparkrun_labels* is forwarded to
+    :meth:`Executor.generate_exec_serve_script`.  For Docker this is a
+    no-op (labels live on the parent container created by
+    ``launch_containers_parallel``); for K8s the Pod is created here,
+    so labels must flow through.
 
     Returns 0 on success, 1 on failure.
     """
@@ -542,6 +569,7 @@ def exec_serve_on_container(
         serve_command=command,
         env=ctx.all_env,
         detached=detached,
+        sparkrun_labels=sparkrun_labels or None,
     )
     result = run_remote_script(
         host,
@@ -714,6 +742,7 @@ def run_native_cluster(
         all_nodes.append((host, rank, executor.node_container_name(ctx.cluster_id, rank)))
 
     containers = [(host, cname) for host, _rank, cname in all_nodes]
+    container_ranks = {cname: rank for _host, rank, cname in all_nodes}
     combined_docker_opts = (runtime.get_extra_docker_opts() or []) + (extra_docker_opts or [])
     rc = launch_containers_parallel(
         ctx,
@@ -721,6 +750,9 @@ def run_native_cluster(
         executor,
         comm_env,
         extra_docker_opts=combined_docker_opts or None,
+        runtime=runtime,
+        recipe=recipe,
+        container_ranks=container_ranks,
     )
     if rc != 0:
         return rc
@@ -743,11 +775,18 @@ def run_native_cluster(
         progress.step("Starting head node serve")
     else:
         logger.info("Step 6/7: Executing serve command on head node (rank 0) %s...", ctx.head_host)
+    head_sparkrun_labels = executor.workload_labels_for_cluster(
+        cluster_id=ctx.cluster_id,
+        recipe=recipe,
+        runtime=runtime,
+        rank=0,
+    )
     head_exec_script = executor.generate_exec_serve_script(
         container_name=head_container,
         serve_command=head_command,
         env=ctx.all_env,
         detached=True,
+        sparkrun_labels=head_sparkrun_labels or None,
     )
     head_result = run_remote_script(
         ctx.head_host,
@@ -822,11 +861,18 @@ def run_native_cluster(
                     placement=ctx.placement,
                 )
                 worker_container = all_nodes[rank][2]
+                worker_sparkrun_labels = executor.workload_labels_for_cluster(
+                    cluster_id=ctx.cluster_id,
+                    recipe=recipe,
+                    runtime=runtime,
+                    rank=rank,
+                )
                 worker_exec_script = executor.generate_exec_serve_script(
                     container_name=worker_container,
                     serve_command=worker_command,
                     env=ctx.all_env,
                     detached=True,
+                    sparkrun_labels=worker_sparkrun_labels or None,
                 )
                 future = pool.submit(
                     run_remote_script,
