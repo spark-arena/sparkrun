@@ -1636,6 +1636,44 @@ class TestDistributeResourcesTransferMode:
         mock_validate.assert_called_once()
         mock_img.assert_called_once()
 
+    @mock.patch("sparkrun.containers.distribute.distribute_image_from_local")
+    @mock.patch("sparkrun.orchestration.infiniband.validate_ib_connectivity")
+    @mock.patch("sparkrun.orchestration.infiniband.detect_ib_for_hosts")
+    @mock.patch("sparkrun.orchestration.primitives.build_ssh_kwargs", return_value={})
+    def test_local_mode_uses_validated_ib_ips_not_first_candidate(self, mock_ssh, mock_ib, mock_validate, mock_img):
+        """Regression: on mesh/ring fabrics the first detected IB IP per host
+        may be unreachable from control; transfer_hosts must come from the
+        reachability-verified map returned by validate_ib_connectivity,
+        not from ib_result.ib_ip_map (first detected per host).
+        """
+        # Mirror the user-reported ring scenario: each host's first candidate
+        # is unreachable from control, but a later candidate is.
+        mock_ib.return_value = mock.MagicMock(
+            comm_env=ClusterCommEnv.empty(),
+            mgmt_ip_map={},
+            ib_ip_map={"h1": "192.168.2.2", "h2": "192.168.0.1", "h3": "192.168.2.1"},
+            ib_candidates={
+                "h1": ["192.168.2.2", "192.168.4.2"],
+                "h2": ["192.168.0.1", "192.168.2.1"],
+                "h3": ["192.168.2.1", "192.168.4.1"],
+            },
+        )
+        mock_validate.return_value = {"h1": "192.168.4.2", "h2": "192.168.0.1", "h3": "192.168.4.1"}
+        mock_img.return_value = []
+        from sparkrun.orchestration.distribution import distribute_resources
+
+        distribute_resources(
+            "img:latest",
+            "",
+            ["h1", "h2", "h3"],
+            "/cache",
+            self._make_config(),
+            dry_run=True,
+            transfer_mode="local",
+        )
+        call_kwargs = mock_img.call_args[1]
+        assert call_kwargs["transfer_hosts"] == ["192.168.4.2", "192.168.0.1", "192.168.4.1"]
+
     @mock.patch("sparkrun.containers.distribute.distribute_image_from_head")
     @mock.patch("sparkrun.orchestration.distribution.is_control_in_cluster", return_value=False)
     @mock.patch("sparkrun.orchestration.infiniband.validate_ib_connectivity")

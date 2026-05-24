@@ -498,14 +498,18 @@ def distribute_resources(
         )
 
     if transfer_mode == "local":
-        # Local mode: use validated IB IPs for direct transfers
+        # Local mode: use validated IB IPs for direct transfers.
+        # ib_result.ib_ip_map only carries the *first* detected IB IP per host;
+        # on mesh/ring fabrics that IP is often unreachable from the control
+        # machine. _ib_validated carries the reachability-verified IP from
+        # validate_ib_connectivity(), which is what control→host transfers must use.
         ib_ip_map = _ib_validated or {}
         if ib_ip_map and not _use_mgmt:
-            transfer_hosts = [ib_result.ib_ip_map.get(h, h) for h in host_list]
-            logger.debug("ib_ip_map=%r host_list=%r transfer_hosts=%r", ib_result.ib_ip_map, host_list, transfer_hosts)
+            transfer_hosts = [ib_ip_map.get(h, h) for h in host_list]
+            logger.debug("ib_ip_map=%r host_list=%r transfer_hosts=%r", ib_ip_map, host_list, transfer_hosts)
             logger.info(
                 "Using IB network for transfers (%d/%d hosts)",
-                len(ib_result.ib_ip_map),
+                len(ib_ip_map),
                 len(host_list),
             )
     else:
@@ -757,8 +761,11 @@ def distribute_from_config(
     _cross_user = _is_cross_user(ssh_kwargs)
 
     if transfer_mode == "local":
+        # See distribute_resources(): control→host transfers must use the
+        # reachability-verified _ib_validated map, not the first-candidate
+        # ib_result.ib_ip_map (which is wrong on mesh/ring fabrics).
         ib_ip_map = _ib_validated or {}
-        transfer_hosts = [ib_result.ib_ip_map.get(h, h) for h in host_list] if ib_ip_map and not _use_mgmt else None
+        transfer_hosts = [ib_ip_map.get(h, h) for h in host_list] if ib_ip_map and not _use_mgmt else None
         worker_transfer_hosts = None
     else:
         ib_ip_map = ib_result.ib_ip_map
