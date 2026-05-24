@@ -28,6 +28,15 @@ class RunningWorkload:
     """
 
     cluster_id: str
+    intent_id: str | None = None
+    """Hex intent identifier (the deterministic prefix of cluster_id).
+
+    Recovered from the ``sparkrun.intent_id`` container label when
+    emitted; otherwise derived from the cluster_id's intent prefix or
+    enriched from cached job metadata.  ``None`` indicates a workload
+    whose container name does not parse as a canonical sparkrun
+    identifier.
+    """
     recipe_name: str | None = None
     runtime_name: str | None = None
     started_at: float | None = None

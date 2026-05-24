@@ -4,16 +4,20 @@ import re
 from unittest import mock
 
 from scitrera_app_framework import Variables
-from sparkrun.orchestration.job_metadata import generate_cluster_id
+from sparkrun.orchestration.job_metadata import (
+    INTENT_ID_LEN,
+    PLACEMENT_TOKEN_LEN,
+    derive_cluster_id,
+)
 from sparkrun.core.recipe import Recipe
 from sparkrun.runtimes.base import RuntimePlugin
 
 
-# --- generate_cluster_id Tests ---
+# --- derive_cluster_id Tests ---
 
 
-class TestGenerateClusterId:
-    """Test deterministic cluster ID generation."""
+class TestDeriveClusterId:
+    """Test deterministic cluster ID derivation from (recipe, hosts)."""
 
     def _make_recipe(self, runtime="vllm", model="meta-llama/Llama-2-7b-hf"):
         return Recipe.from_dict(
@@ -28,27 +32,27 @@ class TestGenerateClusterId:
         """Same inputs produce the same cluster ID."""
         recipe = self._make_recipe()
         hosts = ["10.0.0.1", "10.0.0.2"]
-        assert generate_cluster_id(recipe, hosts) == generate_cluster_id(recipe, hosts)
+        assert derive_cluster_id(recipe, hosts) == derive_cluster_id(recipe, hosts)
 
     def test_host_order_independent(self):
         """Host ordering does not affect the ID (sorted internally)."""
         recipe = self._make_recipe()
-        id_a = generate_cluster_id(recipe, ["10.0.0.1", "10.0.0.2"])
-        id_b = generate_cluster_id(recipe, ["10.0.0.2", "10.0.0.1"])
+        id_a = derive_cluster_id(recipe, ["10.0.0.1", "10.0.0.2"])
+        id_b = derive_cluster_id(recipe, ["10.0.0.2", "10.0.0.1"])
         assert id_a == id_b
 
     def test_different_hosts_differ(self):
         """Different host sets produce different IDs."""
         recipe = self._make_recipe()
-        id_a = generate_cluster_id(recipe, ["10.0.0.1"])
-        id_b = generate_cluster_id(recipe, ["10.0.0.2"])
+        id_a = derive_cluster_id(recipe, ["10.0.0.1"])
+        id_b = derive_cluster_id(recipe, ["10.0.0.2"])
         assert id_a != id_b
 
     def test_prefix_and_format(self):
-        """Result starts with 'sparkrun_' followed by 12 hex characters."""
+        """Composite cluster_id is ``sparkrun_<intent>_<placement_token>``."""
         recipe = self._make_recipe()
-        cid = generate_cluster_id(recipe, ["host1"])
-        assert re.fullmatch(r"sparkrun_[0-9a-f]{12}", cid)
+        cid = derive_cluster_id(recipe, ["host1"])
+        assert re.fullmatch(r"sparkrun_[0-9a-f]{%d}_[0-9a-f]{%d}" % (INTENT_ID_LEN, PLACEMENT_TOKEN_LEN), cid)
 
 
 # --- resolve_api_key Tests ---

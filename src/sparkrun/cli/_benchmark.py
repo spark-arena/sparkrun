@@ -673,9 +673,9 @@ def _run_benchmark(
         serve_port = int(config_chain.get("port") or 8000)
         overrides["port"] = serve_port
         # Derive cluster_id for skip-run (needed for stop)
-        from sparkrun.orchestration.job_metadata import generate_cluster_id
+        from sparkrun.orchestration.job_metadata import derive_cluster_id
 
-        cluster_id = generate_cluster_id(recipe, host_list, overrides=overrides)
+        cluster_id = derive_cluster_id(recipe, host_list, overrides=overrides)
 
     container_image = runtime.resolve_container(recipe, overrides)
 
@@ -725,9 +725,9 @@ def _run_benchmark(
     # Pre-compute cluster_id so we can clean up containers even if
     # launch_inference is interrupted before it returns (e.g. Ctrl+C
     # during wait_for_port inside the runtime).
-    from sparkrun.orchestration.job_metadata import generate_cluster_id as _gen_cid
+    from sparkrun.orchestration.job_metadata import derive_cluster_id as _derive_cid
 
-    cluster_id = _gen_cid(recipe, host_list, overrides=overrides)
+    cluster_id = _derive_cid(recipe, host_list, overrides=overrides)
 
     # Store recipe/cluster context on bench_result so callers (e.g. arena
     # benchmark) can generate metadata even when --skip-run skips the launch.

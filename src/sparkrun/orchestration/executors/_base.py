@@ -35,6 +35,7 @@ EXT_EXECUTOR = "sparkrun.executor"
 # (Docker --label, k8s metadata.labels, etc.) and query_status reads
 # them back to enrich the ClusterStatus snapshot.
 LABEL_CLUSTER_ID = "sparkrun.cluster_id"
+LABEL_INTENT_ID = "sparkrun.intent_id"
 LABEL_RECIPE = "sparkrun.recipe"
 LABEL_RANK = "sparkrun.rank"
 LABEL_RUNTIME = "sparkrun.runtime"
@@ -389,6 +390,7 @@ class Executor(Plugin):
         recipe_name: str | None = None,
         runtime_name: str | None = None,
         rank: int | None = None,
+        intent_id: str | None = None,
     ) -> dict[str, str]:
         """Return the canonical sparkrun label set for a workload.
 
@@ -399,8 +401,23 @@ class Executor(Plugin):
         Returns a plain ``dict[str, str]``; concrete executors choose
         how to emit them (``--label key=value`` for Docker, k8s
         ``metadata.labels``, …).
+
+        Args:
+            cluster_id: Full sparkrun cluster identifier.
+            recipe_name: Recipe qualified name (omitted when falsy).
+            runtime_name: Runtime family (omitted when falsy).
+            rank: Global rank index (``0`` is emitted; ``None`` is not).
+            intent_id: Hex intent identifier.  When omitted, the
+                method attempts to derive it from *cluster_id* (using
+                the canonical ``sparkrun_<intent>_<token>`` shape) so
+                callers that already carry a cluster_id get the label
+                for free.
         """
         labels: dict[str, str] = {LABEL_CLUSTER_ID: cluster_id}
+        if intent_id is None:
+            intent_id = _intent_id_from_cluster_id(cluster_id)
+        if intent_id:
+            labels[LABEL_INTENT_ID] = intent_id
         if recipe_name:
             labels[LABEL_RECIPE] = recipe_name
         if runtime_name:
@@ -619,6 +636,25 @@ class Executor(Plugin):
             "run_cmd": run,
             "label": quote(label),
         }
+
+
+def _intent_id_from_cluster_id(cluster_id: str) -> str | None:
+    """Derive the intent_id from a sparkrun cluster_id.
+
+    Returns ``None`` when *cluster_id* doesn't parse as a canonical
+    ``sparkrun_<intent>_<placement_token>`` — callers may treat absence
+    as "this workload's identifier is not canonical, fall back to
+    cluster_id matching".
+    """
+    from sparkrun.orchestration.job_metadata import parse_cluster_id
+
+    if not cluster_id:
+        return None
+    try:
+        intent_id, _ = parse_cluster_id(cluster_id)
+        return intent_id
+    except ValueError:
+        return None
 
 
 def accelerator_vendor_for(host_hardware) -> str | None:

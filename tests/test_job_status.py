@@ -12,7 +12,7 @@ from sparkrun.orchestration.job_metadata import check_job_running
 
 @pytest.fixture
 def mock_recipe():
-    """Create a mock recipe with attributes needed for generate_cluster_id."""
+    """Create a mock recipe with attributes needed for derive_cluster_id."""
     r = mock.MagicMock()
     r.runtime = "sglang"
     r.model = "Qwen/Qwen3-1.7B"
@@ -148,11 +148,11 @@ class TestCheckJobRunning:
         assert status.hosts == []
 
     def test_check_running_by_recipe(self, mock_recipe):
-        """Generate cluster_id from recipe + hosts."""
-        from sparkrun.orchestration.job_metadata import generate_cluster_id
+        """Derive cluster_id from recipe + hosts."""
+        from sparkrun.orchestration.job_metadata import derive_cluster_id
 
         hosts = ["10.0.0.1", "10.0.0.2"]
-        expected_cid = generate_cluster_id(mock_recipe, hosts)
+        expected_cid = derive_cluster_id(mock_recipe, hosts)
 
         with (
             mock.patch(

@@ -16,11 +16,13 @@ import time
 from typing import Mapping, TYPE_CHECKING
 
 from sparkrun.orchestration.executors._base import (
+    LABEL_INTENT_ID,
     LABEL_RANK,
     LABEL_RECIPE,
     LABEL_RUNTIME,
     Executor,
 )
+from sparkrun.orchestration.job_metadata import INTENT_ID_LEN, PLACEMENT_TOKEN_LEN
 from sparkrun.utils.shell import args_list_to_shell_str, b64_wrap_bash, quote
 
 if TYPE_CHECKING:
@@ -32,8 +34,16 @@ logger = logging.getLogger(__name__)
 
 # Matches the deterministic sparkrun container-name convention emitted by
 # :class:`Executor.container_name` / :class:`Executor.node_container_name`:
-# ``sparkrun_<12-hex>_(solo|head|worker|node_<rank>)``.
-_CONTAINER_NAME_RE = re.compile(r"^(?P<cluster>sparkrun_[0-9a-f]{12})_(?P<role>solo|head|worker|node_(?P<rank>\d+))$")
+# ``sparkrun_<intent>_<placement_token>_(solo|head|worker|node_<rank>)``
+# where ``intent`` is :data:`INTENT_ID_LEN` hex chars and
+# ``placement_token`` is :data:`PLACEMENT_TOKEN_LEN` hex chars.
+#
+# ``cluster`` captures the full ``sparkrun_...`` cluster_id; ``intent``
+# captures the intent_id prefix.
+_CONTAINER_NAME_RE = re.compile(
+    r"^(?P<cluster>sparkrun_(?P<intent>[0-9a-f]{%d})_[0-9a-f]{%d})_(?P<role>solo|head|worker|node_(?P<rank>\d+))$"
+    % (INTENT_ID_LEN, PLACEMENT_TOKEN_LEN)
+)
 
 
 # Per-executor defaults for the resolution chain — sits just above
@@ -414,6 +424,7 @@ def _parse_docker_ps_output(stdout: str, host: str) -> tuple[list, int]:
         cluster_id = m.group("cluster")
         rank_str = m.group("rank")
         rank_from_name = int(rank_str) if rank_str is not None else 0
+        intent_from_name = m.group("intent")
 
         labels = _parse_docker_labels(entry.get("Labels") or "")
         # Labels take precedence when present (future-proof for richer
@@ -421,6 +432,7 @@ def _parse_docker_ps_output(stdout: str, host: str) -> tuple[list, int]:
         rank = int(labels[LABEL_RANK]) if LABEL_RANK in labels else rank_from_name
         recipe_name = labels.get(LABEL_RECIPE)
         runtime_name = labels.get(LABEL_RUNTIME)
+        intent_id = labels.get(LABEL_INTENT_ID) or intent_from_name
         container_id = entry.get("ID") or ""
 
         bucket = by_cluster.setdefault(
@@ -430,6 +442,7 @@ def _parse_docker_ps_output(stdout: str, host: str) -> tuple[list, int]:
                 "container_ids": [],
                 "recipe_name": None,
                 "runtime_name": None,
+                "intent_id": None,
             },
         )
         bucket["ranks"].add(rank)
@@ -439,24 +452,27 @@ def _parse_docker_ps_output(stdout: str, host: str) -> tuple[list, int]:
             bucket["recipe_name"] = recipe_name
         if runtime_name and bucket["runtime_name"] is None:
             bucket["runtime_name"] = runtime_name
+        if intent_id and bucket["intent_id"] is None:
+            bucket["intent_id"] = intent_id
 
-    # Enrich missing recipe/runtime from cached job metadata when the
-    # labels haven't been emitted yet (today's state — labels emission
-    # follows in a later task).
+    # Enrich missing recipe/runtime/intent_id from cached job metadata
+    # when the labels haven't been emitted yet.
     workloads: list[RunningWorkload] = []
     total_ranks_on_host = 0
     for cluster_id, bucket in by_cluster.items():
-        if bucket["recipe_name"] is None or bucket["runtime_name"] is None:
+        if bucket["recipe_name"] is None or bucket["runtime_name"] is None or bucket["intent_id"] is None:
             meta = _load_metadata_safely(cluster_id)
             if meta is not None:
                 bucket["recipe_name"] = bucket["recipe_name"] or meta.get("recipe")
                 bucket["runtime_name"] = bucket["runtime_name"] or meta.get("runtime")
+                bucket["intent_id"] = bucket["intent_id"] or meta.get("intent_id")
 
         ranks_on_host = len(bucket["ranks"])
         total_ranks_on_host += ranks_on_host
         workloads.append(
             RunningWorkload(
                 cluster_id=cluster_id,
+                intent_id=bucket["intent_id"],
                 recipe_name=bucket["recipe_name"],
                 runtime_name=bucket["runtime_name"],
                 ranks_on_host=ranks_on_host,

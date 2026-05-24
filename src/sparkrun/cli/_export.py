@@ -105,7 +105,7 @@ def export_running(ctx, target, hosts, hosts_file, cluster_name, output_json, sa
       sparkrun export running-recipe e5f6a7b8 --save effective-recipe.yaml
     """
     from sparkrun.core.recipe import Recipe
-    from sparkrun.orchestration.job_metadata import load_job_metadata, generate_cluster_id
+    from sparkrun.orchestration.job_metadata import load_job_metadata, derive_cluster_id
 
     config, _ = _get_config_and_registry()
 
@@ -116,7 +116,7 @@ def export_running(ctx, target, hosts, hosts_file, cluster_name, output_json, sa
         # Target is a recipe name — need hosts to generate cluster_id
         recipe, _recipe_path, _registry_mgr = _load_recipe(config, target)
         host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config)
-        cluster_id = generate_cluster_id(recipe, host_list)
+        cluster_id = derive_cluster_id(recipe, host_list)
 
     # Load job metadata
     meta = load_job_metadata(cluster_id, cache_dir=str(config.cache_dir))

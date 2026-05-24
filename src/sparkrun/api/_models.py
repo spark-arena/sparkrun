@@ -159,6 +159,16 @@ class RunResult:
     """Opaque handle to the underlying :class:`LaunchResult` for callers
     that need the raw orchestration object (CLI ``post_launch_lifecycle``,
     crash diagnostics).  External callers should treat this as private."""
+    intent_id: str = ""
+    """Deterministic hex prefix of :attr:`cluster_id`.  Same value
+    across every run of the same recipe + parallelism + port — useful
+    for status / stop / logs discovery without re-running the
+    scheduler.  Empty string only when the caller supplied a
+    non-canonical ``cluster_id_override``."""
+    placement_token: str = ""
+    """Random hex token disambiguating this specific launch from other
+    instances of the same intent.  Empty string only when the caller
+    supplied a non-canonical ``cluster_id_override``."""
 
 
 # --------------------------------------------------------------------------
@@ -219,6 +229,15 @@ class JobInfo:
     hosts: tuple[str, ...] = ()
     started_at: float | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    intent_id: str | None = None
+    """Deterministic hex prefix of the cluster_id.  ``None`` indicates
+    a job metadata file whose contents do not parse as a canonical
+    sparkrun cluster_id (corrupted YAML, hand-edited, or written by an
+    incompatible tool)."""
+    placement_token: str | None = None
+    """Random hex suffix unique to this launch.  ``None`` indicates a
+    job metadata file whose contents do not parse as a canonical
+    sparkrun cluster_id (data-quality issue)."""
 
 
 __all__ = [

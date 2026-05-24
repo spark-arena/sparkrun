@@ -159,14 +159,14 @@ class TestJobMetadataRuntimeInfo:
         runtime_info = {"vllm": "0.8.5", "cuda": "12.9", "torch": "2.7.0"}
 
         save_job_metadata(
-            "sparkrun_abc123",
+            "sparkrun_abc123abc123abc1_0123456789ab",
             recipe,
             ["host1"],
             cache_dir=str(tmp_path),
             runtime_info=runtime_info,
         )
 
-        meta = load_job_metadata("sparkrun_abc123", cache_dir=str(tmp_path))
+        meta = load_job_metadata("sparkrun_abc123abc123abc1_0123456789ab", cache_dir=str(tmp_path))
         assert meta is not None
         assert meta["runtime_info"] == runtime_info
 
@@ -174,13 +174,13 @@ class TestJobMetadataRuntimeInfo:
         recipe = self._make_recipe()
 
         save_job_metadata(
-            "sparkrun_def456",
+            "sparkrun_def456def456def4_56789abcdef0",
             recipe,
             ["host1"],
             cache_dir=str(tmp_path),
         )
 
-        meta = load_job_metadata("sparkrun_def456", cache_dir=str(tmp_path))
+        meta = load_job_metadata("sparkrun_def456def456def4_56789abcdef0", cache_dir=str(tmp_path))
         assert meta is not None
         assert "runtime_info" not in meta
 
@@ -188,14 +188,14 @@ class TestJobMetadataRuntimeInfo:
         recipe = self._make_recipe()
 
         save_job_metadata(
-            "sparkrun_ghi789",
+            "sparkrun_aaaaaaaaaaaaaaaa_bbbbbbbbbbbb",
             recipe,
             ["host1"],
             cache_dir=str(tmp_path),
             runtime_info={},
         )
 
-        meta = load_job_metadata("sparkrun_ghi789", cache_dir=str(tmp_path))
+        meta = load_job_metadata("sparkrun_aaaaaaaaaaaaaaaa_bbbbbbbbbbbb", cache_dir=str(tmp_path))
         assert meta is not None
         assert "runtime_info" not in meta  # empty dict not persisted
 

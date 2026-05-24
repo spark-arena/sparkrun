@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from sparkrun.api._context import default_sctx
 from sparkrun.api._errors import (
+    AmbiguousWorkload,
     HostsUnreachable,
     InsufficientCapacity,
     JobNotFound,
@@ -66,6 +67,7 @@ __all__ = [
     "RecipeNotFound",
     "HostsUnreachable",
     "JobNotFound",
+    "AmbiguousWorkload",
     "TrustRejected",
     # Functions
     "run",

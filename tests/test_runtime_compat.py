@@ -226,7 +226,7 @@ def _make_launch_monkeypatches(monkeypatch, tmp_path):
         lambda *a, **kw: None,
     )
     monkeypatch.setattr(
-        "sparkrun.orchestration.job_metadata.generate_cluster_id",
+        "sparkrun.orchestration.job_metadata.derive_cluster_id",
         lambda *a, **kw: "sparkrun_testabc12345",
     )
     monkeypatch.setattr(

@@ -148,7 +148,7 @@ def test_launch_inference_threads_backends_to_runtime_run(monkeypatch, tmp_path)
         lambda *a, **kw: None,
     )
     monkeypatch.setattr(
-        "sparkrun.orchestration.job_metadata.generate_cluster_id",
+        "sparkrun.orchestration.job_metadata.derive_cluster_id",
         lambda *a, **kw: "sparkrun_testabc12345",
     )
     monkeypatch.setattr(
@@ -260,7 +260,7 @@ def test_launch_inference_logs_platform_warnings_without_raising(monkeypatch, tm
         lambda *a, **kw: None,
     )
     monkeypatch.setattr(
-        "sparkrun.orchestration.job_metadata.generate_cluster_id",
+        "sparkrun.orchestration.job_metadata.derive_cluster_id",
         lambda *a, **kw: "sparkrun_testabc12345",
     )
     monkeypatch.setattr(

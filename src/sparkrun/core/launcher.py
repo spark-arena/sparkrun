@@ -267,7 +267,7 @@ def launch_inference(
     Returns:
         LaunchResult with the outcome and all resolved context.
     """
-    from sparkrun.orchestration.job_metadata import generate_cluster_id, save_job_metadata
+    from sparkrun.orchestration.job_metadata import derive_cluster_id, save_job_metadata
     from sparkrun.orchestration.primitives import build_ssh_kwargs
 
     # Resolve config, v, and progress from sctx when provided
@@ -328,7 +328,7 @@ def launch_inference(
         serve_port = int(config_chain.get("port") or 8000)
 
     # Derive deterministic cluster_id from recipe + (trimmed) hosts
-    cluster_id = cluster_id_override or generate_cluster_id(recipe, host_list, overrides=overrides)
+    cluster_id = cluster_id_override or derive_cluster_id(recipe, host_list, overrides=overrides)
 
     # Resolve container image
     container_image = runtime.resolve_container(recipe, overrides)

@@ -318,10 +318,10 @@ def run(
 
     # --ensure: check if job is already running, exit 0 if so
     if ensure:
-        from sparkrun.orchestration.job_metadata import check_job_running as _check_job, generate_cluster_id
+        from sparkrun.orchestration.job_metadata import check_job_running as _check_job, derive_cluster_id
         from sparkrun.orchestration.primitives import build_ssh_kwargs
 
-        _cid = generate_cluster_id(recipe, host_list, overrides=overrides or None)
+        _cid = derive_cluster_id(recipe, host_list, overrides=overrides or None)
         _ssh_kw = build_ssh_kwargs(config)
         _status = _check_job(cluster_id=_cid, hosts=host_list, ssh_kwargs=_ssh_kw, cache_dir=str(config.cache_dir))
         if _status.running:
