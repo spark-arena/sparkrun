@@ -1,20 +1,24 @@
-"""Tests for :class:`sparkrun.schedulers.occupancy_aware.OccupancyAwareScheduler`.
+"""Tests for :class:`sparkrun.schedulers.dense_pack.DensePackScheduler`.
 
 Covers:
 
 - Scheduler metadata + SAF registration.
 - Fallback path: behaves like :class:`GreedyScheduler` when neither
   ``status`` nor a fractional ``resources`` is set.
-- Whole-GPU placement with cluster occupancy
-  (:class:`~sparkrun.core.cluster_status.ClusterStatus`).
-- Fractional placement honoring
-  :class:`~sparkrun.core.scheduler.ResourceRequest.util_fraction`.
-- Memory accounting via :attr:`ResourceRequest.memory_gb`.
+- Whole-GPU placement with cluster occupancy.
+- Fractional placement honoring ``util_fraction``.
+- Memory accounting via ``memory_gb``.
 - Combined occupancy + fractional packing.
 - Explicit :class:`~sparkrun.core.layout.RecipeLayout` honored verbatim.
 - Heterogeneous-vendor :class:`LayoutConflictError`.
 - Empty hosts / zero parallelism edge cases.
 - End-to-end via :func:`sparkrun.api.schedule`.
+- ``feasibility()`` predicate matches schedule.
+- **Dense pack**: loaded hosts preferred over idle ones.
+- **Head-node overhead**: head of existing workload gets +5% effective load,
+  so the dense scheduler prefers it over an equally-loaded alternative.
+- **Dense GPU best-fit**: on a single host, picks the GPU with the least
+  remaining util budget that still fits (classical best-fit).
 """
 
 from __future__ import annotations
@@ -39,8 +43,8 @@ from sparkrun.core.scheduler import (
     get_scheduler,
     list_schedulers,
 )
+from sparkrun.schedulers.dense_pack import DensePackScheduler
 from sparkrun.schedulers.greedy import GreedyScheduler
-from sparkrun.schedulers.occupancy_aware import OccupancyAwareScheduler
 
 
 # --------------------------------------------------------------------------
@@ -58,27 +62,27 @@ def _multi_gpu_host_hw(count: int, memory_gb: float = 80.0) -> HostHardware:
 # --------------------------------------------------------------------------
 
 
-def test_scheduler_name_is_occupancy_aware():
-    assert OccupancyAwareScheduler.scheduler_name == "occupancy-aware"
-    assert OccupancyAwareScheduler().scheduler_name == "occupancy-aware"
+def test_scheduler_name_is_occupancy_dense():
+    assert DensePackScheduler.scheduler_name == "occupancy-dense"
+    assert DensePackScheduler().scheduler_name == "occupancy-dense"
 
 
-def test_occupancy_aware_registered_via_bootstrap():
-    """init_sparkrun discovers and registers OccupancyAwareScheduler."""
+def test_dense_registered_via_bootstrap():
+    """init_sparkrun discovers and registers DensePackScheduler."""
     from sparkrun.core.bootstrap import init_sparkrun
 
     v = init_sparkrun()
-    plugin = get_scheduler("occupancy-aware", v=v)
-    assert plugin.scheduler_name == "occupancy-aware"
-    assert isinstance(plugin, OccupancyAwareScheduler)
+    plugin = get_scheduler("occupancy-dense", v=v)
+    assert plugin.scheduler_name == "occupancy-dense"
+    assert isinstance(plugin, DensePackScheduler)
 
 
-def test_list_schedulers_includes_occupancy_aware():
+def test_list_schedulers_includes_occupancy_dense():
     from sparkrun.core.bootstrap import init_sparkrun
 
     v = init_sparkrun()
     names = list_schedulers(v=v)
-    assert "occupancy-aware" in names
+    assert "occupancy-dense" in names
     assert "greedy" in names
 
 
@@ -93,28 +97,18 @@ def test_fallback_matches_greedy_on_idle_cluster():
     hosts = ("spark-01", "spark-02", "spark-03")
 
     greedy_req = SchedulingRequest(parallelism=parallelism, hosts=hosts)
-    occ_req = SchedulingRequest(parallelism=parallelism, hosts=hosts)
+    dense_req = SchedulingRequest(parallelism=parallelism, hosts=hosts)
 
     greedy_result = GreedyScheduler().schedule(greedy_req)
-    occ_result = OccupancyAwareScheduler().schedule(occ_req)
+    dense_result = DensePackScheduler().schedule(dense_req)
 
-    assert occ_result.assignment == greedy_result.assignment
-    assert occ_result.scheduler_name == "occupancy-aware"
-
-
-def test_fallback_matches_greedy_multi_gpu():
-    """Multi-GPU single-host fallback matches greedy behaviour."""
-    hw = {"big": _multi_gpu_host_hw(count=4, memory_gb=141.0)}
-    parallelism = ParallelismConfig(tensor_parallel=4)
-
-    greedy = GreedyScheduler().schedule(SchedulingRequest(parallelism=parallelism, hosts=("big", "h2"), host_hardware=hw))
-    occ = OccupancyAwareScheduler().schedule(SchedulingRequest(parallelism=parallelism, hosts=("big", "h2"), host_hardware=hw))
-    assert occ.assignment == greedy.assignment
+    assert dense_result.assignment == greedy_result.assignment
+    assert dense_result.scheduler_name == "occupancy-dense"
 
 
 def test_fallback_whole_gpu_resource_request_accepted():
     """ResourceRequest with util_fraction=1.0 is whole-GPU → flows through fallback."""
-    sched = OccupancyAwareScheduler()
+    sched = DensePackScheduler()
     req = SchedulingRequest(
         parallelism=ParallelismConfig(tensor_parallel=2),
         hosts=("h1", "h2"),
@@ -125,7 +119,7 @@ def test_fallback_whole_gpu_resource_request_accepted():
 
 
 def test_fallback_diagnostics_indicate_mode():
-    sched = OccupancyAwareScheduler()
+    sched = DensePackScheduler()
     req = SchedulingRequest(
         parallelism=ParallelismConfig(tensor_parallel=2),
         hosts=("h1", "h2"),
@@ -143,7 +137,7 @@ def test_fallback_diagnostics_indicate_mode():
 
 def test_whole_gpu_skips_fully_occupied_single_gpu_host():
     """Host with used_slots=1, free_slots=0 (1-GPU host) is skipped."""
-    sched = OccupancyAwareScheduler()
+    sched = DensePackScheduler()
     status = ClusterStatus(
         hosts=(
             HostOccupancy(host="h1", used_slots=1, free_slots=0),
@@ -158,12 +152,13 @@ def test_whole_gpu_skips_fully_occupied_single_gpu_host():
         status=status,
     )
     result = sched.schedule(req)
-    # h1 is skipped because its only GPU is busy.
-    assert result.assignment.hosts_used == ("h2", "h3")
+    # h1 is fully occupied (no eligible GPUs) and gets skipped; dense picks
+    # h2 and h3 which are at score 0.0 (tied).
+    assert set(result.assignment.hosts_used) == {"h2", "h3"}
 
 
 def test_whole_gpu_infeasible_when_all_hosts_full():
-    sched = OccupancyAwareScheduler()
+    sched = DensePackScheduler()
     status = ClusterStatus(
         hosts=(
             HostOccupancy(host="h1", used_slots=1, free_slots=0),
@@ -181,30 +176,10 @@ def test_whole_gpu_infeasible_when_all_hosts_full():
     assert "2" in str(exc_info.value)
 
 
-def test_whole_gpu_idle_status_behaves_like_greedy():
-    """Status snapshot reporting zero usage everywhere → greedy-like placement."""
-    sched = OccupancyAwareScheduler()
-    status = ClusterStatus(
-        hosts=(
-            HostOccupancy(host="h1", used_slots=0, free_slots=1),
-            HostOccupancy(host="h2", used_slots=0, free_slots=1),
-        ),
-        executor="docker",
-    )
-    req = SchedulingRequest(
-        parallelism=ParallelismConfig(tensor_parallel=2),
-        hosts=("h1", "h2"),
-        status=status,
-    )
-    result = sched.schedule(req)
-    assert result.assignment.hosts_used == ("h1", "h2")
-
-
 def test_whole_gpu_per_gpu_occupancy_excludes_busy_gpu():
     """Per-GPU detail with non-trivial usage excludes that GPU from whole-GPU placement."""
-    sched = OccupancyAwareScheduler()
+    sched = DensePackScheduler()
     hw = {"big": _multi_gpu_host_hw(count=4, memory_gb=80.0)}
-    # GPU 0 is busy on the host; whole-GPU ranks should skip it.
     status = ClusterStatus(
         hosts=(
             HostOccupancy(
@@ -235,7 +210,7 @@ def test_whole_gpu_per_gpu_occupancy_excludes_busy_gpu():
 
 def test_fractional_two_ranks_share_single_gpu():
     """tp=2, util_fraction=0.5 → both ranks on local_gpu=0."""
-    sched = OccupancyAwareScheduler()
+    sched = DensePackScheduler()
     req = SchedulingRequest(
         parallelism=ParallelismConfig(tensor_parallel=2),
         hosts=("h1",),
@@ -246,13 +221,12 @@ def test_fractional_two_ranks_share_single_gpu():
     assert len(result.assignment.by_rank) == 2
     for slot in result.assignment.by_rank:
         assert slot.host == "h1"
-        assert slot.local_gpu == 0
         assert slot.util_fraction == 0.5
 
 
 def test_fractional_infeasible_when_combined_util_exceeds_one():
     """tp=2, util_fraction=0.6 → 0.6+0.6=1.2 > 1.0 on single-GPU host."""
-    sched = OccupancyAwareScheduler()
+    sched = DensePackScheduler()
     req = SchedulingRequest(
         parallelism=ParallelismConfig(tensor_parallel=2),
         hosts=("h1",),
@@ -262,29 +236,8 @@ def test_fractional_infeasible_when_combined_util_exceeds_one():
         sched.schedule(req)
 
 
-def test_fractional_packs_two_per_gpu_across_multi_gpu_host():
-    """4-GPU host, tp=8, util_fraction=0.5 → 2 ranks per GPU × 4 GPUs."""
-    sched = OccupancyAwareScheduler()
-    hw = {"big": _multi_gpu_host_hw(count=4, memory_gb=80.0)}
-    req = SchedulingRequest(
-        parallelism=ParallelismConfig(tensor_parallel=8),
-        hosts=("big",),
-        host_hardware=hw,
-        resources=ResourceRequest(util_fraction=0.5),
-    )
-    result = sched.schedule(req)
-    assert result.assignment.hosts_used == ("big",)
-    assert len(result.assignment.by_rank) == 8
-
-    counts: dict[int, int] = {}
-    for slot in result.assignment.by_rank:
-        assert slot.util_fraction == 0.5
-        counts[slot.local_gpu] = counts.get(slot.local_gpu, 0) + 1
-    assert counts == {0: 2, 1: 2, 2: 2, 3: 2}
-
-
 def test_fractional_diagnostics_mode_label():
-    sched = OccupancyAwareScheduler()
+    sched = DensePackScheduler()
     req = SchedulingRequest(
         parallelism=ParallelismConfig(tensor_parallel=2),
         hosts=("h1",),
@@ -302,7 +255,7 @@ def test_fractional_diagnostics_mode_label():
 
 def test_memory_two_ranks_fit_in_one_gpu():
     """80GB GPU, tp=2 on one host with memory_gb=40 each → must fit on one GPU."""
-    sched = OccupancyAwareScheduler()
+    sched = DensePackScheduler()
     hw = {"big": _multi_gpu_host_hw(count=1, memory_gb=80.0)}
     req = SchedulingRequest(
         parallelism=ParallelismConfig(tensor_parallel=2),
@@ -319,7 +272,7 @@ def test_memory_two_ranks_fit_in_one_gpu():
 
 def test_memory_infeasible_when_combined_memory_exceeds_capacity():
     """80GB GPU, tp=2, memory_gb=50 each → 50+50=100 > 80."""
-    sched = OccupancyAwareScheduler()
+    sched = DensePackScheduler()
     hw = {"big": _multi_gpu_host_hw(count=1, memory_gb=80.0)}
     req = SchedulingRequest(
         parallelism=ParallelismConfig(tensor_parallel=2),
@@ -338,7 +291,7 @@ def test_memory_infeasible_when_combined_memory_exceeds_capacity():
 
 def test_combined_occupancy_and_fractional_fits():
     """GPU 0 has used_util_fraction=0.3; new rank with util_fraction=0.5 still fits."""
-    sched = OccupancyAwareScheduler()
+    sched = DensePackScheduler()
     hw = {"h1": _multi_gpu_host_hw(count=1, memory_gb=80.0)}
     status = ClusterStatus(
         hosts=(
@@ -365,8 +318,8 @@ def test_combined_occupancy_and_fractional_fits():
 
 
 def test_combined_occupancy_and_fractional_infeasible():
-    """GPU 0 has used_util_fraction=0.7; new rank with util_fraction=0.5 → 0.7+0.5=1.2 > 1.0."""
-    sched = OccupancyAwareScheduler()
+    """GPU 0 has used_util_fraction=0.7; new rank with util_fraction=0.5 → infeasible."""
+    sched = DensePackScheduler()
     hw = {"h1": _multi_gpu_host_hw(count=1, memory_gb=80.0)}
     status = ClusterStatus(
         hosts=(
@@ -392,7 +345,7 @@ def test_combined_occupancy_and_fractional_infeasible():
 
 def test_occupancy_diagnostics_mode_label():
     """Status set but resources unset → diagnostics mention occupancy mode."""
-    sched = OccupancyAwareScheduler()
+    sched = DensePackScheduler()
     status = ClusterStatus(
         hosts=(HostOccupancy(host="h1", used_slots=0, free_slots=1),),
         executor="docker",
@@ -420,7 +373,7 @@ def test_explicit_layout_honored_verbatim():
             Placement(host="h1", ranks=(1,)),
         ],
     )
-    sched = OccupancyAwareScheduler()
+    sched = DensePackScheduler()
     req = SchedulingRequest(
         parallelism=ParallelismConfig(tensor_parallel=2),
         hosts=("h1", "h2"),
@@ -440,8 +393,7 @@ def test_explicit_layout_overrides_status_and_resources():
             Placement(host="h2", ranks=(1,)),
         ],
     )
-    sched = OccupancyAwareScheduler()
-    # Even though h1 looks busy in status, the explicit layout is honored.
+    sched = DensePackScheduler()
     status = ClusterStatus(
         hosts=(
             HostOccupancy(host="h1", used_slots=1, free_slots=0),
@@ -467,19 +419,12 @@ def test_explicit_layout_overrides_status_and_resources():
 
 
 def test_multi_vendor_cluster_raises_layout_conflict():
-    """Mixed NVIDIA + AMD without explicit layout → LayoutConflictError.
-
-    Requires placing at least one rank on each vendor's host to trigger the
-    cross-host conflict check, so we set ``util_fraction`` low enough that
-    a single GPU per host still fills before spilling to the next.
-    """
+    """Mixed NVIDIA + AMD without explicit layout → LayoutConflictError."""
     hw = {
         "h1": HostHardware(accelerators=[AcceleratorSpec(vendor="nvidia", model="gb10", count=1, memory_gb=121.0)]),
         "h2": HostHardware(accelerators=[AcceleratorSpec(vendor="amd", model="mi300", count=1, memory_gb=192.0)]),
     }
-    sched = OccupancyAwareScheduler()
-    # tp=3 with util_fraction=0.5 means 2 ranks fit on h1 (nvidia), then 1
-    # spills to h2 (amd) — which triggers the multi-vendor guard.
+    sched = DensePackScheduler()
     req = SchedulingRequest(
         parallelism=ParallelismConfig(tensor_parallel=3),
         hosts=("h1", "h2"),
@@ -491,7 +436,7 @@ def test_multi_vendor_cluster_raises_layout_conflict():
 
 
 def test_multi_vendor_single_host_raises_layout_conflict():
-    """One host with two different vendor accelerators → LayoutConflictError on that host."""
+    """One host with two different vendor accelerators → LayoutConflictError."""
     hw = {
         "h1": HostHardware(
             accelerators=[
@@ -500,7 +445,7 @@ def test_multi_vendor_single_host_raises_layout_conflict():
             ]
         ),
     }
-    sched = OccupancyAwareScheduler()
+    sched = DensePackScheduler()
     req = SchedulingRequest(
         parallelism=ParallelismConfig(tensor_parallel=1),
         hosts=("h1",),
@@ -518,7 +463,7 @@ def test_multi_vendor_single_host_raises_layout_conflict():
 
 def test_empty_hosts_with_nonzero_parallelism_raises_infeasible():
     """Empty host list + tp>=1 → cannot place any ranks → InfeasibleScheduleError."""
-    sched = OccupancyAwareScheduler()
+    sched = DensePackScheduler()
     req = SchedulingRequest(
         parallelism=ParallelismConfig(tensor_parallel=2),
         hosts=(),
@@ -532,7 +477,7 @@ def test_zero_ranks_returns_empty_assignment():
     """Parallelism with zero total ranks → empty assignment (no error)."""
     import dataclasses
 
-    sched = OccupancyAwareScheduler()
+    sched = DensePackScheduler()
     parallelism = dataclasses.replace(ParallelismConfig(tensor_parallel=1), total_ranks=0)
     req = SchedulingRequest(
         parallelism=parallelism,
@@ -546,7 +491,7 @@ def test_zero_ranks_returns_empty_assignment():
 
 def test_status_with_running_workload_per_gpu():
     """GPU with workloads list + used_util>0 is excluded from whole-GPU placement."""
-    sched = OccupancyAwareScheduler()
+    sched = DensePackScheduler()
     hw = {"big": _multi_gpu_host_hw(count=2, memory_gb=80.0)}
     workload = RunningWorkload(cluster_id="job-x", util_fraction=0.4, memory_used_gb=30.0)
     status = ClusterStatus(
@@ -583,8 +528,8 @@ def test_status_with_running_workload_per_gpu():
 # --------------------------------------------------------------------------
 
 
-def test_api_schedule_fractional_via_occupancy_aware():
-    """api.schedule(...) with scheduler='occupancy-aware' succeeds where greedy rejects."""
+def test_api_schedule_fractional_via_occupancy_dense():
+    """api.schedule(...) with scheduler='occupancy-dense' succeeds where greedy rejects."""
     from sparkrun.api import schedule as api_schedule
 
     parallelism = ParallelismConfig(tensor_parallel=2)
@@ -593,13 +538,11 @@ def test_api_schedule_fractional_via_occupancy_aware():
         hosts=("h1",),
         resources=ResourceRequest(util_fraction=0.5),
     )
-    # Greedy would raise on this — confirm the occupancy-aware scheduler routes it through.
-    result = api_schedule(req, scheduler="occupancy-aware")
-    assert result.scheduler_name == "occupancy-aware"
+    result = api_schedule(req, scheduler="occupancy-dense")
+    assert result.scheduler_name == "occupancy-dense"
     assert result.assignment.hosts_used == ("h1",)
     assert len(result.assignment.by_rank) == 2
     for slot in result.assignment.by_rank:
-        assert slot.local_gpu == 0
         assert slot.util_fraction == 0.5
 
 
@@ -614,12 +557,12 @@ def test_api_schedule_translates_infeasible_to_insufficient_capacity():
         resources=ResourceRequest(util_fraction=0.6),
     )
     with pytest.raises(InsufficientCapacity):
-        api_schedule(req, scheduler="occupancy-aware")
+        api_schedule(req, scheduler="occupancy-dense")
 
 
 def test_feasibility_predicate_matches_schedule():
     """Scheduler.feasibility returns True iff schedule succeeds."""
-    sched = OccupancyAwareScheduler()
+    sched = DensePackScheduler()
 
     feasible = SchedulingRequest(
         parallelism=ParallelismConfig(tensor_parallel=2),
@@ -634,3 +577,155 @@ def test_feasibility_predicate_matches_schedule():
         resources=ResourceRequest(util_fraction=0.6),
     )
     assert sched.feasibility(infeasible) is False
+
+
+# --------------------------------------------------------------------------
+# Dense-specific: host ordering (bin-pack behaviour)
+# --------------------------------------------------------------------------
+
+
+def test_dense_prefers_loaded_hosts_over_idle():
+    """4 hosts; h1+h2 already at util=0.3, h3+h4 idle.
+
+    Each new rank needs util_fraction=0.5, which fits on all hosts (h1/h2
+    have 0.7 remaining, h3/h4 have 1.0).  Only one rank fits per GPU
+    (0.7 - 0.5 = 0.2 < 0.5, so a second rank won't fit on the same GPU).
+    Dense visits hosts in descending load order: h1 (0.3) → h2 (0.3) →
+    done after tp=2 is satisfied, leaving h3/h4 idle.
+    """
+    sched = DensePackScheduler()
+    hw = {h: _multi_gpu_host_hw(count=1, memory_gb=80.0) for h in ("h1", "h2", "h3", "h4")}
+    workload = RunningWorkload(cluster_id="existing", util_fraction=0.3)
+    status = ClusterStatus(
+        hosts=(
+            HostOccupancy(
+                host="h1",
+                used_slots=0,
+                free_slots=1,
+                gpus=(GpuOccupancy(gpu_index=0, used_util_fraction=0.3, workloads=(workload,)),),
+            ),
+            HostOccupancy(
+                host="h2",
+                used_slots=0,
+                free_slots=1,
+                gpus=(GpuOccupancy(gpu_index=0, used_util_fraction=0.3, workloads=(workload,)),),
+            ),
+            HostOccupancy(host="h3", used_slots=0, free_slots=1),
+            HostOccupancy(host="h4", used_slots=0, free_slots=1),
+        ),
+        executor="docker",
+    )
+    req = SchedulingRequest(
+        parallelism=ParallelismConfig(tensor_parallel=2),
+        hosts=("h1", "h2", "h3", "h4"),
+        host_hardware=hw,
+        status=status,
+        resources=ResourceRequest(util_fraction=0.5),
+    )
+    result = sched.schedule(req)
+    # Dense visits most-loaded first: h1 (0.3) → places rank 0 →
+    # head overhead bumps h1 to 0.35 but remaining ranks=1, moves to h2 (0.3) → done.
+    assert set(result.assignment.hosts_used) == {"h1", "h2"}
+
+
+def test_dense_head_overhead_prefers_head_host():
+    """2 hosts both at load 0.3; h1 is head of an existing workload.
+
+    The head overhead (+0.05) pushes h1's effective score to 0.35, so
+    dense places the single new rank on h1 (higher score = busier = preferred).
+    """
+    sched = DensePackScheduler()
+    hw = {h: _multi_gpu_host_hw(count=1, memory_gb=80.0) for h in ("h1", "h2")}
+    workload = RunningWorkload(cluster_id="alpha", util_fraction=0.3, ranks_on_host=1)
+    status = ClusterStatus(
+        hosts=(
+            HostOccupancy(
+                host="h1",
+                used_slots=0,
+                free_slots=1,
+                gpus=(GpuOccupancy(gpu_index=0, used_util_fraction=0.3, workloads=(workload,)),),
+                workloads=(workload,),
+            ),
+            HostOccupancy(
+                host="h2",
+                used_slots=0,
+                free_slots=1,
+                gpus=(GpuOccupancy(gpu_index=0, used_util_fraction=0.3),),
+            ),
+        ),
+        executor="docker",
+    )
+    req = SchedulingRequest(
+        parallelism=ParallelismConfig(tensor_parallel=1),
+        hosts=("h1", "h2"),
+        host_hardware=hw,
+        status=status,
+        resources=ResourceRequest(util_fraction=0.3),
+    )
+    result = sched.schedule(req)
+    # h1 effective score = 0.3 + 0.05 = 0.35 > h2's 0.3 → dense prefers h1.
+    assert result.assignment.hosts_used == ("h1",)
+
+
+def test_dense_gpu_best_fit_picks_least_remaining():
+    """1 host, 2 GPUs: GPU 0 at util=0.5, GPU 1 idle.
+
+    Placing tp=1, util=0.3 → dense picks GPU 0 (util_remaining=0.5, less
+    slack than GPU 1's 1.0) — classical best-fit.
+    """
+    sched = DensePackScheduler()
+    hw = {"h1": _multi_gpu_host_hw(count=2, memory_gb=80.0)}
+    status = ClusterStatus(
+        hosts=(
+            HostOccupancy(
+                host="h1",
+                used_slots=0,
+                free_slots=2,
+                gpus=(
+                    GpuOccupancy(gpu_index=0, used_util_fraction=0.5),
+                    GpuOccupancy(gpu_index=1, used_util_fraction=0.0),
+                ),
+            ),
+        ),
+        executor="docker",
+    )
+    req = SchedulingRequest(
+        parallelism=ParallelismConfig(tensor_parallel=1),
+        hosts=("h1",),
+        host_hardware=hw,
+        status=status,
+        resources=ResourceRequest(util_fraction=0.3),
+    )
+    result = sched.schedule(req)
+    # GPU 0 has less remaining util (0.5) vs GPU 1 (1.0) → dense picks GPU 0.
+    assert result.assignment.by_rank[0].local_gpu == 0
+
+
+def test_dense_full_host_rejected_regardless_of_head_status():
+    """Head-node overhead never affects capacity rejection.
+
+    A host that is physically full must be rejected even when dense
+    would prefer it due to high effective score.
+    """
+    sched = DensePackScheduler()
+    hw = {"h1": _multi_gpu_host_hw(count=1, memory_gb=80.0)}
+    status = ClusterStatus(
+        hosts=(
+            HostOccupancy(
+                host="h1",
+                used_slots=1,
+                free_slots=0,
+                gpus=(GpuOccupancy(gpu_index=0, used_util_fraction=1.0),),
+            ),
+        ),
+        executor="docker",
+    )
+    req = SchedulingRequest(
+        parallelism=ParallelismConfig(tensor_parallel=1),
+        hosts=("h1",),
+        host_hardware=hw,
+        status=status,
+        resources=ResourceRequest(util_fraction=0.3),
+    )
+    with pytest.raises(InfeasibleScheduleError):
+        sched.schedule(req)

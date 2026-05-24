@@ -873,3 +873,104 @@ def test_to_dict_includes_hosts_hardware_only_when_set(tmp_path: Path):
     hw = HostHardware(accelerators=[AcceleratorSpec(vendor="nvidia", model="h200", count=8, memory_gb=141.0)])
     manager.update("legacy", hosts_hardware={"h1": hw})
     assert "hosts_hardware" in manager.get("legacy").to_dict()
+
+
+# --------------------------------------------------------------------------
+# query_cluster_status — container-name parsing
+# --------------------------------------------------------------------------
+
+
+class TestQueryClusterStatusParsing:
+    """Regression coverage for cluster_id extraction in query_cluster_status.
+
+    Container names follow ``sparkrun_<intent>_<placement>[_<role>]``.  The
+    cluster_id is the full ``sparkrun_<intent>_<placement>`` — workloads
+    with the same intent but different placement tokens (the same recipe
+    replayed back to back) are distinct jobs and must not collapse on the
+    intent prefix.
+    """
+
+    @staticmethod
+    def _mock_docker_ps(per_host_lines):
+        """Return a fake ``run_command_on_host`` that emits canned docker-ps output."""
+        from sparkrun.orchestration.ssh import RemoteResult
+
+        def _impl(host, command, ssh_kwargs=None, timeout=None):
+            return RemoteResult(host=host, returncode=0, stdout="\n".join(per_host_lines.get(host, [])), stderr="")
+
+        return _impl
+
+    def test_two_workloads_same_intent_distinct_placements_are_separate_clusters(self, tmp_path, monkeypatch):
+        """Same recipe launched twice → same intent_id, different placement_tokens
+        → must report as two distinct cluster_ids."""
+        from sparkrun.core.cluster_manager import query_cluster_status
+
+        intent = "221f3a3a45d7fa4d"
+        place_a = "aabbccddeeff"
+        place_b = "112233445566"
+        # Workload A on h1+h2, workload B on h3+h4 — both share the same intent prefix.
+        per_host = {
+            "h1": ["sparkrun_%s_%s_head\tUp 1 minute\timg" % (intent, place_a)],
+            "h2": ["sparkrun_%s_%s_node_1\tUp 1 minute\timg" % (intent, place_a)],
+            "h3": ["sparkrun_%s_%s_head\tUp 30 seconds\timg" % (intent, place_b)],
+            "h4": ["sparkrun_%s_%s_node_1\tUp 30 seconds\timg" % (intent, place_b)],
+        }
+        monkeypatch.setattr(
+            "sparkrun.orchestration.primitives.run_command_on_host",
+            self._mock_docker_ps(per_host),
+        )
+
+        result = query_cluster_status(list(per_host.keys()), ssh_kwargs={}, cache_dir=str(tmp_path))
+
+        cid_a = "sparkrun_%s_%s" % (intent, place_a)
+        cid_b = "sparkrun_%s_%s" % (intent, place_b)
+        assert set(result.groups.keys()) == {cid_a, cid_b}
+        # Each cluster has exactly two members (one per host).
+        assert len(result.groups[cid_a].members) == 2
+        assert len(result.groups[cid_b].members) == 2
+        # Roles parse cleanly (head + node_1, not "<placement>_head").
+        roles_a = sorted(m[1] for m in result.groups[cid_a].members)
+        assert roles_a == ["head", "node_1"]
+        roles_b = sorted(m[1] for m in result.groups[cid_b].members)
+        assert roles_b == ["head", "node_1"]
+
+    def test_single_workload_parses_full_cluster_id(self, tmp_path, monkeypatch):
+        """A single 2-node workload must surface as exactly one cluster_id with full placement token."""
+        from sparkrun.core.cluster_manager import query_cluster_status
+
+        intent = "deadbeefcafe1234"
+        place = "0123456789ab"
+        per_host = {
+            "h1": ["sparkrun_%s_%s_head\tUp 5 minutes\timg" % (intent, place)],
+            "h2": ["sparkrun_%s_%s_node_1\tUp 5 minutes\timg" % (intent, place)],
+        }
+        monkeypatch.setattr(
+            "sparkrun.orchestration.primitives.run_command_on_host",
+            self._mock_docker_ps(per_host),
+        )
+
+        result = query_cluster_status(list(per_host.keys()), ssh_kwargs={}, cache_dir=str(tmp_path))
+
+        expected = "sparkrun_%s_%s" % (intent, place)
+        assert list(result.groups.keys()) == [expected]
+        assert len(result.groups[expected].members) == 2
+
+    def test_solo_container_uses_full_cluster_id(self, tmp_path, monkeypatch):
+        """Solo containers (`..._solo`) must yield the full cluster_id, not the intent prefix."""
+        from sparkrun.core.cluster_manager import query_cluster_status
+
+        intent = "feedfacef00d4242"
+        place = "abcdef012345"
+        per_host = {
+            "h1": ["sparkrun_%s_%s_solo\tUp 10 seconds\timg" % (intent, place)],
+        }
+        monkeypatch.setattr(
+            "sparkrun.orchestration.primitives.run_command_on_host",
+            self._mock_docker_ps(per_host),
+        )
+
+        result = query_cluster_status(list(per_host.keys()), ssh_kwargs={}, cache_dir=str(tmp_path))
+
+        assert result.groups == {}
+        assert len(result.solo_entries) == 1
+        assert result.solo_entries[0].cluster_id == "sparkrun_%s_%s" % (intent, place)

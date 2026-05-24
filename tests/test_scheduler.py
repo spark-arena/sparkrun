@@ -329,12 +329,13 @@ def test_greedy_registered_via_bootstrap():
     assert plugin.scheduler_name == "greedy"
 
 
-def test_get_scheduler_default_is_greedy():
+def test_get_scheduler_default_matches_fallback():
     from sparkrun.core.bootstrap import init_sparkrun
+    from sparkrun.core.scheduler import FALLBACK_DEFAULT_SCHEDULER
 
     v = init_sparkrun()
-    assert get_scheduler(None, v=v).scheduler_name == "greedy"
-    assert get_scheduler("default", v=v).scheduler_name == "greedy"
+    assert get_scheduler(None, v=v).scheduler_name == FALLBACK_DEFAULT_SCHEDULER
+    assert get_scheduler("default", v=v).scheduler_name == FALLBACK_DEFAULT_SCHEDULER
 
 
 def test_list_schedulers_includes_greedy():

@@ -91,7 +91,7 @@ def cluster(ctx):
     "--scheduler",
     "scheduler_name",
     default=None,
-    help="Default scheduler selector for workloads on this cluster (e.g. greedy, occupancy-aware)",
+    help="Default scheduler selector for workloads on this cluster (e.g. greedy, occupancy-sparse, occupancy-dense)",
 )
 @click.option("--default", "set_default", is_flag=True, default=False, help="Set as the default cluster")
 @click.pass_context
@@ -207,7 +207,7 @@ def cluster_create(
     "--scheduler",
     "scheduler_name",
     default=None,
-    help="Default scheduler selector for workloads on this cluster (e.g. greedy, occupancy-aware). Pass empty string to clear.",
+    help="Default scheduler selector for workloads on this cluster (e.g. greedy, occupancy-sparse, occupancy-dense). Pass empty string to clear.",
 )
 @click.pass_context
 def cluster_update(

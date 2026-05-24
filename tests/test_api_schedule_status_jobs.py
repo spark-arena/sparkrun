@@ -41,14 +41,16 @@ from sparkrun.orchestration.ssh import RemoteResult
 # --------------------------------------------------------------------------
 
 
-def test_schedule_default_uses_greedy():
+def test_schedule_default_uses_fallback_scheduler():
+    from sparkrun.core.scheduler import FALLBACK_DEFAULT_SCHEDULER
+
     req = SchedulingRequest(
         parallelism=ParallelismConfig(tensor_parallel=2),
         hosts=("h1", "h2"),
     )
     result = api.schedule(req)
     assert isinstance(result, SchedulingResult)
-    assert result.scheduler_name == "greedy"
+    assert result.scheduler_name == FALLBACK_DEFAULT_SCHEDULER
     assert result.assignment.hosts_used == ("h1", "h2")
 
 
@@ -100,7 +102,7 @@ def test_schedule_greedy_rejects_fractional_request_via_api():
         resources=ResourceRequest(util_fraction=0.5),
     )
     with pytest.raises(api.SparkrunError) as exc_info:
-        api.schedule(req)
+        api.schedule(req, scheduler="greedy")
     assert "fractional" in str(exc_info.value).lower()
 
 

@@ -285,7 +285,8 @@ def test_full_api_with_run_stop_logs_imports_without_click():
 
 def _run_with_scheduler_chain(*, options_scheduler, recipe_scheduler, cluster_scheduler):
     """Exercise ``api.run`` with the three layers wired up; return the
-    ``RunResult.scheduler`` field (which mirrors ``effective_scheduler or 'greedy'``)."""
+    ``RunResult.scheduler`` field (the actually-resolved scheduler name).
+    """
     from sparkrun.core.cluster_manager import ClusterDefinition
     from sparkrun.core.recipe import Recipe
 
@@ -370,11 +371,162 @@ def test_scheduler_chain_cluster_wins_over_default():
     assert result.scheduler == "from-cluster"
 
 
-def test_scheduler_chain_all_unset_falls_back_to_greedy():
+def test_scheduler_chain_all_unset_falls_back_to_default():
+    from sparkrun.core.scheduler import FALLBACK_DEFAULT_SCHEDULER
+
     result = _run_with_scheduler_chain(
         options_scheduler=None,
         recipe_scheduler=None,
         cluster_scheduler=None,
     )
-    # RunResult.scheduler stamps "greedy" when effective_scheduler is falsy.
-    assert result.scheduler == "greedy"
+    # RunResult.scheduler reflects the actually-resolved scheduler name —
+    # when no caller supplies one we land on FALLBACK_DEFAULT_SCHEDULER.
+    assert result.scheduler == FALLBACK_DEFAULT_SCHEDULER
+
+
+# --------------------------------------------------------------------------
+# Scheduling request carries occupancy status
+# --------------------------------------------------------------------------
+
+
+def _build_multihost_run_fixtures(num_hosts: int = 4):
+    """Build a recipe + cluster + options tuple that triggers the multi-host
+    scheduling path inside ``api.run``.
+
+    Returns ``(recipe, cluster_def, opts, fake_runtime, fake_launch_result)``.
+    """
+    from sparkrun.core.cluster_manager import ClusterDefinition
+    from sparkrun.core.recipe import Recipe
+
+    hosts = tuple("h%d" % (i + 1) for i in range(num_hosts))
+    recipe = Recipe(
+        {
+            "sparkrun_version": "2",
+            "runtime": "vllm",
+            "model": "test/m",
+            "defaults": {"tensor_parallel": 2},
+        }
+    )
+    cluster_def = ClusterDefinition(name="multi", hosts=list(hosts))
+
+    class _FakeRuntime:
+        runtime_name = "vllm"
+        executor = None
+
+        def world_size(self, parallelism, recipe=None, cluster=None):
+            return parallelism.tensor_parallel
+
+    fake_runtime = _FakeRuntime()
+    fake_launch_result = type(
+        "FakeLaunchResult",
+        (),
+        {
+            "rc": 0,
+            "cluster_id": "sparkrun_multihostfix",
+            "host_list": list(hosts[:2]),
+            "is_solo": False,
+            "runtime": fake_runtime,
+            "recipe": recipe,
+            "overrides": {},
+            "container_image": "test:latest",
+            "effective_cache_dir": "/tmp",
+            "serve_port": 8000,
+            "config": None,
+            "recipe_ref": None,
+            "comm_env": None,
+            "ib_ip_map": {},
+            "serve_command": "",
+            "runtime_info": {},
+            "builder": None,
+            "backends": {},
+        },
+    )()
+
+    opts = api.RunOptions(recipe=recipe, hosts=hosts, cluster=cluster_def, dry_run=True)
+    return recipe, cluster_def, opts, fake_runtime, fake_launch_result
+
+
+def test_run_populates_scheduling_request_status():
+    """``api.run`` queries cluster status and passes the snapshot into the
+    SchedulingRequest so occupancy-sparse / occupancy-dense schedulers can subtract committed
+    workloads from each host's capacity."""
+    from sparkrun.core.cluster_status import ClusterStatus
+    from sparkrun.core.scheduler import RankAssignment, SchedulingResult
+
+    recipe, cluster_def, opts, fake_runtime, fake_launch_result = _build_multihost_run_fixtures()
+
+    fake_status = ClusterStatus(hosts=())
+    captured_requests: list = []
+
+    def _fake_schedule(request, *, scheduler=None, sctx=None):
+        captured_requests.append(request)
+        return SchedulingResult(
+            assignment=RankAssignment(
+                by_rank=(),
+                hosts_used=tuple(request.hosts[:2]),
+            ),
+            scheduler_name="greedy",
+            diagnostics=(),
+        )
+
+    with (
+        patch("sparkrun.core.launcher.launch_inference", return_value=fake_launch_result),
+        patch("sparkrun.api._resolve.resolve_runtime", return_value=fake_runtime),
+        patch("sparkrun.api._resolve.resolve_cluster", return_value=cluster_def),
+        patch("sparkrun.api._status.status", return_value=fake_status),
+        patch("sparkrun.api._schedule.schedule", side_effect=_fake_schedule),
+    ):
+        api.run(opts)
+
+    assert len(captured_requests) == 1
+    assert captured_requests[0].status is fake_status
+
+
+def test_run_status_acquisition_failure_falls_back_gracefully():
+    """When the cluster status query fails (partial reachability, missing
+    executor, transient SSH error), scheduling still proceeds with
+    ``status=None`` rather than crashing the launch."""
+    from sparkrun.core.scheduler import RankAssignment, SchedulingResult
+
+    recipe, cluster_def, opts, fake_runtime, fake_launch_result = _build_multihost_run_fixtures()
+
+    captured_requests: list = []
+
+    def _fake_schedule(request, *, scheduler=None, sctx=None):
+        captured_requests.append(request)
+        return SchedulingResult(
+            assignment=RankAssignment(
+                by_rank=(),
+                hosts_used=tuple(request.hosts[:2]),
+            ),
+            scheduler_name="greedy",
+            diagnostics=(),
+        )
+
+    with (
+        patch("sparkrun.core.launcher.launch_inference", return_value=fake_launch_result),
+        patch("sparkrun.api._resolve.resolve_runtime", return_value=fake_runtime),
+        patch("sparkrun.api._resolve.resolve_cluster", return_value=cluster_def),
+        patch("sparkrun.api._status.status", side_effect=RuntimeError("boom")),
+        patch("sparkrun.api._schedule.schedule", side_effect=_fake_schedule),
+    ):
+        api.run(opts)
+
+    assert len(captured_requests) == 1
+    assert captured_requests[0].status is None
+
+
+def test_run_result_scheduler_reflects_effective_resolution():
+    """When the caller doesn't pick a scheduler, ``RunResult.scheduler``
+    reports the actually-resolved scheduler name (not a stale ``"greedy"``
+    default) so consumers can verify which scheduler ran."""
+    from sparkrun.core.scheduler import FALLBACK_DEFAULT_SCHEDULER
+
+    result = _run_with_scheduler_chain(
+        options_scheduler=None,
+        recipe_scheduler=None,
+        cluster_scheduler=None,
+    )
+    # FALLBACK_DEFAULT_SCHEDULER ("occupancy-sparse") names a registered
+    # plugin; the resolver returns the plugin's canonical scheduler_name.
+    assert result.scheduler == FALLBACK_DEFAULT_SCHEDULER

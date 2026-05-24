@@ -242,6 +242,101 @@ def test_resolve_effective_hosts_for_recipe_threads_cluster(monkeypatch):
     assert is_solo is False
 
 
+def test_resolve_effective_hosts_for_recipe_populates_status(monkeypatch):
+    """``resolve_effective_hosts_for_recipe`` calls ``api.status`` and
+    passes the snapshot into the ``SchedulingRequest`` so occupancy-sparse / occupancy-dense
+    schedulers can subtract already-committed workloads."""
+    from sparkrun.cli import _common
+    from sparkrun.core.cluster_status import ClusterStatus
+    import sparkrun.api as api
+
+    captured = {}
+
+    fake_status = ClusterStatus(hosts=())
+
+    def _stub_status(hosts, *, cluster=None, sctx=None, **kwargs):
+        captured["status_hosts"] = list(hosts)
+        return fake_status
+
+    def _stub_schedule(request, **kwargs):
+        from sparkrun.core.scheduler import RankAssignment, RankSlot, SchedulingResult
+
+        captured["request_status"] = request.status
+        assignment = RankAssignment(
+            by_rank=(RankSlot("a", 0), RankSlot("b", 0)),
+            hosts_used=("a", "b"),
+        )
+        return SchedulingResult(assignment=assignment, scheduler_name="greedy")
+
+    monkeypatch.setattr(api, "schedule", _stub_schedule)
+    monkeypatch.setattr(api, "status", _stub_status)
+
+    class _Recipe:
+        max_nodes = None
+        mode = "auto"
+        layout = None
+
+        def build_config_chain(self, overrides):
+            return {"tensor_parallel": 2}
+
+    cluster = ClusterDefinition(name="c", hosts=["a", "b", "c"])
+    _common.resolve_effective_hosts_for_recipe(
+        ["a", "b", "c"],
+        _Recipe(),
+        {},
+        cluster_def=cluster,
+        solo=False,
+    )
+
+    assert captured["status_hosts"] == ["a", "b", "c"]
+    assert captured["request_status"] is fake_status
+
+
+def test_resolve_effective_hosts_for_recipe_status_failure_is_best_effort(monkeypatch):
+    """When ``api.status`` raises, scheduling still proceeds with
+    ``status=None`` rather than crashing the CLI."""
+    from sparkrun.cli import _common
+    import sparkrun.api as api
+
+    captured = {}
+
+    def _stub_status(hosts, *, cluster=None, sctx=None, **kwargs):
+        raise RuntimeError("partial reachability")
+
+    def _stub_schedule(request, **kwargs):
+        from sparkrun.core.scheduler import RankAssignment, RankSlot, SchedulingResult
+
+        captured["request_status"] = request.status
+        assignment = RankAssignment(
+            by_rank=(RankSlot("a", 0), RankSlot("b", 0)),
+            hosts_used=("a", "b"),
+        )
+        return SchedulingResult(assignment=assignment, scheduler_name="greedy")
+
+    monkeypatch.setattr(api, "schedule", _stub_schedule)
+    monkeypatch.setattr(api, "status", _stub_status)
+
+    class _Recipe:
+        max_nodes = None
+        mode = "auto"
+        layout = None
+
+        def build_config_chain(self, overrides):
+            return {"tensor_parallel": 2}
+
+    cluster = ClusterDefinition(name="c", hosts=["a", "b", "c"])
+    host_list, _ = _common.resolve_effective_hosts_for_recipe(
+        ["a", "b", "c"],
+        _Recipe(),
+        {},
+        cluster_def=cluster,
+        solo=False,
+    )
+
+    assert captured["request_status"] is None
+    assert len(host_list) == 2
+
+
 # --------------------------------------------------------------------------
 # CLI: cluster update --infer-hardware (mocked SSH)
 # --------------------------------------------------------------------------

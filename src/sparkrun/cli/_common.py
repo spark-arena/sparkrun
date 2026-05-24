@@ -251,11 +251,25 @@ def resolve_effective_hosts_for_recipe(
     # play.  ``hosts_used`` IS the effective host list.
     if not solo and len(host_list) > 1 and parallelism_configured:
         parallelism = extract_parallelism(config_chain)
+        # Best-effort cluster status snapshot so occupancy-sparse / occupancy-dense schedulers
+        # can subtract already-running workloads from each host's capacity.
+        # Failures (partial reachability, missing executor, transient SSH)
+        # are swallowed; the scheduler falls back to its no-status path.
+        cluster_status = None
+        try:
+            cluster_status = api.status(
+                list(host_list),
+                cluster=cluster_def,
+                sctx=sctx,
+            )
+        except Exception as e:
+            logger.debug("Cluster status query failed; scheduling without occupancy info: %s", e)
         request = SchedulingRequest(
             parallelism=parallelism,
             hosts=tuple(host_list),
             host_hardware=(cluster_def.hosts_hardware if cluster_def is not None else None) or None,
             layout=getattr(recipe, "layout", None),
+            status=cluster_status,
             resources=None,
         )
         try:
