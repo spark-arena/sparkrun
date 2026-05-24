@@ -185,11 +185,11 @@ def _stop_all(hosts, hosts_file, cluster_name, config, dry_run):
 
     # Stop containers per host
     click.echo("Stopping all containers...")
-    stopped_count = 0
+    container_count = 0
     for host, names in host_containers.items():
         cmds = "; ".join(docker_stop_cmd(n) for n in names)
         run_remote_command(host, cmds, timeout=30, dry_run=dry_run, **ssh_kwargs)
-        stopped_count += len(names)
+        container_count += len(names)
 
     # Clean up job metadata for discovered clusters (skip in dry-run mode)
     if not dry_run:
@@ -200,7 +200,7 @@ def _stop_all(hosts, hosts_file, cluster_name, config, dry_run):
             remove_job_metadata(solo_cid, cache_dir=str(config.cache_dir))
 
     hosts_touched = len(host_containers)
-    click.echo("Stopped %d job(s) across %d host(s)." % (stopped_count, hosts_touched))
+    click.echo("Stopped %d job(s), %d container(s) across %d host(s)." % (jobs_count, container_count, hosts_touched))
 
 
 @click.command("logs")
