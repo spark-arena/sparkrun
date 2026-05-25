@@ -249,6 +249,6 @@ def test_gap_analysis_tasks_missing_run_args_flagged(caplog):
     assert gaps[0].index == 0
 
     warning_messages = [r.message for r in caplog.records if r.levelno == logging.WARNING]
-    assert any("missing depth or concurrency" in m for m in warning_messages), (
-        "Expected warning about missing run_args, got: %s" % warning_messages
+    assert any("coverage key contained None" in m for m in warning_messages), (
+        "Expected warning about None coverage key, got: %s" % warning_messages
     )

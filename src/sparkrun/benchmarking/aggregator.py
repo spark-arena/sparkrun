@@ -77,7 +77,7 @@ def gap_analysis(
             continue
 
         if key is None or (isinstance(key, tuple) and any(v is None for v in key)):
-            logger.warning("gap_analysis: task %d (%s) missing depth or concurrency in run_args", task.index, task.label)
+            logger.warning("gap_analysis: task %d (%s) coverage key contained None", task.index, task.label)
             gaps.append(task)
             continue
 

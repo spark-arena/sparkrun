@@ -115,6 +115,18 @@ class SparkrunConfig:
         return defaults.get("transformers", "t4")
 
     @property
+    def default_benchmark_framework(self) -> str:
+        """Site-wide default benchmarking framework name.
+
+        Resolved from ``defaults.benchmark_framework`` in ``config.yaml``,
+        falling back to ``"llama-benchy"`` when unset.  CLI invocations
+        without an explicit ``--framework`` flag use this value.
+        """
+        defaults = self._data.get("defaults", {})
+        val = defaults.get("benchmark_framework") if isinstance(defaults, dict) else None
+        return str(val) if val else "llama-benchy"
+
+    @property
     def default_executor(self) -> str | None:
         """System-wide executor pin (``"docker"`` / ``"local"`` / ``"k8s"``).
 

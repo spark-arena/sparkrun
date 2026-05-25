@@ -149,20 +149,46 @@ class BenchmarkingPlugin(Plugin):
         """Return default benchmark args when no profile is provided."""
         return dict(self.default_args)
 
+    def prepare_benchmark_args(
+        self,
+        recipe: "Recipe",
+        config_chain: dict[str, Any],
+        overrides: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Framework-specific args derived from the recipe/config chain.
+
+        Called by the common benchmark path after profile + CLI overrides
+        have been resolved, before ``build_benchmark_command``.  Each
+        framework returns a dict of extra args it wants injected; the
+        common code merges this in *without overwriting* keys already
+        present in ``bench_args``.
+
+        Default: nothing extra.  Frameworks override to opt in to recipe
+        fields they care about (e.g. ``llama-benchy`` consumes
+        ``served_model_name``).
+        """
+        return {}
+
     def detect_version(self) -> str | None:
         """Resolve the framework tool version that will be used for execution.
 
-        Frameworks that pin via ``uvx <pkg>@<version>`` (or similar) should
-        implement this so the version can be captured up-front and reused for
-        all subsequent calls within the same benchmark run — including
-        resumes after a crash.  The scheduler stashes the result in
-        ``state.extras["framework_version"]`` and threads it back into every
-        per-task ``run_args`` via the ``_pinned_version`` sentinel key, which
-        the framework's ``build_benchmark_command`` is expected to consume.
+        Frameworks that pin a tool version for reproducibility (e.g. via
+        ``uvx pkg@version``, or ``--from git+url@ref``) should implement this
+        so the version is captured once and threaded back into every task's
+        ``run_args`` via the ``framework_pinned_version`` sentinel.
 
         Default: framework does not support pinning.  Returns ``None``.
         """
         return None
+
+    def apply_session_warmup_state(self, run_args: dict[str, Any], *, is_first_task: bool) -> dict[str, Any]:
+        """Return a possibly-mutated copy of ``run_args`` reflecting the framework's
+        one-time-per-session vs per-task split for warmup / coherence checks.
+        Default: no change.  Frameworks that do warmup once per session at the
+        start should set their warmup/coherence-disabling args on tasks beyond
+        the first.
+        """
+        return dict(run_args)
 
     def estimate_test_count(self, args: dict[str, Any]) -> int | None:
         """Estimate the number of test combinations from the args.

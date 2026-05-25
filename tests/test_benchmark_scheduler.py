@@ -273,18 +273,26 @@ def test_run_schedule_filename_suffix_llama_benchy(tmp_path: Path):
 
 
 def test_run_schedule_warmup_rule(tmp_path: Path):
-    """Task 0 must NOT have no_warmup; task 1+ must have no_warmup=True and skip_coherence=True."""
+    """Task 0 must NOT have no_warmup; task 1+ must have no_warmup=True and skip_coherence=True.
+
+    Uses ``LlamaBenchyFramework`` so the framework-specific
+    ``apply_session_warmup_state`` hook drives the behavior (the scheduler is
+    framework-agnostic about warmup args).
+    """
     tasks = _make_tasks(2)
     state = _make_state(tmp_path, n_tasks=2)
-    fw = _FakeFW()
+    fw = LlamaBenchyFramework()
 
-    # Capture actual args passed to build_benchmark_command
+    # Capture actual args passed to build_benchmark_command. Stub it with a
+    # deterministic shape so the popen factory finds --save-result.
     call_args_list: list[dict[str, Any]] = []
-    original_build = fw.build_benchmark_command
 
     def _capturing_build(target_url, model, args, result_file=None):
         call_args_list.append(dict(args))
-        return original_build(target_url, model, args, result_file=result_file)
+        cmd = ["/usr/bin/echo", "task"]
+        if result_file:
+            cmd.extend(["--save-result", result_file])
+        return cmd
 
     fw.build_benchmark_command = _capturing_build  # type: ignore[method-assign]
 
@@ -333,18 +341,30 @@ def test_run_schedule_resume_warmup_rule(tmp_path: Path):
     state.completed_indices = [0, 1]
     state.save(str(tmp_path))
 
-    fw = _FakeFW()
+    fw = LlamaBenchyFramework()
     call_args_list: list[dict[str, Any]] = []
-    original_build = fw.build_benchmark_command
 
     def _capturing_build(target_url, model, args, result_file=None):
         call_args_list.append(dict(args))
-        return original_build(target_url, model, args, result_file=result_file)
+        cmd = ["/usr/bin/echo", "task"]
+        if result_file:
+            cmd.extend(["--save-result", result_file])
+        return cmd
 
     fw.build_benchmark_command = _capturing_build  # type: ignore[method-assign]
 
-    # Stub-FW coverage uses task indices; full = 4 indices present so no gap re-run.
-    full_consolidated = {"runs": [{"i": 0}, {"i": 1}, {"i": 2}, {"i": 3}]}
+    # LlamaBenchy coverage uses (context_size, concurrency); seed all 4 task
+    # coverage keys so the post-loop gap pass finds nothing to re-queue.
+    full_consolidated = {
+        "model": "org/model",
+        "max_concurrency": 1,
+        "benchmarks": [
+            {"context_size": 0, "concurrency": 1},
+            {"context_size": 1, "concurrency": 1},
+            {"context_size": 2, "concurrency": 1},
+            {"context_size": 3, "concurrency": 1},
+        ],
+    }
 
     ui = BenchmarkProgressUI(total_tasks=len(tasks), benchmark_id=state.benchmark_id, fw=fw)
     with ui:
