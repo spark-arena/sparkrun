@@ -83,7 +83,6 @@ class ToolEvalBenchFramework(BenchmarkingPlugin):
         "timeout": 60,
         "max_turns": 8,
         "temperature": 0.0,
-        # TODO: probe true
     }
     passthrough_args: set[str] = set()
 
