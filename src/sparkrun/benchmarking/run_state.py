@@ -33,9 +33,32 @@ def derive_benchmark_id(
     base_args: dict[str, Any],
     schedule: list[dict[str, Any]] | None,
 ) -> str:
-    """Stable ID derived from canonical-JSON of inputs. Returns ``'bench_<12hex>'``."""
+    """Stable ID derived from canonical-JSON of inputs. Returns ``'bench_<12hex>'``.
+
+    Benchmark identity follows the recipe *intent* (port, parallelism, runtime,
+    model, served-model-name), **not** per-launch placement. The cluster_id is
+    parsed via :func:`parse_cluster_id` and only its intent half is hashed, so a
+    benchmark resumes successfully across relaunches that produce a fresh
+    placement token but represent the same logical workload.
+
+    Malformed (legacy) cluster_ids that do not parse fall back to hashing the
+    full string verbatim — they will not match a relaunch, but they also won't
+    crash old callers.
+    """
+    from sparkrun.orchestration.job_metadata import parse_cluster_id
+
+    try:
+        intent_id, _placement_token = parse_cluster_id(cluster_id)
+        identity = intent_id
+    except (ValueError, TypeError):
+        logger.debug(
+            "derive_benchmark_id: cluster_id %r does not parse; hashing verbatim — benchmark will not be resumable across relaunches",
+            cluster_id,
+        )
+        identity = cluster_id
+
     payload = {
-        "cluster_id": cluster_id,
+        "intent_id": identity,
         "framework": framework,
         "profile": profile,
         "base_args": base_args,
@@ -48,7 +71,13 @@ def derive_benchmark_id(
 
 @dataclass
 class BenchmarkRunState:
-    """Persistent progress state for a scheduled benchmark run."""
+    """Persistent progress state for a scheduled benchmark run.
+
+    ``cluster_id`` carries the most recently observed concrete launch; it is
+    refreshed on resume when the user relaunches inference for the same intent.
+    ``intent_id`` is the stable identity used for resume matching — it does not
+    change across relaunches of the same logical workload.
+    """
 
     benchmark_id: str
     cluster_id: str
@@ -57,6 +86,7 @@ class BenchmarkRunState:
     profile: str | None
     base_args: dict[str, Any]
     schedule: list[dict[str, Any]]  # raw schedule_entry dicts in order
+    intent_id: str = ""  # derived from cluster_id; stable across relaunches
     completed_indices: list[int] = field(default_factory=list)
     failed_indices: list[int] = field(default_factory=list)
     crash_count: int = 0
@@ -65,6 +95,20 @@ class BenchmarkRunState:
     extras: dict[str, Any] = field(default_factory=dict)  # arena uses for submission_id, etc.
     created_at: str = ""  # ISO-8601 UTC
     updated_at: str = ""  # ISO-8601 UTC
+
+    def __post_init__(self) -> None:
+        """Derive ``intent_id`` from ``cluster_id`` if not already set."""
+        if not self.intent_id and self.cluster_id:
+            from sparkrun.orchestration.job_metadata import parse_cluster_id
+
+            try:
+                self.intent_id, _ = parse_cluster_id(self.cluster_id)
+            except (ValueError, TypeError):
+                logger.debug(
+                    "BenchmarkRunState: cluster_id %r does not parse; intent_id left empty (unresumable across relaunches)",
+                    self.cluster_id,
+                )
+                self.intent_id = ""
 
     # -------------------------------------------------------------------------
     # Path helpers

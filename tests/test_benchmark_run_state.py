@@ -21,7 +21,13 @@ def test_derive_benchmark_id_stable(tmp_path: Path):
 
 
 def test_derive_benchmark_id_different_cluster(tmp_path: Path):
-    """Different cluster_id produces a different benchmark id."""
+    """Different (unparseable / legacy) cluster_id strings produce different IDs.
+
+    Note: when cluster_id parses as the canonical
+    ``sparkrun_<intent>_<placement>`` form, only the *intent* half drives the
+    benchmark id (so resumes work across relaunches that swap placement
+    tokens). See ``test_benchmark_resume_intent_id.py`` for that path.
+    """
     id1 = derive_benchmark_id("cluster-abc", "llama-benchy", "default", {"pp": [2048]}, None)
     id2 = derive_benchmark_id("cluster-xyz", "llama-benchy", "default", {"pp": [2048]}, None)
     assert id1 != id2

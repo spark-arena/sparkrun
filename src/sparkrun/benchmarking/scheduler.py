@@ -34,9 +34,7 @@ class BenchTask:
     Attributes:
         index: 0-based position in the schedule. Stable across resumes.
         label: Short human description for the progress UI (e.g. ``"d=4096 c=2"``).
-        run_args: Final merged arg dict passed to ``build_benchmark_command``.
-            For llama-benchy with a (depth, concurrency) entry this contains
-            single-element ``depth`` and ``concurrency`` lists.
+        run_args: Framework-specific args dict; opaque to the scheduler.
         schedule_entry: Raw per-task override dict from the YAML schedule
             (or the auto-generated default). Persisted in run state so the
             schedule can be reconstructed on resume.
@@ -116,17 +114,14 @@ def run_schedule(
             task = tasks[idx]
             progress_ui.start_task(idx, task.label)
 
-            # Build per-task args, applying warmup/coherence rule.
-            run_args: dict[str, Any] = dict(task.run_args)
-            if not session_first_task:
-                run_args.setdefault("no_warmup", True)
-                run_args.setdefault("skip_coherence", True)
+            # Build per-task args, applying framework's warmup/coherence rule.
+            run_args = fw.apply_session_warmup_state(task.run_args, is_first_task=session_first_task)
 
             # Pin framework version to whatever was resolved on the first run
             # of this benchmark, so resumes don't drift onto a newer release.
             pinned_version = state.extras.get("framework_version")
             if pinned_version:
-                run_args["_pinned_version"] = pinned_version
+                run_args["framework_pinned_version"] = pinned_version
 
             suffix = fw.result_filename_suffix(task)
             result_file = state.runs_dir(cache_dir) / ("%03d%s.json" % (idx, suffix))

@@ -166,12 +166,39 @@ class LlamaBenchyFramework(BenchmarkingPlugin):
     def initialize(self, v: Variables, logger_arg: Logger) -> LlamaBenchyFramework:
         return self
 
+    def prepare_benchmark_args(
+        self,
+        recipe,
+        config_chain: dict[str, Any],
+        overrides: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Pull ``served_model_name`` off the recipe so llama-benchy can preserve
+        the upstream HuggingFace model id for tokenization (its CLI requires
+        this to be set explicitly when the served name differs from the model).
+        """
+        extra: dict[str, Any] = {}
+        served_model_name = config_chain.get("served_model_name")
+        if served_model_name:
+            extra["served_model_name"] = served_model_name
+        return extra
+
     def check_prerequisites(self) -> list[str]:
         """Check that uvx is available on PATH."""
         missing = []
         if shutil.which("uvx") is None:
             missing.append("uvx not found on PATH. Install uv: https://docs.astral.sh/uv/getting-started/installation/")
         return missing
+
+    def apply_session_warmup_state(self, run_args: dict[str, Any], *, is_first_task: bool) -> dict[str, Any]:
+        """llama-benchy: warmup + coherence checks run once per session on the
+        first task; subsequent tasks suppress them via ``no_warmup`` /
+        ``skip_coherence``.
+        """
+        out = dict(run_args)
+        if not is_first_task:
+            out.setdefault("no_warmup", True)
+            out.setdefault("skip_coherence", True)
+        return out
 
     def detect_version(self) -> str | None:
         """Resolve the llama-benchy version uvx will use for execution.
@@ -217,9 +244,9 @@ class LlamaBenchyFramework(BenchmarkingPlugin):
         Always uses ``--format json`` for machine-parseable output and
         ``--save-result`` to capture results to a file.
 
-        If ``args`` carries a ``_pinned_version`` sentinel key, the package
-        spec becomes ``llama-benchy@<version>`` so the same version is used
-        on every call within a benchmark run (including resumes).
+        If ``args`` carries a ``framework_pinned_version`` sentinel key, the
+        package spec becomes ``llama-benchy@<version>`` so the same version
+        is used on every call within a benchmark run (including resumes).
         """
         # Strip GGUF quant suffix (e.g. "repo/model-GGUF:Q4_K_M" → "repo/model-GGUF")
         # The colon syntax is a sparkrun convention; the served model uses the repo ID.
@@ -227,7 +254,7 @@ class LlamaBenchyFramework(BenchmarkingPlugin):
 
         model_id, _ = parse_gguf_model_spec(model)
 
-        pinned_version = args.get("_pinned_version") if isinstance(args, dict) else None
+        pinned_version = args.get("framework_pinned_version") if isinstance(args, dict) else None
         package_spec = "llama-benchy@%s" % pinned_version if pinned_version else "llama-benchy"
 
         cmd = [
@@ -247,7 +274,7 @@ class LlamaBenchyFramework(BenchmarkingPlugin):
         # Render args as CLI flags
         for key, value in args.items():
             # Skip args we handle explicitly above
-            if key in ("base_url", "model", "format", "save_result", "_pinned_version"):
+            if key in ("base_url", "model", "format", "save_result", "framework_pinned_version"):
                 continue
 
             # Resolve shorthand aliases to canonical names

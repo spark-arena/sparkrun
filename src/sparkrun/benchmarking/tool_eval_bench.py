@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # Pinned upstream ref. Bump as needed; users can override per-call with
 # ``-b ref=<tag-or-branch>`` (the value is consumed by the plugin and not
 # forwarded to the subprocess).
-_DEFAULT_REF = "v1.6.0"
+_DEFAULT_REF = "v1.8.0"
 _GIT_URL = "https://github.com/SeraphimSerapis/tool-eval-bench"
 
 # tool-eval-bench args that take multiple space-separated values.
@@ -78,13 +78,16 @@ class ToolEvalBenchFramework(BenchmarkingPlugin):
 
     framework_name = "tool-eval-bench"
     default_args: dict[str, Any] = {
-        "backend": "vllm",
+        "backend": "vllm",  # TODO: should be runtime (not just vllm)
         "parallel": 1,
         "timeout": 60,
         "max_turns": 8,
         "temperature": 0.0,
+        # TODO: probe true
     }
     passthrough_args: set[str] = set()
+
+    # TODO: resolve api key option -- like other places that do that
 
     def initialize(self, v: Variables, logger_arg: Logger) -> ToolEvalBenchFramework:
         return self
@@ -94,6 +97,17 @@ class ToolEvalBenchFramework(BenchmarkingPlugin):
         if shutil.which("uvx") is None:
             missing.append("uvx not found on PATH. Install uv: https://docs.astral.sh/uv/getting-started/installation/")
         return missing
+
+    def apply_session_warmup_state(self, run_args: dict[str, Any], *, is_first_task: bool) -> dict[str, Any]:
+        """tool-eval-bench: warmup + coherence checks run once per session on
+        the first task; subsequent tasks suppress them via ``no_warmup`` /
+        ``skip_coherence``.
+        """
+        out = dict(run_args)
+        if not is_first_task:
+            out.setdefault("no_warmup", True)
+            out.setdefault("skip_coherence", True)
+        return out
 
     def build_benchmark_command(
         self,

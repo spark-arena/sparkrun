@@ -131,7 +131,7 @@ def benchmark(ctx):
 @click.option("--solo", is_flag=True, help="Force single-node mode")
 @click.option("--port", type=int, default=None, help="Override serve port")
 @click.option("--profile", default=None, type=PROFILE_NAME, help="Benchmark profile name or file path")
-@click.option("--framework", default=None, help="Override benchmarking framework (default: llama-benchy)")
+@click.option("--framework", default=None, help="benchmarking framework (default from config.default_benchmark_framework)")
 @click.option("--output", "output_file", default=None, type=click.Path(), help="Output file for results YAML")
 @click.option("-b", "--benchmark-option", "bench_options", multiple=True, help="Override benchmark arg: -b key=value (repeatable)")
 @click.option(
@@ -158,6 +158,13 @@ def benchmark(ctx):
 )
 @click.option("--fresh", is_flag=True, default=False, help="Force fresh start, deleting prior state if any")
 @dry_run_option
+@click.option(
+    "--scheduler",
+    "scheduler_name",
+    default=None,
+    help="Registered scheduler name (e.g. 'greedy', 'occupancy-sparse', 'occupancy-dense'). Defaults to the recipe's scheduler field, then 'greedy'.",
+    hidden=HIDE_ADVANCED_OPTIONS,
+)
 @click.option(
     "--executor-args",
     multiple=True,
@@ -195,6 +202,7 @@ def benchmark_run(
     bench_timeout,
     fresh,
     dry_run,
+    scheduler_name,
     executor_args,
     extra_args,
     host_list=None,
@@ -231,6 +239,7 @@ def benchmark_run(
         executor_args,
         extra_args,
         fresh=fresh,
+        scheduler_name=scheduler_name,
         host_list=host_list,
         cluster_mgr=cluster_mgr,
     )
@@ -489,6 +498,7 @@ def _run_benchmark(
     export_results_files=True,
     fresh: bool = False,
     submission_id_for_extras: str | None = None,
+    scheduler_name: str | None = None,
     host_list=None,
     cluster_mgr=None,
 ):
@@ -496,11 +506,11 @@ def _run_benchmark(
 
     Returns a :class:`BenchmarkResult` with output file paths on success.
     """
+    import sparkrun.api as api
     from sparkrun.benchmarking.base import export_results, BenchmarkResult
     from ..core.benchmark_profiles import BenchmarkSpec
     from sparkrun.core.bootstrap import get_runtime, get_benchmarking_framework
     from sparkrun.utils import is_local_host
-    from sparkrun.core.launcher import launch_inference
     from sparkrun.orchestration.primitives import (
         build_ssh_kwargs,
         detect_host_ip,
@@ -549,7 +559,7 @@ def _run_benchmark(
                 framework = bench_spec.framework
 
     if not framework:
-        framework = "llama-benchy"
+        framework = config.default_benchmark_framework if config else "llama-benchy"
 
     try:
         fw = get_benchmarking_framework(framework)
@@ -600,9 +610,6 @@ def _run_benchmark(
             bench_args["api_key"] = api_key
         else:
             click.echo(f"Warning: --api-key-env '{api_key_env}' specified, but not found in environment.", err=True)
-
-    if exit_on_first_fail:
-        bench_args["exit_on_first_fail"] = True
 
     effective_timeout = bench_timeout or (bench_spec.timeout if bench_spec else None) or DEFAULT_BENCHMARK_TIMEOUT
 
@@ -785,6 +792,17 @@ def _run_benchmark(
         # Build or load state
         if existing_state is not None:
             state = existing_state
+            # Resume matched by intent_id (encoded in benchmark_id); if the
+            # cluster_id has changed (user relaunched with a fresh placement
+            # token) refresh it on the state so subsequent display reflects
+            # the actual running cluster.
+            if state.cluster_id != cluster_id:
+                logger.debug(
+                    "Refreshing state.cluster_id %s -> %s on resume (same intent, new placement)",
+                    state.cluster_id,
+                    cluster_id,
+                )
+                state.cluster_id = cluster_id
         else:
             state = BenchmarkRunState(
                 benchmark_id=benchmark_id,
@@ -820,39 +838,44 @@ def _run_benchmark(
         if not skip_run:
             logger.log(_PROGRESS_LEVEL, "Step 1/3: Launching inference...")
 
-            launch_result = launch_inference(
+            run_options = api.RunOptions(
                 recipe=recipe,
-                runtime=runtime,
-                host_list=host_list,
-                overrides=overrides,
-                sctx=sctx,
-                is_solo=is_solo,
-                cache_dir=remote_cache_dir,
-                local_cache_dir=local_cache_dir,
+                hosts=tuple(host_list),
+                overrides=dict(overrides),
+                solo=is_solo,
+                dry_run=dry_run,
+                follow=False,
+                detached=True,
+                trust=None,
+                scheduler=scheduler_name,
                 transfer_mode=effective_transfer_mode,
                 transfer_interface=effective_transfer_interface,
-                recipe_ref=recipe_ref,
-                registry_mgr=registry_mgr,
-                auto_port=True,
+                cache_dir=remote_cache_dir,
+                local_cache_dir=local_cache_dir,
+                rootful=rootful,
                 sync_tuning=sync_tuning,
-                dry_run=dry_run,
-                detached=True,
-                rootless=not rootful,
-                auto_user=not rootful,
-                extra_docker_opts=list(executor_args) if executor_args else None,
+                extra_docker_opts=tuple(executor_args) if executor_args else None,
+                recipe_ref=recipe_ref,
             )
+            try:
+                run_result = api.run(run_options, sctx=sctx)
+            except api.SparkrunError as e:
+                click.echo("Error: inference launch failed: %s" % e, err=True)
+                sys.exit(1)
 
-            if launch_result.rc != 0 and not dry_run:
+            launch_result = run_result.launch_result
+            if launch_result is not None and launch_result.rc != 0 and not dry_run:
                 click.echo("Error: inference launch failed (exit code %d)" % launch_result.rc, err=True)
                 sys.exit(launch_result.rc)
 
-            cluster_id = launch_result.cluster_id
-            serve_port = launch_result.serve_port
+            cluster_id = run_result.cluster_id
+            serve_port = run_result.serve_port
 
-            logger.info("Serve command:")
-            for line in launch_result.serve_command.strip().splitlines():
-                logger.info("  %s", line)
-            click.echo("")
+            if run_result.serve_command:
+                logger.info("Serve command:")
+                for line in run_result.serve_command.strip().splitlines():
+                    logger.info("  %s", line)
+                click.echo("")
 
             launched = True
             bench_result.launch_result = launch_result
@@ -873,7 +896,7 @@ def _run_benchmark(
                 except RuntimeError as e:
                     click.echo("Error detecting head IP: %s" % e, err=True)
                     if launched and not no_stop:
-                        _stop_inference(runtime, host_list, cluster_id, config, dry_run)
+                        _stop_inference(runtime, host_list, cluster_id, config, dry_run, sctx=sctx)
                     sys.exit(1)
 
         if not dry_run and not skip_run:
@@ -892,7 +915,7 @@ def _run_benchmark(
             if not ready:
                 click.echo("Error: inference server did not become ready", err=True)
                 if launched and not no_stop:
-                    _stop_inference(runtime, host_list, cluster_id, config, dry_run)
+                    _stop_inference(runtime, host_list, cluster_id, config, dry_run, sctx=sctx)
                 sys.exit(1)
 
             health_url = "http://%s:%d/v1/models" % (target_ip, serve_port)
@@ -906,7 +929,7 @@ def _run_benchmark(
             if not healthy:
                 click.echo("Error: inference server health check timed out", err=True)
                 if launched and not no_stop:
-                    _stop_inference(runtime, host_list, cluster_id, config, dry_run)
+                    _stop_inference(runtime, host_list, cluster_id, config, dry_run, sctx=sctx)
                 sys.exit(1)
             logger.log(_PROGRESS_LEVEL, "Inference server ready.")
         elif dry_run:
@@ -924,11 +947,11 @@ def _run_benchmark(
         if est_tests is not None:
             logger.info("Estimated test iterations: %d", est_tests)
 
-        # Pass served_model_name as an argument if defined, satisfying llama-benchy's
-        # requirement to maintain the original huggingface model ID for tokenization.
-        # Check config_chain to capture both CLI overrides and recipe definitions natively.
-        if (served_model_name := config_chain.get("served_model_name")) and "served_model_name" not in bench_args:
-            bench_args["served_model_name"] = served_model_name
+        # Let the framework pick up any recipe-derived args it cares about
+        # (llama-benchy reads served_model_name; tool-eval-bench is no-op).
+        # We never overwrite keys already supplied by profile/CLI overrides.
+        for k, v in fw.prepare_benchmark_args(recipe, config_chain, overrides).items():
+            bench_args.setdefault(k, v)
 
         # pass api key to model if specified by recipe and not already in bench_args (e.g., via --api-key-env)
         if (api_key := runtime.resolve_api_key(recipe, overrides)) and "api_key" not in bench_args:
@@ -983,7 +1006,7 @@ def _run_benchmark(
                     if launched and not no_stop:
                         click.echo("")
                         click.echo("Stopping inference...")
-                        _stop_inference(runtime, host_list, cluster_id, config, dry_run)
+                        _stop_inference(runtime, host_list, cluster_id, config, dry_run, sctx=sctx)
                         click.echo("Inference stopped.")
                     sys.exit(1)
 
@@ -1053,7 +1076,7 @@ def _run_benchmark(
                             if launched and not no_stop:
                                 click.echo("")
                                 click.echo("Stopping inference...")
-                                _stop_inference(runtime, host_list, cluster_id, config, dry_run)
+                                _stop_inference(runtime, host_list, cluster_id, config, dry_run, sctx=sctx)
                                 click.echo("Inference stopped.")
                             sys.exit(proc.returncode)
                     else:
@@ -1066,7 +1089,7 @@ def _run_benchmark(
                 except FileNotFoundError:
                     click.echo("Error: benchmark command not found: %s" % bench_cmd[0], err=True)
                     if launched and not no_stop:
-                        _stop_inference(runtime, host_list, cluster_id, config, dry_run)
+                        _stop_inference(runtime, host_list, cluster_id, config, dry_run, sctx=sctx)
                     sys.exit(1)
 
             result_file_for_parse = result_file
@@ -1135,7 +1158,7 @@ def _run_benchmark(
         if launched and not no_stop:
             click.echo("")
             logger.log(_PROGRESS_LEVEL, "Step 3/3: Stopping inference...")
-            _stop_inference(runtime, host_list, cluster_id, config, dry_run)
+            _stop_inference(runtime, host_list, cluster_id, config, dry_run, sctx=sctx)
             logger.log(_PROGRESS_LEVEL, "Inference stopped.")
         elif no_stop:
             click.echo("")
@@ -1155,7 +1178,7 @@ def _run_benchmark(
             click.echo("State preserved so that you can resume later")
         if not no_stop and not skip_run:
             click.echo("Stopping inference (cleaning up containers)...")
-            _stop_inference(runtime, host_list, cluster_id, config, dry_run)
+            _stop_inference(runtime, host_list, cluster_id, config, dry_run, sctx=sctx)
             click.echo("Inference stopped.")
         sys.exit(130)
     finally:
@@ -1169,14 +1192,24 @@ def _run_benchmark(
     return bench_result
 
 
-def _stop_inference(runtime, host_list, cluster_id, config, dry_run):
-    """Stop the inference workload."""
+def _stop_inference(runtime, host_list, cluster_id, config, dry_run, sctx=None):
+    """Stop the inference workload via the library API.
+
+    ``runtime`` is retained in the signature for backward compatibility with
+    existing callers; the actual stop is dispatched through ``api.stop`` so
+    executor / collective-backend lookup mirrors the launch path.
+    """
+    import sparkrun.api as api
+
+    if dry_run:
+        click.echo("[dry-run] Would stop cluster %s on %s" % (cluster_id, ", ".join(host_list)))
+        return
+
     try:
-        runtime.stop(
-            hosts=host_list,
+        api.stop(
             cluster_id=cluster_id,
-            config=config,
-            dry_run=dry_run,
+            hosts=tuple(host_list) if host_list else None,
+            sctx=sctx,
         )
     except Exception as e:
         logger.warning("Failed to stop inference: %s", e)
