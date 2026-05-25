@@ -1494,16 +1494,16 @@ class TestInitDefaultsFromManifests:
 
         from sparkrun.core import registry as reg_module
 
-        original = reg_module.DEFAULT_REGISTRIES_GIT
+        original = reg_module.BOOTSTRAP_REGISTRY_URLS
         try:
-            reg_module.DEFAULT_REGISTRIES_GIT = [
+            reg_module.BOOTSTRAP_REGISTRY_URLS = [
                 "https://example.com/bad-repo",
                 "https://example.com/good-repo",
             ]
             with mock.patch.object(mgr, "_discover_manifest_entries", side_effect=fake_discover):
                 result = mgr._init_defaults_from_manifests()
         finally:
-            reg_module.DEFAULT_REGISTRIES_GIT = original
+            reg_module.BOOTSTRAP_REGISTRY_URLS = original
 
         assert len(result) == 1
         assert result[0].name == "good-reg"

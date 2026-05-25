@@ -65,12 +65,21 @@ def resolve_recipe_trust(recipe: Recipe, trust_cli: bool) -> bool:
 
     * the user passed ``--trust`` on the CLI (``trust_cli=True``);
     * the recipe was loaded from a local path (no ``source_registry``);
-    * the recipe came from a registry whose URL is in
-      :data:`sparkrun.core.registry.DEFAULT_REGISTRIES_GIT`.
+    * the recipe came from a registry that the local ``registries.yaml``
+      marks as ``trusted: true`` (per-registry opt-in stored in
+      :class:`sparkrun.core.registry.RegistryEntry`).
+
+    Trust is a **local** decision: it lives in the user's
+    ``~/.config/sparkrun/registries.yaml``.  A manifest in the source
+    repository cannot grant itself trust; the user must opt in either via
+    the bootstrap defaults (registries shipped as ``trusted=True`` in
+    :data:`sparkrun.core.registry.FALLBACK_DEFAULT_REGISTRIES`) or
+    explicitly via ``sparkrun registry trust <name>`` /
+    ``sparkrun registry add --trust <url>``.
 
     Args:
-        recipe: The loaded recipe (used for ``source_registry`` /
-            ``source_registry_url`` introspection).
+        recipe: The loaded recipe (used for ``source_registry``
+            introspection).
         trust_cli: CLI ``--trust`` flag value.
 
     Returns:
@@ -78,13 +87,23 @@ def resolve_recipe_trust(recipe: Recipe, trust_cli: bool) -> bool:
         confirmation, False when they should be gated by an interactive
         prompt.
     """
-    from sparkrun.core.registry import DEFAULT_REGISTRIES_GIT
+    if trust_cli:
+        return True
+    if recipe.source_registry is None:
+        return True  # local recipe
+    # Any failure to consult the local registries.yaml → untrusted.
+    try:
+        from sparkrun.core.config import SparkrunConfig
+        from sparkrun.core.registry import RegistryError
 
-    return (
-        trust_cli
-        or recipe.source_registry is None  # local recipe
-        or (recipe.source_registry_url is not None and recipe.source_registry_url in DEFAULT_REGISTRIES_GIT)
-    )
+        mgr = SparkrunConfig().get_registry_manager()
+        entry = mgr.get_registry(recipe.source_registry)
+        return bool(entry.trusted)
+    except RegistryError:
+        return False
+    except Exception:
+        logger.debug("resolve_recipe_trust: failed to consult registries.yaml", exc_info=True)
+        return False
 
 
 def resolve_effective_cache_dir(

@@ -41,6 +41,11 @@ class RegistryEntry:
         tuning_subpath: Path within repo for tuning configs
         benchmark_subpath: Path within repo for benchmark profiles
         mods_subpath: Path within repo for shared mods (run.sh + supporting files)
+        trusted: Whether recipes from this registry auto-run lifecycle hooks
+            (pre_exec / post_exec / post_commands) without an interactive
+            confirmation prompt.  Defaults to False so user-added third-party
+            registries are untrusted until explicitly opted-in via
+            ``sparkrun registry trust <name>`` or ``registry add --trust``.
     """
 
     name: str
@@ -52,6 +57,20 @@ class RegistryEntry:
     tuning_subpath: str = ""
     benchmark_subpath: str = ""
     mods_subpath: str = ""
+    trusted: bool = False
+
+
+# Git URLs whose .sparkrun/registry.yaml manifests are used for first-run
+# registry discovery (see RegistryManager._init_defaults_from_manifests).
+#
+# This list is **only** consulted during bootstrap-time manifest discovery.
+# It does NOT control trust: trust is now a per-registry ``trusted`` field
+# stored locally in ``registries.yaml`` (see ``RegistryEntry.trusted``).
+BOOTSTRAP_REGISTRY_URLS = [
+    "https://github.com/dbotwinick/sparkrun-recipe-registry.git",
+    "https://github.com/spark-arena/recipe-registry.git",
+    "https://github.com/spark-arena/community-recipe-registry.git",
+]
 
 
 FALLBACK_DEFAULT_REGISTRIES = [
@@ -63,6 +82,7 @@ FALLBACK_DEFAULT_REGISTRIES = [
         tuning_subpath="testing/tuning",
         benchmark_subpath="testing/benchmarking",
         visible=False,
+        trusted=True,
     ),
     RegistryEntry(
         name="official",
@@ -72,6 +92,7 @@ FALLBACK_DEFAULT_REGISTRIES = [
         tuning_subpath="tuning",
         benchmark_subpath="benchmarking",
         visible=True,
+        trusted=True,
     ),
     RegistryEntry(
         name="eugr",
@@ -80,6 +101,7 @@ FALLBACK_DEFAULT_REGISTRIES = [
         description="Official eugr/spark-vllm-docker repo recipes",
         mods_subpath="mods",
         visible=True,
+        # Not in BOOTSTRAP_REGISTRY_URLS — ships untrusted.
     ),
     RegistryEntry(
         name="sparkrun-transitional",
@@ -88,6 +110,7 @@ FALLBACK_DEFAULT_REGISTRIES = [
         description="Transitional registry for recipes",
         tuning_subpath="testing/tuning",
         visible=True,
+        trusted=True,
     ),
     RegistryEntry(
         name="experimental",
@@ -95,6 +118,7 @@ FALLBACK_DEFAULT_REGISTRIES = [
         subpath="experimental-recipes",
         description="Spark Arena registry for experimental recipes",
         visible=False,
+        trusted=True,
     ),
     RegistryEntry(
         name="community",
@@ -102,6 +126,7 @@ FALLBACK_DEFAULT_REGISTRIES = [
         subpath="recipes",
         description="Community recipe registry",
         visible=False,
+        trusted=True,
     ),
     RegistryEntry(
         name="atlas",
@@ -109,15 +134,8 @@ FALLBACK_DEFAULT_REGISTRIES = [
         subpath="recipes",
         description="Atlas recipes",
         visible=False,
+        # Not in BOOTSTRAP_REGISTRY_URLS — ships untrusted.
     ),
-]
-
-# Git URLs whose .sparkrun/registry.yaml manifests are used for first-run
-# registry discovery (see RegistryManager._init_defaults_from_manifests).
-DEFAULT_REGISTRIES_GIT = [
-    "https://github.com/dbotwinick/sparkrun-recipe-registry.git",
-    "https://github.com/spark-arena/recipe-registry.git",
-    "https://github.com/spark-arena/community-recipe-registry.git",
 ]
 
 # List of git URLs for registries that have been superseded and should be cleaned up.
@@ -279,7 +297,7 @@ class RegistryManager:
         """Return the default registry list.
 
         On first run (no ``registries.yaml``), attempts manifest-based
-        discovery from ``DEFAULT_REGISTRIES_GIT``.  Discovered manifest
+        discovery from ``BOOTSTRAP_REGISTRY_URLS``.  Discovered manifest
         entries take priority; ``FALLBACK_DEFAULT_REGISTRIES`` entries are
         then layered on for any names not already present.  This lets git
         manifests override/refresh entries while hardcoded fallbacks fill
@@ -313,13 +331,22 @@ class RegistryManager:
     def _init_defaults_from_manifests(self) -> list[RegistryEntry]:
         """Try to discover default registries from git manifest files.
 
-        For each URL in ``DEFAULT_REGISTRIES_GIT``, clones the repo and reads
+        For each URL in ``BOOTSTRAP_REGISTRY_URLS``, clones the repo and reads
         its ``.sparkrun/registry.yaml`` manifest.  Entries are collected,
         deduplicated by name, and validated.
 
         URLs that fail to clone are skipped individually — successful URLs
         still contribute their entries (partial success).  Only if ALL URLs
         fail does this return ``[]``.
+
+        Entries discovered via this bootstrap path are marked as
+        ``trusted=True``.  Trust is granted by **sparkrun** because the
+        URL came from the curated ``BOOTSTRAP_REGISTRY_URLS`` list — the
+        manifest YAML itself does not (and cannot) dictate trust, even if
+        it sets ``trusted: true`` on its own entries.  The standalone
+        :meth:`_discover_manifest_entries` helper (used by
+        :meth:`add_registry_from_url`) keeps the manifest-derived default
+        of ``trusted=False`` and the bootstrap override happens here.
 
         This method does **not** save to ``registries.yaml``; the caller
         (:meth:`_default_registries`) handles persistence after layering
@@ -333,7 +360,7 @@ class RegistryManager:
         all_entries: list[RegistryEntry] = []
         seen_names: set[str] = set()
 
-        for url in DEFAULT_REGISTRIES_GIT:
+        for url in BOOTSTRAP_REGISTRY_URLS:
             try:
                 entries = self._discover_manifest_entries(url)
                 for entry in entries:
@@ -341,6 +368,10 @@ class RegistryManager:
                         logger.debug("Skipping duplicate manifest entry %r", entry.name)
                         continue
                     validate_registry_name(entry.name, entry.url)
+                    # Bootstrap-discovered entries are trusted because they
+                    # came in via the curated BOOTSTRAP_REGISTRY_URLS list,
+                    # not because the manifest declared itself trustworthy.
+                    entry.trusted = True
                     seen_names.add(entry.name)
                     all_entries.append(entry)
             except Exception as e:
@@ -371,9 +402,50 @@ class RegistryManager:
                 tuning_subpath=r.get("tuning_subpath", ""),
                 benchmark_subpath=r.get("benchmark_subpath", ""),
                 mods_subpath=r.get("mods_subpath", ""),
+                trusted=r.get("trusted", False),
             )
             for r in registries
         ]
+
+    def _needs_trust_migration(self) -> bool:
+        """Check whether the on-disk registries.yaml predates per-entry trust.
+
+        Returns True when the file exists, contains at least one entry, and
+        **no** entry carries a ``trusted`` key in the raw YAML.  A single
+        entry with ``trusted`` set (in either direction) signals a
+        post-migration file written by this version of sparkrun and
+        suppresses the one-time backfill — necessary because
+        :meth:`_save_registries` omits ``trusted: false`` by design
+        (mirroring the ``enabled``/``visible`` pattern).
+        """
+        try:
+            data = read_yaml(self._registries_path)
+        except Exception:
+            return False
+        if not isinstance(data, dict):
+            return False
+        registries = data.get("registries") or []
+        if not isinstance(registries, list) or not registries:
+            return False
+        for raw in registries:
+            if isinstance(raw, dict) and "trusted" in raw:
+                return False
+        return True
+
+    def _migrate_trust_field(self, entries: list[RegistryEntry]) -> list[RegistryEntry]:
+        """Backfill the ``trusted`` field for legacy registries.yaml files.
+
+        Any entry whose URL is in :data:`BOOTSTRAP_REGISTRY_URLS` is marked
+        as ``trusted=True``; all others retain ``trusted=False``.  The
+        migrated list is then persisted via :meth:`_save_registries` so
+        the next load sees an explicit ``trusted`` field on every entry
+        and the migration does not repeat.
+        """
+        for entry in entries:
+            entry.trusted = entry.url in BOOTSTRAP_REGISTRY_URLS
+        self._save_registries(entries)
+        logger.info("Migrated registries.yaml to per-registry trust model")
+        return entries
 
     def _load_registries(self) -> list[RegistryEntry]:
         """Load registries from YAML configuration.
@@ -384,6 +456,12 @@ class RegistryManager:
         if not self._registries_path.exists():
             logger.debug("No registries.yaml found, using defaults")
             return self._default_registries()
+
+        # One-time migration: if the file predates the per-entry ``trusted``
+        # field, backfill trust based on whether each entry's URL is in
+        # ``BOOTSTRAP_REGISTRY_URLS`` and persist the result.  Re-checks the
+        # raw YAML so repeated calls within a process don't re-trigger.
+        needs_migration = self._needs_trust_migration()
 
         try:
             entries = self._load_registries_from_file()
@@ -398,6 +476,8 @@ class RegistryManager:
                     )
                 else:
                     filtered.append(entry)
+            if needs_migration:
+                self._migrate_trust_field(filtered)
             return filtered
         except Exception as e:
             logger.warning("Failed to load registries.yaml: %s", e)
@@ -424,6 +504,8 @@ class RegistryManager:
                 d["benchmark_subpath"] = e.benchmark_subpath
             if e.mods_subpath:
                 d["mods_subpath"] = e.mods_subpath
+            if e.trusted:
+                d["trusted"] = True
             data_list.append(d)
 
         data = {"registries": data_list}
@@ -792,13 +874,16 @@ class RegistryManager:
                 for reg_data in registries_data
             ]
 
-    def add_registry_from_url(self, url: str) -> list[RegistryEntry]:
+    def add_registry_from_url(self, url: str, trust: bool = False) -> list[RegistryEntry]:
         """Add registries by discovering them from a repo's .sparkrun/registry.yaml manifest.
 
         Clones the repo temporarily, reads the manifest, and adds all declared registries.
 
         Args:
             url: Git repository URL.
+            trust: If True, mark every newly-added entry as ``trusted=True``
+                after the add step.  Default False keeps user-added
+                registries untrusted until an explicit opt-in.
 
         Returns:
             List of RegistryEntry objects added.
@@ -820,6 +905,11 @@ class RegistryManager:
                 logger.info("Added registry '%s' from manifest", entry.name)
             except RegistryError:
                 logger.warning("Registry '%s' already exists, skipping", entry.name)
+        if trust and added:
+            # Flip the trust bit on every newly-added entry and persist.
+            for entry in added:
+                self.trust_registry(entry.name)
+                entry.trusted = True
         return added
 
     def remove_registry(self, name: str) -> None:
@@ -1024,6 +1114,41 @@ class RegistryManager:
             RegistryError: If the registry is not found
         """
         self._set_registry_enabled(name, False)
+
+    def _set_registry_trusted(self, name: str, trusted: bool) -> None:
+        """Set the trusted state of a registry by name.
+
+        Args:
+            name: Registry name to modify.
+            trusted: Target trust state.
+
+        Raises:
+            RegistryError: If the registry is not found.
+        """
+        entries = self._load_registries()
+        for e in entries:
+            if e.name == name:
+                e.trusted = trusted
+                self._save_registries(entries)
+                logger.info("%s registry %s", "Trusted" if trusted else "Untrusted", name)
+                return
+        raise RegistryError("Registry %r not found" % name)
+
+    def trust_registry(self, name: str) -> None:
+        """Mark a registry as trusted (recipes from it get auto-trust for hooks).
+
+        Raises:
+            RegistryError: If the registry is not found.
+        """
+        self._set_registry_trusted(name, True)
+
+    def untrust_registry(self, name: str) -> None:
+        """Mark a registry as untrusted (recipes from it require --trust or prompt).
+
+        Raises:
+            RegistryError: If the registry is not found.
+        """
+        self._set_registry_trusted(name, False)
 
     def list_registries(self) -> list[RegistryEntry]:
         """List all configured registries.

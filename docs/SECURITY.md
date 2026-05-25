@@ -5,20 +5,62 @@ security fixes actually changed.
 
 ## Recipe trust model
 
+Trust is a **per-registry** local decision, stored in
+`~/.config/sparkrun/registries.yaml` as a boolean `trusted:` field on each
+entry (see `RegistryEntry.trusted` in `core/registry.py`).
+
 A recipe is **trusted** when any of the following holds (see
 `core/launcher.py:resolve_recipe_trust`):
 
 1. The user passed `--trust` on the CLI (hidden flag, default off).
 2. The recipe was loaded from a local path (no `source_registry` recorded —
    files passed on the CLI, `./recipes/`, `~/.config/sparkrun/recipes/`).
-3. The recipe came from a registry whose URL is in
-   `core/registry.py:DEFAULT_REGISTRIES_GIT`:
-   - `https://github.com/dbotwinick/sparkrun-recipe-registry.git`
-   - `https://github.com/spark-arena/recipe-registry.git`
-   - `https://github.com/spark-arena/community-recipe-registry.git`
+3. The recipe came from a registry whose `trusted` flag is `true` in the
+   user's local `registries.yaml`.
 
 A recipe is **untrusted** otherwise — typically a third-party registry the user
-added via `sparkrun registry add <url>`.
+added via `sparkrun registry add <url>` without the `--trust` flag, or any
+registry whose name cannot be resolved against the local `registries.yaml`.
+
+### Where the trust bit comes from
+
+- **Default registries**: bootstrap-curated entries shipped via
+  `core/registry.py:FALLBACK_DEFAULT_REGISTRIES` are marked `trusted=True`
+  when their URL is in `BOOTSTRAP_REGISTRY_URLS`:
+  - `https://github.com/dbotwinick/sparkrun-recipe-registry.git`
+  - `https://github.com/spark-arena/recipe-registry.git`
+  - `https://github.com/spark-arena/community-recipe-registry.git`
+
+  This preserves out-of-the-box behavior for first-run installs.  Default
+  entries whose URLs are not in `BOOTSTRAP_REGISTRY_URLS` (currently
+  `eugr`, `atlas`) ship `trusted=False`.
+
+- **Bootstrap manifest discovery**: when `_init_defaults_from_manifests`
+  successfully clones a bootstrap URL and reads its
+  `.sparkrun/registry.yaml`, **sparkrun** marks the discovered entries
+  `trusted=True` because they came in via the curated bootstrap path.
+  The manifest YAML itself **cannot** grant trust — only the local
+  decision (curated bootstrap URL list, explicit user opt-in) does.
+
+- **User-added registries**: `sparkrun registry add <url>` lands new
+  entries with `trusted=False`.  Pass `--trust` (or run
+  `sparkrun registry trust <name>` afterwards) to opt in.
+
+- **Migration**: when an existing `registries.yaml` predates the
+  `trusted` field, sparkrun performs a one-time migration on next load,
+  marking entries whose URL is in `BOOTSTRAP_REGISTRY_URLS` as
+  `trusted=True` and leaving the rest `trusted=False`.
+
+### CLI surface
+
+| Command                                       | Effect                                                |
+|-----------------------------------------------|-------------------------------------------------------|
+| `sparkrun registry add <url>`                 | Add registries from a manifest (lands `trusted=False`)|
+| `sparkrun registry add --trust <url>`         | Add and immediately mark `trusted=True`               |
+| `sparkrun registry trust <name>`              | Flip an existing registry to `trusted=True`           |
+| `sparkrun registry untrust <name>`            | Flip back to `trusted=False`                          |
+| `sparkrun registry list`                      | Includes a `Trusted` column                           |
+| `sparkrun registry show <name>`               | Includes a `Trusted:` line                            |
 
 ## What trust gates
 

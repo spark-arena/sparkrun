@@ -5849,6 +5849,130 @@ class TestRegistryListJson:
             assert "enabled" in data[0]
 
 
+class TestRegistryTrustCli:
+    """CLI surface for the per-registry trust model."""
+
+    @pytest.fixture
+    def isolated_registry(self, runner, tmp_path, monkeypatch):
+        """Redirect DEFAULT_CONFIG_DIR + cache to a temp tree so CLI ops are isolated."""
+        from sparkrun.core import config as config_module
+        from sparkrun.core.registry import RegistryEntry, RegistryManager
+
+        cfg_dir = tmp_path / "cfg"
+        cache_dir = tmp_path / "cache"
+        cfg_dir.mkdir()
+        cache_dir.mkdir()
+        monkeypatch.setattr(config_module, "DEFAULT_CONFIG_DIR", cfg_dir)
+        monkeypatch.setattr(config_module, "DEFAULT_CACHE_DIR", cache_dir)
+
+        # Seed a known set of registries (avoids manifest discovery network calls).
+        mgr = RegistryManager(cfg_dir, cache_dir / "registries")
+        mgr._manifest_discovery_attempted = True
+        mgr._save_registries(
+            [
+                RegistryEntry(
+                    name="seed-trusted",
+                    url="https://example.com/trusted",
+                    subpath="recipes",
+                    description="seed trusted entry",
+                    trusted=True,
+                ),
+                RegistryEntry(
+                    name="seed-untrusted",
+                    url="https://example.com/untrusted",
+                    subpath="recipes",
+                    description="seed untrusted entry",
+                    trusted=False,
+                ),
+            ]
+        )
+        return cfg_dir, cache_dir, mgr
+
+    def test_trust_command_flips_bit(self, runner, isolated_registry):
+        """``sparkrun registry trust <name>`` marks entry trusted."""
+        _, _, mgr = isolated_registry
+        result = runner.invoke(main, ["registry", "trust", "seed-untrusted"])
+        assert result.exit_code == 0
+        assert "trusted" in result.output.lower()
+        loaded = {e.name: e for e in mgr._load_registries_from_file()}
+        assert loaded["seed-untrusted"].trusted is True
+
+    def test_untrust_command_flips_bit_back(self, runner, isolated_registry):
+        """``sparkrun registry untrust <name>`` marks entry untrusted."""
+        _, _, mgr = isolated_registry
+        result = runner.invoke(main, ["registry", "untrust", "seed-trusted"])
+        assert result.exit_code == 0
+        assert "untrusted" in result.output.lower()
+        loaded = {e.name: e for e in mgr._load_registries_from_file()}
+        assert loaded["seed-trusted"].trusted is False
+
+    def test_trust_unknown_exits_nonzero(self, runner, isolated_registry):
+        result = runner.invoke(main, ["registry", "trust", "does-not-exist"])
+        assert result.exit_code != 0
+        assert "not found" in result.output.lower() or "error" in result.output.lower()
+
+    def test_add_with_trust_flag(self, runner, isolated_registry, monkeypatch):
+        """``sparkrun registry add --trust <url>`` lands entries as trusted."""
+        _, _, mgr = isolated_registry
+        from sparkrun.core.registry import RegistryEntry
+
+        # Mock the manifest-discovery step so the CLI doesn't hit the network.
+        new_entries = [
+            RegistryEntry(name="added-via-cli", url="https://example.com/new", subpath="recipes"),
+        ]
+        monkeypatch.setattr(
+            "sparkrun.core.registry.RegistryManager._discover_manifest_entries",
+            lambda self, url: new_entries,
+        )
+
+        result = runner.invoke(main, ["registry", "add", "--trust", "--no-update", "https://example.com/new"])
+        assert result.exit_code == 0, result.output
+        loaded = {e.name: e for e in mgr._load_registries_from_file()}
+        assert loaded["added-via-cli"].trusted is True
+
+    def test_add_without_trust_lands_untrusted(self, runner, isolated_registry, monkeypatch):
+        """``sparkrun registry add <url>`` defaults to trusted=False."""
+        _, _, mgr = isolated_registry
+        from sparkrun.core.registry import RegistryEntry
+
+        new_entries = [
+            RegistryEntry(name="added-default", url="https://example.com/def", subpath="recipes"),
+        ]
+        monkeypatch.setattr(
+            "sparkrun.core.registry.RegistryManager._discover_manifest_entries",
+            lambda self, url: new_entries,
+        )
+
+        result = runner.invoke(main, ["registry", "add", "--no-update", "https://example.com/def"])
+        assert result.exit_code == 0, result.output
+        loaded = {e.name: e for e in mgr._load_registries_from_file()}
+        assert loaded["added-default"].trusted is False
+
+    def test_registry_list_displays_trust(self, runner, isolated_registry):
+        result = runner.invoke(main, ["registry", "list"])
+        assert result.exit_code == 0
+        # Header shows Trusted column.
+        assert "Trusted" in result.output
+        # Seeded entries both appear with their trust state.
+        # Each row has name + 'yes'/'no' tokens in the trusted column.
+        lines = [ln for ln in result.output.splitlines() if "seed-" in ln]
+        assert any("seed-trusted" in ln and "yes" in ln for ln in lines)
+        assert any("seed-untrusted" in ln and "no" in ln for ln in lines)
+
+    def test_registry_show_displays_trust(self, runner, isolated_registry):
+        result = runner.invoke(main, ["registry", "show", "seed-trusted"])
+        assert result.exit_code == 0, result.output
+        assert "Trusted:" in result.output
+        # "Trusted:     yes"
+        trust_line = [ln for ln in result.output.splitlines() if ln.startswith("Trusted:")][0]
+        assert "yes" in trust_line
+
+        result_un = runner.invoke(main, ["registry", "show", "seed-untrusted"])
+        assert result_un.exit_code == 0, result_un.output
+        un_line = [ln for ln in result_un.output.splitlines() if ln.startswith("Trusted:")][0]
+        assert "no" in un_line
+
+
 class TestWithHostContext:
     """Unit tests for the @with_host_context decorator."""
 

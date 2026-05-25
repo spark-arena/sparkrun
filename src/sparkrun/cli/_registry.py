@@ -68,8 +68,8 @@ def registry_list(ctx, show_disabled, only_show_visible, output_json, config_pat
     has_benchmarks = any(r.benchmark_subpath for r in display_registries)
 
     # Table header
-    header = f"{'Name':<25} {'URL':<45} {'Enabled':<9} {'Visible':<9}"
-    sep_width = 88
+    header = f"{'Name':<25} {'URL':<45} {'Enabled':<9} {'Visible':<9} {'Trusted':<9}"
+    sep_width = 98
     if has_tuning:
         header += f" {'Tuning':<8}"
         sep_width += 9
@@ -83,7 +83,8 @@ def registry_list(ctx, show_disabled, only_show_visible, output_json, config_pat
         url = reg.url[:43] + ".." if len(reg.url) > 45 else reg.url
         enabled = "yes" if reg.enabled else "no"
         visible = "yes" if reg.visible else "no"
-        row = f"{reg.name:<25} {url:<45} {enabled:<9} {visible:<9}"
+        trusted = "yes" if reg.trusted else "no"
+        row = f"{reg.name:<25} {url:<45} {enabled:<9} {visible:<9} {trusted:<9}"
         if has_tuning:
             tuning = "yes" if reg.tuning_subpath else "no"
             row += f" {tuning:<8}"
@@ -129,8 +130,15 @@ def registry_list(ctx, show_disabled, only_show_visible, output_json, config_pat
 @registry.command("add")
 @click.argument("url")
 @click.option("--no-update", is_flag=True, help="Skip the automatic fetch of newly added registries")
+@click.option(
+    "--trust",
+    "trust",
+    is_flag=True,
+    default=False,
+    help="Mark newly-added registries as trusted (recipe hooks auto-run without prompting).",
+)
 @click.pass_context
-def registry_add_url(ctx, url, no_update, config_path=None):
+def registry_add_url(ctx, url, no_update, trust, config_path=None):
     """Add registries from a repository's .sparkrun/registry.yaml manifest.
 
     Clones the repository, reads the manifest, and adds all declared registries.
@@ -140,6 +148,7 @@ def registry_add_url(ctx, url, no_update, config_path=None):
     Examples:
 
       sparkrun registry add https://github.com/spark-arena/recipe-registry
+      sparkrun registry add --trust https://github.com/me/my-recipes
     """
     from sparkrun.core.registry import RegistryError
 
@@ -147,7 +156,7 @@ def registry_add_url(ctx, url, no_update, config_path=None):
 
     try:
         click.echo("Discovering registries from %s..." % url)
-        added = registry_mgr.add_registry_from_url(url)
+        added = registry_mgr.add_registry_from_url(url, trust=trust)
         if not added:
             click.echo("No new registries added (all may already exist).")
             return
@@ -155,7 +164,8 @@ def registry_add_url(ctx, url, no_update, config_path=None):
         click.echo("Added %d registr%s:" % (len(added), "y" if len(added) == 1 else "ies"))
         for entry in added:
             vis = "" if entry.visible else " (hidden)"
-            click.echo("  %s — %s%s" % (entry.name, entry.description, vis))
+            trust_note = " [trusted]" if entry.trusted else ""
+            click.echo("  %s — %s%s%s" % (entry.name, entry.description, vis, trust_note))
 
         if no_update:
             return
@@ -230,6 +240,71 @@ def registry_disable(ctx, name, config_path=None):
     except RegistryError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
+
+
+@registry.command("trust")
+@click.argument("name", type=REGISTRY_NAME)
+@click.pass_context
+def registry_trust_cmd(ctx, name, config_path=None):
+    """Mark a registry as trusted (auto-runs recipe hooks without prompt)."""
+    from sparkrun.core.registry import RegistryError
+
+    config, registry_mgr = _get_config_and_registry(config_path)
+
+    try:
+        registry_mgr.trust_registry(name)
+        click.echo(f"Registry '{name}' marked as trusted.")
+    except RegistryError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@registry.command("untrust")
+@click.argument("name", type=REGISTRY_NAME)
+@click.pass_context
+def registry_untrust_cmd(ctx, name, config_path=None):
+    """Mark a registry as untrusted (hook commands require interactive prompt)."""
+    from sparkrun.core.registry import RegistryError
+
+    config, registry_mgr = _get_config_and_registry(config_path)
+
+    try:
+        registry_mgr.untrust_registry(name)
+        click.echo(f"Registry '{name}' marked as untrusted.")
+    except RegistryError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@registry.command("show")
+@click.argument("name", type=REGISTRY_NAME)
+@click.pass_context
+def registry_show(ctx, name, config_path=None):
+    """Show details of a single registry."""
+    from sparkrun.core.registry import RegistryError
+
+    config, registry_mgr = _get_config_and_registry(config_path)
+
+    try:
+        entry = registry_mgr.get_registry(name)
+    except RegistryError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    click.echo("Name:        %s" % entry.name)
+    click.echo("URL:         %s" % entry.url)
+    click.echo("Subpath:     %s" % entry.subpath)
+    if entry.description:
+        click.echo("Description: %s" % entry.description)
+    click.echo("Enabled:     %s" % ("yes" if entry.enabled else "no"))
+    click.echo("Visible:     %s" % ("yes" if entry.visible else "no"))
+    click.echo("Trusted:     %s" % ("yes" if entry.trusted else "no"))
+    if entry.tuning_subpath:
+        click.echo("Tuning:      %s" % entry.tuning_subpath)
+    if entry.benchmark_subpath:
+        click.echo("Benchmarks:  %s" % entry.benchmark_subpath)
+    if entry.mods_subpath:
+        click.echo("Mods:        %s" % entry.mods_subpath)
 
 
 @registry.command("revert-to-defaults", hidden=HIDE_ADVANCED_OPTIONS)
