@@ -398,3 +398,65 @@ def test_ambiguous_workload_carries_cluster_ids():
 
     err = api.AmbiguousWorkload("multiple matches", cluster_ids=["a", "b"])
     assert err.cluster_ids == ("a", "b")
+
+
+# --------------------------------------------------------------------------
+# parse_container_name — canonical container-name decomposition
+# --------------------------------------------------------------------------
+
+
+class TestParseContainerName:
+    """The single source of truth for ``sparkrun_<intent>_<placement>[_<role>]``
+    splitting.  Both ``query_cluster_status`` and the monitor TUI depend on
+    this returning the full cluster_id (not the intent prefix) for distinct
+    placements of the same recipe."""
+
+    INTENT = "221f3a3a45d7fa4d"
+    PLACE = "0123456789ab"
+
+    def test_head_role(self):
+        from sparkrun.orchestration.job_metadata import parse_container_name
+
+        result = parse_container_name("sparkrun_%s_%s_head" % (self.INTENT, self.PLACE))
+        assert result == ("sparkrun_%s_%s" % (self.INTENT, self.PLACE), "head")
+
+    def test_node_role_with_index(self):
+        from sparkrun.orchestration.job_metadata import parse_container_name
+
+        result = parse_container_name("sparkrun_%s_%s_node_3" % (self.INTENT, self.PLACE))
+        assert result == ("sparkrun_%s_%s" % (self.INTENT, self.PLACE), "node_3")
+
+    def test_solo_shorthand(self):
+        from sparkrun.orchestration.job_metadata import parse_container_name
+
+        result = parse_container_name("sparkrun_%s_%s_solo" % (self.INTENT, self.PLACE))
+        assert result == ("sparkrun_%s_%s" % (self.INTENT, self.PLACE), "solo")
+
+    def test_no_role_suffix(self):
+        from sparkrun.orchestration.job_metadata import parse_container_name
+
+        # Cluster_id by itself (rare but legal) returns role="?".
+        result = parse_container_name("sparkrun_%s_%s" % (self.INTENT, self.PLACE))
+        assert result == ("sparkrun_%s_%s" % (self.INTENT, self.PLACE), "?")
+
+    def test_two_workloads_same_intent_distinct_placements(self):
+        """Critical regression: same intent + different placement → different cluster_ids."""
+        from sparkrun.orchestration.job_metadata import parse_container_name
+
+        place_a = "aabbccddeeff"
+        place_b = "112233445566"
+        cid_a, _ = parse_container_name("sparkrun_%s_%s_head" % (self.INTENT, place_a))
+        cid_b, _ = parse_container_name("sparkrun_%s_%s_head" % (self.INTENT, place_b))
+        assert cid_a != cid_b
+        assert cid_a == "sparkrun_%s_%s" % (self.INTENT, place_a)
+        assert cid_b == "sparkrun_%s_%s" % (self.INTENT, place_b)
+
+    def test_unparseable_returns_none(self):
+        from sparkrun.orchestration.job_metadata import parse_container_name
+
+        assert parse_container_name("not-a-sparkrun-container") is None
+        assert parse_container_name("sparkrun_short_head") is None
+        # Wrong intent length (15 instead of 16).
+        assert parse_container_name("sparkrun_%s_%s_head" % ("a" * 15, self.PLACE)) is None
+        # Wrong placement length (11 instead of 12).
+        assert parse_container_name("sparkrun_%s_%s_head" % (self.INTENT, "a" * 11)) is None

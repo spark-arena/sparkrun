@@ -38,33 +38,28 @@ def _pct(raw: str) -> float:
 def _parse_container_jobs(container_names: list[str], cache_dir: str | None) -> list[dict]:
     """Resolve container names to job metadata entries.
 
-    Uses the same cluster-ID extraction logic as
+    Delegates name → (cluster_id, role) parsing to
+    :func:`sparkrun.orchestration.job_metadata.parse_container_name` so
+    the TUI shares the canonical
+    ``sparkrun_<intent>_<placement>[_<role>]`` format with
     :func:`sparkrun.core.cluster_manager.query_cluster_status` and the
-    Docker executor's ``query_status`` (consumed by
-    :func:`sparkrun.api.status`): solo containers end with ``_solo``;
-    clustered containers encode the cluster_id as ``sparkrun_{12-char
-    hash}`` followed by a role suffix.
+    Docker executor's ``query_status``.
 
     Returns a list of dicts, one per container, with keys:
         name, role, cluster_id, recipe, model, runtime, tp
     """
-    from sparkrun.orchestration.job_metadata import load_job_metadata
+    from sparkrun.orchestration.job_metadata import load_job_metadata, parse_container_name
 
     # Group containers by cluster_id first so we only load metadata once
     clusters: dict[str, list[tuple[str, str]]] = {}  # cluster_id -> [(name, role)]
     for name in container_names:
-        if name.endswith("_solo"):
-            cid = name.removesuffix("_solo")
-            clusters.setdefault(cid, []).append((name, "solo"))
-        else:
-            prefix_end = name.find("_", len("sparkrun_"))
-            if 0 < prefix_end < len(name) - 1:
-                cid = name[:prefix_end]
-                role = name[prefix_end + 1 :]
-            else:
-                cid = name
-                role = "?"
-            clusters.setdefault(cid, []).append((name, role))
+        parsed = parse_container_name(name)
+        if parsed is None:
+            # Unparseable name — surface verbatim so the TUI still lists it.
+            clusters.setdefault(name, []).append((name, "?"))
+            continue
+        cid, role = parsed
+        clusters.setdefault(cid, []).append((name, role))
 
     result: list[dict] = []
     for cid, members in clusters.items():
