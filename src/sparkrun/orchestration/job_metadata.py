@@ -208,6 +208,13 @@ PLACEMENT_TOKEN_LEN = PLACEMENT_TOKEN_BYTES * 2
 _INTENT_ID_RE = re.compile(r"^[0-9a-f]{%d}$" % INTENT_ID_LEN)
 _PLACEMENT_TOKEN_RE = re.compile(r"^[0-9a-f]{%d}$" % PLACEMENT_TOKEN_LEN)
 _NEW_CLUSTER_ID_RE = re.compile(r"^sparkrun_([0-9a-f]{%d})_([0-9a-f]{%d})$" % (INTENT_ID_LEN, PLACEMENT_TOKEN_LEN))
+# Canonical container name: ``sparkrun_<intent>_<placement>[_<role>]``.
+# Used by every consumer that splits container names into (cluster_id, role):
+# ``cluster_manager.query_cluster_status``, the Docker executor's
+# ``query_status``, the cluster monitor TUI.
+_CONTAINER_NAME_RE = re.compile(
+    r"^sparkrun_(?P<intent>[0-9a-f]{%d})_(?P<placement>[0-9a-f]{%d})(?:_(?P<role>.+))?$" % (INTENT_ID_LEN, PLACEMENT_TOKEN_LEN)
+)
 
 
 def generate_intent_id(recipe: "Recipe", overrides: dict | None = None) -> str:
@@ -315,6 +322,30 @@ def parse_cluster_id(cluster_id: str) -> tuple[str, str]:
 def is_cluster_id(cluster_id: str) -> bool:
     """``True`` when *cluster_id* parses as the canonical sparkrun format."""
     return _NEW_CLUSTER_ID_RE.fullmatch(cluster_id) is not None
+
+
+def parse_container_name(name: str) -> tuple[str, str] | None:
+    """Decompose a container name into ``(cluster_id, role)``.
+
+    Accepts the canonical
+    ``sparkrun_<intent_id>_<placement_token>[_<role>]`` form, plus the
+    ``..._solo`` shorthand for single-container launches.  Returns
+    ``None`` for names that don't parse so callers can keep an
+    "unknown" branch without try/except.
+
+    The ``cluster_id`` returned is the full
+    ``sparkrun_<intent>_<placement>`` — distinct workloads of the same
+    recipe replay (same intent, different placement token) parse to
+    distinct cluster_ids.
+    """
+    if name.endswith("_solo"):
+        return (name.removesuffix("_solo"), "solo")
+    m = _CONTAINER_NAME_RE.match(name)
+    if m is None:
+        return None
+    cluster_id = "sparkrun_%s_%s" % (m.group("intent"), m.group("placement"))
+    role = m.group("role") or "?"
+    return (cluster_id, role)
 
 
 def save_job_metadata(
