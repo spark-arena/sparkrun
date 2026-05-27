@@ -14,6 +14,7 @@ import yaml
 
 from sparkrun.proxy import (
     DEFAULT_DISCOVER_INTERVAL,
+    DEFAULT_ENABLE_UI,
     DEFAULT_MASTER_KEY,
     DEFAULT_PROXY_HOST,
     DEFAULT_PROXY_PORT,
@@ -23,7 +24,14 @@ logger = logging.getLogger(__name__)
 
 
 class ProxyConfig:
-    """Manages proxy configuration stored in ``proxy.yaml``."""
+    """Manages proxy configuration stored in ``proxy.yaml``.
+
+    The canonical access path is :attr:`sparkrun.core.context.SparkrunContext.proxy_config`
+    (or :meth:`sparkrun.core.config.SparkrunConfig.get_proxy_config` for direct
+    callers without a ``sctx``).  Direct construction is reserved for the
+    auto-discover daemon (forked subprocess with no ``sctx``) and for tests
+    that need to point at a temporary config path.
+    """
 
     def __init__(self, config_path: Path | None = None):
         if config_path is None:
@@ -75,6 +83,20 @@ class ProxyConfig:
     @property
     def discover_interval(self) -> int:
         return int(self._data.get("proxy", {}).get("discover_interval", DEFAULT_DISCOVER_INTERVAL))
+
+    @property
+    def enable_ui(self) -> bool:
+        return bool(self._data.get("proxy", {}).get("enable_ui", DEFAULT_ENABLE_UI))
+
+    @property
+    def ui_username(self) -> str | None:
+        val = self._data.get("proxy", {}).get("ui_username")
+        return str(val) if val is not None else None
+
+    @property
+    def ui_password(self) -> str | None:
+        val = self._data.get("proxy", {}).get("ui_password")
+        return str(val) if val is not None else None
 
     def set_proxy(self, **kwargs: Any) -> None:
         """Update proxy settings (port, host, master_key, etc.)."""

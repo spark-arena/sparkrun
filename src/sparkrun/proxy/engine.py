@@ -20,7 +20,13 @@ from typing import Any
 
 import yaml
 
-from sparkrun.proxy import DEFAULT_PROXY_HOST, DEFAULT_PROXY_PORT, DEFAULT_MASTER_KEY
+from sparkrun.proxy import (
+    DEFAULT_ENABLE_UI,
+    DEFAULT_MASTER_KEY,
+    DEFAULT_PROXY_HOST,
+    DEFAULT_PROXY_PORT,
+    DEFAULT_UI_USERNAME,
+)
 from sparkrun.proxy.discovery import DiscoveredEndpoint
 
 logger = logging.getLogger(__name__)
@@ -32,10 +38,15 @@ def build_litellm_config(
 ) -> dict[str, Any]:
     """Generate a litellm proxy config dict from discovered endpoints.
 
+    When *master_key* is set, LiteLLM performs stateless bearer-token
+    authentication against ``general_settings.master_key`` — no backing
+    database is required.  Features that need a DB (virtual keys,
+    budgets, request logging) are intentionally out of scope.
+
     Args:
         endpoints: Discovered inference endpoints.
-        master_key: Master key for litellm management API.  When None,
-            no authentication is required (avoids LiteLLM DB dependency).
+        master_key: Bearer token for stateless auth.  When ``None``,
+            no authentication is configured.
 
     Returns:
         Dict suitable for writing as litellm YAML config.
@@ -117,10 +128,16 @@ class ProxyEngine:
         port: int = DEFAULT_PROXY_PORT,
         master_key: str | None = DEFAULT_MASTER_KEY,
         state_dir: Path | None = None,
+        enable_ui: bool = DEFAULT_ENABLE_UI,
+        ui_username: str | None = None,
+        ui_password: str | None = None,
     ):
         self.host = host
         self.port = port
         self.master_key = master_key
+        self.enable_ui = enable_ui
+        self.ui_username = ui_username
+        self.ui_password = ui_password
 
         if state_dir is None:
             from sparkrun.core.config import DEFAULT_CACHE_DIR
@@ -130,6 +147,9 @@ class ProxyEngine:
         self.state_file = state_dir / "state.yaml"
         self.config_path = state_dir / "litellm_config.yaml"
         self._autodiscover_config_path = state_dir / "autodiscover.yaml"
+
+        if self.enable_ui and self.master_key is None:
+            raise ValueError("enable_ui requires master_key to be set (LiteLLM UI login needs the master key)")
 
     def start(
         self,
@@ -189,10 +209,17 @@ class ProxyEngine:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         env = os.environ.copy()
 
-        # LiteLLM requires a database when master_key is set.
-        if self.master_key:
-            db_path = self.state_dir / "litellm.db"
-            env["DATABASE_URL"] = "sqlite:///%s" % db_path
+        # master_key auth uses LiteLLM's stateless bearer-token check, configured
+        # via general_settings.master_key in the YAML emitted by build_litellm_config.
+        # No DB env-vars are injected: virtual keys, budgets, and request logging —
+        # features that require a backing DB — are intentionally out of scope.
+        #
+        # Opt-in UI mode (enable_ui=True) re-adds DATABASE_URL because LiteLLM's
+        # /ui requires a DB.  master_key precondition is enforced in __init__.
+        if self.enable_ui:
+            env["DATABASE_URL"] = "sqlite:///%s" % (self.state_dir / "litellm.db")
+            env["UI_USERNAME"] = self.ui_username or DEFAULT_UI_USERNAME
+            env["UI_PASSWORD"] = self.ui_password or self.master_key
 
         if foreground:
             proc = subprocess.Popen(cmd, env=env)

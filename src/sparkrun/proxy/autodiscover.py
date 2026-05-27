@@ -70,6 +70,7 @@ def run_autodiscover(config_path: str) -> None:
     from sparkrun.proxy.engine import ProxyEngine
 
     engine = ProxyEngine(port=proxy_port, master_key=master_key)
+    # Daemon process — no sctx available; ProxyConfig() direct construction is the documented exception.
     proxy_cfg = ProxyConfig()
 
     logger.info(

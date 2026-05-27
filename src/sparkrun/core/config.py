@@ -12,6 +12,7 @@ from vpd.next.util import read_yaml
 if TYPE_CHECKING:
     from scitrera_app_framework import Variables
     from sparkrun.core.registry import RegistryManager
+    from sparkrun.proxy.config import ProxyConfig
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,7 @@ class SparkrunConfig:
     def __init__(self, config_path: Path | None = None):
         self.config_path = config_path or (DEFAULT_CONFIG_DIR / "config.yaml")
         self._data: dict[str, Any] = {}
+        self._proxy_config: "ProxyConfig | None" = None
         self._load()
 
     def _load(self):
@@ -254,3 +256,18 @@ class SparkrunConfig:
             config_root=self.config_path.parent if self.config_path else DEFAULT_CONFIG_DIR,
             cache_root=self.cache_dir / "registries",
         )
+
+    def get_proxy_config(self) -> "ProxyConfig":
+        """Return a cached :class:`ProxyConfig` for this config object.
+
+        The canonical access path is :attr:`SparkrunContext.proxy_config`;
+        callers that don't have a ``sctx`` (scripts, tests, internal
+        helpers) can reach the same instance via this factory.  The
+        instance is constructed lazily on first call and reused on
+        subsequent calls — mirroring :meth:`get_registry_manager`.
+        """
+        if self._proxy_config is None:
+            from sparkrun.proxy.config import ProxyConfig
+
+            self._proxy_config = ProxyConfig()
+        return self._proxy_config

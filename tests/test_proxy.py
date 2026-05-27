@@ -698,16 +698,12 @@ class TestDiscovery:
         assert endpoints[0].runtime == "sglang"
 
     def test_discover_live_uses_running_containers(self, tmp_path: Path):
-        """Live discovery builds endpoints from query_cluster_status results."""
+        """Live discovery cross-references api.list_jobs with api.status."""
+        from sparkrun.api import JobInfo
+        from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy, RunningWorkload
         from sparkrun.proxy.discovery import discover_endpoints
-        from sparkrun.core.cluster_manager import ClusterGroup, ClusterStatusResult
 
-        jobs_dir = tmp_path / "jobs"
-        jobs_dir.mkdir()
-        cache_dir = str(tmp_path)
-
-        # Save metadata for the running cluster
-        meta = {
+        running_meta = {
             "cluster_id": "sparkrun_bbbbbbbbbbbbbbb1_bbbbbbbbbbb1",
             "recipe": "qwen3.5-0.8b-bf16-sglang",
             "model": "Qwen/Qwen3.5-0.8B",
@@ -718,11 +714,7 @@ class TestDiscovery:
             "served_model_name": "qwen3.5-0.8b",
             "mgmt_ip_map": {"10.24.11.13": "10.24.11.13", "10.24.11.14": "10.24.11.14"},
         }
-        with open(jobs_dir / "abc123.yaml", "w") as f:
-            yaml.safe_dump(meta, f)
-
-        # Also save stale metadata on the same host:port (should be ignored)
-        stale = {
+        stale_meta = {
             "cluster_id": "sparkrun_old999",
             "recipe": "nemotron3-super-120b-nvfp4-trtllm",
             "model": "nvidia/NVIDIA-Nemotron-3-Super-120B",
@@ -731,35 +723,42 @@ class TestDiscovery:
             "port": 8000,
             "tensor_parallel": 1,
         }
-        with open(jobs_dir / "old999.yaml", "w") as f:
-            yaml.safe_dump(stale, f)
 
-        # Mock query_cluster_status to return only the running cluster
-        mock_result = ClusterStatusResult(
-            groups={
-                "sparkrun_bbbbbbbbbbbbbbb1_bbbbbbbbbbb1": ClusterGroup(
-                    cluster_id="sparkrun_bbbbbbbbbbbbbbb1_bbbbbbbbbbb1",
-                    members=[
-                        ("10.24.11.13", "node_0", "Up 5 minutes", "sglang:latest"),
-                        ("10.24.11.14", "node_1", "Up 5 minutes", "sglang:latest"),
-                    ],
-                    meta=meta,
+        jobs = [
+            JobInfo(
+                cluster_id=running_meta["cluster_id"],
+                recipe=running_meta["recipe"],
+                runtime=running_meta["runtime"],
+                hosts=tuple(running_meta["hosts"]),
+                metadata=running_meta,
+            ),
+            JobInfo(
+                cluster_id=stale_meta["cluster_id"],
+                recipe=stale_meta["recipe"],
+                runtime=stale_meta["runtime"],
+                hosts=tuple(stale_meta["hosts"]),
+                metadata=stale_meta,
+            ),
+        ]
+
+        snapshot = ClusterStatus(
+            hosts=(
+                HostOccupancy(
+                    host="10.24.11.13",
+                    workloads=(RunningWorkload(cluster_id=running_meta["cluster_id"]),),
                 ),
-            },
-            solo_entries=[],
-            errors={},
-            idle_hosts=[],
-            pending_ops=[],
-            total_containers=2,
-            host_count=2,
+                HostOccupancy(
+                    host="10.24.11.14",
+                    workloads=(RunningWorkload(cluster_id=running_meta["cluster_id"]),),
+                ),
+            ),
         )
 
-        with patch(
-            "sparkrun.core.cluster_manager.query_cluster_status",
-            return_value=mock_result,
+        with (
+            patch("sparkrun.proxy.discovery.api.list_jobs", return_value=jobs),
+            patch("sparkrun.proxy.discovery.api.status", return_value=snapshot),
         ):
             endpoints = discover_endpoints(
-                cache_dir=cache_dir,
                 check_health=False,
                 host_list=["10.24.11.13", "10.24.11.14"],
                 ssh_kwargs={"ssh_user": "drew"},
@@ -776,11 +775,11 @@ class TestDiscovery:
         assert ep.served_model_name == "qwen3.5-0.8b"
 
     def test_discover_live_fallback_on_failure(self, populated_jobs_dir: Path):
-        """Falls back to metadata discovery when live query fails."""
+        """Falls back to metadata-only discovery when api.status fails."""
         from sparkrun.proxy.discovery import discover_endpoints
 
         with patch(
-            "sparkrun.core.cluster_manager.query_cluster_status",
+            "sparkrun.proxy.discovery.api.status",
             side_effect=RuntimeError("SSH failed"),
         ):
             endpoints = discover_endpoints(
@@ -790,7 +789,7 @@ class TestDiscovery:
                 ssh_kwargs={"ssh_user": "drew"},
             )
 
-        # Should still find endpoints via metadata fallback
+        # Should still find endpoints via metadata-only fallback
         assert len(endpoints) > 0
 
 
@@ -1711,6 +1710,14 @@ class TestCLI:
             patch("sparkrun.proxy.config.ProxyConfig.host", new_callable=lambda: property(lambda s: "0.0.0.0")),
             patch("sparkrun.proxy.config.ProxyConfig.master_key", new_callable=lambda: property(lambda s: "sk-test")),
             patch("sparkrun.proxy.config.ProxyConfig.aliases", new_callable=lambda: property(lambda s: {})),
+            patch("sparkrun.proxy.config.ProxyConfig.enable_ui", new_callable=lambda: property(lambda s: False)),
+            patch("sparkrun.proxy.config.ProxyConfig.ui_username", new_callable=lambda: property(lambda s: None)),
+            patch("sparkrun.proxy.config.ProxyConfig.ui_password", new_callable=lambda: property(lambda s: None)),
+            patch("sparkrun.proxy.config.ProxyConfig.auto_discover", new_callable=lambda: property(lambda s: True)),
+            patch(
+                "sparkrun.proxy.config.ProxyConfig.discover_interval",
+                new_callable=lambda: property(lambda s: 30),
+            ),
         ):
             result = runner.invoke(proxy, ["start", "--dry-run"])
 

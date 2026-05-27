@@ -9,6 +9,7 @@ import click
 from ._common import (
     RECIPE_NAME,
     _apply_recipe_overrides,
+    _get_context,
     _load_recipe,
     dry_run_option,
     host_options,
@@ -38,13 +39,42 @@ def proxy():
 @proxy.command()
 @click.option("--port", type=int, default=None, help="Proxy listen port (default: 4000)")
 @click.option("--host", "bind_host", default=None, help="Bind address (default: 0.0.0.0)")
-@click.option("--master-key", default=None, help="LiteLLM master_key (default: sk-sparkrun)")
+@click.option(
+    "--master-key",
+    default=None,
+    help="Bearer token for stateless LiteLLM auth (no DB). Required when enabling the UI.",
+)
+@click.option(
+    "--enable-ui/--no-enable-ui",
+    "enable_ui",
+    default=None,
+    help="Enable the LiteLLM /ui (requires --master-key; adds a sqlite DATABASE_URL).",
+)
 @host_options
 @click.option("--foreground", is_flag=True, help="Run in foreground (default: daemonize)")
 @click.option("--no-auto-discover", is_flag=True, help="Disable periodic endpoint re-scanning")
 @click.option("--discover-interval", type=int, default=None, help="Seconds between discovery sweeps (default: 30)")
+@click.option(
+    "--restart",
+    is_flag=True,
+    default=False,
+    help="If the proxy is already running, stop it and start fresh with the new settings.",
+)
 @dry_run_option
-def start(port, bind_host, master_key, cluster_name, hosts, hosts_file, foreground, no_auto_discover, discover_interval, dry_run):
+def start(
+    port,
+    bind_host,
+    master_key,
+    enable_ui,
+    cluster_name,
+    hosts,
+    hosts_file,
+    foreground,
+    no_auto_discover,
+    discover_interval,
+    restart,
+    dry_run,
+):
     """Start the inference proxy.
 
     Discovers running endpoints, generates LiteLLM config, and launches
@@ -58,15 +88,40 @@ def start(port, bind_host, master_key, cluster_name, hosts, hosts_file, foregrou
 
       sparkrun proxy start --foreground
     """
-    from sparkrun.proxy.config import ProxyConfig
     from sparkrun.proxy.discovery import discover_endpoints
     from sparkrun.proxy.engine import ProxyEngine, build_litellm_config, write_config
 
-    proxy_cfg = ProxyConfig()
+    sctx = _get_context(click.get_current_context())
+    proxy_cfg = sctx.proxy_config
 
     effective_port = port or proxy_cfg.port
     effective_host = bind_host or proxy_cfg.host
     effective_key = master_key if master_key is not None else proxy_cfg.master_key
+    effective_enable_ui = enable_ui if enable_ui is not None else proxy_cfg.enable_ui
+    effective_ui_username = proxy_cfg.ui_username
+    effective_ui_password = proxy_cfg.ui_password
+
+    if effective_enable_ui and not effective_key:
+        click.echo(
+            "Error: --enable-ui requires --master-key (or proxy.master_key in proxy.yaml).",
+            err=True,
+        )
+        sys.exit(1)
+
+    # Persist any explicitly-supplied CLI overrides to proxy.yaml so they
+    # stick across restarts.  Done before the is_running() check so intent
+    # is saved regardless of whether the proxy gets restarted now.
+    if not dry_run:
+        changed = _persist_cli_overrides(
+            proxy_cfg,
+            port=port,
+            bind_host=bind_host,
+            master_key=master_key,
+            enable_ui=enable_ui,
+            discover_interval=discover_interval,
+        )
+        if changed:
+            click.echo("Saved proxy.yaml: %s" % ", ".join(changed))
 
     # Resolve host filter and live discovery args
     host_filter = _resolve_host_filter(cluster_name, hosts, hosts_file)
@@ -117,6 +172,9 @@ def start(port, bind_host, master_key, cluster_name, hosts, hosts_file, foregrou
         host=effective_host,
         port=effective_port,
         master_key=effective_key,
+        enable_ui=effective_enable_ui,
+        ui_username=effective_ui_username,
+        ui_password=effective_ui_password,
     )
 
     # Resolve auto-discover settings
@@ -131,11 +189,35 @@ def start(port, bind_host, master_key, cluster_name, hosts, hosts_file, foregrou
             "ssh_kwargs": ssh_kwargs,
         }
 
-    # Check if already running
+    # Check if already running — restart or hard-error per --restart flag.
     if engine.is_running():
-        click.echo("Proxy is already running (PID %s) on port %d." % (engine._read_pid(), engine.port))
-        click.echo("Use 'sparkrun proxy stop' first, or 'sparkrun proxy load <recipe>' to add models.")
-        return
+        if not restart:
+            click.echo(
+                "Error: proxy is already running (PID %s) on port %d. "
+                "Use --restart to apply new settings, or 'sparkrun proxy stop' first." % (engine._read_pid(), engine.port),
+                err=True,
+            )
+            sys.exit(1)
+
+        click.echo("Restarting proxy...")
+        engine.stop()
+
+        # Poll until the old process actually exits (10s timeout).
+        import time
+
+        deadline = 10.0
+        waited = 0.0
+        interval = 0.5
+        while engine.is_running() and waited < deadline:
+            time.sleep(interval)
+            waited += interval
+
+        if engine.is_running():
+            click.echo(
+                "Warning: proxy did not stop cleanly within 10s; aborting restart",
+                err=True,
+            )
+            sys.exit(1)
 
     click.echo("Starting proxy on %s:%d..." % (effective_host, effective_port))
     rc = engine.start(
@@ -151,6 +233,11 @@ def start(port, bind_host, master_key, cluster_name, hosts, hosts_file, foregrou
         click.echo("Proxy started. API: http://localhost:%d/v1" % effective_port)
         if effective_key:
             click.echo("Management API key: %s" % effective_key)
+        if effective_enable_ui:
+            from sparkrun.proxy import DEFAULT_UI_USERNAME
+
+            ui_user = effective_ui_username or DEFAULT_UI_USERNAME
+            click.echo("UI available at http://%s:%d/ui (login: %s)" % (effective_host, effective_port, ui_user))
         if auto_discover:
             click.echo("Auto-discover enabled (every %ds)" % effective_interval)
 
@@ -199,7 +286,8 @@ def stop(dry_run):
 
 @proxy.command()
 @json_option()
-def status(output_json):
+@click.pass_context
+def status(ctx, output_json):
     """Show proxy process status and registered models."""
     from sparkrun.proxy.engine import ProxyEngine
 
@@ -214,6 +302,10 @@ def status(output_json):
         return
 
     running = engine.is_running()
+
+    # Resolve proxy config now that we've passed the no-state early exit
+    sctx = _get_context(ctx)
+    proxy_cfg = sctx.proxy_config
 
     # Autodiscover status
     ad_pid = state.get("autodiscover_pid")
@@ -247,6 +339,11 @@ def status(output_json):
         }
         if ad_pid:
             data["autodiscover"] = {"pid": int(ad_pid), "running": ad_running}
+        if proxy_cfg.enable_ui:
+            data["ui"] = {
+                "enabled": True,
+                "url": "http://%s:%s/ui" % (state.get("host", "?"), state.get("port", "?")),
+            }
         print_json(data)
         return
 
@@ -255,6 +352,9 @@ def status(output_json):
     click.echo("  Host:   %s" % state.get("host", "?"))
     click.echo("  Port:   %s" % state.get("port", "?"))
     click.echo("  Start:  %s" % state.get("started_at", "?"))
+
+    if proxy_cfg.enable_ui:
+        click.echo("  UI:     enabled (http://%s:%s/ui)" % (state.get("host", "?"), state.get("port", "?")))
 
     if ad_pid:
         if ad_running:
@@ -425,10 +525,10 @@ def alias_add(alias_name, target_model):
 
       sparkrun proxy alias add my-model "Qwen/Qwen3-1.7B"
     """
-    from sparkrun.proxy.config import ProxyConfig
     from sparkrun.proxy.engine import ProxyEngine
 
-    proxy_cfg = ProxyConfig()
+    sctx = _get_context(click.get_current_context())
+    proxy_cfg = sctx.proxy_config
     proxy_cfg.add_alias(alias_name, target_model)
     proxy_cfg.save()
     click.echo("Alias added: %s -> %s" % (alias_name, target_model))
@@ -452,10 +552,10 @@ def alias_remove(alias_name):
 
       sparkrun proxy alias remove my-model
     """
-    from sparkrun.proxy.config import ProxyConfig
     from sparkrun.proxy.engine import ProxyEngine
 
-    proxy_cfg = ProxyConfig()
+    sctx = _get_context(click.get_current_context())
+    proxy_cfg = sctx.proxy_config
     if not proxy_cfg.remove_alias(alias_name):
         click.echo("Alias '%s' not found." % alias_name)
         return
@@ -477,9 +577,8 @@ def alias_remove(alias_name):
 @json_option()
 def alias_list(output_json):
     """List all configured aliases."""
-    from sparkrun.proxy.config import ProxyConfig
-
-    proxy_cfg = ProxyConfig()
+    sctx = _get_context(click.get_current_context())
+    proxy_cfg = sctx.proxy_config
     aliases = proxy_cfg.list_aliases()
 
     if output_json:
@@ -672,6 +771,48 @@ def unload_cmd(ctx, recipe_name, hosts, hosts_file, cluster_name, dry_run):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _persist_cli_overrides(
+    proxy_cfg,
+    *,
+    port,
+    bind_host,
+    master_key,
+    enable_ui,
+    discover_interval,
+) -> list[str]:
+    """Persist explicitly-supplied CLI flags to ``proxy.yaml``.
+
+    Only writes keys whose value differs from the current saved value, so
+    a no-op invocation (same value already saved) does not touch the file.
+
+    Returns:
+        List of key names that were updated (empty if nothing changed).
+    """
+    candidates: list[tuple[str, object, object]] = [
+        ("port", port, proxy_cfg.port),
+        ("host", bind_host, proxy_cfg.host),
+        ("master_key", master_key, proxy_cfg.master_key),
+        ("enable_ui", enable_ui, proxy_cfg.enable_ui),
+        ("discover_interval", discover_interval, proxy_cfg.discover_interval),
+    ]
+
+    updates: dict[str, object] = {}
+    changed: list[str] = []
+    for key, supplied, current in candidates:
+        if supplied is None:
+            continue
+        if supplied == current:
+            continue
+        updates[key] = supplied
+        changed.append(key)
+
+    if updates:
+        proxy_cfg.set_proxy(**updates)
+        proxy_cfg.save()
+
+    return changed
 
 
 def _resolve_live_discovery_args(

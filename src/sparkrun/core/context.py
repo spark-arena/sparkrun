@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.core.progress import LaunchProgress
     from sparkrun.core.registry import RegistryManager
+    from sparkrun.proxy.config import ProxyConfig
 
 
 @dataclass
@@ -38,3 +39,7 @@ class SparkrunContext:
         from sparkrun.core.config import get_config_root
 
         return ClusterManager(get_config_root(self.variables))
+
+    @cached_property
+    def proxy_config(self) -> ProxyConfig:
+        return self.config.get_proxy_config()

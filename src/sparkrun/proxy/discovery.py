@@ -1,12 +1,23 @@
-"""Endpoint discovery via live container queries and job metadata.
+"""Endpoint discovery via the ``sparkrun.api`` surface.
 
-Primary path (live): SSHes into hosts, runs ``docker ps`` to find
-actually-running sparkrun containers, then enriches with cached job
-metadata.  This is authoritative — no stale metadata can appear.
+Single discovery pass:
 
-Fallback path (metadata-only): Scans ``~/.cache/sparkrun/jobs/*.yaml``
-metadata files, deduplicates, and health-checks.  Used when SSH info
-is not available (e.g. internal proxy callers with no host context).
+1. ``api.list_jobs(sctx=sctx)`` enumerates persisted job metadata —
+   every cluster_id, recipe, runtime, hosts, and the original metadata
+   dict (port, served_model_name, api_key, ...).
+2. ``api.status(host_list, sctx=sctx)`` produces the live
+   :class:`ClusterStatus` snapshot.  Its
+   :meth:`ClusterStatus.running_cluster_ids` is the authoritative
+   liveness filter.
+
+A persisted job surfaces as an :class:`DiscoveredEndpoint` iff its
+``cluster_id`` is reported running by the snapshot.  When *host_list*
+is omitted the liveness step is skipped (metadata-only mode) — useful
+for callers that have no host context and want to enumerate everything
+they've ever launched.
+
+Health checks (TCP/HTTP probe of ``/v1/models``) run as a final pass,
+identical to the previous implementation.
 """
 
 from __future__ import annotations
@@ -17,7 +28,14 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from pathlib import Path
+from typing import TYPE_CHECKING
+
+import sparkrun.api as api
+
+if TYPE_CHECKING:
+    from sparkrun.api import JobInfo
+    from sparkrun.core.cluster_manager import ClusterDefinition
+    from sparkrun.core.context import SparkrunContext
 
 logger = logging.getLogger(__name__)
 
@@ -47,221 +65,137 @@ def discover_endpoints(
     check_health: bool = True,
     host_list: list[str] | None = None,
     ssh_kwargs: dict | None = None,
+    *,
+    cluster_def: "ClusterDefinition | None" = None,
+    sctx: "SparkrunContext | None" = None,
 ) -> list[DiscoveredEndpoint]:
-    """Discover running inference endpoints.
+    """Discover running inference endpoints via :mod:`sparkrun.api`.
 
-    When *host_list* and *ssh_kwargs* are provided, uses the **live**
-    path: queries actual running containers via ``docker ps`` over SSH,
-    then enriches with cached job metadata.  This is the most reliable
-    method and should be preferred by CLI commands.
-
-    When SSH info is not available, falls back to scanning job metadata
-    files with health checks to filter stale entries.
+    The metadata source is :func:`sparkrun.api.list_jobs`; the liveness
+    filter is :func:`sparkrun.api.status` when *host_list* is provided.
 
     Args:
-        host_filter: Only include endpoints on these hosts (metadata path).
-        cache_dir: Override cache directory (default: ~/.cache/sparkrun).
-        check_health: Whether to perform HTTP health checks.
-        host_list: Hosts to query via SSH (enables live path).
-        ssh_kwargs: SSH connection kwargs (enables live path).
+        host_filter: Optional management-IP allowlist applied after
+            normalization.  Only endpoints whose resolved host matches
+            are emitted.
+        cache_dir: Override the sparkrun cache root (forwarded to
+            :func:`sparkrun.api.list_jobs`).
+        check_health: When ``True``, TCP/HTTP-probe each endpoint and
+            drop the unreachable ones.
+        host_list: Hosts to inspect via :func:`sparkrun.api.status`.
+            When ``None``, liveness is skipped (metadata-only mode).
+        ssh_kwargs: Optional SSH kwargs forwarded to ``api.status``.
+        cluster_def: Optional pre-resolved cluster definition forwarded
+            to ``api.status``.
+        sctx: Optional shared :class:`SparkrunContext`.
 
     Returns:
-        List of discovered endpoints (healthy only when check_health=True).
+        List of discovered endpoints (healthy only when *check_health*
+        is ``True``).
     """
-    if cache_dir is None:
-        from sparkrun.core.config import DEFAULT_CACHE_DIR
+    jobs = api.list_jobs(cache_dir=cache_dir, sctx=sctx)
 
-        cache_dir = str(DEFAULT_CACHE_DIR)
-
-    # Live path: query actual running containers
-    if host_list and ssh_kwargs is not None:
+    running_ids: set[str] | None = None
+    if host_list:
         try:
-            return _discover_live(host_list, ssh_kwargs, cache_dir, check_health)
+            snapshot = api.status(
+                list(host_list),
+                cluster=cluster_def,
+                ssh_kwargs=ssh_kwargs,
+                sctx=sctx,
+            )
+            running_ids = set(snapshot.running_cluster_ids())
         except Exception:
             logger.warning(
-                "Live discovery failed, falling back to metadata scan",
+                "api.status query failed, falling back to metadata-only discovery",
                 exc_info=True,
             )
+            running_ids = None
 
-    return _discover_from_metadata(host_filter, cache_dir, check_health)
-
-
-# ---------------------------------------------------------------------------
-# Live discovery (primary)
-# ---------------------------------------------------------------------------
-
-
-def _discover_live(
-    host_list: list[str],
-    ssh_kwargs: dict,
-    cache_dir: str,
-    check_health: bool,
-) -> list[DiscoveredEndpoint]:
-    """Discover endpoints by querying running containers on hosts.
-
-    Uses :func:`query_cluster_status` to get authoritative container
-    state, then enriches each running cluster with cached job metadata.
-    """
-    from sparkrun.core.cluster_manager import query_cluster_status
-    from sparkrun.orchestration.job_metadata import load_job_metadata
-
-    result = query_cluster_status(host_list, ssh_kwargs=ssh_kwargs, cache_dir=cache_dir)
-
-    endpoints: list[DiscoveredEndpoint] = []
-
-    for cid, group in result.groups.items():
-        ep = _endpoint_from_meta(cid, group.meta, fallback_host=group.members[0][0])
-        if ep:
-            endpoints.append(ep)
-
-    for entry in result.solo_entries:
-        cid = entry.name.removesuffix("_solo")
-        meta = load_job_metadata(cid, cache_dir=cache_dir) or {}
-        ep = _endpoint_from_meta(cid, meta, fallback_host=entry.host)
-        if ep:
-            endpoints.append(ep)
-
-    if check_health and endpoints:
-        _check_health_parallel(endpoints)
-        endpoints = [ep for ep in endpoints if ep.healthy]
-
-    return endpoints
-
-
-def _endpoint_from_meta(
-    cluster_id: str,
-    meta: dict,
-    fallback_host: str,
-) -> DiscoveredEndpoint | None:
-    """Build a DiscoveredEndpoint from job metadata.
-
-    Uses mgmt_ip_map to normalise the head host to a management IP.
-    Falls back to *fallback_host* when metadata has no host info.
-    """
-    hosts = meta.get("hosts", [fallback_host])
-    if not hosts:
-        return None
-
-    head_host = hosts[0]
-
-    # Prefer management IP for user-facing display
-    mgmt_map = meta.get("mgmt_ip_map", {})
-    if head_host in mgmt_map:
-        head_host = mgmt_map[head_host]
-
-    return DiscoveredEndpoint(
-        cluster_id=cluster_id,
-        model=meta.get("model", ""),
-        served_model_name=meta.get("served_model_name"),
-        runtime=meta.get("runtime", ""),
-        host=head_host,
-        port=int(meta.get("port", 8000)),
-        healthy=False,
-        recipe_name=meta.get("recipe", meta.get("recipe_ref", "")),
-        tensor_parallel=int(meta.get("tensor_parallel", 1)),
-        api_key=meta.get("api_key") or None,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Metadata-only discovery (fallback)
-# ---------------------------------------------------------------------------
-
-
-def _discover_from_metadata(
-    host_filter: list[str] | None,
-    cache_dir: str,
-    check_health: bool,
-) -> list[DiscoveredEndpoint]:
-    """Discover endpoints by scanning job metadata files.
-
-    Fallback path when SSH is not available.  Deduplicates by host:port
-    (most recent file wins) and optionally health-checks each endpoint.
-    """
-    jobs_dir = Path(cache_dir) / "jobs"
-    if not jobs_dir.is_dir():
-        return []
-
-    from sparkrun.utils import load_yaml
-
-    # Two-pass approach:
-    # 1. Load all metadata and build an IB→mgmt IP reverse map.
-    # 2. Build candidates keyed by normalised host:port (mgmt IP).
-    all_meta: list[dict] = []
+    # Build IB→mgmt reverse map from every metadata entry, used to
+    # normalize IB IPs to management IPs for consistent display/dedup.
     ib_to_mgmt: dict[str, str] = {}
-
-    for meta_path in sorted(jobs_dir.glob("*.yaml"), key=lambda p: p.stat().st_mtime):
-        try:
-            meta = load_yaml(meta_path)
-        except Exception:
-            logger.debug("Failed to load job metadata: %s", meta_path, exc_info=True)
-            continue
-        if not meta or not meta.get("hosts"):
-            continue
-        all_meta.append(meta)
-        # Collect IB→mgmt mappings from every metadata file
-        ib_map = meta.get("ib_ip_map", {})
-        mgmt_map = meta.get("mgmt_ip_map", {})
+    for job in jobs:
+        meta = job.metadata
+        ib_map = meta.get("ib_ip_map", {}) or {}
+        mgmt_map = meta.get("mgmt_ip_map", {}) or {}
         for raw_host, ib_ip in ib_map.items():
             mgmt_ip = mgmt_map.get(raw_host, raw_host)
             ib_to_mgmt[ib_ip] = mgmt_ip
 
-    # Later entries (sorted by mtime) overwrite earlier ones,
-    # so the most recent metadata wins for each host:port.
+    # Deduplicate: one entry per host:port — last write wins.
+    # ``api.list_jobs`` returns most-recent-first; iterate in reverse so
+    # the most recent job overwrites older entries on the same key.
     candidates: dict[str, DiscoveredEndpoint] = {}
-
-    for meta in all_meta:
-        hosts = meta["hosts"]
-        head_host = hosts[0]
-
-        # Normalise IB IPs to management IPs for consistent
-        # dedup and user-facing display.
-        mgmt_map = meta.get("mgmt_ip_map", {})
-        if head_host in mgmt_map:
-            head_host = mgmt_map[head_host]
-        elif head_host in ib_to_mgmt:
-            head_host = ib_to_mgmt[head_host]
-
-        # Apply host filter
-        if host_filter and head_host not in host_filter:
+    for job in reversed(jobs):
+        if running_ids is not None and job.cluster_id not in running_ids:
             continue
 
-        port = int(meta.get("port", 8000))
-        model = meta.get("model", "")
-        runtime = meta.get("runtime", "")
-        cluster_id = meta.get("cluster_id", "")
-        recipe_name = meta.get("recipe", meta.get("recipe_ref", ""))
-        served_name = meta.get("served_model_name")
-        tp = int(meta.get("tensor_parallel", 1))
+        ep = _endpoint_from_job(job, ib_to_mgmt=ib_to_mgmt)
+        if ep is None:
+            continue
 
-        # Deduplicate: one entry per host:port (last write wins)
-        key = "%s:%d" % (head_host, port)
-        candidates[key] = DiscoveredEndpoint(
-            cluster_id=cluster_id,
-            model=model,
-            served_model_name=served_name,
-            runtime=runtime,
-            host=head_host,
-            port=port,
-            healthy=False,
-            recipe_name=recipe_name,
-            tensor_parallel=tp,
-            api_key=meta.get("api_key") or None,
-        )
+        if host_filter and ep.host not in host_filter:
+            continue
+
+        key = "%s:%d" % (ep.host, ep.port)
+        candidates[key] = ep
 
     endpoints = list(candidates.values())
 
     if check_health and endpoints:
         _check_health_parallel(endpoints)
-        # Only return healthy endpoints — stale metadata for dead
-        # servers is not useful to callers.
         endpoints = [ep for ep in endpoints if ep.healthy]
-        # Deduplicate endpoints serving identical models on the same
-        # port but reachable via different network interfaces (e.g.
-        # management IP vs ConnectX-7 IP).  Keep the newest entry.
+        # Collapse entries that turn out to serve the same models on the
+        # same port via different network interfaces.
         endpoints = _deduplicate_by_identity(endpoints)
 
     return endpoints
+
+
+def _endpoint_from_job(
+    job: "JobInfo",
+    *,
+    ib_to_mgmt: dict[str, str],
+) -> DiscoveredEndpoint | None:
+    """Build a :class:`DiscoveredEndpoint` from a :class:`JobInfo`.
+
+    Returns ``None`` when essential metadata (hosts, port) is missing.
+    """
+    meta = job.metadata or {}
+    hosts = job.hosts or tuple(meta.get("hosts") or ())
+    if not hosts:
+        return None
+
+    head_host = hosts[0]
+
+    # Prefer management IP for user-facing display.
+    mgmt_map = meta.get("mgmt_ip_map") or {}
+    if head_host in mgmt_map:
+        head_host = mgmt_map[head_host]
+    elif head_host in ib_to_mgmt:
+        head_host = ib_to_mgmt[head_host]
+
+    port_raw = meta.get("port", 8000)
+    try:
+        port = int(port_raw)
+    except (TypeError, ValueError):
+        return None
+
+    served_name = meta.get("served_model_name")
+
+    return DiscoveredEndpoint(
+        cluster_id=job.cluster_id,
+        model=meta.get("model", "") or "",
+        served_model_name=served_name,
+        runtime=(job.runtime or meta.get("runtime") or "") or "",
+        host=head_host,
+        port=port,
+        healthy=False,
+        recipe_name=(job.recipe or meta.get("recipe") or meta.get("recipe_ref") or "") or "",
+        tensor_parallel=int(meta.get("tensor_parallel", 1) or 1),
+        api_key=meta.get("api_key") or None,
+    )
 
 
 def _check_health_parallel(endpoints: list[DiscoveredEndpoint]) -> None:
