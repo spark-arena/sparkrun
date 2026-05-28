@@ -15,6 +15,7 @@ from ._common import (
     TARGET,
     _apply_recipe_overrides,
     _get_config_and_registry,
+    _get_context,
     _is_cluster_id,
     _load_recipe,
     _resolve_hosts_or_exit,
@@ -409,6 +410,8 @@ def _resolve_recipe_for_systemd(
     image,
     port,
     served_model_name,
+    *,
+    sctx=None,
 ):
     """Resolve recipe, hosts, and overrides for the systemd command.
 
@@ -473,12 +476,12 @@ def _resolve_recipe_for_systemd(
     )
 
     host_list, _ = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config)
-    host_list = _trim_hosts_via_api(host_list, recipe, overrides)
+    host_list = _trim_hosts_via_api(host_list, recipe, overrides, sctx=sctx)
 
     return recipe, overrides, host_list
 
 
-def _trim_hosts_via_api(host_list, recipe, overrides):
+def _trim_hosts_via_api(host_list, recipe, overrides, *, sctx=None):
     """Resolve ``host_list`` to the scheduler's effective hosts via ``api.schedule``.
 
     Mirrors the placement-driven host selection ``api.run`` performs so
@@ -503,7 +506,7 @@ def _trim_hosts_via_api(host_list, recipe, overrides):
         layout=getattr(recipe, "layout", None),
         resources=None,
     )
-    result = api.schedule(request)
+    result = api.schedule(request, sctx=sctx)
     return list(result.assignment.hosts_used)
 
 
@@ -574,6 +577,7 @@ def export_systemd(
         do_install = True
 
     config, _ = _get_config_and_registry()
+    sctx = _get_context(ctx)
 
     # Resolve recipe, overrides, and hosts
     recipe, overrides, host_list = _resolve_recipe_for_systemd(
@@ -591,6 +595,7 @@ def export_systemd(
         image,
         port,
         served_model_name,
+        sctx=sctx,
     )
 
     head_host = host_list[0]

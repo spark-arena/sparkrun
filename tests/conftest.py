@@ -96,7 +96,9 @@ def tmp_recipe_dir(tmp_path: Path) -> Path:
     with open(recipe_dir / "test-sglang.yaml", "w") as f:
         yaml.dump(v2_sglang, f)
 
-    # v1 recipe with mods (should auto-set eugr builder)
+    # v1 recipe with mods (should auto-set eugr builder).
+    # v1 default values are strings (template-substituted via {port}); the
+    # migration's `.replace("{{", "{")` step assumes str values.
     v1_eugr = {
         "recipe_version": "1",
         "name": "Test EUGR Recipe",
@@ -105,7 +107,7 @@ def tmp_recipe_dir(tmp_path: Path) -> Path:
         "build_args": ["ARG1=value1"],
         "mods": ["mod1.patch"],
         "defaults": {
-            "port": 8000,
+            "port": "8000",
         },
     }
     with open(recipe_dir / "test-eugr.yaml", "w") as f:
@@ -118,7 +120,7 @@ def tmp_recipe_dir(tmp_path: Path) -> Path:
         "model": "meta-llama/Llama-2-7b-hf",
         "runtime": "vllm",
         "defaults": {
-            "port": 8000,
+            "port": "8000",
         },
     }
     with open(recipe_dir / "test-plain-v1.yaml", "w") as f:
@@ -200,8 +202,9 @@ def sample_v1_recipe_data() -> dict[str, Any]:
             "performance_tweaks.patch",
         ],
         "defaults": {
-            "port": 8000,
-            "tensor_parallel": 2,
+            # v1 defaults are template-substituted as strings ({port} → "8000")
+            "port": "8000",
+            "tensor_parallel": "2",
         },
         "env": {
             "NCCL_DEBUG": "INFO",

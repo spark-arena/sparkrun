@@ -235,9 +235,10 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
         import time
         from sparkrun.runtimes._cluster_ops import (
             ClusterContext,
+            cleanup_after_failure,
             cleanup_named_containers,
+            dump_serve_log,
             resolve_comm_env,
-            resolve_ib_env,
             find_port,
             run_pre_serve_hooks,
         )
@@ -289,10 +290,9 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
         # CollectiveBackend.env_for_host via resolve_comm_env; otherwise
         # fall through to the deprecated legacy resolver for callers
         # that haven't threaded backends yet.
-        if backends is not None:
-            comm_env = resolve_comm_env(ctx, comm_env, backends=backends)
-        else:
-            comm_env = resolve_ib_env(ctx, comm_env)
+        if backends is None:
+            raise RuntimeError("backends is None; legacy IB env resolution is deprecated and no backends were provided.")
+        comm_env = resolve_comm_env(ctx, comm_env, backends=backends)
         logger.info("Step 2/5: IB step done (%.1fs)", time.monotonic() - t0)
 
         # Auto-detect available ports to avoid collisions with running instances
@@ -343,7 +343,16 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
             **ctx.ssh_kwargs,
         )
         if not head_result.success and not dry_run:
-            logger.error("Failed to launch Ray head: %s", head_result.stderr)
+            logger.error("Failed to launch Ray head on %s (rc=%d):", ctx.head_host, head_result.returncode)
+            for line in (head_result.stderr or "").rstrip().splitlines():
+                logger.error("  %s", line)
+            cleanup_after_failure(
+                ctx,
+                executor,
+                container_names=[head_container],
+                hosts=[ctx.head_host],
+                reason="Ray head launch failed",
+            )
             return 1
 
         head_ip = head_result.last_line if not dry_run else "<HEAD_IP>"
@@ -351,6 +360,13 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
             logger.error(
                 "Could not determine head IP from output: %s",
                 head_result.stdout[-200:],
+            )
+            cleanup_after_failure(
+                ctx,
+                executor,
+                container_names=[head_container],
+                hosts=[ctx.head_host],
+                reason="Ray head IP not parseable",
             )
             return 1
         logger.info("  Ray head launched. HEAD_IP=%s", head_ip)
@@ -370,6 +386,13 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
                     "Ray head failed to become ready. Check logs: ssh %s 'docker logs %s'",
                     ctx.head_host,
                     head_container,
+                )
+                cleanup_after_failure(
+                    ctx,
+                    executor,
+                    container_names=[head_container],
+                    hosts=[ctx.head_host],
+                    reason="Ray head port did not open",
                 )
                 return 1
         logger.info("Step 3/5: Ray head ready (%.1fs)", time.monotonic() - t0)
@@ -424,12 +447,18 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
                     ] = _whost
                 worker_results = [f.result() for f in as_completed(_wfutures)]
             failed = [r for r in worker_results if not r.success and not dry_run]
-            for r in failed:
-                logger.warning(
-                    "  Worker launch may have failed on %s: %s",
-                    r.host,
-                    r.stderr[:100],
+            if failed:
+                for r in failed:
+                    logger.error("Ray worker launch failed on %s (rc=%d):", r.host, r.returncode)
+                    for line in (r.stderr or "").rstrip().splitlines():
+                        logger.error("  %s", line)
+                cleanup_after_failure(
+                    ctx,
+                    executor,
+                    container_names=[head_container, worker_container],
+                    reason=f"{len(failed)} Ray worker(s) failed to launch",
                 )
+                return 1
             if not dry_run:
                 logger.info(
                     "  Waiting 3s for workers to connect to head at %s:%d...",
@@ -496,7 +525,21 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
 
         if dry_run:
             return 0
-        return exec_result.returncode
+        if not exec_result.success:
+            logger.error("Failed to exec serve on Ray head %s (rc=%d):", ctx.head_host, exec_result.returncode)
+            for line in (exec_result.stderr or "").rstrip().splitlines():
+                logger.error("  %s", line)
+            # `docker logs` is blind to the serve script's redirected output
+            # file -- emit it explicitly so the user sees the real traceback.
+            dump_serve_log(ctx.head_host, head_container, ctx.ssh_kwargs)
+            cleanup_after_failure(
+                ctx,
+                executor,
+                container_names=[head_container, worker_container],
+                reason="Ray serve exec failed",
+            )
+            return 1
+        return 0
 
     def _print_connection_info(self, hosts, cluster_id, head_ip=None, dashboard_port=8265):
         """Print vLLM-specific connection info including Dashboard URL."""

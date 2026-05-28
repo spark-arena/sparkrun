@@ -68,7 +68,8 @@ def stop(ctx, target, hosts, hosts_file, cluster_name, stop_all, tp_override, po
         click.echo("Error: Must specify TARGET or --all.", err=True)
         sys.exit(1)
 
-    config = _get_context(ctx).config
+    sctx = _get_context(ctx)
+    config = sctx.config
 
     if stop_all:
         _stop_all(hosts, hosts_file, cluster_name, config, dry_run)
@@ -85,6 +86,7 @@ def stop(ctx, target, hosts, hosts_file, cluster_name, stop_all, tp_override, po
                 hosts=tuple(host_list) if host_list else None,
                 cluster=cluster_name,
                 cache_dir=str(config.cache_dir),
+                sctx=sctx,
             )
         else:
             # Resolve the recipe at the CLI layer so cwd-discovered recipes
@@ -98,6 +100,7 @@ def stop(ctx, target, hosts, hosts_file, cluster_name, stop_all, tp_override, po
                 overrides=overrides,
                 cluster=cluster_name,
                 cache_dir=str(config.cache_dir),
+                sctx=sctx,
             )
     except api.AmbiguousWorkload as e:
         click.echo(
@@ -282,7 +285,7 @@ def _follow_logs_by_cluster_id(sctx, cluster_id, target, hosts, hosts_file, clus
 
     # No runtime context — stream via api.logs (head container only).
     try:
-        for line in api.logs(cluster_id, hosts=tuple(host_list), tail=tail, follow=True, cache_dir=str(config.cache_dir)):
+        for line in api.logs(cluster_id, hosts=tuple(host_list), tail=tail, follow=True, cache_dir=str(config.cache_dir), sctx=sctx):
             click.echo(line.text)
     except api.JobNotFound as e:
         click.echo("Error: %s" % e, err=True)

@@ -133,6 +133,7 @@ def update(ctx):
         )
         if check.returncode == 0 and "sparkrun" in check.stdout:
             click.echo("Checking for sparkrun updates (current: %s)..." % old_version)
+            # TODO: check if next version is significant upgrade; handle warning if so!
             result = subprocess.run(
                 [uv, "tool", "upgrade", "sparkrun"],
                 capture_output=True,

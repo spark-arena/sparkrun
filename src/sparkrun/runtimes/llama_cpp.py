@@ -417,8 +417,10 @@ class LlamaCppRuntime(RuntimePlugin):
         import time
         from sparkrun.runtimes._cluster_ops import (
             ClusterContext,
+            cleanup_after_failure,
             cleanup_named_containers,
             detect_ib_with_ips,
+            dump_serve_log,
             launch_containers_parallel,
             run_pre_serve_hooks,
             exec_serve_on_container,
@@ -563,15 +565,29 @@ class LlamaCppRuntime(RuntimePlugin):
                     )
                     futures[future] = host
 
+                worker_failures = []
                 for future in as_completed(futures):
                     host = futures[future]
                     result = future.result()
                     if not result.success and not dry_run:
-                        logger.warning(
-                            "  RPC worker on %s may have failed: %s",
+                        worker_failures.append((host, result))
+
+                if worker_failures:
+                    for host, result in worker_failures:
+                        logger.error(
+                            "RPC worker on %s failed to exec (rc=%d):",
                             host,
-                            result.stderr[:100],
+                            result.returncode,
                         )
+                        for line in (result.stderr or "").rstrip().splitlines():
+                            logger.error("  %s", line)
+                    cleanup_after_failure(
+                        ctx,
+                        self.executor,
+                        container_names=[head_container, worker_container_name],
+                        reason=f"{len(worker_failures)} RPC worker(s) failed exec",
+                    )
+                    return 1
 
             # Wait for RPC ports (probe via management IPs -- SSH
             # connectivity is guaranteed there; the IB IPs are used for the
@@ -590,10 +606,16 @@ class LlamaCppRuntime(RuntimePlugin):
                     )
                     if not ready:
                         logger.error(
-                            "RPC worker on %s failed to become ready. Check logs: ssh %s 'docker logs %s'",
+                            "RPC worker on %s failed to become ready (port %d).",
                             host,
-                            host,
-                            worker_container_name,
+                            rpc_port,
+                        )
+                        dump_serve_log(host, worker_container_name, ctx.ssh_kwargs, dry_run=dry_run)
+                        cleanup_after_failure(
+                            ctx,
+                            self.executor,
+                            container_names=[head_container, worker_container_name],
+                            reason=f"RPC worker on {host} did not open port",
                         )
                         return 1
 
@@ -623,6 +645,13 @@ class LlamaCppRuntime(RuntimePlugin):
 
         rc = exec_serve_on_container(ctx, self.executor, ctx.head_host, head_container, head_command)
         if rc != 0:
+            dump_serve_log(ctx.head_host, head_container, ctx.ssh_kwargs, dry_run=dry_run)
+            cleanup_after_failure(
+                ctx,
+                self.executor,
+                container_names=[head_container, worker_container_name],
+                reason="llama-server head exec failed",
+            )
             return rc
         logger.info("Step 6/6: Head launched (%.1fs)", time.monotonic() - t0)
 

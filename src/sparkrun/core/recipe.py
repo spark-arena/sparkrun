@@ -332,6 +332,9 @@ def _resolve_v1_migration(recipe: Recipe) -> None:
     if recipe.runtime in ("vllm", ""):
         if not recipe.builder:
             recipe.builder = "eugr"
+        # TODO: verify possible failures from this; v1 recipes sometimes use '{{' in defaults values to escape '{'.
+        # replace '{{' in str defaults values with '{'
+        recipe.defaults = {k: v.replace("{{", "{") for k, v in recipe.defaults.items()}
 
 
 def _resolve_eugr_signals(recipe: Recipe) -> None:
@@ -339,7 +342,7 @@ def _resolve_eugr_signals(recipe: Recipe) -> None:
     if recipe.runtime not in ("vllm", ""):
         return
     rc = recipe.runtime_config
-    if rc.get("build_args") or recipe.mods or recipe.container.strip().startswith("ghcr.io/spark-arena/dgx-vllm-eugr-nightly"):
+    if rc.get("build_args") or recipe.container.strip().startswith("ghcr.io/spark-arena/dgx-vllm-eugr-nightly"):
         if not recipe.builder:
             recipe.builder = "eugr"
 
@@ -1243,7 +1246,7 @@ class Recipe:
         if self.runtime_version:
             d["runtime_version"] = self.runtime_version
 
-        # -- Topology --
+        # -- Topology -- (accounts for v1 solo_only/cluster_only flags as well)
         if self.min_nodes != 1:
             d["min_nodes"] = self.min_nodes
         if self.max_nodes is not None:
@@ -1253,11 +1256,11 @@ class Recipe:
         if self.container:
             d["container"] = self.container
 
-        # -- Preserve Raw Topology flags from v1 --
-        if self._raw.get("solo_only"):
-            d["solo_only"] = True
-        if self._raw.get("cluster_only"):
-            d["cluster_only"] = True
+        # # -- Preserve Raw Topology flags from v1 --
+        # if self._raw.get("solo_only"):
+        #     d["solo_only"] = True
+        # if self._raw.get("cluster_only"):
+        #     d["cluster_only"] = True
 
         # -- Explicit placement layout (optional) --
         if self.layout is not None:

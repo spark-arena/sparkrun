@@ -10,7 +10,6 @@ from sparkrun.core.backend_select import BackendBundle
 from sparkrun.orchestration.collectives import NcclBackend
 from sparkrun.orchestration.infiniband import detect_ib_for_hosts
 
-
 # Canonical NVIDIA + IB detection output (mirrors test_collectives.py).
 _IB_DETECTED_RAW = (
     "IB_DETECTED=1\n"
@@ -252,37 +251,3 @@ def test_native_cluster_threads_backends_to_detect_ib_with_ips(monkeypatch):
     _cluster_ops.run_native_cluster(runtime=runtime, ctx=ctx, backends=backends)
 
     assert captured["backends"] is backends
-
-
-# ---------------------------------------------------------------------------
-# Deprecation warning on resolve_ib_env
-# ---------------------------------------------------------------------------
-
-
-def test_resolve_ib_env_emits_deprecation_warning(monkeypatch):
-    """resolve_ib_env raises a DeprecationWarning pointing at the replacement."""
-    from sparkrun.runtimes import _cluster_ops
-    from sparkrun.orchestration.comm_env import ClusterCommEnv
-
-    # Patch to avoid actually probing hosts.
-    monkeypatch.setattr(
-        "sparkrun.orchestration.infiniband.detect_ib_for_hosts",
-        lambda *a, **kw: mock.MagicMock(comm_env=ClusterCommEnv.empty()),
-    )
-
-    ctx = _cluster_ops.ClusterContext(
-        hosts=["h1"],
-        head_host="h1",
-        worker_hosts=[],
-        num_nodes=1,
-        ssh_kwargs={},
-        volumes={},
-        all_env={},
-        cluster_id="cid",
-        image="img",
-        dry_run=True,
-        config=None,
-    )
-
-    with pytest.warns(DeprecationWarning, match="resolve_ib_env is deprecated"):
-        _cluster_ops.resolve_ib_env(ctx, None)

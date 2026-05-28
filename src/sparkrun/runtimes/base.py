@@ -1114,7 +1114,20 @@ class RuntimePlugin(Plugin):
             dry_run=dry_run,
         )
         if not result.success and not dry_run:
-            logger.error("Failed to launch container: %s", result.stderr)
+            logger.error("Failed to launch container on %s (rc=%d):", host, result.returncode)
+            for line in (result.stderr or "").rstrip().splitlines():
+                logger.error("  %s", line)
+            from sparkrun.runtimes._cluster_ops import cleanup_solo_after_failure
+
+            cleanup_solo_after_failure(
+                executor,
+                host,
+                container_name,
+                ssh_kwargs,
+                dry_run=dry_run,
+                cluster_id=cluster_id,
+                reason="solo container launch failed",
+            )
             return 1
         logger.info("Step 2/3: Container launched (%.1fs)", time.monotonic() - t0)
 
@@ -1165,6 +1178,17 @@ class RuntimePlugin(Plugin):
             elif result.stdout:
                 for line in result.stdout.rstrip().splitlines():
                     logger.error("  %s", line)
+            from sparkrun.runtimes._cluster_ops import cleanup_solo_after_failure
+
+            cleanup_solo_after_failure(
+                executor,
+                host,
+                container_name,
+                ssh_kwargs,
+                dry_run=dry_run,
+                cluster_id=cluster_id,
+                reason="solo serve exec failed",
+            )
 
         return result.returncode
 

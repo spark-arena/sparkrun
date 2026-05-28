@@ -175,6 +175,131 @@ def cleanup_named_containers(ctx: ClusterContext, container_names: list[str]) ->
     cleanup_containers(ctx.hosts, container_names, ssh_kwargs=ctx.ssh_kwargs, dry_run=ctx.dry_run)
 
 
+def cleanup_after_failure(
+    ctx: ClusterContext,
+    executor: Executor,
+    *,
+    reason: str,
+    container_names: list[str] | None = None,
+    hosts: list[str] | None = None,
+) -> None:
+    """Stop containers after a launch failure, respecting ``--no-rm``.
+
+    When ``--no-rm`` was passed (``executor.config.auto_remove == False``), the
+    user explicitly asked to keep containers around for debugging — emit a
+    warning naming the cluster id and skip cleanup.  Otherwise, stop the
+    ranked node containers on every cluster host, or the explicitly named
+    containers when ``container_names`` is provided (solo / partial-cluster).
+
+    ``hosts`` restricts cleanup to a subset (e.g., only the hosts that had
+    containers launched at the point of failure).  Errors during cleanup are
+    logged at warning level and swallowed so the original failure remains the
+    primary signal to the caller.
+    """
+    if not getattr(executor.config, "auto_remove", True):
+        logger.warning(
+            "Launch failed (%s). Containers left running because --no-rm was set. Clean up manually: sparkrun stop %s",
+            reason,
+            ctx.cluster_id,
+        )
+        return
+
+    logger.info("Cleaning up containers after launch failure (%s)...", reason)
+    try:
+        if container_names is not None:
+            from sparkrun.orchestration.primitives import cleanup_containers
+
+            cleanup_containers(
+                hosts or ctx.hosts,
+                container_names,
+                ssh_kwargs=ctx.ssh_kwargs,
+                dry_run=ctx.dry_run,
+            )
+            return
+        # Ranked cleanup. Use the supplied host subset when provided so we
+        # don't issue stop commands to hosts that never had a container.
+        from sparkrun.orchestration.ssh import run_remote_command
+
+        target_hosts = hosts or ctx.hosts
+        for rank, host in enumerate(target_hosts):
+            container_name = executor.node_container_name(ctx.cluster_id, rank)
+            run_remote_command(
+                host,
+                executor.stop_cmd(container_name),
+                timeout=30,
+                dry_run=ctx.dry_run,
+                **ctx.ssh_kwargs,
+            )
+    except Exception as e:
+        logger.warning("Cleanup encountered errors (continuing): %s", e)
+
+
+def cleanup_solo_after_failure(
+    executor: Executor,
+    host: str,
+    container_name: str,
+    ssh_kwargs: dict,
+    *,
+    dry_run: bool,
+    cluster_id: str,
+    reason: str,
+) -> None:
+    """``cleanup_after_failure`` for the solo path (no ``ClusterContext``)."""
+    if not getattr(executor.config, "auto_remove", True):
+        logger.warning(
+            "Launch failed (%s). Container left running because --no-rm was set. Clean up manually: sparkrun stop %s",
+            reason,
+            cluster_id,
+        )
+        return
+
+    logger.info("Cleaning up container after launch failure (%s)...", reason)
+    try:
+        from sparkrun.orchestration.ssh import run_remote_command
+
+        run_remote_command(
+            host,
+            executor.stop_cmd(container_name),
+            timeout=30,
+            dry_run=dry_run,
+            **ssh_kwargs,
+        )
+    except Exception as e:
+        logger.warning("Cleanup encountered errors (continuing): %s", e)
+
+
+def dump_serve_log(host: str, container: str, ssh_kwargs: dict, *, dry_run: bool = False) -> None:
+    """Log ``/tmp/sparkrun_serve.log`` from inside a container at ERROR level.
+
+    The serve process redirects its stdout/stderr to a file inside the
+    container, so ``docker logs`` (which only sees PID 1's stdio) is
+    structurally blind to it.  This helper bridges the gap by running
+    ``docker exec ... cat`` over SSH and emitting whatever it finds.
+    """
+    from sparkrun.orchestration.ssh import run_remote_command
+
+    result = run_remote_command(
+        host,
+        f"docker exec {container} cat /tmp/sparkrun_serve.log 2>/dev/null || true",
+        timeout=30,
+        dry_run=dry_run,
+        **ssh_kwargs,
+    )
+    if dry_run:
+        return
+    content = (result.stdout or "").rstrip()
+    if not content:
+        logger.error(
+            "No content in /tmp/sparkrun_serve.log for %s on %s (container may have exited or serve never wrote to the file).",
+            container,
+            host,
+        )
+        return
+    logger.error("Serve log /tmp/sparkrun_serve.log on %s (%s):", host, container)
+    for line in content.splitlines():
+        logger.error("  %s", line)
+
+
 # ---------------------------------------------------------------------------
 # InfiniBand helpers
 # ---------------------------------------------------------------------------
@@ -251,69 +376,6 @@ def resolve_comm_env(
     supplied; otherwise falls back to the legacy NCCL generator
     (byte-identical for NVIDIA hosts).
     """
-    from sparkrun.orchestration.comm_env import ClusterCommEnv as _CCE
-
-    _refuse_unsupported_collectives(ctx)
-
-    if comm_env is not None:
-        logger.info("Using pre-detected comm env (%d vars)", len(comm_env))
-        return comm_env
-
-    from sparkrun.orchestration.infiniband import detect_ib_for_hosts
-
-    logger.info("Detecting InfiniBand on %d host(s)...", len(ctx.hosts))
-    ib_result = detect_ib_for_hosts(
-        ctx.hosts,
-        ssh_kwargs=ctx.ssh_kwargs,
-        dry_run=ctx.dry_run,
-        topology=ctx.topology,
-        backends=backends,
-    )
-    if ib_result.comm_env.is_empty():
-        logger.info("  No InfiniBand detected, using default networking")
-        return _CCE.empty()
-    return ib_result.comm_env
-
-
-def resolve_ib_env(
-    ctx: ClusterContext,
-    comm_env: ClusterCommEnv | None,
-    backends: "dict[str, BackendBundle] | None" = None,
-) -> ClusterCommEnv:
-    """Resolve the cluster comm env: reuse pre-detected or probe.
-
-    Returns a :class:`ClusterCommEnv` carrying both shared and
-    per-host inter-node comm env vars.  Per-host entries let
-    heterogeneous management interfaces (e.g. wired on the head, wifi
-    on a worker) each bind the correct ``*_SOCKET_IFNAME`` values.
-
-    .. deprecated::
-        Pass a ``backends`` mapping (per-host
-        :class:`~sparkrun.core.backend_select.BackendBundle`) and call
-        ``backends[host].collective.env_for_host(ib_info)`` directly —
-        see :func:`sparkrun.orchestration.infiniband.detect_ib_for_hosts`
-        which accepts *backends* natively.  This wrapper is kept for
-        one release so downstream callers continue to compile, but
-        will be removed thereafter.
-
-    Args:
-        ctx: Cluster context.
-        comm_env: Pre-detected comm env (skip probe if non-None).
-        backends: Optional per-host :class:`BackendBundle`.  When
-            provided, IB env vars are emitted via
-            ``backends[host].collective.env_for_host``; otherwise the
-            legacy NCCL generator is used (byte-identical for NVIDIA).
-    """
-    import warnings
-
-    warnings.warn(
-        "resolve_ib_env is deprecated; pass `backends` and call "
-        "CollectiveBackend.env_for_host via BackendBundle (see "
-        "sparkrun.orchestration.infiniband.detect_ib_for_hosts)",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-
     from sparkrun.orchestration.comm_env import ClusterCommEnv as _CCE
 
     _refuse_unsupported_collectives(ctx)
@@ -579,7 +641,9 @@ def exec_serve_on_container(
         **ctx.ssh_kwargs,
     )
     if not result.success and not ctx.dry_run:
-        logger.error("Failed to exec serve on %s (%s): %s", host, container_name, result.stderr[:200])
+        logger.error("Failed to exec serve on %s (%s, rc=%d):", host, container_name, result.returncode)
+        for line in (result.stderr or "").rstrip().splitlines():
+            logger.error("  %s", line)
         return 1
     return 0
 
@@ -796,7 +860,14 @@ def run_native_cluster(
         **ctx.ssh_kwargs,
     )
     if not head_result.success and not ctx.dry_run:
-        logger.error("Failed to exec serve on head node: %s", head_result.stderr[:200])
+        logger.error("Failed to exec serve on head node %s (rc=%d):", ctx.head_host, head_result.returncode)
+        for line in (head_result.stderr or "").rstrip().splitlines():
+            logger.error("  %s", line)
+        if head_result.stdout:
+            logger.error("Head node stdout:")
+            for line in head_result.stdout.rstrip().splitlines():
+                logger.error("  %s", line)
+        cleanup_after_failure(ctx, executor, reason="head serve exec failed")
         return 1
 
     # Wait for head init port
@@ -823,12 +894,11 @@ def run_native_cluster(
                 logger.error("Container logs for %s:", head_container)
                 for line in captured[-150:]:
                     logger.error("  %s", line)
-            else:
-                logger.error(
-                    "No logs captured. Check manually: ssh %s 'docker logs %s'",
-                    ctx.head_host,
-                    head_container,
-                )
+            # `start_log_capture` uses `docker logs -f`, which is blind to the
+            # serve process's redirected output file. Always emit the real log
+            # so the user sees the actual error, not just sleep-infinity stdio.
+            dump_serve_log(ctx.head_host, head_container, ctx.ssh_kwargs, dry_run=ctx.dry_run)
+            cleanup_after_failure(ctx, executor, reason="head node did not become ready")
             return 1
         logger.info("Step 6/7: Head node ready (%.1fs)", time.monotonic() - t0)
     else:
@@ -884,16 +954,29 @@ def run_native_cluster(
                 )
                 futures[future] = (host, rank)
 
+            worker_failures: list[tuple[str, int, Any]] = []
             for future in as_completed(futures):
                 host, rank = futures[future]
                 result = future.result()
                 if not result.success and not ctx.dry_run:
-                    logger.warning(
-                        "  Worker rank %d on %s may have failed: %s",
+                    worker_failures.append((host, rank, result))
+
+            if worker_failures:
+                for host, rank, result in worker_failures:
+                    logger.error(
+                        "Worker rank %d on %s failed to exec serve (rc=%d):",
                         rank,
                         host,
-                        result.stderr[:100],
+                        result.returncode,
                     )
+                    for line in (result.stderr or "").rstrip().splitlines():
+                        logger.error("  %s", line)
+                cleanup_after_failure(
+                    ctx,
+                    executor,
+                    reason=f"{len(worker_failures)} worker(s) failed serve exec",
+                )
+                return 1
 
         if not progress:
             logger.info("Step 7/7: Workers launched (%.1fs)", time.monotonic() - t0)

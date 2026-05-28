@@ -520,7 +520,7 @@ def run(
     if diag:
         diag.phase_start("launch")
     try:
-        run_result = api.run(run_options)
+        run_result = api.run(run_options, sctx=sctx)
     except TransferError as e:
         if diag:
             diag.phase_end("launch", error=str(e))

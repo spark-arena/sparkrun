@@ -453,10 +453,10 @@ class TrtllmRuntime(RuntimePlugin):
         from sparkrun.orchestration.ssh import run_remote_command
         from sparkrun.runtimes._cluster_ops import (
             ClusterContext,
+            cleanup_after_failure,
             cleanup_ranked_containers,
             launch_containers_parallel,
             resolve_comm_env,
-            resolve_ib_env,
         )
 
         progress = kwargs.pop("progress", None)
@@ -509,10 +509,9 @@ class TrtllmRuntime(RuntimePlugin):
         # New path uses CollectiveBackend.env_for_host via backends; the
         # deprecated resolve_ib_env wrapper is kept for one release for
         # callers that haven't threaded backends through.
-        if backends is not None:
-            comm_env = resolve_comm_env(ctx, comm_env, backends=backends)
-        else:
-            comm_env = resolve_ib_env(ctx, comm_env)
+        if backends is None:
+            raise RuntimeError("backends is None; legacy IB env resolution is deprecated and no backends were provided.")
+        comm_env = resolve_comm_env(ctx, comm_env, backends=backends)
         logger.info("Step 2/7: IB step done (%.1fs)", time.monotonic() - t0)
 
         # Step 3: Detect management IPs on all hosts
@@ -574,6 +573,11 @@ class TrtllmRuntime(RuntimePlugin):
                         host,
                         rank,
                     )
+                    cleanup_after_failure(
+                        ctx,
+                        self.executor,
+                        reason=f"container {container_name} not running on {host}",
+                    )
                     return 1
             logger.info("Step 5/7: All containers verified (%.1fs)", time.monotonic() - t0)
         else:
@@ -612,7 +616,10 @@ class TrtllmRuntime(RuntimePlugin):
             **ctx.ssh_kwargs,
         )
         if not result.success and not dry_run:
-            logger.error("Failed to write rsh wrapper: %s", result.stderr[:200])
+            logger.error("Failed to write rsh wrapper (rc=%d):", result.returncode)
+            for line in (result.stderr or "").rstrip().splitlines():
+                logger.error("  %s", line)
+            cleanup_after_failure(ctx, self.executor, reason="rsh wrapper write failed")
             return 1
 
         # Write extra-llm-api-config.yml if needed
@@ -629,7 +636,10 @@ class TrtllmRuntime(RuntimePlugin):
                     **ctx.ssh_kwargs,
                 )
                 if not result.success and not dry_run:
-                    logger.error("Failed to write extra config: %s", result.stderr[:200])
+                    logger.error("Failed to write extra config (rc=%d):", result.returncode)
+                    for line in (result.stderr or "").rstrip().splitlines():
+                        logger.error("  %s", line)
+                    cleanup_after_failure(ctx, self.executor, reason="extra LLM config write failed")
                     return 1
                 logger.info("  Extra LLM API config written to %s", _EXTRA_CONFIG_PATH)
 
@@ -691,7 +701,14 @@ class TrtllmRuntime(RuntimePlugin):
         logger.info("Step 7/7: mpirun dispatched (%.1fs)", time.monotonic() - t0)
 
         if not dry_run and not result.success:
-            logger.error("mpirun exec failed: %s", result.stderr[:200])
+            logger.error("mpirun exec failed on %s (rc=%d):", head_host, result.returncode)
+            for line in (result.stderr or "").rstrip().splitlines():
+                logger.error("  %s", line)
+            if result.stdout:
+                logger.error("mpirun stdout:")
+                for line in result.stdout.rstrip().splitlines():
+                    logger.error("  %s", line)
+            cleanup_after_failure(ctx, self.executor, reason="mpirun exec failed")
             return 1
 
         self._print_connection_info(hosts, cluster_id, per_node_logs=True)

@@ -1252,8 +1252,11 @@ class TestResolverChain:
         assert recipe.runtime == "vllm-distributed"
         assert recipe.builder == "eugr"
 
-    def test_resolve_eugr_signals_mods(self):
-        """mods triggers eugr builder, runtime resolves to vllm-distributed."""
+    def test_resolve_eugr_signals_mods_alone_does_not_trigger_eugr(self):
+        """``mods`` alone no longer triggers the eugr builder — only ``build_args`` or
+        an eugr-specific container prefix does (see ``_resolve_eugr_signals``).
+        Runtime still resolves to vllm-distributed.
+        """
         recipe = Recipe.from_dict(
             {
                 "name": "Test",
@@ -1263,7 +1266,7 @@ class TestResolverChain:
             }
         )
         assert recipe.runtime == "vllm-distributed"
-        assert recipe.builder == "eugr"
+        assert recipe.builder == ""
 
     def test_resolve_vllm_defaults_to_distributed(self):
         """Bare vllm -> vllm-distributed."""
