@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from logging import Logger
 from pathlib import Path
-from typing import Any, Callable, TYPE_CHECKING, Optional
+from typing import Any, Callable, ClassVar, TYPE_CHECKING, Optional
 
 import yaml
 from scitrera_app_framework import Plugin, Variables
@@ -70,6 +70,23 @@ class BenchmarkingPlugin(Plugin):
     framework_name: str = ""
     default_args: dict[str, Any] = {}
     passthrough_args: set[str] = set()
+
+    # Benchmark category taxonomy: the kind of question this framework answers
+    # ("performance", "tools", "hallucinations", ...). A plugin may belong to
+    # more than one category, but ``primary_category`` is the one used when a
+    # spec/profile does not pin a category explicitly.
+    categories: ClassVar[tuple[str, ...]] = ("performance",)
+    primary_category: ClassVar[str] = "performance"
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        # If the subclass declared ``categories`` but not ``primary_category``,
+        # default the primary to the first declared category. Without this,
+        # tools-only plugins would inherit ``primary_category = "performance"``.
+        if "categories" in cls.__dict__ and "primary_category" not in cls.__dict__:
+            cats = cls.__dict__["categories"]
+            if cats:
+                cls.primary_category = cats[0]
 
     # --- SAF Plugin interface ---
 
@@ -298,6 +315,13 @@ class BenchmarkResult:
     profile: Optional[str] = None
     benchmark_args: Optional[dict[str, Any]] = None
 
+    # Pre-resolved long-term archival reference. When set (e.g. from a
+    # persisted resume state), generate_metadata uses these instead of calling
+    # builder.resolve_long_term_image again — keeps result-yaml provenance
+    # identical across sessions of the same resumable run.
+    longterm_image_ref: Optional[str] = None
+    longterm_image_pinned: bool = False
+
     @property
     def output_csv(self):
         return self.outputs.get("csv") if self.outputs else None
@@ -356,7 +380,11 @@ class BenchmarkResult:
         # Resolve container image to a pinned long-term reference when possible
         container_pinned = False
         recipe_container = container_image or recipe.container
-        if launch_result and launch_result.builder:
+        if self.longterm_image_ref:
+            # Pre-resolved (and persisted) on first launch of this resumable run.
+            recipe_container = self.longterm_image_ref
+            container_pinned = self.longterm_image_pinned
+        elif launch_result and launch_result.builder:
             try:
                 resolved_image, pinned = launch_result.builder.resolve_long_term_image(
                     container_image=launch_result.container_image,

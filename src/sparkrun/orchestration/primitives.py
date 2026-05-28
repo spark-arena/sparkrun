@@ -594,3 +594,39 @@ def run_command_on_host(
     if should_run_locally(host, kw.get("ssh_user")):
         return run_local_script("#!/bin/bash\n" + command, dry_run=dry_run)
     return run_remote_command(host, command, timeout=timeout, dry_run=dry_run, quiet=quiet, **kw)
+
+
+def resolve_image_sha(
+    image_ref: str,
+    hosts: list[str] | tuple[str, ...],
+    ssh_kwargs: dict | None = None,
+    dry_run: bool = False,
+) -> str | None:
+    """Resolve a container image reference to its content-addressable image ID.
+
+    Runs ``docker image inspect --format '{{.Id}}' <ref>`` on each host in
+    *hosts* until one succeeds; returns the ``sha256:...`` ID string. Returns
+    ``None`` when no host can resolve it (image not pulled, docker unavailable,
+    network error). Returns ``None`` on ``dry_run`` to avoid live calls.
+
+    Used by benchmark resume to lock the exact image bits across invocations
+    so a re-pushed tag or rebuilt local image cannot silently change the
+    workload between sessions.
+    """
+    if dry_run or not hosts:
+        return None
+    from sparkrun.utils.shell import quote as _q
+
+    cmd = "docker image inspect --format '{{.Id}}' %s" % _q(image_ref)
+    for host in hosts:
+        try:
+            result = run_command_on_host(host, cmd, ssh_kwargs=ssh_kwargs, dry_run=False, quiet=True)
+        except Exception:
+            logger.debug("resolve_image_sha: exception on %s", host, exc_info=True)
+            continue
+        if result.returncode == 0 and result.stdout.strip():
+            sha = result.stdout.strip().splitlines()[0].strip()
+            if sha.startswith("sha256:"):
+                return sha
+            logger.debug("resolve_image_sha: unexpected output on %s: %r", host, sha)
+    return None

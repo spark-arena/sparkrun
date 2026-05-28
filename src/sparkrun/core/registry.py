@@ -244,6 +244,64 @@ def validate_registry_name(name: str, url: str) -> None:
     )
 
 
+_PROFILE_CATEGORY_CACHE: dict[tuple[str, float, int], str | None] = {}
+
+
+def _profile_category_from_data(data: Any) -> str | None:
+    """Extract a benchmark category from a parsed profile YAML mapping.
+
+    Resolution order: explicit ``category:`` (top-level or inside a
+    ``benchmark:`` block) → derived from the framework's ``primary_category``
+    → ``None`` (let callers default).
+    """
+    if not isinstance(data, dict):
+        return None
+
+    explicit = data.get("category")
+    block = data.get("benchmark") if isinstance(data.get("benchmark"), dict) else None
+    if explicit is None and block is not None:
+        explicit = block.get("category")
+    if isinstance(explicit, str) and explicit:
+        return explicit
+
+    framework_name = data.get("framework")
+    if framework_name is None and block is not None:
+        framework_name = block.get("framework")
+    if not isinstance(framework_name, str) or not framework_name:
+        return None
+
+    try:
+        from sparkrun.core.bootstrap import get_benchmarking_framework
+    except Exception:
+        return None
+    try:
+        fw = get_benchmarking_framework(framework_name)
+    except Exception:
+        return None
+    return getattr(fw, "primary_category", None)
+
+
+def _profile_category(path: Path) -> str | None:
+    """Return the category for the profile at *path*, cached by (path, mtime, size)."""
+    try:
+        st = path.stat()
+        key = (str(path), st.st_mtime, st.st_size)
+    except OSError:
+        return None
+    cached = _PROFILE_CATEGORY_CACHE.get(key)
+    if cached is not None or key in _PROFILE_CATEGORY_CACHE:
+        return cached
+    try:
+        with open(path) as fh:
+            data = yaml.safe_load(fh) or {}
+    except Exception:
+        _PROFILE_CATEGORY_CACHE[key] = None
+        return None
+    cat = _profile_category_from_data(data)
+    _PROFILE_CATEGORY_CACHE[key] = cat
+    return cat
+
+
 class RegistryManager:
     """Manages recipe registries with git-based syncing.
 
@@ -1578,12 +1636,15 @@ class RegistryManager:
         self,
         name: str,
         include_hidden: bool = False,
+        category: str | None = None,
     ) -> list[tuple[str, Path]]:
         """Find benchmark profile by file stem across registries.
 
         Args:
             name: Profile file stem (e.g. 'spark-arena-v1')
             include_hidden: If True, include profiles from invisible registries
+            category: Optional category filter. When set, only profiles whose
+                declared (or framework-derived) category matches are returned.
 
         Returns:
             List of (registry_name, profile_path) tuples for disambiguation
@@ -1600,6 +1661,8 @@ class RegistryManager:
             for ext in (".yaml", ".yml"):
                 candidate = benchmark_dir / (name + ext)
                 if candidate.exists():
+                    if category is not None and _profile_category(candidate) != category:
+                        continue
                     matches.append((entry.name, candidate))
         return matches
 
@@ -1607,15 +1670,19 @@ class RegistryManager:
         self,
         registry_name: str | None = None,
         include_hidden: bool = False,
+        category: str | None = None,
     ) -> list[dict[str, Any]]:
         """List all benchmark profiles across registries.
 
         Args:
             registry_name: If provided, only list from this registry
             include_hidden: If True, include profiles from invisible registries
+            category: Optional category filter. When set, only profiles whose
+                declared (or framework-derived) category matches are returned.
 
         Returns:
-            List of dicts with keys: registry, file, name, description, path
+            List of dicts with keys: registry, file, name, description, path,
+            category
         """
         import yaml
 
@@ -1636,6 +1703,7 @@ class RegistryManager:
                 # Read metadata from the profile
                 profile_name = f.stem
                 description = ""
+                profile_category: str | None = None
                 try:
                     with open(f) as fh:
                         data = yaml.safe_load(fh) or {}
@@ -1648,8 +1716,11 @@ class RegistryManager:
                             description = metadata["description"]
                         if metadata.get("name") and not data.get("name"):
                             profile_name = metadata["name"]
+                    profile_category = _profile_category_from_data(data)
                 except Exception:
                     pass
+                if category is not None and profile_category != category:
+                    continue
                 profiles.append(
                     {
                         "registry": entry.name,
@@ -1657,6 +1728,7 @@ class RegistryManager:
                         "name": profile_name,
                         "description": description,
                         "path": str(f),
+                        "category": profile_category,
                     }
                 )
         return profiles

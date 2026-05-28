@@ -10,7 +10,7 @@ from sparkrun.utils.shell import render_args_as_flags
 from sparkrun.core.recipe import Recipe
 
 # Keys in the benchmark: block that are NOT framework args
-_KNOWN_BENCHMARK_KEYS = {"framework", "args", "metadata", "timeout", "schedule"}
+_KNOWN_BENCHMARK_KEYS = {"framework", "args", "metadata", "timeout", "schedule", "category"}
 
 
 class ProfileError(Exception):
@@ -35,6 +35,7 @@ def find_benchmark_profile(
     config,
     registry_manager=None,
     include_hidden: bool = False,
+    category: str | None = None,
 ) -> Path:
     """Find a benchmark profile by name.
 
@@ -49,6 +50,10 @@ def find_benchmark_profile(
         config: SparkrunConfig instance
         registry_manager: Optional RegistryManager for registry search
         include_hidden: If True, include hidden registries
+        category: Optional category filter. When set, scoped/local/registry
+            lookups skip profiles whose declared (or framework-derived)
+            category does not match. Direct file paths are not filtered —
+            an explicit path is always honored.
 
     Returns:
         Path to the profile YAML file.
@@ -79,10 +84,15 @@ def find_benchmark_profile(
         matches = registry_manager.find_benchmark_profile_in_registries(
             lookup_name,
             include_hidden=True,
+            category=category,
         )
         scoped_matches = [(reg, path) for reg, path in matches if reg == scoped_registry]
         if scoped_matches:
             return scoped_matches[0][1]
+        if category is not None:
+            raise ProfileError(
+                "Benchmark profile '%s' not found in registry '%s' for category '%s'" % (lookup_name, scoped_registry, category)
+            )
         raise ProfileError("Benchmark profile '%s' not found in registry '%s'" % (lookup_name, scoped_registry))
 
     # 3. Local benchmarking directory
@@ -91,19 +101,28 @@ def find_benchmark_profile(
         for ext in (".yaml", ".yml"):
             candidate = local_dir / (lookup_name + ext)
             if candidate.exists():
-                return candidate
+                if category is None:
+                    return candidate
+                # Lazy category check via the same helper used by registry lookups
+                from sparkrun.core.registry import _profile_category
+
+                if _profile_category(candidate) == category:
+                    return candidate
 
     # 4. Registry search with ambiguity detection
     if registry_manager:
         matches = registry_manager.find_benchmark_profile_in_registries(
             lookup_name,
             include_hidden=include_hidden,
+            category=category,
         )
         if len(matches) == 1:
             return matches[0][1]
         elif len(matches) > 1:
             raise ProfileAmbiguousError(lookup_name, matches)
 
+    if category is not None:
+        raise ProfileError("Benchmark profile '%s' not found for category '%s'" % (lookup_name, category))
     raise ProfileError("Benchmark profile '%s' not found" % lookup_name)
 
 
@@ -138,6 +157,11 @@ class BenchmarkSpec:
     args: dict[str, Any]
     timeout: int | None = None
     schedule: list[dict[str, Any]] | None = None
+    # Benchmark category ("performance", "tools", ...). When None at load time,
+    # the spec is "implicit-category" — callers resolve it after framework
+    # lookup via :func:`resolve_spec_category` so the spec inherits the
+    # framework's ``primary_category``.
+    category: str | None = None
 
     @classmethod
     def load(cls, path: str | Path) -> BenchmarkSpec:
@@ -186,12 +210,17 @@ class BenchmarkSpec:
             if not isinstance(schedule, list) or not all(isinstance(e, dict) for e in schedule):
                 raise BenchmarkError("benchmark.schedule must be a list of mappings")
 
+        category = block.get("category")
+        if category is not None and not isinstance(category, str):
+            raise BenchmarkError("benchmark.category must be a string")
+
         return cls(
             source_path=str(p),
             framework=framework,
             args=args,
             timeout=timeout,
             schedule=schedule,
+            category=category,
         )
 
     @classmethod
@@ -221,13 +250,37 @@ class BenchmarkSpec:
             if not isinstance(schedule, list) or not all(isinstance(e, dict) for e in schedule):
                 raise BenchmarkError("benchmark.schedule must be a list of mappings")
 
+        category = block.get("category")
+        if category is not None and not isinstance(category, str):
+            raise BenchmarkError("benchmark.category must be a string")
+
         return cls(
             source_path=recipe.source_path or "",
             framework=str(framework),
             args=args,
             timeout=timeout,
             schedule=schedule,
+            category=category,
         )
+
+    def resolved_category(self, default: str = "performance") -> str:
+        """Return the spec's category, falling back to the framework's primary.
+
+        Looks up the framework by name and reads ``primary_category``. When
+        the framework isn't registered (e.g. unit tests using bare specs),
+        falls back to *default*.
+        """
+        if self.category is not None:
+            return self.category
+        try:
+            from sparkrun.core.bootstrap import get_benchmarking_framework
+        except Exception:
+            return default
+        try:
+            fw = get_benchmarking_framework(self.framework)
+        except Exception:
+            return default
+        return getattr(fw, "primary_category", default) or default
 
     def build_command(self, extra_args: dict[str, Any] | None = None) -> list[str]:
         """Render a shell argv list for this benchmark spec.

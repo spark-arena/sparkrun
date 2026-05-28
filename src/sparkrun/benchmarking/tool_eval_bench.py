@@ -77,6 +77,7 @@ class ToolEvalBenchFramework(BenchmarkingPlugin):
     """
 
     framework_name = "tool-eval-bench"
+    categories = ("tools",)
     default_args: dict[str, Any] = {
         "backend": "vllm",  # TODO: should be runtime (not just vllm)
         "parallel": 1,

@@ -831,6 +831,27 @@ def _run_benchmark(
         else:
             click.echo("Using pinned %s version: %s" % (fw.framework_name, state.extras["framework_version"]))
 
+        # --- Container SHA pin (P1) — resume path ---
+        # When a prior session captured the SHA of the operational image, use it
+        # verbatim on resume. This guarantees identical bits across sessions even
+        # if the source tag has been re-pushed or the local image rebuilt.
+        pinned_image_sha = state.extras.get("container_image_sha")
+        if pinned_image_sha:
+            if container_image != pinned_image_sha:
+                click.echo("Using pinned image SHA: %s" % pinned_image_sha)
+                click.echo("  (was: %s)" % container_image)
+            container_image = pinned_image_sha
+            overrides["image"] = pinned_image_sha
+            bench_result.container_image = container_image
+
+        # --- Long-term archival ref (P2) — thread into bench_result on resume ---
+        # If a prior session already resolved and persisted the long-term ref,
+        # pre-populate bench_result so generate_metadata uses the pinned value
+        # rather than re-resolving from the builder (keeps provenance identical).
+        if "container_image_longterm_ref" in state.extras:
+            bench_result.longterm_image_ref = state.extras["container_image_longterm_ref"]
+            bench_result.longterm_image_pinned = bool(state.extras.get("container_image_longterm_pinned", True))
+
     try:
         # ---------------------------------------------------------------
         # 6. Launch inference (unless --skip-run)
@@ -879,6 +900,44 @@ def _run_benchmark(
 
             launched = True
             bench_result.launch_result = launch_result
+
+            if tasks is not None:
+                # --- Container SHA pin capture (P1) — first run ---
+                # Capture the content-addressable image ID from the head host so
+                # subsequent resumes can lock onto these exact bits. Idempotent:
+                # only captures when unset. Failure to resolve is non-fatal.
+                if "container_image_sha" not in state.extras:
+                    from sparkrun.orchestration.primitives import resolve_image_sha as _resolve_image_sha
+
+                    sha = _resolve_image_sha(container_image, host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
+                    if sha:
+                        state.extras["container_image_sha"] = sha
+                        click.echo("Pinned image SHA: %s" % sha)
+                        state.save(cache_dir)
+                    else:
+                        logger.debug(
+                            "resolve_image_sha returned None for %s; pin will not be enforced on resume",
+                            container_image,
+                        )
+
+                # --- Long-term archival ref (P2) — first run ---
+                # Resolve and persist the builder-provided long-term reference so
+                # resumed sessions emit identical result-yaml provenance.
+                if "container_image_longterm_ref" not in state.extras and launch_result is not None and launch_result.builder is not None:
+                    try:
+                        lt_ref, lt_pinned = launch_result.builder.resolve_long_term_image(
+                            container_image=launch_result.container_image,
+                            runtime_info=launch_result.runtime_info,
+                            recipe=recipe,
+                        )
+                        if lt_pinned and lt_ref:
+                            state.extras["container_image_longterm_ref"] = lt_ref
+                            state.extras["container_image_longterm_pinned"] = True
+                            bench_result.longterm_image_ref = lt_ref
+                            bench_result.longterm_image_pinned = True
+                            state.save(cache_dir)
+                    except Exception:
+                        logger.debug("Long-term image resolution failed during pin", exc_info=True)
         else:
             logger.log(_PROGRESS_LEVEL, "Step 1/3: Skipping inference launch (--skip-run)")
 

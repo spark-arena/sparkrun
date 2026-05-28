@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from scitrera_app_framework import Variables, register_plugin, get_extensions
 from scitrera_app_framework.util import find_types_in_modules
@@ -187,6 +187,84 @@ def list_benchmarking_frameworks(v: Variables | None = None) -> list[str]:
 
     all_frameworks = get_extensions(EXT_BENCHMARKING_FRAMEWORKS, v=v)
     return sorted(r.framework_name for r in all_frameworks.values())
+
+
+def list_benchmark_categories(v: Variables | None = None) -> list[str]:
+    """List all benchmark categories implemented by registered frameworks.
+
+    The union of every plugin's ``categories`` tuple, deduplicated and sorted.
+    Used by the CLI to decide which ``sparkrun benchmark <category>``
+    subcommands to register.
+    """
+    if v is None:
+        v = get_variables()
+
+    all_frameworks = get_extensions(EXT_BENCHMARKING_FRAMEWORKS, v=v)
+    seen: set[str] = set()
+    for fw in all_frameworks.values():
+        for cat in getattr(fw, "categories", ()) or ():
+            if cat:
+                seen.add(cat)
+    return sorted(seen)
+
+
+def get_benchmarking_frameworks_for_category(
+    category: str,
+    v: Variables | None = None,
+) -> list["BenchmarkingPlugin"]:
+    """Return all registered frameworks whose ``categories`` includes *category*."""
+    if v is None:
+        v = get_variables()
+
+    all_frameworks = get_extensions(EXT_BENCHMARKING_FRAMEWORKS, v=v)
+    return [fw for fw in all_frameworks.values() if category in (getattr(fw, "categories", ()) or ())]
+
+
+class AmbiguousCategoryError(ValueError):
+    """Raised when a category has multiple frameworks and no default is set."""
+
+
+class CategoryNotFoundError(ValueError):
+    """Raised when a category has no registered frameworks."""
+
+
+def get_default_framework_for_category(
+    category: str,
+    config: Any = None,
+    v: Variables | None = None,
+) -> "BenchmarkingPlugin":
+    """Return the framework to use by default for *category*.
+
+    Resolution order:
+
+    1. If *config* declares ``default_benchmark_framework`` and that
+       framework belongs to *category*, use it.
+    2. If exactly one registered framework belongs to *category*, use it.
+    3. Otherwise raise :class:`AmbiguousCategoryError` (multiple matches) or
+       :class:`CategoryNotFoundError` (no matches).
+    """
+    candidates = get_benchmarking_frameworks_for_category(category, v=v)
+    if not candidates:
+        raise CategoryNotFoundError(
+            "No benchmarking framework registered for category %r. Registered categories: %s" % (category, list_benchmark_categories(v=v))
+        )
+
+    if config is not None:
+        configured_name = getattr(config, "default_benchmark_framework", None)
+        if configured_name:
+            for fw in candidates:
+                if fw.framework_name == configured_name:
+                    return fw
+
+    if len(candidates) == 1:
+        return candidates[0]
+
+    names = sorted(fw.framework_name for fw in candidates)
+    raise AmbiguousCategoryError(
+        "Category %r has multiple frameworks (%s). "
+        "Pin one via `defaults.benchmark_framework` in config.yaml or "
+        "pass --framework explicitly." % (category, names)
+    )
 
 
 def get_builder(name: str, v: Variables | None = None) -> "BuilderPlugin":
