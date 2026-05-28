@@ -102,9 +102,12 @@ def build_vllm_tune_invocation(
     SPARKRUN_TUNING_DIR is exported so a follow-up ``--export-sparkrun`` call
     writes to the same flat cache directory the vLLM runtimes auto-mount.
     """
+    # install_path is sparkrun-controlled (echoed by our install script or
+    # built from `$HOME/...`); interpolated raw so an unresolved `$HOME`
+    # expands on the remote shell.
     return ("SPARKRUN_TUNING_DIR=%s bash %s %s --tp %d --mode %s --standalone --image %s --foreground") % (
         quote(sparkrun_dir),
-        quote(install_path),
+        install_path,
         quote(model),
         tp_size,
         quote(mode),
@@ -123,7 +126,7 @@ def build_vllm_tune_export(
     flat cache.  Cheap (just ``cp``) and idempotent."""
     return ("SPARKRUN_TUNING_DIR=%s bash %s %s --tp %d --mode %s --export-sparkrun --sparkrun-dir %s") % (
         quote(sparkrun_dir),
-        quote(install_path),
+        install_path,
         quote(model),
         tp_size,
         quote(mode),
