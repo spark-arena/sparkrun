@@ -189,10 +189,8 @@ def arena_benchmark_run(
     """
     from sparkrun import __version__
     from sparkrun.api._benchmark_models import ResumeMode
-    from sparkrun.arena.auth import load_refresh_token, exchange_token
-    from sparkrun.arena.upload import generate_submission_id, upload_benchmark_results
+    from sparkrun.cli._arena_flow import preflight_arena, finalize_arena
     from ._benchmark import _run_benchmark
-    from ._common import _get_context
 
     _resume_mode = ResumeMode.IF_EXISTS if resume_flag else ResumeMode.AUTO
 
@@ -201,31 +199,9 @@ def arena_benchmark_run(
     click.echo("sparkrun v%s — Spark Arena benchmark" % __version__)
     click.echo()
 
-    refresh_token = None
-    if local_test:
-        click.echo("[local-test] Skipping authentication — upload will be simulated.")
-        click.echo()
-    else:
-        refresh_token = load_refresh_token()
-        if not refresh_token:
-            click.echo("Error: Not logged in. Run 'sparkrun arena login' first.", err=True)
-            sys.exit(1)
+    submission_id, profile_override = preflight_arena(local_test=local_test, ctx=ctx)
+    profile = profile_override  # None in local-test mode, arena profile otherwise
 
-        try:
-            exchange_token(refresh_token)
-        except RuntimeError as e:
-            click.echo("Error: Authentication failed: %s" % e, err=True)
-            click.echo("Run 'sparkrun arena login' to re-authenticate.", err=True)
-            sys.exit(1)
-
-        click.echo("Authentication verified.")
-        click.echo()
-
-    # Generate submission_id before calling _run_benchmark so it is stable
-    # across schedule retries and persisted in state.extras.
-    submission_id = generate_submission_id()
-
-    profile = None if local_test else _BENCHMARK_PROFILE
     framework = None
     output_file = None
     bench_options = []
@@ -269,134 +245,13 @@ def arena_benchmark_run(
         click.echo("Benchmark did not complete successfully. Skipping upload.", err=True)
         return
 
-    # gather recipe/metadata/runtime info (works with or without launch_result)
-    recipe = bench_result.launch_result.recipe if bench_result.launch_result else bench_result.recipe
-    overrides = bench_result.launch_result.overrides if bench_result.launch_result else (bench_result.overrides or {})
-    metadata = bench_result.generate_metadata()
-    effective_recipe = recipe.export(
-        overrides=overrides,
-        container_image=metadata["recipe"]["container"],
+    finalize_arena(
+        ctx=ctx,
+        bench_result=bench_result,
+        submission_id=submission_id,
+        local_test=local_test,
+        dry_run=dry_run,
     )
-    # benchmark_json = bench_result.results['json']
-    benchmark_csv = bench_result.results["csv"]
-
-    if dry_run or local_test:
-        from pprint import pformat
-
-        click.echo("-" * 40)
-        click.echo("Effective Recipe Export:")
-        click.echo("-" * 40)
-        click.echo(effective_recipe)
-        click.echo("-" * 40)
-        click.echo("Metadata:")
-        click.echo("-" * 40)
-        click.echo(pformat(metadata))
-        click.echo("-" * 40)
-
-    if dry_run:
-        click.echo("[dry-run] Would upload results to Spark Arena")
-        return
-
-    # --- Write files to cache directory ---
-    sctx = _get_context(ctx)
-    arena_cache = sctx.config.cache_dir
-    cache_dir = arena_cache / "benchmarks" / submission_id
-    cache_dir.mkdir(parents=True, exist_ok=True)
-
-    recipe_path = cache_dir / "recipe.yaml"
-    csv_path = cache_dir / "benchmark.csv"
-    meta_path = cache_dir / "metadata.json"
-
-    recipe_path.write_text(effective_recipe)
-    csv_path.write_text(benchmark_csv)
-    meta_path.write_text(json.dumps(metadata, indent=2))
-
-    upload_files = [
-        (recipe_path, "recipes"),
-        (csv_path, "logs"),
-        (meta_path, "metadata"),
-    ]
-
-    # Persist arena-specific extras in state for resume support
-    _persist_arena_extras(ctx, bench_result, submission_id, effective_recipe, metadata)
-
-    if local_test:
-        click.echo()
-        click.echo("[local-test] Benchmark files written to: %s" % cache_dir)
-        for fpath, folder in upload_files:
-            click.echo("  %s -> %s/" % (fpath.name, folder))
-        click.echo("[local-test] Skipping actual upload.")
-        return
-
-    # --- Upload results ---
-    click.echo()
-    click.echo("Uploading results to Spark Arena...")
-
-    try:
-        success, sid = upload_benchmark_results(
-            refresh_token=refresh_token,
-            upload_files=upload_files,
-            submission_id=submission_id,
-        )
-    except RuntimeError as e:
-        click.echo("Upload failed: %s" % e, err=True)
-        sys.exit(1)
-
-    if success:
-        click.echo("Results uploaded successfully (submission: %s)" % sid)
-    else:
-        click.echo("Some files failed to upload (submission: %s)" % sid, err=True)
-        sys.exit(1)
-
-
-def _persist_arena_extras(ctx, bench_result, submission_id: str, effective_recipe: str, metadata: dict) -> None:
-    """Persist arena-specific fields into BenchmarkRunState.extras if a state exists."""
-    from sparkrun.benchmarking.run_state import BenchmarkRunState
-    from ._common import _get_context
-
-    sctx = _get_context(ctx)
-    config = sctx.config
-    cache_dir = str(config.cache_dir) if config else None
-
-    # cluster_id and framework are needed to derive benchmark_id; they live on bench_result
-    cluster_id = bench_result.cluster_id
-    if not cluster_id:
-        return
-
-    # We don't have benchmark_id directly on bench_result, so we look up by cluster_id.
-    # The state was already saved by _run_benchmark; load it by scanning or by re-deriving.
-    # Re-derive: we need framework + base_args — obtain from bench_result.
-    fw = bench_result.framework
-    bench_args = getattr(bench_result, "benchmark_args", None)
-    if fw is None or bench_args is None:
-        return
-
-    # Re-derive benchmark_id from the same inputs used in _run_benchmark
-    # We need the schedule; approximate by loading any existing state for this cluster_id.
-    # The simplest approach: scan the benchmarks cache dir for a state whose cluster_id matches.
-    if not config:
-        return
-
-    benchmarks_dir = config.cache_dir / "benchmarks"
-    if not benchmarks_dir.exists():
-        return
-
-    for candidate_dir in benchmarks_dir.iterdir():
-        if not candidate_dir.is_dir():
-            continue
-        state = BenchmarkRunState.load(candidate_dir.name, cache_dir)
-        if state is None:
-            continue
-        if state.cluster_id != cluster_id:
-            continue
-        # Found the matching state; persist extras (do not overwrite existing submission_id)
-        if "submission_id" not in state.extras:
-            state.extras["submission_id"] = submission_id
-        state.extras["effective_recipe_text"] = effective_recipe
-        state.extras["metadata_json"] = metadata
-        state.save(cache_dir)
-        logger.debug("Persisted arena extras into benchmark state %s", state.benchmark_id)
-        break
 
 
 @arena_benchmark.command("resume")
@@ -406,8 +261,7 @@ def _persist_arena_extras(ctx, bench_result, submission_id: str, effective_recip
 @click.pass_context
 def arena_benchmark_resume(ctx, benchmark_id, local_test, dry_run):
     """Resume a paused arena benchmark by id, then upload."""
-    from sparkrun.arena.auth import load_refresh_token, exchange_token
-    from sparkrun.arena.upload import generate_submission_id, upload_benchmark_results
+    from sparkrun.arena.upload import generate_submission_id
     from sparkrun.benchmarking.run_state import BenchmarkRunState
     from ._benchmark import _resume_benchmark_run
     from ._common import _get_context
@@ -425,12 +279,14 @@ def arena_benchmark_resume(ctx, benchmark_id, local_test, dry_run):
     # Recover or generate submission_id (idempotent across retries)
     submission_id: str = state.extras.get("submission_id") or generate_submission_id()
 
-    # --- Authentication ---
-    refresh_token = None
+    # --- Authentication (preflight handles auth + echo, but we already have submission_id) ---
     if local_test:
         click.echo("[local-test] Skipping authentication — upload will be simulated.")
         click.echo()
     else:
+        # Reuse auth logic from preflight but don't re-generate submission_id
+        from sparkrun.arena.auth import load_refresh_token, exchange_token
+
         refresh_token = load_refresh_token()
         if not refresh_token:
             click.echo("Error: Not logged in. Run 'sparkrun arena login' first.", err=True)
@@ -488,6 +344,10 @@ def arena_benchmark_resume(ctx, benchmark_id, local_test, dry_run):
         return
 
     # --- Upload results ---
+    from sparkrun.arena.auth import load_refresh_token as _load_token
+    from sparkrun.arena.upload import upload_benchmark_results
+
+    refresh_token = _load_token()
     click.echo()
     click.echo("Uploading results to Spark Arena...")
 

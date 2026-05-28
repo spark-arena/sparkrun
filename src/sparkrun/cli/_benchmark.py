@@ -221,6 +221,21 @@ def _shared_run_options(f):
             default=False,
             help="Non-interactive resume: if existing state matches, resume from there; otherwise start fresh.",
         ),
+        click.option(
+            "--arena",
+            "arena_flag",
+            is_flag=True,
+            default=False,
+            help="Submit results to Spark Arena (requires `sparkrun arena login`).",
+        ),
+        click.option(
+            "--local-test",
+            "local_test",
+            is_flag=True,
+            default=False,
+            hidden=HIDE_ADVANCED_OPTIONS,
+            help="Arena local-test mode: skip auth and upload, simulate end-to-end.",
+        ),
         dry_run_option,
         click.option(
             "--scheduler",
@@ -249,11 +264,16 @@ def _invoke_benchmark(ctx, *, category, **kwargs):
 
     Resolves the ResumeMode from the ``resume_flag``/``fresh`` kwargs, then
     delegates to ``_run_benchmark`` with the pinned *category*.
+
+    When ``arena_flag`` is True, calls preflight_arena before the benchmark
+    and finalize_arena after a successful run.
     """
     from sparkrun.api._benchmark_models import ResumeMode
 
     resume_flag = kwargs.pop("resume_flag", False)
     fresh = kwargs.get("fresh", False)
+    arena_flag = kwargs.pop("arena_flag", False)
+    local_test = kwargs.pop("local_test", False)
 
     if resume_flag and fresh:
         raise click.UsageError("--resume and --fresh are mutually exclusive")
@@ -264,7 +284,20 @@ def _invoke_benchmark(ctx, *, category, **kwargs):
     else:
         _resume_mode = ResumeMode.AUTO
 
-    return _run_benchmark(
+    # Arena preflight: when --arena is set, do auth and submission_id generation
+    # before the benchmark runs so the same id flows through state.extras.
+    arena_submission_id: str | None = None
+    if arena_flag:
+        from sparkrun.cli._arena_flow import preflight_arena
+
+        arena_submission_id, arena_profile = preflight_arena(local_test=local_test, ctx=ctx)
+        # Only override profile when user did not supply one explicitly
+        if not kwargs.get("profile") and arena_profile:
+            kwargs["profile"] = arena_profile
+
+    dry_run = kwargs.get("dry_run", False)
+
+    bench_result = _run_benchmark(
         ctx,
         recipe_name=kwargs.pop("recipe_name"),
         hosts=kwargs.pop("hosts"),
@@ -299,7 +332,22 @@ def _invoke_benchmark(ctx, *, category, **kwargs):
         host_list=kwargs.pop("host_list", None),
         cluster_mgr=kwargs.pop("cluster_mgr", None),
         category=category,
+        submission_id_for_extras=arena_submission_id,
     )
+
+    # Arena finalize: persist extras and upload (unless dry_run/local_test).
+    if arena_flag and bench_result and getattr(bench_result, "success", False):
+        from sparkrun.cli._arena_flow import finalize_arena
+
+        finalize_arena(
+            ctx=ctx,
+            bench_result=bench_result,
+            submission_id=arena_submission_id,
+            local_test=local_test,
+            dry_run=dry_run,
+        )
+
+    return bench_result
 
 
 @benchmark.command("run")

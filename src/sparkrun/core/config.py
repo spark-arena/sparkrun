@@ -19,6 +19,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONFIG_DIR = Path.home() / ".config" / "sparkrun"
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "sparkrun"
 
+# Defaults for the vllm-tune backing engine (https://github.com/SeraphimSerapis/vllm-tune).
+# Overridable via `tuning.vllm_tune_repo` / `tuning.vllm_tune_ref` in config.yaml.
+DEFAULT_VLLM_TUNE_REPO = "https://github.com/SeraphimSerapis/vllm-tune.git"
+DEFAULT_VLLM_TUNE_REF = "main"
+
 # Defer to huggingface_hub's own resolution of the cache root, which
 # respects HF_HOME, HF_HUB_CACHE, and HUGGINGFACE_HUB_CACHE env vars.
 try:
@@ -229,6 +234,26 @@ class SparkrunConfig:
     def monitor_backend(self) -> str | None:
         """Monitoring backend preference: ``"bash"`` or ``"nv-monitor"``."""
         return self._data.get("monitor_backend")
+
+    @property
+    def vllm_tune_repo(self) -> str:
+        """Git URL for the vllm-tune backing engine used by ``sparkrun tune vllm``."""
+        tuning = self._data.get("tuning", {})
+        if isinstance(tuning, dict):
+            url = tuning.get("vllm_tune_repo")
+            if url:
+                return str(url)
+        return DEFAULT_VLLM_TUNE_REPO
+
+    @property
+    def vllm_tune_ref(self) -> str:
+        """Git ref (tag/branch/SHA) pinning the vllm-tune backing engine."""
+        tuning = self._data.get("tuning", {})
+        if isinstance(tuning, dict):
+            ref = tuning.get("vllm_tune_ref")
+            if ref:
+                return str(ref)
+        return DEFAULT_VLLM_TUNE_REF
 
     def get_recipe_search_paths(self) -> list[Path]:
         """Return ordered list of paths to search for recipes."""

@@ -23,14 +23,13 @@ from sparkrun.tuning.sglang import (
     _format_duration,
 )
 from sparkrun.tuning.vllm import (
-    build_vllm_tuning_command,
+    build_vllm_tune_export,
+    build_vllm_tune_invocation,
     get_vllm_tuning_dir,
     get_vllm_tuning_env,
     get_vllm_tuning_volumes,
     VllmTuner,
-    TUNE_VLLM_CONTAINER_NAME,
-    VLLM_CLONE_DIR,
-    VLLM_TUNING_CONTAINER_OUTPUT_PATH,
+    VLLM_TUNING_CACHE_SUBDIR,
     VLLM_TUNING_CONTAINER_PATH,
     DEFAULT_TP_SIZES as VLLM_DEFAULT_TP_SIZES,
 )
@@ -504,58 +503,172 @@ class TestGetVllmTuningEnv:
 
 
 # ---------------------------------------------------------------------------
-# build_vllm_tuning_command
+# vllm-tune invocation builders
 # ---------------------------------------------------------------------------
 
 
-class TestBuildVllmTuningCommand:
+class TestBuildVllmTuneInvocation:
+    def _invoke(self, **overrides):
+        kwargs = {
+            "install_path": "/home/user/.cache/sparkrun/vllm-tune/main/vllm-tune.sh",
+            "model": "Qwen/Qwen3-MoE",
+            "tp_size": 2,
+            "mode": "all",
+            "image": "vllm/vllm-openai:latest",
+            "sparkrun_dir": "/home/user/.cache/sparkrun/tuning/vllm",
+        }
+        kwargs.update(overrides)
+        return build_vllm_tune_invocation(**kwargs)
+
+    def test_calls_vllm_tune_via_bash(self):
+        cmd = self._invoke()
+        assert "bash " in cmd
+        assert "vllm-tune.sh" in cmd
+
     def test_contains_model(self):
-        cmd = build_vllm_tuning_command("Qwen/Qwen3-MoE", 4)
+        cmd = self._invoke(model="Qwen/Qwen3-MoE")
         assert "Qwen/Qwen3-MoE" in cmd
 
     def test_contains_tp_size(self):
-        cmd = build_vllm_tuning_command("test-model", 8)
-        assert "--tp-size 8" in cmd
+        cmd = self._invoke(tp_size=8)
+        assert "--tp 8" in cmd
 
-    def test_contains_tune_flag(self):
-        cmd = build_vllm_tuning_command("test-model", 1)
-        assert "--tune" in cmd
+    def test_contains_mode(self):
+        cmd = self._invoke(mode="fp8")
+        assert "--mode fp8" in cmd
 
-    def test_contains_config_dir(self):
-        cmd = build_vllm_tuning_command("test-model", 2)
-        assert "VLLM_TUNED_CONFIG_FOLDER=" in cmd
-        assert VLLM_TUNING_CONTAINER_OUTPUT_PATH in cmd
+    def test_runs_standalone_foreground(self):
+        cmd = self._invoke()
+        assert "--standalone" in cmd
+        assert "--foreground" in cmd
 
-    def test_creates_output_dir(self):
-        cmd = build_vllm_tuning_command("test-model", 2)
-        assert "mkdir -p %s" % VLLM_TUNING_CONTAINER_OUTPUT_PATH in cmd
+    def test_passes_image_through(self):
+        cmd = self._invoke(image="my-registry.example.com/vllm:custom")
+        assert "my-registry.example.com/vllm:custom" in cmd
 
-    def test_runs_from_clone_dir(self):
-        cmd = build_vllm_tuning_command("test-model", 1)
-        assert cmd.startswith("cd %s" % VLLM_CLONE_DIR)
-
-    def test_uses_benchmark_moe_script(self):
-        cmd = build_vllm_tuning_command("test-model", 1)
-        assert "benchmarks/kernels/benchmark_moe.py" in cmd
+    def test_exports_sparkrun_tuning_dir_env(self):
+        cmd = self._invoke(sparkrun_dir="/opt/cache/sparkrun/tuning/vllm")
+        assert "SPARKRUN_TUNING_DIR=" in cmd
+        assert "/opt/cache/sparkrun/tuning/vllm" in cmd
 
     def test_various_tp_sizes(self):
         for tp in VLLM_DEFAULT_TP_SIZES:
-            cmd = build_vllm_tuning_command("model", tp)
-            assert "--tp-size %d" % tp in cmd
+            cmd = self._invoke(tp_size=tp)
+            assert "--tp %d" % tp in cmd
 
     def test_model_with_single_quote_is_shell_safe(self):
-        """Model names with single quotes must not break shell quoting."""
         import shlex
 
-        cmd = build_vllm_tuning_command("org/model'name", 1)
+        cmd = self._invoke(model="org/model'name")
         assert shlex.quote("org/model'name") in cmd
 
-    def test_model_with_spaces_is_shell_safe(self):
-        """Model names with spaces must be shell-quoted."""
+    def test_image_with_special_chars_is_shell_safe(self):
         import shlex
 
-        cmd = build_vllm_tuning_command("org/model name", 1)
-        assert shlex.quote("org/model name") in cmd
+        cmd = self._invoke(image="registry/img:tag$with$dollars")
+        assert shlex.quote("registry/img:tag$with$dollars") in cmd
+
+
+class TestBuildVllmTuneExport:
+    def test_uses_export_sparkrun_flag(self):
+        cmd = build_vllm_tune_export(
+            install_path="/p/vllm-tune.sh",
+            model="m",
+            tp_size=2,
+            mode="all",
+            sparkrun_dir="/cache/tuning/vllm",
+        )
+        assert "--export-sparkrun" in cmd
+        assert "--sparkrun-dir " in cmd
+
+    def test_carries_tp_and_mode(self):
+        cmd = build_vllm_tune_export(
+            install_path="/p/vllm-tune.sh",
+            model="m",
+            tp_size=4,
+            mode="moe",
+            sparkrun_dir="/cache/tuning/vllm",
+        )
+        assert "--tp 4" in cmd
+        assert "--mode moe" in cmd
+
+
+# ---------------------------------------------------------------------------
+# vllm-tune install script
+# ---------------------------------------------------------------------------
+
+
+class TestVllmTuneInstallScript:
+    def test_install_script_is_readable(self):
+        from sparkrun.scripts import read_script
+
+        body = read_script("vllm_tune_install.sh")
+        assert body.startswith("#!/bin/bash")
+
+    def test_install_script_uses_required_env_vars(self):
+        from sparkrun.scripts import read_script
+
+        body = read_script("vllm_tune_install.sh")
+        for var in ("VLLM_TUNE_REPO", "VLLM_TUNE_REF", "VLLM_TUNE_DEST"):
+            assert var in body
+
+    def test_install_script_does_git_fetch_or_clone(self):
+        from sparkrun.scripts import read_script
+
+        body = read_script("vllm_tune_install.sh")
+        assert "git clone" in body
+        assert "git fetch" in body
+
+
+# ---------------------------------------------------------------------------
+# Config pin resolution
+# ---------------------------------------------------------------------------
+
+
+class TestVllmTunePinResolution:
+    def test_default_pin_falls_back_to_built_ins(self):
+        from sparkrun.core.config import DEFAULT_VLLM_TUNE_REF, DEFAULT_VLLM_TUNE_REPO
+        from sparkrun.tuning.vllm import _resolve_vllm_tune_pin
+
+        repo, ref = _resolve_vllm_tune_pin(None, None)
+        assert repo == DEFAULT_VLLM_TUNE_REPO
+        assert ref == DEFAULT_VLLM_TUNE_REF
+
+    def test_cli_override_wins(self):
+        from sparkrun.tuning.vllm import _resolve_vllm_tune_pin
+
+        repo, ref = _resolve_vllm_tune_pin(None, "v1.2.3")
+        assert ref == "v1.2.3"
+
+    def test_config_pin_used_when_no_cli_override(self, tmp_path):
+        from sparkrun.core.config import SparkrunConfig
+        from sparkrun.tuning.vllm import _resolve_vllm_tune_pin
+
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(
+            yaml.dump(
+                {
+                    "tuning": {
+                        "vllm_tune_repo": "https://example.com/fork.git",
+                        "vllm_tune_ref": "custom-branch",
+                    }
+                }
+            )
+        )
+        config = SparkrunConfig(config_path=cfg_path)
+        repo, ref = _resolve_vllm_tune_pin(config, None)
+        assert repo == "https://example.com/fork.git"
+        assert ref == "custom-branch"
+
+    def test_rejects_unsafe_git_url(self, tmp_path):
+        from sparkrun.core.config import SparkrunConfig
+        from sparkrun.tuning.vllm import _resolve_vllm_tune_pin
+
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(yaml.dump({"tuning": {"vllm_tune_repo": "-malicious-flag"}}))
+        config = SparkrunConfig(config_path=cfg_path)
+        with pytest.raises(ValueError):
+            _resolve_vllm_tune_pin(config, None)
 
 
 # ---------------------------------------------------------------------------
@@ -570,9 +683,12 @@ class TestTuneVllmCLI:
         runner = CliRunner()
         result = runner.invoke(main, ["tune", "vllm", "--help"])
         assert result.exit_code == 0
-        assert "Tune vLLM fused MoE Triton kernels" in result.output
+        assert "vllm-tune" in result.output
         assert "--tp" in result.output
-        assert "--skip-clone" in result.output
+        assert "--mode" in result.output
+        assert "--vllm-tune-ref" in result.output
+        # --skip-clone was retired with the vllm-tune integration.
+        assert "--skip-clone" not in result.output
 
     def test_tune_group_lists_vllm(self):
         from sparkrun.cli import main
@@ -685,18 +801,6 @@ class TestVllmTunerDryRun:
         )
         assert tuner.output_dir == custom_dir
 
-    def test_tuner_skip_clone(self):
-        tuner = VllmTuner(
-            host="10.0.0.1",
-            image="test:latest",
-            model="test-model",
-            skip_clone=True,
-            dry_run=True,
-        )
-        assert tuner.skip_clone is True
-        rc = tuner.run_tuning(tp_sizes=(1,))
-        assert rc == 0
-
     def test_default_tp_sizes_constant(self):
         assert VLLM_DEFAULT_TP_SIZES == (1, 2, 4, 8)
 
@@ -710,8 +814,32 @@ class TestVllmTunerDryRun:
         rc = tuner.run_tuning(tp_sizes=(1, 2, 4), parallel=2)
         assert rc == 0
 
-    def test_container_name_constant(self):
-        assert TUNE_VLLM_CONTAINER_NAME == "sparkrun_tune_vllm"
+    def test_default_mode_is_all(self):
+        tuner = VllmTuner(host="10.0.0.1", image="test:latest", model="m", dry_run=True)
+        assert tuner.mode == "all"
+
+    def test_invalid_mode_rejected(self):
+        with pytest.raises(ValueError):
+            VllmTuner(
+                host="10.0.0.1",
+                image="test:latest",
+                model="m",
+                mode="bogus",
+                dry_run=True,
+            )
+
+    def test_vllm_tune_ref_override(self):
+        tuner = VllmTuner(
+            host="10.0.0.1",
+            image="test:latest",
+            model="m",
+            vllm_tune_ref="my-pr-branch",
+            dry_run=True,
+        )
+        assert tuner.vllm_tune_ref == "my-pr-branch"
+
+    def test_cache_subdir_constant(self):
+        assert VLLM_TUNING_CACHE_SUBDIR == "tuning/vllm"
 
 
 # ---------------------------------------------------------------------------
@@ -867,34 +995,11 @@ class TestPreCheckTp:
         )
         assert tuner._pre_check_tp(1, "3.6.0") is False
 
-    def test_vllm_pre_check_returns_false_in_dry_run(self):
-        """VllmTuner._pre_check_tp returns False in dry-run mode."""
-        tuner = VllmTuner(
-            host="10.0.0.1",
-            image="test:latest",
-            model="test-model",
-            dry_run=True,
-        )
-        assert tuner._pre_check_tp(1, "3.6.0") is False
-
     def test_sglang_pre_check_returns_false_on_error(self):
         """SglangTuner._pre_check_tp returns False on any exception."""
         from unittest.mock import patch
 
         tuner = SglangTuner(
-            host="10.0.0.1",
-            image="test:latest",
-            model="test-model",
-            dry_run=False,
-        )
-        with patch("sparkrun.orchestration.primitives.run_command_on_host", side_effect=RuntimeError("connection refused")):
-            assert tuner._pre_check_tp(1, "3.6.0") is False
-
-    def test_vllm_pre_check_returns_false_on_error(self):
-        """VllmTuner._pre_check_tp returns False on any exception."""
-        from unittest.mock import patch
-
-        tuner = VllmTuner(
             host="10.0.0.1",
             image="test:latest",
             model="test-model",
@@ -909,21 +1014,6 @@ class TestPreCheckTp:
         from sparkrun.orchestration.ssh import RemoteResult
 
         tuner = SglangTuner(
-            host="10.0.0.1",
-            image="test:latest",
-            model="test-model",
-            dry_run=False,
-        )
-        mock_result = RemoteResult(host="10.0.0.1", returncode=0, stdout="", stderr="")
-        with patch("sparkrun.orchestration.primitives.run_command_on_host", return_value=mock_result):
-            assert tuner._pre_check_tp(1, "3.6.0") is True
-
-    def test_vllm_pre_check_returns_true_on_success(self):
-        """VllmTuner._pre_check_tp returns True when command succeeds."""
-        from unittest.mock import patch
-        from sparkrun.orchestration.ssh import RemoteResult
-
-        tuner = VllmTuner(
             host="10.0.0.1",
             image="test:latest",
             model="test-model",

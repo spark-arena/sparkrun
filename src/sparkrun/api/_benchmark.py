@@ -124,6 +124,20 @@ def _build_run_benchmark_kwargs(
     bench_options_tuple = tuple("%s=%s" % (k, v) for k, v in options.bench_args.items())
     executor_args_tuple = tuple(options.extra_docker_opts) if options.extra_docker_opts else ()
 
+    # Arena defaults: when options.arena is True, supply the pinned profile and
+    # performance category when the caller has not specified them explicitly.
+    # Auth and upload are CLI-only concerns; the API caller is responsible for
+    # those when using options.arena=True.
+    effective_profile = options.profile
+    effective_category = options.category
+    if options.arena:
+        if not effective_profile:
+            from sparkrun.cli._arena_flow import ARENA_BENCHMARK_PROFILE
+
+            effective_profile = ARENA_BENCHMARK_PROFILE
+        if not effective_category:
+            effective_category = "performance"
+
     return {
         "recipe_name": recipe_name,
         "hosts": list(options.hosts) if options.hosts else [],
@@ -138,7 +152,7 @@ def _build_run_benchmark_kwargs(
         "image": image,
         "solo": options.solo,
         "port": port,
-        "profile": options.profile,
+        "profile": effective_profile,
         "framework": options.framework,
         "output_file": options.output_file,
         "bench_options": bench_options_tuple,
@@ -158,7 +172,7 @@ def _build_run_benchmark_kwargs(
         "on_prompt_required": options.on_prompt_required,
         "submission_id_for_extras": submission_id_for_extras,
         "scheduler_name": options.scheduler,
-        "category": options.category,
+        "category": effective_category,
     }
 
 
