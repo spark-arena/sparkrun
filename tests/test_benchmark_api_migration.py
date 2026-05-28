@@ -91,8 +91,11 @@ def test_stop_inference_dry_run_skips_api_stop():
 
 @pytest.fixture
 def fake_recipe_env(tmp_path: Path, monkeypatch):
-    """Patch ``_load_recipe`` in the benchmark CLI module so the CLI can run
+    """Patch ``_load_recipe`` so the CLI and API orchestration can run
     without a configured recipe-search path.  Returns the in-memory Recipe.
+
+    After step 7, ``_execute_benchmark`` imports ``_load_recipe`` from
+    ``sparkrun.cli._common`` at call time, so we patch both locations.
     """
     from sparkrun.core.recipe import Recipe
 
@@ -108,10 +111,13 @@ def fake_recipe_env(tmp_path: Path, monkeypatch):
         }
     )
 
-    monkeypatch.setattr(
-        "sparkrun.cli._benchmark._load_recipe",
-        lambda config, recipe_name, resolve=False: (recipe, Path("/dev/null"), None),
-    )
+    def _fake_loader(config, recipe_name, resolve=False):
+        return recipe, Path("/dev/null"), None
+
+    # Patch in CLI module (used by _run_benchmark VRAM estimate path)
+    monkeypatch.setattr("sparkrun.cli._benchmark._load_recipe", _fake_loader)
+    # Patch in _common (used by _execute_benchmark via local import)
+    monkeypatch.setattr("sparkrun.cli._common._load_recipe", _fake_loader)
     monkeypatch.chdir(tmp_path)
     return recipe
 

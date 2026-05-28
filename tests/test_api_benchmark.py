@@ -1,4 +1,4 @@
-"""Tests for the sparkrun.api.benchmark public surface (step 3 thin wrapper)."""
+"""Tests for the sparkrun.api.benchmark public surface (step 7 — orchestration lifted)."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from sparkrun.api import (
 from sparkrun.api._errors import BenchmarkFailed
 
 
-def _fake_bench_result(**overrides):
+def _fake_internal_result(**overrides):
     """Build a stand-in for the internal sparkrun.benchmarking.base.BenchmarkResult."""
     obj = MagicMock()
     obj.success = True
@@ -93,29 +93,29 @@ def test_result_dataclass_is_frozen():
         r.success = False  # type: ignore[misc]
 
 
-def test_benchmark_translates_systemexit_to_benchmarkfailed():
-    """A sys.exit(N) inside _run_benchmark surfaces as BenchmarkFailed."""
-    with patch("sparkrun.cli._benchmark._run_benchmark", side_effect=SystemExit(2)):
+def test_benchmark_translates_benchmarkfailed_raised_directly():
+    """A BenchmarkFailed raised inside _execute_benchmark surfaces as BenchmarkFailed."""
+    with patch("sparkrun.api._benchmark._execute_benchmark", side_effect=BenchmarkFailed("boom", exit_code=2)):
         with pytest.raises(BenchmarkFailed) as excinfo:
             benchmark(BenchmarkOptions(recipe="my-recipe"))
     assert excinfo.value.exit_code == 2
 
 
 def test_benchmark_translates_unexpected_exception_to_sparkrunerror():
-    with patch("sparkrun.cli._benchmark._run_benchmark", side_effect=RuntimeError("boom")):
+    with patch("sparkrun.api._benchmark._execute_benchmark", side_effect=RuntimeError("boom")):
         with pytest.raises(SparkrunError):
             benchmark(BenchmarkOptions(recipe="my-recipe"))
 
 
 def test_benchmark_propagates_keyboardinterrupt():
-    with patch("sparkrun.cli._benchmark._run_benchmark", side_effect=KeyboardInterrupt):
+    with patch("sparkrun.api._benchmark._execute_benchmark", side_effect=KeyboardInterrupt):
         with pytest.raises(KeyboardInterrupt):
             benchmark(BenchmarkOptions(recipe="my-recipe"))
 
 
 def test_benchmark_translates_internal_result_to_api_result():
-    fake = _fake_bench_result()
-    with patch("sparkrun.cli._benchmark._run_benchmark", return_value=fake):
+    fake = _fake_internal_result()
+    with patch("sparkrun.api._benchmark._execute_benchmark", return_value=fake):
         result = benchmark(BenchmarkOptions(recipe="my-recipe"))
     assert isinstance(result, BenchmarkResult)
     assert result.success is True
@@ -132,80 +132,82 @@ def test_benchmark_translates_internal_result_to_api_result():
 
 def test_benchmark_resolves_category_from_framework_primary():
     """primary_category is extracted from the plugin object on the internal result."""
-    fake = _fake_bench_result()
-    with patch("sparkrun.cli._benchmark._run_benchmark", return_value=fake):
+    fake = _fake_internal_result()
+    with patch("sparkrun.api._benchmark._execute_benchmark", return_value=fake):
         result = benchmark(BenchmarkOptions(recipe="my-recipe"))
     assert result.category == "performance"
 
 
 def test_benchmark_honors_explicit_category():
-    fake = _fake_bench_result()
-    with patch("sparkrun.cli._benchmark._run_benchmark", return_value=fake):
+    fake = _fake_internal_result()
+    with patch("sparkrun.api._benchmark._execute_benchmark", return_value=fake):
         result = benchmark(BenchmarkOptions(recipe="my-recipe", category="evals"))
     assert result.category == "evals"
 
 
 def test_benchmark_passes_bench_args_through():
-    """bench_args dict is rendered into key=value tuples for _run_benchmark."""
-    captured: dict = {}
+    """bench_args dict is passed as BenchmarkOptions.bench_args to _execute_benchmark."""
+    captured: list = []
 
-    def _capture(ctx, **kwargs):
-        captured.update(kwargs)
-        return _fake_bench_result()
+    def _capture(options, *, sctx, emitter):
+        captured.append(options)
+        return _fake_internal_result()
 
-    with patch("sparkrun.cli._benchmark._run_benchmark", side_effect=_capture):
+    with patch("sparkrun.api._benchmark._execute_benchmark", side_effect=_capture):
         benchmark(BenchmarkOptions(recipe="my-recipe", bench_args={"pp": "[2048]", "depth": 4}))
 
-    bench_options = captured.get("bench_options")
-    assert bench_options is not None
-    assert any("pp=" in s for s in bench_options)
-    assert any("depth=" in s for s in bench_options)
+    assert captured
+    opts = captured[0]
+    assert opts.bench_args.get("pp") == "[2048]"
+    assert opts.bench_args.get("depth") == 4
 
 
-def test_benchmark_fresh_resume_mode_sets_fresh_kwarg():
-    captured: dict = {}
+def test_benchmark_fresh_resume_mode_sets_fresh():
+    """FRESH resume mode is passed correctly via BenchmarkOptions."""
+    captured: list = []
 
-    def _capture(ctx, **kwargs):
-        captured.update(kwargs)
-        return _fake_bench_result()
+    def _capture(options, *, sctx, emitter):
+        captured.append(options)
+        return _fake_internal_result()
 
-    with patch("sparkrun.cli._benchmark._run_benchmark", side_effect=_capture):
+    with patch("sparkrun.api._benchmark._execute_benchmark", side_effect=_capture):
         benchmark(BenchmarkOptions(recipe="my-recipe", resume=ResumeMode.FRESH))
-    assert captured.get("fresh") is True
+    assert captured[0].resume == ResumeMode.FRESH
 
 
-def test_benchmark_default_resume_mode_does_not_force_fresh():
-    captured: dict = {}
+def test_benchmark_default_resume_mode_is_if_exists():
+    """Default BenchmarkOptions.resume is IF_EXISTS."""
+    captured: list = []
 
-    def _capture(ctx, **kwargs):
-        captured.update(kwargs)
-        return _fake_bench_result()
+    def _capture(options, *, sctx, emitter):
+        captured.append(options)
+        return _fake_internal_result()
 
-    with patch("sparkrun.cli._benchmark._run_benchmark", side_effect=_capture):
+    with patch("sparkrun.api._benchmark._execute_benchmark", side_effect=_capture):
         benchmark(BenchmarkOptions(recipe="my-recipe"))
-    assert captured.get("fresh") is False
+    assert captured[0].resume == ResumeMode.IF_EXISTS
 
 
-def test_benchmark_if_exists_resume_mode_does_not_force_fresh():
-    captured: dict = {}
+def test_benchmark_if_exists_resume_mode_passed():
+    captured: list = []
 
-    def _capture(ctx, **kwargs):
-        captured.update(kwargs)
-        return _fake_bench_result()
+    def _capture(options, *, sctx, emitter):
+        captured.append(options)
+        return _fake_internal_result()
 
-    with patch("sparkrun.cli._benchmark._run_benchmark", side_effect=_capture):
+    with patch("sparkrun.api._benchmark._execute_benchmark", side_effect=_capture):
         benchmark(BenchmarkOptions(recipe="my-recipe", resume=ResumeMode.IF_EXISTS))
-    assert captured.get("fresh") is False
+    assert captured[0].resume == ResumeMode.IF_EXISTS
 
 
 def test_benchmark_threads_submission_id_through_state_extras():
-    captured: dict = {}
+    captured: list = []
 
-    def _capture(ctx, **kwargs):
-        captured.update(kwargs)
-        return _fake_bench_result()
+    def _capture(options, *, sctx, emitter):
+        captured.append(options)
+        return _fake_internal_result()
 
-    with patch("sparkrun.cli._benchmark._run_benchmark", side_effect=_capture):
+    with patch("sparkrun.api._benchmark._execute_benchmark", side_effect=_capture):
         benchmark(
             BenchmarkOptions(
                 recipe="my-recipe",
@@ -213,54 +215,78 @@ def test_benchmark_threads_submission_id_through_state_extras():
                 state_extras={"submission_id": "sub-abc-123"},
             )
         )
-    assert captured.get("submission_id_for_extras") == "sub-abc-123"
+    opts = captured[0]
+    assert opts.state_extras.get("submission_id") == "sub-abc-123"
 
 
-def test_benchmark_null_state_extras_gives_none_submission_id():
-    captured: dict = {}
+def test_benchmark_null_state_extras_gives_no_submission_id():
+    captured: list = []
 
-    def _capture(ctx, **kwargs):
-        captured.update(kwargs)
-        return _fake_bench_result()
+    def _capture(options, *, sctx, emitter):
+        captured.append(options)
+        return _fake_internal_result()
 
-    with patch("sparkrun.cli._benchmark._run_benchmark", side_effect=_capture):
+    with patch("sparkrun.api._benchmark._execute_benchmark", side_effect=_capture):
         benchmark(BenchmarkOptions(recipe="my-recipe"))
-    assert captured.get("submission_id_for_extras") is None
+    opts = captured[0]
+    assert opts.state_extras.get("submission_id") is None
 
 
 def test_benchmark_framework_string_in_result_when_internal_has_none():
     """When bench_result.framework is None, fall back to options.framework."""
-    fake = _fake_bench_result()
+    fake = _fake_internal_result()
     fake.framework = None
-    with patch("sparkrun.cli._benchmark._run_benchmark", return_value=fake):
+    with patch("sparkrun.api._benchmark._execute_benchmark", return_value=fake):
         result = benchmark(BenchmarkOptions(recipe="my-recipe", framework="my-fw"))
     assert result.framework == "my-fw"
 
 
-def test_benchmark_passed_kwargs_include_scheduler_name():
-    captured: dict = {}
+def test_benchmark_passed_scheduler_in_options():
+    captured: list = []
 
-    def _capture(ctx, **kwargs):
-        captured.update(kwargs)
-        return _fake_bench_result()
+    def _capture(options, *, sctx, emitter):
+        captured.append(options)
+        return _fake_internal_result()
 
-    with patch("sparkrun.cli._benchmark._run_benchmark", side_effect=_capture):
+    with patch("sparkrun.api._benchmark._execute_benchmark", side_effect=_capture):
         benchmark(BenchmarkOptions(recipe="my-recipe", scheduler="greedy"))
-    assert captured.get("scheduler_name") == "greedy"
+    assert captured[0].scheduler == "greedy"
 
 
-def test_benchmark_exit_code_none_on_non_int_systemexit():
-    """SystemExit with non-int code still produces BenchmarkFailed with code=1."""
-    with patch("sparkrun.cli._benchmark._run_benchmark", side_effect=SystemExit("oops")):
+def test_benchmark_benchmarkfailed_exit_code_preserved():
+    """BenchmarkFailed with specific exit code is re-raised unchanged."""
+    with patch("sparkrun.api._benchmark._execute_benchmark", side_effect=BenchmarkFailed("fail", exit_code=42)):
         with pytest.raises(BenchmarkFailed) as excinfo:
             benchmark(BenchmarkOptions(recipe="my-recipe"))
-    assert excinfo.value.exit_code == 1
+    assert excinfo.value.exit_code == 42
 
 
 def test_benchmark_sparkrunerror_propagates_unchanged():
-    """A SparkrunError raised by _run_benchmark is not re-wrapped."""
+    """A SparkrunError raised by _execute_benchmark is not re-wrapped."""
     original = SparkrunError("direct typed error")
-    with patch("sparkrun.cli._benchmark._run_benchmark", side_effect=original):
+    with patch("sparkrun.api._benchmark._execute_benchmark", side_effect=original):
         with pytest.raises(SparkrunError) as excinfo:
             benchmark(BenchmarkOptions(recipe="my-recipe"))
     assert excinfo.value is original
+
+
+# ---------------------------------------------------------------------------
+# Legacy compat: _build_run_benchmark_kwargs still works (imported by tests)
+# ---------------------------------------------------------------------------
+
+
+def test_build_run_benchmark_kwargs_category_threaded():
+    """_build_run_benchmark_kwargs still works for tests that import it."""
+    from sparkrun.api._benchmark import _build_run_benchmark_kwargs
+
+    opts = BenchmarkOptions(recipe="my-recipe", category="performance")
+    kwargs = _build_run_benchmark_kwargs(opts, fresh=False, submission_id_for_extras=None)
+    assert kwargs["category"] == "performance"
+
+
+def test_build_run_benchmark_kwargs_no_category():
+    from sparkrun.api._benchmark import _build_run_benchmark_kwargs
+
+    opts = BenchmarkOptions(recipe="my-recipe")
+    kwargs = _build_run_benchmark_kwargs(opts, fresh=False, submission_id_for_extras=None)
+    assert kwargs["category"] is None

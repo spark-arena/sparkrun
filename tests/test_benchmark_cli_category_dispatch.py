@@ -200,9 +200,14 @@ def test_category_command_accepts_resume_flag():
 
 
 def test_framework_category_mismatch_raises():
-    """`_run_benchmark(category='tools', framework='llama-benchy')` raises FrameworkCategoryMismatch."""
+    """`_run_benchmark(category='tools', framework='llama-benchy')` exits non-zero.
+
+    After step 7, the CLI wrapper catches FrameworkCategoryMismatch (a SparkrunError)
+    and translates it to sys.exit(1) — so callers of _run_benchmark see SystemExit,
+    not the typed exception.  The typed exception is still raised by _execute_benchmark
+    and can be caught by the API layer.
+    """
     init_sparkrun()
-    from sparkrun.api._errors import FrameworkCategoryMismatch
     from sparkrun.cli._benchmark import _run_benchmark
 
     ctx = MagicMock()
@@ -210,7 +215,7 @@ def test_framework_category_mismatch_raises():
     ctx.obj["sparkrun_ctx"].variables = None
     ctx.obj["sparkrun_ctx"].config = None
 
-    with pytest.raises(FrameworkCategoryMismatch):
+    with pytest.raises(SystemExit) as exc_info:
         _run_benchmark(
             ctx,
             recipe_name="r",
@@ -244,6 +249,24 @@ def test_framework_category_mismatch_raises():
             scheduler_name=None,
             category="tools",
         )
+    assert exc_info.value.code != 0
+
+
+def test_framework_category_mismatch_raises_typed_from_api():
+    """`_execute_benchmark` raises FrameworkCategoryMismatch directly (not swallowed)."""
+    init_sparkrun()
+    from sparkrun.api._errors import FrameworkCategoryMismatch
+    from sparkrun.api._benchmark import _execute_benchmark, _NullProgressEmitter
+    from sparkrun.api._benchmark_models import BenchmarkOptions
+    from sparkrun.core.context import SparkrunContext
+
+    sctx = MagicMock(spec=SparkrunContext)
+    sctx.variables = None
+    sctx.config = None
+
+    opts = BenchmarkOptions(recipe="r", framework="llama-benchy", category="tools")
+    with pytest.raises(FrameworkCategoryMismatch):
+        _execute_benchmark(opts, sctx=sctx, emitter=_NullProgressEmitter())
 
 
 def test_framework_category_match_does_not_raise():

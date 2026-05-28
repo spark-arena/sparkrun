@@ -184,58 +184,61 @@ def test_api_arena_defaults_profile_and_category():
     """api.benchmark(BenchmarkOptions(arena=True)) defaults profile and category."""
     from sparkrun.api import benchmark, BenchmarkOptions
 
-    captured = {}
+    captured = []
 
-    def _capture(ctx, **kwargs):
-        captured.update(kwargs)
+    def _capture(options, *, sctx, emitter):
+        captured.append(options)
         return _fake_bench_result()
 
-    with patch("sparkrun.cli._benchmark._run_benchmark", side_effect=_capture):
+    with patch("sparkrun.api._benchmark._execute_benchmark", side_effect=_capture):
         try:
             benchmark(BenchmarkOptions(recipe="my-recipe", arena=True))
         except SystemExit:
             pass
 
-    assert captured.get("profile") == "@official/spark-arena-v2"
-    assert captured.get("category") == "performance"
+    assert captured
+    assert captured[0].profile == "@official/spark-arena-v2"
+    assert captured[0].category == "performance"
 
 
 def test_api_arena_respects_explicit_profile():
     """When profile is explicit with arena=True, explicit profile is preserved."""
     from sparkrun.api import benchmark, BenchmarkOptions
 
-    captured = {}
+    captured = []
 
-    def _capture(ctx, **kwargs):
-        captured.update(kwargs)
+    def _capture(options, *, sctx, emitter):
+        captured.append(options)
         return _fake_bench_result()
 
-    with patch("sparkrun.cli._benchmark._run_benchmark", side_effect=_capture):
+    with patch("sparkrun.api._benchmark._execute_benchmark", side_effect=_capture):
         try:
             benchmark(BenchmarkOptions(recipe="my-recipe", arena=True, profile="@local/test"))
         except SystemExit:
             pass
 
-    assert captured.get("profile") == "@local/test"
+    assert captured
+    assert captured[0].profile == "@local/test"
 
 
 def test_api_arena_respects_explicit_category():
     """When category is explicit with arena=True, explicit category is preserved."""
     from sparkrun.api import benchmark, BenchmarkOptions
 
-    captured = {}
+    captured = []
 
-    def _capture(ctx, **kwargs):
-        captured.update(kwargs)
+    def _capture(options, *, sctx, emitter):
+        captured.append(options)
         return _fake_bench_result()
 
-    with patch("sparkrun.cli._benchmark._run_benchmark", side_effect=_capture):
+    with patch("sparkrun.api._benchmark._execute_benchmark", side_effect=_capture):
         try:
             benchmark(BenchmarkOptions(recipe="my-recipe", arena=True, category="evals"))
         except SystemExit:
             pass
 
-    assert captured.get("category") == "evals"
+    assert captured
+    assert captured[0].category == "evals"
 
 
 def test_arena_flow_module_constants():

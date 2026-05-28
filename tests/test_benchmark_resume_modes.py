@@ -12,94 +12,111 @@ from sparkrun.api._benchmark_models import ResumeMode
 # ---------------------------------------------------------------------------
 
 
+def _fake_internal_result():
+    """Return a fake internal BenchmarkResult for _execute_benchmark patches."""
+    result = MagicMock()
+    result.success = True
+    result.benchmark_id = "x"
+    fw = MagicMock()
+    fw.framework_name = "llama-benchy"
+    fw.primary_category = "performance"
+    result.framework = fw
+    result.profile = None
+    result.results = {}
+    result.outputs = {}
+    result.cluster_id = "c"
+    result.host_list = []
+    result.container_image = "img"
+    result.container_image_sha = None
+    result.container_image_sha_pinned = False
+    result.longterm_image_ref = None
+    result.longterm_image_pinned = False
+    result.benchmark_args = {}
+    result.state_dir = None
+    result.resumed = False
+    result.submission_id = None
+    result.recipe = MagicMock()
+    result.overrides = {}
+    return result
+
+
+def _stub_execute_benchmark(received_options):
+    """Return a side_effect for _execute_benchmark that records the options."""
+
+    def _capture(options, *, sctx, emitter):
+        received_options.append(options)
+        return _fake_internal_result()
+
+    return _capture
+
+
 def _stub_run_benchmark(received_kwargs):
-    """Return a side_effect that records kwargs and returns a fake bench_result."""
+    """Return a side_effect for _run_benchmark that records kwargs (CLI-side tests)."""
 
     def _capture(ctx, **kwargs):
         received_kwargs.update(kwargs)
-        result = MagicMock()
-        result.success = True
-        result.benchmark_id = "x"
-        result.framework = "llama-benchy"
-        result.profile = None
-        result.results = {}
-        result.outputs = {}
-        result.cluster_id = "c"
-        result.host_list = []
-        result.container_image = "img"
-        result.container_image_sha = None
-        result.container_image_sha_pinned = False
-        result.longterm_image_ref = None
-        result.longterm_image_pinned = False
-        result.benchmark_args = {}
-        result.state_dir = None
-        result.resumed = False
-        result.submission_id = None
-        result.recipe = MagicMock()
-        result.overrides = {}
-        return result
+        return _fake_internal_result()
 
     return _capture
 
 
 # ---------------------------------------------------------------------------
-# API wrapper threading tests
+# API wrapper threading tests — now patch _execute_benchmark
 # ---------------------------------------------------------------------------
 
 
 def test_api_default_resume_mode_is_if_exists():
-    received = {}
-    with patch("sparkrun.cli._benchmark._run_benchmark", side_effect=_stub_run_benchmark(received)):
+    received = []
+    with patch("sparkrun.api._benchmark._execute_benchmark", side_effect=_stub_execute_benchmark(received)):
         from sparkrun.api import benchmark
         from sparkrun.api._benchmark_models import BenchmarkOptions
 
         benchmark(BenchmarkOptions(recipe="my-recipe"))
-    assert received["resume_mode"] == ResumeMode.IF_EXISTS
+    assert received[0].resume == ResumeMode.IF_EXISTS
 
 
 def test_api_fresh_mode_threaded_through():
-    received = {}
-    with patch("sparkrun.cli._benchmark._run_benchmark", side_effect=_stub_run_benchmark(received)):
+    received = []
+    with patch("sparkrun.api._benchmark._execute_benchmark", side_effect=_stub_execute_benchmark(received)):
         from sparkrun.api import benchmark
         from sparkrun.api._benchmark_models import BenchmarkOptions
 
         benchmark(BenchmarkOptions(recipe="my-recipe", resume=ResumeMode.FRESH))
-    assert received["resume_mode"] == ResumeMode.FRESH
-    assert received["fresh"] is True  # legacy mirror
+    assert received[0].resume == ResumeMode.FRESH
 
 
 def test_api_required_mode_threaded_through():
-    received = {}
-    with patch("sparkrun.cli._benchmark._run_benchmark", side_effect=_stub_run_benchmark(received)):
+    received = []
+    with patch("sparkrun.api._benchmark._execute_benchmark", side_effect=_stub_execute_benchmark(received)):
         from sparkrun.api import benchmark
         from sparkrun.api._benchmark_models import BenchmarkOptions
 
         benchmark(BenchmarkOptions(recipe="my-recipe", resume=ResumeMode.REQUIRED))
-    assert received["resume_mode"] == ResumeMode.REQUIRED
+    assert received[0].resume == ResumeMode.REQUIRED
 
 
 def test_api_auto_mode_threaded_through():
-    received = {}
-    with patch("sparkrun.cli._benchmark._run_benchmark", side_effect=_stub_run_benchmark(received)):
+    received = []
+    with patch("sparkrun.api._benchmark._execute_benchmark", side_effect=_stub_execute_benchmark(received)):
         from sparkrun.api import benchmark
         from sparkrun.api._benchmark_models import BenchmarkOptions
 
         benchmark(BenchmarkOptions(recipe="my-recipe", resume=ResumeMode.AUTO))
-    assert received["resume_mode"] == ResumeMode.AUTO
+    assert received[0].resume == ResumeMode.AUTO
 
 
 def test_api_on_prompt_required_threaded_through():
-    received = {}
+    received = []
 
     def cb(state):
         return True
 
-    with patch("sparkrun.cli._benchmark._run_benchmark", side_effect=_stub_run_benchmark(received)):
+    with patch("sparkrun.api._benchmark._execute_benchmark", side_effect=_stub_execute_benchmark(received)):
         from sparkrun.api import benchmark
         from sparkrun.api._benchmark_models import BenchmarkOptions
 
         benchmark(BenchmarkOptions(recipe="my-recipe", on_prompt_required=cb))
-    assert received["on_prompt_required"] is cb
+    assert received[0].on_prompt_required is cb
 
 
 # ---------------------------------------------------------------------------

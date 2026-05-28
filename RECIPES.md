@@ -96,7 +96,10 @@ precedence over auto-detected values.
 
 ```yaml
 benchmark:
-  framework: llama-benchy     # default framework
+  category: performance       # optional; derived from the framework's primary
+                              # category when omitted (perf for llama-benchy,
+                              # tools for tool-eval-bench, ...).
+  framework: llama-benchy     # default framework for the category
   timeout: 3600
   args: # or put args at top level (auto-swept)
     pp: [ 2048 ]
@@ -105,6 +108,53 @@ benchmark:
 ```
 
 Used by `sparkrun benchmark <recipe>`. CLI `-o` overrides apply on top.
+
+**Category subcommands.** `sparkrun benchmark` accepts a category positional
+that pins the kind of benchmark (and the default framework for it):
+
+```
+sparkrun benchmark performance <recipe>     # alias: sparkrun benchmark perf
+sparkrun benchmark tools       <recipe>
+sparkrun benchmark <recipe>                  # back-compat: == performance
+sparkrun benchmark run <recipe>              # legacy entry; no category
+```
+
+Pinning a category and an incompatible `--framework` raises
+`FrameworkCategoryMismatch`. New categories appear automatically once a
+plugin registers them (`BenchmarkingPlugin.categories`).
+
+**Resume / fresh.** Resumable runs (frameworks that implement
+`build_task_list`) write progress state to
+`~/.cache/sparkrun/benchmarks/<benchmark_id>/`. CLI flags:
+
+```
+--resume   # non-interactive: resume if compatible state exists, else fresh
+--fresh    # delete prior state and start over (mutually exclusive with --resume)
+```
+
+When neither flag is set and stdin is a TTY, the CLI prompts. Non-TTY
+defaults to resume. The library API (`sparkrun.api.benchmark`) exposes the
+full `ResumeMode` enum (`AUTO`, `IF_EXISTS`, `FRESH`, `REQUIRED`); pass
+`on_prompt_required=...` to inject a callback in lieu of the prompt.
+
+**Container image pinning.** On the first successful launch of a resumable
+run, sparkrun captures two distinct references and persists them in
+`state.extras`:
+
+- `container_image_sha` — content-addressable image ID resolved via
+  `docker image inspect` on a target host. On resume the orchestration
+  overrides `overrides["image"]` with this SHA so a re-pushed tag or rebuilt
+  local image cannot silently change the bits between sessions.
+- `container_image_longterm_ref` — output of the builder's
+  `resolve_long_term_image()`. Used only for archival provenance in the
+  result YAML; it is not used at launch time. Persisted so resumed sessions
+  emit identical archive references.
+
+**Spark Arena.** `--arena` on any category subcommand runs the opinionated
+Spark Arena flow (auth check, hardcoded profile `@official/spark-arena-v2`,
+post-run upload). `sparkrun arena benchmark` continues to work as a sibling
+entry point that calls into the same shared helpers (`preflight_arena` and
+`finalize_arena`).
 
 ### Version
 

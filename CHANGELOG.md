@@ -6,6 +6,72 @@ follows semantic versioning.
 
 For the long-form 0.3.0 narrative, see [`docs/RELEASE_NOTES.md`](docs/RELEASE_NOTES.md).
 
+## [Unreleased]
+
+### Highlights — Benchmarking redesign
+
+- Per-category CLI: `sparkrun benchmark performance <recipe>` (alias `perf`),
+  `sparkrun benchmark tools <recipe>`. Bare `sparkrun benchmark <recipe>`
+  remains and falls through to `performance`. `sparkrun benchmark run` is
+  preserved as a legacy entry that imposes no category. New categories
+  appear automatically when a plugin registers them.
+- Non-interactive `--resume` flag (mutually exclusive with `--fresh`) on
+  both `benchmark run` / category subcommands and `arena benchmark run`.
+  Existing TTY prompt is unchanged for default invocations.
+- Spark Arena via flag: `sparkrun benchmark perf <recipe> --arena` runs
+  the same opinionated flow as `sparkrun arena benchmark`; both entry
+  points share new `preflight_arena` / `finalize_arena` helpers.
+- Container image pinning for resumable runs: content-addressable SHA
+  (`container_image_sha`) captured on first launch and used to override
+  `overrides["image"]` on resume, so re-pushed tags or rebuilt local
+  images cannot silently change the bits between sessions. The builder's
+  long-term archival reference (`container_image_longterm_ref`) is
+  persisted separately so resumed sessions emit identical archive
+  provenance.
+- Public library API: `sparkrun.api.benchmark(BenchmarkOptions)` returns
+  a typed `BenchmarkResult`; orchestration lifted into
+  `sparkrun.api._benchmark._execute_benchmark`. CLI becomes a thin shell
+  that wires a `_CliEmitter` and translates typed exceptions back into
+  `click.echo` + `sys.exit`. All `sys.exit()` paths inside the
+  orchestration are typed exceptions; `KeyboardInterrupt` re-raises after
+  state preservation.
+
+### Added
+
+- `BenchmarkingPlugin.categories` / `primary_category` class attrs; default
+  `("performance",)`. `tool-eval-bench` declares `("tools",)`.
+- `BenchmarkSpec.category` + `resolved_category()` helper.
+- `find_benchmark_profile(..., category=...)` filter; same kwarg on
+  `RegistryManager.find_benchmark_profile_in_registries` and
+  `list_benchmark_profiles`. Per-process cache keyed on (path, mtime, size).
+- `sparkrun.core.bootstrap`: `list_benchmark_categories()`,
+  `get_benchmarking_frameworks_for_category(category)`,
+  `get_default_framework_for_category(category, config)`, plus
+  `AmbiguousCategoryError` / `CategoryNotFoundError`.
+- `sparkrun.api`: `benchmark()`, `BenchmarkOptions`, `BenchmarkResult`,
+  `ResumeMode` (`AUTO`/`IF_EXISTS`/`FRESH`/`REQUIRED`), `ProgressEvent`,
+  plus `BenchmarkFailed`, `NoResumableState`, `CategoryNotFound`,
+  `AmbiguousCategoryError`, `FrameworkCategoryMismatch` typed errors.
+- `sparkrun.orchestration.primitives.resolve_image_sha()` — captures the
+  content-addressable image ID from a target host.
+- `sparkrun.cli._arena_flow`: `preflight_arena`, `finalize_arena`,
+  `persist_arena_extras`, plus `ARENA_BENCHMARK_PROFILE` constant.
+- `BenchmarkResult.longterm_image_ref` / `longterm_image_pinned` fields;
+  `generate_metadata()` prefers the persisted ref when set.
+- `--resume`, `--arena`, `--local-test` flags on the category subcommands
+  via the new `_shared_run_options` decorator.
+
+### Changed
+
+- `BenchmarkRunState.extras` now carries `container_image_sha`,
+  `container_image_longterm_ref`, and `container_image_longterm_pinned`
+  on resumable runs (additive — schema unchanged).
+- `_run_benchmark` (CLI) shrunk from ~1000 to ~175 lines; orchestration
+  body moved to `sparkrun.api._benchmark._execute_benchmark`. Behavior
+  preserved: same banners, same exit codes, same error formatting.
+- `click.confirm` resume prompt replaced with a `ResumeMode` decision
+  tree + injectable `on_prompt_required` callback.
+
 ## [0.3.0] — 2026-05-20
 
 ### Highlights
