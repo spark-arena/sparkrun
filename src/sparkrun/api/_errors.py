@@ -85,6 +85,38 @@ class TrustRejected(SparkrunError):
     """
 
 
+# --------------------------------------------------------------------------
+# Benchmark errors
+# --------------------------------------------------------------------------
+
+
+class BenchmarkFailed(SparkrunError):
+    """A benchmark run failed (non-zero rc, task failures, or aborted launch).
+
+    Carries the original exit code in :attr:`exit_code` when known.
+    """
+
+    def __init__(self, message: str, exit_code: int | None = None) -> None:
+        super().__init__(message)
+        self.exit_code = exit_code
+
+
+class NoResumableState(SparkrunError):
+    """``ResumeMode.REQUIRED`` but no benchmark state exists for the derived id."""
+
+
+class CategoryNotFound(SparkrunError):
+    """Requested benchmark category has no registered frameworks."""
+
+
+class AmbiguousCategoryError(SparkrunError):
+    """Category has multiple frameworks; pin one via config or ``--framework``."""
+
+
+class FrameworkCategoryMismatch(SparkrunError):
+    """Explicit framework does not belong to the explicit category."""
+
+
 __all__ = [
     "SparkrunError",
     "InsufficientCapacity",
@@ -94,4 +126,9 @@ __all__ = [
     "JobNotFound",
     "AmbiguousWorkload",
     "TrustRejected",
+    "BenchmarkFailed",
+    "NoResumableState",
+    "CategoryNotFound",
+    "AmbiguousCategoryError",
+    "FrameworkCategoryMismatch",
 ]

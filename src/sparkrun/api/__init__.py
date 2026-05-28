@@ -4,14 +4,19 @@ This package is the contract that non-CLI Python callers (tests, third-
 party automation, the CLI itself) depend on.  Surfaces:
 
 - **Data models** — :class:`RunOptions`, :class:`RunResult`,
-  :class:`StopResult`, :class:`LogLine`, :class:`JobInfo`.
+  :class:`StopResult`, :class:`LogLine`, :class:`JobInfo`,
+  :class:`BenchmarkOptions`, :class:`BenchmarkResult`,
+  :class:`ProgressEvent`, :class:`ResumeMode`.
 - **Errors** — :class:`SparkrunError` and typed subclasses
   (:class:`InsufficientCapacity`, :class:`LayoutRequired`,
   :class:`RecipeNotFound`, :class:`HostsUnreachable`,
-  :class:`JobNotFound`, :class:`TrustRejected`).
+  :class:`JobNotFound`, :class:`TrustRejected`,
+  :class:`BenchmarkFailed`, :class:`NoResumableState`,
+  :class:`CategoryNotFound`, :class:`AmbiguousCategoryError`,
+  :class:`FrameworkCategoryMismatch`).
 - **Functions** — ``run``, ``stop``, ``logs``, ``status``,
-  ``schedule``, ``list_jobs`` (added incrementally in subsequent
-  tasks; this module re-exports them as they land).
+  ``schedule``, ``list_jobs``, ``benchmark`` (added incrementally in
+  subsequent tasks; this module re-exports them as they land).
 
 The API never writes to ``stdout`` / ``stderr`` and never calls
 ``sys.exit``.  Errors are raised as :class:`SparkrunError`
@@ -24,13 +29,25 @@ field additions are non-breaking, field removals are breaking.
 
 from __future__ import annotations
 
+from sparkrun.api._benchmark import benchmark
+from sparkrun.api._benchmark_models import (
+    BenchmarkOptions,
+    BenchmarkResult,
+    ProgressEvent,
+    ResumeMode,
+)
 from sparkrun.api._context import default_sctx
 from sparkrun.api._errors import (
+    AmbiguousCategoryError,
     AmbiguousWorkload,
+    BenchmarkFailed,
+    CategoryNotFound,
+    FrameworkCategoryMismatch,
     HostsUnreachable,
     InsufficientCapacity,
     JobNotFound,
     LayoutRequired,
+    NoResumableState,
     RecipeNotFound,
     SparkrunError,
     TrustRejected,
@@ -60,6 +77,11 @@ __all__ = [
     "StopResult",
     "LogLine",
     "JobInfo",
+    # Benchmark data models
+    "BenchmarkOptions",
+    "BenchmarkResult",
+    "ProgressEvent",
+    "ResumeMode",
     # Errors
     "SparkrunError",
     "InsufficientCapacity",
@@ -69,6 +91,12 @@ __all__ = [
     "JobNotFound",
     "AmbiguousWorkload",
     "TrustRejected",
+    # Benchmark errors
+    "BenchmarkFailed",
+    "NoResumableState",
+    "CategoryNotFound",
+    "AmbiguousCategoryError",
+    "FrameworkCategoryMismatch",
     # Functions
     "run",
     "stop",
@@ -76,4 +104,5 @@ __all__ = [
     "schedule",
     "status",
     "list_jobs",
+    "benchmark",
 ]
