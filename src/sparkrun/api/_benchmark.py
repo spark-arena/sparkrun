@@ -64,10 +64,6 @@ def benchmark(
         logger.debug(
             "BenchmarkOptions.progress_callback is set but step 3 does not wire it. Callback will be honoured after step 7 lift-and-shift."
         )
-    if options.on_prompt_required is not None:
-        logger.debug(
-            "BenchmarkOptions.on_prompt_required is set but step 3 does not wire it. Prompt interception will be activated in step 4."
-        )
 
     fresh, submission_id_for_extras = _translate_lifecycle(options)
     kwargs = _build_run_benchmark_kwargs(options, fresh, submission_id_for_extras)
@@ -89,17 +85,15 @@ def benchmark(
 
 
 def _translate_lifecycle(options: BenchmarkOptions) -> tuple[bool, str | None]:
-    """Translate API lifecycle settings to current ``_run_benchmark`` kwargs.
+    """Translate API-shaped lifecycle settings.
 
-    Returns ``(fresh, submission_id_for_extras)``.
-
-    NOTE: Step 4 will replace this with full ``ResumeMode`` plumbing.  Until
-    then ``AUTO`` / ``IF_EXISTS`` / ``REQUIRED`` all map to ``fresh=False``
-    and the existing CLI prompt still drives interactive runs.
+    Returns ``(fresh_legacy, submission_id)``. ``fresh_legacy`` is kept for
+    back-compat with callers reading the old kwarg; ``resume_mode`` is now
+    threaded through directly.
     """
-    fresh = options.resume == ResumeMode.FRESH
+    fresh_legacy = options.resume == ResumeMode.FRESH
     submission_id = options.state_extras.get("submission_id") if options.state_extras else None
-    return fresh, submission_id
+    return fresh_legacy, submission_id
 
 
 def _build_run_benchmark_kwargs(
@@ -160,6 +154,8 @@ def _build_run_benchmark_kwargs(
         "extra_args": (),
         "export_results_files": options.export_files,
         "fresh": fresh,
+        "resume_mode": options.resume,
+        "on_prompt_required": options.on_prompt_required,
         "submission_id_for_extras": submission_id_for_extras,
         "scheduler_name": options.scheduler,
     }

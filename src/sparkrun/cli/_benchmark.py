@@ -10,7 +10,7 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import Any, Callable, TYPE_CHECKING
 
 import click
 
@@ -38,7 +38,31 @@ logger = logging.getLogger(__name__)
 DEFAULT_BENCHMARK_TIMEOUT: int = 14400  # 4 hours
 
 if TYPE_CHECKING:
-    pass
+    from sparkrun.api._benchmark_models import ResumeMode
+
+
+def _resolve_resume_prompt(
+    state,
+    total_tasks: int,
+    on_prompt_required: "Callable[[Any], bool] | None",
+) -> bool:
+    """Decide whether to resume incomplete state when mode is AUTO.
+
+    Resolution order:
+    1. Explicit ``on_prompt_required`` callback — caller drives the answer.
+    2. TTY: ``click.confirm`` with default=True (preserves existing CLI UX).
+    3. Non-TTY: default to True (resume) — sensible non-interactive default.
+    """
+    if on_prompt_required is not None:
+        return bool(on_prompt_required(state))
+    import sys as _sys
+
+    if _sys.stdin.isatty():
+        return click.confirm(
+            "Found existing incomplete benchmark state (%d/%d tasks done). Resume?" % (len(state.completed_indices), total_tasks),
+            default=True,
+        )
+    return True
 
 
 def _benchmark_title(recipe_name: str, profile: str | None) -> str:
@@ -157,6 +181,13 @@ def benchmark(ctx):
     help="Benchmark timeout in seconds (default: %d, or from profile)" % DEFAULT_BENCHMARK_TIMEOUT,
 )
 @click.option("--fresh", is_flag=True, default=False, help="Force fresh start, deleting prior state if any")
+@click.option(
+    "--resume",
+    "resume_flag",
+    is_flag=True,
+    default=False,
+    help="Non-interactive resume: if existing state matches, resume from there; otherwise start fresh.",
+)
 @dry_run_option
 @click.option(
     "--scheduler",
@@ -201,6 +232,7 @@ def benchmark_run(
     rootful,
     bench_timeout,
     fresh,
+    resume_flag,
     dry_run,
     scheduler_name,
     executor_args,
@@ -209,6 +241,17 @@ def benchmark_run(
     cluster_mgr=None,
 ):
     """Run a benchmark against an inference recipe."""
+    from sparkrun.api._benchmark_models import ResumeMode
+
+    if resume_flag and fresh:
+        raise click.UsageError("--resume and --fresh are mutually exclusive")
+    if resume_flag:
+        _resume_mode = ResumeMode.IF_EXISTS
+    elif fresh:
+        _resume_mode = ResumeMode.FRESH
+    else:
+        _resume_mode = ResumeMode.AUTO
+
     return _run_benchmark(
         ctx,
         recipe_name,
@@ -239,6 +282,7 @@ def benchmark_run(
         executor_args,
         extra_args,
         fresh=fresh,
+        resume_mode=_resume_mode,
         scheduler_name=scheduler_name,
         host_list=host_list,
         cluster_mgr=cluster_mgr,
@@ -497,6 +541,8 @@ def _run_benchmark(
     extra_args,
     export_results_files=True,
     fresh: bool = False,
+    resume_mode: "ResumeMode | None" = None,
+    on_prompt_required: "Callable[[Any], bool] | None" = None,
     submission_id_for_extras: str | None = None,
     scheduler_name: str | None = None,
     host_list=None,
@@ -517,6 +563,14 @@ def _run_benchmark(
         wait_for_healthy,
         wait_for_port,
     )
+
+    from sparkrun.api._benchmark_models import ResumeMode
+
+    # Translate legacy ``fresh`` bool to the new ResumeMode axis when caller
+    # didn't provide one. ``fresh=True`` → FRESH; otherwise AUTO (preserves
+    # the click.confirm-driven behavior for callers that haven't migrated).
+    if resume_mode is None:
+        resume_mode = ResumeMode.FRESH if fresh else ResumeMode.AUTO
 
     bench_result = BenchmarkResult(recipe_name=recipe_name)
     sctx = _get_context(ctx)
@@ -768,22 +822,34 @@ def _run_benchmark(
         click.echo("State directory:       %s" % state_dir_str)
         click.echo("")
 
-        # Check for existing state
+        # Check for existing state — Resume decision tree (plan section I)
         existing_state = BenchmarkRunState.load(benchmark_id, cache_dir)
-        if existing_state is not None and not existing_state.is_complete(len(tasks)):
-            if fresh:
-                # Force fresh: delete prior state directory
+        if existing_state is None:
+            if resume_mode == ResumeMode.REQUIRED:
+                from sparkrun.api._errors import NoResumableState
+
+                raise NoResumableState("ResumeMode.REQUIRED but no benchmark state exists for id %s" % benchmark_id)
+        elif existing_state.is_complete(len(tasks)):
+            # Idempotent: resume the already-complete state (scheduler no-ops).
+            # Do not delete or rerun unless explicit FRESH was requested.
+            if resume_mode == ResumeMode.FRESH:
+                if state_dir and state_dir.exists():
+                    shutil.rmtree(state_dir)
+                    logger.debug("Deleted complete benchmark state at %s (--fresh)", state_dir)
+                existing_state = None
+        else:
+            # Incomplete state on disk — apply mode.
+            if resume_mode == ResumeMode.FRESH:
                 if state_dir and state_dir.exists():
                     shutil.rmtree(state_dir)
                     logger.debug("Deleted prior benchmark state at %s (--fresh)", state_dir)
                 existing_state = None
-            else:
-                resume_answer = click.confirm(
-                    "Found existing incomplete benchmark state (%d/%d tasks done). Resume?"
-                    % (len(existing_state.completed_indices), len(tasks)),
-                    default=True,
-                )
-                if not resume_answer:
+            elif resume_mode in (ResumeMode.IF_EXISTS, ResumeMode.REQUIRED):
+                # Explicit resume — no prompt
+                pass
+            else:  # AUTO
+                prompt_ok = _resolve_resume_prompt(existing_state, len(tasks), on_prompt_required)
+                if not prompt_ok:
                     if state_dir and state_dir.exists():
                         shutil.rmtree(state_dir)
                         logger.debug("Deleted prior benchmark state at %s (user chose fresh start)", state_dir)

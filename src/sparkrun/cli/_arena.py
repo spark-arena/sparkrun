@@ -141,6 +141,13 @@ def arena_benchmark(ctx):
 @click.option("--rootful", is_flag=True, help="Run with --privileged as root inside container", hidden=True)
 @click.option("--timeout", "bench_timeout", type=int, default=None, help="Benchmark timeout in seconds (default: 14400)")
 @click.option("--local-test", is_flag=True, hidden=True, help="Smoke test: skip profile and simulate upload without sending")
+@click.option(
+    "--resume",
+    "resume_flag",
+    is_flag=True,
+    default=False,
+    help="Non-interactive resume: if existing state matches, resume from there; otherwise start fresh.",
+)
 @dry_run_option
 @click.pass_context
 def arena_benchmark_run(
@@ -166,6 +173,7 @@ def arena_benchmark_run(
     rootful,
     bench_timeout,
     local_test,
+    resume_flag,
     dry_run,
 ):
     """Benchmark a recipe and submit results to Spark Arena.
@@ -180,10 +188,13 @@ def arena_benchmark_run(
       sparkrun arena benchmark qwen3-1.7b-sglang --tp 2
     """
     from sparkrun import __version__
+    from sparkrun.api._benchmark_models import ResumeMode
     from sparkrun.arena.auth import load_refresh_token, exchange_token
     from sparkrun.arena.upload import generate_submission_id, upload_benchmark_results
     from ._benchmark import _run_benchmark
     from ._common import _get_context
+
+    _resume_mode = ResumeMode.IF_EXISTS if resume_flag else ResumeMode.AUTO
 
     # --- Pre-flight checks ---
     click.echo(ASCII_ART)
@@ -249,6 +260,7 @@ def arena_benchmark_run(
         executor_args=None,
         extra_args=None,
         export_results_files=False,
+        resume_mode=_resume_mode,
         submission_id_for_extras=submission_id,
     )
 
