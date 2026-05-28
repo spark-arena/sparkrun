@@ -101,23 +101,52 @@ def _emit_results_outputs(results: dict[str, Any], base_path: Path) -> dict[str,
 
 
 class _BenchmarkGroup(click.Group):
-    """Group that falls back to the 'run' subcommand when no recognized
-    subcommand name is present in the argument list (preserves legacy
-    `sparkrun benchmark <recipe>` UX, including `benchmark --solo --dry-run
-    <recipe>` forms where options precede the positional)."""
+    """Click group for ``sparkrun benchmark`` with:
+
+    - Backwards-compat fallback so ``sparkrun benchmark <recipe>`` keeps
+      working (routes to ``performance`` if registered, else ``run``).
+    - Name aliases: ``perf`` → ``performance``.
+    """
+
+    _ALIASES: dict[str, str] = {"perf": "performance"}
+
+    def get_command(self, ctx, cmd_name):
+        cmd_name = self._ALIASES.get(cmd_name, cmd_name)
+        # Lazy: re-register category commands if they aren't present yet.
+        if cmd_name not in self.commands and cmd_name in self._categories_dynamic():
+            _register_category_commands(self)
+        return super().get_command(ctx, cmd_name)
+
+    def resolve_command(self, ctx, args):
+        if args and args[0] in self._ALIASES:
+            args = list(args)
+            args[0] = self._ALIASES[args[0]]
+        return super().resolve_command(ctx, args)
+
+    def _categories_dynamic(self) -> set[str]:
+        try:
+            from sparkrun.core.bootstrap import list_benchmark_categories
+
+            return set(list_benchmark_categories())
+        except Exception:
+            return set()
 
     def parse_args(self, ctx, args):
-        # If none of the known subcommand names appears as a standalone token in
-        # the argument list, prepend "run" so the group routes there.  We scan
-        # all args but skip anything that looks like an option value (i.e. the
-        # token immediately following a --flag=... would not appear here as a
-        # separate element anyway), so a simple scan for tokens matching command
-        # names is sufficient.
+        # Ensure category subcommands are registered before we use ``self.commands``
+        # to decide what counts as a "known" subcommand vs. a fallback recipe name.
+        # Lazy registration here keeps SAF bootstrapping out of module-import time
+        # (which would pollute the autouse ``isolate_stateful`` test fixture).
+        _register_category_commands(self)
+        # If none of the known subcommand names (or known aliases) appears as a
+        # standalone token in the argument list, prepend the fallback target so
+        # legacy ``sparkrun benchmark <recipe>`` keeps working.
+        # Updated target: ``performance`` when registered, else ``run``.
         if args:
-            command_names = set(self.commands)
-            has_subcommand = any(a in command_names for a in args if not a.startswith("-"))
+            all_known = set(self.commands) | set(self._ALIASES)
+            has_subcommand = any(a in all_known for a in args if not a.startswith("-"))
             if not has_subcommand:
-                args = ["run"] + list(args)
+                fallback = "performance" if "performance" in self.commands else "run"
+                args = [fallback] + list(args)
         return super().parse_args(ctx, args)
 
 
@@ -148,100 +177,83 @@ def benchmark(ctx):
     pass
 
 
-@benchmark.command("run")
-@click.argument("recipe_name", type=RECIPE_NAME)
-@host_options
-@recipe_override_options
-@click.option("--solo", is_flag=True, help="Force single-node mode")
-@click.option("--port", type=int, default=None, help="Override serve port")
-@click.option("--profile", default=None, type=PROFILE_NAME, help="Benchmark profile name or file path")
-@click.option("--framework", default=None, help="benchmarking framework (default from config.default_benchmark_framework)")
-@click.option("--output", "output_file", default=None, type=click.Path(), help="Output file for results YAML")
-@click.option("-b", "--benchmark-option", "bench_options", multiple=True, help="Override benchmark arg: -b key=value (repeatable)")
-@click.option(
-    "--api-key-env",
-    default=None,
-    help="Name of the environment variable to read the API key from (e.g. OPENAI_API_KEY).",
-)
-@click.option(
-    "--exit-on-first-fail/--no-exit-on-first-fail",
-    "exit_on_first_fail",
-    default=True,
-    help="Abort benchmark on first failure and skip saving results (default: enabled)",
-)
-@click.option("--no-stop", is_flag=True, help="Don't stop inference after benchmarking")
-@click.option("--skip-run", is_flag=True, help="Skip launching inference (benchmark existing instance)")
-@click.option("--sync-tuning", is_flag=True, help="Sync tuning configs from registries before benchmarking")
-@click.option("--rootful", is_flag=True, help="Run with --privileged as root inside container (legacy behavior)")
-@click.option(
-    "--timeout",
-    "bench_timeout",
-    type=int,
-    default=None,
-    help="Benchmark timeout in seconds (default: %d, or from profile)" % DEFAULT_BENCHMARK_TIMEOUT,
-)
-@click.option("--fresh", is_flag=True, default=False, help="Force fresh start, deleting prior state if any")
-@click.option(
-    "--resume",
-    "resume_flag",
-    is_flag=True,
-    default=False,
-    help="Non-interactive resume: if existing state matches, resume from there; otherwise start fresh.",
-)
-@dry_run_option
-@click.option(
-    "--scheduler",
-    "scheduler_name",
-    default=None,
-    help="Registered scheduler name (e.g. 'greedy', 'occupancy-sparse', 'occupancy-dense'). Defaults to the recipe's scheduler field, then 'greedy'.",
-    hidden=HIDE_ADVANCED_OPTIONS,
-)
-@click.option(
-    "--executor-args",
-    multiple=True,
-    hidden=HIDE_ADVANCED_OPTIONS,
-    help="Arguments passed directly to the container executor (e.g. docker run)",
-)
-@click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
-@click.pass_context
-@with_host_context
-def benchmark_run(
-    ctx,
-    recipe_name,
-    hosts,
-    hosts_file,
-    cluster_name,
-    tensor_parallel,
-    pipeline_parallel,
-    data_parallel,
-    gpu_mem,
-    max_model_len,
-    options,
-    image,
-    solo,
-    port,
-    profile,
-    framework,
-    output_file,
-    bench_options,
-    api_key_env,
-    exit_on_first_fail,
-    no_stop,
-    skip_run,
-    sync_tuning,
-    rootful,
-    bench_timeout,
-    fresh,
-    resume_flag,
-    dry_run,
-    scheduler_name,
-    executor_args,
-    extra_args,
-    host_list=None,
-    cluster_mgr=None,
-):
-    """Run a benchmark against an inference recipe."""
+def _shared_run_options(f):
+    """All Click options/arguments shared by ``benchmark run`` and the per-category
+    subcommands.  Apply as a single decorator so the option stack stays in one place.
+    """
+    decorators = [
+        click.argument("recipe_name", type=RECIPE_NAME),
+        host_options,
+        recipe_override_options,
+        click.option("--solo", is_flag=True, help="Force single-node mode"),
+        click.option("--port", type=int, default=None, help="Override serve port"),
+        click.option("--profile", default=None, type=PROFILE_NAME, help="Benchmark profile name or file path"),
+        click.option("--framework", default=None, help="benchmarking framework (default from config.default_benchmark_framework)"),
+        click.option("--output", "output_file", default=None, type=click.Path(), help="Output file for results YAML"),
+        click.option("-b", "--benchmark-option", "bench_options", multiple=True, help="Override benchmark arg: -b key=value (repeatable)"),
+        click.option(
+            "--api-key-env",
+            default=None,
+            help="Name of the environment variable to read the API key from (e.g. OPENAI_API_KEY).",
+        ),
+        click.option(
+            "--exit-on-first-fail/--no-exit-on-first-fail",
+            "exit_on_first_fail",
+            default=True,
+            help="Abort benchmark on first failure and skip saving results (default: enabled)",
+        ),
+        click.option("--no-stop", is_flag=True, help="Don't stop inference after benchmarking"),
+        click.option("--skip-run", is_flag=True, help="Skip launching inference (benchmark existing instance)"),
+        click.option("--sync-tuning", is_flag=True, help="Sync tuning configs from registries before benchmarking"),
+        click.option("--rootful", is_flag=True, help="Run with --privileged as root inside container (legacy behavior)"),
+        click.option(
+            "--timeout",
+            "bench_timeout",
+            type=int,
+            default=None,
+            help="Benchmark timeout in seconds (default: %d, or from profile)" % DEFAULT_BENCHMARK_TIMEOUT,
+        ),
+        click.option("--fresh", is_flag=True, default=False, help="Force fresh start, deleting prior state if any"),
+        click.option(
+            "--resume",
+            "resume_flag",
+            is_flag=True,
+            default=False,
+            help="Non-interactive resume: if existing state matches, resume from there; otherwise start fresh.",
+        ),
+        dry_run_option,
+        click.option(
+            "--scheduler",
+            "scheduler_name",
+            default=None,
+            help="Registered scheduler name (e.g. 'greedy', 'occupancy-sparse', 'occupancy-dense'). Defaults to the recipe's scheduler field, then 'greedy'.",
+            hidden=HIDE_ADVANCED_OPTIONS,
+        ),
+        click.option(
+            "--executor-args",
+            multiple=True,
+            hidden=HIDE_ADVANCED_OPTIONS,
+            help="Arguments passed directly to the container executor (e.g. docker run)",
+        ),
+        click.argument("extra_args", nargs=-1, type=click.UNPROCESSED),
+    ]
+    # Apply in reverse so the first item in the list ends up outermost (Click
+    # applies decorators bottom-up; reversing preserves declaration order).
+    for dec in reversed(decorators):
+        f = dec(f)
+    return f
+
+
+def _invoke_benchmark(ctx, *, category, **kwargs):
+    """Shared body for ``benchmark run`` / per-category subcommands.
+
+    Resolves the ResumeMode from the ``resume_flag``/``fresh`` kwargs, then
+    delegates to ``_run_benchmark`` with the pinned *category*.
+    """
     from sparkrun.api._benchmark_models import ResumeMode
+
+    resume_flag = kwargs.pop("resume_flag", False)
+    fresh = kwargs.get("fresh", False)
 
     if resume_flag and fresh:
         raise click.UsageError("--resume and --fresh are mutually exclusive")
@@ -254,39 +266,92 @@ def benchmark_run(
 
     return _run_benchmark(
         ctx,
-        recipe_name,
-        hosts,
-        hosts_file,
-        cluster_name,
-        tensor_parallel,
-        pipeline_parallel,
-        data_parallel,
-        gpu_mem,
-        max_model_len,
-        options,
-        image,
-        solo,
-        port,
-        profile,
-        framework,
-        output_file,
-        bench_options,
-        api_key_env,
-        exit_on_first_fail,
-        no_stop,
-        skip_run,
-        sync_tuning,
-        rootful,
-        bench_timeout,
-        dry_run,
-        executor_args,
-        extra_args,
+        recipe_name=kwargs.pop("recipe_name"),
+        hosts=kwargs.pop("hosts"),
+        hosts_file=kwargs.pop("hosts_file"),
+        cluster_name=kwargs.pop("cluster_name"),
+        tensor_parallel=kwargs.pop("tensor_parallel"),
+        pipeline_parallel=kwargs.pop("pipeline_parallel"),
+        data_parallel=kwargs.pop("data_parallel"),
+        gpu_mem=kwargs.pop("gpu_mem"),
+        max_model_len=kwargs.pop("max_model_len"),
+        options=kwargs.pop("options"),
+        image=kwargs.pop("image"),
+        solo=kwargs.pop("solo"),
+        port=kwargs.pop("port"),
+        profile=kwargs.pop("profile"),
+        framework=kwargs.pop("framework"),
+        output_file=kwargs.pop("output_file"),
+        bench_options=kwargs.pop("bench_options"),
+        api_key_env=kwargs.pop("api_key_env"),
+        exit_on_first_fail=kwargs.pop("exit_on_first_fail"),
+        no_stop=kwargs.pop("no_stop"),
+        skip_run=kwargs.pop("skip_run"),
+        sync_tuning=kwargs.pop("sync_tuning"),
+        rootful=kwargs.pop("rootful"),
+        bench_timeout=kwargs.pop("bench_timeout"),
+        dry_run=kwargs.pop("dry_run"),
+        executor_args=kwargs.pop("executor_args"),
+        extra_args=kwargs.pop("extra_args"),
         fresh=fresh,
         resume_mode=_resume_mode,
-        scheduler_name=scheduler_name,
-        host_list=host_list,
-        cluster_mgr=cluster_mgr,
+        scheduler_name=kwargs.pop("scheduler_name"),
+        host_list=kwargs.pop("host_list", None),
+        cluster_mgr=kwargs.pop("cluster_mgr", None),
+        category=category,
     )
+
+
+@benchmark.command("run")
+@_shared_run_options
+@click.pass_context
+@with_host_context
+def benchmark_run(ctx, **kwargs):
+    """Run a benchmark against an inference recipe."""
+    return _invoke_benchmark(ctx, category=None, **kwargs)
+
+
+def _make_category_command(category: str, *, doc: str | None = None):
+    """Build a Click command bound to a specific benchmark category.
+
+    The command shares the entire ``_shared_run_options`` stack with
+    ``benchmark run`` and pins the *category* so framework defaulting /
+    validation runs in ``_run_benchmark``.
+    """
+
+    @click.command(category)
+    @_shared_run_options
+    @click.pass_context
+    @with_host_context
+    def _cmd(ctx, **kwargs):
+        return _invoke_benchmark(ctx, category=category, **kwargs)
+
+    _cmd.name = category
+    _cmd.__doc__ = doc or "Run a %s benchmark." % category
+    return _cmd
+
+
+def _register_category_commands(group):
+    """Register a subcommand for every registered benchmark category.
+
+    Categories with no plugins are skipped; registration is idempotent.
+    """
+    try:
+        from sparkrun.core.bootstrap import list_benchmark_categories
+
+        cats = list_benchmark_categories()
+    except Exception:
+        return
+    for cat in cats:
+        if cat in group.commands:
+            continue
+        group.add_command(_make_category_command(cat), name=cat)
+
+
+# Per-category subcommand registration happens lazily on the first
+# ``benchmark`` invocation (see ``_BenchmarkGroup.parse_args`` and
+# ``get_command``) so importing this module never bootstraps SAF — that
+# would pollute test fixtures and double-init the plugin registry.
 
 
 @benchmark.command("resume")
@@ -547,6 +612,7 @@ def _run_benchmark(
     scheduler_name: str | None = None,
     host_list=None,
     cluster_mgr=None,
+    category: str | None = None,
 ):
     """Execute the full benchmark flow: launch inference -> benchmark -> stop.
 
@@ -576,6 +642,37 @@ def _run_benchmark(
     sctx = _get_context(ctx)
     v = sctx.variables
     config = sctx.config
+
+    # ---------------------------------------------------------------
+    # Category pinning: when the CLI/API pins a category, validate or
+    # supply the framework before the normal framework-resolution block.
+    # ---------------------------------------------------------------
+    if category:
+        from sparkrun.core.bootstrap import (
+            get_benchmarking_frameworks_for_category,
+            get_default_framework_for_category,
+            AmbiguousCategoryError as _AmbiguousBoot,
+            CategoryNotFoundError as _CatNotFoundBoot,
+        )
+        from sparkrun.api._errors import (
+            FrameworkCategoryMismatch,
+            AmbiguousCategoryError as _AmbiguousApi,
+            CategoryNotFound as _CatNotFoundApi,
+        )
+
+        if framework:
+            # Caller pinned both — they must agree.
+            candidates = get_benchmarking_frameworks_for_category(category)
+            if not any(fw_obj.framework_name == framework for fw_obj in candidates):
+                raise FrameworkCategoryMismatch("Framework %r is not registered for category %r" % (framework, category))
+        else:
+            try:
+                default_fw = get_default_framework_for_category(category, config=config)
+            except _CatNotFoundBoot as exc:
+                raise _CatNotFoundApi(str(exc)) from exc
+            except _AmbiguousBoot as exc:
+                raise _AmbiguousApi(str(exc)) from exc
+            framework = default_fw.framework_name
 
     # ---------------------------------------------------------------
     # 1. Load recipe

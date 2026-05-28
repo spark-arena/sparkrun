@@ -158,6 +158,7 @@ def _build_run_benchmark_kwargs(
         "on_prompt_required": options.on_prompt_required,
         "submission_id_for_extras": submission_id_for_extras,
         "scheduler_name": options.scheduler,
+        "category": options.category,
     }
 
 
