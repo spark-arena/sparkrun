@@ -26,6 +26,11 @@ from sparkrun.orchestration.collectives import CollectiveBackend
 
 logger = logging.getLogger(__name__)
 
+# Reserved for future SAF entry-point discovery of platform plugins.
+# Today platform resolution uses the ordered in-process registry in
+# ``sparkrun.platforms.__init__`` (see that module's docstring for why);
+# nothing scans this extension point yet.  The ``Plugin`` hooks below
+# wire it up so flipping to SAF discovery later is a drop-in change.
 EXT_PLATFORM = "sparkrun.platform"
 
 

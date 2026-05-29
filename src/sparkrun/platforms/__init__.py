@@ -7,11 +7,31 @@ container images.  Built-in platforms are ordered most-specific first
 :func:`resolve_platform` matches the DGX path even though both claim
 NVIDIA hosts.
 
-External packages can register additional platforms via
-:func:`register_platform`.  SAF entry-point discovery is not yet wired
-up — today nothing in tree consults the registry for plugin-style
-lookup, the hot-path already uses the collective backend + executor
-accelerator flag directly.
+Why an in-process ordered registry instead of SAF discovery
+------------------------------------------------------------
+Platforms (and likewise the :mod:`sparkrun.orchestration.collectives`
+backends) deliberately use the ordered ``_REGISTRY`` list below rather
+than SAF extension-point discovery.  Two properties make that the right
+call today: (1) **resolution is order-sensitive** — multiple platforms
+legitimately claim the same host (``DgxSparkPlatform`` and
+``GenericNvidiaPlatform`` both ``matches()`` a GB10 box), and
+``resolve_platform`` must return the *most-specific* match, which a
+deterministic registration order expresses directly but SAF's
+unordered multi-extension set does not; and (2) the set is **tiny and
+closed** (two built-ins plus the occasional external ``register_platform``
+call), so the discovery / lazy-init machinery SAF brings would add
+indirection without buying anything.  ``register_platform(prepend=...)``
+gives external packages explicit control over where they sit in the
+match order — the semantics callers actually need.
+
+``EXT_PLATFORM`` (defined in :mod:`sparkrun.platforms.base` and
+re-exported here) is **reserved for future SAF entry-point discovery**.
+:class:`HardwarePlatformPlugin` already implements the SAF ``Plugin``
+hooks (``extension_point_name`` returns ``EXT_PLATFORM``,
+``is_multi_extension`` is True) so that wiring it into
+``core.bootstrap`` later is a drop-in change.  Until then nothing scans
+that extension point: the ordered registry above is the single source
+of truth for platform resolution.
 """
 
 from __future__ import annotations
