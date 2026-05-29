@@ -64,10 +64,16 @@ def resolve_recipe_trust(recipe: Recipe, trust_cli: bool) -> bool:
     A recipe is trusted when any of these hold:
 
     * the user passed ``--trust`` on the CLI (``trust_cli=True``);
-    * the recipe was loaded from a local path (no ``source_registry``);
+    * the recipe was loaded from a local filesystem path (no
+      ``source_registry`` *and* not fetched from a URL);
     * the recipe came from a registry that the local ``registries.yaml``
       marks as ``trusted: true`` (per-registry opt-in stored in
       :class:`sparkrun.core.registry.RegistryEntry`).
+
+    Recipes fetched from a remote URL (``recipe.is_url_sourced``) are
+    **never** auto-trusted, even though they carry no ``source_registry``:
+    a "run this link" recipe must not silently execute its hooks. They
+    require ``--trust`` or interactive confirmation.
 
     Trust is a **local** decision: it lives in the user's
     ``~/.config/sparkrun/registries.yaml``.  A manifest in the source
@@ -89,8 +95,12 @@ def resolve_recipe_trust(recipe: Recipe, trust_cli: bool) -> bool:
     """
     if trust_cli:
         return True
+    # URL-sourced recipes carry no source_registry but must not be
+    # auto-trusted — they are the least-trustworthy source.
+    if getattr(recipe, "is_url_sourced", False):
+        return False
     if recipe.source_registry is None:
-        return True  # local recipe
+        return True  # local filesystem recipe
     # Any failure to consult the local registries.yaml → untrusted.
     try:
         from sparkrun.core.config import SparkrunConfig

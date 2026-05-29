@@ -4432,6 +4432,9 @@ class TestUrlRecipe:
         p2 = _url_cache_path("https://example.com/b")
         assert p1 != p2
 
+    # An allowlisted host so fetch validation passes (see RECIPE_URL_ALLOWED_HOSTS).
+    _ALLOWED_RECIPE_URL = "https://spark-arena.com/api/recipes/abc/raw"
+
     def test_fetch_and_cache_recipe_success(self, tmp_path, monkeypatch):
         """Successful fetch writes cache file."""
         from sparkrun.core.recipe import fetch_and_cache_recipe as _fetch_and_cache_recipe
@@ -4448,8 +4451,9 @@ class TestUrlRecipe:
         mock_resp.__enter__ = lambda s: s
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("urllib.request.urlopen", return_value=mock_resp):
-            path = _fetch_and_cache_recipe("https://example.com/recipe")
+        # Code fetches via build_opener().open (for redirect re-validation).
+        with patch("urllib.request.OpenerDirector.open", return_value=mock_resp):
+            path = _fetch_and_cache_recipe(self._ALLOWED_RECIPE_URL)
 
         assert path.exists()
         assert path.read_bytes() == recipe_yaml
@@ -4462,7 +4466,7 @@ class TestUrlRecipe:
 
         monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CACHE_DIR", tmp_path)
 
-        url = "https://example.com/recipe"
+        url = self._ALLOWED_RECIPE_URL
         cache_path = _url_cache_path(url)
         cache_path.parent.mkdir(parents=True)
         cache_path.write_text("model: cached\nruntime: sglang\n")
@@ -4471,7 +4475,7 @@ class TestUrlRecipe:
 
         from urllib.error import URLError
 
-        with patch("urllib.request.urlopen", side_effect=URLError("offline")):
+        with patch("urllib.request.OpenerDirector.open", side_effect=URLError("offline")):
             path = _fetch_and_cache_recipe(url)
         assert path == cache_path
 
@@ -4489,9 +4493,71 @@ class TestUrlRecipe:
 
         from sparkrun.core.recipe import RecipeError
 
-        with patch("urllib.request.urlopen", side_effect=URLError("offline")):
+        with patch("urllib.request.OpenerDirector.open", side_effect=URLError("offline")):
             with pytest.raises(RecipeError, match="Failed to fetch"):
-                _fetch_and_cache_recipe("https://example.com/recipe")
+                _fetch_and_cache_recipe(self._ALLOWED_RECIPE_URL)
+
+    def test_fetch_rejects_plaintext_http(self, tmp_path, monkeypatch):
+        """http:// recipe URLs are refused (MITM protection)."""
+        from sparkrun.core.recipe import fetch_and_cache_recipe as _fetch_and_cache_recipe, RecipeError
+
+        import sparkrun.core.config
+
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CACHE_DIR", tmp_path)
+
+        with pytest.raises(RecipeError, match="only https"):
+            _fetch_and_cache_recipe("http://spark-arena.com/api/recipes/abc/raw")
+
+    def test_fetch_rejects_offlist_host(self, tmp_path, monkeypatch):
+        """A non-allowlisted https host raises RecipeUntrustedHostError unless opted in."""
+        from sparkrun.core.recipe import fetch_and_cache_recipe as _fetch_and_cache_recipe, RecipeUntrustedHostError
+
+        import sparkrun.core.config
+
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CACHE_DIR", tmp_path)
+
+        with pytest.raises(RecipeUntrustedHostError):
+            _fetch_and_cache_recipe("https://evil.example/recipe.yaml")
+
+    def test_fetch_offlist_host_allowed_with_flag(self, tmp_path, monkeypatch):
+        """allow_untrusted_host=True bypasses the allowlist (post-confirmation)."""
+        from sparkrun.core.recipe import fetch_and_cache_recipe as _fetch_and_cache_recipe
+
+        import sparkrun.core.config
+
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CACHE_DIR", tmp_path)
+
+        from unittest.mock import MagicMock, patch
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b"model: m\nruntime: sglang\n"
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.OpenerDirector.open", return_value=mock_resp):
+            path = _fetch_and_cache_recipe("https://evil.example/recipe.yaml", allow_untrusted_host=True)
+        assert path.exists()
+
+    def test_fetch_rejects_oversize_response(self, tmp_path, monkeypatch):
+        """A response exceeding the size cap is refused."""
+        from sparkrun.core.recipe import fetch_and_cache_recipe as _fetch_and_cache_recipe, RecipeError
+        from sparkrun.core import recipe as _recipe_mod
+
+        import sparkrun.core.config
+
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(_recipe_mod, "_RECIPE_FETCH_MAX_BYTES", 16)
+
+        from unittest.mock import MagicMock, patch
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b"x" * 64
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.OpenerDirector.open", return_value=mock_resp):
+            with pytest.raises(RecipeError, match="exceeds"):
+                _fetch_and_cache_recipe(self._ALLOWED_RECIPE_URL)
 
 
 # ---------------------------------------------------------------------------

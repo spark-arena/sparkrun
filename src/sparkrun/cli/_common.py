@@ -440,8 +440,24 @@ def _load_recipe(config, recipe_name, resolve=True, retry_after_update=False):
 
     # Handle remote URLs (e.g. spark-arena recipe links)
     if _is_recipe_url(recipe_name):
+        from sparkrun.core.recipe import RecipeUntrustedHostError
+
         logger.debug("Loading recipe from URL: %s", recipe_name)
-        cached_path = _fetch_and_cache_recipe(recipe_name)
+        try:
+            cached_path = _fetch_and_cache_recipe(recipe_name)
+        except RecipeUntrustedHostError as e:
+            # Off-allowlist https host: confirm interactively, else abort.
+            if sys.stdin.isatty() and click.confirm(
+                "Recipe URL host '%s' is not in the trusted allowlist. Fetch anyway?" % e.host,
+                default=False,
+            ):
+                cached_path = _fetch_and_cache_recipe(recipe_name, allow_untrusted_host=True)
+            else:
+                click.echo("Error: %s" % e, err=True)
+                sys.exit(1)
+        except RecipeError as e:
+            click.echo("Error: %s" % e, err=True)
+            sys.exit(1)
         try:
             recipe = Recipe.load(cached_path, resolve=resolve)
         except RecipeError as e:
@@ -449,6 +465,10 @@ def _load_recipe(config, recipe_name, resolve=True, retry_after_update=False):
             sys.exit(1)
         # Store URL as source for display/debugging
         recipe.source_path = recipe_name
+        # URL-sourced recipes are never auto-trusted (see
+        # core.launcher.resolve_recipe_trust): their hooks require
+        # --trust or interactive confirmation.
+        recipe.is_url_sourced = True
         # Registry manager still needed by callers (e.g. tuning sync)
         registry_mgr = config.get_registry_manager()
         registry_mgr.ensure_initialized()

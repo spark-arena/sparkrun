@@ -508,6 +508,44 @@ def is_recipe_url(name: str) -> bool:
     return name.startswith(("http://", "https://"))
 
 
+# Hosts allowed to serve recipes without an explicit confirmation. Any
+# other https host requires the caller to pass ``allow_untrusted_host=True``
+# (the CLI prompts / honours --trust). http:// is never allowed (MITM).
+RECIPE_URL_ALLOWED_HOSTS: tuple[str, ...] = ("spark-arena.com",)
+
+# Cap fetched recipe size to avoid a hostile/buggy endpoint streaming
+# unbounded data onto the control machine. Recipes are small YAML files.
+_RECIPE_FETCH_MAX_BYTES = 5 * 1024 * 1024
+_RECIPE_FETCH_MAX_REDIRECTS = 3
+
+
+def _recipe_url_host(url: str) -> str:
+    from urllib.parse import urlparse
+
+    return (urlparse(url).hostname or "").lower()
+
+
+def _validate_recipe_url(url: str, *, allow_untrusted_host: bool) -> None:
+    """Raise RecipeError if *url* is not a safe recipe source.
+
+    Enforces https-only (no MITM) and an allowlist of known hosts unless
+    the caller explicitly opts in to an untrusted host.
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        raise RecipeError(
+            "Refusing to fetch recipe over %r: only https:// recipe URLs are allowed "
+            "(plaintext http is vulnerable to tampering)." % (parsed.scheme or url)
+        )
+    host = (parsed.hostname or "").lower()
+    if not host:
+        raise RecipeError("Refusing to fetch recipe: URL has no host: %s" % url)
+    if host not in RECIPE_URL_ALLOWED_HOSTS and not allow_untrusted_host:
+        raise RecipeUntrustedHostError(url, host)
+
+
 def _url_cache_path(url: str) -> Path:
     """Return the local cache path for a remote recipe URL."""
     import hashlib
@@ -518,22 +556,43 @@ def _url_cache_path(url: str) -> Path:
     return DEFAULT_CACHE_DIR / "remote-recipes" / ("%s.yaml" % url_hash)
 
 
-def fetch_and_cache_recipe(url: str) -> Path:
+def fetch_and_cache_recipe(url: str, *, allow_untrusted_host: bool = False) -> Path:
     """Fetch a recipe from URL and cache it locally.
+
+    Only ``https://`` URLs are accepted, and only from
+    :data:`RECIPE_URL_ALLOWED_HOSTS` unless *allow_untrusted_host* is set
+    (the CLI prompts / honours ``--trust`` before passing it). Redirects
+    are re-validated against the same rules and the chain is capped; the
+    response body is size-capped.
 
     On success, writes/updates the cache file and returns its path.
     On network failure, falls back to cached copy if available.
     Raises RecipeError if fetch fails and no cache exists.
     """
     from urllib.error import HTTPError, URLError
-    from urllib.request import Request, urlopen
+    from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+    _validate_recipe_url(url, allow_untrusted_host=allow_untrusted_host)
 
     cache_path = _url_cache_path(url)
 
+    class _ValidatingRedirectHandler(HTTPRedirectHandler):
+        max_redirections = _RECIPE_FETCH_MAX_REDIRECTS
+
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            # Re-apply the same scheme/host policy to every redirect hop so
+            # an allowed host cannot bounce us to http:// or an arbitrary host.
+            _validate_recipe_url(newurl, allow_untrusted_host=allow_untrusted_host)
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+
     try:
+        opener = build_opener(_ValidatingRedirectHandler())
         req = Request(url, headers={"User-Agent": "sparkrun"})
-        with urlopen(req, timeout=30) as resp:
-            content = resp.read()
+        with opener.open(req, timeout=30) as resp:
+            # Read one byte past the cap so we can detect oversize bodies.
+            content = resp.read(_RECIPE_FETCH_MAX_BYTES + 1)
+        if len(content) > _RECIPE_FETCH_MAX_BYTES:
+            raise RecipeError("Refusing to fetch recipe from %s: response exceeds %d bytes." % (url, _RECIPE_FETCH_MAX_BYTES))
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_bytes(content)
         return cache_path
@@ -561,6 +620,22 @@ class RecipeError(Exception):
     """Raised when a recipe is invalid or cannot be loaded."""
 
 
+class RecipeUntrustedHostError(RecipeError):
+    """Raised when a recipe URL points at a host not on the allowlist.
+
+    The caller (CLI) may catch this, confirm with the user, and retry
+    ``fetch_and_cache_recipe(url, allow_untrusted_host=True)``.
+    """
+
+    def __init__(self, url: str, host: str):
+        self.url = url
+        self.host = host
+        super().__init__(
+            "Recipe URL host %r is not in the trusted allowlist (%s). "
+            "Re-run with --trust to fetch from this host." % (host, ", ".join(RECIPE_URL_ALLOWED_HOSTS))
+        )
+
+
 class RecipeAmbiguousError(RecipeError):
     """Raised when a recipe name matches multiple registries."""
 
@@ -579,6 +654,11 @@ class Recipe:
         self.source_path = source_path
         self.source_registry: str | None = None  # set by _load_recipe after resolution
         self.source_registry_url: str | None = None  # set by _load_recipe after resolution
+        # True when the recipe was fetched from a remote URL (e.g. a
+        # spark-arena link). URL-sourced recipes are never auto-trusted —
+        # their hooks require --trust / interactive confirmation. Set by
+        # _load_recipe; see core.launcher.resolve_recipe_trust.
+        self.is_url_sourced: bool = False
 
         self._qualified_name_override: str | None = None  # optional override for qualified_name
 
@@ -1095,6 +1175,7 @@ class Recipe:
             "source_path": self.source_path,
             "source_registry": self.source_registry,
             "source_registry_url": self.source_registry_url,
+            "is_url_sourced": self.is_url_sourced,
             "_qualified_name_override": self._qualified_name_override,
             "recipe_version": self.recipe_version,
             "description": self.description,
@@ -1134,6 +1215,7 @@ class Recipe:
         self.source_path = state.get("source_path")
         self.source_registry = state.get("source_registry")
         self.source_registry_url = state.get("source_registry_url")
+        self.is_url_sourced = state.get("is_url_sourced", False)
         self._qualified_name_override = state.get("_qualified_name_override")
         self.recipe_version = state.get("recipe_version", "2")
         self.name = state.get("name", "unnamed")

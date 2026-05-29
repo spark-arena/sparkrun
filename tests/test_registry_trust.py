@@ -327,8 +327,9 @@ class TestTrustMigration:
 
 
 class _StubRecipe:
-    def __init__(self, source_registry: str | None):
+    def __init__(self, source_registry: str | None, is_url_sourced: bool = False):
         self.source_registry = source_registry
+        self.is_url_sourced = is_url_sourced
 
 
 class TestResolveRecipeTrust:
@@ -356,6 +357,18 @@ class TestResolveRecipeTrust:
         from sparkrun.core.launcher import resolve_recipe_trust
 
         assert resolve_recipe_trust(_StubRecipe(source_registry=None), trust_cli=False) is True
+
+    def test_url_sourced_recipe_untrusted(self, mgr, monkeypatch):
+        """A URL-fetched recipe (no source_registry) must NOT be auto-trusted."""
+        from sparkrun.core.launcher import resolve_recipe_trust
+
+        assert resolve_recipe_trust(_StubRecipe(source_registry=None, is_url_sourced=True), trust_cli=False) is False
+
+    def test_url_sourced_recipe_trusted_with_cli_flag(self, mgr, monkeypatch):
+        """--trust still forces trust for a URL recipe."""
+        from sparkrun.core.launcher import resolve_recipe_trust
+
+        assert resolve_recipe_trust(_StubRecipe(source_registry=None, is_url_sourced=True), trust_cli=True) is True
 
     def test_trusted_registry_recipe_trusted(self, mgr, monkeypatch):
         self._patch_config(monkeypatch, mgr)
