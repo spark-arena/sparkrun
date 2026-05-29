@@ -201,6 +201,115 @@ class TestCanOpenBrowser:
 
 
 # ---------------------------------------------------------------------------
+# Auth: callback state-nonce binding (token fixation / CSRF protection)
+# ---------------------------------------------------------------------------
+
+
+class TestBrowserCallbackStateBinding:
+    """The localhost callback must reject any request whose per-flow state
+    nonce does not match the value sent to the browser, validating BEFORE
+    storing the token. This prevents a malicious local page from injecting an
+    attacker-controlled refresh token."""
+
+    @staticmethod
+    def _drive_login(monkeypatch, responder):
+        """Run run_browser_login, invoking ``responder(login_url)`` in a
+        background thread once the browser would be opened. ``responder``
+        receives the full login URL (from which it can extract the state) and
+        is responsible for POSTing/GETting the callback. Returns the
+        run_browser_login return value (or None)."""
+        import threading
+        from urllib.parse import urlparse, parse_qs
+
+        from sparkrun.arena import auth
+
+        captured: dict[str, str] = {}
+        done = threading.Event()
+
+        def fake_open(url):
+            captured["url"] = url
+            qs = parse_qs(urlparse(url).query)
+            callback = qs["callback"][0]
+            state = qs["state"][0]
+
+            def worker():
+                try:
+                    responder(callback, state)
+                finally:
+                    done.set()
+
+            threading.Thread(target=worker, daemon=True).start()
+            return True
+
+        monkeypatch.setattr("webbrowser.open", fake_open)
+        result = auth.run_browser_login()
+        done.wait(timeout=5)
+        return result
+
+    def test_mismatched_state_rejected(self, monkeypatch):
+        import urllib.request
+        import urllib.error
+
+        statuses: list[int] = []
+
+        def responder(callback, state):
+            # POST a token with a WRONG state -> must be rejected (HTTP 400),
+            # token must NOT be stored. Then POST with the correct state so the
+            # server loop terminates (otherwise handle_request blocks forever).
+            wrong = json.dumps({"token": "attacker-token", "state": "not-the-state"}).encode()
+            req = urllib.request.Request(callback, data=wrong, headers={"Content-Type": "application/json"})
+            try:
+                urllib.request.urlopen(req, timeout=5)
+                statuses.append(200)
+            except urllib.error.HTTPError as e:
+                statuses.append(e.code)
+
+        result = self._drive_login(monkeypatch, responder)
+
+        # The bad request was rejected with 400...
+        assert statuses == [400]
+        # ...and because only an error (state mismatch) was recorded, the flow
+        # returns None rather than the attacker token.
+        assert result is None
+
+    def test_correct_state_stores_token(self, monkeypatch):
+        import urllib.request
+
+        def responder(callback, state):
+            body = json.dumps({"token": "legit-refresh-token", "state": state}).encode()
+            req = urllib.request.Request(callback, data=body, headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=5)
+
+        result = self._drive_login(monkeypatch, responder)
+
+        assert result is not None
+        refresh_token, challenge_id = result
+        assert refresh_token == "legit-refresh-token"
+        assert challenge_id  # XXXXX-XXXXX challenge still returned for prompt verification
+
+    def test_missing_state_rejected(self, monkeypatch):
+        import urllib.request
+        import urllib.error
+
+        statuses: list[int] = []
+
+        def responder(callback, state):
+            # No state field at all -> rejected before storing token.
+            no_state = json.dumps({"token": "attacker-token"}).encode()
+            req = urllib.request.Request(callback, data=no_state, headers={"Content-Type": "application/json"})
+            try:
+                urllib.request.urlopen(req, timeout=5)
+                statuses.append(200)
+            except urllib.error.HTTPError as e:
+                statuses.append(e.code)
+
+        result = self._drive_login(monkeypatch, responder)
+
+        assert statuses == [400]
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
 # Upload: submission ID
 # ---------------------------------------------------------------------------
 

@@ -6,7 +6,6 @@ import logging
 import re
 from dataclasses import dataclass, field, asdict as dataclass_asdict
 from json import dumps as json_dumps
-from os import path as osp
 from pathlib import Path
 from typing import Any, TYPE_CHECKING, Optional
 
@@ -698,7 +697,10 @@ class Recipe:
 
         # Configuration
         self.defaults: dict[str, Any] = dict(data.get("defaults") or {})
-        self.env: dict[str, str] = {str(k): osp.expandvars(str(v)) for k, v in (data.get("env") or {}).items()}
+        # Use recipe-provided env values literally.  Do NOT expand control-machine
+        # variables (e.g. ``$AWS_SECRET_ACCESS_KEY``): a third-party recipe could
+        # otherwise exfiltrate host secrets by injecting them into the container.
+        self.env: dict[str, str] = {str(k): str(v) for k, v in (data.get("env") or {}).items()}
         self.command: str | None = data.get("command")
 
         # Metadata section (v2 extension for VRAM estimation, model info)

@@ -152,6 +152,11 @@ def run_browser_login() -> str | None:
     Returns the refresh token on success, or None on failure.
     """
     challenge_id = generate_challenge_id()
+    # Per-flow random nonce bound to this callback server instance. The browser
+    # JS / auth proxy must echo this exact value back; the handler rejects any
+    # callback whose state does not match, preventing a malicious local page
+    # from injecting an attacker-controlled token (token fixation / CSRF).
+    expected_state = secrets.token_urlsafe(32)
     received_token: list[str] = []
     server_error: list[str] = []
 
@@ -160,6 +165,21 @@ def run_browser_login() -> str | None:
             self.send_header("Access-Control-Allow-Origin", AUTH_PROXY_BASE)
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", "Content-Type")
+
+        def _reject_state(self, *, html: bool):
+            """Reject a callback whose state nonce does not match this flow."""
+            server_error.append("state mismatch")
+            self.send_response(400)
+            if html:
+                self.send_header("Content-Type", "text/html")
+            else:
+                self.send_header("Content-Type", "application/json")
+                self._send_cors_headers()
+            self.end_headers()
+            if html:
+                self.wfile.write(b"Authentication failed.")
+            else:
+                self.wfile.write(b'{"error":"invalid state"}')
 
         def do_OPTIONS(self):
             self.send_response(204)
@@ -178,8 +198,15 @@ def run_browser_login() -> str | None:
             try:
                 data = json.loads(body)
                 token = data.get("token")
+                state = data.get("state")
             except (json.JSONDecodeError, ValueError):
                 token = None
+                state = None
+
+            # Validate the per-flow state nonce BEFORE storing any token.
+            if not state or not secrets.compare_digest(str(state), expected_state):
+                self._reject_state(html=False)
+                return
 
             if token:
                 received_token.append(token)
@@ -203,6 +230,14 @@ def run_browser_login() -> str | None:
                 return
 
             params = parse_qs(parsed.query)
+
+            # Validate the per-flow state nonce BEFORE storing any token.
+            state_list = params.get("state", [])
+            state = state_list[0] if state_list else None
+            if not state or not secrets.compare_digest(str(state), expected_state):
+                self._reject_state(html=True)
+                return
+
             token_list = params.get("token", [])
             if token_list:
                 received_token.append(token_list[0])
@@ -233,7 +268,7 @@ def run_browser_login() -> str | None:
     callback_url = "http://localhost:%d/callback" % callback_port
     login_url = "%s/login?%s" % (
         AUTH_PROXY_BASE,
-        urlencode({"callback": callback_url, "code": challenge_id}),
+        urlencode({"callback": callback_url, "code": challenge_id, "state": expected_state}),
     )
 
     import webbrowser

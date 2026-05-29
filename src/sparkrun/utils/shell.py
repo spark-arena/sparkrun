@@ -187,6 +187,40 @@ def safe_remote_path(value: str) -> str:
     return value
 
 
+# Conservative allowlist for paths interpolated into a sudoers rule.  A
+# sudoers file is security-critical: a value containing whitespace, a newline,
+# or shell/sudoers metacharacters could append extra rules or commands.  Only
+# characters that appear in legitimate absolute filesystem paths are permitted.
+_SUDOERS_PATH_RE = re.compile(r"[A-Za-z0-9_./-]+")
+
+
+def validate_sudoers_path(value: str) -> str:
+    """Validate an absolute path destined for interpolation into a sudoers rule.
+
+    Requires an absolute path containing only ``[A-Za-z0-9_./-]`` — no
+    whitespace, newlines, or shell/sudoers metacharacters.  This is stricter
+    than :func:`assert_safe_path` because the interpolation target (a
+    ``/etc/sudoers.d`` rule) is a privilege-escalation primitive.
+
+    Args:
+        value: Path string to validate.
+
+    Returns:
+        The validated path (unchanged).
+
+    Raises:
+        ValueError: If *value* is empty, not absolute, or contains characters
+            outside the allowed set.
+    """
+    if not value:
+        raise ValueError("Sudoers path must not be empty")
+    if not value.startswith("/"):
+        raise ValueError("Sudoers path must be absolute: %r" % value)
+    if not _SUDOERS_PATH_RE.fullmatch(value):
+        raise ValueError("Unsafe character in sudoers path %r — possible privilege escalation" % value)
+    return value
+
+
 _ALLOWED_GIT_URL_SCHEMES = ("https://", "git@", "ssh://", "file://")
 
 

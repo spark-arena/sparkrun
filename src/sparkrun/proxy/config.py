@@ -72,6 +72,16 @@ class ProxyConfig:
         return str(self._data.get("proxy", {}).get("host", DEFAULT_PROXY_HOST))
 
     @property
+    def host_configured(self) -> bool:
+        """True when a bind host has been explicitly persisted.
+
+        Distinguishes "user chose a bind host" from "fell back to the legacy
+        ``0.0.0.0`` default".  When False, the proxy keeps the legacy 0.0.0.0
+        bind for backward compatibility but emits a loud security warning.
+        """
+        return "host" in self._data.get("proxy", {})
+
+    @property
     def master_key(self) -> str | None:
         val = self._data.get("proxy", {}).get("master_key", DEFAULT_MASTER_KEY)
         return str(val) if val is not None else None

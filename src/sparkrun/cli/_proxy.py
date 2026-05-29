@@ -38,7 +38,12 @@ def proxy():
 
 @proxy.command()
 @click.option("--port", type=int, default=None, help="Proxy listen port (default: 4000)")
-@click.option("--host", "bind_host", default=None, help="Bind address (default: 0.0.0.0)")
+@click.option(
+    "--host",
+    "bind_host",
+    default=None,
+    help="Bind address — persisted to proxy.yaml (recommended: 127.0.0.1). Unconfigured legacy default is 0.0.0.0 (warns loudly).",
+)
 @click.option(
     "--master-key",
     default=None,
@@ -96,6 +101,9 @@ def start(
 
     effective_port = port or proxy_cfg.port
     effective_host = bind_host or proxy_cfg.host
+    # A bind host is "explicitly configured" if supplied this run or already
+    # persisted. Drives the legacy-0.0.0.0 security warning in the engine.
+    host_configured = bind_host is not None or proxy_cfg.host_configured
     effective_key = master_key if master_key is not None else proxy_cfg.master_key
     effective_enable_ui = enable_ui if enable_ui is not None else proxy_cfg.enable_ui
     effective_ui_username = proxy_cfg.ui_username
@@ -175,6 +183,7 @@ def start(
         enable_ui=effective_enable_ui,
         ui_username=effective_ui_username,
         ui_password=effective_ui_password,
+        host_configured=host_configured,
     )
 
     # Resolve auto-discover settings

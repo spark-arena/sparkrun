@@ -14,6 +14,7 @@ from sparkrun.utils.shell import (
     quote,
     quote_dict,
     safe_remote_path,
+    validate_sudoers_path,
     validate_unix_username,
 )
 
@@ -177,6 +178,48 @@ class TestSafeRemotePath:
 
     def test_path_with_spaces(self):
         assert safe_remote_path("~/.cache/my models") == "$HOME/.cache/my models"
+
+
+class TestValidateSudoersPath:
+    """Tests for validate_sudoers_path() — sudoers-rule interpolation guard."""
+
+    def test_normal_absolute_path(self):
+        assert validate_sudoers_path("/home/user/.cache/huggingface") == "/home/user/.cache/huggingface"
+
+    def test_path_with_dashes_and_underscores(self):
+        assert validate_sudoers_path("/srv/sparkrun_cache/hf-models") == "/srv/sparkrun_cache/hf-models"
+
+    def test_empty_rejected(self):
+        with pytest.raises(ValueError, match="must not be empty"):
+            validate_sudoers_path("")
+
+    def test_relative_path_rejected(self):
+        with pytest.raises(ValueError, match="must be absolute"):
+            validate_sudoers_path(".cache/huggingface")
+
+    def test_tilde_path_rejected(self):
+        with pytest.raises(ValueError, match="must be absolute"):
+            validate_sudoers_path("~/.cache/huggingface")
+
+    def test_newline_rejected(self):
+        with pytest.raises(ValueError, match="Unsafe character"):
+            validate_sudoers_path("/tmp/foo\nuser ALL=(root) NOPASSWD: ALL")
+
+    def test_space_rejected(self):
+        with pytest.raises(ValueError, match="Unsafe character"):
+            validate_sudoers_path("/tmp/foo bar")
+
+    def test_semicolon_rejected(self):
+        with pytest.raises(ValueError, match="Unsafe character"):
+            validate_sudoers_path("/tmp/foo; rm -rf /")
+
+    def test_dollar_rejected(self):
+        with pytest.raises(ValueError, match="Unsafe character"):
+            validate_sudoers_path("/tmp/$HOME/exploit")
+
+    def test_comma_rejected(self):
+        with pytest.raises(ValueError, match="Unsafe character"):
+            validate_sudoers_path("/tmp/foo,/usr/bin/sh")
 
 
 def test_validate_unix_username_valid():

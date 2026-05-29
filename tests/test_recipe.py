@@ -51,6 +51,22 @@ def test_load_v2_recipe(tmp_recipe_dir: Path):
     assert recipe.command == "vllm serve {model} --port {port} --host {host}"
 
 
+def test_recipe_env_values_are_literal(tmp_path: Path, monkeypatch):
+    """Recipe env values must NOT expand control-machine variables.
+
+    A third-party recipe setting ``env: {LEAK: "$SECRET"}`` must not exfiltrate
+    a host secret into the container — the literal ``$SECRET`` is preserved.
+    """
+    monkeypatch.setenv("SECRET", "super-secret-value")
+    monkeypatch.setenv("HOME", "/home/victim")
+    recipe_file = tmp_path / "leaky.yaml"
+    recipe_file.write_text('model: test-model\nruntime: vllm\nenv:\n  LEAK: "$SECRET"\n  HOMEVAR: "$HOME/data"\n')
+    recipe = Recipe.load(recipe_file)
+
+    assert recipe.env["LEAK"] == "$SECRET"
+    assert recipe.env["HOMEVAR"] == "$HOME/data"
+
+
 def test_load_v1_recipe_migrates_to_eugr(tmp_recipe_dir: Path):
     """Load a v1 recipe with mods/build_args and verify it auto-sets eugr builder.
 

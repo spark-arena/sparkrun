@@ -7,6 +7,8 @@ works correctly.
 
 from __future__ import annotations
 
+import logging
+
 from sparkrun.orchestration.docker import (
     enumerate_cluster_containers,
     generate_container_name,
@@ -446,3 +448,43 @@ class TestScriptGenerators:
         )
         assert "--restart always" in script
         assert "--rm" not in script
+
+
+class TestEnvDebugMasking:
+    """The DEBUG env dump must mask values for sensitive keys."""
+
+    def test_sensitive_keys_masked(self, caplog):
+        executor = DockerExecutor()
+        env = {
+            "HF_TOKEN": "hf_secretvalue",
+            "AWS_SECRET_ACCESS_KEY": "topsecret",
+            "MY_API_KEY": "abc123",
+            "DB_PASSWORD": "hunter2",
+            "VLLM_LOGGING_LEVEL": "INFO",
+        }
+        with caplog.at_level(logging.DEBUG, logger="sparkrun.orchestration.executors.docker"):
+            executor.run_cmd(image="img:latest", container_name="test", env=env)
+
+        # Inspect only the per-var env dump lines (the "  KEY=VALUE" entries),
+        # not the full assembled-command debug line.
+        dump_lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("  ")]
+        dump_text = "\n".join(dump_lines)
+
+        # Sensitive values must never appear in the dump; keys are logged as ***.
+        assert "hf_secretvalue" not in dump_text
+        assert "topsecret" not in dump_text
+        assert "abc123" not in dump_text
+        assert "hunter2" not in dump_text
+        assert "  HF_TOKEN=***" in dump_text
+        assert "  AWS_SECRET_ACCESS_KEY=***" in dump_text
+        assert "  MY_API_KEY=***" in dump_text
+        assert "  DB_PASSWORD=***" in dump_text
+
+    def test_normal_keys_shown(self, caplog):
+        executor = DockerExecutor()
+        env = {"VLLM_LOGGING_LEVEL": "INFO"}
+        with caplog.at_level(logging.DEBUG, logger="sparkrun.orchestration.executors.docker"):
+            executor.run_cmd(image="img:latest", container_name="test", env=env)
+
+        dump_lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("  ")]
+        assert "  VLLM_LOGGING_LEVEL=INFO" in "\n".join(dump_lines)

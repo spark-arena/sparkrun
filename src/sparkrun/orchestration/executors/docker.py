@@ -46,6 +46,28 @@ _CONTAINER_NAME_RE = re.compile(
 )
 
 
+# Env-var keys whose values are likely secrets and must be masked in DEBUG
+# logs (case-insensitive substring match on token/key/password/secret).
+_SENSITIVE_ENV_KEY_RE = re.compile(r"token|key|password|secret", re.IGNORECASE)
+
+
+def _mask_sensitive_env_in_command(command: str, env: dict[str, str] | None) -> str:
+    """Return *command* with sensitive ``-e KEY=value`` values masked.
+
+    The per-var DEBUG dump masks secrets, but the full assembled command
+    line also contains ``-e KEY=value`` tokens — mask those too so a
+    secret never reaches logs via the command-line debug entry. Only the
+    log representation is masked; the returned command is unchanged.
+    """
+    if not env:
+        return command
+    masked = command
+    for key, value in env.items():
+        if value and _SENSITIVE_ENV_KEY_RE.search(key):
+            masked = masked.replace(quote("%s=%s" % (key, value)), quote("%s=***" % key))
+    return masked
+
+
 # Per-executor defaults for the resolution chain — sits just above
 # the :class:`ExecutorConfig` dataclass field defaults and below
 # everything else.  Lives with :class:`DockerExecutor` because every
@@ -254,8 +276,10 @@ class DockerExecutor(Executor):
         if env:
             logger.debug("docker run %s env (%d vars):", container_name or image, len(env))
             for key, value in sorted(env.items()):
-                logger.debug("  %s=%s", key, value)
-        logger.debug("docker run command: %s", result)
+                # Mask values for sensitive keys so secrets never reach logs.
+                shown = "***" if _SENSITIVE_ENV_KEY_RE.search(key) else value
+                logger.debug("  %s=%s", key, shown)
+        logger.debug("docker run command: %s", _mask_sensitive_env_in_command(result, env))
 
         return result
 

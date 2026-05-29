@@ -32,6 +32,22 @@ from sparkrun.proxy.discovery import DiscoveredEndpoint
 logger = logging.getLogger(__name__)
 
 
+def _restrict_file_permissions(path: Path) -> None:
+    """Best-effort chmod a secrets-bearing file to owner-only (0o600)."""
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        logger.debug("Could not restrict permissions on %s", path, exc_info=True)
+
+
+def _restrict_dir_permissions(path: Path) -> None:
+    """Best-effort chmod a secrets-bearing dir to owner-only (0o700)."""
+    try:
+        os.chmod(path, 0o700)
+    except OSError:
+        logger.debug("Could not restrict permissions on %s", path, exc_info=True)
+
+
 def build_litellm_config(
     endpoints: list[DiscoveredEndpoint],
     master_key: str | None = DEFAULT_MASTER_KEY,
@@ -131,10 +147,14 @@ class ProxyEngine:
         enable_ui: bool = DEFAULT_ENABLE_UI,
         ui_username: str | None = None,
         ui_password: str | None = None,
+        host_configured: bool = False,
     ):
         self.host = host
         self.port = port
         self.master_key = master_key
+        # Whether the bind host was explicitly configured by the user.  When
+        # False and host is the legacy 0.0.0.0 default, start() warns loudly.
+        self.host_configured = host_configured
         self.enable_ui = enable_ui
         self.ui_username = ui_username
         self.ui_password = ui_password
@@ -201,6 +221,8 @@ class ProxyEngine:
         if dry_run:
             logger.info("[dry-run] Would run: %s", " ".join(cmd))
             return 0
+
+        self._warn_insecure_bind()
 
         if self.is_running():
             logger.warning("Proxy already running (PID %s)", self._read_pid())
@@ -284,6 +306,52 @@ class ProxyEngine:
             logger.info("Log: %s", log_path)
             return 0
 
+    def _warn_insecure_bind(self) -> None:
+        """Emit a loud warning when binding 0.0.0.0 without explicit config.
+
+        Legacy compatibility: when no bind host has been explicitly configured
+        (``host_configured`` is False) the proxy keeps binding the legacy
+        ``0.0.0.0`` default so existing deployments do not break.  This exposes
+        every discovered inference backend to the whole network, so we warn
+        loudly on every start and explain how to silence it.
+        """
+        if self.host_configured:
+            return
+        if self.host not in ("0.0.0.0", "::"):
+            return
+
+        if self.master_key:
+            logger.warning(
+                "\n"
+                "============================================================\n"
+                "  sparkrun proxy: binding %s:%d (ALL network interfaces)\n"
+                "  Authentication IS enabled (master key set), but every\n"
+                "  discovered inference backend is reachable network-wide.\n"
+                "  To restrict exposure, bind to localhost instead:\n"
+                "      sparkrun proxy start --host 127.0.0.1\n"
+                "  (the chosen bind host is persisted to proxy.yaml)\n"
+                "============================================================",
+                self.host,
+                self.port,
+            )
+        else:
+            logger.warning(
+                "\n"
+                "============================================================\n"
+                "  SECURITY WARNING: sparkrun proxy is binding %s:%d\n"
+                "  (ALL network interfaces) with NO authentication.\n"
+                "  Every discovered inference backend is exposed UNAUTHENTICATED\n"
+                "  to the entire network.\n"
+                "\n"
+                "  To secure the proxy and silence this warning:\n"
+                "    * bind to localhost:   sparkrun proxy start --host 127.0.0.1\n"
+                "    * require a token:     sparkrun proxy start --master-key <secret>\n"
+                "  (both settings are persisted to proxy.yaml for future runs)\n"
+                "============================================================",
+                self.host,
+                self.port,
+            )
+
     def start_autodiscover(
         self,
         proxy_pid: int,
@@ -314,8 +382,12 @@ class ProxyEngine:
             cfg["cache_dir"] = cache_dir
 
         self.state_dir.mkdir(parents=True, exist_ok=True)
+        _restrict_dir_permissions(self.state_dir)
+        # The autodiscover config carries the master_key, so restrict it to
+        # owner-only after the write succeeds.
         with open(self._autodiscover_config_path, "w") as f:
             yaml.safe_dump(cfg, f, default_flow_style=False)
+        _restrict_file_permissions(self._autodiscover_config_path)
 
         log_path = self.state_dir / "autodiscover.log"
         log_file = open(log_path, "w")
@@ -658,10 +730,16 @@ class ProxyEngine:
     # -- State management --
 
     def _save_state(self, pid: int, autodiscover_pid: int | None = None) -> None:
-        """Save proxy state to disk."""
+        """Save proxy state to disk.
+
+        The state file contains the master_key, so it is written with
+        owner-only (0o600) permissions and its parent dir is restricted to
+        0o700 — mirroring ``arena.auth.save_refresh_token``.
+        """
         import datetime
 
         self.state_dir.mkdir(parents=True, exist_ok=True)
+        _restrict_dir_permissions(self.state_dir)
         state = {
             "pid": pid,
             "port": self.port,
@@ -673,6 +751,7 @@ class ProxyEngine:
             state["autodiscover_pid"] = autodiscover_pid
         with open(self.state_file, "w") as f:
             yaml.safe_dump(state, f, default_flow_style=False)
+        _restrict_file_permissions(self.state_file)
 
     def _read_pid(self) -> int | None:
         """Read PID from state file."""

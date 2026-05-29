@@ -1348,13 +1348,17 @@ def setup_fix_permissions(ctx, hosts, hosts_file, cluster_name, user, cache_dir,
     # --save-sudo: install scoped sudoers entry on each host
     if save_sudo:
         click.echo("Installing sudoers entry for passwordless chown...")
-        from sparkrun.utils.shell import validate_unix_username
-        import re as _re
+        from sparkrun.utils.shell import validate_sudoers_path, validate_unix_username
 
         validate_unix_username(user)
         safe_cache_dir = cache_path or ""
-        if safe_cache_dir and not _re.fullmatch(r"[/a-zA-Z0-9_.~-]+", safe_cache_dir):
-            raise click.UsageError("cache_dir contains unsafe characters: %r" % safe_cache_dir)
+        # Empty means auto-detect inside the script; only non-empty values are
+        # interpolated into the sudoers rule and must be validated.
+        if safe_cache_dir:
+            try:
+                validate_sudoers_path(safe_cache_dir)
+            except ValueError as exc:
+                raise click.UsageError(str(exc))
         sudoers_script = read_script("fix_permissions_sudoers.sh").format(
             user=user,
             cache_dir=safe_cache_dir,

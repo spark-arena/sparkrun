@@ -161,15 +161,20 @@ def apply_sudoers(host_list, user, dry_run, sudo_password=None, sudo_dispatch_fn
         list of ``(label, ok_count)`` tuples.
     """
     from sparkrun.scripts import read_script
-    from sparkrun.utils.shell import validate_unix_username
+    from sparkrun.utils.shell import validate_sudoers_path, validate_unix_username
 
     validate_unix_username(user)
+    # Empty cache_dir means auto-detect inside the script; only non-empty
+    # values are interpolated into the sudoers rule and must be validated.
+    fix_cache_dir = ""
+    if fix_cache_dir:
+        validate_sudoers_path(fix_cache_dir)
     sudoers_scripts = [
         (
             "fix-permissions",
             read_script("fix_permissions_sudoers.sh").format(
                 user=user,
-                cache_dir="",
+                cache_dir=fix_cache_dir,
             ),
         ),
         (

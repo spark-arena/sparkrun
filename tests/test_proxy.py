@@ -1708,6 +1708,7 @@ class TestCLI:
             patch("sparkrun.proxy.config.ProxyConfig.__init__", return_value=None),
             patch("sparkrun.proxy.config.ProxyConfig.port", new_callable=lambda: property(lambda s: 4000)),
             patch("sparkrun.proxy.config.ProxyConfig.host", new_callable=lambda: property(lambda s: "0.0.0.0")),
+            patch("sparkrun.proxy.config.ProxyConfig.host_configured", new_callable=lambda: property(lambda s: False)),
             patch("sparkrun.proxy.config.ProxyConfig.master_key", new_callable=lambda: property(lambda s: "sk-test")),
             patch("sparkrun.proxy.config.ProxyConfig.aliases", new_callable=lambda: property(lambda s: {})),
             patch("sparkrun.proxy.config.ProxyConfig.enable_ui", new_callable=lambda: property(lambda s: False)),
