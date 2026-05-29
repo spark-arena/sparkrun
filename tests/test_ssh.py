@@ -373,3 +373,157 @@ def test_detect_sudo_on_hosts_all_nopasswd(mock_run):
     result = detect_sudo_on_hosts(["host1", "host2", "host3"])
 
     assert result == {"host1", "host2", "host3"}
+
+
+# ---------------------------------------------------------------------------
+# C1: SSH/rsync fan-out cap
+# ---------------------------------------------------------------------------
+
+from sparkrun.orchestration.ssh import (  # noqa: E402
+    DEFAULT_MAX_PARALLEL_SSH,
+    resolve_parallel_cap,
+    run_rsync_parallel,
+    run_pipeline_to_remotes_parallel,
+)
+
+
+def test_resolve_parallel_cap_small_cluster_unchanged():
+    """Small clusters (<= cap) get one worker per host (behavior unchanged)."""
+    assert resolve_parallel_cap(5) == 5
+    assert resolve_parallel_cap(1) == 1
+
+
+def test_resolve_parallel_cap_large_cluster_capped():
+    """Large clusters are capped at the default."""
+    assert resolve_parallel_cap(32) == DEFAULT_MAX_PARALLEL_SSH
+    assert resolve_parallel_cap(100) == DEFAULT_MAX_PARALLEL_SSH
+
+
+def test_resolve_parallel_cap_custom_override():
+    """Explicit cap overrides the default."""
+    assert resolve_parallel_cap(32, 8) == 8
+    assert resolve_parallel_cap(4, 8) == 4
+
+
+def test_resolve_parallel_cap_never_zero():
+    """A zero/empty fan-out never produces max_workers=0."""
+    assert resolve_parallel_cap(0) == 1
+    assert resolve_parallel_cap(5, 0) == 5  # cap<=0 falls back to default, then min(5,20)=5
+
+
+@patch("sparkrun.orchestration.ssh.subprocess.run")
+def test_run_remote_scripts_parallel_caps_workers(mock_run, monkeypatch):
+    """With 32 hosts, the pool is capped at DEFAULT_MAX_PARALLEL_SSH."""
+    import concurrent.futures
+
+    captured = {}
+    real_pool = concurrent.futures.ThreadPoolExecutor
+
+    def _spy(max_workers=None, **kw):
+        captured["max_workers"] = max_workers
+        return real_pool(max_workers=max_workers, **kw)
+
+    monkeypatch.setattr(concurrent.futures, "ThreadPoolExecutor", _spy)
+
+    mock_proc = MagicMock(returncode=0, stdout="", stderr="")
+    mock_run.return_value = mock_proc
+
+    hosts = [f"host{i}" for i in range(32)]
+    run_remote_scripts_parallel(hosts, "echo x")
+    assert captured["max_workers"] == DEFAULT_MAX_PARALLEL_SSH
+
+
+@patch("sparkrun.orchestration.ssh.subprocess.run")
+def test_run_rsync_parallel_caps_workers(mock_run, monkeypatch):
+    """run_rsync_parallel also caps the pool size."""
+    import concurrent.futures
+
+    captured = {}
+    real_pool = concurrent.futures.ThreadPoolExecutor
+
+    def _spy(max_workers=None, **kw):
+        captured["max_workers"] = max_workers
+        return real_pool(max_workers=max_workers, **kw)
+
+    monkeypatch.setattr(concurrent.futures, "ThreadPoolExecutor", _spy)
+    mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+    hosts = [f"host{i}" for i in range(40)]
+    run_rsync_parallel("/src", hosts, "/dst")
+    assert captured["max_workers"] == DEFAULT_MAX_PARALLEL_SSH
+
+
+@patch("sparkrun.orchestration.ssh.subprocess.run")
+def test_run_pipeline_parallel_caps_workers(mock_run, monkeypatch):
+    """run_pipeline_to_remotes_parallel caps the pool size."""
+    import concurrent.futures
+
+    captured = {}
+    real_pool = concurrent.futures.ThreadPoolExecutor
+
+    def _spy(max_workers=None, **kw):
+        captured["max_workers"] = max_workers
+        return real_pool(max_workers=max_workers, **kw)
+
+    monkeypatch.setattr(concurrent.futures, "ThreadPoolExecutor", _spy)
+    mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+    hosts = [f"host{i}" for i in range(25)]
+    run_pipeline_to_remotes_parallel(hosts, "docker save x", "docker load")
+    assert captured["max_workers"] == DEFAULT_MAX_PARALLEL_SSH
+
+
+@patch("sparkrun.orchestration.ssh.subprocess.run")
+def test_run_remote_scripts_parallel_explicit_cap(mock_run, monkeypatch):
+    """An explicit max_workers overrides the default cap."""
+    import concurrent.futures
+
+    captured = {}
+    real_pool = concurrent.futures.ThreadPoolExecutor
+
+    def _spy(max_workers=None, **kw):
+        captured["max_workers"] = max_workers
+        return real_pool(max_workers=max_workers, **kw)
+
+    monkeypatch.setattr(concurrent.futures, "ThreadPoolExecutor", _spy)
+    mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+    hosts = [f"host{i}" for i in range(16)]
+    run_remote_scripts_parallel(hosts, "echo x", max_workers=4)
+    assert captured["max_workers"] == 4
+
+
+# ---------------------------------------------------------------------------
+# C3: execution timeout on a hung host
+# ---------------------------------------------------------------------------
+
+
+@patch("sparkrun.orchestration.ssh.subprocess.run")
+def test_parallel_hung_host_hits_timeout(mock_run):
+    """A host that connects then hangs surfaces as a timeout, not a block.
+
+    subprocess.run raising TimeoutExpired for one host must not prevent the
+    other hosts' results from being collected, and the hung host's result
+    must report failure.
+    """
+
+    def _side_effect(*args, **kwargs):
+        # Simulate: host with 'hang' in stdin/script times out, others OK.
+        # We can't easily inspect the host here, so alternate behavior by a
+        # mutable counter.
+        if not hasattr(_side_effect, "n"):
+            _side_effect.n = 0
+        _side_effect.n += 1
+        if _side_effect.n == 1:
+            raise subprocess.TimeoutExpired(cmd=["ssh"], timeout=5)
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    mock_run.side_effect = _side_effect
+
+    hosts = ["h1", "h2", "h3"]
+    results = run_remote_scripts_parallel(hosts, "sleep 100", timeout=5)
+    assert len(results) == 3
+    # Exactly one host timed out (rc=-1), the rest succeeded.
+    timed_out = [r for r in results if r.returncode == -1]
+    assert len(timed_out) == 1
+    assert "timed out" in timed_out[0].stderr.lower()

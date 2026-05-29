@@ -1967,3 +1967,86 @@ class TestDistributeSingleImageIbRouting:
             )
 
         assert mock_dist.call_args.kwargs["transfer_hosts"] == ["192.168.11.14"]
+
+
+# ---------------------------------------------------------------------------
+# C2: head→worker distribute scripts are parallel + bounded, with per-target
+# failure detection preserved.
+# ---------------------------------------------------------------------------
+
+
+class TestEmbeddedDistributeScriptsParallel:
+    """The embedded image_distribute.sh / model_distribute.sh fan out targets
+    concurrently (bounded by MAX_PARALLEL) while still surfacing per-target
+    failures and the script-level exit code."""
+
+    def _render(self, name, **kw):
+        from sparkrun.scripts import read_script
+
+        return read_script(name).format(**kw)
+
+    def test_image_script_is_parallel_and_bounded(self):
+        s = self._render(
+            "image_distribute.sh",
+            image="img",
+            targets="a b c",
+            ssh_opts="-o BatchMode=yes",
+            ssh_user="u",
+            max_parallel=4,
+        )
+        # Backgrounds transfers and waits — not a serial loop.
+        assert ") &" in s
+        assert "wait" in s
+        # Bounded concurrency knob is wired through.
+        assert 'MAX_PARALLEL="4"' in s
+        # Per-target failure detection + script-level exit preserved.
+        assert "FAILED" in s
+        assert "exit 1" in s
+        # No literal curly braces survive (str.format would have failed
+        # otherwise, but assert defensively for the no-functions invariant).
+        assert "{" not in s and "}" not in s
+
+    def test_model_script_is_parallel_and_bounded(self):
+        s = self._render(
+            "model_distribute.sh",
+            model_path="/m",
+            targets="a b c",
+            ssh_opts="-o BatchMode=yes",
+            ssh_user="",
+            max_parallel=8,
+        )
+        assert ") &" in s
+        assert "wait" in s
+        assert 'MAX_PARALLEL="8"' in s
+        assert "rsync" in s
+        assert "FAILED" in s
+        assert "exit 1" in s
+        assert "{" not in s and "}" not in s
+
+    def test_image_script_passes_bash_syntax(self):
+        import subprocess
+
+        s = self._render(
+            "image_distribute.sh",
+            image="img",
+            targets="a b",
+            ssh_opts="-o X",
+            ssh_user="u",
+            max_parallel=2,
+        )
+        proc = subprocess.run(["bash", "-n"], input=s, text=True, capture_output=True)
+        assert proc.returncode == 0, proc.stderr
+
+    def test_model_script_passes_bash_syntax(self):
+        import subprocess
+
+        s = self._render(
+            "model_distribute.sh",
+            model_path="/m",
+            targets="a b",
+            ssh_opts="-o X",
+            ssh_user="u",
+            max_parallel=2,
+        )
+        proc = subprocess.run(["bash", "-n"], input=s, text=True, capture_output=True)
+        assert proc.returncode == 0, proc.stderr

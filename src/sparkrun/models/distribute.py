@@ -16,6 +16,7 @@ from sparkrun.orchestration.transfer import (
     map_transfer_failures_detailed,
 )
 from sparkrun.orchestration.ssh import (
+    HEAD_DISTRIBUTE_MAX_PARALLEL,
     build_ssh_opts_string,
     run_remote_scripts_parallel,
     run_rsync_parallel,
@@ -25,6 +26,14 @@ from sparkrun.scripts import read_script
 from sparkrun.core.progress import PROGRESS
 
 logger = logging.getLogger(__name__)
+
+# Generous execution timeout (seconds) for control→host model rsync.
+# build_ssh_cmd only sets ConnectTimeout (TCP connect); without an overall
+# timeout a host that connects then stalls (frozen NFS, hung rsync) blocks
+# the whole as_completed loop forever.  Model caches can be tens of GB and
+# the first sync to a fresh host is the slowest, so this is intentionally
+# large — it exists to break true hangs, not to bound healthy transfers.
+DEFAULT_MODEL_RSYNC_TIMEOUT = 2 * 60 * 60  # 2 hours
 
 
 def _try_fix_remote_permissions(
@@ -162,7 +171,7 @@ def distribute_model_from_local(
         ssh_key=ssh_key,
         ssh_options=ssh_options,
         rsync_options=["-a", "--size-only", "--mkpath", "--partial", "--links"],
-        timeout=timeout,
+        timeout=timeout if timeout is not None else DEFAULT_MODEL_RSYNC_TIMEOUT,
         dry_run=dry_run,
     )
 
@@ -260,6 +269,7 @@ def distribute_model_from_head(
         targets=" ".join(targets),
         ssh_opts=ssh_opts,
         ssh_user=ssh_user or "",
+        max_parallel=HEAD_DISTRIBUTE_MAX_PARALLEL,
     )
 
     failed_hosts = _distribute_from_head(

@@ -412,6 +412,8 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
             # interfaces (e.g. wired on head, wifi on a worker) get the
             # right GLOO_SOCKET_IFNAME / NCCL_SOCKET_IFNAME / etc.
             from concurrent.futures import ThreadPoolExecutor, as_completed
+            from sparkrun.orchestration.ssh import resolve_parallel_cap
+            from sparkrun.runtimes._cluster_ops import _config_ssh_cap
 
             # Ray manages per-actor ranks internally; each host runs one
             # ``{cluster_id}_worker`` container, so we omit the rank label.
@@ -420,7 +422,7 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
                 recipe=recipe,
                 runtime=self,
             )
-            with ThreadPoolExecutor(max_workers=len(ctx.worker_hosts)) as _wpool:
+            with ThreadPoolExecutor(max_workers=resolve_parallel_cap(len(ctx.worker_hosts), _config_ssh_cap(ctx.config))) as _wpool:
                 _wfutures = {}
                 for _whost in ctx.worker_hosts:
                     _whost_env = comm_env.get_env(_whost) if comm_env else None

@@ -140,6 +140,39 @@ def test_config_ssh_settings(tmp_path: Path):
     assert config.ssh_options == ["-v", "-o ConnectTimeout=30"]
 
 
+def test_config_max_parallel_ssh_default(tmp_path: Path):
+    """max_parallel_ssh defaults to DEFAULT_MAX_PARALLEL_SSH when unset."""
+    from sparkrun.orchestration.ssh import DEFAULT_MAX_PARALLEL_SSH
+
+    config = SparkrunConfig(config_path=tmp_path / "nope.yaml")
+    assert config.max_parallel_ssh == DEFAULT_MAX_PARALLEL_SSH
+
+
+def test_config_max_parallel_ssh_override(tmp_path: Path):
+    """ssh.max_parallel_ssh overrides the default."""
+    config_file = tmp_path / "config.yaml"
+    with open(config_file, "w") as f:
+        yaml.dump({"ssh": {"max_parallel_ssh": 8}}, f)
+
+    config = SparkrunConfig(config_path=config_file)
+    assert config.max_parallel_ssh == 8
+
+
+def test_config_max_parallel_ssh_invalid_falls_back(tmp_path: Path):
+    """Non-positive or non-int values fall back to the default."""
+    from sparkrun.orchestration.ssh import DEFAULT_MAX_PARALLEL_SSH
+
+    config_file = tmp_path / "config.yaml"
+    with open(config_file, "w") as f:
+        yaml.dump({"ssh": {"max_parallel_ssh": 0}}, f)
+    assert SparkrunConfig(config_path=config_file).max_parallel_ssh == DEFAULT_MAX_PARALLEL_SSH
+
+    config_file2 = tmp_path / "config2.yaml"
+    with open(config_file2, "w") as f:
+        yaml.dump({"ssh": {"max_parallel_ssh": "not-a-number"}}, f)
+    assert SparkrunConfig(config_path=config_file2).max_parallel_ssh == DEFAULT_MAX_PARALLEL_SSH
+
+
 def test_config_get_dotted_path(tmp_path: Path):
     """Test the get() method with dot-separated key paths.
 

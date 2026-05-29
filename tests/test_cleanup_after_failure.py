@@ -51,7 +51,10 @@ def _make_executor(*, auto_remove: bool = True) -> mock.MagicMock:
 
 
 def test_cleanup_after_failure_ranked_runs_stop_on_each_host(monkeypatch):
-    """auto_remove=True → stops cid_node_<rank> on each host (one call per host)."""
+    """auto_remove=True → stops cid_node_<rank> on each host (one call per host).
+
+    Cleanup is parallel, so the assertion is order-independent.
+    """
     ctx = _make_ctx()
     executor = _make_executor(auto_remove=True)
 
@@ -65,10 +68,10 @@ def test_cleanup_after_failure_ranked_runs_stop_on_each_host(monkeypatch):
 
     cleanup_after_failure(ctx, executor, reason="boom")
 
-    assert calls == [
+    assert set(calls) == {
         ("h1", "docker rm -f cid_node_0"),
         ("h2", "docker rm -f cid_node_1"),
-    ]
+    }
 
 
 def test_cleanup_after_failure_respects_no_rm(monkeypatch, caplog):
@@ -101,10 +104,11 @@ def test_cleanup_after_failure_explicit_container_names_uses_named_primitive(mon
 
     captured: dict = {}
 
-    def fake_cleanup_containers(hosts, names, *, ssh_kwargs, dry_run):
+    def fake_cleanup_containers(hosts, names, *, ssh_kwargs, dry_run, max_workers=None):
         captured["hosts"] = list(hosts)
         captured["names"] = list(names)
         captured["dry_run"] = dry_run
+        captured["max_workers"] = max_workers
 
     monkeypatch.setattr("sparkrun.orchestration.primitives.cleanup_containers", fake_cleanup_containers)
 
@@ -136,7 +140,12 @@ def test_cleanup_after_failure_hosts_subset_restricts_cleanup(monkeypatch):
 
 
 def test_cleanup_after_failure_swallows_cleanup_errors(monkeypatch, caplog):
-    """Errors during cleanup are logged at warning and don't propagate."""
+    """Per-host cleanup errors are reported (not raised) — best-effort cleanup.
+
+    With parallel cleanup, a per-host exception is caught inside the worker
+    loop and surfaced as a per-host "did not confirm" warning rather than
+    propagating; the original launch failure must remain the primary signal.
+    """
     ctx = _make_ctx()
     executor = _make_executor(auto_remove=True)
 
@@ -146,9 +155,11 @@ def test_cleanup_after_failure_swallows_cleanup_errors(monkeypatch, caplog):
     monkeypatch.setattr("sparkrun.orchestration.ssh.run_remote_command", boom)
 
     with caplog.at_level(logging.WARNING, logger="sparkrun.runtimes._cluster_ops"):
+        # Must not raise.
         cleanup_after_failure(ctx, executor, reason="x")
 
-    assert any("Cleanup encountered errors (continuing): ssh down" in r.message for r in caplog.records)
+    # Both hosts failed cleanup → informative per-host warning naming them.
+    assert any("Container cleanup did not confirm" in r.message and "h1" in r.message and "h2" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------

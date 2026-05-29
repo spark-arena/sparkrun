@@ -572,13 +572,14 @@ def query_cluster_status(
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from sparkrun.orchestration.primitives import run_command_on_host
+    from sparkrun.orchestration.ssh import resolve_parallel_cap
     from sparkrun.orchestration.job_metadata import load_job_metadata
     from sparkrun.core.pending_ops import list_pending_ops
 
     docker_cmd = "docker ps --filter 'name=sparkrun_' --format '{{.Names}}\\t{{.Status}}\\t{{.Image}}'"
 
     # Query all hosts in parallel (dispatches local vs SSH automatically)
-    with ThreadPoolExecutor(max_workers=len(host_list)) as executor:
+    with ThreadPoolExecutor(max_workers=resolve_parallel_cap(len(host_list))) as executor:
         futures = {
             executor.submit(
                 run_command_on_host,

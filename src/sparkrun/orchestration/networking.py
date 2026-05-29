@@ -1625,7 +1625,7 @@ def discover_host_network_ips(
             run_remote_scripts_parallel(
                 remote_hosts,
                 ib_script,
-                timeout=30,
+                timeout=60,
                 dry_run=dry_run,
                 **kw,
             )
@@ -1720,7 +1720,9 @@ def distribute_host_keys(
         lr = run_local_script(script, dry_run=dry_run)
         results.append(RemoteResult(host=host, returncode=lr.returncode, stdout=lr.stdout, stderr=lr.stderr))
     if remote_hosts:
-        results.extend(run_remote_scripts_parallel(remote_hosts, script, dry_run=dry_run, **kw))
+        # ssh-keyscan is a fast probe; bound it so an unreachable host that
+        # completes TCP connect but then stalls can't hang the keyscan step.
+        results.extend(run_remote_scripts_parallel(remote_hosts, script, timeout=60, dry_run=dry_run, **kw))
 
     for r in results:
         if r.success:

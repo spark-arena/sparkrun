@@ -28,6 +28,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _config_ssh_cap(config: "SparkrunConfig | None") -> int | None:
+    """Return the SSH fan-out cap from *config*, or ``None`` for the default."""
+    return config.max_parallel_ssh if config is not None else None
+
+
 @dataclass
 class ClusterContext:
     """Resolved state for a cluster launch.
@@ -153,19 +158,68 @@ class ClusterContext:
 # ---------------------------------------------------------------------------
 
 
-def cleanup_ranked_containers(ctx: ClusterContext, executor: Executor) -> None:
-    """Stop ranked node containers (``{cluster_id}_node_{rank}``) on all hosts."""
-    from sparkrun.orchestration.ssh import run_remote_command
+def _stop_ranked_containers_parallel(
+    ctx: ClusterContext,
+    executor: Executor,
+    target_hosts: list[str],
+) -> list[str]:
+    """Stop ranked node containers on *target_hosts* in parallel (best-effort).
 
-    for rank, host in enumerate(ctx.hosts):
-        container_name = executor.node_container_name(ctx.cluster_id, rank)
-        run_remote_command(
-            host,
-            executor.stop_cmd(container_name),
-            timeout=30,
-            dry_run=ctx.dry_run,
-            **ctx.ssh_kwargs,
+    Ranks are assigned by position in ``ctx.hosts`` so the stopped container
+    name matches what was launched, even when *target_hosts* is a subset.
+    Returns the hosts whose stop command did not confirm (empty on success;
+    always empty in dry-run).
+    """
+    from sparkrun.orchestration.ssh import resolve_parallel_cap, run_remote_command
+
+    rank_by_host = {host: rank for rank, host in enumerate(ctx.hosts)}
+    if not target_hosts:
+        return []
+
+    failed: list[str] = []
+    with ThreadPoolExecutor(max_workers=resolve_parallel_cap(len(target_hosts), _config_ssh_cap(ctx.config))) as pool:
+        futures = {}
+        for host in target_hosts:
+            container_name = executor.node_container_name(ctx.cluster_id, rank_by_host.get(host, 0))
+            futures[
+                pool.submit(
+                    run_remote_command,
+                    host,
+                    executor.stop_cmd(container_name),
+                    timeout=30,
+                    dry_run=ctx.dry_run,
+                    quiet=True,
+                    **ctx.ssh_kwargs,
+                )
+            ] = host
+        for future in as_completed(futures):
+            host = futures[future]
+            try:
+                result = future.result()
+            except Exception as e:  # pragma: no cover - defensive
+                logger.debug("Ranked cleanup raised on %s: %s", host, e)
+                failed.append(host)
+                continue
+            if not result.success and not ctx.dry_run:
+                failed.append(host)
+
+    if failed and not ctx.dry_run:
+        logger.warning(
+            "Container cleanup did not confirm on %d host(s): %s — "
+            "these may still hold VRAM; check with 'sparkrun stop %s' or 'docker ps'.",
+            len(failed),
+            ", ".join(failed),
+            ctx.cluster_id,
         )
+    return failed
+
+
+def cleanup_ranked_containers(ctx: ClusterContext, executor: Executor) -> list[str]:
+    """Stop ranked node containers (``{cluster_id}_node_{rank}``) on all hosts.
+
+    Parallel and best-effort; returns the hosts that did not confirm cleanup.
+    """
+    return _stop_ranked_containers_parallel(ctx, executor, list(ctx.hosts))
 
 
 def cleanup_named_containers(ctx: ClusterContext, container_names: list[str]) -> None:
@@ -214,22 +268,13 @@ def cleanup_after_failure(
                 container_names,
                 ssh_kwargs=ctx.ssh_kwargs,
                 dry_run=ctx.dry_run,
+                max_workers=_config_ssh_cap(ctx.config),
             )
             return
         # Ranked cleanup. Use the supplied host subset when provided so we
         # don't issue stop commands to hosts that never had a container.
-        from sparkrun.orchestration.ssh import run_remote_command
-
-        target_hosts = hosts or ctx.hosts
-        for rank, host in enumerate(target_hosts):
-            container_name = executor.node_container_name(ctx.cluster_id, rank)
-            run_remote_command(
-                host,
-                executor.stop_cmd(container_name),
-                timeout=30,
-                dry_run=ctx.dry_run,
-                **ctx.ssh_kwargs,
-            )
+        # Parallel + per-host reporting via the shared helper.
+        _stop_ranked_containers_parallel(ctx, executor, list(hosts or ctx.hosts))
     except Exception as e:
         logger.warning("Cleanup encountered errors (continuing): %s", e)
 
@@ -520,9 +565,9 @@ def launch_containers_parallel(
 
     Returns 0 on success, 1 on first failure.
     """
-    from sparkrun.orchestration.ssh import run_remote_script
+    from sparkrun.orchestration.ssh import resolve_parallel_cap, run_remote_script
 
-    with ThreadPoolExecutor(max_workers=len(containers)) as pool:
+    with ThreadPoolExecutor(max_workers=resolve_parallel_cap(len(containers), _config_ssh_cap(ctx.config))) as pool:
         futures = {}
         for host, cname in containers:
             host_nccl_env = comm_env.get_env(host) if comm_env else None
@@ -914,7 +959,9 @@ def run_native_cluster(
                 len(ctx.worker_hosts),
                 ", ".join(ctx.worker_hosts),
             )
-        with ThreadPoolExecutor(max_workers=len(ctx.worker_hosts)) as pool:
+        from sparkrun.orchestration.ssh import resolve_parallel_cap
+
+        with ThreadPoolExecutor(max_workers=resolve_parallel_cap(len(ctx.worker_hosts), _config_ssh_cap(ctx.config))) as pool:
             futures = {}
             for i, host in enumerate(ctx.worker_hosts):
                 rank = i + 1

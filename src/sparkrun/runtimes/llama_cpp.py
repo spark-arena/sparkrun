@@ -545,8 +545,10 @@ class LlamaCppRuntime(RuntimePlugin):
             rpc_worker_command = self._build_rpc_worker_command(rpc_port)
 
             from concurrent.futures import ThreadPoolExecutor, as_completed
+            from sparkrun.orchestration.ssh import resolve_parallel_cap
+            from sparkrun.runtimes._cluster_ops import _config_ssh_cap
 
-            with ThreadPoolExecutor(max_workers=len(ctx.worker_hosts)) as pool:
+            with ThreadPoolExecutor(max_workers=resolve_parallel_cap(len(ctx.worker_hosts), _config_ssh_cap(ctx.config))) as pool:
                 futures = {}
                 for host in ctx.worker_hosts:
                     exec_script = self._resolve_executor().generate_exec_serve_script(

@@ -13,7 +13,9 @@ import subprocess
 from sparkrun.core.config import SparkrunConfig, resolve_hf_cache_home
 from sparkrun.utils import is_valid_ip
 from sparkrun.orchestration.ssh import (
+    DEFAULT_MAX_PARALLEL_SSH,
     RemoteResult,
+    resolve_parallel_cap,
     run_remote_command,
     run_remote_script,
     run_remote_scripts_parallel,
@@ -28,8 +30,11 @@ from sparkrun.orchestration.docker import docker_stop_cmd
 
 logger = logging.getLogger(__name__)
 
-# Orchestration constants
-MAX_PARALLEL_SSH = 20
+# Orchestration constants.
+# ``MAX_PARALLEL_SSH`` is retained here for backward-compatible imports;
+# the canonical default now lives in ``orchestration.ssh`` so the fan-out
+# helpers and ``SparkrunConfig.max_parallel_ssh`` share one source of truth.
+MAX_PARALLEL_SSH = DEFAULT_MAX_PARALLEL_SSH
 PORT_SCAN_MAX_ATTEMPTS = 24
 
 
@@ -363,20 +368,57 @@ def cleanup_containers(
     container_names: list[str],
     ssh_kwargs: dict | None = None,
     dry_run: bool = False,
-) -> None:
-    """Stop and remove named containers on every host.
+    max_workers: int | None = None,
+) -> list[str]:
+    """Stop and remove named containers on every host, in parallel.
 
-    Uses local execution when a host is localhost, SSH otherwise.
+    Uses local execution when a host is localhost, SSH otherwise.  Cleanup is
+    best-effort: each host is attempted independently and failures are
+    reported (returned + logged) rather than raised, so one unreachable host
+    can't block or mask cleanup of the rest.
 
     Args:
         hosts: Target hosts.
         container_names: Container names to remove on each host.
         ssh_kwargs: SSH connection parameters.
         dry_run: Log without executing.
+        max_workers: Cap on concurrent cleanup workers (defaults to the
+            shared SSH fan-out cap).
+
+    Returns:
+        List of hosts where the stop command failed (empty on full success).
+        Always empty in dry-run mode.
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     cmds = "; ".join(docker_stop_cmd(name) for name in container_names)
-    for host in hosts:
-        run_command_on_host(host, cmds, ssh_kwargs=ssh_kwargs, timeout=30, dry_run=dry_run)
+    if not hosts:
+        return []
+
+    failed: list[str] = []
+    with ThreadPoolExecutor(max_workers=resolve_parallel_cap(len(hosts), max_workers)) as pool:
+        futures = {
+            pool.submit(run_command_on_host, host, cmds, ssh_kwargs=ssh_kwargs, timeout=30, dry_run=dry_run, quiet=True): host
+            for host in hosts
+        }
+        for future in as_completed(futures):
+            host = futures[future]
+            try:
+                result = future.result()
+            except Exception as e:  # pragma: no cover - defensive
+                logger.debug("Cleanup raised on %s: %s", host, e)
+                failed.append(host)
+                continue
+            if not result.success and not dry_run:
+                failed.append(host)
+
+    if failed and not dry_run:
+        logger.warning(
+            "Container cleanup did not confirm on %d host(s): %s — these may still hold VRAM; check with 'sparkrun stop' or 'docker ps'.",
+            len(failed),
+            ", ".join(failed),
+        )
+    return failed
 
 
 def cleanup_containers_local(

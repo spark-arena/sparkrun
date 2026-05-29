@@ -285,8 +285,9 @@ def validate_ib_connectivity(
             result = run_remote_command(_ip, "true", connect_timeout=5, timeout=10, **kw)
             return host_ip, result.success
 
-        # TODO: review parallelism limits!
-        with ThreadPoolExecutor(max_workers=len(work)) as pool:
+        from sparkrun.orchestration.ssh import resolve_parallel_cap
+
+        with ThreadPoolExecutor(max_workers=resolve_parallel_cap(len(work))) as pool:
             for host_ip, ok in pool.map(_probe, work):
                 probe_results[host_ip] = ok
 

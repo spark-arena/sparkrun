@@ -18,6 +18,35 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_RSYNC_OPTIONS = ["-az", "--mkpath", "--partial", "--links"]
 
+# Default cap on concurrent SSH/rsync fan-out workers.  At 32+ hosts an
+# uncapped ``max_workers=len(hosts)`` spawns one SSH (or ``docker save|ssh
+# docker load`` pipeline) per host simultaneously, hitting sshd's
+# ``MaxStartups`` (default 10) and saturating the control node.  Capping the
+# thread pool bounds concurrency while leaving small clusters (<= cap hosts)
+# byte-for-byte unchanged.  Overridable via ``SparkrunConfig.max_parallel_ssh``
+# (``ssh.max_parallel_ssh`` in config.yaml).
+DEFAULT_MAX_PARALLEL_SSH = 20
+
+# Concurrency cap for head→worker fan-out inside the embedded
+# ``image_distribute.sh`` / ``model_distribute.sh`` scripts.  These run ON THE
+# HEAD and stream multi-GB transfers (``docker save | ssh docker load``, rsync)
+# out a single NIC/disk, so the cap is intentionally small — overlap connect
+# latency without saturating the head.  Distinct from
+# ``DEFAULT_MAX_PARALLEL_SSH`` (control-node SSH fan-out).
+HEAD_DISTRIBUTE_MAX_PARALLEL = 4
+
+
+def resolve_parallel_cap(n: int, cap: int | None = None) -> int:
+    """Return the worker count for a fan-out over *n* items.
+
+    ``min(n, cap)`` with ``cap`` defaulting to
+    :data:`DEFAULT_MAX_PARALLEL_SSH`.  Always returns at least ``1`` so a
+    ``ThreadPoolExecutor`` is never constructed with ``max_workers=0``.
+    """
+    if cap is None or cap <= 0:
+        cap = DEFAULT_MAX_PARALLEL_SSH
+    return max(1, min(n, cap))
+
 
 @dataclass
 class RemoteResult:
@@ -518,6 +547,7 @@ def run_remote_scripts_parallel(
     timeout: int | None = None,
     dry_run: bool = False,
     quiet: bool = False,
+    max_workers: int | None = None,
 ) -> list[RemoteResult]:
     """Execute the same script on multiple hosts in parallel using threads.
 
@@ -530,6 +560,9 @@ def run_remote_scripts_parallel(
         timeout: Per-host execution timeout in seconds.
         dry_run: If True, log the script but don't execute.
         quiet: If True, downgrade failure logging from WARNING to DEBUG.
+        max_workers: Cap on concurrent SSH workers.  Defaults to
+            :data:`DEFAULT_MAX_PARALLEL_SSH`; the effective pool size is
+            ``min(len(hosts), max_workers)``.
 
     Returns:
         List of RemoteResult, one per host (order not guaranteed).
@@ -540,7 +573,7 @@ def run_remote_scripts_parallel(
 
     t0 = time.monotonic()
     results: list[RemoteResult] = []
-    with ThreadPoolExecutor(max_workers=len(hosts)) as executor:
+    with ThreadPoolExecutor(max_workers=resolve_parallel_cap(len(hosts), max_workers)) as executor:
         futures = {
             executor.submit(
                 run_remote_script,
@@ -848,6 +881,7 @@ def run_pipeline_to_remotes_parallel(
     connect_timeout: int = 10,
     timeout: int | None = None,
     dry_run: bool = False,
+    max_workers: int | None = None,
 ) -> list[RemoteResult]:
     """Run a local-to-remote pipeline on multiple hosts in parallel.
 
@@ -864,6 +898,11 @@ def run_pipeline_to_remotes_parallel(
         connect_timeout: SSH connection timeout in seconds.
         timeout: Per-host execution timeout in seconds.
         dry_run: If True, log but don't execute.
+        max_workers: Cap on concurrent pipeline workers.  Defaults to
+            :data:`DEFAULT_MAX_PARALLEL_SSH`; the effective pool size is
+            ``min(len(hosts), max_workers)``.  Pipelines stream multi-GB
+            ``docker save | ssh docker load`` data, so a tight cap also
+            protects control-node I/O.
 
     Returns:
         List of RemoteResult, one per host.
@@ -874,7 +913,7 @@ def run_pipeline_to_remotes_parallel(
 
     t0 = time.monotonic()
     results: list[RemoteResult] = []
-    with ThreadPoolExecutor(max_workers=len(hosts)) as executor:
+    with ThreadPoolExecutor(max_workers=resolve_parallel_cap(len(hosts), max_workers)) as executor:
         futures = {
             executor.submit(
                 run_pipeline_to_remote,
@@ -944,6 +983,7 @@ def run_rsync_parallel(
     rsync_options: list[str] | None = None,
     timeout: int | None = None,
     dry_run: bool = False,
+    max_workers: int | None = None,
 ) -> list[RemoteResult]:
     """Rsync a local path to multiple hosts in parallel.
 
@@ -961,6 +1001,9 @@ def run_rsync_parallel(
         rsync_options: Override rsync flags.
         timeout: Per-host execution timeout in seconds.
         dry_run: If True, log but don't execute.
+        max_workers: Cap on concurrent rsync workers.  Defaults to
+            :data:`DEFAULT_MAX_PARALLEL_SSH`; the effective pool size is
+            ``min(len(hosts), max_workers)``.
 
     Returns:
         List of RemoteResult, one per host.
@@ -971,7 +1014,7 @@ def run_rsync_parallel(
 
     t0 = time.monotonic()
     results: list[RemoteResult] = []
-    with ThreadPoolExecutor(max_workers=len(hosts)) as executor:
+    with ThreadPoolExecutor(max_workers=resolve_parallel_cap(len(hosts), max_workers)) as executor:
         futures = {
             executor.submit(
                 run_rsync,

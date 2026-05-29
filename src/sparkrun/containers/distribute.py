@@ -17,6 +17,7 @@ import logging
 from sparkrun.containers.registry import ensure_image, get_image_identity
 from sparkrun.orchestration.transfer import map_transfer_failures
 from sparkrun.orchestration.ssh import (
+    HEAD_DISTRIBUTE_MAX_PARALLEL,
     RemoteResult,
     build_ssh_opts_string,
     run_pipeline_to_remotes_parallel,
@@ -109,11 +110,12 @@ def _check_remote_image_identities(
         return {}
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
+    from sparkrun.orchestration.ssh import resolve_parallel_cap
 
     cmd = _REMOTE_IMAGE_IDENTITY_CMD.format(image=quote(image))
     result_map: dict[str, tuple[str | None, list[str]]] = {}
 
-    with ThreadPoolExecutor(max_workers=len(hosts)) as executor:
+    with ThreadPoolExecutor(max_workers=resolve_parallel_cap(len(hosts))) as executor:
         futures = {
             executor.submit(
                 run_remote_command,
@@ -405,6 +407,7 @@ def distribute_image_from_head(
         targets=args_list_to_shell_str(targets),
         ssh_opts=ssh_opts,
         ssh_user=ssh_user or "",
+        max_parallel=HEAD_DISTRIBUTE_MAX_PARALLEL,
     )
 
     return _distribute_from_head(

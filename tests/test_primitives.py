@@ -777,3 +777,67 @@ class TestResolveEffectiveCacheDir:
 
         assert result == "/home/other/.cache/huggingface"
         mock_probe.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# C4: parallel cleanup_containers with per-host reporting
+# ---------------------------------------------------------------------------
+
+
+@patch("sparkrun.orchestration.primitives.run_command_on_host")
+def test_cleanup_containers_reports_failed_hosts(mock_run):
+    """cleanup_containers returns the hosts whose stop did not confirm."""
+    from sparkrun.orchestration.primitives import cleanup_containers
+
+    def _side(host, cmds, **kw):
+        # h2 fails to confirm cleanup; the rest succeed.
+        return RemoteResult(host=host, returncode=1 if host == "h2" else 0, stdout="", stderr="boom")
+
+    mock_run.side_effect = _side
+
+    failed = cleanup_containers(["h1", "h2", "h3"], ["c0", "c1"])
+    assert failed == ["h2"]
+    # One call per host (parallel, order-independent).
+    assert mock_run.call_count == 3
+
+
+@patch("sparkrun.orchestration.primitives.run_command_on_host")
+def test_cleanup_containers_all_ok_returns_empty(mock_run):
+    from sparkrun.orchestration.primitives import cleanup_containers
+
+    mock_run.return_value = RemoteResult(host="x", returncode=0, stdout="", stderr="")
+    failed = cleanup_containers(["h1", "h2"], ["c0"])
+    assert failed == []
+
+
+@patch("sparkrun.orchestration.primitives.run_command_on_host")
+def test_cleanup_containers_unreachable_host_does_not_block_others(mock_run):
+    """An exception on one host is reported, not raised, and others proceed."""
+    from sparkrun.orchestration.primitives import cleanup_containers
+
+    def _side(host, cmds, **kw):
+        if host == "h1":
+            raise RuntimeError("ssh down")
+        return RemoteResult(host=host, returncode=0, stdout="", stderr="")
+
+    mock_run.side_effect = _side
+
+    failed = cleanup_containers(["h1", "h2"], ["c0"])
+    assert failed == ["h1"]
+
+
+@patch("sparkrun.orchestration.primitives.run_command_on_host")
+def test_cleanup_containers_dry_run_reports_no_failures(mock_run):
+    from sparkrun.orchestration.primitives import cleanup_containers
+
+    mock_run.return_value = RemoteResult(host="x", returncode=1, stdout="", stderr="")
+    failed = cleanup_containers(["h1", "h2"], ["c0"], dry_run=True)
+    assert failed == []
+
+
+@patch("sparkrun.orchestration.primitives.run_command_on_host")
+def test_cleanup_containers_empty_hosts_noop(mock_run):
+    from sparkrun.orchestration.primitives import cleanup_containers
+
+    assert cleanup_containers([], ["c0"]) == []
+    mock_run.assert_not_called()

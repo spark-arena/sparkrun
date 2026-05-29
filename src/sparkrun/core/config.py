@@ -178,6 +178,29 @@ class SparkrunConfig:
         ssh = self._data.get("ssh", {})
         return ssh.get("options", [])
 
+    @property
+    def max_parallel_ssh(self) -> int:
+        """Cap on concurrent SSH/rsync fan-out workers.
+
+        Bounds the thread-pool size used by the parallel orchestration
+        helpers (``run_remote_scripts_parallel``, ``run_rsync_parallel``,
+        ``run_pipeline_to_remotes_parallel``, cleanup, status queries).
+        Defaults to :data:`DEFAULT_MAX_PARALLEL_SSH` (20) — chosen to stay
+        under sshd's ``MaxStartups`` default (10 unauthenticated, but
+        authenticated sessions are not throttled the same way) while still
+        fanning out widely.  Set via ``ssh.max_parallel_ssh`` in
+        ``config.yaml``.  Values ``<= 0`` fall back to the default.
+        """
+        from sparkrun.orchestration.ssh import DEFAULT_MAX_PARALLEL_SSH
+
+        ssh = self._data.get("ssh", {})
+        raw = ssh.get("max_parallel_ssh") if isinstance(ssh, dict) else None
+        try:
+            val = int(raw)
+        except (TypeError, ValueError):
+            return DEFAULT_MAX_PARALLEL_SSH
+        return val if val > 0 else DEFAULT_MAX_PARALLEL_SSH
+
     def get(self, key: str, default: Any = None) -> Any:
         """Get a config value by dot-separated key path."""
         parts = key.split(".")
