@@ -318,6 +318,7 @@ def run(
         recipe,
         overrides,
         cluster_def=cluster_def,
+        runtime=runtime,
         sctx=sctx,
         solo=solo,
     )

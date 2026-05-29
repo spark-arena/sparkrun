@@ -328,20 +328,36 @@ def test_framework_category_match_does_not_raise():
 
 
 def test_api_benchmark_options_category_threaded_to_run_benchmark():
-    """BenchmarkOptions.category is forwarded to _run_benchmark as category=..."""
-    from sparkrun.api._benchmark import _build_run_benchmark_kwargs
+    """BenchmarkOptions.category is forwarded to _execute_benchmark as options.category."""
+    from unittest.mock import MagicMock, patch
     from sparkrun.api._benchmark_models import BenchmarkOptions
 
-    opts = BenchmarkOptions(recipe="my-recipe", category="performance")
-    kwargs = _build_run_benchmark_kwargs(opts, fresh=False, submission_id_for_extras=None)
-    assert kwargs["category"] == "performance"
+    received = []
+
+    def _capture(options, *, sctx, emitter):
+        received.append(options)
+        return MagicMock(success=True)
+
+    with patch("sparkrun.api._benchmark._execute_benchmark", side_effect=_capture):
+        from sparkrun.api import benchmark
+
+        benchmark(BenchmarkOptions(recipe="my-recipe", category="performance"))
+    assert received[0].category == "performance"
 
 
 def test_api_benchmark_options_no_category_is_none():
-    """When BenchmarkOptions.category is None, the kwarg is None."""
-    from sparkrun.api._benchmark import _build_run_benchmark_kwargs
+    """When BenchmarkOptions.category is None, options.category stays None."""
+    from unittest.mock import MagicMock, patch
     from sparkrun.api._benchmark_models import BenchmarkOptions
 
-    opts = BenchmarkOptions(recipe="my-recipe")
-    kwargs = _build_run_benchmark_kwargs(opts, fresh=False, submission_id_for_extras=None)
-    assert kwargs["category"] is None
+    received = []
+
+    def _capture(options, *, sctx, emitter):
+        received.append(options)
+        return MagicMock(success=True)
+
+    with patch("sparkrun.api._benchmark._execute_benchmark", side_effect=_capture):
+        from sparkrun.api import benchmark
+
+        benchmark(BenchmarkOptions(recipe="my-recipe"))
+    assert received[0].category is None

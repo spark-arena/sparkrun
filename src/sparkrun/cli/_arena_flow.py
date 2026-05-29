@@ -14,9 +14,9 @@ from typing import Any
 
 import click
 
-logger = logging.getLogger(__name__)
+from sparkrun.core.benchmark_profiles import ARENA_BENCHMARK_PROFILE  # noqa: F401 — re-exported for back-compat
 
-ARENA_BENCHMARK_PROFILE = "@official/spark-arena-v2"
+logger = logging.getLogger(__name__)
 
 
 def preflight_arena(

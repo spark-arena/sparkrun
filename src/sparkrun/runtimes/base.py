@@ -869,9 +869,10 @@ class RuntimePlugin(Plugin):
                 entry per host in *hosts*).  When provided, the cluster
                 orchestrator uses ``backends[host].collective.env_for_host``
                 to emit NCCL/RCCL/HCCL env vars; ``None`` keeps the
-                legacy :func:`sparkrun.runtimes._cluster_ops.resolve_ib_env`
-                behaviour for back-compat with callers that haven't
-                threaded backends through yet.
+                legacy NCCL generator path in
+                :func:`sparkrun.runtimes._cluster_ops.resolve_comm_env`
+                for back-compat with callers that haven't threaded
+                backends through yet.
             trust: When True, suppress the interactive confirmation
                 prompt for recipe-defined ``pre_exec`` hooks.  Resolved
                 upstream by :func:`sparkrun.core.launcher.resolve_recipe_trust`

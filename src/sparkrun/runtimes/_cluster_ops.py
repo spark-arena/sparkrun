@@ -371,10 +371,9 @@ def resolve_comm_env(
 ) -> ClusterCommEnv:
     """Resolve the cluster comm env: reuse pre-detected or probe.
 
-    Successor to :func:`resolve_ib_env`.  Emits per-host env via
-    ``backends[host].collective.env_for_host`` when *backends* is
-    supplied; otherwise falls back to the legacy NCCL generator
-    (byte-identical for NVIDIA hosts).
+    Emits per-host env via ``backends[host].collective.env_for_host``
+    when *backends* is supplied; otherwise falls back to the legacy
+    NCCL generator (byte-identical for NVIDIA hosts).
     """
     from sparkrun.orchestration.comm_env import ClusterCommEnv as _CCE
 

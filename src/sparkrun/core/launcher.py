@@ -53,8 +53,8 @@ class LaunchResult:
     Populated when at least one host's hardware resolved cleanly through
     :func:`sparkrun.core.backend_select.select_backends`.  Empty dict
     when no resolution was performed (e.g. caller bypassed cluster
-    threading) — runtimes then fall back to the legacy
-    :func:`resolve_ib_env` path.
+    threading) — runtimes then fall back to the legacy NCCL generator
+    in :func:`sparkrun.runtimes._cluster_ops.resolve_comm_env`.
     """
 
 
@@ -169,9 +169,11 @@ def resolve_per_host_backends(
 
     Hosts whose hardware fails to resolve a backend (unknown vendor,
     multi-vendor host, etc.) are silently skipped: runtimes fall back
-    to the legacy :func:`resolve_ib_env` path for those hosts.  This
-    keeps the cluster-launch surface live for partial-vendor coverage
-    rather than failing-fast on a single bad fingerprint.
+    to the legacy NCCL generator in
+    :func:`sparkrun.runtimes._cluster_ops.resolve_comm_env` for those
+    hosts.  This keeps the cluster-launch surface live for
+    partial-vendor coverage rather than failing-fast on a single bad
+    fingerprint.
 
     Args:
         host_list: Resolved cluster hosts.
@@ -414,7 +416,8 @@ def launch_inference(
 
     # Resolve per-host backends from cluster hardware (or DGX Spark default).
     # Used by NCCL/RCCL/HCCL env emission inside the cluster orchestrator;
-    # empty dict means runtimes fall back to the legacy resolve_ib_env path.
+    # empty dict means runtimes fall back to the legacy NCCL generator in
+    # _cluster_ops.resolve_comm_env.
     backends = resolve_per_host_backends(host_list, cluster=cluster)
 
     # Pre-placement compatibility gate: verify the runtime can target every

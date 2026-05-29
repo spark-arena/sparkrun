@@ -27,7 +27,26 @@ class InsufficientCapacity(SparkrunError):
     Surfaced when a scheduler raises
     :class:`~sparkrun.core.scheduler.InfeasibleScheduleError`.  The
     message carries the slot count seen vs requested.
+
+    The optional :attr:`status` (a ``ClusterStatus`` snapshot),
+    :attr:`host_list`, and :attr:`required` attributes are populated by
+    :func:`sparkrun.api._hosts.resolve_effective_hosts` so the CLI can
+    render capacity diagnostics without an extra SSH round-trip.  They
+    are ``None`` / empty when the error originated elsewhere.
     """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status=None,
+        host_list: list[str] | None = None,
+        required: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status = status
+        self.host_list: tuple[str, ...] = tuple(host_list or ())
+        self.required = required
 
 
 class LayoutRequired(SparkrunError):

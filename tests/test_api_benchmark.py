@@ -271,22 +271,40 @@ def test_benchmark_sparkrunerror_propagates_unchanged():
 
 
 # ---------------------------------------------------------------------------
-# Legacy compat: _build_run_benchmark_kwargs still works (imported by tests)
+# Category threading: benchmark() forwards options.category to the
+# orchestration body (_execute_benchmark) unchanged.  These replace the
+# retired _build_run_benchmark_kwargs shim by asserting the real entry point.
 # ---------------------------------------------------------------------------
 
 
-def test_build_run_benchmark_kwargs_category_threaded():
-    """_build_run_benchmark_kwargs still works for tests that import it."""
-    from sparkrun.api._benchmark import _build_run_benchmark_kwargs
+def test_benchmark_threads_category_to_execute():
+    """``benchmark()`` forwards ``options.category`` into ``_execute_benchmark``."""
+    from unittest.mock import patch
 
-    opts = BenchmarkOptions(recipe="my-recipe", category="performance")
-    kwargs = _build_run_benchmark_kwargs(opts, fresh=False, submission_id_for_extras=None)
-    assert kwargs["category"] == "performance"
+    received = []
+
+    def _capture(options, *, sctx, emitter):
+        received.append(options)
+        return MagicMock(success=True)
+
+    with patch("sparkrun.api._benchmark._execute_benchmark", side_effect=_capture):
+        from sparkrun.api import benchmark
+
+        benchmark(BenchmarkOptions(recipe="my-recipe", category="performance"))
+    assert received[0].category == "performance"
 
 
-def test_build_run_benchmark_kwargs_no_category():
-    from sparkrun.api._benchmark import _build_run_benchmark_kwargs
+def test_benchmark_no_category_threads_none():
+    from unittest.mock import patch
 
-    opts = BenchmarkOptions(recipe="my-recipe")
-    kwargs = _build_run_benchmark_kwargs(opts, fresh=False, submission_id_for_extras=None)
-    assert kwargs["category"] is None
+    received = []
+
+    def _capture(options, *, sctx, emitter):
+        received.append(options)
+        return MagicMock(success=True)
+
+    with patch("sparkrun.api._benchmark._execute_benchmark", side_effect=_capture):
+        from sparkrun.api import benchmark
+
+        benchmark(BenchmarkOptions(recipe="my-recipe"))
+    assert received[0].category is None

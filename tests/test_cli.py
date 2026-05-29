@@ -115,11 +115,12 @@ def _cli_test_recipes(tmp_path_factory, monkeypatch):
 def _stub_cluster_status_in_cli_tests(monkeypatch):
     """Default cluster-status acquisition to a no-op so CLI tests don't SSH out.
 
-    The v0.3 launch flow populates ``SchedulingRequest.status`` from
-    two call sites: :func:`sparkrun.api._run._safe_acquire_status`
-    (consumed by ``api.run``) and ``api.status`` (called from
+    The v0.3 launch flow populates ``SchedulingRequest.status`` from a
+    single call site: ``api.status``, invoked by the shared placement
+    authority :func:`sparkrun.api._hosts.resolve_effective_hosts`
+    (consumed by ``api.run``, the benchmark flow, and
     :func:`sparkrun.cli._common.resolve_effective_hosts_for_recipe`).
-    Both dispatch to ``executor.query_status`` → SSH against the
+    It dispatches to ``executor.query_status`` → SSH against the
     supplied hosts.  In unit tests the hosts are unreachable mock IPs
     — without these stubs each test waits the full SSH connect
     timeout (~10s/host) before the best-effort wrappers swallow the
@@ -131,7 +132,6 @@ def _stub_cluster_status_in_cli_tests(monkeypatch):
     from sparkrun.core.cluster_status import empty_status
 
     _stub = lambda hosts, **kwargs: empty_status(list(hosts))  # noqa: E731
-    monkeypatch.setattr("sparkrun.api._run._safe_acquire_status", lambda *args, **kwargs: None)
     monkeypatch.setattr("sparkrun.api._status.status", _stub)
     # ``api/__init__`` re-binds ``status`` into the public namespace;
     # CLI helpers call ``api.status(...)`` against that binding, so

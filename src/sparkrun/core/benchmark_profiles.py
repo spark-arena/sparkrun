@@ -12,6 +12,11 @@ from sparkrun.core.recipe import Recipe
 # Keys in the benchmark: block that are NOT framework args
 _KNOWN_BENCHMARK_KEYS = {"framework", "args", "metadata", "timeout", "schedule", "category"}
 
+# Pinned benchmark profile used by Spark Arena submissions.  Data, not CLI
+# behaviour — both the CLI arena flow and the API benchmark path import it
+# from here so neither owns the constant.
+ARENA_BENCHMARK_PROFILE = "@official/spark-arena-v2"
+
 
 class ProfileError(Exception):
     """Raised when a benchmark profile cannot be found."""

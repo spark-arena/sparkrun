@@ -76,7 +76,7 @@ class EugrVllmRayRuntime(VllmRayRuntime):
         Issues a deprecation warning since users should migrate to
         ``vllm-ray`` runtime with ``builder: eugr``.
         """
-        logger.warning("eugr-vllm runtime is deprecated. Use 'vllm' runtime with 'builder: eugr' instead.")
+        logger.warning("eugr-vllm runtime is deprecated. Use 'vllm-ray' runtime with 'builder: eugr' instead.")
         warnings.warn(
             "eugr-vllm runtime is deprecated. Use 'vllm-ray' runtime with 'builder: eugr' instead.",
             DeprecationWarning,

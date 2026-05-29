@@ -114,10 +114,9 @@ def fake_recipe_env(tmp_path: Path, monkeypatch):
     def _fake_loader(config, recipe_name, resolve=False):
         return recipe, Path("/dev/null"), None
 
-    # Patch in CLI module (used by _run_benchmark VRAM estimate path)
-    monkeypatch.setattr("sparkrun.cli._benchmark._load_recipe", _fake_loader)
-    # Patch in _common (used by _execute_benchmark via local import)
-    monkeypatch.setattr("sparkrun.cli._common._load_recipe", _fake_loader)
+    # Patch the console-free core loader that ``_execute_benchmark`` now
+    # imports (relocated out of cli/_common in the api→cli decoupling).
+    monkeypatch.setattr("sparkrun.core.resolve.load_recipe", _fake_loader)
     monkeypatch.chdir(tmp_path)
     return recipe
 

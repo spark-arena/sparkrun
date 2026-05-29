@@ -192,10 +192,11 @@ def resolve_effective_hosts_for_recipe(
     overrides: dict | None = None,
     *,
     cluster_def=None,
+    runtime=None,
     sctx: SparkrunContext | None = None,
     solo: bool = False,
 ) -> tuple[list[str], bool]:
-    """CLI-layer adapter around :func:`sparkrun.api.schedule`.
+    """CLI-layer adapter around :func:`sparkrun.api._hosts.resolve_effective_hosts`.
 
     Replaces the legacy ``validate_and_prepare_hosts`` helper.  Treats
     placement as a *structural* property: the scheduler's
@@ -233,114 +234,35 @@ def resolve_effective_hosts_for_recipe(
         behaviour).
     """
     import sparkrun.api as api
-    from sparkrun.core.parallelism import extract_parallelism
-    from sparkrun.core.scheduler import SchedulingRequest
+    from sparkrun.api._hosts import resolve_effective_hosts
 
     overrides = overrides or {}
 
-    # ``solo`` here is the ``--solo`` CLI flag; ``recipe.mode`` is the
-    # recipe-declared mode.  Both feed into the final ``is_solo`` answer,
-    # but the multi-host scheduling pass only short-circuits on the CLI
-    # flag (matching legacy behaviour, where ``max_nodes`` is enforced
-    # even for solo-mode recipes when the user supplied multiple hosts).
-    config_chain = recipe.build_config_chain(overrides)
-    parallelism_configured = any(config_chain.get(k) is not None for k in ("tensor_parallel", "pipeline_parallel", "data_parallel"))
-
-    # Multi-host scheduling pass: defer to the scheduler whenever any
-    # parallelism dimension is configured and more than one host is in
-    # play.  ``hosts_used`` IS the effective host list.
-    if not solo and len(host_list) > 1 and parallelism_configured:
-        parallelism = extract_parallelism(config_chain)
-        # Best-effort cluster status snapshot so occupancy-sparse / occupancy-dense schedulers
-        # can subtract already-running workloads from each host's capacity.
-        # Failures (partial reachability, missing executor, transient SSH)
-        # are swallowed; the scheduler falls back to its no-status path.
-        cluster_status = None
-        try:
-            cluster_status = api.status(
-                list(host_list),
-                cluster=cluster_def,
-                sctx=sctx,
-            )
-        except Exception as e:
-            logger.debug("Cluster status query failed; scheduling without occupancy info: %s", e)
-        request = SchedulingRequest(
-            parallelism=parallelism,
-            hosts=tuple(host_list),
-            host_hardware=(cluster_def.hosts_hardware if cluster_def is not None else None) or None,
-            layout=getattr(recipe, "layout", None),
-            status=cluster_status,
-            resources=None,
+    try:
+        host_list, is_solo, notes, _placement = resolve_effective_hosts(
+            host_list,
+            recipe,
+            overrides,
+            cluster_def=cluster_def,
+            runtime=runtime,
+            sctx=sctx,
+            solo=solo,
         )
-        try:
-            result = api.schedule(request, sctx=sctx)
-        except api.InsufficientCapacity as e:
-            # Distinguish "not enough hosts in the cluster" from "hosts
-            # are there but already full": only the former is a config
-            # error the user can fix by adding hosts; the latter is a
-            # state issue best diagnosed via the scheduler's message.
-            required = parallelism.total_nodes
-            if len(host_list) < required:
-                msg = "runtime requires %d nodes, but only %d hosts provided" % (required, len(host_list))
-            else:
-                # Surface the scheduler's diagnostic (e.g. "Cluster cannot
-                # satisfy 2 ranks under current occupancy: only placed 0
-                # of 2 ranks across 4 host(s)") so the user sees that
-                # capacity, not host count, is the constraint.
-                detail = str(e) or "no free accelerator slots across %d host(s)" % len(host_list)
-                msg = "cluster has insufficient free capacity for %d node(s): %s" % (required, detail)
-            click.echo("Error: %s" % msg, err=True)
-            _render_capacity_diagnostics(cluster_status, host_list)
-            sys.exit(1)
-        except api.LayoutRequired as e:
-            click.echo("Error: %s" % e, err=True)
-            sys.exit(1)
-        except api.SparkrunError as e:
-            click.echo("Error: %s" % e, err=True)
-            sys.exit(1)
+    except api.InsufficientCapacity as e:
+        # ``resolve_effective_hosts`` already shaped the message (host-count
+        # vs occupancy) and attached the status snapshot for diagnostics.
+        click.echo("Error: %s" % e, err=True)
+        _render_capacity_diagnostics(getattr(e, "status", None), list(getattr(e, "host_list", ()) or host_list))
+        sys.exit(1)
+    except api.LayoutRequired as e:
+        click.echo("Error: %s" % e, err=True)
+        sys.exit(1)
+    except api.SparkrunError as e:
+        click.echo("Error: %s" % e, err=True)
+        sys.exit(1)
 
-        scheduled_hosts = list(result.assignment.hosts_used)
-
-        # max_nodes is a hard recipe constraint; if the scheduler picked
-        # more hosts than the recipe permits, fail rather than silently
-        # truncate (truncation would produce a non-functional placement).
-        if recipe.max_nodes is not None and len(scheduled_hosts) > recipe.max_nodes:
-            click.echo(
-                "Error: runtime requires %d nodes (from parallelism settings), "
-                "but recipe '%s' specifies max_nodes=%d" % (len(scheduled_hosts), recipe.qualified_name, recipe.max_nodes),
-                err=True,
-            )
-            sys.exit(1)
-
-        if len(scheduled_hosts) < len(host_list):
-            click.echo("Note: %d nodes required, using %d of %d hosts" % (len(scheduled_hosts), len(scheduled_hosts), len(host_list)))
-        host_list = scheduled_hosts
-
-    # Enforce recipe.max_nodes as an orthogonal cap when scheduling did
-    # not run (solo CLI flag, single host, or no parallelism config).
-    if recipe.max_nodes is not None and len(host_list) > recipe.max_nodes:
-        # When parallelism is configured AND the implied node count
-        # exceeds max_nodes, treat it as a hard error rather than a
-        # silent truncation — runs that would be wrong as truncated are
-        # surfaced explicitly.
-        if parallelism_configured:
-            parallelism = extract_parallelism(config_chain)
-            required = parallelism.total_nodes
-            if required > recipe.max_nodes:
-                click.echo(
-                    "Error: runtime requires %d nodes (from parallelism settings), "
-                    "but recipe '%s' specifies max_nodes=%d" % (required, recipe.qualified_name, recipe.max_nodes),
-                    err=True,
-                )
-                sys.exit(1)
-        click.echo("Note: recipe max_nodes=%d, using %d of %d hosts" % (recipe.max_nodes, recipe.max_nodes, len(host_list)))
-        host_list = host_list[: recipe.max_nodes]
-
-    # Determine final solo mode after scheduling / max_nodes.
-    is_solo = bool(solo) or recipe.mode == "solo" or len(host_list) <= 1
-    if is_solo and len(host_list) > 1:
-        click.echo("Note: solo mode enabled, using 1 of %d hosts" % len(host_list))
-        host_list = host_list[:1]
+    for note in notes:
+        click.echo(note)
 
     return host_list, is_solo
 
@@ -1052,46 +974,31 @@ def _apply_recipe_overrides(
     recipe=None,
     **kwargs,
 ):
-    """Build overrides dict, apply to recipe, and resolve runtime.
+    """CLI wrapper around :func:`sparkrun.core.resolve.apply_recipe_overrides`.
 
-    Returns ``(recipe, overrides)`` — recipe is returned to make the
-    mutation explicit (runtime may change based on overrides).
-
-    When *recipe* is provided, ``recipe.resolve(overrides)`` is called
-    so that overrides can influence runtime resolution (e.g.
-    ``distributed_executor_backend=ray`` switches vllm-distributed to
-    vllm-ray).
+    Validates the ``--option/-o`` tuple first via :func:`_parse_options`
+    (which echoes ``"Error: --option must be key=value..."`` and exits on
+    malformed input, preserving the existing CLI behaviour), then defers
+    the override construction + runtime resolution to the console-free
+    core resolver.
     """
-    overrides = _parse_options(options)
-    if tensor_parallel is not None:
-        overrides["tensor_parallel"] = tensor_parallel
-    if pipeline_parallel is not None:
-        overrides["pipeline_parallel"] = pipeline_parallel
-    if data_parallel is not None:
-        overrides["data_parallel"] = data_parallel
-    if gpu_mem is not None:
-        overrides["gpu_memory_utilization"] = gpu_mem
-    if max_model_len is not None:
-        overrides["max_model_len"] = max_model_len
-    if image and recipe is not None:
-        recipe.container = image
+    from sparkrun.core.resolve import apply_recipe_overrides
 
-    for k, v in kwargs.items():
-        if v is not None:
-            overrides[k] = v
+    # Validate the option tuple up-front for the CLI's error message + exit
+    # code; the core resolver re-parses the (now-valid) tuple identically.
+    _parse_options(options)
 
-    # Apply env.* overrides to recipe.env directly
-    if recipe is not None:
-        for k, v in list(overrides.items()):
-            if k.startswith("env."):
-                recipe.env[k[4:]] = str(v)
-                del overrides[k]
-
-    # Resolve runtime with overrides visible to resolvers
-    if recipe is not None:
-        recipe.resolve(overrides)
-
-    return recipe, overrides
+    return apply_recipe_overrides(
+        options,
+        tensor_parallel=tensor_parallel,
+        pipeline_parallel=pipeline_parallel,
+        data_parallel=data_parallel,
+        gpu_mem=gpu_mem,
+        max_model_len=max_model_len,
+        image=image,
+        recipe=recipe,
+        **kwargs,
+    )
 
 
 def dry_run_option(f):

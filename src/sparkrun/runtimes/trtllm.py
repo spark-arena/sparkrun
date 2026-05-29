@@ -506,9 +506,9 @@ class TrtllmRuntime(RuntimePlugin):
             progress.step("Detecting InfiniBand")
         else:
             logger.info("Step 2/7: InfiniBand detection...")
-        # New path uses CollectiveBackend.env_for_host via backends; the
-        # deprecated resolve_ib_env wrapper is kept for one release for
-        # callers that haven't threaded backends through.
+        # New path uses CollectiveBackend.env_for_host via backends;
+        # backends must be threaded through by the launcher (the legacy
+        # backend-free IB env resolution has been removed).
         if backends is None:
             raise RuntimeError("backends is None; legacy IB env resolution is deprecated and no backends were provided.")
         comm_env = resolve_comm_env(ctx, comm_env, backends=backends)

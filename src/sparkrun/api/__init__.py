@@ -29,7 +29,7 @@ field additions are non-breaking, field removals are breaking.
 
 from __future__ import annotations
 
-from sparkrun.api._benchmark import benchmark
+from sparkrun.api._benchmark import benchmark, resume_benchmark
 from sparkrun.api._benchmark_models import (
     BenchmarkOptions,
     BenchmarkResult,
@@ -105,4 +105,5 @@ __all__ = [
     "status",
     "list_jobs",
     "benchmark",
+    "resume_benchmark",
 ]

@@ -58,10 +58,7 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunRes
         resolve_recipe,
         resolve_runtime,
     )
-    from sparkrun.api._schedule import schedule
     from sparkrun.core.launcher import launch_inference
-    from sparkrun.core.parallelism import extract_parallelism
-    from sparkrun.core.scheduler import SchedulingRequest
     from sparkrun.orchestration.job_metadata import (
         generate_cluster_id,
         generate_intent_id,
@@ -97,51 +94,28 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunRes
         except Exception:
             logger.debug("Failed to apply cluster SSH user to config", exc_info=True)
 
-    # 2. Compute placement (single source of truth for the effective host list).
-    placement: "RankAssignment | None" = None
-    host_list = list(hosts)
+    # 2. Compute placement via the single shared authority
+    # (:func:`sparkrun.api._hosts.resolve_effective_hosts`).  This is the
+    # same path the CLI ``run`` command and the benchmark flow use, so all
+    # three place identically — the scheduler's ``hosts_used`` IS the
+    # effective host list, ``runtime.world_size()`` is baked into the
+    # request, and ``max_nodes`` / solo are applied as orthogonal
+    # constraints.  ``notes`` (human-readable trim messages) are rendered
+    # by the CLI shell, not the library, so the API discards them.
+    from sparkrun.api._hosts import resolve_effective_hosts
+
+    placement: "RankAssignment | None"
     is_solo_request = bool(options.solo) or recipe.mode == "solo"
-
-    if not is_solo_request and len(host_list) > 1:
-        import dataclasses
-
-        parallelism = extract_parallelism(recipe.build_config_chain(options.overrides))
-        if any(getattr(parallelism, k) > 1 for k in ("tensor_parallel", "pipeline_parallel", "data_parallel")):
-            # Bake the runtime-derived rank count into the parallelism config
-            # so the scheduler asks ``parallelism.world_size()`` and gets the
-            # right answer regardless of which runtime owns the workload.
-            total_ranks = runtime.world_size(parallelism, recipe=recipe, cluster=cluster_def)
-            parallelism = dataclasses.replace(parallelism, total_ranks=total_ranks)
-            # Acquire a ClusterStatus snapshot so occupancy-sparse / occupancy-dense schedulers can
-            # subtract already-committed workloads from each host's capacity.
-            # Best-effort — a partially-unreachable cluster shouldn't crash the
-            # launch path; the scheduler falls through to its no-status
-            # behaviour (greedy-equivalent for OccupancyAware) when this is
-            # None.
-            cluster_status = _safe_acquire_status(host_list, cluster_def, sctx)
-            sched_request = SchedulingRequest(
-                parallelism=parallelism,
-                hosts=tuple(host_list),
-                host_hardware=cluster_def.hosts_hardware or None,
-                layout=getattr(recipe, "layout", None),
-                status=cluster_status,
-                resources=None,
-            )
-            sched_result = schedule(sched_request, scheduler=effective_scheduler, sctx=sctx)
-            placement = sched_result.assignment
-            host_list = list(placement.hosts_used)
-            logger.debug("placement consumed %d of %d hosts", len(host_list), len(hosts))
-
-    # 3. Apply orthogonal constraints (max_nodes is a recipe hard cap).
-    if recipe.max_nodes is not None and len(host_list) > recipe.max_nodes:
-        host_list = host_list[: recipe.max_nodes]
-        # Placement is now potentially stale; clear so the launcher recomputes.
-        placement = None
-
-    is_solo = is_solo_request or len(host_list) <= 1
-    if is_solo and len(host_list) > 1:
-        host_list = host_list[:1]
-        placement = None
+    host_list, is_solo, _notes, placement = resolve_effective_hosts(
+        list(hosts),
+        recipe,
+        options.overrides,
+        cluster_def=cluster_def,
+        runtime=runtime,
+        sctx=sctx,
+        solo=is_solo_request,
+        scheduler=effective_scheduler,
+    )
 
     # 3a. Compute intent_id + placement_token; compose cluster_id.
     # The launcher honours ``cluster_id_override`` so we hand it the
@@ -273,28 +247,6 @@ def _build_executor_overrides(options: RunOptions) -> dict[str, Any]:
         for key, value in options.executor_config.items():
             overrides[key] = value
     return overrides
-
-
-def _safe_acquire_status(host_list, cluster_def, sctx):
-    """Best-effort :class:`ClusterStatus` query for the active host list.
-
-    Failures (partial reachability, missing executor, transient SSH
-    errors) are swallowed and ``None`` is returned so the scheduling
-    path stays resilient.  Schedulers that don't consume occupancy
-    info (e.g. greedy) simply ignore the field; ``occupancy-sparse``
-    and ``occupancy-dense`` degrade to their no-status path.
-    """
-    try:
-        from sparkrun.api._status import status as get_status
-
-        return get_status(
-            list(host_list),
-            cluster=cluster_def,
-            sctx=sctx,
-        )
-    except Exception as e:
-        logger.debug("Cluster status query failed; scheduling without occupancy info: %s", e)
-        return None
 
 
 def _resolve_scheduler_name(effective_scheduler, sctx):

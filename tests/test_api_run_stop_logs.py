@@ -473,8 +473,8 @@ def test_run_populates_scheduling_request_status():
         patch("sparkrun.core.launcher.launch_inference", return_value=fake_launch_result),
         patch("sparkrun.api._resolve.resolve_runtime", return_value=fake_runtime),
         patch("sparkrun.api._resolve.resolve_cluster", return_value=cluster_def),
-        patch("sparkrun.api._status.status", return_value=fake_status),
-        patch("sparkrun.api._schedule.schedule", side_effect=_fake_schedule),
+        patch("sparkrun.api.status", return_value=fake_status),
+        patch("sparkrun.api.schedule", side_effect=_fake_schedule),
     ):
         api.run(opts)
 
@@ -507,8 +507,8 @@ def test_run_status_acquisition_failure_falls_back_gracefully():
         patch("sparkrun.core.launcher.launch_inference", return_value=fake_launch_result),
         patch("sparkrun.api._resolve.resolve_runtime", return_value=fake_runtime),
         patch("sparkrun.api._resolve.resolve_cluster", return_value=cluster_def),
-        patch("sparkrun.api._status.status", side_effect=RuntimeError("boom")),
-        patch("sparkrun.api._schedule.schedule", side_effect=_fake_schedule),
+        patch("sparkrun.api.status", side_effect=RuntimeError("boom")),
+        patch("sparkrun.api.schedule", side_effect=_fake_schedule),
     ):
         api.run(opts)
 

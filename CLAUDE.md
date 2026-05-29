@@ -173,9 +173,9 @@ prompt unless `--trust` is passed. See `docs/SECURITY.md`.
 **Backend bundle**: `RuntimePlugin.run()` accepts a keyword-only
 `backends: dict[str, BackendBundle] | None` resolved by
 `launcher.resolve_per_host_backends()`. Runtimes route per-host env emission
-through `_cluster_ops.resolve_comm_env(ctx, comm_env, backends)`; the legacy
-`resolve_ib_env(ctx, comm_env)` wrapper is deprecated (emits
-`DeprecationWarning`).
+through `_cluster_ops.resolve_comm_env(ctx, comm_env, backends)`. When
+`backends` is `None`, `resolve_comm_env` falls back to the legacy NCCL
+generator (byte-identical for NVIDIA hosts).
 
 ### Orchestration Layer (`orchestration/`)
 

@@ -183,16 +183,14 @@ def _execute_benchmark(
         wait_for_healthy,
         wait_for_port,
     )
-    from sparkrun.cli._common import (
-        _apply_recipe_overrides,
-        _expand_recipe_shortcut,
-        _is_recipe_url,
-        _load_recipe,
-        _resolve_hosts_or_exit,
-        _simplify_recipe_ref,
-        resolve_cluster_config,
-        resolve_effective_hosts_for_recipe,
+    from sparkrun.core.recipe import (
+        expand_recipe_shortcut as _expand_recipe_shortcut,
+        is_recipe_url as _is_recipe_url,
+        simplify_recipe_ref as _simplify_recipe_ref,
     )
+    from sparkrun.core.cluster_manager import resolve_cluster_config
+    from sparkrun.core.resolve import apply_recipe_overrides as _apply_recipe_overrides, load_recipe as _load_recipe
+    from sparkrun.api._hosts import resolve_effective_hosts, resolve_host_list
     from sparkrun.api._errors import (
         NoResumableState,
         FrameworkCategoryMismatch,
@@ -274,7 +272,12 @@ def _execute_benchmark(
     # -----------------------------------------------------------------------
     # 1. Load recipe
     # -----------------------------------------------------------------------
-    recipe, _recipe_path, registry_mgr = _load_recipe(config, recipe_name, resolve=False)
+    from sparkrun.core.recipe import RecipeError
+
+    try:
+        recipe, _recipe_path, registry_mgr = _load_recipe(config, recipe_name, resolve=False)
+    except RecipeError as e:
+        raise BenchmarkFailed("Error: %s" % e, exit_code=1) from e
 
     _resolved_name = _expand_recipe_shortcut(recipe_name)
     recipe_ref = _simplify_recipe_ref(_resolved_name) if _is_recipe_url(_resolved_name) else None
@@ -388,18 +391,24 @@ def _execute_benchmark(
     for issue in runtime_issues:
         emitter.warning(issue)
 
-    # Resolve hosts — _resolve_hosts_or_exit expects a comma-separated string
+    # Resolve hosts — resolve_host_list expects a comma-separated string
     # (the raw CLI token), not a list; join any pre-resolved hosts back to string.
     hosts_str = ",".join(hosts) if hosts else ""
-    host_list, cluster_mgr = _resolve_hosts_or_exit(hosts_str, None, cluster_name, config, sctx=sctx)
+    try:
+        host_list = resolve_host_list(hosts_str, None, cluster_name, config, sctx=sctx)
+    except api.HostsUnreachable as e:
+        raise BenchmarkFailed("Error: %s" % e, exit_code=1) from e
+    cluster_mgr = sctx.cluster_manager
 
-    host_list, is_solo = resolve_effective_hosts_for_recipe(
+    host_list, is_solo, _notes, _placement = resolve_effective_hosts(
         host_list,
         recipe,
         overrides,
         cluster_def=None,
+        runtime=runtime,
         sctx=sctx,
         solo=solo,
+        scheduler=scheduler_name,
     )
 
     cluster_cfg = resolve_cluster_config(cluster_name, hosts, None, cluster_mgr)
@@ -522,9 +531,17 @@ def _execute_benchmark(
             elif resume_mode in (ResumeMode.IF_EXISTS, ResumeMode.REQUIRED):
                 pass
             else:  # AUTO
-                from sparkrun.cli._benchmark import _resolve_resume_prompt
-
-                prompt_ok = _resolve_resume_prompt(existing_state, len(tasks), on_prompt_required)
+                # Library policy: consult the caller-supplied
+                # ``on_prompt_required`` callback to decide whether to resume
+                # incomplete state.  When no callback is given, default to
+                # resume (True) — the console-free default that matches the
+                # prior non-TTY behaviour.  The CLI shell supplies a callback
+                # that renders the interactive ``click.confirm`` prompt, so
+                # the API never imports CLI/console code.
+                if on_prompt_required is not None:
+                    prompt_ok = bool(on_prompt_required(existing_state))
+                else:
+                    prompt_ok = True
                 if not prompt_ok:
                     if state_dir and state_dir.exists():
                         shutil.rmtree(state_dir)
@@ -1010,6 +1027,219 @@ def _stop_inference(runtime, host_list, cluster_id, config, dry_run, sctx=None, 
 
 
 # ---------------------------------------------------------------------------
+# Resume orchestration
+# ---------------------------------------------------------------------------
+
+
+def resume_benchmark(
+    benchmark_id: str,
+    *,
+    dry_run: bool = False,
+    sctx: "SparkrunContext | None" = None,
+    emitter: _ProgressEmitter | None = None,
+) -> dict[str, Any]:
+    """Resume a paused benchmark by id and return the parsed ``results`` dict.
+
+    Full orchestration (recipe reload, host reconstruction from job
+    metadata, IP detection, framework rebuild, ``run_schedule``, export,
+    multi-format output) lifted out of ``cli._benchmark._resume_benchmark_run``
+    so library callers get the flow with no Click / sys.exit coupling.
+
+    The optional *emitter* surfaces banner / info lines; pass
+    ``_NullProgressEmitter()`` (the default) for headless execution.  Writes
+    ``consolidated.json``, ``result.yaml``, and the per-format output files
+    to disk and returns the ``results`` mapping (keys: ``rows``, ``csv``,
+    ``json``, etc.).
+
+    Raises:
+        NoResumableState: No state for *benchmark_id*, or the inference
+            cluster is no longer running.
+        BenchmarkFailed: Already-complete benchmark (nothing to resume),
+            framework lookup failure, unschedulable framework, head-IP
+            detection failure, or an incomplete schedule.
+        KeyboardInterrupt: Re-raised after state is preserved.
+    """
+    import yaml as _yaml
+
+    from sparkrun.api._errors import NoResumableState
+    from sparkrun.benchmarking.base import export_results
+    from sparkrun.benchmarking.progress_ui import BenchmarkProgressUI
+    from sparkrun.benchmarking.run_state import BenchmarkRunState
+    from sparkrun.benchmarking.scheduler import run_schedule
+    from sparkrun.core.bootstrap import get_benchmarking_framework
+    from sparkrun.core.resolve import load_recipe
+    from sparkrun.orchestration.job_metadata import check_job_running, load_job_metadata
+    from sparkrun.orchestration.primitives import build_ssh_kwargs, detect_host_ip
+    from sparkrun.utils import is_local_host
+
+    if emitter is None:
+        emitter = _NullProgressEmitter()
+
+    sctx = resolve_sctx(sctx)
+    config = sctx.config
+    cache_dir = str(config.cache_dir) if config else None
+
+    # Load existing state
+    state = BenchmarkRunState.load(benchmark_id, cache_dir)
+    if state is None:
+        raise NoResumableState("no benchmark state found for id: %s" % benchmark_id)
+
+    if state.is_complete(len(state.schedule)):
+        raise BenchmarkFailed("Benchmark %s is already complete. Nothing to resume." % benchmark_id, exit_code=0)
+
+    # Reconstruct recipe
+    recipe_name = state.recipe_qualified_name
+    from sparkrun.core.recipe import RecipeError
+
+    try:
+        recipe, _recipe_path, _registry_mgr = load_recipe(config, recipe_name, resolve=False)
+    except RecipeError as e:
+        raise BenchmarkFailed("could not reload recipe %r: %s" % (recipe_name, e), exit_code=1) from e
+
+    # Reconstruct hosts from job metadata
+    meta = load_job_metadata(state.cluster_id, cache_dir=cache_dir)
+    if not meta or not meta.get("hosts"):
+        raise NoResumableState(
+            "no job metadata found for cluster_id %r.\n"
+            "Please relaunch inference with `sparkrun run` and then retry resume." % state.cluster_id
+        )
+    hosts = meta["hosts"]
+
+    # Check if inference is currently running
+    ssh_kwargs = build_ssh_kwargs(config)
+    job_status = check_job_running(cluster_id=state.cluster_id, hosts=hosts, ssh_kwargs=ssh_kwargs)
+    if not job_status.running:
+        raise NoResumableState(
+            "inference cluster %r is not currently running.\n"
+            "Please relaunch with `sparkrun run %s` first, then retry resume." % (state.cluster_id, recipe_name)
+        )
+
+    # Determine the serving URL
+    head_host = hosts[0]
+    serve_port = meta.get("port") or 8000
+
+    if is_local_host(head_host):
+        target_ip = "127.0.0.1"
+    elif dry_run:
+        target_ip = "<HEAD_IP>"
+    else:
+        try:
+            target_ip = detect_host_ip(head_host, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
+        except RuntimeError as e:
+            raise BenchmarkFailed("Error detecting head IP: %s" % e, exit_code=1) from e
+
+    base_url = "http://%s:%d/v1" % (target_ip, serve_port)
+
+    # Reconstruct framework
+    try:
+        fw = get_benchmarking_framework(state.framework)
+    except ValueError as e:
+        raise BenchmarkFailed("Error: %s" % e, exit_code=1) from e
+
+    # Rebuild tasks from saved state
+    tasks = fw.build_task_list(state.base_args, state.schedule)
+    if tasks is None:
+        raise BenchmarkFailed(
+            "framework %r does not support scheduled execution (build_task_list returned None)" % state.framework,
+            exit_code=1,
+        )
+
+    effective_timeout = DEFAULT_BENCHMARK_TIMEOUT
+
+    emitter.banner("=" * 60)
+    emitter.banner("sparkrun — benchmark resume")
+    emitter.banner("=" * 60)
+    emitter.banner("Benchmark ID:          %s" % benchmark_id)
+    emitter.banner("Recipe:                %s" % recipe_name)
+    emitter.banner("Framework:             %s" % state.framework)
+    emitter.banner("Profile:               %s" % (state.profile or "(none)"))
+    emitter.banner("Hosts:                 %s" % ", ".join(hosts))
+    emitter.banner("Completed tasks:       %d / %d" % (len(state.completed_indices), len(tasks)))
+    emitter.banner("State directory:       %s" % state.state_dir(cache_dir))
+    emitter.banner("=" * 60)
+    emitter.banner("")
+
+    title = _benchmark_title(recipe.name, state.profile)
+
+    try:
+        with BenchmarkProgressUI(total_tasks=len(tasks), benchmark_id=benchmark_id, fw=fw, title=title) as pui:
+            sched_result = run_schedule(
+                fw=fw,
+                tasks=tasks,
+                state=state,
+                target_url=base_url,
+                model=recipe.model,
+                timeout=effective_timeout,
+                progress_ui=pui,
+                cache_dir=cache_dir,
+                exit_on_first_fail=False,
+                skip_run=True,  # inference already running; treat first task as needing warmup by session logic
+            )
+
+        consolidated = sched_result.consolidated
+
+        # Write consolidated.json to state dir
+        consolidated_path = _write_consolidated(state.state_dir(cache_dir), consolidated)
+
+        if not sched_result.success:
+            emitter.info("")
+            emitter.info("Benchmark incomplete; you can resume later.")
+            raise BenchmarkFailed("Benchmark incomplete; schedule did not complete", exit_code=1)
+
+        emitter.info("")
+        emitter.info("Benchmark resumed and completed successfully.")
+
+        # Export results
+        stdout_text = json.dumps(consolidated)
+        results = fw.parse_results(stdout_text, "", result_file=str(consolidated_path))
+
+        overrides = meta.get("overrides") or {}
+        effective_tp = int(overrides.get("tensor_parallel") or meta.get("tensor_parallel") or 1)
+
+        profile_slug = state.profile.replace("/", "_").replace("@", "") if state.profile else "default"
+        effective_pp = int(overrides.get("pipeline_parallel") or meta.get("pipeline_parallel") or 1)
+        pp_suffix = "_pp%d" % effective_pp if effective_pp > 1 else ""
+
+        if config:
+            out_dir = config.default_benchmark_output_dir
+            out_dir.mkdir(parents=True, exist_ok=True)
+            output_file = str(
+                out_dir / ("benchmark_%s_%s_tp%d%s.yaml" % (recipe.name.replace("/", "_"), profile_slug, effective_tp, pp_suffix))
+            )
+        else:
+            output_file = "benchmark_%s_%s_tp%d%s.yaml" % (recipe.name.replace("/", "_"), profile_slug, effective_tp, pp_suffix)
+
+        export_results(
+            recipe=recipe,
+            hosts=hosts,
+            tp=effective_tp,
+            cluster_id=state.cluster_id,
+            framework_name=fw.framework_name,
+            profile_name=state.profile,
+            args=state.base_args,
+            results=results,
+            output_path=output_file,
+            runtime_info=None,
+        )
+        emitter.info("Results saved to: %s" % output_file)
+
+        # Write additional formats
+        _emit_results_outputs(results, Path(output_file), emitter)
+
+        # Save result.yaml in state dir too
+        result_yaml_path = state.state_dir(cache_dir) / "result.yaml"
+        with open(result_yaml_path, "w") as _fh:
+            _yaml.safe_dump(results, _fh, default_flow_style=False)
+
+        return results
+
+    except KeyboardInterrupt:
+        emitter.info("")
+        emitter.info("Interrupted. State preserved so that you can resume later.")
+        raise
+
+
+# ---------------------------------------------------------------------------
 # Public API entry point
 # ---------------------------------------------------------------------------
 
@@ -1046,7 +1276,7 @@ def benchmark(
         needs_profile = not options.profile
         needs_category = not options.category
         if needs_profile or needs_category:
-            from sparkrun.cli._arena_flow import ARENA_BENCHMARK_PROFILE
+            from sparkrun.core.benchmark_profiles import ARENA_BENCHMARK_PROFILE
 
             effective_options = dataclasses.replace(
                 options,
@@ -1069,98 +1299,6 @@ def benchmark(
         raise SparkrunError("benchmark failed: %s" % exc) from exc
 
     return _build_result(effective_options, bench_result)
-
-
-# ---------------------------------------------------------------------------
-# Translation helpers (kept for back-compat — tests import these)
-# ---------------------------------------------------------------------------
-
-
-def _translate_lifecycle(options: BenchmarkOptions) -> tuple[bool, str | None]:
-    """Translate API-shaped lifecycle settings.
-
-    Returns ``(fresh_legacy, submission_id)``.  Kept for back-compat with
-    tests that import ``_build_run_benchmark_kwargs``.
-    """
-    fresh_legacy = options.resume == ResumeMode.FRESH
-    submission_id = options.state_extras.get("submission_id") if options.state_extras else None
-    return fresh_legacy, submission_id
-
-
-def _build_run_benchmark_kwargs(
-    options: BenchmarkOptions,
-    fresh: bool,
-    submission_id_for_extras: str | None,
-) -> dict[str, Any]:
-    """Build kwargs dict for legacy CLI ``_run_benchmark`` signature.
-
-    Kept for back-compat with tests that import and call this function directly.
-    The ``benchmark()`` entry point no longer uses it internally.
-    """
-    recipe_name: str
-    if isinstance(options.recipe, str):
-        recipe_name = options.recipe
-    else:
-        recipe_name = getattr(options.recipe, "qualified_name", None) or str(options.recipe)
-
-    cluster_name: str | None = None
-    if isinstance(options.cluster, str):
-        cluster_name = options.cluster
-    elif options.cluster is not None:
-        cluster_name = getattr(options.cluster, "name", None)
-
-    image = options.overrides.get("image") if isinstance(options.overrides, dict) else None
-    port = options.overrides.get("port") if isinstance(options.overrides, dict) else None
-
-    bench_options_tuple = tuple("%s=%s" % (k, v) for k, v in options.bench_args.items())
-    executor_args_tuple = tuple(options.extra_docker_opts) if options.extra_docker_opts else ()
-
-    effective_profile = options.profile
-    effective_category = options.category
-    if options.arena:
-        if not effective_profile:
-            from sparkrun.cli._arena_flow import ARENA_BENCHMARK_PROFILE
-
-            effective_profile = ARENA_BENCHMARK_PROFILE
-        if not effective_category:
-            effective_category = "performance"
-
-    return {
-        "recipe_name": recipe_name,
-        "hosts": list(options.hosts) if options.hosts else [],
-        "hosts_file": None,
-        "cluster_name": cluster_name,
-        "tensor_parallel": None,
-        "pipeline_parallel": None,
-        "data_parallel": None,
-        "gpu_mem": None,
-        "max_model_len": None,
-        "options": (),
-        "image": image,
-        "solo": options.solo,
-        "port": port,
-        "profile": effective_profile,
-        "framework": options.framework,
-        "output_file": options.output_file,
-        "bench_options": bench_options_tuple,
-        "api_key_env": options.api_key_env,
-        "exit_on_first_fail": options.exit_on_first_fail,
-        "no_stop": options.no_stop,
-        "skip_run": options.skip_run,
-        "sync_tuning": options.sync_tuning,
-        "rootful": options.rootful,
-        "bench_timeout": options.timeout,
-        "dry_run": options.dry_run,
-        "executor_args": executor_args_tuple,
-        "extra_args": (),
-        "export_results_files": options.export_files,
-        "fresh": fresh,
-        "resume_mode": options.resume,
-        "on_prompt_required": options.on_prompt_required,
-        "submission_id_for_extras": submission_id_for_extras,
-        "scheduler_name": options.scheduler,
-        "category": effective_category,
-    }
 
 
 def _build_result(options: BenchmarkOptions, bench_result: Any) -> BenchmarkResult:
@@ -1221,11 +1359,10 @@ def _build_result(options: BenchmarkOptions, bench_result: Any) -> BenchmarkResu
 
 __all__ = [
     "benchmark",
+    "resume_benchmark",
     "_ProgressEmitter",
     "_NullProgressEmitter",
     "_CallbackProgressEmitter",
     "_execute_benchmark",
     "_build_result",
-    "_translate_lifecycle",
-    "_build_run_benchmark_kwargs",
 ]

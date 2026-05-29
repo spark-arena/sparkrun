@@ -5,10 +5,8 @@ CLI presentation shell.  Orchestration lives in ``sparkrun.api._benchmark``.
 
 from __future__ import annotations
 
-import json
 import logging
 import sys
-from pathlib import Path
 from typing import Any, Callable, TYPE_CHECKING
 
 import click
@@ -18,7 +16,6 @@ from ._common import (
     RECIPE_NAME,
     _display_vram_estimate,
     _get_context,
-    _load_recipe,
     dry_run_option,
     host_options,
     recipe_override_options,
@@ -56,44 +53,6 @@ def _resolve_resume_prompt(
             default=True,
         )
     return True
-
-
-def _benchmark_title(recipe_name: str, profile: str | None) -> str:
-    """Return the recipe/profile title used by the progress UI."""
-    return "%s/%s" % (recipe_name, profile) if profile else recipe_name
-
-
-def _write_consolidated(state_dir: Path, consolidated: dict[str, Any]) -> Path:
-    """Write the consolidated dict to ``<state_dir>/consolidated.json`` and return the path."""
-    state_dir.mkdir(parents=True, exist_ok=True)
-    p = state_dir / "consolidated.json"
-    p.write_text(json.dumps(consolidated, indent=2))
-    return p
-
-
-def _emit_results_outputs(results: dict[str, Any], base_path: Path) -> dict[str, Path]:
-    """Write json/csv variants of ``base_path`` and echo the artifact paths.
-
-    Returns a mapping from format ("json", "csv") to the written path so callers
-    can record them on a result struct.
-
-    Used by ``_resume_benchmark_run``; the main benchmark path uses
-    ``sparkrun.api._benchmark._emit_results_outputs`` with an emitter.
-    """
-    writers = {
-        "json": lambda data, path: path.write_text(json.dumps(data, indent=2)),
-        "csv": lambda data, path: path.write_text(data),
-    }
-    written: dict[str, Path] = {}
-    for fmt, writer in writers.items():
-        payload = results.get(fmt)
-        if not payload:
-            continue
-        out = base_path.with_suffix("." + fmt)
-        writer(payload, out)
-        click.echo("%s output: %s" % (fmt.upper(), out))
-        written[fmt] = out
-    return written
 
 
 class _BenchmarkGroup(click.Group):
@@ -409,214 +368,51 @@ def benchmark_resume(ctx, benchmark_id, dry_run):
 
 
 def _resume_benchmark_run(ctx, benchmark_id: str, dry_run: bool, *, sctx=None):
-    """Resume a paused benchmark by id and return the parsed results dict.
+    """Thin CLI shell over ``sparkrun.api._benchmark.resume_benchmark``.
 
-    Shared by ``benchmark resume`` and ``arena benchmark resume``.  Writes
-    consolidated.json, result.yaml, and the per-format output files to disk and
-    returns the ``results`` mapping (keys: ``rows``, ``csv``, ``json``, etc.).
-    Returns ``None`` only if we exit early (the caller should treat that as an
-    error — sys.exit has already been called).
+    Shared by ``benchmark resume`` and ``arena benchmark resume``.  Sets up
+    the CLI progress emitter, delegates the orchestration to the API, and
+    translates typed exceptions into ``click.echo`` + ``sys.exit``.  Returns
+    the ``results`` mapping (keys: ``rows``, ``csv``, ``json``, etc.) on
+    success; otherwise ``sys.exit`` is called and this never returns.
     """
-    from sparkrun.benchmarking.run_state import BenchmarkRunState
-    from sparkrun.benchmarking.scheduler import run_schedule
-    from sparkrun.benchmarking.progress_ui import BenchmarkProgressUI
-    from sparkrun.orchestration.job_metadata import load_job_metadata
+    from sparkrun.api._benchmark import resume_benchmark, _ProgressEmitter
+    from sparkrun.api._errors import BenchmarkFailed, NoResumableState, SparkrunError
 
     if sctx is None:
         sctx = _get_context(ctx)
-    config = sctx.config
-    cache_dir = str(config.cache_dir) if config else None
 
-    # Load existing state
-    state = BenchmarkRunState.load(benchmark_id, cache_dir)
-    if state is None:
-        click.echo("Error: no benchmark state found for id: %s" % benchmark_id, err=True)
-        sys.exit(1)
+    class _CliEmitter(_ProgressEmitter):
+        def banner(self, line: str) -> None:
+            click.echo(line)
 
-    if state.is_complete(len(state.schedule)):
-        click.echo("Benchmark %s is already complete. Nothing to resume." % benchmark_id)
-        sys.exit(0)
+        def info(self, msg: str) -> None:
+            click.echo(msg)
 
-    # Reconstruct recipe
-    recipe_name = state.recipe_qualified_name
-    try:
-        recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name, resolve=False)
-    except Exception as e:
-        click.echo("Error: could not reload recipe %r: %s" % (recipe_name, e), err=True)
-        sys.exit(1)
+        def warning(self, msg: str) -> None:
+            click.echo("Warning: %s" % msg, err=True)
 
-    # Reconstruct hosts from job metadata
-    meta = load_job_metadata(state.cluster_id, cache_dir=cache_dir)
-    if not meta or not meta.get("hosts"):
-        click.echo(
-            "Error: no job metadata found for cluster_id %r.\n"
-            "Please relaunch inference with `sparkrun run` and then retry resume." % state.cluster_id,
-            err=True,
-        )
-        sys.exit(1)
-    hosts = meta["hosts"]
-
-    # Check if inference is currently running
-    from sparkrun.orchestration.job_metadata import check_job_running
-    from sparkrun.orchestration.primitives import build_ssh_kwargs
-
-    ssh_kwargs = build_ssh_kwargs(config)
-    job_status = check_job_running(cluster_id=state.cluster_id, hosts=hosts, ssh_kwargs=ssh_kwargs)
-    if not job_status.running:
-        click.echo(
-            "Error: inference cluster %r is not currently running.\n"
-            "Please relaunch with `sparkrun run %s` first, then retry resume." % (state.cluster_id, recipe_name),
-            err=True,
-        )
-        sys.exit(1)
-
-    # Determine the serving URL
-    from sparkrun.utils import is_local_host
-    from sparkrun.orchestration.primitives import detect_host_ip
-
-    head_host = hosts[0]
-    serve_port = meta.get("port") or 8000
-
-    if is_local_host(head_host):
-        target_ip = "127.0.0.1"
-    else:
-        if dry_run:
-            target_ip = "<HEAD_IP>"
-        else:
-            try:
-                target_ip = detect_host_ip(head_host, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
-            except RuntimeError as e:
-                click.echo("Error detecting head IP: %s" % e, err=True)
-                sys.exit(1)
-
-    base_url = "http://%s:%d/v1" % (target_ip, serve_port)
-
-    # Reconstruct framework
-    from sparkrun.core.bootstrap import get_benchmarking_framework
+        def error(self, msg: str) -> None:
+            click.echo("Error: %s" % msg, err=True)
 
     try:
-        fw = get_benchmarking_framework(state.framework)
-    except ValueError as e:
+        return resume_benchmark(benchmark_id, dry_run=dry_run, sctx=sctx, emitter=_CliEmitter())
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except BenchmarkFailed as e:
+        # exit_code 0 is the "already complete" case — print the message on
+        # stdout (not stderr) to preserve the prior CLI behaviour.
+        if e.exit_code == 0:
+            click.echo(str(e).removeprefix("Error: "))
+            sys.exit(0)
+        click.echo("Error: %s" % str(e).removeprefix("Error: "), err=True)
+        sys.exit(e.exit_code if e.exit_code is not None else 1)
+    except NoResumableState as e:
         click.echo("Error: %s" % e, err=True)
         sys.exit(1)
-
-    # Rebuild tasks from saved state
-    tasks = fw.build_task_list(state.base_args, state.schedule)
-    if tasks is None:
-        click.echo("Error: framework %r does not support scheduled execution (build_task_list returned None)" % state.framework, err=True)
+    except SparkrunError as e:
+        click.echo("Error: %s" % e, err=True)
         sys.exit(1)
-
-    effective_timeout = DEFAULT_BENCHMARK_TIMEOUT
-
-    click.echo("=" * 60)
-    click.echo("sparkrun — benchmark resume")
-    click.echo("=" * 60)
-    click.echo("Benchmark ID:          %s" % benchmark_id)
-    click.echo("Recipe:                %s" % recipe_name)
-    click.echo("Framework:             %s" % state.framework)
-    click.echo("Profile:               %s" % (state.profile or "(none)"))
-    click.echo("Hosts:                 %s" % ", ".join(hosts))
-    click.echo("Completed tasks:       %d / %d" % (len(state.completed_indices), len(tasks)))
-    click.echo("State directory:       %s" % state.state_dir(cache_dir))
-    click.echo("=" * 60)
-    click.echo("")
-
-    title = _benchmark_title(recipe.name, state.profile)
-
-    try:
-        with BenchmarkProgressUI(total_tasks=len(tasks), benchmark_id=benchmark_id, fw=fw, title=title) as pui:
-            sched_result = run_schedule(
-                fw=fw,
-                tasks=tasks,
-                state=state,
-                target_url=base_url,
-                model=recipe.model,
-                timeout=effective_timeout,
-                progress_ui=pui,
-                cache_dir=cache_dir,
-                exit_on_first_fail=False,
-                skip_run=True,  # inference already running; treat first task as needing warmup by session logic
-            )
-
-        consolidated = sched_result.consolidated
-
-        # Write consolidated.json to state dir
-        consolidated_path = _write_consolidated(state.state_dir(cache_dir), consolidated)
-
-        if not sched_result.success:
-            click.echo("")
-            click.echo("Benchmark incomplete; you can resume later.")
-            sys.exit(1)
-
-        click.echo("")
-        click.echo("Benchmark resumed and completed successfully.")
-
-        # Export results
-        from sparkrun.benchmarking.base import export_results
-
-        stdout_text = json.dumps(consolidated)
-        results = fw.parse_results(stdout_text, "", result_file=str(consolidated_path))
-
-        overrides = meta.get("overrides") or {}
-        effective_tp = int(overrides.get("tensor_parallel") or meta.get("tensor_parallel") or 1)
-
-        profile_slug = state.profile.replace("/", "_").replace("@", "") if state.profile else "default"
-        effective_pp = int(overrides.get("pipeline_parallel") or meta.get("pipeline_parallel") or 1)
-        pp_suffix = "_pp%d" % effective_pp if effective_pp > 1 else ""
-
-        if config:
-            out_dir = config.default_benchmark_output_dir
-            out_dir.mkdir(parents=True, exist_ok=True)
-            output_file = str(
-                out_dir
-                / (
-                    "benchmark_%s_%s_tp%d%s.yaml"
-                    % (
-                        recipe.name.replace("/", "_"),
-                        profile_slug,
-                        effective_tp,
-                        pp_suffix,
-                    )
-                )
-            )
-        else:
-            output_file = "benchmark_%s_%s_tp%d%s.yaml" % (
-                recipe.name.replace("/", "_"),
-                profile_slug,
-                effective_tp,
-                pp_suffix,
-            )
-
-        export_results(
-            recipe=recipe,
-            hosts=hosts,
-            tp=effective_tp,
-            cluster_id=state.cluster_id,
-            framework_name=fw.framework_name,
-            profile_name=state.profile,
-            args=state.base_args,
-            results=results,
-            output_path=output_file,
-            runtime_info=None,
-        )
-        click.echo("Results saved to: %s" % output_file)
-
-        # Write additional formats
-        _emit_results_outputs(results, Path(output_file))
-
-        # Save result.yaml in state dir too
-        result_yaml_path = state.state_dir(cache_dir) / "result.yaml"
-        import yaml as _yaml
-
-        with open(result_yaml_path, "w") as _fh:
-            _yaml.safe_dump(results, _fh, default_flow_style=False)
-
-        return results
-
-    except KeyboardInterrupt:
-        click.echo("")
-        click.echo("Interrupted. State preserved so that you can resume later.")
-        sys.exit(130)
 
 
 def _run_benchmark(
@@ -681,6 +477,15 @@ def _run_benchmark(
     # didn't provide one.
     if resume_mode is None:
         resume_mode = _ResumeMode.FRESH if fresh else _ResumeMode.AUTO
+
+    # AUTO-mode resume prompting is a CLI/console concern.  The API
+    # orchestration consults ``options.on_prompt_required`` instead of
+    # importing console code, so supply a callback that renders the
+    # interactive ``click.confirm`` prompt (or the non-TTY default) via
+    # ``_resolve_resume_prompt``.  ``state.schedule`` carries the full
+    # task count for the resumed run.
+    if on_prompt_required is None:
+        on_prompt_required = lambda state: _resolve_resume_prompt(state, len(state.schedule), None)  # noqa: E731
 
     # Parse bench_options key=value strings into a dict for BenchmarkOptions.
     # Validation (insecure api_key, malformed) happens in _execute_benchmark.
@@ -814,24 +619,21 @@ def _run_benchmark(
 
 
 def _stop_inference(runtime, host_list, cluster_id, config, dry_run, sctx=None):
-    """Stop the inference workload via the library API.
+    """Thin CLI shell over ``sparkrun.api._benchmark._stop_inference``.
 
     ``runtime`` is retained in the signature for backward compatibility with
-    existing callers; the actual stop is dispatched through ``api.stop`` so
-    executor / collective-backend lookup mirrors the launch path.
+    existing callers; the actual stop is dispatched through ``api.stop`` (via
+    the canonical API helper) so executor / collective-backend lookup mirrors
+    the launch path.  A click-backed emitter surfaces the dry-run notice and
+    any warning to the console.
     """
-    import sparkrun.api as api
+    from sparkrun.api._benchmark import _stop_inference as _api_stop_inference, _ProgressEmitter
 
-    if dry_run:
-        click.echo("[dry-run] Would stop cluster %s on %s" % (cluster_id, ", ".join(host_list)))
-        return
+    class _CliEmitter(_ProgressEmitter):
+        def info(self, msg: str) -> None:
+            click.echo(msg)
 
-    try:
-        api.stop(
-            cluster_id=cluster_id,
-            hosts=tuple(host_list) if host_list else None,
-            sctx=sctx,
-        )
-    except Exception as e:
-        logger.warning("Failed to stop inference: %s", e)
-        click.echo("Warning: failed to stop inference: %s" % e, err=True)
+        def warning(self, msg: str) -> None:
+            click.echo("Warning: %s" % msg, err=True)
+
+    _api_stop_inference(runtime, host_list, cluster_id, config, dry_run, sctx=sctx, emitter=_CliEmitter())
