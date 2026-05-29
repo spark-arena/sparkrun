@@ -18,10 +18,18 @@ Repository: <https://github.com/spark-arena/sparkrun>
   (CLI → recipe → runtime → SAF defaults → fallback) replaces ad-hoc executor
   construction. Two experimental executors land: `LocalExecutor` (native
   subprocess, no container) and `K8sExecutor` (`kubectl run`-driven draft).
-- **Security hardening**: trust gating on every recipe hook surface
-  (`pre_exec` / `post_exec` / `post_commands`), git URL allowlist, validated
-  sudo usernames, strict trtllm host-key checking, delegated-copy host/path
-  validation.
+- **Security hardening**: URL recipes never auto-trusted + hardened recipe
+  fetch, explicit/persisted proxy bind host, arena OAuth state binding, trust
+  gating on every recipe hook surface (`pre_exec` / `post_exec` /
+  `post_commands`), git URL allowlist, validated sudo usernames and cache
+  paths, strict trtllm host-key checking, delegated-copy host/path validation.
+- **Scales to larger clusters**: bounded SSH/rsync fan-out, parallel
+  head→worker distribution, execution timeouts on the launch path, and
+  parallel per-host cleanup keep 8/16/32-host launches from saturating the
+  control node or stalling on one slow host.
+- **Console-free library API**: the `sparkrun.api` package no longer imports
+  the CLI; `api.run` / `api.benchmark` / `api.resume_benchmark` share a single
+  placement authority and raise typed errors instead of writing to stdout.
 
 ## New
 
@@ -105,6 +113,29 @@ Repository: <https://github.com/spark-arena/sparkrun>
 - `resolve_recipe_trust(recipe, trust_cli)` returns one trust verdict per
   recipe, shared by `pre_exec` and `post_exec`/`post_commands`.
 
+### Scalability & robustness
+
+- `SparkrunConfig.max_parallel_ssh` (config key `ssh.max_parallel_ssh`, default
+  20) caps every parallel SSH/rsync fan-out; small clusters are unchanged.
+- Head→worker image/model distribution (`image_distribute.sh` /
+  `model_distribute.sh`) runs transfers with bounded concurrency instead of
+  serially.
+- Launch-path parallel SSH calls carry explicit execution timeouts so a host
+  that connects then hangs no longer blocks the whole batch.
+- Container cleanup runs in parallel and reports per-host success/failure,
+  naming hosts that may still hold VRAM after a failed launch.
+- `pending_ops` locks record host + token + timestamp, prune by max age (guards
+  PID reuse / NFS-shared caches), and verify ownership before removal.
+
+### Library API
+
+- `sparkrun.api` is a console-free facade over `core/`: it no longer imports
+  from `sparkrun.cli`. Shared resolution moved to `core/resolve.py` and
+  `api/_hosts.py:resolve_effective_hosts` (the single placement authority used
+  by `run`, `benchmark`, and the CLI).
+- New `api.resume_benchmark(...)` entry point; benchmark resume is no longer
+  CLI-only.
+
 ## Breaking changes
 
 - **`RuntimePlugin.run()` signature** gains a keyword-only `backends:
@@ -130,6 +161,32 @@ Repository: <https://github.com/spark-arena/sparkrun>
 
 ## Security fixes
 
+- **URL-sourced recipes are never auto-trusted.** Recipes fetched from a URL
+  (e.g. `@spark-arena/<uuid>` links) previously carried no `source_registry`
+  and were treated as local — so their `pre_exec`/`post_exec`/`post_commands`
+  hooks ran with **no confirmation**. `Recipe.is_url_sourced` now forces these
+  through `--trust` / interactive confirmation, closing a "run this link" code-
+  execution path.
+- **Recipe fetch hardening.** `fetch_and_cache_recipe` enforces `https://`
+  only (no plaintext-HTTP tampering), an allowed-host list (`spark-arena.com`;
+  off-allowlist hosts require confirmation), redirect re-validation, and a
+  response size cap.
+- **Proxy bind host is now explicit and persisted.** A new `proxy.host` setting
+  is saved and reused (recommended `127.0.0.1`). For backward compatibility an
+  unconfigured proxy still binds `0.0.0.0`, but now emits a loud warning each
+  start — escalated when no master key is set (unauthenticated gateway exposed
+  to the network). Proxy `state.yaml` / `autodiscover.yaml` are written `0600`.
+- **Arena OAuth callback** binds to a per-flow random `state` nonce and rejects
+  mismatched/missing state before storing the token (token-fixation / CSRF).
+- **Sudoers `cache_dir` validation.** `validate_sudoers_path()` (absolute path,
+  conservative charset) gates `cache_dir` before it is interpolated into the
+  passwordless `chown` sudoers rule.
+- **Recipe env no longer expanded.** Control-machine environment variables are
+  no longer substituted into recipe `env` values, preventing a third-party
+  recipe from exfiltrating host secrets (`$AWS_SECRET_ACCESS_KEY`, ...) into a
+  container.
+- **Secret masking in logs.** `token`/`key`/`password`/`secret` env values are
+  masked in the docker executor DEBUG output (per-var dump and full command).
 - Trust gating on `pre_exec` / `post_exec` / `post_commands` (single decision
   via `resolve_recipe_trust`). Local recipes and default-registry recipes are
   auto-trusted; third-party registry recipes require `--trust` or prompt.
@@ -150,13 +207,11 @@ Repository: <https://github.com/spark-arena/sparkrun>
 
 ## Deprecations
 
-- `runtimes/_cluster_ops.py:resolve_ib_env(ctx, comm_env)` emits
-  `DeprecationWarning` on every call. Successor:
-  `runtimes/_cluster_ops.py:resolve_comm_env(ctx, comm_env, backends)`.
-  Consumers should switch to threading `backends: dict[host, BackendBundle]`
-  through to the cluster ops helper; NVIDIA-only call sites continue to emit
-  identical output. Verified by
-  `tests/test_collectives.py::test_nccl_backend_matches_resolve_ib_env_legacy`.
+- The legacy `resolve_ib_env(ctx, comm_env)` wrapper has been **removed**.
+  Per-host communication env now flows exclusively through
+  `runtimes/_cluster_ops.py:resolve_comm_env(ctx, comm_env, backends)` with a
+  `backends: dict[host, BackendBundle]` map; NVIDIA-only call sites continue to
+  emit identical output.
 - Recipe topology fields `mode`, `solo_only`, `cluster_only` remain
   deprecated in favor of `min_nodes` / `max_nodes` (carry-over from earlier
   releases; documented in `RECIPES.md`).
