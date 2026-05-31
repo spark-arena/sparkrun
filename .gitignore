@@ -17,3 +17,5 @@ reference_materials/
 /MagicMock/
 /benchmarks/
 /.slop/
+/runs/
+/data/

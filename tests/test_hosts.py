@@ -239,6 +239,12 @@ def test_resolve_hosts_whitespace_only_string_returns_empty():
 class TestIsControlInCluster:
     """Tests for is_control_in_cluster() local membership detection."""
 
+    @pytest.fixture(autouse=True)
+    def _no_interface_ips(self):
+        """Default to no interface IPs so tests can mock socket alone."""
+        with mock.patch("sparkrun.core.hosts._collect_interface_ips", return_value=set()):
+            yield
+
     @mock.patch("sparkrun.core.hosts.socket")
     def test_hostname_match(self, mock_socket):
         """Returns True when hostname matches a host in the list."""
@@ -337,3 +343,15 @@ class TestIsControlInCluster:
         mock_socket.gaierror = OSError
 
         assert is_control_in_cluster([]) is False
+
+    @mock.patch("sparkrun.core.hosts._collect_interface_ips", return_value={"192.168.1.157", "127.0.0.1"})
+    @mock.patch("sparkrun.core.hosts.socket")
+    def test_interface_ip_match_when_hostname_not_in_dns(self, mock_socket, _mock_ips):
+        """Regression: hostname resolves only to 127.0.0.1 but a LAN interface
+        IP matches the cluster — should detect local membership."""
+        mock_socket.gethostname.return_value = "spark-9a09"
+        mock_socket.getfqdn.return_value = "localhost"
+        mock_socket.getaddrinfo.return_value = [(None, None, None, None, ("127.0.0.1",))]
+        mock_socket.gaierror = OSError
+
+        assert is_control_in_cluster(["192.168.1.157"]) is True
