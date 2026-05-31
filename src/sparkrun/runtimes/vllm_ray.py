@@ -65,7 +65,6 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
         skip_keys: set[str] | frozenset[str] = frozenset(),
     ) -> str:
         """Generate the vllm serve command."""
-        overrides = self.resolve_overrides_for_auto(recipe, overrides)
         config = recipe.build_config_chain(overrides)
 
         # If recipe has an explicit command template, render it

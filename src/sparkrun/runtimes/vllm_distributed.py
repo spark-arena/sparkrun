@@ -68,7 +68,6 @@ class VllmDistributedRuntime(VllmMixin, RuntimePlugin):
         ``--node-rank``.  Use :meth:`generate_node_command` to get the
         per-node variant.
         """
-        overrides = self.resolve_overrides_for_auto(recipe, overrides)
         config = recipe.build_config_chain(overrides)
 
         # If recipe has an explicit command template, render it

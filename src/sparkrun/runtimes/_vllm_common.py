@@ -39,18 +39,6 @@ class VllmMixin:
         cmds["vllm"] = "python3 -c 'import vllm; print(vllm.__version__)' 2>/dev/null || echo unknown"
         return cmds
 
-    def resolve_overrides_for_auto(
-        self,
-        recipe: "Recipe",
-        overrides: dict,
-    ) -> dict:
-        """Resolve ``max_model_len: "auto"`` by keeping it as the literal string "auto" directly."""
-        config = recipe.build_config_chain(overrides)
-        raw = config.get("max_model_len")
-        if raw is not None and str(raw).lower() == "auto":
-            return {**overrides, "max_model_len": "auto"}
-        return overrides
-
     def detect_spec_config_draft_model(self, recipe: "Recipe") -> str | None:
         try:
             # TODO: support various ways that speculative config can be specified
