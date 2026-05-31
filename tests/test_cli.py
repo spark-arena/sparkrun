@@ -2976,7 +2976,7 @@ class TestSetupSshCommand:
         monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
         monkeypatch.setenv("USER", "testuser")
 
-        from sparkrun.orchestration.primitives import local_ip_for
+        from sparkrun.utils.net import local_ip_for
 
         local_ip = local_ip_for("10.0.0.1")
 
@@ -3007,7 +3007,7 @@ class TestSetupSshCommand:
         monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
         monkeypatch.setenv("USER", "testuser")
 
-        from sparkrun.orchestration.primitives import local_ip_for
+        from sparkrun.utils.net import local_ip_for
 
         local_ip = local_ip_for("10.0.0.1")
 
@@ -3093,7 +3093,7 @@ class TestSetupSshCommand:
 
         monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
 
-        with mock.patch("sparkrun.orchestration.primitives.local_ip_for", return_value="192.168.1.100"):
+        with mock.patch("sparkrun.utils.net.local_ip_for", return_value="192.168.1.100"):
             result = runner.invoke(
                 main,
                 [
@@ -3266,7 +3266,7 @@ class TestSetupSshCommand:
         monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
         monkeypatch.setenv("USER", "localuser")
 
-        from sparkrun.orchestration.primitives import local_ip_for
+        from sparkrun.utils.net import local_ip_for
 
         local_ip = local_ip_for("10.0.0.1")
 
@@ -3299,7 +3299,7 @@ class TestSetupSshCommand:
         monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
         monkeypatch.setenv("USER", "localuser")
 
-        from sparkrun.orchestration.primitives import local_ip_for
+        from sparkrun.utils.net import local_ip_for
 
         local_ip = local_ip_for("10.0.0.1")
 

@@ -25,10 +25,9 @@ def _detect_and_update_mgmt_ips(host_list, cluster_name, cluster_mgr, ssh_kwargs
     Returns:
         The (possibly updated) host list.
     """
-    from sparkrun.orchestration.primitives import local_ip_for
     from sparkrun.orchestration.scripts import generate_ip_detect_script
     from sparkrun.orchestration.ssh import run_remote_scripts_parallel
-    from sparkrun.utils import is_valid_ip
+    from sparkrun.utils.net import is_valid_ip, local_ip_for
 
     if dry_run or not host_list:
         return host_list

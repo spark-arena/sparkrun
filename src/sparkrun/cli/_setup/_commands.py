@@ -726,7 +726,7 @@ def setup_ssh(ctx, hosts, hosts_file, cluster_name, extra_hosts, include_self, u
 
     from sparkrun.core.hosts import resolve_hosts
     from sparkrun.core.config import SparkrunConfig
-    from sparkrun.orchestration.primitives import local_ip_for
+    from sparkrun.utils.net import local_ip_for
 
     config = SparkrunConfig()
 

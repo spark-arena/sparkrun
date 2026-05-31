@@ -7,8 +7,15 @@ from unittest import mock
 
 import pytest
 
-from sparkrun.core.hosts import resolve_hosts, parse_hosts_file, HostResolutionError, is_control_in_cluster
+from sparkrun.core.hosts import (
+    resolve_hosts,
+    parse_hosts_file,
+    HostResolutionError,
+    is_control_in_cluster,
+    _get_local_identifiers,
+)
 from sparkrun.core.cluster_manager import ClusterManager
+from sparkrun.utils import get_local_ips, is_local_host
 
 
 def test_parse_hosts_file_basic(tmp_path: Path):
@@ -239,6 +246,16 @@ def test_resolve_hosts_whitespace_only_string_returns_empty():
 class TestIsControlInCluster:
     """Tests for is_control_in_cluster() local membership detection."""
 
+    @pytest.fixture(autouse=True)
+    def _no_interface_ips(self):
+        """Keep tests hermetic: stub interface enumeration to nothing.
+
+        Individual tests drive matching through the mocked ``socket``; the
+        ``ip addr`` based enumeration is exercised separately below.
+        """
+        with mock.patch("sparkrun.core.hosts.get_local_ips", return_value=set()):
+            yield
+
     @mock.patch("sparkrun.core.hosts.socket")
     def test_hostname_match(self, mock_socket):
         """Returns True when hostname matches a host in the list."""
@@ -337,3 +354,90 @@ class TestIsControlInCluster:
         mock_socket.gaierror = OSError
 
         assert is_control_in_cluster([]) is False
+
+    @mock.patch("sparkrun.core.hosts.get_local_ips", return_value={"127.0.0.1", "192.168.1.157"})
+    @mock.patch("sparkrun.core.hosts.socket")
+    def test_lan_ip_matched_via_interface_enumeration(self, mock_socket, mock_ips):
+        """Regression: LAN IP recognized even when getaddrinfo only sees loopback.
+
+        Reproduces the DGX Spark case (spark-arena/sparkrun#197) where the
+        hostname is pinned to 127.0.0.1 in /etc/hosts so getaddrinfo misses
+        the interface IP entirely.  Interface enumeration must still match it.
+        """
+        mock_socket.gethostname.return_value = "spark-2918"
+        mock_socket.getfqdn.return_value = "spark-2918"
+        mock_socket.gaierror = OSError
+        # getaddrinfo only ever yields loopback (the bug condition).
+        mock_socket.getaddrinfo.return_value = [(None, None, None, None, ("127.0.0.1",))]
+
+        assert is_control_in_cluster(["192.168.1.157"]) is True
+
+
+class TestGetLocalIdentifiers:
+    """Tests for _get_local_identifiers() interface-IP inclusion."""
+
+    @mock.patch("sparkrun.core.hosts.get_local_ips", return_value={"127.0.0.1", "10.24.11.11"})
+    @mock.patch("sparkrun.core.hosts.socket")
+    def test_includes_interface_ips(self, mock_socket, mock_ips):
+        """Interface IPs from get_local_ips() are folded into identifiers."""
+        mock_socket.gethostname.return_value = "spark-2918"
+        mock_socket.getfqdn.return_value = "spark-2918"
+        mock_socket.gaierror = OSError
+        mock_socket.getaddrinfo.return_value = []
+
+        ids = _get_local_identifiers()
+        assert "10.24.11.11" in ids
+        assert "localhost" in ids
+
+
+class TestGetLocalIps:
+    """Tests for utils.get_local_ips() interface enumeration."""
+
+    @mock.patch("sparkrun.utils.net.subprocess.run")
+    def test_parses_ipv4_and_ipv6(self, mock_run):
+        """Parses inet/inet6 addresses, strips CIDR and zone ids."""
+        mock_run.return_value = mock.Mock(
+            returncode=0,
+            stdout=(
+                "1: lo    inet 127.0.0.1/8 scope host lo\n"
+                "2: eth0    inet 10.24.11.11/24 brd 10.24.11.255 scope global eth0\n"
+                "2: eth0    inet 192.168.11.11/24 scope global eth0\n"
+                "3: eth1    inet6 fe80::1%eth1/64 scope link\n"
+            ),
+        )
+        ips = get_local_ips()
+        assert "10.24.11.11" in ips
+        assert "192.168.11.11" in ips
+        assert "fe80::1" in ips  # zone id stripped
+        assert "127.0.0.1" in ips
+
+    @mock.patch("sparkrun.utils.net.subprocess.run", side_effect=OSError("no ip cmd"))
+    def test_returns_loopback_on_failure(self, mock_run):
+        """Falls back to loopback set when ``ip`` is unavailable."""
+        assert get_local_ips() == {"127.0.0.1", "::1"}
+
+    @mock.patch("sparkrun.utils.net.subprocess.run")
+    def test_returns_loopback_on_nonzero_exit(self, mock_run):
+        """Falls back to loopback set on non-zero exit."""
+        mock_run.return_value = mock.Mock(returncode=1, stdout="")
+        assert get_local_ips() == {"127.0.0.1", "::1"}
+
+
+class TestIsLocalHost:
+    """Tests for utils.is_local_host() routed through get_local_ips()."""
+
+    def test_localhost_shortcircuits(self):
+        assert is_local_host("localhost") is True
+        assert is_local_host("127.0.0.1") is True
+        assert is_local_host("") is True
+
+    @mock.patch("sparkrun.utils.net.get_local_ips", return_value={"127.0.0.1", "192.168.1.157"})
+    def test_lan_ip_matched_without_bind(self, mock_ips):
+        """A LAN interface IP is recognized via enumeration, no bind needed."""
+        assert is_local_host("192.168.1.157") is True
+
+    @mock.patch("sparkrun.utils.net.get_local_ips", return_value={"127.0.0.1"})
+    def test_remote_ip_not_local(self, mock_ips):
+        """A non-local, non-bindable IP returns False."""
+        # 203.0.113.x is TEST-NET-3 (RFC 5737) — never assigned locally.
+        assert is_local_host("203.0.113.7") is False

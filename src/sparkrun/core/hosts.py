@@ -10,7 +10,7 @@ import socket
 from pathlib import Path
 
 from sparkrun.core.cluster_manager import ClusterError, ClusterManager
-from sparkrun.utils import is_local_host  # noqa: F401 re-exported for backward compat
+from sparkrun.utils import get_local_ips, is_local_host  # noqa: F401 is_local_host re-exported for backward compat
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,9 @@ def _get_local_identifiers() -> set[str]:
                 identifiers.add(info[4][0])
         except (OSError, socket.gaierror):
             pass
+
+    # Add interface-bound IPs (LAN IPs absent from DNS/hosts, e.g. DGX Spark).
+    identifiers.update(get_local_ips())
 
     return identifiers
 

@@ -54,9 +54,10 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
         apply_cx7_plan,
         distribute_cx7_host_keys,
     )
-    from sparkrun.orchestration.primitives import build_ssh_kwargs, local_ip_for
+    from sparkrun.orchestration.primitives import build_ssh_kwargs
     from sparkrun.orchestration.sudo import dispatch_sudo_script, run_with_sudo_fallback, run_sudo_script_on_host
     from sparkrun.scripts import read_script
+    from sparkrun.utils.net import local_ip_for
 
     from .._common import _get_cluster_manager
     from ._commands import setup_install

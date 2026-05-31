@@ -435,24 +435,6 @@ def cleanup_containers_local(
 # ---------------------------------------------------------------------------
 
 
-def local_ip_for(target_host: str) -> str | None:
-    """Return the local IP address on the interface that routes to *target_host*.
-
-    Uses a UDP connect (no packets sent) to let the OS pick the right
-    source address.  Falls back to ``socket.gethostname()`` on failure.
-    """
-    import socket
-
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.connect((target_host, 1))  # port is arbitrary; no traffic sent
-            return s.getsockname()[0]
-    except Exception:
-        # Fall back to hostname if routing lookup fails (e.g. target
-        # is not resolvable from the control machine itself).
-        return socket.gethostname() or None
-
-
 def detect_host_ip(
     host: str,
     ssh_kwargs: dict | None = None,

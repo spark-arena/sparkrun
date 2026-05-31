@@ -1,8 +1,17 @@
-"""YAML formatting helpers for sparkrun."""
+"""YAML read/write helpers for sparkrun."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import yaml
+
+
+def load_yaml(path) -> dict:
+    """Load a YAML file, returning an empty dict on parse failure."""
+    with Path(path).open() as f:
+        data = yaml.safe_load(f)
+    return data if isinstance(data, dict) else {}
 
 
 class LiteralBlockDumper(yaml.SafeDumper):
