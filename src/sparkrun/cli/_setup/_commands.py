@@ -62,7 +62,7 @@ def setup_completion(ctx, shell):
     from sparkrun.utils.shell import quote
     import shutil
 
-    sparkrun_cmd = quote(shutil.which("sparkrun")) or "sparkrun"
+    sparkrun_cmd = quote(shutil.which("sparkrun") or "sparkrun")
 
     if shell == "bash":
         snippet = 'eval "$(%s=bash_source %s)"' % (completion_var, sparkrun_cmd)
