@@ -54,12 +54,22 @@ def setup_completion(ctx, shell):
 
     completion_var = "_SPARKRUN_COMPLETE"
 
+    # Resolve the absolute path to the installed `sparkrun` so the completion
+    # snippet doesn't depend on PATH ordering in the shell rc file (issue #198).
+    # shutil.which() returns what the shell itself resolves -- typically the
+    # stable ~/.local/bin/sparkrun shim -- rather than an internal uv
+    # version-specific venv path. Fall back to the bare command if unresolved.
+    from sparkrun.utils.shell import quote
+    import shutil
+
+    sparkrun_cmd = quote(shutil.which("sparkrun")) or "sparkrun"
+
     if shell == "bash":
-        snippet = 'eval "$(%s=bash_source sparkrun)"' % completion_var
+        snippet = 'eval "$(%s=bash_source %s)"' % (completion_var, sparkrun_cmd)
     elif shell == "zsh":
-        snippet = 'eval "$(%s=zsh_source sparkrun)"' % completion_var
+        snippet = 'eval "$(%s=zsh_source %s)"' % (completion_var, sparkrun_cmd)
     elif shell == "fish":
-        snippet = "%s=fish_source sparkrun | source" % completion_var
+        snippet = "%s=fish_source %s | source" % (completion_var, sparkrun_cmd)
 
     # Check if already installed
     if rc_file.exists():
