@@ -616,6 +616,11 @@ def _execute_benchmark(
                 transfer_interface=effective_transfer_interface,
                 cache_dir=remote_cache_dir,
                 local_cache_dir=local_cache_dir,
+                # Pass the cluster's shared-cache prefs explicitly: this launch
+                # uses explicit hosts and so loses the named-cluster identity
+                # that launch_inference would otherwise read them from.
+                preserve_model_perms=cluster_cfg.preserve_model_perms,
+                skip_model_fan_out=cluster_cfg.skip_model_fan_out,
                 rootful=rootful,
                 sync_tuning=sync_tuning,
                 extra_docker_opts=tuple(executor_args) if executor_args else None,

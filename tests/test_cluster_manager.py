@@ -974,3 +974,99 @@ class TestQueryClusterStatusParsing:
         assert result.groups == {}
         assert len(result.solo_entries) == 1
         assert result.solo_entries[0].cluster_id == "sparkrun_%s_%s" % (intent, place)
+
+
+class TestClusterDistributionPrefs:
+    """Round-trip + resolution for cluster ``distribution.model`` prefs."""
+
+    def test_defaults_omitted_from_yaml(self, tmp_path: Path):
+        """A cluster with default prefs writes no ``distribution`` block."""
+        manager = ClusterManager(tmp_path)
+        manager.create("c", ["h1"])
+        text = (tmp_path / "clusters" / "c.yaml").read_text()
+        assert "distribution" not in text
+        # Defaults still materialize on read.
+        cluster = manager.get("c")
+        assert cluster.distribution.model.preserve_perms is True
+        assert cluster.distribution.model.skip_fan_out is False
+
+    def test_create_persists_non_default_prefs(self, tmp_path: Path):
+        from sparkrun.core.cluster_manager import (
+            ClusterDistributionConfig,
+            ModelDistributionPrefs,
+        )
+
+        manager = ClusterManager(tmp_path)
+        manager.create(
+            "shared",
+            ["h1", "h2"],
+            distribution=ClusterDistributionConfig(model=ModelDistributionPrefs(preserve_perms=False, skip_fan_out=True)),
+        )
+        text = (tmp_path / "clusters" / "shared.yaml").read_text()
+        assert "distribution" in text
+
+        cluster = manager.get("shared")
+        assert cluster.distribution.model.preserve_perms is False
+        assert cluster.distribution.model.skip_fan_out is True
+
+    def test_update_prefs(self, tmp_path: Path):
+        from sparkrun.core.cluster_manager import (
+            ClusterDistributionConfig,
+            ModelDistributionPrefs,
+        )
+
+        manager = ClusterManager(tmp_path)
+        manager.create("c", ["h1"])
+        manager.update(
+            "c",
+            distribution=ClusterDistributionConfig(model=ModelDistributionPrefs(skip_fan_out=True)),
+        )
+        cluster = manager.get("c")
+        assert cluster.distribution.model.skip_fan_out is True
+        assert cluster.distribution.model.preserve_perms is True
+
+    def test_legacy_yaml_without_distribution_loads(self, tmp_path: Path):
+        """A cluster file with no ``distribution`` key loads with defaults."""
+        clusters_dir = tmp_path / "clusters"
+        clusters_dir.mkdir(parents=True, exist_ok=True)
+        (clusters_dir / "old.yaml").write_text("name: old\nhosts:\n- h1\ndescription: legacy\n")
+        manager = ClusterManager(tmp_path)
+        cluster = manager.get("old")
+        assert cluster.distribution.model.preserve_perms is True
+        assert cluster.distribution.model.skip_fan_out is False
+
+    def test_resolved_config_carries_prefs_from_cluster(self, tmp_path: Path):
+        from sparkrun.core.cluster_manager import (
+            ClusterDistributionConfig,
+            ModelDistributionPrefs,
+            resolve_cluster_config,
+        )
+
+        manager = ClusterManager(tmp_path)
+        manager.create(
+            "shared",
+            ["h1", "h2"],
+            distribution=ClusterDistributionConfig(model=ModelDistributionPrefs(preserve_perms=False, skip_fan_out=True)),
+        )
+        # Hosts sourced from the cluster → prefs apply.
+        cfg = resolve_cluster_config("shared", None, None, manager)
+        assert cfg.preserve_model_perms is False
+        assert cfg.skip_model_fan_out is True
+
+    def test_resolved_config_ignores_prefs_with_explicit_hosts(self, tmp_path: Path):
+        """Explicit --hosts bypasses cluster transfer prefs (matches cache_dir)."""
+        from sparkrun.core.cluster_manager import (
+            ClusterDistributionConfig,
+            ModelDistributionPrefs,
+            resolve_cluster_config,
+        )
+
+        manager = ClusterManager(tmp_path)
+        manager.create(
+            "shared",
+            ["h1", "h2"],
+            distribution=ClusterDistributionConfig(model=ModelDistributionPrefs(preserve_perms=False, skip_fan_out=True)),
+        )
+        cfg = resolve_cluster_config("shared", "h9,h10", None, manager)
+        assert cfg.preserve_model_perms is True
+        assert cfg.skip_model_fan_out is False

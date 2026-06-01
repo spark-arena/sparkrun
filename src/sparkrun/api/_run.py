@@ -171,6 +171,8 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunRes
         "topology": options.topology,
         "cluster_id_override": cluster_id_for_launch,
         "recipe_ref": options.recipe_ref,
+        "preserve_model_perms": options.preserve_model_perms,
+        "skip_model_fan_out": options.skip_model_fan_out,
     }
 
     # 5. Launch.

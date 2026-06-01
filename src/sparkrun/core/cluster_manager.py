@@ -36,6 +36,69 @@ _UNSET = object()
 
 
 @dataclass
+class ModelDistributionPrefs:
+    """Per-cluster model-distribution preferences.
+
+    Defaults reproduce the historical behavior exactly:
+      * ``preserve_perms=True`` — rsync uses ``-a`` (archive) and the
+        best-effort cache chown runs before transfer.
+      * ``skip_fan_out=False`` — the model is rsynced to every host.
+
+    On a cluster whose ``cache_dir`` is a shared mount (NFS/CIFS), both
+    are typically flipped: ``preserve_perms=False`` drops the
+    owner/group/perm preservation that fails under root_squash, and
+    ``skip_fan_out=True`` skips the redundant per-host rsync because the
+    model is already visible on every node once downloaded once.
+    """
+
+    preserve_perms: bool = True
+    skip_fan_out: bool = False
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "ModelDistributionPrefs":
+        if not isinstance(data, dict):
+            return cls()
+        return cls(
+            preserve_perms=bool(data.get("preserve_perms", True)),
+            skip_fan_out=bool(data.get("skip_fan_out", False)),
+        )
+
+    def is_default(self) -> bool:
+        return self.preserve_perms and not self.skip_fan_out
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        if not self.preserve_perms:
+            out["preserve_perms"] = False
+        if self.skip_fan_out:
+            out["skip_fan_out"] = True
+        return out
+
+
+@dataclass
+class ClusterDistributionConfig:
+    """Cluster-level resource-distribution preferences (``distribution:`` block)."""
+
+    model: ModelDistributionPrefs = field(default_factory=ModelDistributionPrefs)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "ClusterDistributionConfig":
+        if not isinstance(data, dict):
+            return cls()
+        return cls(model=ModelDistributionPrefs.from_dict(data.get("model")))
+
+    def is_default(self) -> bool:
+        return self.model.is_default()
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        model = self.model.to_dict()
+        if model:
+            out["model"] = model
+        return out
+
+
+@dataclass
 class ClusterDefinition:
     """Definition of a named cluster."""
 
@@ -47,6 +110,12 @@ class ClusterDefinition:
     transfer_mode: str | None = None
     transfer_interface: str | None = None
     topology: str | None = None
+    distribution: ClusterDistributionConfig = field(default_factory=ClusterDistributionConfig)
+    """Cluster-level model/resource distribution preferences (see
+    :class:`ClusterDistributionConfig`).  Defaults reproduce historical
+    behavior; shared-cache clusters typically set
+    ``distribution.model.skip_fan_out`` and clear
+    ``distribution.model.preserve_perms``."""
     hosts_hardware: dict[str, HostHardware] = field(default_factory=dict)
     """Optional per-host hardware metadata, keyed by host name/address.
 
@@ -229,6 +298,7 @@ class ClusterManager:
         executor: str | None = None,
         executor_config: dict[str, Any] | None = None,
         scheduler: str | None = None,
+        distribution: ClusterDistributionConfig | None = None,
     ) -> None:
         """Create a new named cluster.
 
@@ -274,6 +344,7 @@ class ClusterManager:
             executor=executor,
             executor_config=dict(executor_config) if executor_config else None,
             scheduler=scheduler,
+            distribution=distribution if distribution is not None else ClusterDistributionConfig(),
         )
         self._write_cluster(cluster_def)
         logger.info("Created cluster '%s' with %d hosts", name, len(hosts))
@@ -310,6 +381,7 @@ class ClusterManager:
         executor: str | None = _UNSET,
         executor_config: dict[str, Any] | None = _UNSET,
         scheduler: str | None = _UNSET,
+        distribution: ClusterDistributionConfig | None = _UNSET,
     ) -> None:
         """Update existing cluster definition.
 
@@ -380,6 +452,10 @@ class ClusterManager:
         if scheduler is not _UNSET:
             cluster_def.scheduler = scheduler
             logger.debug("Updated scheduler for cluster '%s'", name)
+
+        if distribution is not _UNSET:
+            cluster_def.distribution = distribution if distribution is not None else ClusterDistributionConfig()
+            logger.debug("Updated distribution prefs for cluster '%s'", name)
 
         # Write back
         self._write_cluster(cluster_def)
@@ -503,6 +579,8 @@ class ClusterManager:
             data["executor_config"] = dict(cluster_def.executor_config)
         if cluster_def.scheduler:
             data["scheduler"] = cluster_def.scheduler
+        if cluster_def.distribution and not cluster_def.distribution.is_default():
+            data["distribution"] = cluster_def.distribution.to_dict()
 
         with cluster_path.open("w") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
@@ -543,6 +621,7 @@ class ClusterManager:
             executor=data.get("executor"),
             executor_config=executor_config,
             scheduler=data.get("scheduler"),
+            distribution=ClusterDistributionConfig.from_dict(data.get("distribution")),
         )
 
 
@@ -694,6 +773,15 @@ class ResolvedClusterConfig:
     """Cluster-level default scheduler selector — consumed by
     :func:`sparkrun.api.run` between the recipe's ``scheduler`` and the
     greedy emergency fallback in the resolution chain."""
+    preserve_model_perms: bool = True
+    """When ``False``, model rsync drops owner/group/perm preservation
+    (``-r --links`` instead of ``-a``) and the best-effort cache chown is
+    skipped — for shared/NFS caches under root_squash.  Mirrors
+    ``cluster.distribution.model.preserve_perms``."""
+    skip_model_fan_out: bool = False
+    """When ``True``, the per-host model rsync fan-out is skipped (the model
+    is downloaded once to the shared cache).  Mirrors
+    ``cluster.distribution.model.skip_fan_out``."""
 
     def resolve_transfer_config(self, config, transfer_mode_override: str | None = None):
         """Resolve transfer configuration against defaults.
@@ -766,6 +854,8 @@ def resolve_cluster_config(
         cfg.transfer_interface = cluster_def.transfer_interface
         cfg.cache_dir = cluster_def.cache_dir
         cfg.topology = cluster_def.topology
+        cfg.preserve_model_perms = cluster_def.distribution.model.preserve_perms
+        cfg.skip_model_fan_out = cluster_def.distribution.model.skip_fan_out
     else:
         logger.debug("explicit hosts; not using cluster for transfer_mode, transfer_interface, cache_dir, and topology")
 

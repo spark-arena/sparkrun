@@ -214,6 +214,11 @@ def launch_inference(
     local_cache_dir: str | None = None,
     transfer_mode: str | None = None,
     transfer_interface: str | None = None,
+    # Model-distribution preferences.  ``None`` → derive from the resolved
+    # ``cluster`` def; an explicit bool overrides (used by the benchmark path
+    # which launches with explicit hosts and loses the named cluster).
+    preserve_model_perms: bool | None = None,
+    skip_model_fan_out: bool | None = None,
     recipe_ref: str | None = None,
     registry_mgr: RegistryManager | None = None,
     auto_port: bool = False,
@@ -493,6 +498,16 @@ def launch_inference(
             p.phase(3)
         from sparkrun.orchestration.distribution import distribute_from_config
 
+        # Cluster-level model-distribution preferences (shared/NFS caches).
+        # Explicit kwargs win (used by the benchmark path, which launches with
+        # explicit hosts and so loses the named cluster identity); otherwise
+        # fall back to the resolved cluster's prefs.  Anonymous/explicit-hosts
+        # clusters carry the safe defaults (preserve_perms=True,
+        # skip_fan_out=False).
+        _dist_model = getattr(getattr(cluster, "distribution", None), "model", None)
+        _preserve_model_perms = preserve_model_perms if preserve_model_perms is not None else getattr(_dist_model, "preserve_perms", True)
+        _skip_model_fan_out = skip_model_fan_out if skip_model_fan_out is not None else getattr(_dist_model, "skip_fan_out", False)
+
         comm_env, ib_ip_map, mgmt_ip_map = distribute_from_config(
             recipe,
             container_image,
@@ -507,6 +522,8 @@ def launch_inference(
             local_cache_dir=effective_local_cache,
             pre_ib=transfer_result,
             topology=topology,
+            preserve_model_perms=_preserve_model_perms,
+            skip_model_fan_out=_skip_model_fan_out,
         )
         # Re-save job metadata with IP maps from IB detection
         if not dry_run and (ib_ip_map or mgmt_ip_map):

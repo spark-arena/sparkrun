@@ -2,7 +2,7 @@
 set -uo pipefail
 
 # Distribute an HF model cache directory from this host to target hosts via rsync.
-# Placeholders filled by Python: {model_path}, {targets}, {ssh_opts}, {ssh_user}, {max_parallel}
+# Placeholders filled by Python: {model_path}, {targets}, {ssh_opts}, {ssh_user}, {max_parallel}, {rsync_attr_flags}
 #
 # NOTE: this file is consumed via Python str.format(); it must contain NO
 # literal curly-brace characters (shell functions are therefore avoided in
@@ -13,6 +13,8 @@ TARGETS="{targets}"
 SSH_OPTS="{ssh_opts}"
 SSH_USER="{ssh_user}"
 MAX_PARALLEL="{max_parallel}"
+# Unquoted on use so multi-word values (e.g. "-r --links") split into argv.
+RSYNC_ATTR_FLAGS="{rsync_attr_flags}"
 
 echo "Distributing model $MODEL_PATH to targets: $TARGETS"
 
@@ -35,9 +37,11 @@ for TARGET in $TARGETS; do
     echo "  Syncing $MODEL_PATH -> $TARGET ..."
     # HF cache is content-addressed (blobs/<sha256>): --size-only lets
     # rsync skip already-synced shards instantly.  Quantized weights
-    # don't compress, so -z is omitted.
+    # don't compress, so -z is omitted.  RSYNC_ATTR_FLAGS is "-a" by
+    # default, or "-r --links" for shared/NFS caches where preserving
+    # owner/group/perms would fail under root_squash (rsync rc=23).
     (
-        if rsync -a --size-only --mkpath --partial --links -e "ssh $SSH_OPTS" "$MODEL_PATH/" "$DEST"; then
+        if rsync $RSYNC_ATTR_FLAGS --size-only --mkpath --partial -e "ssh $SSH_OPTS" "$MODEL_PATH/" "$DEST"; then
             echo "  OK: $TARGET"
             echo 0 > "$STATUS_DIR/$TARGET.status"
         else

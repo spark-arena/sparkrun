@@ -115,6 +115,14 @@ class RunOptions:
     """Extra arguments threaded through to the container executor (``docker run``)."""
     topology: str | None = None
     """Cluster topology hint (carried through to the runtime)."""
+    preserve_model_perms: bool | None = None
+    """Model-rsync permission preservation override.  ``None`` → derive from
+    the resolved cluster's ``distribution.model.preserve_perms``; an explicit
+    bool wins (used by the benchmark flow, which launches with explicit hosts
+    and loses the named-cluster identity)."""
+    skip_model_fan_out: bool | None = None
+    """Skip the per-host model rsync fan-out (shared cache).  ``None`` → derive
+    from the cluster's ``distribution.model.skip_fan_out``; explicit bool wins."""
     recipe_ref: str | None = None
     """Simplified recipe reference for display (e.g. ``@spark-arena/UUID``)."""
 

@@ -1042,6 +1042,54 @@ class TestDistributeModelFromLocal:
         )
         assert [f.host for f in failed] == ["mgmt2"]
 
+    @mock.patch("sparkrun.models.distribute.run_remote_scripts_parallel")
+    @mock.patch("sparkrun.models.distribute.run_rsync_parallel")
+    @mock.patch("sparkrun.models.distribute.download_model")
+    def test_preserve_perms_default_uses_archive(self, mock_dl, mock_rsync, mock_fix):
+        """Default (preserve_perms=True) uses rsync -a and runs the chown fix."""
+        mock_dl.return_value = 0
+        mock_fix.return_value = [RemoteResult(host="h1", returncode=0, stdout="", stderr="")]
+        mock_rsync.return_value = [RemoteResult(host="h1", returncode=0, stdout="ok", stderr="")]
+        from sparkrun.models.distribute import distribute_model_from_local
+
+        distribute_model_from_local("org/model", ["h1"])
+        opts = mock_rsync.call_args.kwargs["rsync_options"]
+        assert opts == ["-a", "--size-only", "--mkpath", "--partial", "--links"]
+        # Best-effort chown runs when preserving perms.
+        mock_fix.assert_called_once()
+
+    @mock.patch("sparkrun.models.distribute.run_remote_scripts_parallel")
+    @mock.patch("sparkrun.models.distribute.run_rsync_parallel")
+    @mock.patch("sparkrun.models.distribute.download_model")
+    def test_no_preserve_perms_drops_archive_and_skips_chown(self, mock_dl, mock_rsync, mock_fix):
+        """preserve_perms=False uses -r --links (no -a/-o/-g) and skips chown."""
+        mock_dl.return_value = 0
+        mock_rsync.return_value = [RemoteResult(host="h1", returncode=0, stdout="ok", stderr="")]
+        from sparkrun.models.distribute import distribute_model_from_local
+
+        distribute_model_from_local("org/model", ["h1"], preserve_perms=False)
+        opts = mock_rsync.call_args.kwargs["rsync_options"]
+        assert opts == ["-r", "--links", "--size-only", "--mkpath", "--partial"]
+        assert "-a" not in opts
+        # No ownership/group preservation flags that trip chgrp under root_squash.
+        assert "-o" not in opts and "-g" not in opts
+        # chown fix is pointless when not preserving perms — must be skipped.
+        mock_fix.assert_not_called()
+
+    @mock.patch("sparkrun.models.distribute.run_remote_scripts_parallel")
+    @mock.patch("sparkrun.models.distribute.run_rsync_parallel")
+    @mock.patch("sparkrun.models.distribute.download_model")
+    def test_skip_fan_out_downloads_but_skips_rsync(self, mock_dl, mock_rsync, mock_fix):
+        """skip_fan_out downloads the model once but performs no per-host rsync."""
+        mock_dl.return_value = 0
+        from sparkrun.models.distribute import distribute_model_from_local
+
+        failed = distribute_model_from_local("org/model", ["h1", "h2"], skip_fan_out=True)
+        assert failed == []
+        mock_dl.assert_called_once()
+        mock_rsync.assert_not_called()
+        mock_fix.assert_not_called()
+
 
 class TestDistributeModelFromHead:
     """Test distribute_model_from_head."""
@@ -1134,6 +1182,95 @@ class TestDistributeModelFromHead:
         dist_script = mock_run.call_args_list[1][0][1]
         assert "10.0.0.1" in dist_script
         assert "10.0.0.2" in dist_script
+
+    @mock.patch("sparkrun.orchestration.ssh.run_remote_script_streaming")
+    def test_preserve_perms_renders_archive_flag(self, mock_run):
+        """Default head distribution renders rsync -a in the embedded script."""
+        mock_run.return_value = RemoteResult(host="head", returncode=0, stdout="ok", stderr="")
+        from sparkrun.models.distribute import distribute_model_from_head
+
+        distribute_model_from_head("org/model", ["head", "w1"])
+        dist_script = mock_run.call_args_list[1][0][1]
+        assert 'RSYNC_ATTR_FLAGS="-a"' in dist_script
+
+    @mock.patch("sparkrun.orchestration.ssh.run_remote_script_streaming")
+    def test_no_preserve_perms_renders_recursive_flag(self, mock_run):
+        """preserve_perms=False renders '-r --links' instead of '-a'."""
+        mock_run.return_value = RemoteResult(host="head", returncode=0, stdout="ok", stderr="")
+        from sparkrun.models.distribute import distribute_model_from_head
+
+        distribute_model_from_head("org/model", ["head", "w1"], preserve_perms=False)
+        dist_script = mock_run.call_args_list[1][0][1]
+        assert 'RSYNC_ATTR_FLAGS="-r --links"' in dist_script
+
+    @mock.patch("sparkrun.orchestration.ssh.run_remote_script_streaming")
+    def test_skip_fan_out_ensures_head_only(self, mock_run):
+        """skip_fan_out runs the ensure script on the head but no distribute step."""
+        mock_run.return_value = RemoteResult(host="head", returncode=0, stdout="ok", stderr="")
+        from sparkrun.models.distribute import distribute_model_from_head
+
+        failed = distribute_model_from_head("org/model", ["head", "w1", "w2"], skip_fan_out=True)
+        assert failed == []
+        # Only the ensure (download) script runs — no head→worker distribution.
+        assert mock_run.call_count == 1
+
+    @mock.patch("sparkrun.orchestration.ssh.run_remote_script_streaming")
+    def test_skip_fan_out_head_download_failure_surfaces(self, mock_run):
+        """skip_fan_out still reports a head-download failure."""
+        mock_run.return_value = RemoteResult(host="head", returncode=1, stdout="", stderr="dl failed")
+        from sparkrun.models.distribute import distribute_model_from_head
+
+        failed = distribute_model_from_head("org/model", ["head", "w1"], skip_fan_out=True)
+        assert [f.host for f in failed] == ["head"]
+
+
+class TestDetectSharedCache:
+    """Test the wizard's shared-cache detection helper."""
+
+    @mock.patch("sparkrun.models.distribute.run_remote_scripts_parallel")
+    def test_all_nfs_is_shared(self, mock_run):
+        mock_run.return_value = [
+            RemoteResult(host="h1", returncode=0, stdout="FSTYPE=nfs4", stderr=""),
+            RemoteResult(host="h2", returncode=0, stdout="FSTYPE=nfs", stderr=""),
+        ]
+        from sparkrun.models.distribute import detect_shared_cache
+
+        assert detect_shared_cache("/nfs/models", ["h1", "h2"]) is True
+
+    @mock.patch("sparkrun.models.distribute.run_remote_scripts_parallel")
+    def test_mixed_fstype_not_shared(self, mock_run):
+        mock_run.return_value = [
+            RemoteResult(host="h1", returncode=0, stdout="FSTYPE=nfs4", stderr=""),
+            RemoteResult(host="h2", returncode=0, stdout="FSTYPE=ext4", stderr=""),
+        ]
+        from sparkrun.models.distribute import detect_shared_cache
+
+        assert detect_shared_cache("/nfs/models", ["h1", "h2"]) is False
+
+    @mock.patch("sparkrun.models.distribute.run_remote_scripts_parallel")
+    def test_probe_failure_not_shared(self, mock_run):
+        mock_run.return_value = [
+            RemoteResult(host="h1", returncode=0, stdout="FSTYPE=nfs4", stderr=""),
+            RemoteResult(host="h2", returncode=255, stdout="", stderr="ssh error"),
+        ]
+        from sparkrun.models.distribute import detect_shared_cache
+
+        assert detect_shared_cache("/nfs/models", ["h1", "h2"]) is False
+
+    @mock.patch("sparkrun.models.distribute.run_remote_scripts_parallel")
+    def test_no_cache_dir_probes_default_home(self, mock_run):
+        """When cache_dir is None the script resolves the host's HF cache home."""
+        mock_run.return_value = [RemoteResult(host="h1", returncode=0, stdout="FSTYPE=nfs", stderr="")]
+        from sparkrun.models.distribute import detect_shared_cache
+
+        assert detect_shared_cache(None, ["h1"]) is True
+        script = mock_run.call_args[0][1]
+        assert "HF_HOME" in script
+
+    def test_dry_run_short_circuits(self):
+        from sparkrun.models.distribute import detect_shared_cache
+
+        assert detect_shared_cache("/nfs/models", ["h1"], dry_run=True) is False
 
 
 # ---------------------------------------------------------------------------
@@ -2014,11 +2151,15 @@ class TestEmbeddedDistributeScriptsParallel:
             ssh_opts="-o BatchMode=yes",
             ssh_user="",
             max_parallel=8,
+            rsync_attr_flags="-a",
         )
         assert ") &" in s
         assert "wait" in s
         assert 'MAX_PARALLEL="8"' in s
         assert "rsync" in s
+        # Attribute flags are wired through the placeholder, not hardcoded.
+        assert 'RSYNC_ATTR_FLAGS="-a"' in s
+        assert "rsync $RSYNC_ATTR_FLAGS" in s
         assert "FAILED" in s
         assert "exit 1" in s
         assert "{" not in s and "}" not in s
@@ -2047,6 +2188,7 @@ class TestEmbeddedDistributeScriptsParallel:
             ssh_opts="-o X",
             ssh_user="u",
             max_parallel=2,
+            rsync_attr_flags="-r --links",
         )
         proc = subprocess.run(["bash", "-n"], input=s, text=True, capture_output=True)
         assert proc.returncode == 0, proc.stderr

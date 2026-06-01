@@ -321,11 +321,49 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
             if not yes and user == default_user:
                 user = click.prompt("SSH username", default=default_user)
 
+            # Detect a shared/NFS HF cache and offer to enable the matching
+            # distribution preferences (skip the redundant per-host rsync,
+            # drop perm preservation that fails under root_squash).
+            dist_cfg = None
+            if host_list and not dry_run:
+                from sparkrun.core.cluster_manager import (
+                    ClusterDistributionConfig,
+                    ModelDistributionPrefs,
+                )
+                from sparkrun.models.distribute import detect_shared_cache
+
+                ssh_kwargs_cache = build_ssh_kwargs(config)
+                if user and user != default_user:
+                    ssh_kwargs_cache["ssh_user"] = user
+                try:
+                    shared = detect_shared_cache(None, host_list, **ssh_kwargs_cache)
+                except Exception as e:
+                    logger.debug("Shared-cache detection failed: %s", e)
+                    shared = False
+
+                if shared:
+                    click.echo("Detected a shared/NFS HuggingFace cache across the cluster hosts.")
+                    skip_fan_out = yes or click.confirm(
+                        "Skip per-host model sync (the cache is already visible everywhere)?",
+                        default=True,
+                    )
+                    disable_perms = yes or click.confirm(
+                        "Disable file-permission preservation during sync (recommended on NFS)?",
+                        default=True,
+                    )
+                    dist_cfg = ClusterDistributionConfig(
+                        model=ModelDistributionPrefs(
+                            preserve_perms=not disable_perms,
+                            skip_fan_out=bool(skip_fan_out),
+                        )
+                    )
+
             try:
                 cluster_mgr.create(
                     name=cluster_name,
                     hosts=host_list,
                     user=user if user != default_user else None,
+                    distribution=dist_cfg,
                 )
                 cluster_mgr.set_default(cluster_name)
                 results["cluster"] = "%s (%d hosts, set as default)" % (cluster_name, len(host_list))
@@ -342,10 +380,17 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                         "Cluster '%s' already exists. Update it?" % cluster_name,
                         default=True,
                     ):
+                        # Only override distribution prefs when we actually
+                        # detected a shared cache; otherwise leave the existing
+                        # cluster's prefs untouched (update() defaults to _UNSET).
+                        _update_kw = {}
+                        if dist_cfg is not None:
+                            _update_kw["distribution"] = dist_cfg
                         cluster_mgr.update(
                             name=cluster_name,
                             hosts=host_list,
                             user=user if user != default_user else None,
+                            **_update_kw,
                         )
                         cluster_mgr.set_default(cluster_name)
                         results["cluster"] = "%s (%d hosts, updated)" % (cluster_name, len(host_list))
@@ -356,6 +401,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                             name=cluster_name,
                             hosts=host_list,
                             user=user if user != default_user else None,
+                            distribution=dist_cfg,
                         )
                         cluster_mgr.set_default(cluster_name)
                         results["cluster"] = "%s (%d hosts, set as default)" % (
