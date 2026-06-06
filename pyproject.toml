@@ -51,6 +51,7 @@ eugr-vllm = "sparkrun.runtimes.eugr_vllm_ray:EugrVllmRayRuntime"
 llama-cpp = "sparkrun.runtimes.llama_cpp:LlamaCppRuntime"
 trtllm = "sparkrun.runtimes.trtllm:TrtllmRuntime"
 atlas = "sparkrun.runtimes.atlas:AtlasRuntime"
+tokenary = "sparkrun.runtimes.tokenary:TokenaryRuntime"
 
 [project.entry-points."sparkrun.benchmarking"]
 llama-benchy = "sparkrun.benchmarking.llama_benchy:LlamaBenchyFramework"
