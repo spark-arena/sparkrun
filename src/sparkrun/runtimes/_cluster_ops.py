@@ -105,12 +105,12 @@ class ClusterContext:
         method recomputes placement internally for back-compat with
         callers that haven't been threaded yet.
         """
-        from sparkrun.orchestration.primitives import build_ssh_kwargs, build_volumes
+        from sparkrun.orchestration.primitives import build_ssh_kwargs, build_volumes, resolved_model_volume
         from sparkrun.utils import merge_env
 
         num_nodes = len(hosts)
         ssh_kwargs = build_ssh_kwargs(config)
-        volumes = build_volumes(cache_dir, extra=runtime.get_extra_volumes())
+        volumes = build_volumes(cache_dir, extra={**runtime.get_extra_volumes(), **resolved_model_volume(recipe)})
         runtime_env = runtime.get_cluster_env(head_ip="<pending>", num_nodes=num_nodes)
         all_env = merge_env(
             runtime.get_common_env(),

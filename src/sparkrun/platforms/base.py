@@ -21,7 +21,7 @@ from logging import Logger
 
 from scitrera_app_framework import Plugin, Variables
 
-from sparkrun.core.hardware import HostHardware
+from sparkrun.core.hardware import AcceleratorSpec, HostHardware
 from sparkrun.orchestration.collectives import CollectiveBackend
 
 logger = logging.getLogger(__name__)
@@ -101,6 +101,21 @@ class HardwarePlatformPlugin(Plugin):
         Base implementation returns ``None``; subclasses override to
         publish per-runtime defaults (e.g. Spark Arena images for
         DGX Spark, upstream vLLM/SGLang images for generic NVIDIA).
+        """
+        return None
+
+    def default_max_gpu_memory_utilization(self, accelerator: AcceleratorSpec) -> float | None:
+        """Default usable-memory cap for *accelerator* on this platform.
+
+        This is the **platform tier** of
+        :func:`sparkrun.core.limits.resolve_max_gpu_memory_utilization` — the
+        fraction of nominal ``memory_gb`` treated as usable for scheduling /
+        fit when neither the accelerator nor the cluster config supplies one.
+
+        Base implementation returns ``None`` (no platform default → the hard
+        ``1.0`` fallback applies).  Subclasses override to publish a default
+        for their accelerators — e.g. DGX Spark returns ``0.85`` for GB10
+        because its unified memory is shared with the CPU/OS.
         """
         return None
 

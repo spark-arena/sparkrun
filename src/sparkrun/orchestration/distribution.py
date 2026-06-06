@@ -707,6 +707,7 @@ def distribute_from_config(
     topology: str | None = None,
     preserve_model_perms: bool = True,
     skip_model_fan_out: bool = False,
+    skip_model: bool = False,
 ) -> tuple["ClusterCommEnv | None", dict[str, str], dict[str, str]]:
     """Distribute resources based on recipe ``distribution_config``.
 
@@ -746,7 +747,7 @@ def distribute_from_config(
     hf_token = _get_hf_token()
     if len(host_list) <= 1 and is_local_host(host_list[0]) and not _is_cross_user(ssh_kwargs):
         _do_local_ensure = dist_cfg.containers.enabled
-        _model_names = [e.name for e in dist_cfg.models.entries] if dist_cfg.models.enabled else []
+        _model_names = [e.name for e in dist_cfg.models.entries] if (dist_cfg.models.enabled and not skip_model) else []
         lock_parts = [image] + _model_names
         _lock_key = hashlib.sha256("|".join(lock_parts).encode()).hexdigest()[:12]
         _lock_id = f"sparkrun_{_lock_key}"
@@ -843,8 +844,9 @@ def distribute_from_config(
             if img_failed:
                 raise DistributionError("Image distribution failed on: %s" % ", ".join(img_failed))
 
-    # Distribute models
-    if dist_cfg.models.enabled:
+    # Distribute models (skipped entirely when skip_model — e.g. a
+    # cluster_config.resolved_model_path points at pre-placed shared weights).
+    if dist_cfg.models.enabled and not skip_model:
         for entry in dist_cfg.models.entries:
             if not isinstance(entry, DistributionModelEntry):
                 continue

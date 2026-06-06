@@ -34,21 +34,30 @@ class HostFitDetail:
     """Per-rank VRAM requirement (= :attr:`VRAMEstimate.total_per_gpu_gb`)."""
 
     accelerator_memory_gb: float | None
-    """Smallest per-accelerator memory across this host's accelerators.
+    """Smallest per-accelerator *usable* memory across this host's accelerators.
 
-    ``None`` when no :class:`AcceleratorSpec` on the host declares
-    ``memory_gb`` — fit cannot be verified and the host is reported as
-    ``ok=True`` with a warning rather than failing the whole check.
+    Usable = nominal ``memory_gb × max_gpu_memory_utilization`` (the cap
+    resolved by :func:`sparkrun.core.limits.resolve_max_gpu_memory_utilization`).
+    This is the figure the fit decision is made against.  ``None`` when no
+    :class:`AcceleratorSpec` on the host declares ``memory_gb`` — fit cannot be
+    verified and the host is reported as ``ok=True`` with a warning rather than
+    failing the whole check.
     """
 
     headroom_gb: float | None
-    """``accelerator_memory_gb - vram_per_rank_gb``, or ``None`` when unknown."""
+    """``accelerator_memory_gb (usable) - vram_per_rank_gb``, or ``None`` when unknown."""
 
     ok: bool
-    """``True`` when the per-rank requirement fits the smallest accelerator on the host."""
+    """``True`` when the per-rank requirement fits the smallest usable accelerator on the host."""
 
     note: str = ""
     """Human-readable explanation when the result is unusual (unknown memory, etc.)."""
+
+    nominal_memory_gb: float | None = None
+    """Nominal per-accelerator memory of the limiting accelerator (pre-cap), or ``None``."""
+
+    max_gpu_memory_utilization: float | None = None
+    """Usable-memory cap applied to the limiting accelerator (``1.0`` = no cap), or ``None``."""
 
 
 @dataclass
@@ -83,18 +92,33 @@ def _detail_to_dict(d: HostFitDetail) -> dict:
         "ranks_assigned": d.ranks_assigned,
         "vram_per_rank_gb": d.vram_per_rank_gb,
         "accelerator_memory_gb": d.accelerator_memory_gb,
+        "nominal_memory_gb": d.nominal_memory_gb,
+        "max_gpu_memory_utilization": d.max_gpu_memory_utilization,
         "headroom_gb": d.headroom_gb,
         "ok": d.ok,
         "note": d.note,
     }
 
 
-def _min_accelerator_memory(hw) -> float | None:
-    """Smallest ``memory_gb`` across this host's accelerator specs (None if all unknown)."""
-    memories = [a.memory_gb for a in hw.accelerators if a.memory_gb is not None]
-    if not memories:
-        return None
-    return min(memories)
+def _limiting_accelerator(hw, cluster) -> tuple[float, float, float] | None:
+    """Find the accelerator with the smallest *usable* memory on *hw*.
+
+    Returns ``(usable_gb, nominal_gb, cap)`` for that accelerator, or ``None``
+    when no accelerator on the host declares ``memory_gb``.  Usable memory
+    applies the scheduling/fit cap resolved by
+    :func:`sparkrun.core.limits.resolve_max_gpu_memory_utilization`.
+    """
+    from sparkrun.core.limits import resolve_max_gpu_memory_utilization
+
+    best: tuple[float, float, float] | None = None
+    for accel in hw.accelerators:
+        if accel.memory_gb is None:
+            continue
+        cap = resolve_max_gpu_memory_utilization(accel, hw, cluster)
+        usable = accel.memory_gb * cap
+        if best is None or usable < best[0]:
+            best = (usable, accel.memory_gb, cap)
+    return best
 
 
 def check_fit(
@@ -132,9 +156,9 @@ def check_fit(
     for host in placement.hosts_used:
         ranks = placement.ranks_on_host(host)
         hw = cluster.hardware_for(host)
-        accel_mem = _min_accelerator_memory(hw)
+        limiting = _limiting_accelerator(hw, cluster)
 
-        if accel_mem is None:
+        if limiting is None:
             note = "no memory_gb declared on host hardware; fit not verified"
             warnings.append("%s: %s" % (host, note))
             detail = HostFitDetail(
@@ -147,17 +171,20 @@ def check_fit(
                 note=note,
             )
         else:
-            headroom = accel_mem - vram_per_rank
-            host_ok = vram_per_rank <= accel_mem
+            usable_mem, nominal_mem, cap = limiting
+            headroom = usable_mem - vram_per_rank
+            host_ok = vram_per_rank <= usable_mem
             if not host_ok:
                 overall_ok = False
             detail = HostFitDetail(
                 host=host,
                 ranks_assigned=len(ranks),
                 vram_per_rank_gb=vram_per_rank,
-                accelerator_memory_gb=accel_mem,
+                accelerator_memory_gb=usable_mem,
                 headroom_gb=headroom,
                 ok=host_ok,
+                nominal_memory_gb=nominal_mem,
+                max_gpu_memory_utilization=cap,
             )
         per_host[host] = detail
 

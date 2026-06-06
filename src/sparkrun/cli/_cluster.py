@@ -93,6 +93,14 @@ def cluster(ctx):
     default=None,
     help="Default scheduler selector for workloads on this cluster (e.g. greedy, occupancy-sparse, occupancy-dense)",
 )
+@click.option(
+    "--max-gpu-mem-util",
+    "max_gpu_mem_util",
+    type=float,
+    default=None,
+    help="Cluster-wide cap (0.0 < x <= 1.0) on the fraction of GPU memory usable for "
+    "scheduling/fit (e.g. 0.85). Overrides platform defaults. Per-type/per-host caps via cluster YAML.",
+)
 @click.option("--default", "set_default", is_flag=True, default=False, help="Set as the default cluster")
 @click.pass_context
 def cluster_create(
@@ -108,11 +116,16 @@ def cluster_create(
     executor_name,
     executor_opts,
     scheduler_name,
+    max_gpu_mem_util,
     set_default,
 ):
     """Create a new named cluster."""
     from sparkrun.core.cluster_manager import ClusterError
     from sparkrun.core.hosts import parse_hosts_file
+
+    if max_gpu_mem_util is not None and not (0.0 < max_gpu_mem_util <= 1.0):
+        click.echo("Error: --max-gpu-mem-util must be > 0.0 and <= 1.0.", err=True)
+        sys.exit(1)
 
     # "auto" means unset (use default behavior)
     if transfer_interface == "auto":
@@ -142,6 +155,7 @@ def cluster_create(
             executor=executor_name,
             executor_config=executor_config,
             scheduler=scheduler_name,
+            max_gpu_memory_utilization=max_gpu_mem_util,
         )
         click.echo(f"Cluster '{name}' created with {len(host_list)} host(s).")
         if set_default:
@@ -209,6 +223,14 @@ def cluster_create(
     default=None,
     help="Default scheduler selector for workloads on this cluster (e.g. greedy, occupancy-sparse, occupancy-dense). Pass empty string to clear.",
 )
+@click.option(
+    "--max-gpu-mem-util",
+    "max_gpu_mem_util",
+    type=float,
+    default=None,
+    help="Cluster-wide cap (0.0 < x <= 1.0) on the fraction of GPU memory usable for "
+    "scheduling/fit (e.g. 0.85). Pass 0 to clear. Per-type/per-host caps via cluster YAML.",
+)
 @click.pass_context
 def cluster_update(
     ctx,
@@ -228,6 +250,7 @@ def cluster_update(
     executor_opts,
     clear_executor_config,
     scheduler_name,
+    max_gpu_mem_util,
 ):
     """Update an existing cluster.
 
@@ -267,6 +290,7 @@ def cluster_update(
     executor_provided = ctx.get_parameter_source("executor_name") == ParameterSource.COMMANDLINE
     executor_opts_provided = bool(executor_opts) or clear_executor_config
     scheduler_provided = ctx.get_parameter_source("scheduler_name") == ParameterSource.COMMANDLINE
+    max_gpu_mem_util_provided = ctx.get_parameter_source("max_gpu_mem_util") == ParameterSource.COMMANDLINE
 
     has_host_change = host_list is not None or add_host or remove_host
     if (
@@ -281,14 +305,19 @@ def cluster_update(
         and not executor_provided
         and not executor_opts_provided
         and not scheduler_provided
+        and not max_gpu_mem_util_provided
     ):
         click.echo(
             "Error: Nothing to update. Provide --hosts, --hosts-file, --add-host, "
             "--remove-host, -d, --user, --cache-dir, --transfer-mode, "
             "--transfer-interface, --topology, --infer-hardware, --executor, "
-            "--executor-opt, --clear-executor-config, or --scheduler.",
+            "--executor-opt, --clear-executor-config, --scheduler, or --max-gpu-mem-util.",
             err=True,
         )
+        sys.exit(1)
+
+    if max_gpu_mem_util_provided and max_gpu_mem_util != 0 and not (0.0 < max_gpu_mem_util <= 1.0):
+        click.echo("Error: --max-gpu-mem-util must be > 0.0 and <= 1.0 (or 0 to clear).", err=True)
         sys.exit(1)
 
     sctx = _get_context(ctx)
@@ -355,6 +384,9 @@ def cluster_update(
     if scheduler_provided:
         # Empty string clears the scheduler selector
         update_kwargs["scheduler"] = scheduler_name if scheduler_name else None
+    if max_gpu_mem_util_provided:
+        # 0 clears the cluster-wide cap (defer to platform default / 1.0 fallback)
+        update_kwargs["max_gpu_memory_utilization"] = max_gpu_mem_util if max_gpu_mem_util else None
 
     if infer_hardware:
         from sparkrun.core.fingerprint import fingerprint_host

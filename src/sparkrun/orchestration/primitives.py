@@ -79,6 +79,19 @@ def build_volumes(
     return volumes
 
 
+def resolved_model_volume(recipe) -> dict[str, str]:
+    """Identity bind-mount for a recipe's ``cluster_config.resolved_model_path``.
+
+    When the (undocumented) escape hatch is set, the pre-placed model-weights
+    directory — already present on every node (e.g. a shared NFS mount) — is
+    mounted into the container at the *same* path so the serving runtime can
+    read it directly (the serve argument is repointed at this path by the
+    launcher).  Returns an empty dict when not configured.
+    """
+    path = getattr(getattr(recipe, "cluster_config", None), "resolved_model_path", None)
+    return {path: path} if path else {}
+
+
 def probe_remote_hf_cache(
     host: str,
     ssh_user: str | None = None,

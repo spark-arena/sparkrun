@@ -67,6 +67,40 @@ def test_sglang_generate_command_cluster():
     assert "--tp-size 4" in cmd
 
 
+def test_sglang_node_command_rendezvous_at_head_with_hosts():
+    """Regression: every worker must rendezvous at the head, not its own IP.
+
+    With a hosts list (1 GPU per node on the Spark cluster), each node's
+    --dist-init-addr must still point at the head node. Previously
+    generate_node_command forwarded hosts/placement to _make_node_command_args
+    with the default replica_size=1, so _resolve_master_addr returned
+    hosts[node_rank] (each node's own IP) and only rank 0 bound the store,
+    producing "1/N clients joined" rendezvous timeouts.
+    """
+    recipe_data = {
+        "name": "test-recipe",
+        "model": "meta-llama/Llama-2-70b-hf",
+        "runtime": "sglang",
+        "defaults": {"tensor_parallel": 4},
+    }
+    recipe = Recipe.from_dict(recipe_data)
+    runtime = SglangRuntime()
+    hosts = ["10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4"]
+
+    for rank in range(4):
+        cmd = runtime.generate_node_command(
+            recipe,
+            {},
+            head_ip="10.0.0.1",
+            num_nodes=4,
+            node_rank=rank,
+            hosts=hosts,
+        )
+        assert "--dist-init-addr 10.0.0.1:25000" in cmd, "rank %d -> %s" % (rank, cmd)
+        assert "--nnodes 4" in cmd
+        assert "--node-rank %d" % rank in cmd
+
+
 def test_sglang_cluster_env():
     """Returns NCCL_CUMEM_ENABLE."""
     runtime = SglangRuntime()

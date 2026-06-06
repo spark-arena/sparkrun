@@ -236,8 +236,13 @@ def test_resolve_effective_hosts_for_recipe_threads_cluster(monkeypatch):
         cluster_def=cluster,
         solo=False,
     )
-    # Hardware coming from the cluster threaded into the scheduling request.
-    assert captured["host_hardware"] == (cluster.hosts_hardware or None)
+    # Hardware coming from the cluster is materialized per-host with the
+    # usable-memory cap folded in (DGX defaults → GB10 platform cap 0.85).
+    hw = captured["host_hardware"]
+    assert set(hw) == {"a", "b", "c"}
+    for host_hw in hw.values():
+        assert host_hw.accelerators[0].model == "gb10"
+        assert host_hw.accelerators[0].max_gpu_memory_utilization == 0.85
     assert len(host_list) == 2
     assert is_solo is False
 

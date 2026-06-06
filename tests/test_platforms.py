@@ -296,3 +296,26 @@ def test_nvidia_generic_validate_host_no_accelerators():
     warnings = GenericNvidiaPlatform().validate_host(hw)
     assert len(warnings) == 1
     assert "none" in warnings[0]
+
+
+# --------------------------------------------------------------------------
+# default_max_gpu_memory_utilization (usable-memory cap, platform tier)
+# --------------------------------------------------------------------------
+
+
+def test_dgx_default_max_gpu_memory_utilization_for_gb10():
+    """DGX Spark caps GB10 usable memory at 0.85 (unified memory headroom)."""
+    accel = AcceleratorSpec(vendor="nvidia", model="gb10", memory_gb=121.0)
+    assert DgxSparkPlatform().default_max_gpu_memory_utilization(accel) == 0.85
+
+
+def test_dgx_default_max_gpu_memory_utilization_other_model_is_none():
+    """A non-GB10 accelerator gets no DGX default."""
+    accel = AcceleratorSpec(vendor="nvidia", model="h200", memory_gb=141.0)
+    assert DgxSparkPlatform().default_max_gpu_memory_utilization(accel) is None
+
+
+def test_generic_nvidia_default_max_gpu_memory_utilization_is_none():
+    """Generic NVIDIA publishes no cap → resolution falls through to 1.0."""
+    accel = AcceleratorSpec(vendor="nvidia", model="h100", memory_gb=80.0)
+    assert GenericNvidiaPlatform().default_max_gpu_memory_utilization(accel) is None

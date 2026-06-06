@@ -31,6 +31,65 @@ def test_create_cluster_already_exists(tmp_path: Path):
         manager.create("duplicate", ["host2"])
 
 
+def test_max_gpu_memory_utilization_round_trips(tmp_path: Path):
+    """Cluster-wide cap persists via create → write → read; omitted when unset."""
+    from sparkrun.core.cluster_manager import ClusterDefinition
+
+    manager = ClusterManager(tmp_path)
+
+    # Unset by default — neither field appears in the serialized dict.
+    manager.create("plain", ["host1"])
+    plain = manager.get("plain")
+    assert plain.max_gpu_memory_utilization is None
+    assert plain.accelerator_memory_limits == {}
+    assert "max_gpu_memory_utilization" not in plain.to_dict()
+    assert "accelerator_memory_limits" not in plain.to_dict()
+
+    # Cluster-wide cap via create() survives a round-trip.
+    manager.create("capped", ["host1"], max_gpu_memory_utilization=0.8)
+    assert manager.get("capped").max_gpu_memory_utilization == 0.8
+
+    # Per-accelerator-type map (set via the dataclass / YAML) survives too.
+    manager._write_cluster(ClusterDefinition(name="typed", hosts=["host1"], accelerator_memory_limits={"gb10": 0.85, "h200": 0.95}))
+    assert manager.get("typed").accelerator_memory_limits == {"gb10": 0.85, "h200": 0.95}
+
+
+def test_distribution_model_enabled_round_trips(tmp_path: Path):
+    """``distribution.model.enabled: false`` survives write → read; True is the omitted default."""
+    from sparkrun.core.cluster_manager import ClusterDefinition, ClusterDistributionConfig, ModelDistributionPrefs
+
+    manager = ClusterManager(tmp_path)
+
+    # Default (enabled=True) is omitted from the serialized dict.
+    prefs = ModelDistributionPrefs()
+    assert prefs.enabled is True
+    assert prefs.is_default() is True
+    assert "enabled" not in prefs.to_dict()
+
+    manager._write_cluster(
+        ClusterDefinition(
+            name="nodist",
+            hosts=["host1"],
+            distribution=ClusterDistributionConfig(model=ModelDistributionPrefs(enabled=False)),
+        )
+    )
+    reloaded = manager.get("nodist")
+    assert reloaded.distribution.model.enabled is False
+    assert reloaded.distribution.model.to_dict() == {"enabled": False}
+
+
+def test_update_max_gpu_memory_utilization(tmp_path: Path):
+    """update() sets and clears the cluster-wide cap."""
+    manager = ClusterManager(tmp_path)
+    manager.create("c", ["host1"], max_gpu_memory_utilization=0.8)
+
+    manager.update("c", max_gpu_memory_utilization=0.7)
+    assert manager.get("c").max_gpu_memory_utilization == 0.7
+
+    manager.update("c", max_gpu_memory_utilization=None)
+    assert manager.get("c").max_gpu_memory_utilization is None
+
+
 def test_get_cluster_not_found(tmp_path: Path):
     """Getting a non-existent cluster raises ClusterError."""
     manager = ClusterManager(tmp_path)

@@ -15,6 +15,17 @@ def test_accelerator_spec_round_trip_minimal():
     d = spec.to_dict()
     assert d == {"vendor": "nvidia", "model": "gb10"}
     assert AcceleratorSpec.from_dict(d) == spec
+    # max_gpu_memory_utilization defaults to None and is omitted from YAML.
+    assert spec.max_gpu_memory_utilization is None
+    assert "max_gpu_memory_utilization" not in d
+
+
+def test_accelerator_spec_round_trip_max_gpu_memory_utilization():
+    """The usable-memory cap survives to_dict/from_dict when set."""
+    spec = AcceleratorSpec(vendor="nvidia", model="gb10", memory_gb=121.0, max_gpu_memory_utilization=0.8)
+    d = spec.to_dict()
+    assert d["max_gpu_memory_utilization"] == 0.8
+    assert AcceleratorSpec.from_dict(d) == spec
 
 
 def test_accelerator_spec_round_trip_full():

@@ -6,7 +6,7 @@ defaults that have been validated for the GB10 RoCEv2 fabric.
 
 from __future__ import annotations
 
-from sparkrun.core.hardware import HostHardware
+from sparkrun.core.hardware import AcceleratorSpec, HostHardware
 from sparkrun.orchestration.collectives import CollectiveBackend, NcclBackend
 from sparkrun.platforms.base import HardwarePlatformPlugin
 
@@ -21,6 +21,13 @@ _DGX_SPARK_DEFAULTS: dict[str, str | None] = {
     "trtllm": "nvcr.io/nvidia/tensorrt-llm/release:latest",
     "atlas": "avarok/atlas-gb10:latest",
 }
+
+
+# GB10 is a unified-memory system: the 121 GB "available for inference" figure
+# is shared with the CPU/OS and runtime overhead, so scheduling/fit should not
+# assume the full amount is usable.  0.85 leaves headroom; users can override
+# per-cluster.  See sparkrun.core.limits.
+_DGX_SPARK_MAX_GPU_MEMORY_UTILIZATION = 0.85
 
 
 class DgxSparkPlatform(HardwarePlatformPlugin):
@@ -41,6 +48,12 @@ class DgxSparkPlatform(HardwarePlatformPlugin):
 
     def default_image(self, runtime_name: str) -> str | None:
         return _DGX_SPARK_DEFAULTS.get(runtime_name)
+
+    def default_max_gpu_memory_utilization(self, accelerator: AcceleratorSpec) -> float | None:
+        """GB10 unified memory → cap usable memory at 0.85 for scheduling/fit."""
+        if accelerator.vendor == "nvidia" and accelerator.model == "gb10":
+            return _DGX_SPARK_MAX_GPU_MEMORY_UTILIZATION
+        return None
 
     def validate_host(self, host_hardware: HostHardware) -> list[str]:
         """Validate that a host looks like a healthy DGX Spark (GB10 + RoCEv2).

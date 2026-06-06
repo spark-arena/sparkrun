@@ -1038,6 +1038,7 @@ class RuntimePlugin(Plugin):
             build_volumes,
             detect_infiniband,
             detect_infiniband_local,
+            resolved_model_volume,
             run_script_on_host,
             should_run_locally,
         )
@@ -1046,7 +1047,7 @@ class RuntimePlugin(Plugin):
         ssh_kwargs = build_ssh_kwargs(config)
         is_local = should_run_locally(host, ssh_kwargs.get("ssh_user"))
         container_name = self._resolve_executor().container_name(cluster_id, "solo")
-        volumes = build_volumes(cache_dir, extra=self.get_extra_volumes())
+        volumes = build_volumes(cache_dir, extra={**self.get_extra_volumes(), **resolved_model_volume(recipe)})
         all_env = merge_env(
             self.get_common_env(),  # base env
             self.get_solo_env(),  # solo-specific

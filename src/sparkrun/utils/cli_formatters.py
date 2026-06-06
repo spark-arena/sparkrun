@@ -320,10 +320,15 @@ def display_vram_estimate(
                 click.echo(f"    {host}: ranks={detail.ranks_assigned}, accelerator memory unknown")
             else:
                 marker = "OK" if detail.ok else "EXCEEDS"
+                cap = detail.max_gpu_memory_utilization
+                if cap is not None and cap < 1.0 and detail.nominal_memory_gb is not None:
+                    accel_str = f"accelerator={detail.nominal_memory_gb:.1f} GB @{cap:.0%} -> usable={detail.accelerator_memory_gb:.1f} GB"
+                else:
+                    accel_str = f"accelerator={detail.accelerator_memory_gb:.1f} GB"
                 click.echo(
                     f"    {host}: ranks={detail.ranks_assigned}, "
                     f"per-rank={detail.vram_per_rank_gb:.1f} GB, "
-                    f"accelerator={detail.accelerator_memory_gb:.1f} GB, "
+                    f"{accel_str}, "
                     f"headroom={detail.headroom_gb:.1f} GB [{marker}]"
                 )
         for w in fit.warnings:

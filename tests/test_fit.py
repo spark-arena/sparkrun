@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from sparkrun.core.cluster_manager import ClusterDefinition
 from sparkrun.core.hardware import AcceleratorSpec, HostHardware
 from sparkrun.core.layout import Placement, RecipeLayout
@@ -39,7 +41,11 @@ def test_default_vram_gb_alias_matches_dgx_constant():
 
 
 def test_check_fit_dgx_three_hosts_fits():
-    """A 50 GB-per-GPU model fits on a 3× DGX Spark cluster (121 GB each)."""
+    """A 50 GB-per-GPU model fits on a 3× DGX Spark cluster.
+
+    DGX Spark GB10 applies the platform usable-memory cap of 0.85, so the fit
+    decision is made against 121 × 0.85 = 102.85 GB usable (nominal stays 121).
+    """
     cluster = ClusterDefinition(name="dgx", hosts=["s1", "s2", "s3"])
     placement = compute_placement(ParallelismConfig(tensor_parallel=3), cluster.hosts)
 
@@ -48,8 +54,10 @@ def test_check_fit_dgx_three_hosts_fits():
     assert result.ok is True
     assert set(result.hosts_used) == {"s1", "s2", "s3"}
     for detail in result.per_host.values():
-        assert detail.accelerator_memory_gb == 121.0
-        assert detail.headroom_gb == 71.0
+        assert detail.accelerator_memory_gb == pytest.approx(102.85)  # usable = 121 × 0.85
+        assert detail.nominal_memory_gb == 121.0
+        assert detail.max_gpu_memory_utilization == 0.85
+        assert detail.headroom_gb == pytest.approx(52.85)
         assert detail.ok is True
 
 
@@ -65,6 +73,36 @@ def test_check_fit_dgx_matches_legacy_fits_dgx_spark():
     assert check_fit(fits, cluster, placement).ok is True
     assert exceeds.fits_dgx_spark is False
     assert check_fit(exceeds, cluster, placement).ok is False
+
+
+def test_check_fit_cap_flips_borderline_model():
+    """A 110 GB model fits nominal 121 GB but exceeds the 0.85 GB10 cap (102.85)."""
+    cluster = ClusterDefinition(name="dgx", hosts=["s1"])
+    placement = compute_placement(ParallelismConfig(), cluster.hosts)
+
+    est = _estimate(per_gpu_gb=110.0)
+    result = check_fit(est, cluster, placement)
+    assert result.ok is False
+    assert result.per_host["s1"].max_gpu_memory_utilization == 0.85
+    assert result.per_host["s1"].headroom_gb < 0
+
+    # Explicit cluster-wide cap of 1.0 restores the full 121 GB → fits again.
+    uncapped = ClusterDefinition(name="dgx", hosts=["s1"], max_gpu_memory_utilization=1.0)
+    assert check_fit(est, uncapped, placement).ok is True
+
+
+def test_check_fit_unknown_memory_still_ok_with_warning():
+    """A host whose accelerator declares no memory_gb is reported ok + warning."""
+    cluster = ClusterDefinition(
+        name="mystery",
+        hosts=["s1"],
+        hosts_hardware={"s1": HostHardware(accelerators=[AcceleratorSpec(vendor="nvidia", model="gb10")])},
+    )
+    placement = compute_placement(ParallelismConfig(), cluster.hosts)
+    result = check_fit(_estimate(per_gpu_gb=999.0), cluster, placement)
+    assert result.ok is True
+    assert result.per_host["s1"].accelerator_memory_gb is None
+    assert any("s1" in w for w in result.warnings)
 
 
 # --------------------------------------------------------------------------
@@ -177,5 +215,8 @@ def test_fit_result_to_dict_round_trips_fields():
     assert d["ok"] is True
     assert "s1" in d["per_host"]
     assert d["per_host"]["s1"]["vram_per_rank_gb"] == 10.0
-    assert d["per_host"]["s1"]["accelerator_memory_gb"] == 121.0
+    # Usable memory after the DGX GB10 0.85 cap; nominal is carried separately.
+    assert d["per_host"]["s1"]["accelerator_memory_gb"] == pytest.approx(102.85)
+    assert d["per_host"]["s1"]["nominal_memory_gb"] == 121.0
+    assert d["per_host"]["s1"]["max_gpu_memory_utilization"] == 0.85
     assert isinstance(result, FitResult)

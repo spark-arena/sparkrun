@@ -38,6 +38,19 @@ class AcceleratorSpec:
     capabilities: frozenset[str] = frozenset()
     """Free-form capability tags: ``"cuda"``, ``"rocm"``, ``"nvlink"``, ``"rdma:roce-v2"``, etc."""
 
+    max_gpu_memory_utilization: float | None = None
+    """Upper bound (``0.0`` < x ≤ ``1.0``) on the fraction of :attr:`memory_gb`
+    treated as usable for **scheduling and fit** decisions
+    (``usable = memory_gb × max_gpu_memory_utilization``).
+
+    This is the *memory* axis — it scales capacity for placement/room math —
+    and is distinct from the scheduler's compute ``util_fraction``.  It also
+    does **not** set the serving ``--gpu-memory-utilization`` /
+    ``--mem-fraction-static`` flag.  ``None`` means "no per-accelerator cap"; a
+    resolved default comes from the cluster config or platform tier (see
+    :func:`sparkrun.core.limits.resolve_max_gpu_memory_utilization`), falling
+    back to :data:`DEFAULT_MAX_GPU_MEMORY_UTILIZATION`."""
+
     def to_dict(self) -> dict[str, Any]:
         """JSON/YAML-serializable form. Omits defaults to keep YAML small."""
         d: dict[str, Any] = {"vendor": self.vendor, "model": self.model}
@@ -47,17 +60,21 @@ class AcceleratorSpec:
             d["memory_gb"] = self.memory_gb
         if self.capabilities:
             d["capabilities"] = sorted(self.capabilities)
+        if self.max_gpu_memory_utilization is not None:
+            d["max_gpu_memory_utilization"] = self.max_gpu_memory_utilization
         return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> AcceleratorSpec:
         caps = data.get("capabilities") or ()
+        raw_max_util = data.get("max_gpu_memory_utilization")
         return cls(
             vendor=str(data.get("vendor", "")),
             model=str(data.get("model", "")),
             count=int(data.get("count", 1)),
             memory_gb=float(data["memory_gb"]) if data.get("memory_gb") is not None else None,
             capabilities=frozenset(str(c) for c in caps),
+            max_gpu_memory_utilization=float(raw_max_util) if raw_max_util is not None else None,
         )
 
 
@@ -131,6 +148,12 @@ class HostHardware:
 # Mirrors models.vram.DGX_SPARK_VRAM_GB.  Kept in this module so callers
 # that resolve hardware never need to import the VRAM module.
 _DGX_SPARK_VRAM_GB = 121.0
+
+# Hard fallback for the scheduling/fit usable-memory cap when neither the
+# accelerator, the cluster config, nor the platform tier supplies one.  ``1.0``
+# means "treat the full nominal memory_gb as usable" — byte-identical to the
+# pre-cap behavior.  See :func:`sparkrun.core.limits.resolve_max_gpu_memory_utilization`.
+DEFAULT_MAX_GPU_MEMORY_UTILIZATION = 1.0
 
 
 def default_dgx_spark_hardware() -> HostHardware:

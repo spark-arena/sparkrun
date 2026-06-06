@@ -267,10 +267,20 @@ class VllmTuner:
 
         # Prefix env-var assignments to the script body so they're available to
         # the script regardless of how the remote shell sources them.
-        prelude = "export VLLM_TUNE_REPO=%s\nexport VLLM_TUNE_REF=%s\nexport VLLM_TUNE_DEST=%s\n" % (
+        #
+        # VLLM_TUNE_DEST must expand `$HOME` on the *remote* shell: the parent
+        # (_VLLM_TUNE_REMOTE_PARENT) is a constant containing a raw `$HOME` and
+        # is left unquoted so the remote shell expands it; only the dynamic ref
+        # subdir is quoted.  This MUST match how build_vllm_tune_invocation
+        # interpolates the resulting path (raw, so `$HOME` expands there too) —
+        # quoting the whole dest here would make the clone land in a directory
+        # literally named "$HOME" while the tune step looks at the expanded
+        # path, producing a "No such file or directory" mismatch.
+        prelude = "export VLLM_TUNE_REPO=%s\nexport VLLM_TUNE_REF=%s\nexport VLLM_TUNE_DEST=%s/%s\n" % (
             quote(self.vllm_tune_repo),
             quote(self.vllm_tune_ref),
-            quote(dest),
+            _VLLM_TUNE_REMOTE_PARENT,
+            quote(safe_ref),
         )
         # The script's shebang stays at the top.
         body = install_script

@@ -49,10 +49,17 @@ class ModelDistributionPrefs:
     owner/group/perm preservation that fails under root_squash, and
     ``skip_fan_out=True`` skips the redundant per-host rsync because the
     model is already visible on every node once downloaded once.
+
+    ``enabled=False`` turns model distribution off entirely — no local
+    download and no per-host transfer.  Use it when the weights are already
+    present on every node (e.g. a shared NFS mount populated out-of-band), so
+    sparkrun should never fetch or copy them.  This is stronger than
+    ``skip_fan_out`` (which still downloads the model once locally).
     """
 
     preserve_perms: bool = True
     skip_fan_out: bool = False
+    enabled: bool = True
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "ModelDistributionPrefs":
@@ -61,10 +68,11 @@ class ModelDistributionPrefs:
         return cls(
             preserve_perms=bool(data.get("preserve_perms", True)),
             skip_fan_out=bool(data.get("skip_fan_out", False)),
+            enabled=bool(data.get("enabled", True)),
         )
 
     def is_default(self) -> bool:
-        return self.preserve_perms and not self.skip_fan_out
+        return self.enabled and self.preserve_perms and not self.skip_fan_out
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {}
@@ -72,6 +80,8 @@ class ModelDistributionPrefs:
             out["preserve_perms"] = False
         if self.skip_fan_out:
             out["skip_fan_out"] = True
+        if not self.enabled:
+            out["enabled"] = False
         return out
 
 
@@ -151,6 +161,23 @@ class ClusterDefinition:
     recipe land on the occupancy-sparse scheduler unless the recipe (or
     CLI) overrides.
     """
+    max_gpu_memory_utilization: float | None = None
+    """Cluster-wide default usable-memory cap (``0.0`` < x ≤ ``1.0``).
+
+    The cluster-wide tier of
+    :func:`sparkrun.core.limits.resolve_max_gpu_memory_utilization`: scales
+    each accelerator's ``memory_gb`` for scheduling / fit when the accelerator
+    itself declares no ``max_gpu_memory_utilization`` and no per-type entry in
+    :attr:`accelerator_memory_limits` applies.  ``None`` defers to the platform
+    tier (e.g. GB10 → 0.85) and ultimately the ``1.0`` hard fallback.
+    """
+    accelerator_memory_limits: dict[str, float] = field(default_factory=dict)
+    """Per-accelerator-type usable-memory caps, keyed by accelerator ``model``
+    (e.g. ``{"gb10": 0.85, "h200": 0.95}``).
+
+    Takes precedence over :attr:`max_gpu_memory_utilization` but is overridden
+    by a value set directly on an :class:`~sparkrun.core.hardware.AcceleratorSpec`.
+    """
 
     def hardware_for(self, host: str) -> HostHardware:
         """Return hardware metadata for *host*, defaulting to DGX Spark.
@@ -185,6 +212,10 @@ class ClusterDefinition:
             d["executor_config"] = dict(self.executor_config)
         if self.scheduler:
             d["scheduler"] = self.scheduler
+        if self.max_gpu_memory_utilization is not None:
+            d["max_gpu_memory_utilization"] = self.max_gpu_memory_utilization
+        if self.accelerator_memory_limits:
+            d["accelerator_memory_limits"] = dict(self.accelerator_memory_limits)
         return d
 
 
@@ -298,6 +329,7 @@ class ClusterManager:
         executor: str | None = None,
         executor_config: dict[str, Any] | None = None,
         scheduler: str | None = None,
+        max_gpu_memory_utilization: float | None = None,
         distribution: ClusterDistributionConfig | None = None,
     ) -> None:
         """Create a new named cluster.
@@ -344,6 +376,7 @@ class ClusterManager:
             executor=executor,
             executor_config=dict(executor_config) if executor_config else None,
             scheduler=scheduler,
+            max_gpu_memory_utilization=max_gpu_memory_utilization,
             distribution=distribution if distribution is not None else ClusterDistributionConfig(),
         )
         self._write_cluster(cluster_def)
@@ -381,6 +414,7 @@ class ClusterManager:
         executor: str | None = _UNSET,
         executor_config: dict[str, Any] | None = _UNSET,
         scheduler: str | None = _UNSET,
+        max_gpu_memory_utilization: float | None = _UNSET,
         distribution: ClusterDistributionConfig | None = _UNSET,
     ) -> None:
         """Update existing cluster definition.
@@ -452,6 +486,10 @@ class ClusterManager:
         if scheduler is not _UNSET:
             cluster_def.scheduler = scheduler
             logger.debug("Updated scheduler for cluster '%s'", name)
+
+        if max_gpu_memory_utilization is not _UNSET:
+            cluster_def.max_gpu_memory_utilization = max_gpu_memory_utilization
+            logger.debug("Updated max_gpu_memory_utilization for cluster '%s'", name)
 
         if distribution is not _UNSET:
             cluster_def.distribution = distribution if distribution is not None else ClusterDistributionConfig()
@@ -579,6 +617,10 @@ class ClusterManager:
             data["executor_config"] = dict(cluster_def.executor_config)
         if cluster_def.scheduler:
             data["scheduler"] = cluster_def.scheduler
+        if cluster_def.max_gpu_memory_utilization is not None:
+            data["max_gpu_memory_utilization"] = cluster_def.max_gpu_memory_utilization
+        if cluster_def.accelerator_memory_limits:
+            data["accelerator_memory_limits"] = dict(cluster_def.accelerator_memory_limits)
         if cluster_def.distribution and not cluster_def.distribution.is_default():
             data["distribution"] = cluster_def.distribution.to_dict()
 
@@ -608,6 +650,18 @@ class ClusterManager:
         if isinstance(raw_exec_cfg, dict) and raw_exec_cfg:
             executor_config = dict(raw_exec_cfg)
 
+        raw_max_util = data.get("max_gpu_memory_utilization")
+        max_gpu_memory_utilization = float(raw_max_util) if raw_max_util is not None else None
+
+        accelerator_memory_limits: dict[str, float] = {}
+        raw_accel_limits = data.get("accelerator_memory_limits")
+        if isinstance(raw_accel_limits, dict):
+            for model, value in raw_accel_limits.items():
+                try:
+                    accelerator_memory_limits[str(model)] = float(value)
+                except (TypeError, ValueError):
+                    logger.warning("Ignoring non-numeric accelerator_memory_limits[%r]=%r", model, value)
+
         return ClusterDefinition(
             name=data.get("name", cluster_path.stem),
             hosts=data.get("hosts", []),
@@ -621,6 +675,8 @@ class ClusterManager:
             executor=data.get("executor"),
             executor_config=executor_config,
             scheduler=data.get("scheduler"),
+            max_gpu_memory_utilization=max_gpu_memory_utilization,
+            accelerator_memory_limits=accelerator_memory_limits,
             distribution=ClusterDistributionConfig.from_dict(data.get("distribution")),
         )
 

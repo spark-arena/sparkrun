@@ -182,8 +182,8 @@ def _resolve_from_quantization_config(qc: dict[str, Any]) -> QuantizationInfo | 
     if not method:
         return None
 
-    if method == "fp8":
-        return QuantizationInfo(method="fp8", bits=8, weight_dtype="fp8")
+    if method in ("fp8", "mxfp8"):
+        return QuantizationInfo(method=method, bits=8, weight_dtype=method)
 
     bits = qc.get("bits")
 

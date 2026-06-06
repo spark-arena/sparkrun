@@ -84,17 +84,24 @@ def _host_vendor(hw: HostHardware) -> str | None:
 
 
 def _host_gpu_memory(hw: HostHardware) -> list[float | None]:
-    """Per-local-GPU memory budget on a host, expanded from ``accelerators``.
+    """Per-local-GPU *usable* memory budget on a host, expanded from ``accelerators``.
 
-    Returns one entry per accelerator slot (in local-index order).  An
-    entry is ``None`` when the underlying :class:`AcceleratorSpec` did
-    not declare ``memory_gb`` — callers fall back to "memory ignored"
-    for that slot.
+    Returns one entry per accelerator slot (in local-index order).  Each entry
+    is ``memory_gb × max_gpu_memory_utilization`` — the usable-memory cap
+    resolved upstream (in ``resolve_effective_hosts`` via
+    :func:`sparkrun.core.limits.resolved_hardware_for_scheduling`) and baked
+    into ``AcceleratorSpec.max_gpu_memory_utilization``.  A missing cap means
+    ``1.0`` (no cap).  An entry is ``None`` when the spec did not declare
+    ``memory_gb`` — callers fall back to "memory ignored" for that slot.
     """
     mem: list[float | None] = []
     for spec in hw.accelerators:
+        if spec.memory_gb is None:
+            usable: float | None = None
+        else:
+            usable = spec.memory_gb * (spec.max_gpu_memory_utilization or 1.0)
         for _ in range(spec.count):
-            mem.append(spec.memory_gb)
+            mem.append(usable)
     return mem
 
 

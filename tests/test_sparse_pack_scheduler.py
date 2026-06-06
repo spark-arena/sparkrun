@@ -343,6 +343,42 @@ def test_memory_infeasible_when_combined_memory_exceeds_capacity():
         sched.schedule(req)
 
 
+def test_max_gpu_memory_utilization_shrinks_usable_capacity():
+    """The usable-memory cap reduces the per-GPU budget the scheduler packs against.
+
+    The cap is pre-resolved into ``AcceleratorSpec.max_gpu_memory_utilization``
+    upstream (resolve_effective_hosts); the scheduler just applies it.
+    """
+    sched = SparsePackScheduler()
+    capped_hw = {
+        "big": HostHardware(
+            accelerators=[AcceleratorSpec(vendor="nvidia", model="h100", count=1, memory_gb=80.0, max_gpu_memory_utilization=0.5)]
+        )
+    }
+    # Usable = 80 × 0.5 = 40 GB < 60 GB claim → infeasible.
+    with pytest.raises(InfeasibleScheduleError):
+        sched.schedule(
+            SchedulingRequest(
+                parallelism=ParallelismConfig(),
+                hosts=("big",),
+                host_hardware=capped_hw,
+                resources=ResourceRequest(memory_gb=60.0, util_fraction=0.5),
+            )
+        )
+
+    # The same claim against the uncapped host (usable = 80) fits.
+    uncapped_hw = {"big": _multi_gpu_host_hw(count=1, memory_gb=80.0)}
+    result = sched.schedule(
+        SchedulingRequest(
+            parallelism=ParallelismConfig(),
+            hosts=("big",),
+            host_hardware=uncapped_hw,
+            resources=ResourceRequest(memory_gb=60.0, util_fraction=0.5),
+        )
+    )
+    assert result.assignment.hosts_used == ("big",)
+
+
 # --------------------------------------------------------------------------
 # Combined occupancy + fractional
 # --------------------------------------------------------------------------

@@ -252,6 +252,58 @@ def test_status_failure_is_best_effort(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Usable-memory cap: per-rank VRAM claim + resolved per-GPU caps
+# ---------------------------------------------------------------------------
+
+
+class _RecipeWithEstimate(_Recipe):
+    """Recipe stub whose estimate_vram is controllable for cap-wiring tests."""
+
+    def __init__(self, *, per_gpu_gb=None, raises=False, **kw):
+        super().__init__(**kw)
+        self._per_gpu_gb = per_gpu_gb
+        self._raises = raises
+
+    def estimate_vram(self, cli_overrides=None, auto_detect=True, cache_dir=None):
+        import types
+
+        if self._raises:
+            raise RuntimeError("model metadata unavailable")
+        return types.SimpleNamespace(total_per_gpu_gb=self._per_gpu_gb)
+
+
+def test_vram_claim_and_resolved_caps_threaded_into_request(monkeypatch):
+    """estimate_vram populates resources.memory_gb and folds the GB10 cap into host_hardware."""
+    capture: dict = {}
+    _stub_schedule(monkeypatch, ["h1", "h2"], capture=capture)
+    monkeypatch.setattr(api, "status", lambda *a, **k: None)
+
+    recipe = _RecipeWithEstimate(per_gpu_gb=50.0, parallelism={"tensor_parallel": 2})
+    cluster = ClusterDefinition(name="c", hosts=["h1", "h2"])
+    resolve_effective_hosts(["h1", "h2"], recipe, {}, cluster_def=cluster)
+
+    request = capture["request"]
+    assert request.resources is not None
+    assert request.resources.memory_gb == 50.0
+    assert request.resources.util_fraction == 1.0
+    # Default DGX hosts → platform cap 0.85 folded into the spec field.
+    assert request.host_hardware["h1"].accelerators[0].max_gpu_memory_utilization == 0.85
+
+
+def test_vram_estimate_failure_yields_no_claim(monkeypatch):
+    """A failing estimate degrades to resources=None (memory-blind, no regression)."""
+    capture: dict = {}
+    _stub_schedule(monkeypatch, ["h1", "h2"], capture=capture)
+    monkeypatch.setattr(api, "status", lambda *a, **k: None)
+
+    recipe = _RecipeWithEstimate(raises=True, parallelism={"tensor_parallel": 2})
+    cluster = ClusterDefinition(name="c", hosts=["h1", "h2"])
+    resolve_effective_hosts(["h1", "h2"], recipe, {}, cluster_def=cluster)
+
+    assert capture["request"].resources is None
+
+
+# ---------------------------------------------------------------------------
 # InsufficientCapacity translation
 # ---------------------------------------------------------------------------
 

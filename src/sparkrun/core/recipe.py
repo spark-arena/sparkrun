@@ -68,6 +68,7 @@ _KNOWN_KEYS = {
     "scheduler",
     "distribution_config",
     "layout",
+    "cluster_config",
 }
 
 
@@ -615,6 +616,58 @@ def fetch_and_cache_recipe(url: str, *, allow_untrusted_host: bool = False) -> P
 # _fetch_and_cache_recipe = fetch_and_cache_recipe
 
 
+@dataclass
+class ClusterConfig:
+    """Internal, undocumented launch/infra overrides from a recipe's
+    ``cluster_config:`` block.
+
+    These are intentionally *not* part of the documented recipe schema — they
+    are an escape hatch for temporary / environment-specific work that doesn't
+    belong in the cluster config (e.g. pointing at pre-placed model weights on
+    a shared NFS path). Applied at the single ``launch_inference`` choke point
+    so both the CLI and ``api.run`` honour them.
+
+    Fields:
+        remote_cache_dir: Overrides the remote HuggingFace cache dir on target
+            hosts (where models are mounted into the container, and where
+            distribution would land). Takes precedence over the cluster config.
+        local_cache_dir: Overrides the control-machine download cache dir.
+        resolved_model_path: Absolute path to a directory of model weights that
+            is already present on every node (e.g. a shared NFS mount). When
+            set, sparkrun skips model download + distribution entirely,
+            identity-mounts the path into the container, and points the serving
+            runtime's model argument at it.
+    """
+
+    remote_cache_dir: str | None = None
+    local_cache_dir: str | None = None
+    resolved_model_path: str | None = None
+
+    def is_empty(self) -> bool:
+        return not (self.remote_cache_dir or self.local_cache_dir or self.resolved_model_path)
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {}
+        if self.remote_cache_dir:
+            d["remote_cache_dir"] = self.remote_cache_dir
+        if self.local_cache_dir:
+            d["local_cache_dir"] = self.local_cache_dir
+        if self.resolved_model_path:
+            d["resolved_model_path"] = self.resolved_model_path
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "ClusterConfig | None":
+        if not isinstance(data, dict):
+            return None
+        cc = cls(
+            remote_cache_dir=(str(data["remote_cache_dir"]) if data.get("remote_cache_dir") else None),
+            local_cache_dir=(str(data["local_cache_dir"]) if data.get("local_cache_dir") else None),
+            resolved_model_path=(str(data["resolved_model_path"]) if data.get("resolved_model_path") else None),
+        )
+        return None if cc.is_empty() else cc
+
+
 class RecipeError(Exception):
     """Raised when a recipe is invalid or cannot be loaded."""
 
@@ -768,6 +821,9 @@ class Recipe:
         # :mod:`sparkrun.core.placement` validates at apply time.
         raw_layout = data.get("layout")
         self.layout: RecipeLayout | None = RecipeLayout.from_dict(raw_layout) if isinstance(raw_layout, dict) else None
+
+        # Internal, undocumented launch overrides (see :class:`ClusterConfig`).
+        self.cluster_config: ClusterConfig | None = ClusterConfig.from_dict(data.get("cluster_config"))
 
         # Applied overrides (populated by resolve())
         self._applied_overrides: dict[str, Any] = {}
@@ -1031,10 +1087,9 @@ class Recipe:
                 if hf_config:
                     hf_info = extract_model_info(hf_config)
 
-                    # Capture the raw storage dtype (torch_dtype) before
-                    # quantization override — needed later when deriving
-                    # model_params from on-disk total_size.
-                    _storage_dtype = hf_info.get("model_dtype")
+                    # use quant_config to capture on disk storage as quantized if it exists
+                    # but otherwise fall back to the model dtype
+                    _storage_dtype = hf_info.get("quant_dtype") or hf_info.get("model_dtype")
 
                     # Fill in missing fields (metadata takes precedence)
                     if not model_dtype:
@@ -1210,6 +1265,7 @@ class Recipe:
             "scheduler": self.scheduler,
             "distribution_config": dataclass_asdict(self.distribution_config),
             "layout": self.layout.to_dict() if self.layout else None,
+            "cluster_config": self.cluster_config.to_dict() if self.cluster_config else None,
             "_applied_overrides": dict(self._applied_overrides),
             "_raw": dict(self._raw),
         }
@@ -1254,6 +1310,7 @@ class Recipe:
         self.distribution_config = _parse_distribution_config(self._raw) if dist_cfg is None else DistributionConfig.from_dict(dist_cfg)
         layout_state = state.get("layout")
         self.layout = RecipeLayout.from_dict(layout_state) if isinstance(layout_state, dict) else None
+        self.cluster_config = ClusterConfig.from_dict(state.get("cluster_config"))
 
     @classmethod
     def _deserialize(cls, data: dict[str, Any]) -> Recipe:
@@ -1299,6 +1356,7 @@ class Recipe:
         "solo_only",
         "cluster_only",
         "layout",
+        "cluster_config",
         "metadata",
         "build_args",
         "mods",
@@ -1354,6 +1412,12 @@ class Recipe:
             layout_dict = self.layout.to_dict()
             if layout_dict:
                 d["layout"] = layout_dict
+
+        # -- Cluster config (internal launch overrides; undocumented) --
+        if self.cluster_config is not None:
+            cc_dict = self.cluster_config.to_dict()
+            if cc_dict:
+                d["cluster_config"] = cc_dict
 
         # -- Metadata (absorb promoted keys) --
         d["metadata"] = meta = dict(self.metadata)

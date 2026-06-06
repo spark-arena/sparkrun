@@ -20,6 +20,7 @@ _DTYPE_BYTES: dict[str, float] = {
     "fp8": 1.0,
     "fp8_e5m2": 1.0,
     "fp8_e4m3": 1.0,
+    "mxfp8": 1.0,
     "int4": 0.5,
     "awq": 0.5,
     "nvfp4": 0.5,

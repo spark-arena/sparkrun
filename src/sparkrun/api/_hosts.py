@@ -132,8 +132,9 @@ def resolve_effective_hosts(
     import dataclasses
 
     import sparkrun.api as api
+    from sparkrun.core.limits import resolved_hardware_for_scheduling
     from sparkrun.core.parallelism import extract_parallelism
-    from sparkrun.core.scheduler import SchedulingRequest
+    from sparkrun.core.scheduler import ResourceRequest, SchedulingRequest
 
     overrides = overrides or {}
     notes: list[str] = []
@@ -159,13 +160,31 @@ def resolve_effective_hosts(
         except Exception as e:
             logger.debug("Cluster status query failed; scheduling without occupancy info: %s", e)
 
+        # Per-host hardware with the usable-memory cap (max_gpu_memory_utilization)
+        # resolved + folded into each AcceleratorSpec, so the scheduler packs
+        # against usable memory rather than nominal memory_gb.
+        effective_hw = resolved_hardware_for_scheduling(cluster_def, list(host_list))
+
+        # Best-effort per-rank VRAM claim so the scheduler can reject GPUs that
+        # can't hold the model within the capped usable memory.  Any estimation
+        # failure degrades to resources=None (memory-blind, today's behavior)
+        # rather than blocking the launch.
+        resources = None
+        try:
+            est = recipe.estimate_vram(cli_overrides=overrides)
+            per_rank = float(getattr(est, "total_per_gpu_gb", 0.0) or 0.0)
+            if per_rank > 0:
+                resources = ResourceRequest(memory_gb=per_rank, util_fraction=1.0)
+        except Exception as e:
+            logger.debug("VRAM estimate unavailable; scheduling without memory claim: %s", e)
+
         request = SchedulingRequest(
             parallelism=parallelism,
             hosts=tuple(host_list),
-            host_hardware=(cluster_def.hosts_hardware if cluster_def is not None else None) or None,
+            host_hardware=effective_hw,
             layout=getattr(recipe, "layout", None),
             status=cluster_status,
-            resources=None,
+            resources=resources,
         )
         try:
             result = api.schedule(request, scheduler=scheduler, sctx=sctx)

@@ -327,6 +327,33 @@ def launch_inference(
     # decision for the same recipe.
     recipe_trusted = resolve_recipe_trust(recipe, trust)
 
+    # Internal recipe escape hatch: ``cluster_config`` launch overrides
+    # (undocumented).  Applied at this single launch choke point so both the
+    # CLI and ``api.run`` honour them.  Recipe-level values take precedence
+    # over cluster/global config.  See :class:`sparkrun.core.recipe.ClusterConfig`.
+    _cluster_config = getattr(recipe, "cluster_config", None)
+    _resolved_model_path: str | None = None
+    if _cluster_config is not None:
+        if _cluster_config.remote_cache_dir:
+            cache_dir = _cluster_config.remote_cache_dir
+        if _cluster_config.local_cache_dir:
+            local_cache_dir = _cluster_config.local_cache_dir
+        if _cluster_config.resolved_model_path:
+            _resolved_model_path = _cluster_config.resolved_model_path
+            # Preserve a clean served-model name (default to the original repo
+            # id) before repointing the serve argument at the on-disk weights.
+            if recipe.model and "served_model_name" not in overrides and "served_model_name" not in (recipe.defaults or {}):
+                overrides["served_model_name"] = recipe.model
+            # Every runtime reads ``recipe.model`` for the serve argument, so
+            # repoint it at the pre-placed weights.  Download + distribution are
+            # skipped below; the path is identity-mounted into the container.
+            recipe.model = _resolved_model_path
+            logger.info(
+                "cluster_config.resolved_model_path set; serving on-disk weights at %s (skipping model download/distribution)",
+                _resolved_model_path,
+            )
+    _skip_model_distribution = bool(_resolved_model_path)
+
     ssh_kwargs = build_ssh_kwargs(config)
     effective_local_cache = local_cache_dir or str(config.hf_cache_dir)
     effective_cache_dir = resolve_effective_cache_dir(
@@ -507,6 +534,11 @@ def launch_inference(
         _dist_model = getattr(getattr(cluster, "distribution", None), "model", None)
         _preserve_model_perms = preserve_model_perms if preserve_model_perms is not None else getattr(_dist_model, "preserve_perms", True)
         _skip_model_fan_out = skip_model_fan_out if skip_model_fan_out is not None else getattr(_dist_model, "skip_fan_out", False)
+        # Skip model download + distribution when the cluster disables it
+        # (``distribution.model.enabled: false``) or a recipe points at
+        # pre-placed weights (``cluster_config.resolved_model_path``).
+        _model_dist_enabled = getattr(_dist_model, "enabled", True)
+        _skip_model = _skip_model_distribution or not _model_dist_enabled
 
         comm_env, ib_ip_map, mgmt_ip_map = distribute_from_config(
             recipe,
@@ -524,6 +556,7 @@ def launch_inference(
             topology=topology,
             preserve_model_perms=_preserve_model_perms,
             skip_model_fan_out=_skip_model_fan_out,
+            skip_model=_skip_model,
         )
         # Re-save job metadata with IP maps from IB detection
         if not dry_run and (ib_ip_map or mgmt_ip_map):
@@ -598,7 +631,7 @@ def launch_inference(
     # GGUF model resolution
     from sparkrun.models.download import is_gguf_model, resolve_gguf_container_path
 
-    if is_gguf_model(recipe.model) and not dry_run:
+    if is_gguf_model(recipe.model) and not dry_run and not _resolved_model_path:
         gguf_container_path = resolve_gguf_container_path(
             recipe.model,
             effective_cache_dir,

@@ -177,15 +177,19 @@ class SglangRuntime(RuntimePlugin):
         else:
             base = self._build_base_command(recipe, config, skip_keys=skip_keys)
 
-        # Canonical distributed-init args (sglang has a flat topology —
-        # no DP replica grouping at this layer — so replica_size=1).
+        # SGLang forms a SINGLE global torch.distributed world rendezvoused at
+        # the head node: one --dist-init-addr for the whole job, with TP/PP/DP
+        # grouping handled internally by sglang.  The rendezvous host is therefore
+        # ALWAYS the head node.  We deliberately do NOT forward hosts/placement
+        # here: with the default replica_size=1, _resolve_master_addr maps
+        # node_rank -> hosts[node_rank] (each node's own IP), so every worker would
+        # point --dist-init-addr at itself and only rank 0 would bind the store —
+        # manifesting as "1/N clients joined" rendezvous timeouts.
         node_args = self._make_node_command_args(
             head_ip=head_ip,
             num_nodes=num_nodes,
             node_rank=node_rank,
             init_port=init_port,
-            hosts=hosts,
-            placement=placement,
         )
 
         # Append sglang multi-node arguments.  SGLang combines master_addr

@@ -619,6 +619,39 @@ class TestVllmTuneInstallScript:
         assert "git clone" in body
         assert "git fetch" in body
 
+    def test_install_prelude_keeps_home_shell_expandable(self, monkeypatch):
+        """Regression: VLLM_TUNE_DEST must let the remote shell expand `$HOME`.
+
+        If the whole dest is single-quoted, the clone lands in a directory
+        literally named ``$HOME`` while build_vllm_tune_invocation (which
+        interpolates the path raw) looks at the expanded path — yielding an
+        ``rc=127 No such file or directory`` mismatch at tune time.
+        """
+        import sparkrun.orchestration.primitives as primitives
+        from sparkrun.tuning.vllm import VllmTuner
+
+        captured = {}
+
+        class _Result:
+            success = True
+            stdout = "/home/u/.cache/sparkrun/vllm-tune/main/vllm-tune.sh"
+            stderr = ""
+
+        def _fake_run_script_on_host(host, body, **kwargs):
+            captured["body"] = body
+            return _Result()
+
+        monkeypatch.setattr(primitives, "run_script_on_host", _fake_run_script_on_host)
+
+        tuner = VllmTuner(host="10.0.0.1", image="img:latest", model="m", vllm_tune_ref="main")
+        tuner._install_vllm_tune()
+
+        body = captured["body"]
+        # `$HOME` is present and NOT trapped inside single quotes (which would
+        # suppress expansion on the remote shell).
+        assert "VLLM_TUNE_DEST=$HOME/.cache/sparkrun/vllm-tune/main" in body
+        assert "'$HOME" not in body
+
 
 # ---------------------------------------------------------------------------
 # Config pin resolution
