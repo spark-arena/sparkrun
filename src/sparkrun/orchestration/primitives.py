@@ -301,9 +301,12 @@ def try_clear_page_cache(
         results = run_remote_scripts_parallel(
             remote_hosts,
             script,
-            timeout=30,
+            ssh_user=kw.get("ssh_user"),
+            ssh_key=kw.get("ssh_key"),
+            ssh_options=kw.get("ssh_options"),
+            timeout=60,  # it will time out if NOPASSWD is not set and it hangs waiting for input
             dry_run=dry_run,
-            **kw,
+            quiet=True,
         )
         failed = [r.host for r in results if not r.success]
         if failed:

@@ -23,11 +23,8 @@ When orchestrating a new LLM benchmark for Spark Arena using `sparkrun`, follow 
 * The benchmark will automatically push the results to Spark Arena via a `subXXXXXX` ID.
 
 ## 4. Recovering from Crashes and Deadlocks
-* If the benchmark crashes or deadlocks during a run (e.g. vLLM freezes on a massive `100,000` context length test under concurrency), DO NOT tamper with the benchmark's internal state.yaml file. Modifying the schedule manually invalidates the benchmark results.
-* Instead, kill the `sparkrun arena benchmark run` process, then forcefully kill any `llama-benchy` orphaned processes locally (`pkill -9 -f llama-benchy`) and natively remove the hung remote Docker container using `uv run sparkrun stop --all --hosts spark.lan.jlapenna.net` (see Step 2).
-* To prevent the deadlock from completely halting the benchmark if it persists on a clean node, append `-o exit_on_first_fail=False` to your `sparkrun arena benchmark run` command.
-* This ensures `llama-benchy` will attempt the problematic test (e.g. 100k depth), correctly mark it as failed if it times out, and continue to the next tests, uploading a valid, untampered benchmark submission with the failure officially recorded.
-* **NEVER DISABLE TESTS.** Do not lower `max_model_len` to natively skip tests. This corrupts the integrity of the benchmark leaderboard.
+* To prevent the deadlock from recurring after verifying it on a clean node, modify the model's `.yaml` recipe file and reduce the `max_model_len` to a value known to be safe (e.g., `65536`).
+* When you relaunch the benchmark using the updated recipe, `llama-benchy` will query the new `max_model_len` and naturally skip any tests in the official profile that exceed this length. This is the formally correct way to bypass tests that mathematically exceed the VRAM constraints of the hardware.
 
 ## 5. Documentation
 * Track your progress across sessions by maintaining the `benchmark_status.md` artifact. Update it with "Completed", "Failed", or "In Progress" statuses along with any relevant findings.

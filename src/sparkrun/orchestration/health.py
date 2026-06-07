@@ -32,7 +32,7 @@ def is_container_running(
     from sparkrun.utils.shell import quote
 
     cmd = "docker inspect -f '{{.State.Running}}' %s 2>/dev/null" % quote(container_name)
-    result = run_command_on_host(host, cmd, ssh_kwargs=ssh_kwargs, timeout=10)
+    result = run_command_on_host(host, cmd, ssh_kwargs=ssh_kwargs, timeout=30)
     return result.success and "true" in result.stdout.lower()
 
 

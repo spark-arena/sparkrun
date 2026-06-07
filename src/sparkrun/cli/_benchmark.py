@@ -863,7 +863,7 @@ def _run_benchmark(
             ready = wait_for_port(
                 head_host,
                 serve_port,
-                max_retries=180,
+                max_retries=600,
                 retry_interval=5,  # TODO: maybe make this dynamic with model size somewhat??
                 ssh_kwargs=ssh_kwargs,
                 dry_run=dry_run,
