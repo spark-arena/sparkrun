@@ -776,16 +776,16 @@ def _is_cluster_id(value: str) -> str | None:
 
     * **Canonical**: ``sparkrun_<intent>_<placement_token>`` — full
       intent + token.
-    * **Bare digest**: 8–12 hex chars (intent-only short form) →
-      normalised to ``sparkrun_<digest>`` so short-form CLI shortcuts
-      keep working.
+    * **Bare digest**: 8–12 hex chars or ``<intent>_<placement>``
+      digest from status output → normalised with a ``sparkrun_``
+      prefix so short-form CLI shortcuts keep working.
     """
     import re
 
     if value.startswith("sparkrun_"):
         # API layer validates the full form at lookup time.
         return value
-    if re.fullmatch(r"[0-9a-f]{8,12}", value):
+    if re.fullmatch(r"(?:[0-9a-f]{8,12}|[0-9a-f]{16}_[0-9a-f]{12})", value):
         return "sparkrun_%s" % value
     return None
 
