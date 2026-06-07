@@ -1,0 +1,5 @@
+{
+  "name": "sparkrun-benchmarking",
+  "version": "1.0.0",
+  "description": "Skills and workflows for orchestrating distributed LLM benchmarks using sparkrun and llama-benchy."
+}
