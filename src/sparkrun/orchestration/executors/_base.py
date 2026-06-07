@@ -92,6 +92,14 @@ class ExecutorConfig:
     cap_add: list[str] | None = None
     ulimit: list[str] | None = None
     devices: list[str] | None = None
+    volumes: list[str] | None = None
+    """Extra bind mounts as Docker ``-v`` specs (e.g. ``"/mnt/quant:/mnt/quant"``).
+
+    A bare path (no ``:``) is expanded to an identity mount (``/p`` →
+    ``/p:/p``); ``src:dst`` and ``src:dst:ro`` forms are passed through.  These
+    are emitted in addition to the standard HuggingFace cache mount, so a recipe
+    or cluster can grant the container access to extra host paths (calibration
+    output dirs, datasets, …) without touching the model cache."""
     memory_limit: str | None = None
     labels: list[str] | None = None
     accelerator_vendor: str | None = None
@@ -184,7 +192,7 @@ class ExecutorConfig:
                 kwargs[key] = v
 
         # List-or-string fields — promote bare strings to single-item lists.
-        for key in ("security_opt", "cap_add", "ulimit", "devices", "labels"):
+        for key in ("security_opt", "cap_add", "ulimit", "devices", "volumes", "labels"):
             raw = chain.get(key)
             if raw is None:
                 continue

@@ -898,10 +898,17 @@ class Recipe:
     def build_config_chain(self, cli_overrides: dict[str, Any] | None = None, user_config: dict[str, Any] | None = None) -> Variables:
         """Build cascading config: CLI overrides -> user config -> recipe defaults.
 
-        Also injects 'model' into the chain for template substitution.
+        Also injects ``model`` and ``resolved_model_path`` into the chain for
+        ``{...}`` template substitution.  ``resolved_model_path`` resolves to the
+        recipe's ``cluster_config.resolved_model_path`` when set (pre-placed
+        on-disk weights), otherwise falls back to ``model`` so the same template
+        — e.g. ``--chat-template {resolved_model_path}/chat_template.jinja`` —
+        works for both the override and normal cases.
         """
         base = dict(self.defaults)
         base.setdefault("model", self.model)
+        _rmp = getattr(getattr(self, "cluster_config", None), "resolved_model_path", None)
+        base.setdefault("resolved_model_path", _rmp or self.model)
         return Variables(sources=(cli_overrides or {}, user_config or {}, base), env_placement=EnvPlacement.IGNORED)
 
     def render_command(self, config_chain: Variables) -> str | None:

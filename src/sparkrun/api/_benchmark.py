@@ -400,16 +400,21 @@ def _execute_benchmark(
         raise BenchmarkFailed("Error: %s" % e, exit_code=1) from e
     cluster_mgr = sctx.cluster_manager
 
-    host_list, is_solo, _notes, _placement = resolve_effective_hosts(
-        host_list,
-        recipe,
-        overrides,
-        cluster_def=None,
-        runtime=runtime,
-        sctx=sctx,
-        solo=solo,
-        scheduler=scheduler_name,
-    )
+    if skip_run:
+        is_solo = bool(solo) or recipe.mode == "solo" or len(host_list) <= 1
+        if is_solo and len(host_list) > 1:
+            host_list = host_list[:1]
+    else:
+        host_list, is_solo, _notes, _placement = resolve_effective_hosts(
+            host_list,
+            recipe,
+            overrides,
+            cluster_def=None,
+            runtime=runtime,
+            sctx=sctx,
+            solo=solo,
+            scheduler=scheduler_name,
+        )
 
     cluster_cfg = resolve_cluster_config(cluster_name, hosts, None, cluster_mgr)
     local_cache_dir, remote_cache_dir, effective_transfer_mode, effective_transfer_interface = cluster_cfg.resolve_transfer_config(config)

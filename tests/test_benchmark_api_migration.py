@@ -242,3 +242,41 @@ def test_benchmark_run_skip_run_does_not_call_api_run(fake_recipe_env):
 
     assert result.exit_code == 0, result.output
     mock_run.assert_not_called()
+
+
+def test_benchmark_perf_skip_run_bypasses_scheduler_capacity(fake_recipe_env):
+    """``benchmark perf <recipe> --skip-run`` benchmarks an existing instance
+    and must not reject the command because a scheduler would refuse a new
+    placement.
+    """
+    import sparkrun.api as api
+
+    fake_recipe_env.defaults["tensor_parallel"] = 2
+
+    with (
+        patch("sparkrun.api.status", return_value=None),
+        patch("sparkrun.api.schedule", side_effect=api.InsufficientCapacity("occupied")) as mock_schedule,
+        patch("sparkrun.api.run") as mock_run,
+        patch("sparkrun.api.stop") as mock_stop,
+        patch("sparkrun.benchmarking.llama_benchy.LlamaBenchyFramework.check_prerequisites", return_value=[]),
+        patch("sparkrun.benchmarking.llama_benchy.LlamaBenchyFramework.detect_version", return_value=None),
+    ):
+        runner = CliRunner()
+        result = runner.invoke(
+            cli_main,
+            [
+                "benchmark",
+                "perf",
+                "test-recipe",
+                "--skip-run",
+                "--dry-run",
+                "--hosts",
+                "h1,h2",
+            ],
+            catch_exceptions=False,
+        )
+
+    assert result.exit_code == 0, "skip-run should bypass placement capacity checks:\n%s" % result.output
+    mock_schedule.assert_not_called()
+    mock_run.assert_not_called()
+    mock_stop.assert_not_called()

@@ -298,6 +298,29 @@ class TestDockerExecutorConfig:
         cmd = executor.run_cmd("img:latest")
         assert "--ulimit memlock=-1:-1" in cmd
 
+    def test_volumes_identity_explicit_and_ro(self):
+        cfg = ExecutorConfig(volumes=["/mnt/quant:/mnt/quant", "/data", "/ref:/ref:ro"])
+        cmd = DockerExecutor(cfg).run_cmd("img:latest")
+        assert "-v /mnt/quant:/mnt/quant" in cmd
+        assert "-v /data:/data" in cmd  # bare path → identity mount
+        assert "-v /ref:/ref:ro" in cmd
+
+    def test_volumes_from_chain_string_promoted(self):
+        cfg = ExecutorConfig.from_chain({"volumes": "/mnt/quant"})
+        assert cfg.volumes == ["/mnt/quant"]
+        assert "-v /mnt/quant:/mnt/quant" in DockerExecutor(cfg).run_cmd("img:latest")
+
+    def test_volumes_coexist_with_run_cmd_volumes_dict(self):
+        # ExecutorConfig.volumes and the volumes dict (HF cache + resolved model)
+        # are independent -v channels — both land on the same docker run.
+        cfg = ExecutorConfig(volumes=["/mnt/quant/nvfp4_calib"])
+        cmd = DockerExecutor(cfg).run_cmd("img:latest", volumes={"/hf": "/cache/huggingface"})
+        assert "-v /mnt/quant/nvfp4_calib:/mnt/quant/nvfp4_calib" in cmd
+        assert "-v /hf:/cache/huggingface" in cmd
+
+    def test_volumes_none_by_default(self):
+        assert ExecutorConfig().volumes is None
+
     def test_no_user_by_default(self):
         executor = DockerExecutor()
         cmd = executor.run_cmd("img:latest")

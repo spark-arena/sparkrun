@@ -86,6 +86,7 @@ DOCKER_DEFAULTS = {
     "cap_add": None,
     "ulimit": None,
     "devices": None,
+    "volumes": None,
 }
 
 
@@ -199,6 +200,11 @@ class DockerExecutor(Executor):
         if cfg.devices:
             for dev in cfg.devices:
                 opts.extend(["--device", quote(dev)])
+        if cfg.volumes:
+            for vol in cfg.volumes:
+                # Bare path → identity mount; src:dst / src:dst:ro pass through.
+                spec = vol if ":" in vol else "%s:%s" % (vol, vol)
+                opts.extend(["-v", quote(spec)])
         if cfg.memory_limit:
             opts.append("--memory=%s" % quote(cfg.memory_limit))
         if cfg.labels:

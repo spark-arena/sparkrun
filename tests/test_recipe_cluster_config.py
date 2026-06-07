@@ -87,6 +87,59 @@ def test_resolved_model_volume_empty_when_unset():
     assert resolved_model_volume(object()) == {}
 
 
+def test_executor_volumes_and_resolved_model_path_coexist():
+    """executor_config.volumes and cluster_config.resolved_model_path are
+    independent -v channels — they coexist on the same docker run, never clobber."""
+    from sparkrun.orchestration.executors._base import ExecutorConfig
+    from sparkrun.orchestration.executors.docker import DockerExecutor
+    from sparkrun.orchestration.primitives import build_volumes
+
+    recipe = Recipe.from_dict(_recipe_dict(resolved_model_path="/mnt/quant/M3"))
+    # resolved_model_path + HF cache flow through the volumes DICT (run_cmd volumes=).
+    vols = build_volumes("/hf", extra=resolved_model_volume(recipe))
+    # executor_config.volumes flow through ExecutorConfig → separate -v flags.
+    cmd = DockerExecutor(ExecutorConfig(volumes=["/mnt/quant/nvfp4_calib"])).run_cmd("img:1", volumes=vols)
+
+    assert "-v /mnt/quant/M3:/mnt/quant/M3" in cmd  # resolved model (cluster_config)
+    assert "-v /hf:/cache/huggingface" in cmd  # HF cache
+    assert "-v /mnt/quant/nvfp4_calib:/mnt/quant/nvfp4_calib" in cmd  # executor_config.volumes
+
+
+# ---------------------------------------------------------------------------
+# {resolved_model_path} command-template placeholder
+# ---------------------------------------------------------------------------
+
+
+def _render(recipe):
+    return recipe.render_command(recipe.build_config_chain())
+
+
+def test_resolved_model_path_placeholder_uses_configured_path():
+    d = _recipe_dict(resolved_model_path="/mnt/quant/M3")
+    d["command"] = "sglang serve --model-path {model} --chat-template {resolved_model_path}/chat_template.jinja"
+    r = Recipe.from_dict(d)
+    rendered = _render(r)
+    assert "--chat-template /mnt/quant/M3/chat_template.jinja" in rendered
+    # {model} still resolves to the repo id pre-launch (the launcher repoints it
+    # at the path at serve time); {resolved_model_path} already gives the path.
+    assert "--model-path Qwen/Qwen3-1.7B" in rendered
+
+
+def test_resolved_model_path_placeholder_falls_back_to_model():
+    d = _recipe_dict()  # no cluster_config
+    d["command"] = "sglang serve --chat-template {resolved_model_path}/chat_template.jinja"
+    r = Recipe.from_dict(d)
+    # Falls back to model so the same template stays valid for normal use.
+    assert "--chat-template Qwen/Qwen3-1.7B/chat_template.jinja" in _render(r)
+
+
+def test_resolved_model_path_in_config_chain():
+    r = Recipe.from_dict(_recipe_dict(resolved_model_path="/mnt/quant/M3"))
+    assert r.build_config_chain().get("resolved_model_path") == "/mnt/quant/M3"
+    r2 = Recipe.from_dict(_recipe_dict())
+    assert r2.build_config_chain().get("resolved_model_path") == "Qwen/Qwen3-1.7B"
+
+
 # ---------------------------------------------------------------------------
 # distribute_from_config skip_model gate (localhost fast path)
 # ---------------------------------------------------------------------------
