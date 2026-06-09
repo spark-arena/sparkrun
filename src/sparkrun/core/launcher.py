@@ -116,6 +116,48 @@ def resolve_recipe_trust(recipe: Recipe, trust_cli: bool) -> bool:
         return False
 
 
+def _enforce_recipe_mount_trust(recipe: Recipe, trusted: bool) -> None:
+    """Reject untrusted recipes that try to bind-mount host paths.
+
+    Two recipe-controlled surfaces can expose arbitrary host paths to the
+    workload container:
+
+    * ``cluster_config`` — the (undocumented) ``resolved_model_path`` /
+      ``remote_cache_dir`` / ``local_cache_dir`` launch overrides, which
+      identity-mount a host directory and repoint the serve argument at it;
+    * ``executor_config.volumes`` — extra ``docker -v`` bind mounts.
+
+    Both are infra-level escape hatches.  Honouring them for an untrusted
+    (registry- or URL-sourced) recipe would let "run this link" mount ``/``,
+    ``~/.ssh`` or the docker socket and take over the host.  They are allowed
+    only for trusted recipes (local, default-registry, or ``--trust``); an
+    untrusted recipe that sets them fails closed here, at the single launch
+    choke point shared by ``run``/``benchmark``/``proxy``.
+
+    Raises:
+        RecipeError: when an untrusted recipe declares either surface.
+    """
+    if trusted:
+        return
+    from sparkrun.core.recipe import RecipeError
+
+    cc = getattr(recipe, "cluster_config", None)
+    if cc is not None and not cc.is_empty():
+        raise RecipeError(
+            "This recipe sets cluster_config host/path overrides (pre-placed model "
+            "path or cache-dir redirection), which can expose host paths to the "
+            "container. They are only honoured for trusted recipes; re-run with "
+            "--trust after auditing this recipe."
+        )
+    exec_cfg = getattr(recipe, "executor_config", None)
+    if isinstance(exec_cfg, dict) and exec_cfg.get("volumes"):
+        raise RecipeError(
+            "This recipe sets executor_config.volumes (extra host bind mounts), "
+            "which can expose host paths to the container. They are only honoured "
+            "for trusted recipes; re-run with --trust after auditing this recipe."
+        )
+
+
 def resolve_effective_cache_dir(
     cache_dir: str | None,
     host_list: list[str],
@@ -327,6 +369,11 @@ def launch_inference(
     # decision for the same recipe.
     recipe_trusted = resolve_recipe_trust(recipe, trust)
 
+    # Security: host-path overrides let a recipe grant the container access to
+    # arbitrary host paths.  Untrusted (registry/URL-sourced) recipes must not
+    # be able to do this — fail closed before any of them is applied.
+    _enforce_recipe_mount_trust(recipe, recipe_trusted)
+
     # Internal recipe escape hatch: ``cluster_config`` launch overrides
     # (undocumented).  Applied at this single launch choke point so both the
     # CLI and ``api.run`` honour them.  Recipe-level values take precedence
@@ -340,6 +387,14 @@ def launch_inference(
             local_cache_dir = _cluster_config.local_cache_dir
         if _cluster_config.resolved_model_path:
             _resolved_model_path = _cluster_config.resolved_model_path
+            # ``launch_inference`` is the shared run/benchmark/proxy pipeline and
+            # the caller may reuse the same recipe/overrides across launches, so
+            # repoint the serve argument on shallow copies rather than mutating
+            # the caller's objects in place.
+            import copy
+
+            recipe = copy.copy(recipe)
+            overrides = dict(overrides)
             # Preserve a clean served-model name (default to the original repo
             # id) before repointing the serve argument at the on-disk weights.
             if recipe.model and "served_model_name" not in overrides and "served_model_name" not in (recipe.defaults or {}):
@@ -531,9 +586,13 @@ def launch_inference(
         # fall back to the resolved cluster's prefs.  Anonymous/explicit-hosts
         # clusters carry the safe defaults (preserve_perms=True,
         # skip_fan_out=False).
+        from sparkrun.core.cluster_manager import ModelDistributionPrefs
+
         _dist_model = getattr(getattr(cluster, "distribution", None), "model", None)
-        _preserve_model_perms = preserve_model_perms if preserve_model_perms is not None else getattr(_dist_model, "preserve_perms", True)
-        _skip_model_fan_out = skip_model_fan_out if skip_model_fan_out is not None else getattr(_dist_model, "skip_fan_out", False)
+        _model_prefs = ModelDistributionPrefs(
+            preserve_perms=(preserve_model_perms if preserve_model_perms is not None else getattr(_dist_model, "preserve_perms", True)),
+            skip_fan_out=(skip_model_fan_out if skip_model_fan_out is not None else getattr(_dist_model, "skip_fan_out", False)),
+        )
         # Skip model download + distribution when the cluster disables it
         # (``distribution.model.enabled: false``) or a recipe points at
         # pre-placed weights (``cluster_config.resolved_model_path``).
@@ -554,8 +613,7 @@ def launch_inference(
             local_cache_dir=effective_local_cache,
             pre_ib=transfer_result,
             topology=topology,
-            preserve_model_perms=_preserve_model_perms,
-            skip_model_fan_out=_skip_model_fan_out,
+            prefs=_model_prefs,
             skip_model=_skip_model,
         )
         # Re-save job metadata with IP maps from IB detection

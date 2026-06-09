@@ -617,15 +617,21 @@ def fetch_and_cache_recipe(url: str, *, allow_untrusted_host: bool = False) -> P
 
 
 @dataclass
-class ClusterConfig:
+class LaunchOverrides:
     """Internal, undocumented launch/infra overrides from a recipe's
     ``cluster_config:`` block.
 
-    These are intentionally *not* part of the documented recipe schema — they
-    are an escape hatch for temporary / environment-specific work that doesn't
-    belong in the cluster config (e.g. pointing at pre-placed model weights on
-    a shared NFS path). Applied at the single ``launch_inference`` choke point
-    so both the CLI and ``api.run`` honour them.
+    Despite the YAML key (kept for back-compat), these are **per-recipe launch
+    overrides**, not a cluster definition — distinct from
+    :class:`sparkrun.core.cluster_manager.ClusterDistributionConfig` (a named
+    cluster's distribution settings) and ``ResolvedClusterConfig`` (resolved
+    transfer config).  They are intentionally *not* part of the documented
+    recipe schema — an escape hatch for temporary / environment-specific work
+    that doesn't belong in the cluster config (e.g. pointing at pre-placed
+    model weights on a shared NFS path).  Applied at the single
+    ``launch_inference`` choke point so both the CLI and ``api.run`` honour
+    them, and only for *trusted* recipes (they can expose host paths to the
+    container — see ``launcher._enforce_recipe_mount_trust``).
 
     Fields:
         remote_cache_dir: Overrides the remote HuggingFace cache dir on target
@@ -657,7 +663,7 @@ class ClusterConfig:
         return d
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> "ClusterConfig | None":
+    def from_dict(cls, data: dict[str, Any] | None) -> "LaunchOverrides | None":
         if not isinstance(data, dict):
             return None
         cc = cls(
@@ -666,6 +672,11 @@ class ClusterConfig:
             resolved_model_path=(str(data["resolved_model_path"]) if data.get("resolved_model_path") else None),
         )
         return None if cc.is_empty() else cc
+
+
+# Back-compat alias: this type was previously named ``ClusterConfig``, which
+# collided with the cluster-side config types.  Keep the old name importable.
+ClusterConfig = LaunchOverrides
 
 
 class RecipeError(Exception):
@@ -822,8 +833,8 @@ class Recipe:
         raw_layout = data.get("layout")
         self.layout: RecipeLayout | None = RecipeLayout.from_dict(raw_layout) if isinstance(raw_layout, dict) else None
 
-        # Internal, undocumented launch overrides (see :class:`ClusterConfig`).
-        self.cluster_config: ClusterConfig | None = ClusterConfig.from_dict(data.get("cluster_config"))
+        # Internal, undocumented launch overrides (see :class:`LaunchOverrides`).
+        self.cluster_config: LaunchOverrides | None = LaunchOverrides.from_dict(data.get("cluster_config"))
 
         # Applied overrides (populated by resolve())
         self._applied_overrides: dict[str, Any] = {}
@@ -1317,7 +1328,7 @@ class Recipe:
         self.distribution_config = _parse_distribution_config(self._raw) if dist_cfg is None else DistributionConfig.from_dict(dist_cfg)
         layout_state = state.get("layout")
         self.layout = RecipeLayout.from_dict(layout_state) if isinstance(layout_state, dict) else None
-        self.cluster_config = ClusterConfig.from_dict(state.get("cluster_config"))
+        self.cluster_config = LaunchOverrides.from_dict(state.get("cluster_config"))
 
     @classmethod
     def _deserialize(cls, data: dict[str, Any]) -> Recipe:

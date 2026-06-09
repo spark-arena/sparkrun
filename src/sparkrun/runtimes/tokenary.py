@@ -38,6 +38,11 @@ _TOKENARY_FLAG_MAP = {
     "kv_cache_dtype": "--kvcache-dtype",
     "gpu_memory_utilization": "--kv-fraction",
     "prefill_chunk_size": "--prefill-chunk-size",
+    # Boolean toggles must also appear here: build_flags_from_map iterates the
+    # flag_map to find each flag string, then emits flag-only for bool_keys.
+    "disable_prefix_cache": "--disable-prefix-cache",
+    "disable_reasoning": "--disable-reasoning",
+    "disable_cuda_graph": "--disable-cuda-graph",
 }
 
 _TOKENARY_BOOL_FLAGS = {
@@ -114,15 +119,15 @@ class TokenaryRuntime(RuntimePlugin):
         head_ip: str,
         num_nodes: int,
         node_rank: int,
-        init_port: int = 29500,
+        init_port: int = 27101,
         skip_keys: set[str] | frozenset[str] = frozenset(),
         hosts: list[str] | None = None,
         placement=None,
     ) -> str:
         """Per-node serve command for native multi-node TP (1 GPU per node).
 
-        Pure tensor parallelism: ``tp_size == world_size == num_nodes``
-        (replica_size = 1). Rank 0 additionally binds the HTTP API.
+        Pure tensor parallelism: ``tp_size == world_size == num_nodes``.
+        Rank 0 additionally binds the HTTP API.
         """
         config = recipe.build_config_chain(overrides)
         rendered = recipe.render_command(config)
@@ -135,6 +140,7 @@ class TokenaryRuntime(RuntimePlugin):
             init_port=init_port,
             hosts=hosts,
             placement=placement,
+            replica_size=num_nodes,
         )
 
         parts = [
@@ -180,7 +186,7 @@ class TokenaryRuntime(RuntimePlugin):
         dry_run: bool = False,
         detached: bool = True,
         comm_env: "ClusterCommEnv | None" = None,
-        init_port: int = 29500,
+        init_port: int = 27101,
         skip_keys: set[str] | frozenset[str] = frozenset(),
         **kwargs,
     ) -> int:

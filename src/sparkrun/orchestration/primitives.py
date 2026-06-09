@@ -89,7 +89,12 @@ def resolved_model_volume(recipe) -> dict[str, str]:
     launcher).  Returns an empty dict when not configured.
     """
     path = getattr(getattr(recipe, "cluster_config", None), "resolved_model_path", None)
-    return {path: path} if path else {}
+    if not path:
+        return {}
+    from sparkrun.utils.shell import assert_safe_mount_source
+
+    assert_safe_mount_source(path)
+    return {path: path}
 
 
 def probe_remote_hf_cache(

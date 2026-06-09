@@ -328,9 +328,17 @@ def test_launch_inference_applies_cluster_config_overrides(monkeypatch, tmp_path
     assert captured["dist_args"][3] == "/nfs/remote"
     assert captured["dist_kwargs"]["local_cache_dir"] == "/nfs/local"
     assert captured["dist_kwargs"]["skip_model"] is True
-    # Serve argument repointed at the on-disk weights; served name preserved.
-    assert recipe.model == "/nfs/models/qwen3"
-    assert overrides["served_model_name"] == "Qwen/Qwen3-1.7B"
+    # Non-mutating contract: the caller's recipe/overrides are left untouched
+    # (launch_inference is the shared run/benchmark/proxy pipeline and the same
+    # recipe object may be reused across launches).
+    assert recipe.model == "Qwen/Qwen3-1.7B"
+    assert "served_model_name" not in overrides
+    # The serve-arg repoint + preserved served name happen on the copy handed
+    # to the runtime, not on the caller's objects.
+    run_kwargs = _StubRuntime.last_kwargs
+    assert run_kwargs["recipe"].model == "/nfs/models/qwen3"
+    assert run_kwargs["overrides"]["served_model_name"] == "Qwen/Qwen3-1.7B"
+    assert run_kwargs["recipe"] is not recipe
 
 
 def test_launch_inference_no_cluster_config_is_noop(monkeypatch, tmp_path):

@@ -14,9 +14,12 @@ Linux/iproute2).  It is isolated so a future ``sys.platform`` branch (macOS
 
 from __future__ import annotations
 
+import logging
 import re
 import socket
 import subprocess
+
+logger = logging.getLogger(__name__)
 
 # Matches the address in ``ip -o addr show`` lines: ``... inet 10.0.0.1/24 ...``
 # or ``... inet6 fe80::1/64 ...``.  The CIDR suffix is excluded by the char class.
@@ -76,8 +79,8 @@ def is_local_host(host: str) -> bool:
     try:
         if host == socket.gethostname() or host == socket.getfqdn():
             return True
-    except Exception:
-        pass
+    except OSError:
+        logger.debug("hostname lookup failed in is_local_host(%r)", host, exc_info=True)
 
     # Match against enumerated local interface IPs (covers DGX Spark LAN IPs
     # that aren't mapped in DNS/hosts).
@@ -104,7 +107,8 @@ def local_ip_for(target_host: str) -> str | None:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.connect((target_host, 1))  # port is arbitrary; no traffic sent
             return s.getsockname()[0]
-    except Exception:
+    except OSError:
         # Fall back to hostname if routing lookup fails (e.g. target
         # is not resolvable from the control machine itself).
+        logger.debug("routing lookup failed in local_ip_for(%r)", target_host, exc_info=True)
         return socket.gethostname() or None

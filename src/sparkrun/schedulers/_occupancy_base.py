@@ -99,7 +99,8 @@ def _host_gpu_memory(hw: HostHardware) -> list[float | None]:
         if spec.memory_gb is None:
             usable: float | None = None
         else:
-            usable = spec.memory_gb * (spec.max_gpu_memory_utilization or 1.0)
+            cap = spec.max_gpu_memory_utilization
+            usable = spec.memory_gb * (cap if cap is not None else 1.0)
         for _ in range(spec.count):
             mem.append(usable)
     return mem
@@ -160,16 +161,19 @@ class _OccupancyAwareBase(Scheduler):
         has_status = request.status is not None and len(request.status.hosts) > 0
 
         # 2. Fallback path: no occupancy + no fractional claim → greedy.
-        # Whole-GPU memory claims (util_fraction == 1.0, memory_gb set)
-        # also flow through the fallback because greedy ignores memory
-        # but accepts the request.
+        # Whole-GPU memory claims (util_fraction == 1.0, memory_gb set) flow
+        # through the fallback too — but the greedy pack now enforces the
+        # per-rank whole-GPU memory budget so the fit guard does not vanish
+        # when cluster status is unavailable (memory cap bypass bug).
         if not is_fractional and not has_status:
+            per_rank_memory_gb = resources.memory_gb if resources is not None else None
             try:
                 assignment = pack(
                     request.parallelism,
                     list(request.hosts),
                     host_hardware=request.host_hardware,
                     layout=request.layout,
+                    per_rank_memory_gb=per_rank_memory_gb,
                 )
             except InsufficientCapacityError as e:
                 raise InfeasibleScheduleError(str(e)) from e

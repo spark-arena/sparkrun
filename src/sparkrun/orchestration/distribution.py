@@ -13,6 +13,8 @@ from sparkrun.utils import is_local_host
 
 from sparkrun.orchestration.transfer import TransferError
 
+from sparkrun.core.cluster_manager import ModelDistributionPrefs
+
 if TYPE_CHECKING:
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.orchestration.comm_env import ClusterCommEnv
@@ -277,8 +279,7 @@ def _distribute_model_push(
     hf_token: str | None = None,
     dry_run: bool = False,
     local_cache_dir: str | None = None,
-    preserve_perms: bool = True,
-    skip_fan_out: bool = False,
+    prefs: ModelDistributionPrefs | None = None,
 ) -> list["TransferFailure"]:
     """Push-mode model distribution: local → head, then head → workers via IB.
 
@@ -287,9 +288,9 @@ def _distribute_model_push(
        workers over IB.
 
     The control node is external (push mode), so its cache is never the
-    shared one — step 1 always pushes to the head.  *skip_fan_out* only
+    shared one — step 1 always pushes to the head.  *prefs.skip_fan_out* only
     suppresses the head→worker fan-out (step 2), since workers already
-    mount the head's shared cache.  *preserve_perms* selects the rsync
+    mount the head's shared cache.  *prefs.preserve_perms* selects the rsync
     flag set for both legs.
 
     Returns:
@@ -299,6 +300,7 @@ def _distribute_model_push(
     from sparkrun.models.distribute import distribute_model_from_head
     from sparkrun.orchestration.transfer import TransferFailure
 
+    prefs = prefs or ModelDistributionPrefs()
     head = hosts[0]
 
     # Step 1: push to head only (no transfer_hosts — use management network)
@@ -311,7 +313,7 @@ def _distribute_model_push(
         revision=model_revision,
         transfer_hosts=None,
         dry_run=dry_run,
-        preserve_perms=preserve_perms,
+        preserve_perms=prefs.preserve_perms,
         **ssh_kwargs,
     )
     if head_failed:
@@ -333,8 +335,8 @@ def _distribute_model_push(
             hf_token=hf_token,
             worker_transfer_hosts=worker_transfer_hosts,
             dry_run=dry_run,
-            preserve_perms=preserve_perms,
-            skip_fan_out=skip_fan_out,
+            preserve_perms=prefs.preserve_perms,
+            skip_fan_out=prefs.skip_fan_out,
             **ssh_kwargs,
         )
 
@@ -355,8 +357,7 @@ def distribute_resources(
     local_cache_dir: str | None = None,
     pre_ib: TransferModeResult | None = None,
     topology: str | None = None,
-    preserve_model_perms: bool = True,
-    skip_model_fan_out: bool = False,
+    prefs: ModelDistributionPrefs | None = None,
 ) -> tuple["ClusterCommEnv | None", dict[str, str], dict[str, str]]:
     """Detect IB, distribute container image and model to target hosts.
 
@@ -410,6 +411,8 @@ def distribute_resources(
     from sparkrun.models.distribute import distribute_model_from_local, distribute_model_from_head
     from sparkrun.models.download import download_model
     from sparkrun.core.pending_ops import pending_op
+
+    prefs = prefs or ModelDistributionPrefs()
 
     # Common kwargs for pending-op lock files
     _pop_kw = dict(
@@ -606,8 +609,8 @@ def distribute_resources(
                     revision=model_revision,
                     transfer_hosts=transfer_hosts,
                     dry_run=dry_run,
-                    preserve_perms=preserve_model_perms,
-                    skip_fan_out=skip_model_fan_out,
+                    preserve_perms=prefs.preserve_perms,
+                    skip_fan_out=prefs.skip_fan_out,
                     **ssh_kwargs,
                 )
             elif transfer_mode == "push":
@@ -621,8 +624,7 @@ def distribute_resources(
                     hf_token=hf_token,
                     dry_run=dry_run,
                     local_cache_dir=effective_local_cache,
-                    preserve_perms=preserve_model_perms,
-                    skip_fan_out=skip_model_fan_out,
+                    prefs=prefs,
                 )
             elif transfer_mode == "delegated":
                 mdl_failed = distribute_model_from_head(
@@ -633,8 +635,8 @@ def distribute_resources(
                     hf_token=hf_token,
                     worker_transfer_hosts=worker_transfer_hosts,
                     dry_run=dry_run,
-                    preserve_perms=preserve_model_perms,
-                    skip_fan_out=skip_model_fan_out,
+                    preserve_perms=prefs.preserve_perms,
+                    skip_fan_out=prefs.skip_fan_out,
                     **ssh_kwargs,
                 )
                 if mdl_failed and _auto_delegated:
@@ -649,8 +651,7 @@ def distribute_resources(
                         hf_token=hf_token,
                         dry_run=dry_run,
                         local_cache_dir=effective_local_cache,
-                        preserve_perms=preserve_model_perms,
-                        skip_fan_out=skip_model_fan_out,
+                        prefs=prefs,
                     )
             else:
                 mdl_failed = distribute_model_from_local(
@@ -662,8 +663,8 @@ def distribute_resources(
                     revision=model_revision,
                     transfer_hosts=transfer_hosts,
                     dry_run=dry_run,
-                    preserve_perms=preserve_model_perms,
-                    skip_fan_out=skip_model_fan_out,
+                    preserve_perms=prefs.preserve_perms,
+                    skip_fan_out=prefs.skip_fan_out,
                     **ssh_kwargs,
                 )
 
@@ -705,8 +706,7 @@ def distribute_from_config(
     local_cache_dir: str | None = None,
     pre_ib: TransferModeResult | None = None,
     topology: str | None = None,
-    preserve_model_perms: bool = True,
-    skip_model_fan_out: bool = False,
+    prefs: ModelDistributionPrefs | None = None,
     skip_model: bool = False,
 ) -> tuple["ClusterCommEnv | None", dict[str, str], dict[str, str]]:
     """Distribute resources based on recipe ``distribution_config``.
@@ -739,6 +739,8 @@ def distribute_from_config(
     from sparkrun.containers.registry import ensure_image
     from sparkrun.models.download import download_model
     from sparkrun.core.pending_ops import pending_op
+
+    prefs = prefs or ModelDistributionPrefs()
 
     dist_cfg = recipe.distribution_config.resolve(recipe, resolved_container=image)
 
@@ -872,8 +874,7 @@ def distribute_from_config(
                     hf_token,
                     dry_run,
                     _auto_delegated,
-                    preserve_perms=preserve_model_perms,
-                    skip_fan_out=skip_model_fan_out,
+                    prefs=prefs,
                 )
             if mdl_failed:
                 from sparkrun.orchestration.transfer import present_and_raise_transfer_failure
@@ -972,21 +973,22 @@ def _distribute_single_model(
     hf_token: str | None,
     dry_run: bool,
     auto_delegated: bool,
-    preserve_perms: bool = True,
-    skip_fan_out: bool = False,
+    prefs: ModelDistributionPrefs | None = None,
 ) -> list["TransferFailure"]:
     """Distribute a single model to a subset of hosts.
 
     Returns the classified per-host failures; empty list means success.
 
-    *preserve_perms* selects the rsync flag set; *skip_fan_out* suppresses
-    the per-host (or head→worker) fan-out for shared caches.  The push /
-    delegated-fallback push-to-head leg never sets *skip_fan_out* (the
+    *prefs.preserve_perms* selects the rsync flag set; *prefs.skip_fan_out*
+    suppresses the per-host (or head→worker) fan-out for shared caches.  The
+    push / delegated-fallback push-to-head leg never sets *skip_fan_out* (the
     external control cache is not the shared one) but does honor
     *preserve_perms*.
     """
     from sparkrun.models.distribute import distribute_model_from_local, distribute_model_from_head
     from sparkrun.orchestration.transfer import TransferFailure
+
+    prefs = prefs or ModelDistributionPrefs()
 
     # Position-aligned subset (see _subset_transfer_hosts docstring).
     target_set = set(targets)
@@ -1003,8 +1005,8 @@ def _distribute_single_model(
             revision=revision,
             transfer_hosts=t_hosts,
             dry_run=dry_run,
-            preserve_perms=preserve_perms,
-            skip_fan_out=skip_fan_out,
+            preserve_perms=prefs.preserve_perms,
+            skip_fan_out=prefs.skip_fan_out,
             **ssh_kwargs,
         )
     elif transfer_mode == "push":
@@ -1018,7 +1020,7 @@ def _distribute_single_model(
             revision=revision,
             transfer_hosts=None,
             dry_run=dry_run,
-            preserve_perms=preserve_perms,
+            preserve_perms=prefs.preserve_perms,
             **ssh_kwargs,
         )
         if head_failed:
@@ -1033,8 +1035,8 @@ def _distribute_single_model(
                 hf_token=hf_token,
                 worker_transfer_hosts=w_hosts,
                 dry_run=dry_run,
-                preserve_perms=preserve_perms,
-                skip_fan_out=skip_fan_out,
+                preserve_perms=prefs.preserve_perms,
+                skip_fan_out=prefs.skip_fan_out,
                 **ssh_kwargs,
             )
         return []
@@ -1047,8 +1049,8 @@ def _distribute_single_model(
             hf_token=hf_token,
             worker_transfer_hosts=w_hosts,
             dry_run=dry_run,
-            preserve_perms=preserve_perms,
-            skip_fan_out=skip_fan_out,
+            preserve_perms=prefs.preserve_perms,
+            skip_fan_out=prefs.skip_fan_out,
             **ssh_kwargs,
         )
         if result and auto_delegated:
@@ -1062,7 +1064,7 @@ def _distribute_single_model(
                 revision=revision,
                 transfer_hosts=None,
                 dry_run=dry_run,
-                preserve_perms=preserve_perms,
+                preserve_perms=prefs.preserve_perms,
                 **ssh_kwargs,
             )
             if not head_failed and len(targets) > 1:
@@ -1074,8 +1076,8 @@ def _distribute_single_model(
                     hf_token=hf_token,
                     worker_transfer_hosts=w_hosts,
                     dry_run=dry_run,
-                    preserve_perms=preserve_perms,
-                    skip_fan_out=skip_fan_out,
+                    preserve_perms=prefs.preserve_perms,
+                    skip_fan_out=prefs.skip_fan_out,
                     **ssh_kwargs,
                 )
         return result
@@ -1088,7 +1090,7 @@ def _distribute_single_model(
         revision=revision,
         transfer_hosts=t_hosts,
         dry_run=dry_run,
-        preserve_perms=preserve_perms,
-        skip_fan_out=skip_fan_out,
+        preserve_perms=prefs.preserve_perms,
+        skip_fan_out=prefs.skip_fan_out,
         **ssh_kwargs,
     )

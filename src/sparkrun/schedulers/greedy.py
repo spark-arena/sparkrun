@@ -68,6 +68,28 @@ def _host_vendor(hw: HostHardware) -> str | None:
     return next(iter(vendors)) if len(vendors) == 1 else None
 
 
+def _host_gpu_memory(hw: HostHardware) -> list[float | None]:
+    """Per-local-GPU *usable* memory budget on a host, in local-index order.
+
+    Mirrors ``schedulers._occupancy_base._host_gpu_memory``: each entry is
+    ``memory_gb × max_gpu_memory_utilization`` (the usable-memory cap baked into
+    ``AcceleratorSpec.max_gpu_memory_utilization`` upstream).  An entry is
+    ``None`` when the spec did not declare ``memory_gb`` — callers treat that
+    slot as "memory ignored".  Kept local to greedy so the scheduler fallback
+    stays free of ``platforms`` / ``cluster_manager`` imports.
+    """
+    mem: list[float | None] = []
+    for spec in hw.accelerators:
+        if spec.memory_gb is None:
+            usable: float | None = None
+        else:
+            cap = spec.max_gpu_memory_utilization
+            usable = spec.memory_gb * (cap if cap is not None else 1.0)
+        for _ in range(spec.count):
+            mem.append(usable)
+    return mem
+
+
 # --------------------------------------------------------------------------
 # Algorithm
 # --------------------------------------------------------------------------
@@ -79,6 +101,7 @@ def pack(
     *,
     host_hardware: Mapping[str, HostHardware] | None = None,
     layout: RecipeLayout | None = None,
+    per_rank_memory_gb: float | None = None,
 ) -> RankAssignment:
     """Greedy placement entry point.
 
@@ -99,6 +122,13 @@ def pack(
             entries default to DGX Spark (1× GB10, 121 GB).
         layout: Optional explicit recipe layout.  When provided with
             non-empty ``placements`` it is honored verbatim.
+        per_rank_memory_gb: Optional per-rank (whole-GPU) VRAM requirement.
+            When set, a GPU slot is rejected from the auto-fit pack when its
+            declared usable memory (``memory_gb × max_gpu_memory_utilization``)
+            is below this value.  Slots with undeclared memory (``None``) are
+            always accepted (memory ignored), preserving today's behavior.
+            ``None`` disables the memory check entirely (byte-identical to the
+            pre-memory-fit behavior).
 
     Raises:
         :class:`LayoutRequiredError`: Heterogeneous cluster (>1 vendor across
@@ -113,7 +143,7 @@ def pack(
     if layout is not None and layout.placements:
         return _placement_from_layout(layout, hosts, effective_total)
 
-    return _auto_pack(hosts, host_hardware, effective_total)
+    return _auto_pack(hosts, host_hardware, effective_total, per_rank_memory_gb=per_rank_memory_gb)
 
 
 def _placement_from_layout(
@@ -157,6 +187,8 @@ def _auto_pack(
     hosts: list[str],
     host_hardware: Mapping[str, HostHardware] | None,
     total_gpus: int,
+    *,
+    per_rank_memory_gb: float | None = None,
 ) -> RankAssignment:
     """Sequentially pack ranks onto hosts up to each host's capacity.
 
@@ -169,6 +201,12 @@ def _auto_pack(
     budget are not consulted, so a cluster with mixed vendors can
     still be auto-fit as long as the leading slice it consumes is
     single-vendor.
+
+    When *per_rank_memory_gb* is set, a GPU slot whose declared usable
+    memory is below the requirement is rejected (it does not count toward
+    capacity and receives no rank); slots with undeclared memory (``None``)
+    are always accepted.  When *per_rank_memory_gb* is ``None`` every slot is
+    accepted — byte-identical to the pre-memory-fit greedy pack.
     """
     if total_gpus <= 0:
         return RankAssignment(by_rank=(), hosts_used=())
@@ -192,14 +230,31 @@ def _auto_pack(
                 "Host '%s' advertises multiple accelerator vendors (%s); "
                 "recipe.layout.placements must specify which ranks land on which accelerator" % (host, sorted(hw.vendors))
             )
+
+        # Per-slot memory eligibility.  A slot is eligible when memory is not
+        # requested, the slot declares no memory (None → ignored), or its
+        # capped usable memory meets the per-rank requirement.
+        if per_rank_memory_gb is None:
+            eligible_indices = list(range(capacity))
+        else:
+            gpu_mem = _host_gpu_memory(hw)
+            eligible_indices = [idx for idx, usable in enumerate(gpu_mem) if usable is None or usable >= per_rank_memory_gb]
+        if not eligible_indices:
+            # No GPU on this host can hold the model under the cap — skip it
+            # (mirrors a fully-occupied host in the occupancy path).  The host
+            # places no ranks, so it does not count toward the vendor mix.
+            continue
+
+        # This host will place at least one rank → it counts as a placed host
+        # for the single-vendor invariant.
         placed_vendors.add(vendor)
         if len(placed_vendors) > 1:
             raise LayoutRequiredError(
                 "Cluster spans multiple accelerator vendors %s; "
                 "recipe.layout.placements is required for heterogeneous-vendor clusters" % sorted(placed_vendors)
             )
-        take = min(capacity, remaining)
-        for local_idx in range(take):
+        take = min(len(eligible_indices), remaining)
+        for local_idx in eligible_indices[:take]:
             by_rank.append(RankSlot(host=host, local_gpu=local_idx))
         hosts_used.append(host)
         remaining -= take

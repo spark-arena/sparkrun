@@ -165,6 +165,20 @@ def resolve_effective_hosts(
         # against usable memory rather than nominal memory_gb.
         effective_hw = resolved_hardware_for_scheduling(cluster_def, list(host_list))
 
+        # Defensive: every scheduled host must carry baked hardware.  A host
+        # missing from the map would fall back to default_dgx_spark_hardware()
+        # inside the scheduler (cap=None → full nominal memory), silently
+        # over-committing capped memory.  resolved_hardware_for_scheduling bakes
+        # every host today, so a gap means a future regression — log it loudly.
+        missing_hw = [h for h in host_list if h not in effective_hw]
+        if missing_hw:
+            logger.warning(
+                "Baked scheduling hardware is missing %d host(s) %s; the scheduler "
+                "will fall back to uncapped defaults for them (potential memory over-commit)",
+                len(missing_hw),
+                missing_hw,
+            )
+
         # Best-effort per-rank VRAM claim so the scheduler can reject GPUs that
         # can't hold the model within the capped usable memory.  Any estimation
         # failure degrades to resources=None (memory-blind, today's behavior)

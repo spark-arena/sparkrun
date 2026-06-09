@@ -23,7 +23,7 @@ from sparkrun.orchestration.executors._base import (
     Executor,
 )
 from sparkrun.orchestration.job_metadata import INTENT_ID_LEN, PLACEMENT_TOKEN_LEN
-from sparkrun.utils.shell import args_list_to_shell_str, b64_wrap_bash, quote
+from sparkrun.utils.shell import args_list_to_shell_str, assert_safe_mount_source, b64_wrap_bash, quote
 
 if TYPE_CHECKING:
     from sparkrun.core.cluster_status import ClusterStatus
@@ -204,6 +204,10 @@ class DockerExecutor(Executor):
             for vol in cfg.volumes:
                 # Bare path → identity mount; src:dst / src:dst:ro pass through.
                 spec = vol if ":" in vol else "%s:%s" % (vol, vol)
+                # Defense in depth: refuse catastrophic host mount sources (root
+                # fs, docker socket, SSH keys) regardless of where the spec came
+                # from. Untrusted recipes are already blocked upstream.
+                assert_safe_mount_source(spec.split(":", 1)[0])
                 opts.extend(["-v", quote(spec)])
         if cfg.memory_limit:
             opts.append("--memory=%s" % quote(cfg.memory_limit))

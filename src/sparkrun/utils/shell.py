@@ -6,6 +6,7 @@ Provides helpers for safely interpolating values into shell command strings.
 from __future__ import annotations
 
 import base64
+import os
 import re
 import shlex
 from typing import Any
@@ -219,6 +220,49 @@ def validate_sudoers_path(value: str) -> str:
     if not _SUDOERS_PATH_RE.fullmatch(value):
         raise ValueError("Unsafe character in sudoers path %r — possible privilege escalation" % value)
     return value
+
+
+# Host paths that must never be bind-mounted into a workload container.
+# Mounting any of these hands the container control of the host (root fs, the
+# docker control socket, kernel/dev pseudo-filesystems, system config, …).
+_FORBIDDEN_MOUNT_PATHS = frozenset(
+    {
+        "/",
+        "/etc",
+        "/boot",
+        "/proc",
+        "/sys",
+        "/dev",
+        "/root",
+        "/var/run/docker.sock",
+        "/run/docker.sock",
+    }
+)
+
+
+def assert_safe_mount_source(path: str) -> str:
+    """Reject host paths that are catastrophic to bind-mount into a container.
+
+    Defense-in-depth guard for ``docker -v`` sources that originate (even
+    indirectly) from a recipe or cluster config.  Mounting the host root, the
+    docker control socket, SSH keys, or kernel pseudo-filesystems gives the
+    containerized workload control of the host, so these are refused outright —
+    independent of recipe trust.  This complements (does not replace) the
+    trust gate that blocks untrusted recipes from supplying mounts at all.
+
+    Returns *path* unchanged on success; raises :class:`ValueError` otherwise.
+    """
+    if not path:
+        raise ValueError("Empty bind-mount source path")
+    real = os.path.realpath(os.path.expanduser(path))
+    if real in _FORBIDDEN_MOUNT_PATHS:
+        raise ValueError("Refusing to bind-mount sensitive host path %r (resolved to %r)" % (path, real))
+    if os.path.basename(real) == "docker.sock":
+        raise ValueError("Refusing to bind-mount the docker control socket %r" % path)
+    ssh_dir = os.path.realpath(os.path.expanduser("~/.ssh"))
+    if real == ssh_dir or real.startswith(ssh_dir + os.sep):
+        raise ValueError("Refusing to bind-mount the SSH key directory %r" % path)
+    return path
 
 
 _ALLOWED_GIT_URL_SCHEMES = ("https://", "git@", "ssh://", "file://")
