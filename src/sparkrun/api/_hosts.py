@@ -132,9 +132,8 @@ def resolve_effective_hosts(
     import dataclasses
 
     import sparkrun.api as api
-    from sparkrun.core.limits import resolved_hardware_for_scheduling
     from sparkrun.core.parallelism import extract_parallelism
-    from sparkrun.core.scheduler import ResourceRequest, SchedulingRequest
+    from sparkrun.core.scheduler import SchedulingRequest
 
     overrides = overrides or {}
     notes: list[str] = []
@@ -143,7 +142,13 @@ def resolve_effective_hosts(
     config_chain = recipe.build_config_chain(overrides)
     parallelism_configured = any(config_chain.get(k) is not None for k in ("tensor_parallel", "pipeline_parallel", "data_parallel"))
 
-    if not solo and len(host_list) > 1 and parallelism_configured:
+    # ``--solo`` / ``recipe.mode == 'solo'`` force a one-host run.  Both skip the
+    # multi-node scheduling block and route to the single-host occupancy pick
+    # below, so a solo workload still lands on a host that has room rather than
+    # blindly on ``host_list[0]``.
+    requested_solo = bool(solo) or recipe.mode == "solo"
+
+    if not requested_solo and len(host_list) > 1 and parallelism_configured:
         parallelism = extract_parallelism(config_chain)
         if runtime is not None:
             # Bake the runtime-derived rank count so the scheduler asks
@@ -152,51 +157,15 @@ def resolve_effective_hosts(
             total_ranks = runtime.world_size(parallelism, recipe=recipe, cluster=cluster_def)
             parallelism = dataclasses.replace(parallelism, total_ranks=total_ranks)
 
-        # Best-effort cluster status snapshot so occupancy-aware schedulers
-        # can subtract already-running workloads.  Failures are swallowed.
-        cluster_status = None
-        try:
-            cluster_status = api.status(list(host_list), cluster=cluster_def, sctx=sctx)
-        except Exception as e:
-            logger.debug("Cluster status query failed; scheduling without occupancy info: %s", e)
-
-        # Per-host hardware with the usable-memory cap (max_gpu_memory_utilization)
-        # resolved + folded into each AcceleratorSpec, so the scheduler packs
-        # against usable memory rather than nominal memory_gb.
-        effective_hw = resolved_hardware_for_scheduling(cluster_def, list(host_list))
-
-        # Defensive: every scheduled host must carry baked hardware.  A host
-        # missing from the map would fall back to default_dgx_spark_hardware()
-        # inside the scheduler (cap=None → full nominal memory), silently
-        # over-committing capped memory.  resolved_hardware_for_scheduling bakes
-        # every host today, so a gap means a future regression — log it loudly.
-        missing_hw = [h for h in host_list if h not in effective_hw]
-        if missing_hw:
-            logger.warning(
-                "Baked scheduling hardware is missing %d host(s) %s; the scheduler "
-                "will fall back to uncapped defaults for them (potential memory over-commit)",
-                len(missing_hw),
-                missing_hw,
-            )
-
-        # Best-effort per-rank VRAM claim so the scheduler can reject GPUs that
-        # can't hold the model within the capped usable memory.  Any estimation
-        # failure degrades to resources=None (memory-blind, today's behavior)
-        # rather than blocking the launch.
-        resources = None
-        try:
-            est = recipe.estimate_vram(cli_overrides=overrides)
-            per_rank = float(getattr(est, "total_per_gpu_gb", 0.0) or 0.0)
-            if per_rank > 0:
-                resources = ResourceRequest(memory_gb=per_rank, util_fraction=1.0)
-        except Exception as e:
-            logger.debug("VRAM estimate unavailable; scheduling without memory claim: %s", e)
+        cluster_status, effective_hw, resources = _gather_scheduling_inputs(
+            host_list, recipe, overrides, cluster_def=cluster_def, sctx=sctx
+        )
 
         request = SchedulingRequest(
             parallelism=parallelism,
             hosts=tuple(host_list),
             host_hardware=effective_hw,
-            layout=getattr(recipe, "layout", None),
+            layout=recipe.layout,
             status=cluster_status,
             resources=resources,
         )
@@ -241,13 +210,123 @@ def resolve_effective_hosts(
         placement = None
 
     # Determine final solo mode after scheduling / max_nodes.
-    is_solo = bool(solo) or recipe.mode == "solo" or len(host_list) <= 1
+    is_solo = requested_solo or len(host_list) <= 1
     if is_solo and len(host_list) > 1:
+        # Occupancy-aware single-host pick: even a one-host (solo / single-rank)
+        # workload should land on a host that has room.  A 1-rank scheduling
+        # request lets the configured scheduler choose the least-loaded host
+        # with capacity; when no occupancy snapshot is available it greedy-packs
+        # and returns the first host with capacity (today's behavior).  When
+        # *every* host is full it raises InsufficientCapacity rather than
+        # stacking onto an occupied host.
+        chosen = _pick_single_host(host_list, recipe, overrides, cluster_def=cluster_def, sctx=sctx, scheduler=scheduler)
         notes.append("Note: solo mode enabled, using 1 of %d hosts" % len(host_list))
-        host_list = host_list[:1]
+        host_list = [chosen]
         placement = None
 
     return host_list, is_solo, notes, placement
+
+
+def _gather_scheduling_inputs(host_list, recipe, overrides, *, cluster_def, sctx):
+    """Best-effort ``(status, host_hardware, resources)`` for a scheduling request.
+
+    Shared by the multi-node scheduling block and the single-host occupancy
+    pick so the occupancy snapshot, usable-memory cap baking, and per-rank VRAM
+    estimation live in exactly one place.
+
+    * ``status`` — live :class:`ClusterStatus` snapshot (``None`` when the query
+      fails; occupancy-aware schedulers then degrade to greedy packing).
+    * ``host_hardware`` — per-host hardware with the ``max_gpu_memory_utilization``
+      cap resolved + folded into each ``AcceleratorSpec`` so the scheduler packs
+      against usable rather than nominal memory.
+    * ``resources`` — per-rank whole-GPU VRAM claim (``None`` when estimation is
+      unavailable, preserving the memory-blind path).
+    """
+    import sparkrun.api as api
+    from sparkrun.core.limits import resolved_hardware_for_scheduling
+    from sparkrun.core.scheduler import ResourceRequest
+
+    cluster_status = None
+    try:
+        cluster_status = api.status(list(host_list), cluster=cluster_def, sctx=sctx)
+    except Exception as e:
+        logger.debug("Cluster status query failed; scheduling without occupancy info: %s", e)
+
+    effective_hw = resolved_hardware_for_scheduling(cluster_def, list(host_list))
+
+    # Defensive: every scheduled host must carry baked hardware.  A host missing
+    # from the map would fall back to default_dgx_spark_hardware() inside the
+    # scheduler (cap=None → full nominal memory), silently over-committing capped
+    # memory.  resolved_hardware_for_scheduling bakes every host today, so a gap
+    # means a future regression — log it loudly.
+    missing_hw = [h for h in host_list if h not in effective_hw]
+    if missing_hw:
+        logger.warning(
+            "Baked scheduling hardware is missing %d host(s) %s; the scheduler "
+            "will fall back to uncapped defaults for them (potential memory over-commit)",
+            len(missing_hw),
+            missing_hw,
+        )
+
+    resources = None
+    try:
+        est = recipe.estimate_vram(cli_overrides=overrides)
+        per_rank = float(getattr(est, "total_per_gpu_gb", 0.0) or 0.0)
+        if per_rank > 0:
+            resources = ResourceRequest(memory_gb=per_rank, util_fraction=1.0)
+    except Exception as e:
+        logger.debug("VRAM estimate unavailable; scheduling without memory claim: %s", e)
+
+    return cluster_status, effective_hw, resources
+
+
+def _pick_single_host(host_list, recipe, overrides, *, cluster_def, sctx, scheduler):
+    """Choose the single least-loaded host with room for a solo (1-rank) run.
+
+    Runs a ``world_size == 1`` scheduling request over *host_list* so the
+    configured scheduler picks an occupancy-appropriate host.  ``layout`` is
+    intentionally dropped — a solo run ignores recipe parallelism/layout and
+    only needs one host.
+
+    Returns the chosen host name.  Raises
+    :class:`~sparkrun.api.InsufficientCapacity` when no host can fit the
+    workload (every accelerator occupied / too little usable VRAM); when no
+    occupancy snapshot is available the scheduler greedy-packs and returns the
+    first host with capacity, so the no-status path is byte-identical to the
+    pre-occupancy ``host_list[0]`` behavior.
+    """
+    import dataclasses
+
+    import sparkrun.api as api
+    from sparkrun.core.parallelism import extract_parallelism
+    from sparkrun.core.scheduler import SchedulingRequest
+
+    config_chain = recipe.build_config_chain(overrides)
+    parallelism = dataclasses.replace(extract_parallelism(config_chain), total_ranks=1)
+
+    cluster_status, effective_hw, resources = _gather_scheduling_inputs(host_list, recipe, overrides, cluster_def=cluster_def, sctx=sctx)
+
+    request = SchedulingRequest(
+        parallelism=parallelism,
+        hosts=tuple(host_list),
+        host_hardware=effective_hw,
+        layout=None,
+        status=cluster_status,
+        resources=resources,
+    )
+    try:
+        result = api.schedule(request, scheduler=scheduler, sctx=sctx)
+    except InsufficientCapacity as e:
+        detail = str(e) or "all %d host(s) occupied" % len(host_list)
+        raise InsufficientCapacity(
+            "cluster has no free capacity for a solo (1-node) run: %s" % detail,
+            status=cluster_status,
+            host_list=list(host_list),
+            required=1,
+        ) from e
+
+    hosts_used = list(result.assignment.hosts_used)
+    return hosts_used[0] if hosts_used else host_list[0]
 
 
 __all__ = ["resolve_host_list", "resolve_effective_hosts"]

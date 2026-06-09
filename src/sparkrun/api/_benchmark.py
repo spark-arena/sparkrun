@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import subprocess
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -431,9 +433,6 @@ def _execute_benchmark(
         config_chain = recipe.build_config_chain(overrides)
         serve_port = int(config_chain.get("port") or 8000)
         overrides["port"] = serve_port
-        from sparkrun.orchestration.job_metadata import derive_cluster_id
-
-        cluster_id = derive_cluster_id(recipe, host_list, overrides=overrides)
 
     container_image = runtime.resolve_container(recipe, overrides)
 
@@ -827,62 +826,60 @@ def _execute_benchmark(
             if dry_run:
                 emitter.info("[dry-run] Would execute benchmark command")
             else:
-                import time
-
                 emitter.info("--- benchmark output ---")
                 bench_start = time.monotonic()
                 bench_result.start_time = datetime.now(tz=timezone.utc)
+                bench_env = os.environ.copy()
+                bench_env["PYTHONUNBUFFERED"] = "1"
                 try:
-                    import os
-
-                    bench_env = os.environ.copy()
-                    bench_env["PYTHONUNBUFFERED"] = "1"
-                    proc = subprocess.Popen(
+                    with subprocess.Popen(
                         bench_cmd,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                         text=True,
                         bufsize=1,
                         env=bench_env,
-                    )
+                    ) as proc:
+                        stdout_lines: list[str] = []
+                        for line in proc.stdout:
+                            emitter.info(line.rstrip("\n"))
+                            stdout_lines.append(line)
 
-                    stdout_lines: list[str] = []
-                    for line in proc.stdout:
-                        emitter.info(line.rstrip("\n"))
-                        stdout_lines.append(line)
-
-                    proc.wait(timeout=effective_timeout)
-                    stdout_text = "".join(stdout_lines)
-                    stderr_text = proc.stderr.read()
-
-                    elapsed = time.monotonic() - bench_start
-                    bench_result.end_time = datetime.now(tz=timezone.utc)
-                    emitter.info("--- end benchmark output ---")
-                    emitter.info("")
-
-                    if proc.returncode != 0:
-                        emitter.warning("benchmark exited with code %d (%.0fs elapsed)" % (proc.returncode, elapsed))
-                        if stderr_text:
-                            emitter.warning("stderr: %s" % stderr_text[:500])
-                        if exit_on_first_fail:
-                            emitter.warning("Skipping result export (--exit-on-first-fail set and benchmark failed).")
-                            if launched and not no_stop:
-                                emitter.info("")
-                                emitter.info("Stopping inference...")
-                                _stop_inference(runtime, host_list, cluster_id, config, dry_run, sctx=sctx, emitter=emitter)
-                                emitter.info("Inference stopped.")
+                        try:
+                            proc.wait(timeout=effective_timeout)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            proc.wait()
                             raise BenchmarkFailed(
-                                "benchmark exited with code %d" % proc.returncode,
-                                exit_code=proc.returncode,
+                                "Error: benchmark timed out after %d seconds" % effective_timeout,
+                                exit_code=1,
                             )
-                    else:
-                        emitter.info("Benchmark completed successfully (%.0fs elapsed)." % elapsed)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    raise BenchmarkFailed(
-                        "Error: benchmark timed out after %d seconds" % effective_timeout,
-                        exit_code=1,
-                    )
+
+                        stdout_text = "".join(stdout_lines)
+                        stderr_text = proc.stderr.read()
+
+                        elapsed = time.monotonic() - bench_start
+                        bench_result.end_time = datetime.now(tz=timezone.utc)
+                        emitter.info("--- end benchmark output ---")
+                        emitter.info("")
+
+                        if proc.returncode != 0:
+                            emitter.warning("benchmark exited with code %d (%.0fs elapsed)" % (proc.returncode, elapsed))
+                            if stderr_text:
+                                emitter.warning("stderr: %s" % stderr_text[:500])
+                            if exit_on_first_fail:
+                                emitter.warning("Skipping result export (--exit-on-first-fail set and benchmark failed).")
+                                if launched and not no_stop:
+                                    emitter.info("")
+                                    emitter.info("Stopping inference...")
+                                    _stop_inference(runtime, host_list, cluster_id, config, dry_run, sctx=sctx, emitter=emitter)
+                                    emitter.info("Inference stopped.")
+                                raise BenchmarkFailed(
+                                    "benchmark exited with code %d" % proc.returncode,
+                                    exit_code=proc.returncode,
+                                )
+                        else:
+                            emitter.info("Benchmark completed successfully (%.0fs elapsed)." % elapsed)
                 except FileNotFoundError:
                     if launched and not no_stop:
                         _stop_inference(runtime, host_list, cluster_id, config, dry_run, sctx=sctx, emitter=emitter)
@@ -980,8 +977,6 @@ def _execute_benchmark(
             emitter.info("Inference stopped.")
         raise
     finally:
-        import os
-
         try:
             os.unlink(result_file)
         except OSError:
@@ -1335,7 +1330,7 @@ def _build_result(options: BenchmarkOptions, bench_result: Any) -> BenchmarkResu
             fw = get_benchmarking_framework(framework_str)
             category = getattr(fw, "primary_category", "") or ""
         except Exception:
-            pass
+            logger.debug("benchmark category resolution failed", exc_info=True)
 
     container_image_raw = getattr(bench_result, "container_image", None)
     container_image_str = str(container_image_raw) if container_image_raw else ""

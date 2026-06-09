@@ -239,6 +239,7 @@ class _Recipe:
     stop_after_post = False
     executor = ""
     executor_config = None
+    is_url_sourced = False
     qualified_name = "stub-recipe"
     name = "stub-recipe"
     container = "stub:latest"

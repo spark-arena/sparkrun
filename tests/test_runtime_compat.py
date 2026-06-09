@@ -308,6 +308,8 @@ class _FakeRecipe:
     stop_after_post = False
     executor = ""
     executor_config = None
+    is_url_sourced = False
+    cluster_config = None
     qualified_name = "stub-recipe"
     name = "stub-recipe"
     container = "stub:latest"

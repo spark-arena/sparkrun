@@ -1,8 +1,19 @@
-"""SparsePackScheduler — spread workloads across hosts/GPUs.
+"""SparsePackScheduler — spread *distinct workloads* across hosts/GPUs.
 
 Sparse packing prefers idle (least-loaded) hosts and GPUs so independent
 workloads avoid each other when possible.  This is the default sparkrun
 scheduler.
+
+**Granularity of "sparse".**  The spread guarantee is *between* workloads,
+not *within* one.  A single workload's ranks are still packed onto as few
+hosts as possible (each chosen host is filled to capacity before the loop
+advances) — this is deliberate: ranks of one job want to be co-located so
+tensor-parallel traffic rides the high-bandwidth intra-node link
+(NVLink-class) rather than the slower inter-node fabric.  What "sparse"
+controls is *which* hosts a new workload lands on: the least-loaded ones,
+so it sits as far as possible from already-running jobs.  (On DGX Spark —
+1 GPU per host — intra- vs inter-host is the only axis, so a multi-rank
+job simply takes the N least-loaded hosts.)
 
 See :mod:`sparkrun.schedulers._occupancy_base` for the shared packing
 loop; this module only specifies the ordering policy.

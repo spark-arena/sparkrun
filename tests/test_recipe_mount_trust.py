@@ -48,15 +48,43 @@ def test_untrusted_recipe_with_cache_dir_override_is_rejected():
 
 def test_untrusted_recipe_with_executor_volumes_is_rejected():
     recipe = _recipe(executor_config={"volumes": ["/:/host"]})
-    with pytest.raises(RecipeError, match="executor_config.volumes"):
+    with pytest.raises(RecipeError, match="executor_config"):
         _enforce_recipe_mount_trust(recipe, trusted=False)
+
+
+@pytest.mark.parametrize(
+    "exec_cfg",
+    [
+        {"privileged": True},  # --privileged → full container escape
+        {"cap_add": ["SYS_ADMIN"]},  # raise capabilities past the rootless baseline
+        {"security_opt": []},  # drop the no-new-privileges hardening
+        {"devices": ["/dev/mem"]},  # raw kernel-memory / block-device access
+        {"user": "0:0"},  # run the container as root
+        {"volumes": ["/etc:/etc"]},  # extra host bind mount
+    ],
+)
+def test_untrusted_recipe_with_privileged_executor_keys_is_rejected(exec_cfg):
+    """C1 regression: an untrusted recipe cannot re-enable any isolation-breaking
+    executor_config key — not just ``volumes``.  These sit above the rootless
+    ``apply_runtime_adjustments`` layer, so the trust gate is the only thing
+    stopping a "run this link" recipe from emitting ``docker run --privileged``
+    / ``--device`` / ``--user 0:0`` and taking over the host."""
+    recipe = _recipe(executor_config=exec_cfg)
+    with pytest.raises(RecipeError, match="executor_config"):
+        _enforce_recipe_mount_trust(recipe, trusted=False)
+
+
+def test_untrusted_recipe_with_benign_executor_keys_is_allowed():
+    """Innocuous resource knobs are not gated — they can't break isolation."""
+    recipe = _recipe(executor_config={"shm_size": "16gb", "ipc": "host", "memory_limit": "64g"})
+    _enforce_recipe_mount_trust(recipe, trusted=False)  # must not raise
 
 
 def test_trusted_recipe_with_mounts_is_allowed():
     # --trust / local / default-registry recipes opt in; the gate is a no-op.
     recipe = _recipe(
         cluster_config={"resolved_model_path": "/nfs/models/qwen3"},
-        executor_config={"volumes": ["/mnt/quant:/mnt/quant"]},
+        executor_config={"volumes": ["/mnt/quant:/mnt/quant"], "privileged": True, "devices": ["/dev/kfd"]},
     )
     _enforce_recipe_mount_trust(recipe, trusted=True)  # must not raise
 

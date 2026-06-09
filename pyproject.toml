@@ -27,6 +27,8 @@ dependencies = [
     "scitrera-app-framework==0.0.69",
     "vpd==0.9.13",
     "six==1.17.0", # transitive dependency of vpd but we pin the version for security reasons
+    "idna==3.15", # transitive (requests/huggingface-hub) pinned to the CVE-2026-45409 fix
+    "pygments==2.20.0", # transitive (rich/textual) pinned to the CVE-2026-4539 fix
     "click==8.3.3",
     "pyyaml==6.0.3",
     "huggingface-hub==1.8.0",

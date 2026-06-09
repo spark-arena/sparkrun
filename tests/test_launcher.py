@@ -193,6 +193,8 @@ def test_launch_inference_threads_backends_to_runtime_run(monkeypatch, tmp_path)
         stop_after_post = False
         executor = ""
         executor_config = None
+        is_url_sourced = False
+        cluster_config = None
         qualified_name = "stub-recipe"
         name = "stub-recipe"
         container = "stub:latest"
@@ -315,6 +317,8 @@ def test_launch_inference_logs_platform_warnings_without_raising(monkeypatch, tm
         stop_after_post = False
         executor = ""
         executor_config = None
+        is_url_sourced = False
+        cluster_config = None
         qualified_name = "stub-recipe"
         name = "stub-recipe"
         container = "stub:latest"
@@ -617,6 +621,8 @@ def test_launch_inference_save_job_metadata_failure_is_best_effort(monkeypatch, 
         stop_after_post = False
         executor = ""
         executor_config = None
+        is_url_sourced = False
+        cluster_config = None
         qualified_name = "stub-recipe"
         name = "stub-recipe"
         container = "stub:latest"

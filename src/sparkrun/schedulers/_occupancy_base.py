@@ -229,6 +229,14 @@ class _OccupancyAwareBase(Scheduler):
         ordering is decided once up front from
         :meth:`_compute_host_load_scores` (which already folds
         :attr:`HEAD_NODE_OVERHEAD` for the heads of *existing* workloads).
+
+        Note the fill-to-capacity inner loop means the sparse/dense policy
+        is applied at *host-selection* granularity: a single workload's
+        ranks are packed onto as few hosts as possible (co-located for
+        intra-node tensor-parallel bandwidth), while the *choice* of which
+        hosts — least-loaded first (sparse) or most-loaded first (dense) —
+        is what spreads or stacks distinct workloads relative to each
+        other.  See the subclass docstrings.
         """
         total_ranks = request.parallelism.world_size()
         if total_ranks <= 0:

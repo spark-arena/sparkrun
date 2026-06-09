@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 import secrets
 from dataclasses import dataclass, field
@@ -383,6 +384,13 @@ def save_job_metadata(
     digest = _filename_digest(cluster_id)
     jobs_dir = Path(cache_dir) / "jobs"
     jobs_dir.mkdir(parents=True, exist_ok=True)
+    # Metadata can carry the resolved upstream API key (see below), so keep the
+    # directory owner-only.  Best-effort: a pre-existing dir from an older
+    # sparkrun is also tightened here.
+    try:
+        os.chmod(jobs_dir, 0o700)
+    except OSError:
+        logger.debug("Could not chmod 0700 %s", jobs_dir, exc_info=True)
 
     from sparkrun.core.parallelism import PARALLELISM_KEYS
 
@@ -468,10 +476,10 @@ def save_job_metadata(
     # Persist executor selection so stop/logs can reproduce the same
     # executor (Docker vs experimental local) without re-running the
     # launcher's resolution logic.
-    executor_selector = getattr(recipe, "executor", "") or ""
+    executor_selector = recipe.executor or ""
     if executor_selector:
         meta["executor"] = executor_selector
-    recipe_exec_cfg = getattr(recipe, "executor_config", None)
+    recipe_exec_cfg = recipe.executor_config
     if isinstance(recipe_exec_cfg, dict) and recipe_exec_cfg:
         meta["executor_config"] = dict(recipe_exec_cfg)
 
@@ -486,8 +494,19 @@ def save_job_metadata(
         logger.debug("Failed to serialize recipe state for %s", cluster_id, exc_info=True)
 
     meta_path = jobs_dir / f"{digest}.yaml"
-    with open(meta_path, "w") as f:
+    # ``meta`` may hold the resolved upstream ``api_key`` (and a full recipe
+    # state that can include env secrets), so create the file owner-only from
+    # the start — never a umask-default 0644 window where another local user
+    # could read the key.  O_TRUNC mirrors the previous "w" overwrite semantics.
+    fd = os.open(meta_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
         yaml.safe_dump(meta, f, default_flow_style=False)
+    # If the file pre-existed with looser perms, O_CREAT won't re-chmod it;
+    # tighten explicitly (best-effort).
+    try:
+        os.chmod(meta_path, 0o600)
+    except OSError:
+        logger.debug("Could not chmod 0600 %s", meta_path, exc_info=True)
     logger.debug("Saved job metadata to %s", meta_path)
 
 

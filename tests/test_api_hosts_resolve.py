@@ -90,13 +90,17 @@ def test_single_host_bypasses_scheduler(monkeypatch):
     assert notes == []
 
 
-def test_solo_flag_truncates_and_clears_placement(monkeypatch):
-    """``solo=True`` skips scheduling entirely and trims to the head host."""
+def test_solo_flag_picks_single_host_via_scheduler(monkeypatch):
+    """``solo=True`` runs a 1-rank schedule to pick one host *with room*.
 
-    def _boom(*a, **k):
-        raise AssertionError("scheduler must not be called in solo mode")
-
-    monkeypatch.setattr(api, "schedule", _boom)
+    Solo no longer blindly trims to ``host_list[0]``; it issues a
+    ``world_size == 1`` scheduling request so the configured scheduler picks
+    an occupancy-appropriate host.  Here the stub returns ``h2`` (not the
+    head), proving the chosen host comes from the scheduler, not a slice.
+    """
+    capture: dict = {}
+    _stub_schedule(monkeypatch, ["h2"], capture=capture)
+    monkeypatch.setattr(api, "status", lambda *a, **k: None)
 
     recipe = _Recipe(parallelism={"tensor_parallel": 2})
     host_list, is_solo, notes, placement = resolve_effective_hosts(
@@ -105,21 +109,37 @@ def test_solo_flag_truncates_and_clears_placement(monkeypatch):
         {},
         solo=True,
     )
-    assert host_list == ["h1"]
+    assert host_list == ["h2"]
     assert is_solo is True
     assert placement is None
     assert any("solo mode enabled" in n for n in notes)
+    # Solo forces a single-rank request regardless of the recipe's tp=2.
+    assert capture["request"].parallelism.world_size() == 1
+
+
+def test_solo_raises_when_no_host_has_room(monkeypatch):
+    """Solo fails closed when the scheduler can fit no host (every host full)."""
+    from sparkrun.api._errors import InsufficientCapacity as _IC
+
+    def _schedule(request, **kwargs):
+        raise _IC("no free accelerator slots")
+
+    monkeypatch.setattr(api, "schedule", _schedule)
+    monkeypatch.setattr(api, "status", lambda *a, **k: None)
+
+    recipe = _Recipe(parallelism={"tensor_parallel": 2})
+    with pytest.raises(_IC):
+        resolve_effective_hosts(["h1", "h2", "h3"], recipe, {}, solo=True)
 
 
 def test_recipe_mode_solo_forces_single_host(monkeypatch):
-    """``recipe.mode == 'solo'`` trims to one host at the final solo gate.
+    """``recipe.mode == 'solo'`` routes to the single-host occupancy pick.
 
-    Unlike the ``solo`` flag, ``recipe.mode`` does not gate the scheduler
-    block (that block keys off the ``solo`` argument only), so the
-    scheduler still runs; the final ``is_solo`` gate then trims to the
-    head host and clears the placement.
+    Like the ``solo`` flag, ``recipe.mode == 'solo'`` now skips the multi-node
+    scheduling block and issues a 1-rank request through the single-host pick;
+    the final ``is_solo`` gate reports solo and clears the placement.
     """
-    _stub_schedule(monkeypatch, ["h1", "h2"])
+    _stub_schedule(monkeypatch, ["h1"])
     monkeypatch.setattr(api, "status", lambda *a, **k: None)
 
     recipe = _Recipe(mode="solo", parallelism={"tensor_parallel": 2})

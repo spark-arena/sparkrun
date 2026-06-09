@@ -10,6 +10,7 @@ distributed.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -125,7 +126,11 @@ class ClusterContext:
 
                 from sparkrun.core.limits import resolved_hardware_for_scheduling
                 from sparkrun.core.parallelism import extract_parallelism
-                from sparkrun.core.placement import compute_placement
+                from sparkrun.core.scheduler import (
+                    SchedulingRequest,
+                    get_scheduler,
+                    resolve_scheduler_selector,
+                )
 
                 config_chain = recipe.build_config_chain()
                 parallelism = extract_parallelism(config_chain)
@@ -142,12 +147,27 @@ class ClusterContext:
                 # applies) rather than nominal memory_gb, so the fallback does
                 # not over-commit GPU memory on a host.
                 capped_hw = resolved_hardware_for_scheduling(cluster, list(hosts))
-                placement = compute_placement(
-                    parallelism,
-                    hosts,
+                # Honour the cluster/recipe-configured scheduler rather than
+                # hardcoding greedy, so a cluster set to ``occupancy-sparse`` is
+                # not silently downgraded on this fallback path.  No live
+                # ClusterStatus is gathered here (this back-compat path runs only
+                # when the caller didn't pre-thread placement), so occupancy-aware
+                # schedulers degrade to their greedy whole-GPU pack — but through
+                # the configured plugin, keeping the algorithm consistent with the
+                # authoritative ``api._hosts`` path.
+                recipe_sched = getattr(recipe, "scheduler", None)
+                cluster_sched = getattr(cluster, "scheduler", None)
+                selector, _defaulted = resolve_scheduler_selector(
+                    recipe=recipe_sched if isinstance(recipe_sched, str) else None,
+                    cluster=cluster_sched if isinstance(cluster_sched, str) else None,
+                )
+                request = SchedulingRequest(
+                    parallelism=parallelism,
+                    hosts=tuple(hosts),
                     host_hardware=capped_hw,
                     layout=recipe.layout,
                 )
+                placement = get_scheduler(selector).schedule(request).assignment
             except Exception as e:
                 logger.warning("Placement computation skipped: %s", e)
 
@@ -720,8 +740,6 @@ def _attach_foreground(runtime: RuntimePlugin, ctx: ClusterContext, follow: bool
         if follow:
             runtime.follow_logs(ctx.hosts, cluster_id=ctx.cluster_id, config=ctx.config)
         else:
-            import threading
-
             threading.Event().wait()
     except KeyboardInterrupt:
         logger.info("\nInterrupted. Stopping cluster '%s'...", ctx.cluster_id)
