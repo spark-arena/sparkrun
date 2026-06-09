@@ -155,6 +155,38 @@ def test_arena_benchmark_run_uses_same_arena_flow_helpers():
     assert order == ["preflight", "run_benchmark", "finalize"]
 
 
+def test_arena_benchmark_run_threads_dry_run_to_benchmark():
+    """``arena benchmark run`` must pass dry_run through the benchmark wrapper."""
+    from sparkrun.api._benchmark_models import ResumeMode
+    from sparkrun.cli._arena import arena_benchmark
+
+    captured = {}
+
+    def _capture(ctx, **kwargs):
+        captured.update(kwargs)
+        return _fake_bench_result()
+
+    runner = CliRunner()
+    with (
+        patch("sparkrun.cli._benchmark._run_benchmark", side_effect=_capture),
+        patch("sparkrun.cli._arena_flow.preflight_arena", return_value=("s", "@official/spark-arena-v2")),
+        patch("sparkrun.cli._arena_flow.finalize_arena"),
+    ):
+        runner.invoke(
+            arena_benchmark,
+            ["my-recipe", "--local-test", "--dry-run", "--tp", "2"],
+            catch_exceptions=False,
+        )
+
+    assert captured["recipe_name"] == "my-recipe"
+    assert captured["tensor_parallel"] == 2
+    assert captured["api_key_env"] is None
+    assert captured["dry_run"] is True
+    assert captured["profile"] == "@official/spark-arena-v2"
+    assert captured["export_results_files"] is False
+    assert captured["resume_mode"] == ResumeMode.AUTO
+
+
 def test_arena_benchmark_run_no_finalize_on_failure():
     """``arena benchmark run`` must NOT call finalize_arena when the benchmark fails."""
     from sparkrun.cli._arena import arena_benchmark
@@ -239,6 +271,25 @@ def test_api_arena_respects_explicit_category():
 
     assert captured
     assert captured[0].category == "evals"
+
+
+def test_finalize_arena_dry_run_skips_metadata_generation(capsys):
+    """``finalize_arena`` must not inspect benchmark artifacts in dry-run mode."""
+    from sparkrun.cli._arena_flow import finalize_arena
+
+    bench_result = MagicMock()
+    bench_result.generate_metadata.side_effect = AssertionError("dry-run metadata is unavailable")
+
+    finalize_arena(
+        ctx=MagicMock(),
+        bench_result=bench_result,
+        submission_id="sub-test-123",
+        local_test=False,
+        dry_run=True,
+    )
+
+    assert "[dry-run] Would upload results to Spark Arena" in capsys.readouterr().out
+    bench_result.generate_metadata.assert_not_called()
 
 
 def test_arena_flow_module_constants():

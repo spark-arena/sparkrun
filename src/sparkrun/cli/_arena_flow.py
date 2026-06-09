@@ -71,6 +71,10 @@ def finalize_arena(
     Idempotent: if upload was already performed for this submission_id, the
     upload module short-circuits.
     """
+    if dry_run:
+        click.echo("[dry-run] Would upload results to Spark Arena")
+        return
+
     from sparkrun.arena.auth import load_refresh_token
     from sparkrun.arena.upload import upload_benchmark_results
     from ._common import _get_context
@@ -85,7 +89,7 @@ def finalize_arena(
     )
     benchmark_csv = bench_result.results["csv"]
 
-    if dry_run or local_test:
+    if local_test:
         from pprint import pformat
 
         click.echo("-" * 40)
@@ -97,10 +101,6 @@ def finalize_arena(
         click.echo("-" * 40)
         click.echo(pformat(metadata))
         click.echo("-" * 40)
-
-    if dry_run:
-        click.echo("[dry-run] Would upload results to Spark Arena")
-        return
 
     # --- Write files to cache directory ---
     sctx = _get_context(ctx)
