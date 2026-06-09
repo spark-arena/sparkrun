@@ -98,6 +98,30 @@ def test_assert_safe_mount_source_rejects_ssh_dir():
         assert_safe_mount_source(os.path.join(ssh, "id_rsa"))
 
 
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "/etc/sudoers.d",  # subtree of /etc — exact-match denylist would miss it
+        "/var/lib/docker",  # docker data root
+        "/var/lib/docker/volumes/x",
+        "/run/secrets",  # subtree of /run
+        "/proc/self/environ",
+        "relative/path",  # not absolute
+        "models",  # not absolute
+        "/data/../etc",  # contains ..
+    ],
+)
+def test_assert_safe_mount_source_rejects_subtrees_and_relative(bad):
+    with pytest.raises(ValueError):
+        assert_safe_mount_source(bad)
+
+
+def test_assert_safe_mount_source_rejects_other_users_ssh_dir():
+    # Matched by path component, not just the control machine's own ~/.ssh.
+    with pytest.raises(ValueError):
+        assert_safe_mount_source("/home/someone-else/.ssh/id_ed25519")
+
+
 def test_assert_safe_mount_source_allows_normal_paths():
     for ok in ("/nfs/models/qwen3", "/mnt/quant/calib", "/data/hf"):
         assert assert_safe_mount_source(ok) == ok

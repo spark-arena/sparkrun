@@ -79,9 +79,15 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunRes
     runtime = resolve_runtime(recipe, sctx=sctx)
 
     # Scheduler selection chain: caller > recipe > cluster > greedy default.
-    effective_scheduler = (
-        options.scheduler or (getattr(recipe, "scheduler", "") or None) or (getattr(cluster_def, "scheduler", None) or None)
+    from sparkrun.core.scheduler import FALLBACK_DEFAULT_SCHEDULER, resolve_scheduler_selector
+
+    effective_scheduler, _scheduler_defaulted = resolve_scheduler_selector(
+        cli=options.scheduler,
+        recipe=getattr(recipe, "scheduler", None),
+        cluster=getattr(cluster_def, "scheduler", None),
     )
+    if _scheduler_defaulted:
+        logger.debug("No scheduler configured (recipe/cluster); using default %r", FALLBACK_DEFAULT_SCHEDULER)
 
     # Apply the cluster's SSH user (if any) to the config so downstream
     # SSH operations (executor.run / distribution / build_ssh_kwargs)

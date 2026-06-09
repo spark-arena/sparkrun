@@ -89,7 +89,7 @@ def resolved_model_volume(recipe) -> dict[str, str]:
     launcher).  Returns an empty dict when not configured.
     """
     path = getattr(getattr(recipe, "cluster_config", None), "resolved_model_path", None)
-    if not path:
+    if not path or not isinstance(path, str):
         return {}
     from sparkrun.utils.shell import assert_safe_mount_source
 

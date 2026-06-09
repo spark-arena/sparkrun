@@ -527,6 +527,7 @@ def test_run_result_scheduler_reflects_effective_resolution():
         recipe_scheduler=None,
         cluster_scheduler=None,
     )
-    # FALLBACK_DEFAULT_SCHEDULER ("occupancy-sparse") names a registered
-    # plugin; the resolver returns the plugin's canonical scheduler_name.
+    # FALLBACK_DEFAULT_SCHEDULER ("greedy") names a registered plugin; the
+    # resolver returns the plugin's canonical scheduler_name when nothing in
+    # the CLI/recipe/cluster chain selects one.
     assert result.scheduler == FALLBACK_DEFAULT_SCHEDULER

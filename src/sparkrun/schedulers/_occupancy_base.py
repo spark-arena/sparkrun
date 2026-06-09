@@ -83,29 +83,6 @@ def _host_vendor(hw: HostHardware) -> str | None:
     return next(iter(vendors)) if len(vendors) == 1 else None
 
 
-def _host_gpu_memory(hw: HostHardware) -> list[float | None]:
-    """Per-local-GPU *usable* memory budget on a host, expanded from ``accelerators``.
-
-    Returns one entry per accelerator slot (in local-index order).  Each entry
-    is ``memory_gb × max_gpu_memory_utilization`` — the usable-memory cap
-    resolved upstream (in ``resolve_effective_hosts`` via
-    :func:`sparkrun.core.limits.resolved_hardware_for_scheduling`) and baked
-    into ``AcceleratorSpec.max_gpu_memory_utilization``.  A missing cap means
-    ``1.0`` (no cap).  An entry is ``None`` when the spec did not declare
-    ``memory_gb`` — callers fall back to "memory ignored" for that slot.
-    """
-    mem: list[float | None] = []
-    for spec in hw.accelerators:
-        if spec.memory_gb is None:
-            usable: float | None = None
-        else:
-            cap = spec.max_gpu_memory_utilization
-            usable = spec.memory_gb * (cap if cap is not None else 1.0)
-        for _ in range(spec.count):
-            mem.append(usable)
-    return mem
-
-
 # --------------------------------------------------------------------------
 # Base scheduler
 # --------------------------------------------------------------------------
@@ -247,10 +224,11 @@ class _OccupancyAwareBase(Scheduler):
         accepts the rank when both budgets remain non-negative.
 
         Host ordering is delegated to :meth:`_sort_hosts`; GPU selection
-        is delegated to :meth:`_select_gpu_index`.  After the first rank
-        of the *new* workload lands somewhere, that host's score gains
-        :attr:`HEAD_NODE_OVERHEAD` and the remaining (unvisited) hosts
-        are re-sorted.
+        is delegated to :meth:`_select_gpu_index`.  Each host is filled to
+        capacity (every rank that fits) before the loop advances, so host
+        ordering is decided once up front from
+        :meth:`_compute_host_load_scores` (which already folds
+        :attr:`HEAD_NODE_OVERHEAD` for the heads of *existing* workloads).
         """
         total_ranks = request.parallelism.world_size()
         if total_ranks <= 0:
@@ -271,10 +249,7 @@ class _OccupancyAwareBase(Scheduler):
         hosts_used: list[str] = []
         placed_vendors: set[str] = set()
         remaining = total_ranks
-        first_rank_placed = False
 
-        # Walk the sorted list by index so we can re-sort the *remaining*
-        # slice in place once the new workload's head host is known.
         i = 0
         while i < len(sorted_hosts) and remaining > 0:
             host = sorted_hosts[i]
@@ -292,7 +267,7 @@ class _OccupancyAwareBase(Scheduler):
                 )
 
             # Build per-GPU (util_remaining, memory_remaining) budgets.
-            gpu_mem_specs = _host_gpu_memory(hw)
+            gpu_mem_specs = hw.usable_gpu_memory_slots()
             num_gpus = len(gpu_mem_specs)
             host_occ = status.for_host(host) if status is not None else None
 
@@ -352,20 +327,6 @@ class _OccupancyAwareBase(Scheduler):
                         "recipe.layout.placements is required for heterogeneous-vendor clusters" % sorted(placed_vendors)
                     )
                 hosts_used.append(host)
-
-                # After placing the first rank of the new workload, mark
-                # this host as the new head and re-sort the remaining
-                # (unvisited) hosts.  This matters when the head's
-                # overhead would flip ordering against neighbouring
-                # candidates.
-                if not first_rank_placed:
-                    first_rank_placed = True
-                    scores = dict(scores)
-                    scores[host] = scores.get(host, 0.0) + self.HEAD_NODE_OVERHEAD
-                    if remaining > 0 and i + 1 < len(sorted_hosts):
-                        tail = tuple(sorted_hosts[i + 1 :])
-                        resorted_tail = self._sort_hosts(tail, scores)
-                        sorted_hosts = sorted_hosts[: i + 1] + resorted_tail
 
             i += 1
 

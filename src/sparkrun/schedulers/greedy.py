@@ -68,28 +68,6 @@ def _host_vendor(hw: HostHardware) -> str | None:
     return next(iter(vendors)) if len(vendors) == 1 else None
 
 
-def _host_gpu_memory(hw: HostHardware) -> list[float | None]:
-    """Per-local-GPU *usable* memory budget on a host, in local-index order.
-
-    Mirrors ``schedulers._occupancy_base._host_gpu_memory``: each entry is
-    ``memory_gb × max_gpu_memory_utilization`` (the usable-memory cap baked into
-    ``AcceleratorSpec.max_gpu_memory_utilization`` upstream).  An entry is
-    ``None`` when the spec did not declare ``memory_gb`` — callers treat that
-    slot as "memory ignored".  Kept local to greedy so the scheduler fallback
-    stays free of ``platforms`` / ``cluster_manager`` imports.
-    """
-    mem: list[float | None] = []
-    for spec in hw.accelerators:
-        if spec.memory_gb is None:
-            usable: float | None = None
-        else:
-            cap = spec.max_gpu_memory_utilization
-            usable = spec.memory_gb * (cap if cap is not None else 1.0)
-        for _ in range(spec.count):
-            mem.append(usable)
-    return mem
-
-
 # --------------------------------------------------------------------------
 # Algorithm
 # --------------------------------------------------------------------------
@@ -237,7 +215,7 @@ def _auto_pack(
         if per_rank_memory_gb is None:
             eligible_indices = list(range(capacity))
         else:
-            gpu_mem = _host_gpu_memory(hw)
+            gpu_mem = hw.usable_gpu_memory_slots()
             eligible_indices = [idx for idx, usable in enumerate(gpu_mem) if usable is None or usable >= per_rank_memory_gb]
         if not eligible_indices:
             # No GPU on this host can hold the model under the cap — skip it

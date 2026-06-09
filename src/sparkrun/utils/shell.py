@@ -222,21 +222,22 @@ def validate_sudoers_path(value: str) -> str:
     return value
 
 
-# Host paths that must never be bind-mounted into a workload container.
-# Mounting any of these hands the container control of the host (root fs, the
-# docker control socket, kernel/dev pseudo-filesystems, system config, …).
-_FORBIDDEN_MOUNT_PATHS = frozenset(
-    {
-        "/",
-        "/etc",
-        "/boot",
-        "/proc",
-        "/sys",
-        "/dev",
-        "/root",
-        "/var/run/docker.sock",
-        "/run/docker.sock",
-    }
+# Host directory subtrees that must never be bind-mounted into a workload
+# container.  Mounting any of these (or anything beneath them) hands the
+# container control of the host: root fs, system config, kernel/dev
+# pseudo-filesystems, runtime state (incl. the docker control socket under
+# /run /var/run), and root's home.  Prefix-matched, not exact, so e.g.
+# ``/etc/sudoers.d`` and ``/var/lib/docker`` style escalations are caught too.
+_FORBIDDEN_MOUNT_PREFIXES = (
+    "/etc",
+    "/boot",
+    "/proc",
+    "/sys",
+    "/dev",
+    "/root",
+    "/run",
+    "/var/run",
+    "/var/lib/docker",
 )
 
 
@@ -250,18 +251,44 @@ def assert_safe_mount_source(path: str) -> str:
     independent of recipe trust.  This complements (does not replace) the
     trust gate that blocks untrusted recipes from supplying mounts at all.
 
+    The bind-mount is performed on a **remote** host whose symlink layout and
+    home directory differ from the control machine, so the guard validates the
+    *literal* path shape (must be absolute, no ``..`` components, not under a
+    forbidden subtree) rather than trusting control-machine ``realpath``
+    resolution.  A secondary local ``realpath`` check still rejects sources
+    that resolve to a catastrophic target via a control-machine symlink.
+
     Returns *path* unchanged on success; raises :class:`ValueError` otherwise.
     """
     if not path:
         raise ValueError("Empty bind-mount source path")
-    real = os.path.realpath(os.path.expanduser(path))
-    if real in _FORBIDDEN_MOUNT_PATHS:
-        raise ValueError("Refusing to bind-mount sensitive host path %r (resolved to %r)" % (path, real))
-    if os.path.basename(real) == "docker.sock":
+
+    expanded = os.path.expanduser(path)
+    if not os.path.isabs(expanded):
+        raise ValueError("Bind-mount source must be an absolute path: %r" % path)
+    if ".." in expanded.split(os.sep):
+        raise ValueError("Bind-mount source must not contain '..': %r" % path)
+
+    norm = os.path.normpath(expanded)
+    parts = norm.split(os.sep)
+    if norm == os.sep or any(norm == p or norm.startswith(p + os.sep) for p in _FORBIDDEN_MOUNT_PREFIXES):
+        raise ValueError("Refusing to bind-mount sensitive host path %r" % path)
+    if os.path.basename(norm) == "docker.sock":
         raise ValueError("Refusing to bind-mount the docker control socket %r" % path)
-    ssh_dir = os.path.realpath(os.path.expanduser("~/.ssh"))
-    if real == ssh_dir or real.startswith(ssh_dir + os.sep):
-        raise ValueError("Refusing to bind-mount the SSH key directory %r" % path)
+    # Any user's SSH key directory, matched by path component (not just the
+    # control machine's own ``~/.ssh``).
+    if ".ssh" in parts:
+        raise ValueError("Refusing to bind-mount an SSH key directory %r" % path)
+
+    # Secondary defense: a control-machine symlink that resolves onto a
+    # catastrophic target.
+    real = os.path.realpath(expanded)
+    if (
+        real == os.sep
+        or os.path.basename(real) == "docker.sock"
+        or any(real == p or real.startswith(p + os.sep) for p in _FORBIDDEN_MOUNT_PREFIXES)
+    ):
+        raise ValueError("Refusing to bind-mount sensitive host path %r (resolved to %r)" % (path, real))
     return path
 
 

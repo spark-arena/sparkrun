@@ -347,13 +347,22 @@ def run(
     )
 
     # Resolve effective scheduler name for display + downstream RunOptions.
-    # Scheduler selection chain: CLI flag → recipe.scheduler → None (registry default).
-    # Look up the plugin so the banner reflects the *actually-resolved* name
-    # (e.g. ``"occupancy-sparse"`` when defaulted) rather than a possibly-``None``
+    # Scheduler selection chain: CLI flag → recipe.scheduler → cluster.scheduler
+    # → greedy default (FALLBACK_DEFAULT_SCHEDULER).  Look up the plugin so the
+    # banner reflects the *actually-resolved* name rather than a possibly-``None``
     # selector — matches what ``api.run`` stamps on ``RunResult.scheduler``.
-    from sparkrun.core.scheduler import FALLBACK_DEFAULT_SCHEDULER, get_scheduler
+    from sparkrun.core.scheduler import (
+        FALLBACK_DEFAULT_SCHEDULER,
+        default_scheduler_upgrade_hint,
+        get_scheduler,
+        resolve_scheduler_selector,
+    )
 
-    effective_scheduler = scheduler_name or (recipe.scheduler or None)
+    effective_scheduler, scheduler_defaulted = resolve_scheduler_selector(
+        cli=scheduler_name,
+        recipe=getattr(recipe, "scheduler", None),
+        cluster=getattr(cluster_def, "scheduler", None),
+    )
     try:
         display_scheduler = get_scheduler(effective_scheduler, v=v).scheduler_name
     except Exception:
@@ -378,6 +387,10 @@ def run(
         for _h, _line in _per_host:
             click.echo("  %-8s %s" % (_h + ":", _line))
     click.echo("Scheduler: %s" % display_scheduler)
+    # When nothing in the chain selected a scheduler we fell back to the 0.2.x
+    # greedy default; recommend opting the cluster into occupancy-aware spreading.
+    if scheduler_defaulted and not is_solo:
+        click.echo(default_scheduler_upgrade_hint())
     if effective_transfer_mode not in ("auto", "local"):
         click.echo("Transfer:  %s" % effective_transfer_mode)
 
@@ -388,13 +401,17 @@ def run(
     display_placement = None
     if cluster_def is not None and not is_solo:
         try:
+            from sparkrun.core.limits import resolved_hardware_for_scheduling
             from sparkrun.core.parallelism import extract_parallelism
             from sparkrun.core.placement import compute_placement
 
+            # Pack against *capped* usable memory (same caps the scheduler uses)
+            # so the displayed per-host fit matches the actual placement decision
+            # rather than uncapped nominal memory.
             display_placement = compute_placement(
                 extract_parallelism(recipe.build_config_chain(overrides)),
                 host_list,
-                host_hardware=cluster_def.hosts_hardware or None,
+                host_hardware=resolved_hardware_for_scheduling(cluster_def, list(host_list)),
                 layout=recipe.layout,
             )
         except Exception:

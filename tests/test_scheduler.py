@@ -346,6 +346,54 @@ def test_list_schedulers_includes_greedy():
     assert "greedy" in names
 
 
+# --------------------------------------------------------------------------
+# Default-scheduler migration: undefined → greedy (0.2.x), new clusters →
+# occupancy-sparse.
+# --------------------------------------------------------------------------
+
+
+def test_fallback_default_is_greedy_for_smooth_migration():
+    """An undefined ``scheduler`` (e.g. a 0.2.x cluster YAML) resolves to greedy."""
+    from sparkrun.core.scheduler import FALLBACK_DEFAULT_SCHEDULER
+
+    assert FALLBACK_DEFAULT_SCHEDULER == "greedy"
+
+
+def test_new_cluster_default_is_occupancy_sparse():
+    from sparkrun.core.scheduler import NEW_CLUSTER_DEFAULT_SCHEDULER
+
+    assert NEW_CLUSTER_DEFAULT_SCHEDULER == "occupancy-sparse"
+
+
+def test_resolve_scheduler_selector_precedence():
+    """CLI > recipe > cluster; ``defaulted`` is True only when all are empty."""
+    from sparkrun.core.scheduler import resolve_scheduler_selector
+
+    assert resolve_scheduler_selector(cli="greedy", recipe="occupancy-sparse", cluster="occupancy-dense") == ("greedy", False)
+    assert resolve_scheduler_selector(cli=None, recipe="occupancy-sparse", cluster="occupancy-dense") == ("occupancy-sparse", False)
+    assert resolve_scheduler_selector(cli=None, recipe=None, cluster="occupancy-dense") == ("occupancy-dense", False)
+    # Empty strings are treated as "unset" so an explicit "" clears the cluster
+    # field back to the greedy default.
+    assert resolve_scheduler_selector(cli="", recipe="", cluster="") == (None, True)
+    assert resolve_scheduler_selector() == (None, True)
+
+
+def test_default_scheduler_upgrade_hint_recommends_occupancy_sparse():
+    from sparkrun.core.scheduler import default_scheduler_upgrade_hint
+
+    hint = default_scheduler_upgrade_hint()
+    assert "occupancy-sparse" in hint
+    assert "greedy" in hint
+
+
+def test_new_cluster_scheduler_notice_contrasts_with_greedy():
+    from sparkrun.core.scheduler import new_cluster_scheduler_notice
+
+    notice = new_cluster_scheduler_notice()
+    assert "occupancy-sparse" in notice
+    assert "greedy" in notice
+
+
 def test_get_scheduler_unknown_raises():
     from sparkrun.core.bootstrap import init_sparkrun
 

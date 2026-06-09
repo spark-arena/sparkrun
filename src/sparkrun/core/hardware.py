@@ -118,6 +118,33 @@ class HostHardware:
         """True if any accelerator on this host advertises *capability*."""
         return any(capability in a.capabilities for a in self.accelerators)
 
+    def usable_gpu_memory_slots(self) -> list[float | None]:
+        """Per-local-GPU *usable* memory budget, one entry per accelerator slot.
+
+        Expands :attr:`accelerators` into local-index order (an entry per GPU,
+        honouring :attr:`AcceleratorSpec.count`).  Each entry is
+        ``memory_gb × max_gpu_memory_utilization`` — the usable-memory cap
+        resolved upstream and baked into
+        :attr:`AcceleratorSpec.max_gpu_memory_utilization` (see
+        :func:`sparkrun.core.limits.resolved_hardware_for_scheduling`).  A
+        missing cap means ``1.0`` (no cap); an entry is ``None`` when the spec
+        declares no ``memory_gb`` (callers treat that slot as "memory ignored").
+
+        Shared by the greedy and occupancy schedulers so the cap math lives in
+        exactly one place while the schedulers stay free of ``platforms`` /
+        ``cluster_manager`` imports.
+        """
+        mem: list[float | None] = []
+        for spec in self.accelerators:
+            if spec.memory_gb is None:
+                usable: float | None = None
+            else:
+                cap = spec.max_gpu_memory_utilization
+                usable = spec.memory_gb * (cap if cap is not None else 1.0)
+            for _ in range(spec.count):
+                mem.append(usable)
+        return mem
+
     def to_dict(self) -> dict[str, Any]:
         """JSON/YAML-serializable form. Omits empty optional fields."""
         d: dict[str, Any] = {"accelerators": [a.to_dict() for a in self.accelerators]}

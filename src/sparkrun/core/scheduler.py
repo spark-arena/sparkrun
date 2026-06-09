@@ -44,7 +44,59 @@ logger = logging.getLogger(__name__)
 
 EXT_SCHEDULER = "sparkrun.scheduler"
 
-FALLBACK_DEFAULT_SCHEDULER = "occupancy-sparse"
+#: Scheduler used when nothing in the selection chain (CLI flag → recipe →
+#: cluster) specifies one.  Kept at ``"greedy"`` so a cluster whose YAML omits
+#: ``scheduler`` behaves exactly like sparkrun 0.2.x (greedy first-fit) — a
+#: smooth upgrade path.  New clusters opt into occupancy-aware spreading via
+#: :data:`NEW_CLUSTER_DEFAULT_SCHEDULER`.
+FALLBACK_DEFAULT_SCHEDULER = "greedy"
+
+#: Scheduler baked into newly-created cluster definitions (``cluster create`` /
+#: the setup wizard).  New clusters default to occupancy-aware spreading; an
+#: existing cluster that predates this field keeps resolving to
+#: :data:`FALLBACK_DEFAULT_SCHEDULER`.
+NEW_CLUSTER_DEFAULT_SCHEDULER = "occupancy-sparse"
+
+
+def resolve_scheduler_selector(
+    cli: str | None = None,
+    recipe: str | None = None,
+    cluster: str | None = None,
+) -> tuple[str | None, bool]:
+    """Resolve the effective scheduler selector from the precedence chain.
+
+    Precedence (highest first): explicit CLI flag → recipe ``scheduler`` →
+    cluster ``scheduler``.
+
+    Returns ``(selector, defaulted)``.  ``selector`` is the explicitly chosen
+    name, or ``None`` when nothing in the chain specified one — in which case
+    :func:`get_scheduler` applies :data:`FALLBACK_DEFAULT_SCHEDULER` (greedy)
+    and ``defaulted`` is ``True``, so callers can surface the
+    :func:`default_scheduler_upgrade_hint` recommendation.
+    """
+    selector = (cli or None) or (recipe or None) or (cluster or None)
+    return selector, selector is None
+
+
+def new_cluster_scheduler_notice(scheduler: str = NEW_CLUSTER_DEFAULT_SCHEDULER) -> str:
+    """Human-readable explanation shown when a new cluster opts into *scheduler*."""
+    return (
+        "Scheduler: '%s' (default for new clusters in 0.3.x).\n"
+        "  It spreads each workload onto the least-loaded hosts/GPUs using live\n"
+        "  cluster occupancy, so concurrent runs avoid colliding. This differs\n"
+        "  from the sparkrun 0.2.x 'greedy' scheduler, which always packed from\n"
+        "  the first host regardless of what was already running.\n"
+        "  Restore 0.2.x behavior with: sparkrun cluster update <name> --scheduler greedy"
+    ) % scheduler
+
+
+def default_scheduler_upgrade_hint() -> str:
+    """One-line recommendation shown when a run falls back to the greedy default."""
+    return (
+        "Note: using the '%s' scheduler (sparkrun 0.2.x default). For "
+        "occupancy-aware placement across least-loaded hosts, set '%s' on your "
+        "cluster: sparkrun cluster update <name> --scheduler %s"
+    ) % (FALLBACK_DEFAULT_SCHEDULER, NEW_CLUSTER_DEFAULT_SCHEDULER, NEW_CLUSTER_DEFAULT_SCHEDULER)
 
 
 # --------------------------------------------------------------------------

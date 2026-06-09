@@ -1886,6 +1886,40 @@ class TestClusterCommands:
         c = mgr.get("sched-cluster")
         assert c.scheduler == "occupancy-sparse"
 
+    def test_cluster_create_defaults_to_occupancy_sparse(self, runner, tmp_path, monkeypatch):
+        """A new cluster created without --scheduler opts into occupancy-sparse
+        and surfaces the migration notice contrasting it with 0.2.x greedy."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.core.config
+
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+
+        result = runner.invoke(main, ["cluster", "create", "new-default", "--hosts", "h1,h2"])
+        assert result.exit_code == 0, result.output
+        assert "occupancy-sparse" in result.output  # migration notice shown
+
+        from sparkrun.core.cluster_manager import ClusterManager
+
+        mgr = ClusterManager(config_root)
+        assert mgr.get("new-default").scheduler == "occupancy-sparse"
+
+    def test_cluster_create_greedy_skips_migration_notice(self, runner, tmp_path, monkeypatch):
+        """Opting back into greedy persists greedy and suppresses the notice."""
+        config_root = tmp_path / "config"
+        config_root.mkdir()
+        import sparkrun.core.config
+
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+
+        result = runner.invoke(main, ["cluster", "create", "legacy", "--hosts", "h1", "--scheduler", "greedy"])
+        assert result.exit_code == 0, result.output
+        assert "spreads each workload" not in result.output  # no occupancy notice
+
+        from sparkrun.core.cluster_manager import ClusterManager
+
+        assert ClusterManager(config_root).get("legacy").scheduler == "greedy"
+
     def test_cluster_show_renders_scheduler(self, runner, tmp_path, monkeypatch):
         """``cluster show`` renders the Scheduler line when set."""
         config_root = tmp_path / "config"

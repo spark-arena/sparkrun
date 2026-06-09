@@ -101,6 +101,52 @@ def test_cluster_context_computes_placement_when_threaded():
     assert ctx.placement.hosts_used == ("a", "b")
 
 
+def test_cluster_context_fallback_bakes_runtime_world_size():
+    """The back-compat placement fallback honours ``runtime.world_size`` (not
+    raw tp·pp·dp), matching the authoritative api._hosts scheduler path so a
+    runtime with a custom rank count places the right number of ranks."""
+    from sparkrun.runtimes._cluster_ops import ClusterContext
+
+    class _WorldSizeRuntime:
+        runtime_name = "ws"
+
+        def get_extra_volumes(self):
+            return {}
+
+        def get_common_env(self):
+            return {}
+
+        def get_extra_env(self):
+            return {}
+
+        def get_cluster_env(self, head_ip, num_nodes):
+            return {}
+
+        def world_size(self, parallelism, *, recipe=None, cluster=None):
+            return 4  # override: 4 ranks regardless of tp=2
+
+    # Two hosts, two GPUs each → room for 4 ranks.
+    two_gpu = HostHardware(accelerators=[AcceleratorSpec(vendor="nvidia", model="h200", count=2, memory_gb=141.0)])
+    cluster = ClusterDefinition(name="c", hosts=["a", "b"], hosts_hardware={"a": two_gpu, "b": two_gpu})
+    recipe = _stub_recipe(tensor_parallel=2)
+
+    ctx = ClusterContext.build(
+        runtime=_WorldSizeRuntime(),
+        hosts=["a", "b"],
+        image="img",
+        cluster_id="cid",
+        env={},
+        cache_dir=None,
+        config=None,
+        dry_run=True,
+        cluster=cluster,
+        recipe=recipe,
+    )
+    assert ctx.placement is not None
+    # 4 ranks (world_size override) rather than 2 (raw tensor_parallel).
+    assert ctx.placement.total_ranks == 4
+
+
 def test_cluster_context_hardware_for_falls_back_to_dgx():
     """Unknown host returns DGX Spark default — preserves legacy assumption."""
     from sparkrun.runtimes._cluster_ops import ClusterContext

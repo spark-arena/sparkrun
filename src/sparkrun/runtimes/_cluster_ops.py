@@ -121,15 +121,31 @@ class ClusterContext:
 
         if placement is None and cluster is not None and recipe is not None:
             try:
+                import dataclasses
+
+                from sparkrun.core.limits import resolved_hardware_for_scheduling
                 from sparkrun.core.parallelism import extract_parallelism
                 from sparkrun.core.placement import compute_placement
 
                 config_chain = recipe.build_config_chain()
                 parallelism = extract_parallelism(config_chain)
+                # Bake the runtime-derived rank count so this back-compat
+                # fallback matches the authoritative ``api._hosts`` scheduler
+                # path (which uses ``runtime.world_size``, not raw tp·pp·dp).
+                try:
+                    total_ranks = runtime.world_size(parallelism, recipe=recipe, cluster=cluster)
+                    if isinstance(total_ranks, int) and total_ranks > 0:
+                        parallelism = dataclasses.replace(parallelism, total_ranks=total_ranks)
+                except Exception:
+                    logger.debug("world_size override unavailable for fallback placement", exc_info=True)
+                # Pack against *capped* usable memory (same caps the scheduler
+                # applies) rather than nominal memory_gb, so the fallback does
+                # not over-commit GPU memory on a host.
+                capped_hw = resolved_hardware_for_scheduling(cluster, list(hosts))
                 placement = compute_placement(
                     parallelism,
                     hosts,
-                    host_hardware=cluster.hosts_hardware or None,
+                    host_hardware=capped_hw,
                     layout=recipe.layout,
                 )
             except Exception as e:

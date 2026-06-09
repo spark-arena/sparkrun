@@ -27,7 +27,7 @@ from sparkrun.core.scheduler import (
     SchedulingRequest,
 )
 from sparkrun.schedulers.dense_pack import DensePackScheduler
-from sparkrun.schedulers.greedy import GreedyScheduler, _host_gpu_memory, pack
+from sparkrun.schedulers.greedy import GreedyScheduler, pack
 from sparkrun.schedulers.sparse_pack import SparsePackScheduler
 
 
@@ -220,7 +220,7 @@ def test_greedy_pack_none_per_rank_memory_is_byte_identical():
 def test_zero_cap_yields_zero_usable_memory():
     """A baked cap of 0.0 → usable = 0.0, not the full nominal memory."""
     hw = _capped_hw(80.0, 0.0)
-    mem = _host_gpu_memory(hw)
+    mem = hw.usable_gpu_memory_slots()
     assert mem == [0.0]
 
 
@@ -245,8 +245,8 @@ def test_zero_cap_rejects_any_positive_memory_claim_without_status():
 
 def test_one_cap_and_none_cap_give_same_usable():
     """cap=1.0 and cap=None both yield the full nominal memory."""
-    assert _host_gpu_memory(_capped_hw(80.0, 1.0)) == [80.0]
-    assert _host_gpu_memory(_uncapped_hw(80.0)) == [80.0]
+    assert _capped_hw(80.0, 1.0).usable_gpu_memory_slots() == [80.0]
+    assert _uncapped_hw(80.0).usable_gpu_memory_slots() == [80.0]
 
 
 # --------------------------------------------------------------------------

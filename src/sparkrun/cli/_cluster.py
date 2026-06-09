@@ -7,6 +7,7 @@ import sys
 import click
 
 import sparkrun.api as api
+from sparkrun.core.scheduler import NEW_CLUSTER_DEFAULT_SCHEDULER, new_cluster_scheduler_notice
 
 from ._common import (
     CLUSTER_NAME,
@@ -90,8 +91,10 @@ def cluster(ctx):
 @click.option(
     "--scheduler",
     "scheduler_name",
-    default=None,
-    help="Default scheduler selector for workloads on this cluster (e.g. greedy, occupancy-sparse, occupancy-dense)",
+    default=NEW_CLUSTER_DEFAULT_SCHEDULER,
+    show_default=True,
+    help="Default scheduler selector for workloads on this cluster (e.g. greedy, occupancy-sparse, occupancy-dense). "
+    "New clusters default to occupancy-sparse; pass '--scheduler greedy' (or an empty string) for 0.2.x behavior.",
 )
 @click.option(
     "--max-gpu-mem-util",
@@ -158,6 +161,8 @@ def cluster_create(
             max_gpu_memory_utilization=max_gpu_mem_util,
         )
         click.echo(f"Cluster '{name}' created with {len(host_list)} host(s).")
+        if scheduler_name and scheduler_name != "greedy":
+            click.echo(new_cluster_scheduler_notice(scheduler_name))
         if set_default:
             mgr.set_default(name)
             click.echo(f"Default cluster set to '{name}'.")

@@ -358,12 +358,15 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                         )
                     )
 
+            from sparkrun.core.scheduler import NEW_CLUSTER_DEFAULT_SCHEDULER, new_cluster_scheduler_notice
+
             try:
                 cluster_mgr.create(
                     name=cluster_name,
                     hosts=host_list,
                     user=user if user != default_user else None,
                     distribution=dist_cfg,
+                    scheduler=NEW_CLUSTER_DEFAULT_SCHEDULER,
                 )
                 cluster_mgr.set_default(cluster_name)
                 results["cluster"] = "%s (%d hosts, set as default)" % (cluster_name, len(host_list))
@@ -374,6 +377,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                         len(host_list),
                     )
                 )
+                click.echo(new_cluster_scheduler_notice())
             except ClusterError as e:
                 if "already exists" in str(e):
                     if yes or click.confirm(
@@ -402,8 +406,10 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                             hosts=host_list,
                             user=user if user != default_user else None,
                             distribution=dist_cfg,
+                            scheduler=NEW_CLUSTER_DEFAULT_SCHEDULER,
                         )
                         cluster_mgr.set_default(cluster_name)
+                        click.echo(new_cluster_scheduler_notice())
                         results["cluster"] = "%s (%d hosts, set as default)" % (
                             cluster_name,
                             len(host_list),
