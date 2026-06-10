@@ -131,6 +131,14 @@ def resolve_recipe_trust(recipe: Recipe, trust_cli: bool) -> bool:
 #: ``restart_policy``, ``auto_remove``, ``labels`` …) are intentionally absent.
 _TRUST_GATED_EXECUTOR_KEYS = frozenset({"privileged", "cap_add", "security_opt", "devices", "user", "volumes"})
 
+#: Executors an untrusted recipe is allowed to select.  Only the Docker executor
+#: runs the workload inside a rootless, namespaced container — the sandbox that
+#: justifies running a registry/URL recipe's serve ``command`` without a prompt.
+#: ``local`` runs the command natively via ``setsid bash -c`` (no container at
+#: all) and ``k8s`` wedges it into ``kubectl run``; selecting either from an
+#: untrusted recipe is arbitrary host code execution, so they require trust.
+_TRUSTED_DEFAULT_EXECUTORS = frozenset({"", "docker"})
+
 
 def _enforce_recipe_mount_trust(recipe: Recipe, trusted: bool) -> None:
     """Reject untrusted recipes that try to escape container isolation.
@@ -186,6 +194,31 @@ def _enforce_recipe_mount_trust(recipe: Recipe, trusted: bool) -> None:
                 "for trusted recipes; re-run with --trust after auditing this "
                 "recipe." % gated
             )
+
+    # The executor *selector* is itself an isolation control: only ``docker``
+    # runs the serve command inside a rootless container.  ``local`` runs it
+    # natively (``setsid bash -c``) and ``k8s`` via ``kubectl run`` — both with
+    # no container boundary — so an untrusted recipe selecting either is direct
+    # host code execution.  Check both the dedicated ``executor`` field and the
+    # selector smuggled through ``executor_config`` (``executor`` /
+    # ``executor_type``, the same keys ``ExecutorConfig.from_chain`` reads).
+    # ``Recipe.__init__`` always stores ``executor`` as a str; the isinstance
+    # guard only keeps non-str sentinels (e.g. test mocks) from being coerced
+    # into a spurious selector — a real untrusted recipe cannot reach here with
+    # a non-str executor.
+    raw_selected = recipe.executor if isinstance(recipe.executor, str) else ""
+    selected = raw_selected.strip().lower()
+    if isinstance(exec_cfg, dict):
+        smuggled = exec_cfg.get("executor") or exec_cfg.get("executor_type")
+        if smuggled and not selected and isinstance(smuggled, str):
+            selected = smuggled.strip().lower()
+    if selected not in _TRUSTED_DEFAULT_EXECUTORS:
+        raise RecipeError(
+            "This recipe selects the %r executor, which runs the workload outside "
+            "a Docker container (no rootless / namespace isolation). It is only "
+            "honoured for trusted recipes; re-run with --trust after auditing this "
+            "recipe." % selected
+        )
 
 
 def resolve_effective_cache_dir(

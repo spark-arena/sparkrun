@@ -94,6 +94,44 @@ def test_untrusted_recipe_without_mounts_is_allowed():
 
 
 # ---------------------------------------------------------------------------
+# Executor selector gate (S1): only Docker keeps the container sandbox.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("executor", ["local", "k8s", "Local", " LOCAL "])
+def test_untrusted_recipe_selecting_non_docker_executor_is_rejected(executor):
+    """An untrusted recipe may not select a non-Docker executor.
+
+    ``local`` runs the serve command natively (``setsid bash -c``) and ``k8s``
+    via ``kubectl run`` — neither sandboxes the command in a rootless container,
+    so honouring the selector for a "run this link" recipe is direct host RCE.
+    """
+    recipe = _recipe(executor=executor)
+    with pytest.raises(RecipeError, match="executor"):
+        _enforce_recipe_mount_trust(recipe, trusted=False)
+
+
+def test_untrusted_recipe_selecting_non_docker_via_executor_config_is_rejected():
+    """The selector smuggled through executor_config is gated too."""
+    recipe = _recipe(executor_config={"executor": "local"})
+    with pytest.raises(RecipeError, match="executor"):
+        _enforce_recipe_mount_trust(recipe, trusted=False)
+
+
+@pytest.mark.parametrize("executor", ["", "docker", "DOCKER"])
+def test_untrusted_recipe_with_docker_executor_is_allowed(executor):
+    """The default Docker executor (or unset) keeps the sandbox → allowed."""
+    recipe = _recipe(executor=executor)
+    _enforce_recipe_mount_trust(recipe, trusted=False)  # must not raise
+
+
+def test_trusted_recipe_may_select_local_executor():
+    """Trust is the explicit opt-in for the non-container executors."""
+    recipe = _recipe(executor="local")
+    _enforce_recipe_mount_trust(recipe, trusted=True)  # must not raise
+
+
+# ---------------------------------------------------------------------------
 # Defense-in-depth mount-source denylist
 # ---------------------------------------------------------------------------
 

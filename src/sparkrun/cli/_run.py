@@ -403,17 +403,22 @@ def run(
         try:
             from sparkrun.core.limits import resolved_hardware_for_scheduling
             from sparkrun.core.parallelism import extract_parallelism
-            from sparkrun.core.placement import compute_placement
+            from sparkrun.core.scheduler import SchedulingRequest
 
-            # Pack against *capped* usable memory (same caps the scheduler uses)
-            # so the displayed per-host fit matches the actual placement decision
-            # rather than uncapped nominal memory.
-            display_placement = compute_placement(
-                extract_parallelism(recipe.build_config_chain(overrides)),
-                host_list,
+            # Route through the *resolved* scheduler (not the deprecated greedy
+            # ``compute_placement`` shim) so the displayed per-host fit matches
+            # the scheduler the launch will actually use.  Pack against capped
+            # usable memory — the same caps the scheduler applies — and skip the
+            # live status query (display only): occupancy-aware schedulers then
+            # degrade to their greedy whole-GPU pack, which is the right shape for
+            # a pre-launch fit preview.
+            display_request = SchedulingRequest(
+                parallelism=extract_parallelism(recipe.build_config_chain(overrides)),
+                hosts=tuple(host_list),
                 host_hardware=resolved_hardware_for_scheduling(cluster_def, list(host_list)),
                 layout=recipe.layout,
             )
+            display_placement = api.schedule(display_request, scheduler=effective_scheduler, sctx=sctx).assignment
         except Exception:
             display_placement = None
 

@@ -240,6 +240,111 @@ def test_whole_gpu_per_gpu_occupancy_excludes_busy_gpu():
     assert placed_gpus == {1, 2, 3}
 
 
+def test_host_load_score_uses_average_not_sum_on_multi_gpu(monkeypatch):
+    """C2 regression: per-GPU-detail load is averaged, not summed.
+
+    ``a4`` (4 GPUs, one fully busy → avg load 0.25) is genuinely *less* loaded
+    than ``b2`` (host-level, 1 of 2 used → avg 0.5).  Sparse must therefore pick
+    ``a4`` even though it appears later in the input and its *summed* per-GPU
+    load (1.0) would, under the old scale, look busier than ``b2``.
+    """
+    sched = SparsePackScheduler()
+    hw = {"a4": _multi_gpu_host_hw(count=4, memory_gb=80.0), "b2": _multi_gpu_host_hw(count=2, memory_gb=80.0)}
+    status = ClusterStatus(
+        hosts=(
+            HostOccupancy(host="b2", used_slots=1, free_slots=1),  # host-level → 0.5 avg
+            HostOccupancy(
+                host="a4",
+                used_slots=1,
+                free_slots=3,
+                gpus=(GpuOccupancy(gpu_index=0, used_util_fraction=1.0, used_memory_gb=80.0),),  # sum 1.0, avg 0.25
+            ),
+        ),
+        executor="docker",
+    )
+    req = SchedulingRequest(
+        parallelism=ParallelismConfig(tensor_parallel=1),
+        hosts=("b2", "a4"),
+        host_hardware=hw,
+        status=status,
+    )
+    result = sched.schedule(req)
+    assert result.assignment.hosts_used == ("a4",)
+
+
+def test_host_level_partial_occupancy_on_multi_gpu_host_raises(monkeypatch):
+    """C3 regression: a multi-GPU host that reports only a host-level slot count
+    (no per-GPU detail) and is *partially* busy can't be whole-GPU placed — the
+    scheduler cannot know which physical GPU indices are free, so it refuses
+    rather than emitting a guessed (possibly colliding) ``local_gpu``."""
+    sched = SparsePackScheduler()
+    hw = {"big": _multi_gpu_host_hw(count=4, memory_gb=80.0)}
+    status = ClusterStatus(
+        hosts=(HostOccupancy(host="big", used_slots=1, free_slots=3),),  # no gpus[] detail
+        executor="docker",
+    )
+    req = SchedulingRequest(
+        parallelism=ParallelismConfig(tensor_parallel=2),
+        hosts=("big",),
+        host_hardware=hw,
+        status=status,
+    )
+    with pytest.raises(LayoutConflictError, match="per-GPU"):
+        sched.schedule(req)
+
+
+def test_ambiguous_host_is_skipped_not_fatal_when_another_host_serves():
+    """C3 must not abort a feasible schedule: an ambiguous multi-GPU host that
+    sorts first is skipped, and the rank lands on a serviceable host instead."""
+    sched = SparsePackScheduler()
+    hw = {"amb": _multi_gpu_host_hw(count=4, memory_gb=80.0), "good": _multi_gpu_host_hw(count=2, memory_gb=80.0)}
+    status = ClusterStatus(
+        hosts=(
+            # ambiguous: host-level partial on 4 GPUs → avg 0.25 → sorts first
+            HostOccupancy(host="amb", used_slots=1, free_slots=3),
+            # unambiguous: per-GPU detail, gpu0 busy / gpu1 free → avg 0.5
+            HostOccupancy(
+                host="good",
+                used_slots=1,
+                free_slots=1,
+                gpus=(GpuOccupancy(gpu_index=0, used_util_fraction=1.0, used_memory_gb=80.0),),
+            ),
+        ),
+        executor="docker",
+    )
+    req = SchedulingRequest(
+        parallelism=ParallelismConfig(tensor_parallel=1),
+        hosts=("amb", "good"),
+        host_hardware=hw,
+        status=status,
+    )
+    result = sched.schedule(req)
+    assert result.assignment.hosts_used == ("good",)
+    assert result.assignment.by_rank[0].local_gpu == 1
+
+
+def test_host_level_full_occupancy_on_multi_gpu_host_is_unambiguous():
+    """C3 boundary: an *all-busy* multi-GPU host is unambiguous (every index
+    busy), so the host is simply skipped rather than raising."""
+    sched = SparsePackScheduler()
+    hw = {"busy": _multi_gpu_host_hw(count=2, memory_gb=80.0), "free": _multi_gpu_host_hw(count=2, memory_gb=80.0)}
+    status = ClusterStatus(
+        hosts=(
+            HostOccupancy(host="busy", used_slots=2, free_slots=0),
+            HostOccupancy(host="free", used_slots=0, free_slots=2),
+        ),
+        executor="docker",
+    )
+    req = SchedulingRequest(
+        parallelism=ParallelismConfig(tensor_parallel=1),
+        hosts=("busy", "free"),
+        host_hardware=hw,
+        status=status,
+    )
+    result = sched.schedule(req)
+    assert result.assignment.hosts_used == ("free",)
+
+
 # --------------------------------------------------------------------------
 # Fractional placement
 # --------------------------------------------------------------------------

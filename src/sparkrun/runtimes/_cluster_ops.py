@@ -9,6 +9,7 @@ distributed.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import threading
 import time
@@ -55,18 +56,19 @@ class ClusterContext:
     config: SparkrunConfig | None
     topology: str | None = None
     cluster: ClusterDefinition | None = None
-    """Named cluster definition (Phase X threading).
+    """Named cluster definition carrying per-host hardware metadata.
 
-    When set, per-host hardware metadata is available via
-    :meth:`hardware_for`.  ``None`` preserves the legacy host-list-only
-    behavior so callers that pre-date the threading pass still work.
+    When set, per-host hardware is available via :meth:`hardware_for`.
+    ``None`` preserves the legacy host-list-only behavior so callers that
+    don't thread a cluster through still work.
     """
 
     placement: RankAssignment | None = None
-    """Rank-to-host placement computed via :func:`compute_placement`.
+    """Rank-to-host placement from the scheduler (``sparkrun.api.schedule``).
 
-    ``None`` for callers that haven't threaded the cluster through;
-    runtimes that consume it must fall back to ``enumerate(hosts)``.
+    Normally threaded verbatim from ``api.run`` so the scheduler runs once
+    per launch.  ``None`` for callers that haven't threaded a cluster
+    through; runtimes that consume it must fall back to ``enumerate(hosts)``.
     """
 
     def hardware_for(self, host: str):
@@ -121,9 +123,12 @@ class ClusterContext:
         )
 
         if placement is None and cluster is not None and recipe is not None:
+            # Legacy back-compat: ``api.run`` now always threads ``placement``,
+            # so this recompute only fires for callers that build a context
+            # without one.  It is occupancy-blind (no live status gathered here)
+            # and intentionally non-fatal — a failure degrades to the
+            # ``enumerate(hosts)`` rank order rather than aborting the launch.
             try:
-                import dataclasses
-
                 from sparkrun.core.limits import resolved_hardware_for_scheduling
                 from sparkrun.core.parallelism import extract_parallelism
                 from sparkrun.core.scheduler import (
@@ -168,8 +173,8 @@ class ClusterContext:
                     layout=recipe.layout,
                 )
                 placement = get_scheduler(selector).schedule(request).assignment
-            except Exception as e:
-                logger.warning("Placement computation skipped: %s", e)
+            except Exception:
+                logger.warning("Back-compat placement recompute skipped; falling back to positional rank order", exc_info=True)
 
         return cls(
             hosts=hosts,

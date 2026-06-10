@@ -498,11 +498,15 @@ def save_job_metadata(
     # state that can include env secrets), so create the file owner-only from
     # the start — never a umask-default 0644 window where another local user
     # could read the key.  O_TRUNC mirrors the previous "w" overwrite semantics.
-    fd = os.open(meta_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # O_NOFOLLOW refuses to write through a symlink: if another local user
+    # pre-planted ``<digest>.yaml`` as a link to a file they can read, the open
+    # fails (ELOOP) rather than leaking the key through the link's target.
+    fd = os.open(meta_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w") as f:
         yaml.safe_dump(meta, f, default_flow_style=False)
-    # If the file pre-existed with looser perms, O_CREAT won't re-chmod it;
-    # tighten explicitly (best-effort).
+    # If the file pre-existed as a regular file with looser perms, O_CREAT won't
+    # re-chmod it; tighten explicitly (best-effort).  O_NOFOLLOW above already
+    # guaranteed the fd is not a symlink, so this chmod can't be redirected.
     try:
         os.chmod(meta_path, 0o600)
     except OSError:

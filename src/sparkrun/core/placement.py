@@ -5,10 +5,11 @@ v0.3.x multiplatform refactor.  It re-exports the placement data types,
 placement-level errors, and a deprecated :func:`compute_placement`
 shim that delegates to :func:`sparkrun.schedulers.greedy.pack`.
 
-It will be removed once all in-tree callers route through
-:func:`sparkrun.api.schedule` (Tasks 8–11 of the refactor).  New code
-should import from :mod:`sparkrun.core.scheduler` and call schedulers
-via :class:`~sparkrun.core.scheduler.Scheduler` or ``sparkrun.api``.
+All in-tree callers now route through :func:`sparkrun.api.schedule`; only
+tests still exercise the shim directly.  It will be removed once those are
+migrated.  New code should import from :mod:`sparkrun.core.scheduler` and
+call schedulers via :class:`~sparkrun.core.scheduler.Scheduler` or
+``sparkrun.api``.
 """
 
 from __future__ import annotations
@@ -35,9 +36,8 @@ def compute_placement(
 ) -> RankAssignment:
     """Deprecated shim — use ``sparkrun.api.schedule`` or :class:`GreedyScheduler`.
 
-    Retained so in-tree callers that haven't migrated keep working;
-    will be removed once Tasks 8–11 of the multiplatform refactor
-    route everything through the API surface.
+    Retained only for tests that exercise the greedy pack directly;
+    production code routes through ``sparkrun.api.schedule``.
 
     Raises the same placement-level exceptions as
     :func:`sparkrun.schedulers.greedy.pack`.

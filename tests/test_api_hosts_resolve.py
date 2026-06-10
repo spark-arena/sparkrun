@@ -449,3 +449,124 @@ def test_max_nodes_orthogonal_hard_error_with_parallelism(monkeypatch):
         )
     assert "requires 4 nodes" in str(exc.value)
     assert "max_nodes=2" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# C1: self-intent occupancy exclusion
+# ---------------------------------------------------------------------------
+
+
+def test_exclude_intent_subtracts_self_from_occupancy(monkeypatch):
+    """A relaunch must not count its own still-running containers as load.
+
+    ``h1`` is reported fully busy by a workload whose intent matches the launch;
+    with ``exclude_intent_id`` that workload is subtracted before scheduling, so
+    the scheduler sees ``h1`` free again."""
+    from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy, RunningWorkload
+
+    status = ClusterStatus(
+        hosts=(
+            HostOccupancy(
+                host="h1",
+                used_slots=1,
+                free_slots=0,
+                workloads=(RunningWorkload(cluster_id="abc123-tok", intent_id="abc123"),),
+            ),
+            HostOccupancy(host="h2", used_slots=0, free_slots=1),
+        ),
+        executor="docker",
+    )
+    monkeypatch.setattr(api, "status", lambda *a, **k: status)
+    capture = {}
+    _stub_schedule(monkeypatch, ["h1"], capture=capture)
+
+    recipe = _Recipe(parallelism={"tensor_parallel": 1})
+    resolve_effective_hosts(["h1", "h2"], recipe, {}, exclude_intent_id="abc123")
+
+    sched_status = capture["request"].status
+    h1 = sched_status.for_host("h1")
+    assert h1.used_slots == 0
+    assert h1.free_slots == 1
+    assert h1.workloads == ()
+
+
+def test_exclude_intent_leaves_foreign_workloads_intact(monkeypatch):
+    """Only the matching intent is subtracted; other workloads stay as load."""
+    from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy, RunningWorkload
+
+    status = ClusterStatus(
+        hosts=(
+            HostOccupancy(
+                host="h1",
+                used_slots=1,
+                free_slots=0,
+                workloads=(RunningWorkload(cluster_id="other-tok", intent_id="other"),),
+            ),
+        ),
+        executor="docker",
+    )
+    monkeypatch.setattr(api, "status", lambda *a, **k: status)
+    capture = {}
+    _stub_schedule(monkeypatch, ["h1"], capture=capture)
+
+    recipe = _Recipe(parallelism={"tensor_parallel": 1})
+    resolve_effective_hosts(["h1", "h2"], recipe, {}, exclude_intent_id="abc123")
+
+    h1 = capture["request"].status.for_host("h1")
+    assert h1.used_slots == 1
+    assert len(h1.workloads) == 1
+
+
+# ---------------------------------------------------------------------------
+# A2: user-facing node counts honour the runtime world_size override
+# ---------------------------------------------------------------------------
+
+
+def test_insufficient_capacity_message_uses_world_size(monkeypatch):
+    """The 'requires N nodes' message/field reflects ``runtime.world_size``
+    (the baked rank count), not the raw ``tp*pp*dp`` ``total_nodes``."""
+
+    class _RT:
+        def world_size(self, parallelism, recipe=None, cluster=None):
+            return 4  # overrides the tp=2 formula (total_nodes would say 2)
+
+    monkeypatch.setattr(api, "status", lambda *a, **k: None)
+
+    def _raise(*a, **k):
+        raise InsufficientCapacity("no room")
+
+    monkeypatch.setattr(api, "schedule", _raise)
+
+    recipe = _Recipe(parallelism={"tensor_parallel": 2})
+    with pytest.raises(InsufficientCapacity) as exc:
+        resolve_effective_hosts(["h1", "h2"], recipe, {}, runtime=_RT())
+    assert exc.value.required == 4
+    assert "requires 4 nodes" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# A1 / C5: occupancy-aware max_nodes trim threads placement
+# ---------------------------------------------------------------------------
+
+
+def test_max_nodes_trim_with_cluster_is_occupancy_aware_and_threads_placement(monkeypatch):
+    """No parallelism + max_nodes + a known cluster → the trim runs through the
+    scheduler (least-loaded subset) and threads the resulting placement instead
+    of a blind prefix slice with placement=None."""
+    monkeypatch.setattr(api, "status", lambda *a, **k: None)
+    capture = {}
+    _stub_schedule(monkeypatch, ["h3", "h4"], capture=capture)
+
+    cluster = ClusterDefinition(name="c", hosts=["h1", "h2", "h3", "h4"])
+    recipe = _Recipe(max_nodes=2)  # no parallelism configured
+    host_list, is_solo, notes, placement = resolve_effective_hosts(
+        ["h1", "h2", "h3", "h4"],
+        recipe,
+        {},
+        cluster_def=cluster,
+    )
+    assert host_list == ["h3", "h4"]
+    assert placement is not None
+    assert placement.hosts_used == ("h3", "h4")
+    assert capture["request"].parallelism.world_size() == 2
+    assert any("max_nodes=2, using 2 of 4 hosts" in n for n in notes)

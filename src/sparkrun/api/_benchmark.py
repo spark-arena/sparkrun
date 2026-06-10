@@ -407,6 +407,13 @@ def _execute_benchmark(
         if is_solo and len(host_list) > 1:
             host_list = host_list[:1]
     else:
+        # Mirror the inputs ``api.run`` will use below (anonymous cluster from the
+        # host list → default hardware) and pass the same ``exclude_intent_id`` so
+        # this pre-launch estimate places identically to the authoritative
+        # scheduling pass inside ``api.run`` — otherwise the banner host list could
+        # disagree with what actually launches.
+        from sparkrun.orchestration.job_metadata import generate_intent_id
+
         host_list, is_solo, _notes, _placement = resolve_effective_hosts(
             host_list,
             recipe,
@@ -416,6 +423,7 @@ def _execute_benchmark(
             sctx=sctx,
             solo=solo,
             scheduler=scheduler_name,
+            exclude_intent_id=generate_intent_id(recipe, overrides),
         )
 
     cluster_cfg = resolve_cluster_config(cluster_name, hosts, None, cluster_mgr)

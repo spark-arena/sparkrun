@@ -110,6 +110,12 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunRes
     # by the CLI shell, not the library, so the API discards them.
     from sparkrun.api._hosts import resolve_effective_hosts
 
+    # Deterministic intent for this launch (recipe + overrides).  Passed to the
+    # scheduler so a relaunch / resume of the same workload subtracts its own
+    # still-running containers from the occupancy snapshot instead of treating
+    # them as foreign load.  Reused below as the composed cluster_id's intent.
+    intent_id = generate_intent_id(recipe, options.overrides)
+
     placement: "RankAssignment | None"
     is_solo_request = bool(options.solo) or recipe.mode == "solo"
     host_list, is_solo, _notes, placement = resolve_effective_hosts(
@@ -121,6 +127,7 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunRes
         sctx=sctx,
         solo=is_solo_request,
         scheduler=effective_scheduler,
+        exclude_intent_id=intent_id,
     )
 
     # 3a. Compute intent_id + placement_token; compose cluster_id.
@@ -129,7 +136,6 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunRes
     # (recipe, hosts).  Per-launch uniqueness via placement_token
     # ensures load-aware schedulers can place the same intent on
     # different host sets without identifier collisions.
-    intent_id = generate_intent_id(recipe, options.overrides)
     placement_token = generate_placement_token()
     cluster_id_for_launch = options.cluster_id_override or generate_cluster_id(intent_id, placement_token)
     # Recover intent + token from the override when one was supplied so

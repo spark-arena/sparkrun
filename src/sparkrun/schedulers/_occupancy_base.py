@@ -47,10 +47,9 @@ best-effort signal; it degrades gracefully when no status is provided.
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import ClassVar, Mapping
+from typing import ClassVar
 
 from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy
-from sparkrun.core.hardware import HostHardware, default_dgx_spark_hardware
 from sparkrun.core.scheduler import (
     InfeasibleScheduleError,
     InsufficientCapacityError,
@@ -64,23 +63,7 @@ from sparkrun.core.scheduler import (
     SchedulingRequest,
     SchedulingResult,
 )
-from sparkrun.schedulers.greedy import pack
-
-
-# --------------------------------------------------------------------------
-# Helpers
-# --------------------------------------------------------------------------
-
-
-def _hw_for(host: str, host_hardware: Mapping[str, HostHardware] | None) -> HostHardware:
-    if host_hardware and host in host_hardware:
-        return host_hardware[host]
-    return default_dgx_spark_hardware()
-
-
-def _host_vendor(hw: HostHardware) -> str | None:
-    vendors = hw.vendors
-    return next(iter(vendors)) if len(vendors) == 1 else None
+from sparkrun.schedulers.greedy import _host_vendor, _hw_for, pack
 
 
 # --------------------------------------------------------------------------
@@ -256,6 +239,7 @@ class _OccupancyAwareBase(Scheduler):
         by_rank: list[RankSlot] = []
         hosts_used: list[str] = []
         placed_vendors: set[str] = set()
+        ambiguous_hosts: list[str] = []
         remaining = total_ranks
 
         i = 0
@@ -278,6 +262,17 @@ class _OccupancyAwareBase(Scheduler):
             gpu_mem_specs = hw.usable_gpu_memory_slots()
             num_gpus = len(gpu_mem_specs)
             host_occ = status.for_host(host) if status is not None else None
+
+            # Whole-GPU placement on a multi-GPU host that reports only a
+            # host-level slot count (no per-GPU detail) and is *partially* busy is
+            # ambiguous: we know how many GPUs are busy but not which indices, so
+            # any local_gpu we emit could collide with an occupied GPU.  Skip the
+            # host (other hosts may serve) and record it so a total failure can
+            # explain why — rather than guessing or aborting a feasible schedule.
+            if self._is_ambiguous_host_level(host_occ, num_gpus, is_fractional):
+                ambiguous_hosts.append(host)
+                i += 1
+                continue
 
             util_remaining, mem_remaining, gpu_eligible = self._build_budgets(
                 num_gpus=num_gpus,
@@ -339,6 +334,17 @@ class _OccupancyAwareBase(Scheduler):
             i += 1
 
         if remaining > 0:
+            # If the only reason we couldn't place was ambiguous host-level
+            # occupancy, surface that as an actionable layout error rather than a
+            # generic "no capacity" — the operator can fix it with per-GPU status
+            # or an explicit recipe.layout.
+            if ambiguous_hosts:
+                raise LayoutConflictError(
+                    "Cluster cannot place %d ranks: host(s) %s report only a host-level "
+                    "busy count on multi-GPU hardware, so the scheduler cannot tell which "
+                    "GPU indices are free. Provide per-GPU occupancy or an explicit "
+                    "recipe.layout for these hosts." % (total_ranks, sorted(ambiguous_hosts))
+                )
             placed = total_ranks - remaining
             raise InfeasibleScheduleError(
                 "Cluster cannot satisfy %d ranks under current occupancy: "
@@ -347,6 +353,19 @@ class _OccupancyAwareBase(Scheduler):
 
         return RankAssignment(by_rank=tuple(by_rank), hosts_used=tuple(hosts_used))
 
+    @staticmethod
+    def _is_ambiguous_host_level(host_occ: HostOccupancy | None, num_gpus: int, is_fractional: bool) -> bool:
+        """``True`` when whole-GPU placement can't pick safe GPU indices.
+
+        Holds for a multi-GPU host that reports only a host-level slot count
+        (no per-GPU :attr:`HostOccupancy.gpus` detail) and is *partially* busy
+        (``0 < used_slots < num_gpus``).  Single-GPU hosts, fully-free / fully-busy
+        hosts, and fractional placements are all unambiguous.
+        """
+        if is_fractional or host_occ is None or host_occ.gpus or num_gpus <= 1:
+            return False
+        return 0 < host_occ.used_slots < num_gpus
+
     # ----------------------------------------------------------------------
     # Host load scoring + head identification
     # ----------------------------------------------------------------------
@@ -354,13 +373,16 @@ class _OccupancyAwareBase(Scheduler):
     def _compute_host_load_scores(self, request: SchedulingRequest) -> dict[str, float]:
         """Return per-host effective load scores in ``[0, ~N]``.
 
-        For each host in :attr:`SchedulingRequest.hosts`:
+        All branches return an *average per-GPU* load in ``[0, ~1]`` so hosts
+        with and without per-GPU detail are comparable on the same scale (the
+        score feeds :meth:`_sort_hosts`).  For each host in
+        :attr:`SchedulingRequest.hosts`:
 
-        - When per-GPU detail is available, ``score = sum(used_util_fraction)``
-          across the host's GPUs.
+        - When per-GPU detail is available,
+          ``score = mean(used_util_fraction)`` across the host's GPUs.
         - When only host-level :attr:`HostOccupancy.used_slots` is
-          available, ``score = used_slots / total_gpus`` (a 0-1
-          normalized fraction representing average per-GPU load).
+          available, ``score = used_slots / total_slots`` (the same 0-1
+          average-per-GPU load).
         - When the host is absent from status, ``score = 0.0``.
 
         If the host is identified as the head of an existing workload
@@ -376,15 +398,29 @@ class _OccupancyAwareBase(Scheduler):
             occ = status.for_host(host) if status is not None else None
             if occ is not None:
                 if occ.gpus:
-                    base = sum(g.used_util_fraction for g in occ.gpus)
+                    # Average per-GPU utilization (not the sum) so a host with
+                    # per-GPU detail is on the same 0-1 scale as the host-level
+                    # branch below — otherwise a 2-GPU host scoring sum=2.0 would
+                    # be ordered against a host-level host scoring 0.5 and the
+                    # sparse/dense host ordering would be corrupted on multi-GPU
+                    # hosts.  Divide by the host's *total* GPU count (not the
+                    # number of GPUs reported — occupancy may list only the busy
+                    # ones) so the result is true average load.
+                    total_gpus = _hw_for(host, request.host_hardware).total_gpus or len(occ.gpus)
+                    raw = sum(g.used_util_fraction for g in occ.gpus) / total_gpus if total_gpus else 0.0
+                    # Clamp to [0, 1] so a stale hardware map (total_gpus smaller
+                    # than the reported busy GPUs) or an out-of-range util reading
+                    # can't push the score off the 0-1 scale the host-level branch
+                    # uses, which would re-corrupt cross-host ordering.
+                    base = min(1.0, max(0.0, raw))
                 else:
                     total = occ.total_slots
                     if total > 0:
                         base = occ.used_slots / total
                     elif occ.used_slots > 0:
                         # No total info but something is used — treat as
-                        # whole-GPU-busy.
-                        base = float(occ.used_slots)
+                        # whole-GPU-busy (already a per-GPU-equivalent fraction).
+                        base = 1.0
             if host in heads:
                 base += self.HEAD_NODE_OVERHEAD
             scores[host] = base
@@ -471,7 +507,12 @@ class _OccupancyAwareBase(Scheduler):
         # Host-level fallback path.
         used_slots = host_occ.used_slots
         if not is_fractional:
-            # Conservatively mark the leading ``used_slots`` GPUs as occupied.
+            # Whole-GPU placement on a host with only a host-level slot count:
+            # the leading ``used_slots`` indices are marked busy.  This index
+            # assumption is exact only when unambiguous (single GPU, all-free, or
+            # all-busy); the ambiguous partial-multi-GPU case is screened out by
+            # :meth:`_is_ambiguous_host_level` *before* this method is called, so
+            # we never emit a guessed local_gpu for it.
             for i in range(min(used_slots, num_gpus)):
                 eligible[i] = False
         elif used_slots > 0 and num_gpus > 0:

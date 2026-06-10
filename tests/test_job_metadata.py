@@ -308,6 +308,37 @@ def test_load_job_metadata_filename_roundtrip(tmp_path: Path, mock_recipe):
     assert meta["cluster_id"] == cid
 
 
+def test_save_job_metadata_is_owner_only(tmp_path: Path, mock_recipe):
+    """S2: metadata may carry the upstream api_key, so the dir is 0700 and the
+    file 0600 — never a umask-default world/group-readable window."""
+    import stat
+
+    intent = "a" * INTENT_ID_LEN
+    token = "d" * PLACEMENT_TOKEN_LEN
+    cid = "sparkrun_%s_%s" % (intent, token)
+    save_job_metadata(cid, mock_recipe, ["h1"], cache_dir=str(tmp_path))
+    meta_path = tmp_path / "jobs" / ("%s_%s.yaml" % (intent, token))
+    assert stat.S_IMODE(meta_path.stat().st_mode) == 0o600
+    assert stat.S_IMODE((tmp_path / "jobs").stat().st_mode) == 0o700
+
+
+def test_save_job_metadata_refuses_symlinked_target(tmp_path: Path, mock_recipe):
+    """S2: a pre-planted symlink at the metadata path is refused (O_NOFOLLOW),
+    so a secret-bearing write is never redirected through another user's link."""
+    intent = "a" * INTENT_ID_LEN
+    token = "e" * PLACEMENT_TOKEN_LEN
+    cid = "sparkrun_%s_%s" % (intent, token)
+    jobs = tmp_path / "jobs"
+    jobs.mkdir(parents=True)
+    victim = tmp_path / "victim.txt"
+    victim.write_text("untouched")
+    (jobs / ("%s_%s.yaml" % (intent, token))).symlink_to(victim)
+
+    with pytest.raises(OSError):
+        save_job_metadata(cid, mock_recipe, ["h1"], cache_dir=str(tmp_path))
+    assert victim.read_text() == "untouched"  # write was not followed through
+
+
 # ---------------------------------------------------------------------------
 # api.stop recipe path: status-driven discovery
 # ---------------------------------------------------------------------------

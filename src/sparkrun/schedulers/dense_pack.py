@@ -62,11 +62,11 @@ class DensePackScheduler(_OccupancyAwareBase):
                     continue
 
             mem_left = mem_remaining[i] if mem_remaining[i] is not None else float("inf")
-            if (
-                best is None
-                or util_remaining[i] < best_util_remaining
-                or (util_remaining[i] == best_util_remaining and mem_left < best_mem_remaining)
-            ):
+            # Tie-break on memory only when util budgets are equal *within eps*:
+            # after repeated subtraction two "equal" budgets can differ by a ULP,
+            # which would otherwise skip the intended memory tie-break.
+            util_tie = abs(util_remaining[i] - best_util_remaining) <= eps
+            if best is None or util_remaining[i] < best_util_remaining or (util_tie and mem_left < best_mem_remaining):
                 best = i
                 best_util_remaining = util_remaining[i]
                 best_mem_remaining = mem_left
