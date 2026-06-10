@@ -128,8 +128,16 @@ def write_config(config_dict: dict[str, Any], config_path: Path | None = None) -
         config_path = DEFAULT_CACHE_DIR / "proxy" / "litellm_config.yaml"
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(config_path, "w") as f:
+    _restrict_dir_permissions(config_path.parent)
+    # The litellm config carries general_settings.master_key plus every upstream
+    # endpoint api_key, so it must be owner-only.  Create it 0600 and refuse to
+    # follow a symlink at the target path (mirrors orchestration.job_metadata);
+    # _restrict_file_permissions afterwards repairs perms on a pre-existing file
+    # written by an older version under the default umask.
+    fd = os.open(config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as f:
         yaml.safe_dump(config_dict, f, default_flow_style=False, sort_keys=False)
+    _restrict_file_permissions(config_path)
 
     logger.debug("Wrote litellm config to %s", config_path)
     return config_path
@@ -383,9 +391,10 @@ class ProxyEngine:
 
         self.state_dir.mkdir(parents=True, exist_ok=True)
         _restrict_dir_permissions(self.state_dir)
-        # The autodiscover config carries the master_key, so restrict it to
-        # owner-only after the write succeeds.
-        with open(self._autodiscover_config_path, "w") as f:
+        # The autodiscover config carries the master_key, so create it owner-only
+        # (no default-umask window) and refuse to follow a symlink at the target.
+        fd = os.open(self._autodiscover_config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w") as f:
             yaml.safe_dump(cfg, f, default_flow_style=False)
         _restrict_file_permissions(self._autodiscover_config_path)
 

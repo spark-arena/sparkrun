@@ -202,6 +202,45 @@ def test_multi_vendor_with_explicit_layout_honored():
     assert placement.hosts_used == ("spark-01", "amd-box")
 
 
+def test_layout_out_of_rank_order_hosts_used_is_rank_major():
+    """hosts_used must follow rank order, not layout-declaration order.
+
+    Regression: the launcher derives the head node from ``hosts_used[0]``, so a
+    layout that declares rank 1's host before rank 0's must still report rank
+    0's host first — otherwise the wrong node is elected head and the
+    distributed rendezvous breaks.
+    """
+    p = ParallelismConfig(tensor_parallel=2)
+    layout = RecipeLayout(
+        placements=[
+            Placement(host="spark-02", ranks=(1,)),
+            Placement(host="spark-01", ranks=(0,)),
+        ]
+    )
+    placement = _place(p, ["spark-01", "spark-02"], layout=layout)
+
+    # by_rank is rank-indexed; hosts_used is rank-major first-appearance.
+    assert placement.host_for_rank(0) == "spark-01"
+    assert placement.hosts_used == ("spark-01", "spark-02")
+    assert placement.hosts_used[0] == placement.host_for_rank(0)
+
+
+def test_layout_multi_rank_host_first_appearance_order():
+    """A host owning ranks 0 and 2 appears once, before the rank-1-only host."""
+    p = ParallelismConfig(tensor_parallel=3)
+    layout = RecipeLayout(
+        placements=[
+            Placement(host="b", ranks=(1,)),
+            Placement(host="a", ranks=(0, 2), local_gpus=(0, 1)),
+        ]
+    )
+    placement = _place(p, ["a", "b"], layout=layout)
+
+    assert placement.host_for_rank(0) == "a"
+    # Rank-major first appearance: a (rank 0) before b (rank 1).
+    assert placement.hosts_used == ("a", "b")
+
+
 # --------------------------------------------------------------------------
 # Layout validation errors — surface as SchedulingError (base class)
 # --------------------------------------------------------------------------

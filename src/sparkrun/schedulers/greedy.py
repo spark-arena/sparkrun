@@ -132,15 +132,10 @@ def _placement_from_layout(
     """Honor an explicit ``RecipeLayout.placements`` verbatim."""
     host_set = set(hosts)
     by_rank_dict: dict[int, RankSlot] = {}
-    hosts_used: list[str] = []
-    seen_hosts: set[str] = set()
 
     for placement in layout.placements:
         if placement.host not in host_set:
             raise PlacementError("Layout placement references host '%s' not present in cluster hosts %s" % (placement.host, hosts))
-        if placement.host not in seen_hosts:
-            hosts_used.append(placement.host)
-            seen_hosts.add(placement.host)
 
         local_gpus = placement.local_gpus or tuple(range(len(placement.ranks)))
         if len(local_gpus) != len(placement.ranks):
@@ -158,7 +153,13 @@ def _placement_from_layout(
             raise PlacementError("Layout does not cover ranks %s (parallelism requires %d ranks)" % (missing, total_gpus))
 
     ordered = tuple(by_rank_dict[i] for i in sorted(by_rank_dict)) if not total_gpus else tuple(by_rank_dict[i] for i in range(total_gpus))
-    return RankAssignment(by_rank=ordered, hosts_used=tuple(hosts_used))
+    # hosts_used must be in rank-major first-appearance order (the
+    # RankAssignment contract), NOT layout-declaration order: the launcher
+    # derives the head node from hosts_used[0], which must be rank 0's host.
+    # Declaring placements out of rank order (e.g. rank 1's host first) would
+    # otherwise elect the wrong head and break the distributed rendezvous.
+    hosts_used = tuple(dict.fromkeys(slot.host for slot in ordered))
+    return RankAssignment(by_rank=ordered, hosts_used=hosts_used)
 
 
 def _auto_pack(

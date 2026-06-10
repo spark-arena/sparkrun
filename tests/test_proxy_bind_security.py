@@ -76,6 +76,41 @@ class TestSecretFilePermissions:
         dir_mode = stat.S_IMODE(os.stat(state_dir).st_mode)
         assert dir_mode == 0o700
 
+    def test_litellm_config_is_owner_only(self, tmp_path: Path):
+        """write_config writes litellm_config.yaml 0o600 with a 0o700 parent.
+
+        The litellm config carries general_settings.master_key plus every
+        upstream endpoint api_key, so it must be owner-only at rest.
+        """
+        from sparkrun.proxy.engine import write_config
+
+        config_path = tmp_path / "proxy" / "litellm_config.yaml"
+        config = {
+            "model_list": [{"model_name": "m", "litellm_params": {"api_key": "upstream-secret"}}],
+            "general_settings": {"master_key": "bearer-secret"},
+        }
+        write_config(config, config_path=config_path)
+
+        mode = stat.S_IMODE(os.stat(config_path).st_mode)
+        assert mode == 0o600, "litellm_config.yaml should be owner-only, got %o" % mode
+        dir_mode = stat.S_IMODE(os.stat(config_path.parent).st_mode)
+        assert dir_mode == 0o700, "proxy config dir should be owner-only, got %o" % dir_mode
+
+    def test_litellm_config_repairs_preexisting_world_readable_file(self, tmp_path: Path):
+        """A pre-existing 0o644 config (older version) is tightened to 0o600."""
+        from sparkrun.proxy.engine import write_config
+
+        config_dir = tmp_path / "proxy"
+        config_dir.mkdir(parents=True)
+        config_path = config_dir / "litellm_config.yaml"
+        config_path.write_text("model_list: []\n")
+        os.chmod(config_path, 0o644)
+
+        write_config({"model_list": []}, config_path=config_path)
+
+        mode = stat.S_IMODE(os.stat(config_path).st_mode)
+        assert mode == 0o600, "stale world-readable config should be tightened, got %o" % mode
+
 
 # ---------------------------------------------------------------------------
 # A3: persisted bind host + loud warning

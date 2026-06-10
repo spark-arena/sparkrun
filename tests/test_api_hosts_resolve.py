@@ -231,6 +231,39 @@ def test_runtime_world_size_baked_into_request(monkeypatch):
     assert host_list == ["h1", "h2", "h3", "h4"]
 
 
+def test_expert_parallel_only_recipe_engages_scheduler(monkeypatch):
+    """A recipe configuring only expert/context parallelism must still schedule.
+
+    Regression: ``parallelism_configured`` previously checked only tp/pp/dp, so
+    an ep-only recipe (whose runtime derives world_size from ``tp*ep``) skipped
+    the multi-node scheduling block and was treated as single-host.  With
+    ep included in the gate, the scheduler is consulted and the runtime's
+    world_size override is baked into the request.
+    """
+    capture: dict = {}
+    _stub_schedule(monkeypatch, ["h1", "h2"], capture=capture)
+    monkeypatch.setattr(api, "status", lambda *a, **k: None)
+
+    class _Runtime:
+        def world_size(self, parallelism, recipe=None, cluster=None):
+            # e.g. Atlas: tp(1) * ep(2) -> 2 ranks.
+            return parallelism.expert_parallel * parallelism.tensor_parallel
+
+    recipe = _Recipe(parallelism={"expert_parallel": 2})
+    cluster = ClusterDefinition(name="c", hosts=["h1", "h2"])
+    host_list, is_solo, notes, placement = resolve_effective_hosts(
+        ["h1", "h2"],
+        recipe,
+        {},
+        cluster_def=cluster,
+        runtime=_Runtime(),
+    )
+    assert host_list == ["h1", "h2"]
+    assert is_solo is False
+    assert placement is not None
+    assert capture["request"].parallelism.world_size() == 2
+
+
 def test_scheduler_choice_threaded_through(monkeypatch):
     """The ``scheduler`` argument is forwarded to ``api.schedule``."""
     capture: dict = {}

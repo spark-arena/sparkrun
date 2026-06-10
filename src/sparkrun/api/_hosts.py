@@ -149,7 +149,14 @@ def resolve_effective_hosts(
     placement = None
 
     config_chain = recipe.build_config_chain(overrides)
-    parallelism_configured = any(config_chain.get(k) is not None for k in ("tensor_parallel", "pipeline_parallel", "data_parallel"))
+    # All five parallelism dimensions gate the multi-node scheduling block:
+    # a runtime whose world_size derives from expert/context parallelism (e.g.
+    # Atlas's tp*ep MoE mesh) must still be scheduled across hosts even when
+    # tp/pp/dp are left at 1.
+    parallelism_configured = any(
+        config_chain.get(k) is not None
+        for k in ("tensor_parallel", "pipeline_parallel", "data_parallel", "expert_parallel", "context_parallel")
+    )
 
     # ``--solo`` / ``recipe.mode == 'solo'`` force a one-host run.  Both skip the
     # multi-node scheduling block and route to the single-host occupancy pick
