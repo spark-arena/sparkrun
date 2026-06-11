@@ -54,6 +54,7 @@ llama-cpp = "sparkrun.runtimes.llama_cpp:LlamaCppRuntime"
 trtllm = "sparkrun.runtimes.trtllm:TrtllmRuntime"
 atlas = "sparkrun.runtimes.atlas:AtlasRuntime"
 tokenary = "sparkrun.runtimes.tokenary:TokenaryRuntime"
+modular-max = "sparkrun.runtimes.modular_max:ModularMaxRuntime"
 
 [project.entry-points."sparkrun.benchmarking"]
 llama-benchy = "sparkrun.benchmarking.llama_benchy:LlamaBenchyFramework"

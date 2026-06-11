@@ -234,6 +234,7 @@ Explicit `runtime` always wins. Command-hint detection only fires when `runtime`
 | `trtllm`           | MPI (`mpirun` + rsh wrapper)                        | `sleep infinity` containers + `mpirun` on head |
 | `eugr-vllm`        | Ray (inherits vllm-ray)                             | eugr container builds + Ray cluster            |
 | `atlas`            | Native (`--rank`, `--world-size`, `--master-addr`)  | Atlas Spark (avarok/atlas-gb10) — pure-Rust LLM inference; each rank runs `atlas serve`, rank 0 only HTTP |
+| `modular-max`      | None — single-node only                             | Modular MAX (`max serve`); tensor parallelism uses local GPUs via `--devices` (never multi-node) |
 
 ### Common Defaults Keys
 
