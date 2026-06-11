@@ -36,7 +36,10 @@ _TOKENARY_FLAG_MAP = {
     "max_tokens": "--max-tokens",
     "dtype": "--dtype",
     "kv_cache_dtype": "--kvcache-dtype",
-    "gpu_memory_utilization": "--kv-fraction",
+    # vLLM semantics since tokenary 21a7f62: TOTAL device budget for
+    # weights+KV+workspace (the old mapping to --kv-fraction sized the pool
+    # as a fraction of post-load FREE memory, which surprised vLLM users).
+    "gpu_memory_utilization": "--gpu-memory-utilization",
     "prefill_chunk_size": "--prefill-chunk-size",
     # Boolean toggles must also appear here: build_flags_from_map iterates the
     # flag_map to find each flag string, then emits flag-only for bool_keys.
