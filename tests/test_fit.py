@@ -8,7 +8,7 @@ from sparkrun.core.cluster_manager import ClusterDefinition
 from sparkrun.core.hardware import AcceleratorSpec, HostHardware
 from sparkrun.core.layout import Placement, RecipeLayout
 from sparkrun.core.parallelism import ParallelismConfig
-from sparkrun.core.placement import compute_placement
+from sparkrun.schedulers.greedy import pack
 from sparkrun.models.fit import FitResult, check_fit
 from sparkrun.models.vram import DEFAULT_VRAM_GB, DGX_SPARK_VRAM_GB, VRAMEstimate
 
@@ -47,7 +47,7 @@ def test_check_fit_dgx_three_hosts_fits():
     decision is made against 121 × 0.85 = 102.85 GB usable (nominal stays 121).
     """
     cluster = ClusterDefinition(name="dgx", hosts=["s1", "s2", "s3"])
-    placement = compute_placement(ParallelismConfig(tensor_parallel=3), cluster.hosts)
+    placement = pack(ParallelismConfig(tensor_parallel=3), cluster.hosts)
 
     result = check_fit(_estimate(per_gpu_gb=50.0, tp=3), cluster, placement)
 
@@ -64,7 +64,7 @@ def test_check_fit_dgx_three_hosts_fits():
 def test_check_fit_dgx_matches_legacy_fits_dgx_spark():
     """For homogeneous DGX, check_fit.ok mirrors VRAMEstimate.fits_dgx_spark."""
     cluster = ClusterDefinition(name="dgx", hosts=["s1"])
-    placement = compute_placement(ParallelismConfig(), cluster.hosts)
+    placement = pack(ParallelismConfig(), cluster.hosts)
 
     fits = _estimate(per_gpu_gb=80.0)
     exceeds = _estimate(per_gpu_gb=200.0)
@@ -78,7 +78,7 @@ def test_check_fit_dgx_matches_legacy_fits_dgx_spark():
 def test_check_fit_cap_flips_borderline_model():
     """A 110 GB model fits nominal 121 GB but exceeds the 0.85 GB10 cap (102.85)."""
     cluster = ClusterDefinition(name="dgx", hosts=["s1"])
-    placement = compute_placement(ParallelismConfig(), cluster.hosts)
+    placement = pack(ParallelismConfig(), cluster.hosts)
 
     est = _estimate(per_gpu_gb=110.0)
     result = check_fit(est, cluster, placement)
@@ -98,7 +98,7 @@ def test_check_fit_unknown_memory_still_ok_with_warning():
         hosts=["s1"],
         hosts_hardware={"s1": HostHardware(accelerators=[AcceleratorSpec(vendor="nvidia", model="gb10")])},
     )
-    placement = compute_placement(ParallelismConfig(), cluster.hosts)
+    placement = pack(ParallelismConfig(), cluster.hosts)
     result = check_fit(_estimate(per_gpu_gb=999.0), cluster, placement)
     assert result.ok is True
     assert result.per_host["s1"].accelerator_memory_gb is None
@@ -122,7 +122,7 @@ def _h200_8gpu_cluster() -> ClusterDefinition:
 
 def test_check_fit_h100_within_budget():
     cluster = _h100_8gpu_cluster()
-    placement = compute_placement(ParallelismConfig(tensor_parallel=8), cluster.hosts, host_hardware=cluster.hosts_hardware)
+    placement = pack(ParallelismConfig(tensor_parallel=8), cluster.hosts, host_hardware=cluster.hosts_hardware)
     result = check_fit(_estimate(per_gpu_gb=60.0, tp=8), cluster, placement)
     assert result.ok is True
     assert result.per_host["h100-box"].accelerator_memory_gb == 80.0
@@ -131,7 +131,7 @@ def test_check_fit_h100_within_budget():
 
 def test_check_fit_h100_exceeds_per_gpu_budget():
     cluster = _h100_8gpu_cluster()
-    placement = compute_placement(ParallelismConfig(tensor_parallel=8), cluster.hosts, host_hardware=cluster.hosts_hardware)
+    placement = pack(ParallelismConfig(tensor_parallel=8), cluster.hosts, host_hardware=cluster.hosts_hardware)
     result = check_fit(_estimate(per_gpu_gb=100.0, tp=8), cluster, placement)
     assert result.ok is False
     detail = result.per_host["h100-box"]
@@ -141,7 +141,7 @@ def test_check_fit_h100_exceeds_per_gpu_budget():
 
 def test_check_fit_h200_room_for_kv_cache():
     cluster = _h200_8gpu_cluster()
-    placement = compute_placement(ParallelismConfig(tensor_parallel=8), cluster.hosts, host_hardware=cluster.hosts_hardware)
+    placement = pack(ParallelismConfig(tensor_parallel=8), cluster.hosts, host_hardware=cluster.hosts_hardware)
     result = check_fit(_estimate(per_gpu_gb=120.0, tp=8), cluster, placement)
     assert result.ok is True
     assert result.per_host["h200-box"].headroom_gb == 21.0
@@ -167,7 +167,7 @@ def test_check_fit_heterogeneous_per_host_outcome():
             Placement(host="h100", ranks=(1, 2), local_gpus=(0, 1)),
         ]
     )
-    placement = compute_placement(
+    placement = pack(
         ParallelismConfig(tensor_parallel=3),
         cluster.hosts,
         host_hardware=cluster.hosts_hardware,
@@ -190,7 +190,7 @@ def test_check_fit_unknown_memory_warns_but_ok():
     """A host with no memory_gb declared returns ok=True + a warning."""
     hw = HostHardware(accelerators=[AcceleratorSpec(vendor="amd", model="mi300x")])  # no memory_gb
     cluster = ClusterDefinition(name="amd", hosts=["box"], hosts_hardware={"box": hw})
-    placement = compute_placement(ParallelismConfig(), cluster.hosts, host_hardware=cluster.hosts_hardware)
+    placement = pack(ParallelismConfig(), cluster.hosts, host_hardware=cluster.hosts_hardware)
 
     result = check_fit(_estimate(per_gpu_gb=300.0), cluster, placement)
 
@@ -208,7 +208,7 @@ def test_check_fit_unknown_memory_warns_but_ok():
 
 def test_fit_result_to_dict_round_trips_fields():
     cluster = ClusterDefinition(name="dgx", hosts=["s1"])
-    placement = compute_placement(ParallelismConfig(), cluster.hosts)
+    placement = pack(ParallelismConfig(), cluster.hosts)
     result = check_fit(_estimate(per_gpu_gb=10.0), cluster, placement)
 
     d = result.to_dict()

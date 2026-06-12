@@ -1,7 +1,8 @@
 """Tests for placement data types and the greedy scheduler.
 
 Exercises the scheduler interface (:class:`GreedyScheduler`) rather than
-calling the legacy :func:`compute_placement` shim directly.  Error
+calling the underlying :func:`sparkrun.schedulers.greedy.pack` primitive
+directly.  Error
 assertions use the scheduler-level vocabulary
 (:class:`InfeasibleScheduleError`, :class:`LayoutConflictError`).
 """

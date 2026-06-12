@@ -75,7 +75,7 @@ class ParallelismConfig:
             Equivalent to :attr:`total_gpus`; correct only for clusters
             where every host has exactly one accelerator (e.g. DGX Spark).
             For multi-GPU hosts or heterogeneous clusters use
-            :func:`sparkrun.core.placement.compute_placement` and read
+            ``sparkrun.api.schedule`` (or :class:`GreedyScheduler`) and read
             ``len(assignment.hosts_used)``.
         """
         return self.tensor_parallel * self.pipeline_parallel * self.data_parallel

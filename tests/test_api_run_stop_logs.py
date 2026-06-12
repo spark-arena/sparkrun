@@ -531,3 +531,115 @@ def test_run_result_scheduler_reflects_effective_resolution():
     # resolver returns the plugin's canonical scheduler_name when nothing in
     # the CLI/recipe/cluster chain selects one.
     assert result.scheduler == FALLBACK_DEFAULT_SCHEDULER
+
+
+# --------------------------------------------------------------------------
+# cluster_id placement token: deterministic for greedy, random for occupancy
+# --------------------------------------------------------------------------
+
+
+def _capture_launch_cluster_id(opts):
+    """Run ``api.run(opts)`` with a hermetic launcher and return the
+    ``cluster_id_override`` it composed and handed to ``launch_inference``.
+
+    The fake launch result echoes the override back as its ``cluster_id`` —
+    mirroring the real launcher, which honours ``cluster_id_override`` — so
+    callers can assert on either the captured override or ``RunResult.cluster_id``.
+    """
+    from sparkrun.core.recipe import Recipe  # noqa: F401  (imported for parity / side effects)
+
+    captured: dict = {}
+
+    class _FakeRuntime:
+        runtime_name = "vllm"
+        executor = None
+
+        def world_size(self, parallelism, recipe=None, cluster=None):
+            return 1
+
+    def _capture(**kwargs):
+        captured["cluster_id"] = kwargs["cluster_id_override"]
+        return type(
+            "FakeLaunchResult",
+            (),
+            {
+                "rc": 0,
+                "cluster_id": kwargs["cluster_id_override"],
+                "host_list": kwargs["host_list"],
+                "is_solo": kwargs["is_solo"],
+                "runtime": _FakeRuntime(),
+                "recipe": kwargs["recipe"],
+                "overrides": {},
+                "container_image": "test:latest",
+                "effective_cache_dir": "/tmp",
+                "serve_port": 8000,
+                "config": None,
+                "recipe_ref": None,
+                "comm_env": None,
+                "ib_ip_map": {},
+                "serve_command": "",
+                "runtime_info": {},
+                "builder": None,
+                "backends": {},
+            },
+        )()
+
+    with (
+        patch("sparkrun.core.launcher.launch_inference", side_effect=_capture),
+        patch("sparkrun.api._resolve.resolve_runtime", return_value=_FakeRuntime()),
+    ):
+        api.run(opts)
+
+    return captured["cluster_id"]
+
+
+def test_run_greedy_cluster_id_is_deterministic():
+    """The default (greedy) scheduler yields a deterministic cluster_id:
+    relaunching the same recipe on the same hosts reuses the same id so the
+    prior deployment is replaced — sparkrun 0.2.x semantics."""
+    from sparkrun.core.recipe import Recipe
+
+    recipe = Recipe({"sparkrun_version": "2", "runtime": "vllm", "model": "test/m"})
+    opts = api.RunOptions(recipe=recipe, hosts=("h1",), dry_run=True)
+
+    first = _capture_launch_cluster_id(opts)
+    second = _capture_launch_cluster_id(opts)
+
+    assert first == second
+
+
+def test_run_greedy_cluster_id_matches_lookup_derivation():
+    """The greedy launch id equals what the lookup paths (stop / status /
+    --ensure) compute via ``derive_cluster_id`` — so they can find and
+    replace the running job."""
+    from sparkrun.core.recipe import Recipe
+    from sparkrun.orchestration.job_metadata import derive_cluster_id
+
+    recipe = Recipe({"sparkrun_version": "2", "runtime": "vllm", "model": "test/m"})
+    hosts = ("h2", "h1")  # unsorted on purpose: derivation sorts before hashing
+    opts = api.RunOptions(recipe=recipe, hosts=hosts, dry_run=True)
+
+    launched = _capture_launch_cluster_id(opts)
+
+    assert launched == derive_cluster_id(recipe, list(hosts))
+
+
+def test_run_occupancy_cluster_id_is_random():
+    """A status-aware scheduler (occupancy-sparse) keeps a fresh random
+    placement token per launch so the same intent placed on different host
+    sets never collides.  The intent half stays stable; only the placement
+    token differs."""
+    from sparkrun.core.recipe import Recipe
+    from sparkrun.orchestration.job_metadata import parse_cluster_id
+
+    recipe = Recipe({"sparkrun_version": "2", "runtime": "vllm", "model": "test/m"})
+    opts = api.RunOptions(recipe=recipe, hosts=("h1",), dry_run=True, scheduler="occupancy-sparse")
+
+    first = _capture_launch_cluster_id(opts)
+    second = _capture_launch_cluster_id(opts)
+
+    assert first != second
+    first_intent, first_token = parse_cluster_id(first)
+    second_intent, second_token = parse_cluster_id(second)
+    assert first_intent == second_intent  # same recipe → same intent
+    assert first_token != second_token  # random placement token per launch

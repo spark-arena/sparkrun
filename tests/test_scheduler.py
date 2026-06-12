@@ -5,7 +5,7 @@ Covers the foundation tier:
 - :class:`ClusterStatus` dataclasses and helpers.
 - :class:`SchedulingRequest` / :class:`SchedulingResult` shapes.
 - :class:`GreedyScheduler` parity with the underlying
-  :func:`sparkrun.core.placement.compute_placement` primitive.
+  :func:`sparkrun.schedulers.greedy.pack` primitive.
 - SAF registration via bootstrap (:data:`EXT_SCHEDULER`).
 - Error translation: ``InsufficientCapacityError`` →
   ``InfeasibleScheduleError``, ``LayoutRequiredError`` →
@@ -177,7 +177,7 @@ def test_greedy_accepts_whole_gpu_resource_request():
 
 
 # --------------------------------------------------------------------------
-# GreedyScheduler — parity with compute_placement
+# GreedyScheduler — parity with greedy.pack
 # --------------------------------------------------------------------------
 
 
@@ -344,6 +344,34 @@ def test_list_schedulers_includes_greedy():
     v = init_sparkrun()
     names = list_schedulers(v=v)
     assert "greedy" in names
+
+
+def test_greedy_is_deterministic_placement():
+    """Greedy ignores live status, so it opts into deterministic placement —
+    the signal api.run uses to derive a stable (0.2.x-style) cluster_id."""
+    from sparkrun.core.bootstrap import init_sparkrun
+
+    v = init_sparkrun()
+    assert get_scheduler("greedy", v=v).deterministic_placement is True
+
+
+def test_occupancy_schedulers_are_not_deterministic_placement():
+    """Status-aware schedulers may place the same intent on different host
+    sets across launches, so they keep the base-class non-deterministic
+    default (random cluster_id placement token)."""
+    from sparkrun.core.bootstrap import init_sparkrun
+
+    v = init_sparkrun()
+    for name in ("occupancy-sparse", "occupancy-dense"):
+        assert get_scheduler(name, v=v).deterministic_placement is False
+
+
+def test_scheduler_base_default_is_not_deterministic():
+    """The Scheduler ABC defaults to non-deterministic so unknown/future
+    schedulers get collision-safe random tokens unless they opt in."""
+    from sparkrun.core.scheduler import Scheduler
+
+    assert Scheduler.deterministic_placement is False
 
 
 # --------------------------------------------------------------------------

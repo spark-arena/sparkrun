@@ -405,8 +405,8 @@ def run(
             from sparkrun.core.parallelism import extract_parallelism
             from sparkrun.core.scheduler import SchedulingRequest
 
-            # Route through the *resolved* scheduler (not the deprecated greedy
-            # ``compute_placement`` shim) so the displayed per-host fit matches
+            # Route through the *resolved* scheduler (not a bare greedy
+            # ``pack``) so the displayed per-host fit matches
             # the scheduler the launch will actually use.  Pack against capped
             # usable memory — the same caps the scheduler applies — and skip the
             # live status query (display only): occupancy-aware schedulers then

@@ -295,6 +295,22 @@ class Scheduler(Plugin):
     # --- Subclass must define ---
     scheduler_name: ClassVar[str] = ""
 
+    #: Whether this scheduler places deterministically — i.e. the same
+    #: ``(intent, candidate hosts)`` always yields the same placement
+    #: because the scheduler ignores live cluster occupancy.  When ``True``,
+    #: callers (notably :func:`sparkrun.api.run`) derive the cluster_id's
+    #: placement token deterministically from the host set instead of a
+    #: random per-launch token, restoring sparkrun 0.2.x replace/dedup
+    #: semantics (relaunching an identical workload reuses the same
+    #: cluster_id and replaces the prior deployment).
+    #:
+    #: Defaults to ``False`` so status-aware schedulers — and any future
+    #: scheduler that may place the same intent on different host sets
+    #: across launches — get collision-safe random tokens unless they
+    #: explicitly opt in.  The greedy first-fit scheduler sets this to
+    #: ``True``.
+    deterministic_placement: ClassVar[bool] = False
+
     # --- SAF Plugin interface ---
 
     def name(self) -> str:

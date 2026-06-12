@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from sparkrun.core.cluster_manager import ClusterDefinition
-    from sparkrun.core.placement import RankAssignment
+    from sparkrun.core.scheduler import RankAssignment
     from sparkrun.models.vram import VRAMEstimate
 
 
@@ -143,7 +143,7 @@ def check_fit(
         estimate: Result of :func:`sparkrun.models.vram.estimate_vram`.
         cluster: Cluster definition (provides per-host hardware metadata).
         placement: Rank-to-host assignment from
-            :func:`sparkrun.core.placement.compute_placement`.
+            ``sparkrun.api.schedule`` / :func:`sparkrun.schedulers.greedy.pack`.
 
     Returns:
         :class:`FitResult` with per-host details and aggregate ``ok``.

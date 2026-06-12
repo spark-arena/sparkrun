@@ -8,7 +8,7 @@ from sparkrun.core.cluster_manager import ClusterDefinition
 from sparkrun.core.hardware import AcceleratorSpec, HostHardware
 from sparkrun.core.layout import Placement, RecipeLayout
 from sparkrun.core.parallelism import ParallelismConfig
-from sparkrun.core.placement import compute_placement
+from sparkrun.schedulers.greedy import pack
 from sparkrun.runtimes.atlas import AtlasRuntime
 from sparkrun.runtimes.base import RuntimePlugin
 from sparkrun.runtimes.compatibility import (
@@ -175,7 +175,7 @@ def test_cluster_compat_walks_only_placed_hosts():
         },
     )
     # Layout places only the spark host
-    placement = compute_placement(
+    placement = pack(
         ParallelismConfig(),
         cluster.hosts,
         host_hardware=cluster.hosts_hardware,

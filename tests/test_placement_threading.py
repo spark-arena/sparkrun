@@ -13,7 +13,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from sparkrun.core.hardware import AcceleratorSpec, HostHardware
-from sparkrun.core.placement import RankAssignment, RankSlot
+from sparkrun.core.scheduler import RankAssignment, RankSlot
 from sparkrun.runtimes._cluster_ops import ClusterContext
 
 

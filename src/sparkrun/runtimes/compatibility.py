@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from sparkrun.core.cluster_manager import ClusterDefinition
     from sparkrun.core.hardware import HostHardware
-    from sparkrun.core.placement import RankAssignment
+    from sparkrun.core.scheduler import RankAssignment
     from sparkrun.runtimes.base import RuntimePlugin
 
 

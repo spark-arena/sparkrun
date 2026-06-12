@@ -13,7 +13,7 @@ import pytest
 from sparkrun.core.cluster_manager import ClusterDefinition
 from sparkrun.core.hardware import AcceleratorSpec, HostHardware
 from sparkrun.core.parallelism import ParallelismConfig
-from sparkrun.core.placement import compute_placement
+from sparkrun.schedulers.greedy import pack
 
 
 # --------------------------------------------------------------------------
@@ -193,7 +193,7 @@ def test_vllm_distributed_with_placement_resolves_through_host_for_rank():
     from sparkrun.core.recipe import Recipe
     from sparkrun.runtimes.vllm_distributed import VllmDistributedRuntime
 
-    placement = compute_placement(
+    placement = pack(
         ParallelismConfig(tensor_parallel=4),
         ["dgx-h200"],
         host_hardware={"dgx-h200": HostHardware(accelerators=[AcceleratorSpec(vendor="nvidia", model="h200", count=4, memory_gb=141.0)])},
@@ -446,7 +446,7 @@ def test_display_vram_estimate_renders_per_host_fit(capsys):
             "s2": HostHardware(accelerators=[AcceleratorSpec(vendor="nvidia", model="gb10", memory_gb=121.0)]),
         },
     )
-    placement = compute_placement(ParallelismConfig(tensor_parallel=2), cluster.hosts)
+    placement = pack(ParallelismConfig(tensor_parallel=2), cluster.hosts)
     recipe = Recipe.from_dict({"model": "m", "runtime": "vllm", "container": "img"})
 
     # Auto-detect off keeps test hermetic; estimate returns model_weights=0 etc.

@@ -2,7 +2,7 @@
 
 Data model only.  :class:`RecipeLayout` is parsed (and round-tripped) by
 the recipe loader and consumed by the placement engine in
-:mod:`sparkrun.core.placement`.
+:mod:`sparkrun.schedulers.greedy`.
 
 A recipe may declare a ``layout`` block to:
 

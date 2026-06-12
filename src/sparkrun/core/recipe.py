@@ -829,7 +829,7 @@ class Recipe:
 
         # Explicit placement layout for heterogeneous clusters (optional).
         # Parsed permissively here; the placement engine in
-        # :mod:`sparkrun.core.placement` validates at apply time.
+        # :mod:`sparkrun.schedulers.greedy` validates at apply time.
         raw_layout = data.get("layout")
         self.layout: RecipeLayout | None = RecipeLayout.from_dict(raw_layout) if isinstance(raw_layout, dict) else None
 

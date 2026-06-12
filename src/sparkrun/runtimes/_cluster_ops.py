@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from sparkrun.core.backend_select import BackendBundle
     from sparkrun.core.cluster_manager import ClusterDefinition
     from sparkrun.core.config import SparkrunConfig
-    from sparkrun.core.placement import RankAssignment
+    from sparkrun.core.scheduler import RankAssignment
     from sparkrun.core.recipe import Recipe
     from sparkrun.orchestration.comm_env import ClusterCommEnv
     from sparkrun.orchestration.executor import Executor

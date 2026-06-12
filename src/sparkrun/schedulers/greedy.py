@@ -7,11 +7,11 @@ explicit :class:`~sparkrun.core.layout.RecipeLayout` when provided.
 The algorithm is exposed in two forms:
 
 - :func:`pack` — raw entry point.  Returns a
-  :class:`~sparkrun.core.placement.RankAssignment` and raises
+  :class:`~sparkrun.core.scheduler.RankAssignment` and raises
   placement-level exceptions
-  (:class:`~sparkrun.core.placement.InsufficientCapacityError`,
-  :class:`~sparkrun.core.placement.LayoutRequiredError`,
-  :class:`~sparkrun.core.placement.PlacementError`).
+  (:class:`~sparkrun.core.scheduler.InsufficientCapacityError`,
+  :class:`~sparkrun.core.scheduler.LayoutRequiredError`,
+  :class:`~sparkrun.core.scheduler.PlacementError`).
 - :class:`GreedyScheduler` — the SAF-registered scheduler that wraps
   :func:`pack` and translates exceptions into the scheduler-level
   vocabulary (:class:`InfeasibleScheduleError` /
@@ -271,6 +271,12 @@ class GreedyScheduler(Scheduler):
     """
 
     scheduler_name = "greedy"
+
+    # Greedy ignores live cluster status, so the same (intent, candidate
+    # hosts) always packs to the same placement.  That lets api.run derive a
+    # deterministic cluster_id placement token from the host set — restoring
+    # sparkrun 0.2.x replace/dedup semantics (see Scheduler.deterministic_placement).
+    deterministic_placement = True
 
     def schedule(self, request: SchedulingRequest) -> SchedulingResult:
         if request.resources is not None and request.resources.is_fractional():

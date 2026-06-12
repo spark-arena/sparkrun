@@ -60,6 +60,7 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunRes
     )
     from sparkrun.core.launcher import launch_inference
     from sparkrun.orchestration.job_metadata import (
+        derive_placement_token_from_hosts,
         generate_cluster_id,
         generate_intent_id,
         generate_placement_token,
@@ -79,7 +80,7 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunRes
     runtime = resolve_runtime(recipe, sctx=sctx)
 
     # Scheduler selection chain: caller > recipe > cluster > greedy default.
-    from sparkrun.core.scheduler import FALLBACK_DEFAULT_SCHEDULER, resolve_scheduler_selector
+    from sparkrun.core.scheduler import FALLBACK_DEFAULT_SCHEDULER, get_scheduler, resolve_scheduler_selector
 
     effective_scheduler, _scheduler_defaulted = resolve_scheduler_selector(
         cli=options.scheduler,
@@ -133,10 +134,31 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunRes
     # 3a. Compute intent_id + placement_token; compose cluster_id.
     # The launcher honours ``cluster_id_override`` so we hand it the
     # composed cluster_id rather than letting it derive one from
-    # (recipe, hosts).  Per-launch uniqueness via placement_token
-    # ensures load-aware schedulers can place the same intent on
-    # different host sets without identifier collisions.
-    placement_token = generate_placement_token()
+    # (recipe, hosts).
+    #
+    # The placement token's source depends on the scheduler:
+    #   * Deterministic scheduler (greedy): derive the token from the
+    #     candidate host set, exactly as the lookup paths
+    #     (``stop`` / ``status`` / ``--ensure`` / ``derive_cluster_id``) do.
+    #     Relaunching an identical workload then yields the same cluster_id
+    #     and replaces the prior deployment — sparkrun 0.2.x semantics.
+    #     We hash the *input* candidate hosts (not the trimmed ``host_list``)
+    #     so the launched id matches what those lookup paths compute.
+    #   * Status-aware scheduler (occupancy-*): use a fresh random token so
+    #     the same intent placed on different host sets across launches gets
+    #     distinct identifiers and never collides.
+    try:
+        scheduler_plugin = get_scheduler(effective_scheduler, v=sctx.variables)
+        deterministic_placement = bool(getattr(scheduler_plugin, "deterministic_placement", False))
+    except ValueError:
+        # Unresolvable selector (e.g. a typo, or a single-host run that
+        # short-circuited the scheduler so the name was never validated):
+        # fall back to a random token — it can never collide.
+        deterministic_placement = False
+    if deterministic_placement:
+        placement_token = derive_placement_token_from_hosts(hosts)
+    else:
+        placement_token = generate_placement_token()
     cluster_id_for_launch = options.cluster_id_override or generate_cluster_id(intent_id, placement_token)
     # Recover intent + token from the override when one was supplied so
     # the result still carries accurate metadata.
