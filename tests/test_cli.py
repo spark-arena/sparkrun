@@ -4219,6 +4219,45 @@ class TestLogCommand:
             assert call_kwargs["cluster_id"].startswith("sparkrun_")
             assert call_kwargs["tail"] == 50
 
+    def test_log_help_shows_follow_and_lines(self, runner):
+        """logs --help advertises the docker-logs-style -n/-f options."""
+        result = runner.invoke(main, ["logs", "--help"])
+        assert result.exit_code == 0
+        assert "--follow" in result.output
+        assert "-f" in result.output
+        assert "-n" in result.output
+
+    def test_log_bare_does_not_follow(self, runner, reset_bootstrap):
+        """Called bare, logs dumps (follow=False) and shows all lines (tail=None)."""
+        with mock.patch.object(SglangRuntime, "follow_logs") as mock_follow:
+            result = runner.invoke(main, ["logs", _TEST_RECIPE_NAME, "--hosts", "localhost"])
+
+            assert result.exit_code == 0
+            mock_follow.assert_called_once()
+            call_kwargs = mock_follow.call_args.kwargs
+            assert call_kwargs["follow"] is False
+            assert call_kwargs["tail"] is None
+
+    def test_log_follow_flag_attaches(self, runner, reset_bootstrap):
+        """-f/--follow sets follow=True on the runtime call."""
+        with mock.patch.object(SglangRuntime, "follow_logs") as mock_follow:
+            result = runner.invoke(main, ["logs", _TEST_RECIPE_NAME, "--hosts", "localhost", "-f"])
+
+            assert result.exit_code == 0
+            mock_follow.assert_called_once()
+            assert mock_follow.call_args.kwargs["follow"] is True
+
+    def test_log_lines_option_sets_tail(self, runner, reset_bootstrap):
+        """-n N limits the number of lines (tail=N) without following."""
+        with mock.patch.object(SglangRuntime, "follow_logs") as mock_follow:
+            result = runner.invoke(main, ["logs", _TEST_RECIPE_NAME, "--hosts", "localhost", "-n", "25"])
+
+            assert result.exit_code == 0
+            mock_follow.assert_called_once()
+            call_kwargs = mock_follow.call_args.kwargs
+            assert call_kwargs["tail"] == 25
+            assert call_kwargs["follow"] is False
+
     def test_log_no_hosts_error(self, runner, reset_bootstrap, tmp_path, monkeypatch):
         """sparkrun logs with no hosts exits with error."""
         config_root = tmp_path / "config"

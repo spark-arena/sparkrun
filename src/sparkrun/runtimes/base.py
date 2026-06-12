@@ -698,9 +698,10 @@ class RuntimePlugin(Plugin):
         cluster_id: str = "sparkrun0",
         config: SparkrunConfig | None = None,
         dry_run: bool = False,
-        tail: int = 100,
+        tail: int | None = 100,
+        follow: bool = True,
     ) -> None:
-        """Follow container logs after a successful launch.
+        """Print container logs, optionally following (``docker logs`` semantics).
 
         Solo mode tails the serve log file inside the container
         (``/tmp/sparkrun_serve.log``), which is the correct approach
@@ -708,6 +709,12 @@ class RuntimePlugin(Plugin):
 
         Cluster mode delegates to :meth:`_follow_cluster_logs`, which
         subclasses should override.
+
+        Args:
+            tail: Number of existing log lines to show; ``None`` shows
+                the whole log.
+            follow: When ``True`` (default — post-launch attach), keep
+                streaming new lines; when ``False``, dump and exit.
         """
         if len(hosts) <= 1:
             from sparkrun.orchestration.primitives import build_ssh_kwargs
@@ -721,11 +728,12 @@ class RuntimePlugin(Plugin):
                 container_name,
                 tail=tail,
                 dry_run=dry_run,
+                follow=follow,
                 **ssh_kwargs,
             )
             return
 
-        self._follow_cluster_logs(hosts, cluster_id, config, dry_run, tail)
+        self._follow_cluster_logs(hosts, cluster_id, config, dry_run, tail, follow=follow)
 
     def _follow_cluster_logs(
         self,
@@ -733,9 +741,10 @@ class RuntimePlugin(Plugin):
         cluster_id: str,
         config: SparkrunConfig | None,
         dry_run: bool,
-        tail: int,
+        tail: int | None,
+        follow: bool = True,
     ) -> None:
-        """Follow logs for a multi-node cluster.
+        """Print logs for a multi-node cluster, optionally following.
 
         Uses :meth:`_cluster_log_mode` and :meth:`_head_container_name`
         to determine the log tailing strategy and target container.
@@ -755,6 +764,7 @@ class RuntimePlugin(Plugin):
                 container_name,
                 tail=tail,
                 dry_run=dry_run,
+                follow=follow,
                 **ssh_kwargs,
             )
         else:
@@ -765,6 +775,7 @@ class RuntimePlugin(Plugin):
                 container_name,
                 tail=tail,
                 dry_run=dry_run,
+                follow=follow,
                 **ssh_kwargs,
             )
 

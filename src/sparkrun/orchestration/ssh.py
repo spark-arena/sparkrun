@@ -358,33 +358,39 @@ def stream_remote_logs(
     ssh_user: str | None = None,
     ssh_key: str | None = None,
     ssh_options: list[str] | None = None,
-    tail: int = 100,
+    tail: int | None = 100,
     dry_run: bool = False,
+    follow: bool = True,
 ) -> None:
-    """Stream ``docker logs -f`` output to the terminal.
+    """Print ``docker logs`` output to the terminal, optionally following.
 
-    For remote hosts, runs ``ssh <host> docker logs -f --tail N <container>``.
-    For local hosts, runs ``docker logs -f --tail N <container>`` directly.
+    For remote hosts, runs ``ssh <host> docker logs [-f] [--tail N] <container>``.
+    For local hosts, runs ``docker logs [-f] [--tail N] <container>`` directly.
 
     The process's stdout/stderr are connected directly to the terminal
-    (no capture), so log output flows in real time.  A ``KeyboardInterrupt``
-    is caught so the user can press Ctrl-C to stop following without a
-    traceback.
+    (no capture), so log output flows in real time.  When *follow* is
+    ``True`` a ``KeyboardInterrupt`` is caught so the user can press
+    Ctrl-C to stop following without a traceback; when ``False`` the
+    command dumps the requested lines and returns (``docker logs``
+    semantics).
 
     Args:
         host: Target hostname or IP.  ``"localhost"``, ``"127.0.0.1"``,
             or ``""`` are treated as local.
-        container_name: Name of the Docker container to follow.
+        container_name: Name of the Docker container to read.
         ssh_user: Optional SSH username.
         ssh_key: Optional path to SSH private key.
         ssh_options: Additional SSH options.
-        tail: Number of existing log lines to show before following.
+        tail: Number of existing log lines to show.  ``None`` shows the
+            whole log (no ``--tail``).
         dry_run: If True, print the command that would run and return.
+        follow: When ``True`` (default), keep streaming new lines
+            (``-f``); when ``False``, dump and exit.
     """
     from sparkrun.orchestration.docker import docker_logs_cmd
     from sparkrun.orchestration.primitives import should_run_locally
 
-    logs_cmd = docker_logs_cmd(container_name, follow=True, tail=tail)
+    logs_cmd = docker_logs_cmd(container_name, follow=follow, tail=tail)
 
     if should_run_locally(host, ssh_user):
         cmd = logs_cmd.split()
@@ -396,7 +402,8 @@ def stream_remote_logs(
         logger.info("[dry-run] Would stream logs: %s", " ".join(cmd))
         return
 
-    logger.info("Following logs for container '%s' on %s (Ctrl-C to stop)...", container_name, host or "localhost")
+    if follow:
+        logger.info("Following logs for container '%s' on %s (Ctrl-C to stop)...", container_name, host or "localhost")
     try:
         subprocess.run(cmd)
     except KeyboardInterrupt:
@@ -410,14 +417,15 @@ def stream_container_file_logs(
     ssh_user: str | None = None,
     ssh_key: str | None = None,
     ssh_options: list[str] | None = None,
-    tail: int = 100,
+    tail: int | None = 100,
     dry_run: bool = False,
+    follow: bool = True,
 ) -> None:
-    """Stream a log file from inside a running container.
+    """Print a log file from inside a running container, optionally following.
 
-    Runs ``docker exec <container> tail -f --lines <N> <file>``.
-    Used for runtimes that exec the serve command inside a long-running
-    container (e.g. vLLM's ``sleep infinity`` + ``nohup serve``).
+    Runs ``docker exec <container> tail [-f] -n <N|+1> <file>``.  Used for
+    runtimes that exec the serve command inside a long-running container
+    (e.g. vLLM's ``sleep infinity`` + ``nohup serve``).
 
     Args:
         host: Target hostname or IP.
@@ -426,19 +434,19 @@ def stream_container_file_logs(
         ssh_user: Optional SSH username.
         ssh_key: Optional path to SSH private key.
         ssh_options: Additional SSH options.
-        tail: Number of existing log lines to show before following.
+        tail: Number of existing log lines to show.  ``None`` shows the
+            whole file (``tail -n +1``).
         dry_run: If True, print the command that would run and return.
+        follow: When ``True`` (default), keep streaming new lines
+            (``-f``); when ``False``, dump and exit.
     """
-    tail_cmd = [
-        "docker",
-        "exec",
-        container_name,
-        "tail",
-        "-f",
-        "--lines",
-        str(tail),
-        log_file,
-    ]
+    # ``tail -n +1`` emits the whole file from line 1; a concrete N emits
+    # the last N lines.  ``-f`` follows in either case.
+    lines_arg = "+1" if tail is None else str(tail)
+    tail_cmd = ["docker", "exec", container_name, "tail"]
+    if follow:
+        tail_cmd.append("-f")
+    tail_cmd += ["-n", lines_arg, log_file]
 
     from sparkrun.orchestration.primitives import should_run_locally
 
@@ -452,7 +460,8 @@ def stream_container_file_logs(
         logger.info("[dry-run] Would stream container file logs: %s", " ".join(cmd))
         return
 
-    logger.info("Following serve logs in container '%s' on %s (Ctrl-C to stop)...", container_name, host or "localhost")
+    if follow:
+        logger.info("Following serve logs in container '%s' on %s (Ctrl-C to stop)...", container_name, host or "localhost")
     try:
         subprocess.run(cmd)
     except KeyboardInterrupt:

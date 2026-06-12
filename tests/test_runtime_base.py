@@ -132,6 +132,28 @@ class TestBaseFollowLogs:
             "mytest0_solo",
             tail=50,
             dry_run=False,
+            follow=True,
+        )
+
+    @mock.patch("sparkrun.orchestration.ssh.stream_container_file_logs")
+    def test_follow_logs_solo_no_follow(self, mock_stream):
+        """follow=False threads through to stream_container_file_logs (dump-and-exit)."""
+        runtime = _StubRuntime()
+        runtime.follow_logs(
+            hosts=["10.0.0.1"],
+            cluster_id="mytest0",
+            config=None,
+            dry_run=False,
+            tail=None,
+            follow=False,
+        )
+
+        mock_stream.assert_called_once_with(
+            "10.0.0.1",
+            "mytest0_solo",
+            tail=None,
+            dry_run=False,
+            follow=False,
         )
 
     @mock.patch("sparkrun.orchestration.ssh.stream_container_file_logs")
