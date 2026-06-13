@@ -747,7 +747,7 @@ def launch_inference(
         p.phase_end()
 
     # GGUF model resolution
-    from sparkrun.models.download import is_gguf_model, resolve_gguf_container_path
+    from sparkrun.models.download import is_gguf_model, resolve_gguf_container_path, resolve_mmproj_container_path
 
     if is_gguf_model(recipe.model) and not dry_run and not _resolved_model_path:
         gguf_container_path = resolve_gguf_container_path(
@@ -758,6 +758,25 @@ def launch_inference(
             overrides["_gguf_model_path"] = gguf_container_path
             overrides["model"] = gguf_container_path
             logger.info("GGUF model pre-synced, container path: %s", gguf_container_path)
+
+        # Multimodal projector (mmproj) resolution for vision GGUF models.
+        # The selector lives in runtime_config (``mmproj:`` top-level key is
+        # auto-swept there); the resolved container path is injected into the
+        # override layer so ``{mmproj}`` substitutes and llama.cpp can
+        # auto-inject ``--mmproj``.  llama.cpp-specific.
+        if recipe.runtime == "llama-cpp":
+            mmproj_selector = recipe.runtime_config.get("mmproj")
+            _disabled = str(mmproj_selector).lower() in ("false", "none", "off", "no", "0", "disable", "disabled")
+            if mmproj_selector is None or not _disabled:
+                mmproj_container_path = resolve_mmproj_container_path(
+                    recipe.model,
+                    effective_cache_dir,
+                    selector=None if mmproj_selector is None else str(mmproj_selector),
+                )
+                if mmproj_container_path:
+                    overrides["_mmproj_path"] = mmproj_container_path
+                    overrides["mmproj"] = mmproj_container_path
+                    logger.info("mmproj projector resolved, container path: %s", mmproj_container_path)
 
     # Generate serve command
     serve_command = runtime.generate_command(

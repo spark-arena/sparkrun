@@ -132,11 +132,103 @@ def resolve_gguf_path(
             q_lower = quant.lower()
             matched = [f for f in all_gguf if q_lower in f.name.lower()]
 
+    # Never resolve the multimodal projector as the main weights file.  A
+    # projector named e.g. ``mmproj-F16.gguf`` can match a quant pattern like
+    # ``*F16*``; exclude it so the main model resolution stays correct.
+    matched = [f for f in matched if "mmproj" not in f.name.lower()]
+
     if not matched:
         return None
 
     # Return the first match (for sharded models this is the first shard).
     return str(matched[0])
+
+
+# Preference order for auto-selecting a multimodal projector precision when a
+# GGUF repo ships several (e.g. F16 + F32).  Higher precision is generally
+# safer for vision quality; F16 is the most common and matches upstream
+# llama.cpp ``-hf`` behaviour, so it leads.
+_MMPROJ_PREFERENCE = ("f16", "bf16", "f32", "f8")
+
+
+def resolve_mmproj_path(
+    model_id: str,
+    cache_dir: str | None = None,
+    selector: str | None = None,
+) -> str | None:
+    """Resolve the local cache path to a multimodal projector (``mmproj``) file.
+
+    Vision GGUF models require a companion ``mmproj-*.gguf`` projector
+    alongside the quantized weights.  This searches the HuggingFace cache for
+    ``*mmproj*.gguf`` files belonging to *model_id*'s repo and selects one.
+
+    Selection:
+      * *selector* ``None`` / ``"auto"`` / ``"true"`` — auto-detect, preferring
+        ``F16 → BF16 → F32 → F8`` then the first projector found.
+      * any other *selector* (e.g. ``"F16"`` or ``"mmproj-F16.gguf"``) — pick
+        the first projector whose filename contains it (case-insensitive),
+        falling back to auto-detection when no match is found.
+
+    Args:
+        model_id: GGUF model spec (e.g. ``"unsloth/Qwen3-VL-8B-GGUF:Q4_K_M"``).
+        cache_dir: Override for the HuggingFace cache directory.
+        selector: Optional projector variant selector.
+
+    Returns:
+        Path to the ``mmproj`` ``.gguf`` file, or ``None`` if none exists.
+    """
+    repo_id, _quant = parse_gguf_model_spec(model_id)
+    cache = Path(resolve_hf_cache_home(cache_dir))
+    safe_name = repo_id.replace("/", "--")
+    model_cache = cache / "hub" / ("models--" + safe_name)
+
+    if not model_cache.exists():
+        return None
+
+    candidates = sorted(model_cache.glob("**/*mmproj*.gguf"))
+    if not candidates:
+        return None
+
+    # Explicit selector (not the auto sentinels): match by filename substring.
+    if selector is not None and str(selector).lower() not in ("auto", "true", "1", "yes"):
+        sel = str(selector).lower()
+        matched = [c for c in candidates if sel in c.name.lower()]
+        if matched:
+            return str(matched[0])
+        # Selector given but unmatched — fall through to preference ordering.
+
+    # Auto-detect by precision preference.
+    for pref in _MMPROJ_PREFERENCE:
+        for c in candidates:
+            if pref in c.name.lower():
+                return str(c)
+
+    # No preferred precision matched — return the first projector found.
+    return str(candidates[0])
+
+
+def resolve_mmproj_container_path(
+    model_id: str,
+    cache_dir: str | None = None,
+    selector: str | None = None,
+    container_cache: str = CONTAINER_HF_CACHE,
+) -> str | None:
+    """Resolve the container-internal path to a cached ``mmproj`` projector.
+
+    Translates the host cache path from :func:`resolve_mmproj_path` to the
+    container mount path, mirroring :func:`resolve_gguf_container_path`.
+
+    Returns:
+        Container-internal path to the ``mmproj`` ``.gguf`` file, or ``None``.
+    """
+    host_path = resolve_mmproj_path(model_id, cache_dir, selector=selector)
+    if not host_path:
+        return None
+
+    cache = resolve_hf_cache_home(cache_dir)
+    if host_path.startswith(cache):
+        return container_cache + host_path[len(cache) :]
+    return None
 
 
 def resolve_gguf_container_path(
@@ -438,7 +530,11 @@ def _download_gguf(
     else:
         logger.info("Downloading GGUF model: %s (quant=%s, revision=%s)...", repo_id, quant or "any", revision or "latest")
 
-    patterns = ["*%s*" % quant] if quant else None
+    # Fetch the matching quant plus any multimodal projector (``mmproj``)
+    # that vision GGUF repos ship.  ``*mmproj*`` is a harmless no-op for
+    # text-only repos that have no such file.  When no quant is given the
+    # whole repo (projector included) is downloaded, so no extra pattern.
+    patterns = ["*%s*" % quant, "*mmproj*"] if quant else None
     return _snapshot_download(
         repo_id=repo_id,
         cache=cache,

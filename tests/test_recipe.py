@@ -163,6 +163,23 @@ def test_recipe_model_revision_not_in_runtime_config():
     assert "model_revision" not in recipe.runtime_config
 
 
+def test_recipe_mmproj_selector_swept_to_runtime_config():
+    """Top-level `mmproj:` selector is auto-swept into runtime_config (issue #204).
+
+    The launcher reads ``recipe.runtime_config['mmproj']`` to pick the
+    projector variant, so the sweep is load-bearing for vision GGUF support.
+    """
+    recipe = Recipe.from_dict(
+        {
+            "name": "vl",
+            "model": "unsloth/Qwen3-VL-8B-Instruct-GGUF:Q4_K_M",
+            "runtime": "llama-cpp",
+            "mmproj": "F16",
+        }
+    )
+    assert recipe.runtime_config.get("mmproj") == "F16"
+
+
 def test_recipe_name_defaults_to_unnamed():
     """Recipe without name and no source_path should default to 'unnamed'."""
     recipe = Recipe.from_dict({"model": "test-model"})

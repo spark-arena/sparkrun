@@ -28,6 +28,16 @@ _LLAMA_CPP_FLAG_MAP = {
     "split_mode": "--split-mode",
     "served_model_name": "--alias",
     "api_key": "--api-key",
+    # Sampling controls — let command-less recipes specify them via defaults.
+    "top_p": "--top-p",
+    "top_k": "--top-k",
+    "temperature": "--temp",
+    "min_p": "--min-p",
+    "presence_penalty": "--presence-penalty",
+    # ``flash_attn`` is valued in modern llama.cpp (``on``/``off``/``auto``).
+    # Listed here so flag-stripping treats it as valued; emission is handled
+    # by ``_special_flags`` to normalise bool/string values.
+    "flash_attn": "--flash-attn",
 }
 
 # Defaults injected when not set in recipe config
@@ -37,11 +47,17 @@ _LLAMA_CPP_DEFAULTS = {
 
 # Boolean flags (present when truthy, absent when falsy)
 _LLAMA_CPP_BOOL_FLAGS = {
-    "flash_attn": "--flash-attn",
     "cont_batching": "--cont-batching",
     "no_webui": "--no-webui",
     "jinja": "--jinja",
 }
+
+# Keys with bespoke emission logic (handled by ``_special_flags``), excluded
+# from the generic ``build_flags_from_map`` pass to avoid double emission.
+#   * ``flash_attn`` — valued, with bool compatibility (True→on, False→off).
+#   * ``webui`` / ``mmap`` — inverted booleans (emit ``--no-webui`` /
+#     ``--no-mmap`` only when explicitly disabled; default-on emits nothing).
+_LLAMA_CPP_SPECIAL_KEYS = frozenset({"flash_attn", "webui", "mmap"})
 
 # Short-form flag aliases recognised when stripping flags from rendered
 # command templates (e.g. ``-a`` is the short form of ``--alias``).
@@ -151,6 +167,52 @@ class LlamaCppRuntime(RuntimePlugin):
         command = re.sub(r"--split-mode\s+\S+", "", command).strip()
         return "%s --split-mode %s" % (command, split_mode)
 
+    @staticmethod
+    def _special_flags(config, skip_keys: set[str] | frozenset[str] = frozenset()) -> list[str]:
+        """Emit flags with bespoke value handling (see ``_LLAMA_CPP_SPECIAL_KEYS``).
+
+        ``flash_attn`` is valued in modern llama.cpp; booleans are normalised
+        (``True`` → ``on``, ``False`` → ``off``) while strings pass through.
+        ``webui`` and ``mmap`` are inverted toggles — ``--no-webui`` /
+        ``--no-mmap`` are emitted only when the value is explicitly falsy.
+        """
+        from scitrera_app_framework import ext_parse_bool
+
+        parts: list[str] = []
+
+        if "flash_attn" not in skip_keys:
+            fa = config.get("flash_attn")
+            if fa is not None:
+                if isinstance(fa, bool):
+                    parts.extend(["--flash-attn", "on" if fa else "off"])
+                else:
+                    parts.extend(["--flash-attn", str(fa)])
+
+        if "webui" not in skip_keys:
+            webui = config.get("webui")
+            if webui is not None and not ext_parse_bool(webui):
+                parts.append("--no-webui")
+
+        if "mmap" not in skip_keys:
+            mmap = config.get("mmap")
+            if mmap is not None and not ext_parse_bool(mmap):
+                parts.append("--no-mmap")
+
+        return parts
+
+    @staticmethod
+    def _inject_mmproj(command: str, mmproj_path: str | None) -> str:
+        """Append ``--mmproj <path>`` to *command* when not already present.
+
+        The projector path is resolved by the launcher and exposed via
+        ``config["_mmproj_path"]``.  Recipes that already reference it
+        explicitly (literal ``--mmproj`` or via the ``{mmproj}`` placeholder)
+        are left untouched, so this only fills in the auto case.
+        """
+        if not mmproj_path or "--mmproj" in command:
+            return command
+        return "%s --mmproj %s" % (command.rstrip().rstrip("\\").rstrip(), mmproj_path)
+
     def prepare(
         self,
         recipe: Recipe,
@@ -234,6 +296,9 @@ class LlamaCppRuntime(RuntimePlugin):
                     set(_LLAMA_CPP_BOOL_FLAGS),
                     flag_aliases=_LLAMA_CPP_FLAG_ALIASES,
                 )
+            # Auto-inject the multimodal projector when the recipe didn't
+            # reference it explicitly (literal --mmproj or {mmproj}).
+            rendered = self._inject_mmproj(rendered, config.get("_mmproj_path"))
             return rendered
 
         # Otherwise, build command from structured defaults
@@ -271,16 +336,24 @@ class LlamaCppRuntime(RuntimePlugin):
         else:
             parts = ["llama-server", "-m", model or ""]
 
-        # Add valued and boolean flags from config
+        # Multimodal projector for vision GGUF models (resolved by the launcher).
+        mmproj_path = config.get("_mmproj_path")
+        if mmproj_path and "mmproj" not in skip_keys:
+            parts.extend(["--mmproj", str(mmproj_path)])
+
+        # Add valued and boolean flags from config.  Keys with bespoke emission
+        # (flash_attn / webui / mmap) are skipped here and handled separately.
         all_flags = {**_LLAMA_CPP_FLAG_MAP, **_LLAMA_CPP_BOOL_FLAGS}
+        generic_skip = set(skip_keys) | _LLAMA_CPP_SPECIAL_KEYS
         parts.extend(
             self.build_flags_from_map(
                 config,
                 all_flags,
                 bool_keys=set(_LLAMA_CPP_BOOL_FLAGS),
-                skip_keys=skip_keys,
+                skip_keys=generic_skip,
             )
         )
+        parts.extend(self._special_flags(config, skip_keys=skip_keys))
 
         return " ".join(parts)
 

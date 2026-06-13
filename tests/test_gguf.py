@@ -13,6 +13,8 @@ from sparkrun.models.download import (
     parse_gguf_model_spec,
     resolve_gguf_container_path,
     resolve_gguf_path,
+    resolve_mmproj_container_path,
+    resolve_mmproj_path,
     download_model,
 )
 from sparkrun.models.download import model_cache_path
@@ -123,6 +125,99 @@ class TestResolveGgufPath:
         )
         result = resolve_gguf_path("Qwen/Qwen3-1.7B-GGUF:q4_k_m", str(tmp_path))
         assert result == str(gguf)
+
+
+# ---------------------------------------------------------------------------
+# resolve_mmproj_path / resolve_mmproj_container_path (vision GGUF, issue #204)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveMmprojPath:
+    def _make_files(self, cache_dir: Path, repo: str, filenames: list[str]):
+        safe_name = repo.replace("/", "--")
+        snapshot = cache_dir / "hub" / f"models--{safe_name}" / "snapshots" / "abc123"
+        snapshot.mkdir(parents=True, exist_ok=True)
+        for fn in filenames:
+            (snapshot / fn).write_text("fake")
+        return snapshot
+
+    def test_finds_single_projector(self, tmp_path):
+        snap = self._make_files(
+            tmp_path,
+            "unsloth/Qwen3-VL-8B-Instruct-GGUF",
+            ["Qwen3-VL-8B-Instruct-Q4_K_M.gguf", "mmproj-F16.gguf"],
+        )
+        result = resolve_mmproj_path("unsloth/Qwen3-VL-8B-Instruct-GGUF:Q4_K_M", str(tmp_path))
+        assert result == str(snap / "mmproj-F16.gguf")
+
+    def test_no_projector_returns_none(self, tmp_path):
+        self._make_files(tmp_path, "Qwen/Qwen3-1.7B-GGUF", ["qwen3-1.7b-q4_k_m.gguf"])
+        result = resolve_mmproj_path("Qwen/Qwen3-1.7B-GGUF:Q4_K_M", str(tmp_path))
+        assert result is None
+
+    def test_auto_prefers_f16_over_f32(self, tmp_path):
+        snap = self._make_files(
+            tmp_path,
+            "org/Vision-GGUF",
+            ["model-Q4_K_M.gguf", "mmproj-F32.gguf", "mmproj-F16.gguf"],
+        )
+        result = resolve_mmproj_path("org/Vision-GGUF:Q4_K_M", str(tmp_path))
+        assert result == str(snap / "mmproj-F16.gguf")
+
+    def test_explicit_selector_pins_variant(self, tmp_path):
+        snap = self._make_files(
+            tmp_path,
+            "org/Vision-GGUF",
+            ["model-Q4_K_M.gguf", "mmproj-F32.gguf", "mmproj-F16.gguf"],
+        )
+        result = resolve_mmproj_path("org/Vision-GGUF:Q4_K_M", str(tmp_path), selector="F32")
+        assert result == str(snap / "mmproj-F32.gguf")
+
+    def test_selector_full_filename(self, tmp_path):
+        snap = self._make_files(
+            tmp_path,
+            "org/Vision-GGUF",
+            ["model-Q4_K_M.gguf", "mmproj-F16.gguf"],
+        )
+        result = resolve_mmproj_path("org/Vision-GGUF:Q4_K_M", str(tmp_path), selector="mmproj-F16.gguf")
+        assert result == str(snap / "mmproj-F16.gguf")
+
+    def test_unmatched_selector_falls_back_to_auto(self, tmp_path):
+        snap = self._make_files(
+            tmp_path,
+            "org/Vision-GGUF",
+            ["model-Q4_K_M.gguf", "mmproj-F16.gguf"],
+        )
+        result = resolve_mmproj_path("org/Vision-GGUF:Q4_K_M", str(tmp_path), selector="BF16")
+        assert result == str(snap / "mmproj-F16.gguf")
+
+    def test_auto_sentinel_selectors(self, tmp_path):
+        snap = self._make_files(tmp_path, "org/Vision-GGUF", ["mmproj-F16.gguf"])
+        for sentinel in ("auto", "true", None):
+            result = resolve_mmproj_path("org/Vision-GGUF:Q4_K_M", str(tmp_path), selector=sentinel)
+            assert result == str(snap / "mmproj-F16.gguf")
+
+    def test_container_path_translation(self, tmp_path):
+        self._make_files(
+            tmp_path,
+            "unsloth/Qwen3-VL-8B-Instruct-GGUF",
+            ["Qwen3-VL-8B-Instruct-Q4_K_M.gguf", "mmproj-F16.gguf"],
+        )
+        result = resolve_mmproj_container_path("unsloth/Qwen3-VL-8B-Instruct-GGUF:Q4_K_M", str(tmp_path))
+        assert result is not None
+        assert result.startswith(CONTAINER_HF_CACHE)
+        assert result.endswith("mmproj-F16.gguf")
+
+    def test_main_model_resolution_excludes_projector(self, tmp_path):
+        """A projector sharing the quant token must not be picked as weights."""
+        snap = self._make_files(
+            tmp_path,
+            "org/Vision-GGUF",
+            ["Vision-F16.gguf", "mmproj-F16.gguf"],
+        )
+        # quant=F16 matches both files; the main resolver must skip the mmproj.
+        result = resolve_gguf_path("org/Vision-GGUF:F16", str(tmp_path))
+        assert result == str(snap / "Vision-F16.gguf")
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +339,18 @@ class TestDownloadModelGguf:
                 with mock.patch.object(dl_mod, "_download_gguf", side_effect=patched_download):
                     rc = dl_mod.download_model("Qwen/Qwen3-1.7B-GGUF:Q4_K_M", cache_dir="/fake")
                     assert rc == 0
+
+    @mock.patch("sparkrun.models.download.resolve_gguf_path", return_value=None)
+    @mock.patch("sparkrun.models.download._snapshot_download", return_value=0)
+    def test_gguf_download_includes_mmproj_pattern(self, mock_snap, mock_resolve):
+        """Quant download also fetches the multimodal projector (issue #204)."""
+        import sparkrun.models.download as dl_mod
+
+        rc = dl_mod._download_gguf("unsloth/Qwen3-VL-8B-GGUF:Q4_K_M", cache_dir="/fake")
+        assert rc == 0
+        patterns = mock_snap.call_args.kwargs["allow_patterns"]
+        assert "*Q4_K_M*" in patterns
+        assert "*mmproj*" in patterns
 
     def test_gguf_dry_run(self):
         """Dry-run GGUF download returns 0 without doing anything."""

@@ -394,6 +394,216 @@ def test_llama_cpp_generate_command_no_presync_uses_hf():
     assert "--port 8080" in cmd
 
 
+# ---------------------------------------------------------------------------
+# Vision GGUF / mmproj support (issue #204)
+# ---------------------------------------------------------------------------
+
+_MMPROJ = "/cache/huggingface/hub/models--unsloth--Qwen3-VL-8B-Instruct-GGUF/snapshots/abc/mmproj-F16.gguf"
+_WEIGHTS = "/cache/huggingface/hub/models--unsloth--Qwen3-VL-8B-Instruct-GGUF/snapshots/abc/Q4_K_M.gguf"
+
+
+def test_llama_cpp_mmproj_auto_injected_template():
+    """Template without --mmproj gets the projector auto-appended."""
+    recipe = Recipe.from_dict(
+        {
+            "name": "vl",
+            "model": "unsloth/Qwen3-VL-8B-Instruct-GGUF:Q4_K_M",
+            "runtime": "llama-cpp",
+            "command": "llama-server -hf {model} --port {port}",
+            "defaults": {"port": 8001},
+        }
+    )
+    cmd = LlamaCppRuntime().generate_command(
+        recipe,
+        {"_gguf_model_path": _WEIGHTS, "model": _WEIGHTS, "_mmproj_path": _MMPROJ, "mmproj": _MMPROJ},
+        is_cluster=False,
+    )
+    assert "-m " + _WEIGHTS in cmd
+    assert "--mmproj " + _MMPROJ in cmd
+    assert cmd.count("--mmproj") == 1
+
+
+def test_llama_cpp_mmproj_placeholder_not_double_injected():
+    """A template using {mmproj} keeps explicit placement; no duplicate flag."""
+    recipe = Recipe.from_dict(
+        {
+            "name": "vl",
+            "model": "unsloth/Qwen3-VL-8B-Instruct-GGUF:Q4_K_M",
+            "runtime": "llama-cpp",
+            "command": "llama-server -hf {model} --mmproj {mmproj} --port {port}",
+            "defaults": {"port": 8001},
+        }
+    )
+    cmd = LlamaCppRuntime().generate_command(
+        recipe,
+        {"_gguf_model_path": _WEIGHTS, "model": _WEIGHTS, "_mmproj_path": _MMPROJ, "mmproj": _MMPROJ},
+        is_cluster=False,
+    )
+    assert cmd.count("--mmproj") == 1
+    assert "--mmproj " + _MMPROJ in cmd
+
+
+def test_llama_cpp_mmproj_literal_not_double_injected():
+    """A template with a literal --mmproj is left untouched."""
+    recipe = Recipe.from_dict(
+        {
+            "name": "vl",
+            "model": "unsloth/Qwen3-VL-8B-Instruct-GGUF:Q4_K_M",
+            "runtime": "llama-cpp",
+            "command": "llama-server -hf {model} --mmproj /custom/mmproj.gguf",
+        }
+    )
+    cmd = LlamaCppRuntime().generate_command(
+        recipe,
+        {"_gguf_model_path": _WEIGHTS, "model": _WEIGHTS, "_mmproj_path": _MMPROJ, "mmproj": _MMPROJ},
+        is_cluster=False,
+    )
+    assert cmd.count("--mmproj") == 1
+    assert "/custom/mmproj.gguf" in cmd
+    assert _MMPROJ not in cmd
+
+
+def test_llama_cpp_mmproj_structured():
+    """Command-less recipe emits --mmproj alongside -m."""
+    recipe = Recipe.from_dict(
+        {
+            "name": "vl",
+            "model": "unsloth/Qwen3-VL-8B-Instruct-GGUF:Q4_K_M",
+            "runtime": "llama-cpp",
+            "defaults": {"port": 8001},
+        }
+    )
+    cmd = LlamaCppRuntime().generate_command(
+        recipe,
+        {"_gguf_model_path": _WEIGHTS, "model": _WEIGHTS, "_mmproj_path": _MMPROJ, "mmproj": _MMPROJ},
+        is_cluster=False,
+    )
+    assert cmd.startswith("llama-server -m " + _WEIGHTS)
+    assert "--mmproj " + _MMPROJ in cmd
+
+
+def test_llama_cpp_flash_attn_valued():
+    """flash_attn is emitted as a valued flag (bool->on/off, str passthrough)."""
+    runtime = LlamaCppRuntime()
+
+    cmd_true = runtime.generate_command(
+        Recipe.from_dict({"name": "r", "model": "/m.gguf", "runtime": "llama-cpp", "defaults": {"flash_attn": True}}),
+        {},
+        is_cluster=False,
+    )
+    assert "--flash-attn on" in cmd_true
+
+    cmd_str = runtime.generate_command(
+        Recipe.from_dict({"name": "r", "model": "/m.gguf", "runtime": "llama-cpp", "defaults": {"flash_attn": "auto"}}),
+        {},
+        is_cluster=False,
+    )
+    assert "--flash-attn auto" in cmd_str
+
+    cmd_false = runtime.generate_command(
+        Recipe.from_dict({"name": "r", "model": "/m.gguf", "runtime": "llama-cpp", "defaults": {"flash_attn": False}}),
+        {},
+        is_cluster=False,
+    )
+    assert "--flash-attn off" in cmd_false
+
+
+def test_llama_cpp_inverted_webui_mmap_flags():
+    """webui/mmap are inverted toggles: emit --no-* only when disabled."""
+    runtime = LlamaCppRuntime()
+
+    cmd_off = runtime.generate_command(
+        Recipe.from_dict({"name": "r", "model": "/m.gguf", "runtime": "llama-cpp", "defaults": {"webui": False, "mmap": False}}),
+        {},
+        is_cluster=False,
+    )
+    assert "--no-webui" in cmd_off
+    assert "--no-mmap" in cmd_off
+
+    cmd_on = runtime.generate_command(
+        Recipe.from_dict({"name": "r", "model": "/m.gguf", "runtime": "llama-cpp", "defaults": {"webui": True, "mmap": True}}),
+        {},
+        is_cluster=False,
+    )
+    assert "--no-webui" not in cmd_on
+    assert "--no-mmap" not in cmd_on
+
+
+def test_llama_cpp_sampling_flags_structured():
+    """Sampling controls render so command-less recipes are viable."""
+    recipe = Recipe.from_dict(
+        {
+            "name": "r",
+            "model": "/m.gguf",
+            "runtime": "llama-cpp",
+            "defaults": {
+                "top_p": 0.8,
+                "top_k": 20,
+                "temperature": 0.7,
+                "min_p": 0.0,
+                "presence_penalty": 1.5,
+            },
+        }
+    )
+    cmd = LlamaCppRuntime().generate_command(recipe, {}, is_cluster=False)
+    assert "--top-p 0.8" in cmd
+    assert "--top-k 20" in cmd
+    assert "--temp 0.7" in cmd
+    assert "--min-p 0.0" in cmd
+    assert "--presence-penalty 1.5" in cmd
+
+
+def test_llama_cpp_issue_204_commandless_equivalent():
+    """The issue's recipe, expressed command-less, renders a complete command."""
+    recipe = Recipe.from_dict(
+        {
+            "name": "qwen3-vl-8b",
+            "model": "unsloth/Qwen3-VL-8B-Instruct-GGUF:Q4_K_M",
+            "runtime": "llama-cpp",
+            "defaults": {
+                "port": 8001,
+                "host": "0.0.0.0",
+                "served_model_name": "qwen3-vl-8b",
+                "n_gpu_layers": 99,
+                "ctx_size": 8192,
+                "flash_attn": "on",
+                "jinja": True,
+                "top_p": 0.8,
+                "top_k": 20,
+                "temperature": 0.7,
+                "min_p": 0.0,
+                "presence_penalty": 1.5,
+                "webui": False,
+                "mmap": False,
+            },
+        }
+    )
+    cmd = LlamaCppRuntime().generate_command(
+        recipe,
+        {"_gguf_model_path": _WEIGHTS, "model": _WEIGHTS, "_mmproj_path": _MMPROJ, "mmproj": _MMPROJ},
+        is_cluster=False,
+    )
+    for fragment in (
+        "-m " + _WEIGHTS,
+        "--mmproj " + _MMPROJ,
+        "--host 0.0.0.0",
+        "--port 8001",
+        "--alias qwen3-vl-8b",
+        "--n-gpu-layers 99",
+        "--ctx-size 8192",
+        "--flash-attn on",
+        "--jinja",
+        "--top-p 0.8",
+        "--top-k 20",
+        "--temp 0.7",
+        "--min-p 0.0",
+        "--presence-penalty 1.5",
+        "--no-webui",
+        "--no-mmap",
+    ):
+        assert fragment in cmd, fragment
+
+
 class TestLlamaCppFollowLogs:
     """Test LlamaCppRuntime.follow_logs()."""
 

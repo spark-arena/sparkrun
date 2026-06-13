@@ -537,6 +537,47 @@ command: |
 - `tensor_parallel` → `--split-mode row`, `pipeline_parallel` → `--split-mode layer` (mutually exclusive)
 - Pre-synced GGUF: `-hf` auto-rewritten to `-m` with container cache path
 
+### Vision GGUF models (multimodal projector)
+
+Vision GGUF models ship a companion **multimodal projector** (`mmproj-*.gguf`) alongside the quantized weights. sparkrun
+downloads it automatically (no extra config) and resolves its container path. There is no need to hardcode a snapshot
+path.
+
+```yaml
+model: unsloth/Qwen3-VL-8B-Instruct-GGUF:Q4_K_M
+runtime: llama-cpp
+max_nodes: 1
+container: ghcr.io/spark-arena/dgx-llama-cpp:latest
+
+# Optional projector selector (swept into runtime_config). Defaults to `auto`,
+# which prefers F16 → BF16 → F32 → F8. Pin a precision with e.g. `F32`, give a
+# filename, or set `false` to disable auto-injection.
+mmproj: auto
+
+defaults:
+  port: 8001
+  host: 0.0.0.0
+  alias: qwen3-vl-8b
+  n_gpu_layers: 99
+  ctx_size: 8192
+  flash_attn: on            # valued in modern llama.cpp (on/off/auto)
+  jinja: true
+  top_p: 0.8
+  top_k: 20
+  temperature: 0.7          # → --temp
+  min_p: 0.0
+  presence_penalty: 1.5
+  webui: false              # inverted → --no-webui
+  mmap: false               # inverted → --no-mmap
+```
+
+- The example above is **command-less**: with the projector and sampling options in `defaults`, sparkrun builds the full
+  `llama-server` command and auto-injects `--mmproj <resolved path>`.
+- To place the projector explicitly in a `command:` template, use `{mmproj}` (e.g. `--mmproj {mmproj}`); auto-injection
+  is skipped whenever the rendered command already contains `--mmproj`.
+- `flash_attn` accepts `on`/`off`/`auto` (booleans map to `on`/`off`); `webui`/`mmap` are inverted toggles that emit
+  `--no-webui`/`--no-mmap` only when set false.
+
 ---
 
 ## Recipe Discovery

@@ -15,15 +15,15 @@ fi
 
 echo "Downloading GGUF model: {repo_id} (quant: {quant})..."
 if command -v huggingface-cli &>/dev/null; then
-    huggingface-cli download "{repo_id}" --include "*{quant}*" {revision_flag}--cache-dir "{cache}/hub"
+    huggingface-cli download "{repo_id}" --include "*{quant}*" "*mmproj*" {revision_flag}--cache-dir "{cache}/hub"
 elif command -v uvx &>/dev/null; then
-    uvx hf download "{repo_id}" --include "*{quant}*" {revision_flag}--cache-dir "{cache}/hub"
+    uvx hf download "{repo_id}" --include "*{quant}*" "*mmproj*" {revision_flag}--cache-dir "{cache}/hub"
 else
     echo "Installing uv for model download access..."
     curl -LsSf https://astral.sh/uv/install.sh | sh
     export PATH="$HOME/.local/bin:$PATH"
     if command -v uvx &>/dev/null; then
-        uvx hf download "{repo_id}" --include "*{quant}*" {revision_flag}--cache-dir "{cache}/hub"
+        uvx hf download "{repo_id}" --include "*{quant}*" "*mmproj*" {revision_flag}--cache-dir "{cache}/hub"
     else
         echo "ERROR: failed to install uv; cannot download model on this host" >&2
         exit 1
