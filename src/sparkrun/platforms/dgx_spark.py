@@ -30,6 +30,15 @@ _DGX_SPARK_DEFAULTS: dict[str, str | None] = {
 _DGX_SPARK_MAX_GPU_MEMORY_UTILIZATION = 0.85
 
 
+# Per-runtime recipe-flag defaults for GB10.  Applied at the recipe-default
+# tier (only when the recipe/CLI are silent).  Memory-mapped GGUF loading
+# performs poorly on GB10's unified memory, so llama.cpp defaults to
+# ``--no-mmap`` (mmap off) unless a recipe opts back in with ``mmap: true``.
+_DGX_SPARK_RUNTIME_FLAGS: dict[str, dict[str, object]] = {
+    "llama-cpp": {"mmap": False},
+}
+
+
 class DgxSparkPlatform(HardwarePlatformPlugin):
     """NVIDIA DGX Spark (GB10, ConnectX-7 RoCEv2 fabric)."""
 
@@ -48,6 +57,12 @@ class DgxSparkPlatform(HardwarePlatformPlugin):
 
     def default_image(self, runtime_name: str) -> str | None:
         return _DGX_SPARK_DEFAULTS.get(runtime_name)
+
+    def default_runtime_flags(self, runtime_name: str, accelerator: AcceleratorSpec) -> dict[str, object]:
+        """GB10 recipe-flag defaults (e.g. ``mmap: False`` for llama.cpp)."""
+        if accelerator.vendor == "nvidia" and accelerator.model == "gb10":
+            return dict(_DGX_SPARK_RUNTIME_FLAGS.get(runtime_name, {}))
+        return {}
 
     def default_max_gpu_memory_utilization(self, accelerator: AcceleratorSpec) -> float | None:
         """GB10 unified memory → cap usable memory at 0.85 for scheduling/fit."""

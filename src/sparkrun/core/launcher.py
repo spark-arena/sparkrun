@@ -260,6 +260,43 @@ def resolve_effective_cache_dir(
     return str(config.hf_cache_dir)
 
 
+def apply_platform_runtime_flag_defaults(recipe: Recipe, runtime_name: str, host_hardware) -> dict[str, object]:
+    """Fold platform/runtime/accelerator flag defaults into ``recipe.defaults``.
+
+    Resolves the hardware platform for *host_hardware* and applies its
+    :meth:`~sparkrun.platforms.base.HardwarePlatformPlugin.default_runtime_flags`
+    for *runtime_name* at the **recipe-default tier** (``setdefault``).  This
+    means a platform default (e.g. ``mmap: False`` for llama.cpp on GB10) only
+    takes effect when the recipe — and therefore any CLI override layered above
+    it — is silent on that key; an explicit recipe ``mmap: true`` is preserved.
+
+    Returns the subset of defaults that were actually applied (for logging /
+    testing); an empty dict means nothing was added.
+    """
+    from sparkrun.platforms import resolve_platform
+
+    if host_hardware is None or not getattr(host_hardware, "accelerators", None):
+        return {}
+
+    platform = resolve_platform(host_hardware)
+    if platform is None:
+        return {}
+
+    accel = host_hardware.accelerators[0]
+    try:
+        flag_defaults = platform.default_runtime_flags(runtime_name, accel) or {}
+    except Exception:
+        logger.debug("Platform %r default_runtime_flags raised", getattr(platform, "platform_name", "?"), exc_info=True)
+        return {}
+
+    applied: dict[str, object] = {}
+    for key, value in flag_defaults.items():
+        if key not in recipe.defaults:
+            recipe.defaults[key] = value
+            applied[key] = value
+    return applied
+
+
 def resolve_per_host_backends(
     host_list: list[str],
     cluster=None,
@@ -593,6 +630,7 @@ def launch_inference(
     # has something sensible to validate against.
     from sparkrun.platforms import resolve_platform
 
+    _head_hw = None
     for host in host_list:
         if cluster is not None:
             _hw = cluster.hardware_for(host)
@@ -600,10 +638,20 @@ def launch_inference(
             from sparkrun.core.hardware import default_dgx_spark_hardware
 
             _hw = default_dgx_spark_hardware()
+        if _head_hw is None:
+            _head_hw = _hw
         _platform = resolve_platform(_hw)
         if _platform is not None:
             for _warn in _platform.validate_host(_hw):
                 logger.warning("Host %s: %s", host, _warn)
+
+    # Platform/runtime/accelerator flag defaults (e.g. mmap off for GB10 +
+    # llama.cpp).  Keyed off the head host's accelerator; applied at the
+    # recipe-default tier so explicit recipe/CLI values still win.  The serve
+    # command is built once, so a single representative host is the right scope.
+    _applied_flags = apply_platform_runtime_flag_defaults(recipe, runtime.runtime_name, _head_hw)
+    if _applied_flags:
+        logger.debug("Applied platform runtime-flag defaults: %s", _applied_flags)
 
     # Save job metadata
     if not dry_run:

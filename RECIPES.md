@@ -577,6 +577,9 @@ defaults:
   is skipped whenever the rendered command already contains `--mmproj`.
 - `flash_attn` accepts `on`/`off`/`auto` (booleans map to `on`/`off`); `webui`/`mmap` are inverted toggles that emit
   `--no-webui`/`--no-mmap` only when set false.
+- **GB10 default:** on DGX Spark (GB10), llama.cpp defaults to `mmap: false` (i.e. `--no-mmap`) because memory-mapped
+  GGUF loading performs poorly on its unified memory. This platform default applies only when the recipe is silent on
+  `mmap`; set `mmap: true` in `defaults` to opt back in.
 
 ---
 

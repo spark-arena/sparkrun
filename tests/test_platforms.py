@@ -90,6 +90,31 @@ def test_dgx_spark_default_images():
     assert p.default_image("nonexistent-runtime") is None
 
 
+def _gb10_accel() -> AcceleratorSpec:
+    return AcceleratorSpec(vendor="nvidia", model="gb10", memory_gb=121.0, capabilities=frozenset({"cuda"}))
+
+
+def test_dgx_spark_runtime_flags_llama_cpp_mmap_off():
+    """GB10 + llama.cpp defaults mmap off (poor mmap perf on unified memory)."""
+    assert DgxSparkPlatform().default_runtime_flags("llama-cpp", _gb10_accel()) == {"mmap": False}
+
+
+def test_dgx_spark_runtime_flags_other_runtime_empty():
+    """Non-llama.cpp runtimes get no GB10 flag defaults."""
+    assert DgxSparkPlatform().default_runtime_flags("vllm-distributed", _gb10_accel()) == {}
+
+
+def test_dgx_spark_runtime_flags_non_gb10_empty():
+    """A non-GB10 NVIDIA accelerator gets no DGX Spark flag defaults."""
+    h100 = AcceleratorSpec(vendor="nvidia", model="h100", memory_gb=80.0, capabilities=frozenset({"cuda"}))
+    assert DgxSparkPlatform().default_runtime_flags("llama-cpp", h100) == {}
+
+
+def test_base_platform_runtime_flags_default_empty():
+    """Generic NVIDIA platform publishes no per-runtime flag defaults."""
+    assert GenericNvidiaPlatform().default_runtime_flags("llama-cpp", _gb10_accel()) == {}
+
+
 # --------------------------------------------------------------------------
 # GenericNvidiaPlatform
 # --------------------------------------------------------------------------

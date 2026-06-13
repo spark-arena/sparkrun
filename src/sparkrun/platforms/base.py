@@ -104,6 +104,24 @@ class HardwarePlatformPlugin(Plugin):
         """
         return None
 
+    def default_runtime_flags(self, runtime_name: str, accelerator: AcceleratorSpec) -> dict[str, object]:
+        """Platform/runtime/accelerator-specific recipe-flag defaults.
+
+        Returns a mapping of recipe ``defaults`` keys to values that should
+        apply on this platform for *runtime_name* + *accelerator* **when the
+        recipe (and CLI) do not specify them**.  The launcher folds the result
+        in at the recipe-default tier (``setdefault``), so explicit recipe
+        defaults and CLI overrides always win.
+
+        This is the platform tier for hardware-conditional runtime tuning —
+        e.g. DGX Spark returns ``{"mmap": False}`` for ``llama-cpp`` on GB10
+        because memory-mapped GGUF loading performs poorly on its unified
+        memory.
+
+        Base implementation returns ``{}`` (no platform-specific defaults).
+        """
+        return {}
+
     def default_max_gpu_memory_utilization(self, accelerator: AcceleratorSpec) -> float | None:
         """Default usable-memory cap for *accelerator* on this platform.
 

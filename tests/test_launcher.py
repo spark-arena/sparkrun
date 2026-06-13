@@ -7,7 +7,8 @@ import pytest
 from sparkrun.core.backend_select import BackendBundle
 from sparkrun.core.cluster_manager import ClusterDefinition
 from sparkrun.core.hardware import AcceleratorSpec, HostHardware
-from sparkrun.core.launcher import resolve_per_host_backends
+from sparkrun.core.launcher import apply_platform_runtime_flag_defaults, resolve_per_host_backends
+from sparkrun.core.recipe import Recipe
 from sparkrun.orchestration.collectives import NcclBackend, RcclBackend
 
 
@@ -40,6 +41,70 @@ def test_resolve_per_host_backends_no_cluster_defaults_to_dgx_nvidia():
 
 def test_resolve_per_host_backends_empty_host_list_empty_map():
     assert resolve_per_host_backends([], cluster=None) == {}
+
+
+# ---------------------------------------------------------------------------
+# Platform/runtime/accelerator flag defaults (GB10 llama.cpp mmap off)
+# ---------------------------------------------------------------------------
+
+
+def _llama_recipe(defaults=None):
+    return Recipe.from_dict(
+        {
+            "name": "vl",
+            "model": "unsloth/Qwen3-VL-8B-Instruct-GGUF:Q4_K_M",
+            "runtime": "llama-cpp",
+            "defaults": defaults or {},
+        }
+    )
+
+
+def test_platform_flag_defaults_applies_mmap_off_for_gb10_llama_cpp():
+    recipe = _llama_recipe()
+    applied = apply_platform_runtime_flag_defaults(recipe, "llama-cpp", _nvidia_hw())
+    assert applied == {"mmap": False}
+    assert recipe.defaults["mmap"] is False
+
+
+def test_platform_flag_defaults_respects_explicit_recipe_value():
+    """An explicit recipe mmap:true is preserved (setdefault semantics)."""
+    recipe = _llama_recipe({"mmap": True})
+    applied = apply_platform_runtime_flag_defaults(recipe, "llama-cpp", _nvidia_hw())
+    assert applied == {}
+    assert recipe.defaults["mmap"] is True
+
+
+def test_platform_flag_defaults_non_llama_runtime_noop():
+    recipe = _llama_recipe()
+    applied = apply_platform_runtime_flag_defaults(recipe, "vllm-distributed", _nvidia_hw())
+    assert applied == {}
+    assert "mmap" not in recipe.defaults
+
+
+def test_platform_flag_defaults_non_gb10_noop():
+    recipe = _llama_recipe()
+    applied = apply_platform_runtime_flag_defaults(recipe, "llama-cpp", _amd_hw())
+    assert applied == {}
+    assert "mmap" not in recipe.defaults
+
+
+def test_platform_flag_defaults_then_command_emits_no_mmap():
+    """End-to-end: GB10 default flows into the rendered llama.cpp command."""
+    from sparkrun.runtimes.llama_cpp import LlamaCppRuntime
+
+    recipe = _llama_recipe({"port": 8001})
+    apply_platform_runtime_flag_defaults(recipe, "llama-cpp", _nvidia_hw())
+    cmd = LlamaCppRuntime().generate_command(recipe, {}, is_cluster=False)
+    assert "--no-mmap" in cmd
+
+
+def test_platform_flag_defaults_explicit_true_suppresses_no_mmap():
+    from sparkrun.runtimes.llama_cpp import LlamaCppRuntime
+
+    recipe = _llama_recipe({"port": 8001, "mmap": True})
+    apply_platform_runtime_flag_defaults(recipe, "llama-cpp", _nvidia_hw())
+    cmd = LlamaCppRuntime().generate_command(recipe, {}, is_cluster=False)
+    assert "--no-mmap" not in cmd
 
 
 # ---------------------------------------------------------------------------
