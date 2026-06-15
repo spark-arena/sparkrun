@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 
 from sparkrun.orchestration.infiniband import parse_kv_output
@@ -403,12 +403,107 @@ def _is_host_valid(
     return True, ""
 
 
+def filter_cx7_interfaces(
+    interfaces: list[CX7Interface],
+    patterns: list[str] | None,
+) -> list[CX7Interface]:
+    """Narrow *interfaces* to those matching any of *patterns*.
+
+    Each pattern is matched against ``iface.name`` both via
+    :func:`fnmatch.fnmatch` (so globs like ``*np1`` work) and by exact
+    string equality (so explicit interface names work).  The union of
+    matches is returned in the original order; ``patterns`` that is
+    empty or ``None`` returns *interfaces* unchanged.
+
+    This filter is intentionally **naming-agnostic** — it makes no
+    assumption about DGX-Spark ``npN`` conventions — so it generalizes
+    to other high-speed-fabric NIC naming schemes.
+    """
+    if not patterns:
+        return interfaces
+
+    import fnmatch
+
+    selected: list[CX7Interface] = []
+    for iface in interfaces:
+        for pat in patterns:
+            if iface.name == pat or fnmatch.fnmatch(iface.name, pat):
+                selected.append(iface)
+                break
+    return selected
+
+
+def select_interface_pair(interfaces: list[CX7Interface]) -> list[CX7Interface]:
+    """Choose the two CX7 interfaces to assign IPs to.
+
+    With two or fewer interfaces the list is returned as-is (sorted by
+    name for determinism).  With more than two, the interfaces are
+    grouped by physical port via :func:`_group_interfaces_by_port` and
+    the first group with at least two interfaces is returned — i.e. a
+    *same-port* pair spanning both PCIe NICs (e.g. ``enp1s0f1np1`` +
+    ``enP2p1s0f1np1``).  This avoids the previous bug where the two
+    first-sorted names mixed a port-0 and a port-1 interface on the same
+    NIC.  If no port group yields a pair (e.g. non-``npN`` naming), it
+    falls back to the first two interfaces sorted by name.
+    """
+    sorted_ifaces = sorted(interfaces, key=lambda i: i.name.lower())
+    if len(sorted_ifaces) <= 2:
+        return sorted_ifaces
+
+    for group in _group_interfaces_by_port(interfaces):
+        if len(group) >= 2:
+            return group[:2]
+
+    return sorted_ifaces[:2]
+
+
+def apply_interface_filter(
+    detections: dict[str, CX7HostDetection],
+    interfaces: list[str] | None,
+) -> dict[str, CX7HostDetection]:
+    """Return *detections* with each host's interfaces narrowed by *interfaces*.
+
+    A no-op when *interfaces* is empty/``None``.  Otherwise returns a new
+    dict of copied detections (via :func:`dataclasses.replace`) so the
+    caller's objects are never mutated.  Shared by both planners so the
+    filter is applied identically for switch/direct and ring topologies.
+    """
+    if not interfaces:
+        return detections
+    return {host: replace(det, interfaces=filter_cx7_interfaces(det.interfaces, interfaces)) for host, det in detections.items()}
+
+
+# Ring topology needs both physical ports (4 interfaces) per host.
+RING_MIN_PHYSICAL_PORTS = 2
+
+
+def ring_ports_error(host: str, interfaces: list[CX7Interface]) -> str | None:
+    """Validate that *host* exposes enough physical ports for a ring.
+
+    Returns ``None`` when *interfaces* form at least
+    :data:`RING_MIN_PHYSICAL_PORTS` physical-port groups, or a ready-to-emit
+    error string otherwise.  Single source of truth for the ring port check
+    shared by the CLI pre-check (``setup cx7``) and :func:`plan_ring_cx7`,
+    so the two cannot drift.
+    """
+    groups = _group_interfaces_by_port(interfaces)
+    if len(groups) < RING_MIN_PHYSICAL_PORTS:
+        return "%s: ring topology requires %d physical ports (4 interfaces), but only %d port group(s) found (%d interfaces)" % (
+            host,
+            RING_MIN_PHYSICAL_PORTS,
+            len(groups),
+            len(interfaces),
+        )
+    return None
+
+
 def plan_cluster_cx7(
     detections: dict[str, CX7HostDetection],
     subnet1: ipaddress.IPv4Network,
     subnet2: ipaddress.IPv4Network,
     mtu: int = DEFAULT_MTU,
     force: bool = False,
+    interfaces: list[str] | None = None,
 ) -> CX7ClusterPlan:
     """Build a complete CX7 configuration plan for all hosts.
 
@@ -422,6 +517,10 @@ def plan_cluster_cx7(
         subnet2: Second /24 subnet.
         mtu: Target MTU (default 9000).
         force: Reconfigure even if existing config is valid.
+        interfaces: Optional name globs/exact names (e.g. ``["*np1"]``)
+            limiting which detected interfaces are eligible.  Applied per
+            host before validity checks and selection so a cluster can
+            pin a specific port pair (see issue #203).
 
     Returns:
         CX7ClusterPlan with per-host plans.
@@ -432,6 +531,11 @@ def plan_cluster_cx7(
         mtu=mtu,
         prefix_len=DEFAULT_PREFIX_LEN,
     )
+
+    # Narrow each host's interfaces to the requested filter up front so
+    # validity checks, existing-IP preservation, and selection all see the
+    # same set.
+    detections = apply_interface_filter(detections, interfaces)
 
     # Track taken octets per subnet
     taken_s1: set[int] = set()
@@ -473,9 +577,10 @@ def plan_cluster_cx7(
             continue
 
         if len(det.interfaces) < 2:
+            filt_note = " after interface filter %s" % interfaces if interfaces else ""
             host_plan.needs_change = True
-            host_plan.reason = "need 2 CX7 interfaces, found %d" % len(det.interfaces)
-            plan.errors.append("%s: need 2 CX7 interfaces, found %d" % (host, len(det.interfaces)))
+            host_plan.reason = "need 2 CX7 interfaces, found %d%s" % (len(det.interfaces), filt_note)
+            plan.errors.append("%s: need 2 CX7 interfaces, found %d%s" % (host, len(det.interfaces), filt_note))
             all_valid = False
             plan.host_plans.append(host_plan)
             continue
@@ -515,15 +620,14 @@ def plan_cluster_cx7(
                 plan.warnings.append("%s: could not derive last octet from mgmt IP '%s'" % (host, det.mgmt_ip))
                 preferred_octet = 1
 
-            # Assign IP on subnet1
-            # Use the first two interfaces (sorted by name for determinism).
-            # On DGX Spark, this picks a consistent pair regardless of which
-            # partition/port combination is active (1x200G vs 2x100G).
-            sorted_ifaces = sorted(det.interfaces, key=lambda i: i.name.lower())
-            if len(sorted_ifaces) > 2:
+            # Pick the pair of interfaces to assign.  When more than two
+            # are present, select_interface_pair() groups by physical port
+            # so we get a same-port pair across both NICs rather than a
+            # mixed port-0/port-1 pair (see issue #203).
+            pair = select_interface_pair(det.interfaces)
+            if len(det.interfaces) > 2:
                 plan.warnings.append(
-                    "%s: %d CX7 interfaces found, using first 2: %s, %s"
-                    % (host, len(sorted_ifaces), sorted_ifaces[0].name, sorted_ifaces[1].name)
+                    "%s: %d CX7 interfaces found, using port pair: %s, %s" % (host, len(det.interfaces), pair[0].name, pair[1].name)
                 )
             octet1 = _find_available_octet(taken_s1, preferred_octet)
             taken_s1.add(octet1)
@@ -540,12 +644,12 @@ def plan_cluster_cx7(
 
             host_plan.assignments = [
                 CX7InterfaceAssignment(
-                    iface_name=sorted_ifaces[0].name,
+                    iface_name=pair[0].name,
                     ip=ip1,
                     subnet=str(subnet1),
                 ),
                 CX7InterfaceAssignment(
-                    iface_name=sorted_ifaces[1].name,
+                    iface_name=pair[1].name,
                     ip=ip2,
                     subnet=str(subnet2),
                 ),
@@ -1124,6 +1228,7 @@ def plan_ring_cx7(
     subnets: list[ipaddress.IPv4Network],
     mtu: int = DEFAULT_MTU,
     force: bool = False,
+    interfaces: list[str] | None = None,
 ) -> CX7ClusterPlan:
     """Build CX7 configuration plan for a 3-node ring topology.
 
@@ -1140,6 +1245,10 @@ def plan_ring_cx7(
         subnets: 6 /24 subnets for ring configuration.
         mtu: Target MTU.
         force: Reconfigure even if existing config is valid.
+        interfaces: Optional name globs/exact names limiting eligible
+            interfaces.  A ring needs both physical ports; an over-narrow
+            filter trips the "requires 2 physical ports" error below
+            rather than silently misconfiguring.
 
     Returns:
         CX7ClusterPlan with per-host plans for 4 interfaces each.
@@ -1152,6 +1261,10 @@ def plan_ring_cx7(
         mtu=mtu,
         prefix_len=DEFAULT_PREFIX_LEN,
     )
+
+    # Narrow interfaces per host (no-op when the filter keeps all needed
+    # ring interfaces).
+    detections = apply_interface_filter(detections, interfaces)
 
     if len(subnets) < 6:
         plan.errors.append("Ring topology requires 6 subnets, got %d" % len(subnets))
@@ -1174,13 +1287,9 @@ def plan_ring_cx7(
 
     # Ring requires 2 physical ports per host (4 interfaces) — one port per peer
     for host in hosts_with_cx7:
-        det = detections[host]
-        port_groups = _group_interfaces_by_port(det.interfaces)
-        if len(port_groups) < 2:
-            plan.errors.append(
-                "%s: ring topology requires 2 physical ports (4 interfaces), "
-                "but only %d port group(s) found (%d interfaces)" % (host, len(port_groups), len(det.interfaces))
-            )
+        err = ring_ports_error(host, detections[host].interfaces)
+        if err:
+            plan.errors.append(err)
     if plan.errors:
         return plan
 

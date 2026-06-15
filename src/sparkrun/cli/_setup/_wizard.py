@@ -679,16 +679,28 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
 
                     click.echo("  Topology: %s" % effective_topology.value)
 
+                    # Reuse any interface filter saved on the cluster (e.g. set
+                    # via `setup cx7 --interfaces '*np1'`) so the wizard pins the
+                    # same port pair.  See issue #203.
+                    cx7_interfaces: list[str] | None = None
+                    if cluster_name:
+                        try:
+                            cx7_interfaces = cluster_mgr.get(cluster_name).fabric_interfaces or None
+                        except Exception:
+                            cx7_interfaces = None
+                    if cx7_interfaces:
+                        click.echo("  Interface filter: %s" % ", ".join(cx7_interfaces))
+
                     # Select subnets and plan based on topology
                     if effective_topology == CX7Topology.RING:
                         all_subnets = select_subnets_for_topology(detections, effective_topology)
                         click.echo("  Subnets: %s" % ", ".join(str(s) for s in all_subnets))
-                        plan = plan_ring_cx7(detections, topology_result, all_subnets)
+                        plan = plan_ring_cx7(detections, topology_result, all_subnets, interfaces=cx7_interfaces)
                     else:
                         s1, s2 = select_subnets(detections)
                         all_subnets = [s1, s2]
                         click.echo("  Subnets: %s, %s" % (s1, s2))
-                        plan = plan_cluster_cx7(detections, s1, s2)
+                        plan = plan_cluster_cx7(detections, s1, s2, interfaces=cx7_interfaces)
 
                     # Check for plan-level errors (e.g. insufficient ports)
                     if plan.errors and not plan.host_plans:

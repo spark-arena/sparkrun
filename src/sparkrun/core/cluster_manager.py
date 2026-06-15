@@ -120,6 +120,17 @@ class ClusterDefinition:
     transfer_mode: str | None = None
     transfer_interface: str | None = None
     topology: str | None = None
+    fabric_interfaces: list[str] = field(default_factory=list)
+    """Optional high-speed-fabric interface selection for this cluster.
+
+    A list of interface-name globs/exact names (e.g. ``["*np1"]``) that
+    ``setup cx7`` / the setup wizard apply when more than two CX7
+    interfaces are present, so the cluster pins a specific port pair
+    (see issue #203).  Empty means "auto" (port-group default).  Named
+    generically (not ``cx7_interfaces``) so it survives the planned
+    high-speed-fabric abstraction; distinct from
+    :attr:`transfer_interface`, which selects the data-transfer NIC.
+    """
     distribution: ClusterDistributionConfig = field(default_factory=ClusterDistributionConfig)
     """Cluster-level model/resource distribution preferences (see
     :class:`ClusterDistributionConfig`).  Defaults reproduce historical
@@ -204,6 +215,8 @@ class ClusterDefinition:
             d["transfer_interface"] = self.transfer_interface
         if self.topology:
             d["topology"] = self.topology
+        if self.fabric_interfaces:
+            d["fabric_interfaces"] = list(self.fabric_interfaces)
         if self.hosts_hardware:
             d["hosts_hardware"] = {h: hw.to_dict() for h, hw in self.hosts_hardware.items()}
         if self.executor:
@@ -325,6 +338,7 @@ class ClusterManager:
         transfer_mode: str | None = None,
         transfer_interface: str | None = None,
         topology: str | None = None,
+        fabric_interfaces: list[str] | None = None,
         hosts_hardware: dict[str, HostHardware] | None = None,
         executor: str | None = None,
         executor_config: dict[str, Any] | None = None,
@@ -343,6 +357,8 @@ class ClusterManager:
             transfer_mode: Optional transfer mode (local, push, delegated)
             transfer_interface: Optional transfer interface (cx7, mgmt)
             topology: Optional CX7 topology (direct, switch, ring)
+            fabric_interfaces: Optional high-speed-fabric interface globs/names
+                (e.g. ``["*np1"]``) pinning a specific CX7 port pair.
             hosts_hardware: Optional per-host hardware metadata.  Missing
                 entries fall back to DGX Spark via :meth:`ClusterDefinition.hardware_for`.
 
@@ -372,6 +388,7 @@ class ClusterManager:
             transfer_mode=transfer_mode,
             transfer_interface=transfer_interface,
             topology=topology,
+            fabric_interfaces=list(fabric_interfaces) if fabric_interfaces else [],
             hosts_hardware=dict(hosts_hardware) if hosts_hardware else {},
             executor=executor,
             executor_config=dict(executor_config) if executor_config else None,
@@ -410,6 +427,7 @@ class ClusterManager:
         transfer_mode: str | None = _UNSET,
         transfer_interface: str | None = _UNSET,
         topology: str | None = _UNSET,
+        fabric_interfaces: list[str] | None = _UNSET,
         hosts_hardware: dict[str, HostHardware] | None = _UNSET,
         executor: str | None = _UNSET,
         executor_config: dict[str, Any] | None = _UNSET,
@@ -428,6 +446,7 @@ class ClusterManager:
             transfer_mode: Transfer mode (if provided; pass ``None`` explicitly to clear)
             transfer_interface: Transfer interface (if provided; pass ``None`` explicitly to clear)
             topology: CX7 topology (if provided; pass ``None`` explicitly to clear)
+            fabric_interfaces: Fabric interface globs/names (if provided; pass empty list to clear)
             hosts_hardware: Per-host hardware metadata (if provided; pass empty dict to clear).
 
         Raises:
@@ -470,6 +489,10 @@ class ClusterManager:
         if topology is not _UNSET:
             cluster_def.topology = topology
             logger.debug("Updated topology for cluster '%s'", name)
+
+        if fabric_interfaces is not _UNSET:
+            cluster_def.fabric_interfaces = list(fabric_interfaces) if fabric_interfaces else []
+            logger.debug("Updated fabric_interfaces for cluster '%s'", name)
 
         if hosts_hardware is not _UNSET:
             cluster_def.hosts_hardware = dict(hosts_hardware) if hosts_hardware else {}
@@ -609,6 +632,8 @@ class ClusterManager:
             data["transfer_interface"] = cluster_def.transfer_interface
         if cluster_def.topology is not None:
             data["topology"] = cluster_def.topology
+        if cluster_def.fabric_interfaces:
+            data["fabric_interfaces"] = list(cluster_def.fabric_interfaces)
         if cluster_def.hosts_hardware:
             data["hosts_hardware"] = {h: hw.to_dict() for h, hw in cluster_def.hosts_hardware.items()}
         if cluster_def.executor:
@@ -653,6 +678,9 @@ class ClusterManager:
         raw_max_util = data.get("max_gpu_memory_utilization")
         max_gpu_memory_utilization = float(raw_max_util) if raw_max_util is not None else None
 
+        raw_fabric_ifaces = data.get("fabric_interfaces") or []
+        fabric_interfaces: list[str] = [str(x) for x in raw_fabric_ifaces] if isinstance(raw_fabric_ifaces, list) else []
+
         accelerator_memory_limits: dict[str, float] = {}
         raw_accel_limits = data.get("accelerator_memory_limits")
         if isinstance(raw_accel_limits, dict):
@@ -671,6 +699,7 @@ class ClusterManager:
             transfer_mode=data.get("transfer_mode"),
             transfer_interface=data.get("transfer_interface"),
             topology=data.get("topology"),
+            fabric_interfaces=fabric_interfaces,
             hosts_hardware=hosts_hardware,
             executor=data.get("executor"),
             executor_config=executor_config,

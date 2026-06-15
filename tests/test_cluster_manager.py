@@ -90,6 +90,33 @@ def test_update_max_gpu_memory_utilization(tmp_path: Path):
     assert manager.get("c").max_gpu_memory_utilization is None
 
 
+def test_fabric_interfaces_round_trips(tmp_path: Path):
+    """fabric_interfaces (issue #203) survives create/update/load; empty is omitted."""
+    manager = ClusterManager(tmp_path)
+
+    # Default is an empty list, omitted from the serialized dict.
+    manager.create("plain", ["host1"])
+    plain = manager.get("plain")
+    assert plain.fabric_interfaces == []
+    assert "fabric_interfaces" not in plain.to_dict()
+
+    # Set via create() and survive a round-trip.
+    manager.create("two", ["a", "b"], fabric_interfaces=["*np1"])
+    assert manager.get("two").fabric_interfaces == ["*np1"]
+    assert manager.get("two").to_dict()["fabric_interfaces"] == ["*np1"]
+
+    # An unrelated update leaves the saved selection intact (_UNSET sentinel).
+    manager.update("two", topology="switch")
+    assert manager.get("two").fabric_interfaces == ["*np1"]
+
+    # update() replaces and clears the selection.
+    manager.update("two", fabric_interfaces=["*np0"])
+    assert manager.get("two").fabric_interfaces == ["*np0"]
+    manager.update("two", fabric_interfaces=[])
+    assert manager.get("two").fabric_interfaces == []
+    assert "fabric_interfaces" not in manager.get("two").to_dict()
+
+
 def test_get_cluster_not_found(tmp_path: Path):
     """Getting a non-existent cluster raises ClusterError."""
     manager = ClusterManager(tmp_path)

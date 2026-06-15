@@ -347,6 +347,148 @@ class TestPlanClusterCX7:
 
 
 # ---------------------------------------------------------------------------
+# filter_cx7_interfaces / select_interface_pair (issue #203)
+# ---------------------------------------------------------------------------
+
+
+def _ifaces(*names) -> list[CX7Interface]:
+    return [CX7Interface(name=n, ip="", prefix=0, subnet="", mtu=9000, state="up", hca="roce") for n in names]
+
+
+# A 4-interface DGX Spark host: two PCIe NICs (enp1.., enP2..), each with np0 and np1.
+_FOUR_PORT_NAMES = ("enp1s0f0np0", "enp1s0f1np1", "enP2p1s0f0np0", "enP2p1s0f1np1")
+
+
+class TestFilterCX7Interfaces:
+    def test_glob_suffix(self):
+        from sparkrun.orchestration.networking import filter_cx7_interfaces
+
+        got = [i.name for i in filter_cx7_interfaces(_ifaces(*_FOUR_PORT_NAMES), ["*np1"])]
+        assert got == ["enp1s0f1np1", "enP2p1s0f1np1"]
+
+    def test_exact_name(self):
+        from sparkrun.orchestration.networking import filter_cx7_interfaces
+
+        got = [i.name for i in filter_cx7_interfaces(_ifaces(*_FOUR_PORT_NAMES), ["enP2p1s0f1np1"])]
+        assert got == ["enP2p1s0f1np1"]
+
+    def test_no_match_empties(self):
+        from sparkrun.orchestration.networking import filter_cx7_interfaces
+
+        assert filter_cx7_interfaces(_ifaces(*_FOUR_PORT_NAMES), ["nope*"]) == []
+
+    def test_none_and_empty_passthrough(self):
+        from sparkrun.orchestration.networking import filter_cx7_interfaces
+
+        ifaces = _ifaces(*_FOUR_PORT_NAMES)
+        assert filter_cx7_interfaces(ifaces, None) is ifaces
+        assert filter_cx7_interfaces(ifaces, []) is ifaces
+
+    def test_preserves_original_order_no_dupes(self):
+        from sparkrun.orchestration.networking import filter_cx7_interfaces
+
+        # Overlapping patterns must not duplicate an interface.
+        got = [i.name for i in filter_cx7_interfaces(_ifaces(*_FOUR_PORT_NAMES), ["*np1", "enP2p1s0f1np1"])]
+        assert got == ["enp1s0f1np1", "enP2p1s0f1np1"]
+
+
+class TestSelectInterfacePair:
+    def test_four_interfaces_picks_same_port_pair(self):
+        from sparkrun.orchestration.networking import select_interface_pair
+
+        pair = [i.name for i in select_interface_pair(_ifaces(*_FOUR_PORT_NAMES))]
+        # Both interfaces must share the same physical port (npN suffix),
+        # never a mixed np0+np1 pair on the same NIC.
+        suffixes = {n[-3:] for n in pair}
+        assert len(suffixes) == 1, pair
+        assert pair == ["enp1s0f0np0", "enP2p1s0f0np0"]
+
+    def test_two_interfaces_unchanged(self):
+        from sparkrun.orchestration.networking import select_interface_pair
+
+        pair = [i.name for i in select_interface_pair(_ifaces("enP2p1s0f1np1", "enp1s0f1np1"))]
+        assert pair == ["enp1s0f1np1", "enP2p1s0f1np1"]  # sorted by name.lower()
+
+    def test_non_npn_naming_falls_back_to_sorted_pair(self):
+        from sparkrun.orchestration.networking import select_interface_pair
+
+        pair = [i.name for i in select_interface_pair(_ifaces("eth3", "eth0", "eth2", "eth1"))]
+        assert pair == ["eth0", "eth1"]
+
+
+class TestSharedFilterHelpers:
+    def test_apply_interface_filter_noop_returns_same_object(self):
+        from sparkrun.orchestration.networking import apply_interface_filter
+
+        dets = {"h1": _make_detection("h1", "10.0.0.1", [(n, "", "", 1500) for n in _FOUR_PORT_NAMES])}
+        assert apply_interface_filter(dets, None) is dets
+        assert apply_interface_filter(dets, []) is dets
+
+    def test_apply_interface_filter_copies_and_narrows(self):
+        from sparkrun.orchestration.networking import apply_interface_filter
+
+        dets = {"h1": _make_detection("h1", "10.0.0.1", [(n, "", "", 1500) for n in _FOUR_PORT_NAMES])}
+        out = apply_interface_filter(dets, ["*np1"])
+        assert out is not dets
+        assert [i.name for i in out["h1"].interfaces] == ["enp1s0f1np1", "enP2p1s0f1np1"]
+        # Original detection untouched.
+        assert len(dets["h1"].interfaces) == 4
+
+    def test_ring_ports_error_ok_and_deficient(self):
+        from sparkrun.orchestration.networking import ring_ports_error
+
+        assert ring_ports_error("h1", _ifaces(*_FOUR_PORT_NAMES)) is None
+        msg = ring_ports_error("h1", _ifaces("enp1s0f1np1", "enP2p1s0f1np1"))
+        assert msg is not None
+        assert "requires 2 physical ports" in msg
+        assert msg.startswith("h1:")
+
+
+class TestPlanClusterCX7InterfaceFilter:
+    """Issue #203: 4 active interfaces per host must yield a coherent pair."""
+
+    def _four_port_hosts(self):
+        det1 = _make_detection("h1", "10.0.0.40", [(n, "", "", 1500) for n in _FOUR_PORT_NAMES])
+        det2 = _make_detection("h2", "10.0.0.41", [(n, "", "", 1500) for n in _FOUR_PORT_NAMES])
+        return {"h1": det1, "h2": det2}
+
+    def test_filter_pins_np1_pair_on_every_host(self):
+        s1 = ipaddress.IPv4Network("192.168.100.0/24")
+        s2 = ipaddress.IPv4Network("192.168.101.0/24")
+        plan = plan_cluster_cx7(self._four_port_hosts(), s1, s2, interfaces=["*np1"])
+        for hp in plan.host_plans:
+            names = {a.iface_name for a in hp.assignments}
+            assert names == {"enp1s0f1np1", "enP2p1s0f1np1"}, hp.host
+
+    def test_default_no_filter_never_mixes_ports(self):
+        s1 = ipaddress.IPv4Network("192.168.100.0/24")
+        s2 = ipaddress.IPv4Network("192.168.101.0/24")
+        plan = plan_cluster_cx7(self._four_port_hosts(), s1, s2)
+        for hp in plan.host_plans:
+            suffixes = {a.iface_name[-3:] for a in hp.assignments}
+            assert len(suffixes) == 1, (hp.host, [a.iface_name for a in hp.assignments])
+
+    def test_overnarrow_filter_flags_host(self):
+        s1 = ipaddress.IPv4Network("192.168.100.0/24")
+        s2 = ipaddress.IPv4Network("192.168.101.0/24")
+        # Only one interface survives the filter -> host cannot be configured.
+        plan = plan_cluster_cx7(self._four_port_hosts(), s1, s2, interfaces=["enp1s0f1np1"])
+        assert plan.all_valid is False
+        hp = plan.host_plans[0]
+        assert hp.needs_change is True
+        assert "need 2 CX7 interfaces" in hp.reason
+        assert "filter" in hp.reason
+
+    def test_filter_does_not_mutate_caller_detections(self):
+        s1 = ipaddress.IPv4Network("192.168.100.0/24")
+        s2 = ipaddress.IPv4Network("192.168.101.0/24")
+        hosts = self._four_port_hosts()
+        plan_cluster_cx7(hosts, s1, s2, interfaces=["*np1"])
+        # Original detection objects must still hold all four interfaces.
+        assert len(hosts["h1"].interfaces) == 4
+
+
+# ---------------------------------------------------------------------------
 # generate_cx7_configure_script
 # ---------------------------------------------------------------------------
 
@@ -977,6 +1119,30 @@ class TestPlanRingCX7:
 
         plan = plan_ring_cx7(detections, topo, [ipaddress.IPv4Network("192.168.10.0/24")])
         assert len(plan.errors) > 0
+
+    def test_ring_plan_interfaces_none_is_noop(self):
+        """interfaces=None reproduces the pre-filter behavior exactly."""
+        topo = self._make_ring_topology()
+        base = plan_ring_cx7(self._make_ring_detections(), topo, self._SUBNETS)
+        filtered = plan_ring_cx7(self._make_ring_detections(), topo, self._SUBNETS, interfaces=None)
+
+        def shape(plan):
+            return [(hp.host, hp.needs_change, [(a.iface_name, a.ip, a.subnet) for a in hp.assignments]) for hp in plan.host_plans]
+
+        assert shape(base) == shape(filtered)
+
+    def test_ring_plan_overnarrow_filter_errors_cleanly(self):
+        """A single-port filter (only np1) leaves <2 port groups → clean error, no plan."""
+        topo = self._make_ring_topology()
+        plan = plan_ring_cx7(self._make_ring_detections(), topo, self._SUBNETS, interfaces=["*np1"])
+
+        assert plan.host_plans == []
+        assert plan.errors
+        assert all("requires 2 physical ports" in e for e in plan.errors)
+        # The caller's detections are not mutated by the filter.
+        dets = self._make_ring_detections()
+        plan_ring_cx7(dets, topo, self._SUBNETS, interfaces=["*np1"])
+        assert all(len(d.interfaces) == 4 for d in dets.values())
 
     def test_ring_plan_idempotent(self):
         """Already-configured ring with custom last octets → no changes."""

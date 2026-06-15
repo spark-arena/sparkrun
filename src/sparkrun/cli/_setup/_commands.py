@@ -863,8 +863,20 @@ def setup_ssh(ctx, hosts, hosts_file, cluster_name, extra_hosts, include_self, u
     help="CX7 topology (auto-detected by default)",
     hidden=True,
 )
+@click.option(
+    "--interfaces",
+    default=None,
+    help="Limit which CX7 interfaces are used (comma-separated names or globs, e.g. '*np1'). "
+    "Saved to the cluster and reused on subsequent runs.",
+)
+@click.option(
+    "--port",
+    type=click.Choice(["0", "1"]),
+    default=None,
+    help="Convenience selector for the Nth physical CX7 port pair (equivalent to --interfaces '*npN').",
+)
 @click.pass_context
-def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, subnet1, subnet2, topology):
+def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, subnet1, subnet2, topology, interfaces, port):
     """Configure CX7 network interfaces on cluster hosts.
 
     Detects ConnectX-7 interfaces, assigns static IPs with jumbo frames
@@ -893,11 +905,18 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
       sparkrun setup cx7 --cluster mylab --subnet1 192.168.11.0/24 --subnet2 192.168.12.0/24
 
       sparkrun setup cx7 --cluster mylab --force
+
+      sparkrun setup cx7 --cluster two --interfaces '*np1'   # pin a port pair
+
+      sparkrun setup cx7 --cluster two --port 1              # same, by port index
     """
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.orchestration.networking import (
         CX7Topology,
+        _group_interfaces_by_port,
         configure_cx7_host,
+        filter_cx7_interfaces,
+        ring_ports_error,
         detect_cx7_for_hosts,
         detect_topology,
         select_subnets,
@@ -911,6 +930,14 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
     if (subnet1 is None) != (subnet2 is None):
         click.echo("Error: --subnet1 and --subnet2 must be specified together.", err=True)
         sys.exit(1)
+
+    # Interface selection: --interfaces (globs/names) and --port are mutually exclusive.
+    if interfaces and port is not None:
+        click.echo("Error: --interfaces and --port cannot be used together.", err=True)
+        sys.exit(1)
+    explicit_interfaces: list[str] | None = None
+    if interfaces:
+        explicit_interfaces = [s.strip() for s in interfaces.split(",") if s.strip()]
 
     import os
 
@@ -931,6 +958,67 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
     if not hosts_with_cx7:
         click.echo("Error: No CX7 interfaces detected on any host.", err=True)
         sys.exit(1)
+
+    # Resolve the effective interface filter:
+    #   explicit --interfaces / --port  >  cluster's saved fabric_interfaces  >  None (auto)
+    effective_interfaces: list[str] | None = None
+    interfaces_explicit = False
+    if explicit_interfaces:
+        effective_interfaces = explicit_interfaces
+        interfaces_explicit = True
+    elif port is not None:
+        import re
+
+        rep = next(iter(hosts_with_cx7.values()))
+        groups = _group_interfaces_by_port(rep.interfaces)
+        pidx = int(port)
+        if pidx >= len(groups):
+            click.echo(
+                "Error: --port %d requested but only %d physical port group(s) detected." % (pidx, len(groups)),
+                err=True,
+            )
+            sys.exit(1)
+        m = re.search(r"np(\d+)$", groups[pidx][0].name)
+        if not m:
+            click.echo(
+                "Error: could not derive a port glob from interface '%s'; use --interfaces instead." % groups[pidx][0].name,
+                err=True,
+            )
+            sys.exit(1)
+        effective_interfaces = ["*np%s" % m.group(1)]
+        # The glob is derived from one host; verify it yields a pair on every
+        # host so a heterogeneous cluster fails fast here rather than deep in
+        # planning.
+        bad_hosts = [h for h, d in hosts_with_cx7.items() if len(filter_cx7_interfaces(d.interfaces, effective_interfaces)) < 2]
+        if bad_hosts:
+            click.echo(
+                "Error: --port %d (%s) does not select 2 interfaces on: %s. Use --interfaces with explicit names."
+                % (pidx, effective_interfaces[0], ", ".join(bad_hosts)),
+                err=True,
+            )
+            sys.exit(1)
+        interfaces_explicit = True
+    else:
+        # Fall back to a previously-saved per-cluster selection.
+        saved_cluster = cluster_name
+        if not saved_cluster:
+            try:
+                _mgr = _get_cluster_manager()
+                saved_cluster = _mgr.get_default() if _mgr else None
+            except Exception:
+                saved_cluster = None
+        if saved_cluster:
+            try:
+                _mgr = _get_cluster_manager()
+                if _mgr:
+                    saved = _mgr.get(saved_cluster).fabric_interfaces
+                    if saved:
+                        effective_interfaces = list(saved)
+            except Exception:
+                pass
+
+    if effective_interfaces:
+        click.echo("Interface filter: %s" % ", ".join(effective_interfaces))
 
     # Lazy sudo handling — uses ensure_sudo_password() which tests NOPASSWD,
     # prompts, verifies, and supports cross-user fallback.  The sudo_ssh_kwargs
@@ -982,16 +1070,13 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
                 err=True,
             )
             sys.exit(1)
-        from sparkrun.orchestration.networking import _group_interfaces_by_port
-
         for h, det in hosts_with_cx7.items():
-            port_groups = _group_interfaces_by_port(det.interfaces)
-            if len(port_groups) < 2:
-                click.echo(
-                    "Error: %s: ring topology requires 2 physical ports (4 interfaces), "
-                    "but only %d port group(s) found (%d interfaces)" % (h, len(port_groups), len(det.interfaces)),
-                    err=True,
-                )
+            # Honor the interface filter so the pre-check matches what
+            # plan_ring_cx7 will actually see, via the shared validator.
+            ring_ifaces = filter_cx7_interfaces(det.interfaces, effective_interfaces)
+            err = ring_ports_error(h, ring_ifaces)
+            if err:
+                click.echo("Error: %s" % err, err=True)
                 sys.exit(1)
     elif topology == "direct":
         effective_topology = CX7Topology.DIRECT
@@ -1048,9 +1133,9 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
 
     # Step 4: Plan
     if effective_topology == CX7Topology.RING:
-        plan = plan_ring_cx7(detections, topology_result, all_subnets, mtu=mtu, force=force)
+        plan = plan_ring_cx7(detections, topology_result, all_subnets, mtu=mtu, force=force, interfaces=effective_interfaces)
     else:
-        plan = plan_cluster_cx7(detections, all_subnets[0], all_subnets[1], mtu=mtu, force=force)
+        plan = plan_cluster_cx7(detections, all_subnets[0], all_subnets[1], mtu=mtu, force=force, interfaces=effective_interfaces)
 
     # Display plan
     for hp in plan.host_plans:
@@ -1176,6 +1261,16 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
                 click.echo("Saved topology '%s' to cluster '%s'." % (effective_topology.value, effective_cluster))
         except Exception as e:
             click.echo("Warning: could not save topology to cluster: %s" % e, err=True)
+
+    # Persist an explicitly-chosen interface filter so subsequent runs reuse it.
+    if effective_cluster and interfaces_explicit and effective_interfaces:
+        try:
+            mgr = _get_cluster_manager()
+            if mgr:
+                mgr.update(effective_cluster, fabric_interfaces=effective_interfaces)
+                click.echo("Saved interface filter %s to cluster '%s'." % (effective_interfaces, effective_cluster))
+        except Exception as e:
+            click.echo("Warning: could not save interface filter to cluster: %s" % e, err=True)
 
     subnet_strs = [str(s) for s in all_subnets]
     if configured and not dry_run:
