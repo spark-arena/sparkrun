@@ -171,6 +171,122 @@ def cluster_create(
         sys.exit(1)
 
 
+@cluster.command("import")
+@click.option(
+    "--from-spark-vllm-docker-env",
+    "svd_env",
+    default=None,
+    metavar="PATH",
+    help="Import a legacy spark-vllm-docker .env file into a cluster.",
+)
+@click.option("--name", "name", type=CLUSTER_NAME, default=None, help="Cluster name (default: derived from the env file path)")
+@click.option("--default", "set_default", is_flag=True, default=False, help="Set as the default cluster")
+@dry_run_option
+@click.pass_context
+def cluster_import(ctx, svd_env, name, set_default, dry_run):
+    """Import an external cluster config into a sparkrun cluster.
+
+    Currently supports spark-vllm-docker ``.env`` files via
+    ``--from-spark-vllm-docker-env``.  Maps ``CLUSTER_NODES`` -> hosts,
+    ``ETH_IF`` -> fabric_interfaces, and ``CONTAINER_*`` -> env references
+    (resolved from the env file at launch, so secrets stay out of YAML).
+
+    Re-running on the same file **syncs in place** — matched by the stored
+    ``sync_source`` (even if the cluster was renamed) — and only ever
+    rewrites the import-owned fields (hosts, fabric_interfaces, env,
+    env_file, sync_source).  The resolved cluster name is printed to stdout.
+    """
+    from sparkrun.core.cluster_manager import ClusterError
+    from sparkrun.core.svd_import import build_svd_import
+
+    if not svd_env:
+        click.echo("Error: a source is required (currently: --from-spark-vllm-docker-env PATH).", err=True)
+        sys.exit(1)
+
+    try:
+        imp = build_svd_import(svd_env)
+    except ClusterError as e:
+        click.echo("Error: %s" % e, err=True)
+        sys.exit(1)
+
+    sctx = _get_context(ctx)
+    mgr = _get_cluster_manager(sctx=sctx)
+
+    # Re-sync identity is the sync_source, not the name — so a renamed
+    # cluster still updates in place on re-import.
+    existing = next((c for c in mgr.list_clusters() if c.sync_source == imp.sync_source), None)
+    if existing is not None:
+        target = existing.name
+    else:
+        target = name or imp.default_name
+        clash = None
+        try:
+            clash = mgr.get(target)
+        except ClusterError:
+            clash = None
+        if clash is not None and clash.sync_source != imp.sync_source:
+            click.echo(
+                "Error: cluster '%s' already exists from a different source; pass --name to choose another." % target,
+                err=True,
+            )
+            sys.exit(1)
+
+    # Human report goes to stderr; only the resolved name lands on stdout.
+    for line in imp.carried:
+        click.echo("  carried: %s" % line, err=True)
+    for line in imp.dropped:
+        click.echo("  dropped: %s" % line, err=True)
+    click.echo("  env_file: %s" % imp.env_file, err=True)
+
+    if dry_run:
+        click.echo("[dry-run] would %s cluster '%s'." % ("sync" if existing else "create", target), err=True)
+        click.echo(target)
+        return
+
+    try:
+        if existing is not None:
+            changes = [
+                f
+                for f, old, new in (
+                    ("hosts", existing.hosts, imp.hosts),
+                    ("fabric_interfaces", existing.fabric_interfaces, imp.fabric_interfaces),
+                    ("env", existing.env, imp.env),
+                    ("env_file", existing.env_file, imp.env_file),
+                )
+                if old != new
+            ]
+            mgr.update(
+                target,
+                hosts=imp.hosts,
+                fabric_interfaces=imp.fabric_interfaces,
+                env=imp.env,
+                env_file=imp.env_file,
+                sync_source=imp.sync_source,
+            )
+            if changes:
+                click.echo("Synced cluster '%s' (updated: %s)." % (target, ", ".join(changes)), err=True)
+            else:
+                click.echo("Cluster '%s' already in sync; no changes." % target, err=True)
+        else:
+            mgr.create(
+                target,
+                imp.hosts,
+                fabric_interfaces=imp.fabric_interfaces,
+                env=imp.env,
+                env_file=imp.env_file,
+                sync_source=imp.sync_source,
+            )
+            click.echo("Imported cluster '%s' with %d host(s)." % (target, len(imp.hosts)), err=True)
+        if set_default:
+            mgr.set_default(target)
+            click.echo("Default cluster set to '%s'." % target, err=True)
+    except ClusterError as e:
+        click.echo("Error: %s" % e, err=True)
+        sys.exit(1)
+
+    click.echo(target)
+
+
 @cluster.command("update")
 @click.argument("name", type=CLUSTER_NAME)
 @click.option("--hosts", "-H", default=None, help="Replace host list (comma-separated)")
