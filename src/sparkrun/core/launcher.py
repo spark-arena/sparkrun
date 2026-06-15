@@ -880,6 +880,15 @@ def launch_inference(
         v=v,
     )
 
+    # Cluster-level container env (e.g. CONTAINER_* imported from a legacy
+    # spark-vllm-docker .env), resolved from the cluster's env_file.  Layered
+    # UNDER recipe env so recipe/CLI env values win.  Single chokepoint —
+    # covers solo and cluster mode, all runtimes and executors.
+    effective_env = recipe.env
+    if cluster is not None and getattr(cluster, "env", None):
+        cluster_env = cluster.resolve_env()
+        effective_env = {**cluster_env, **(recipe.env or {})}
+
     # Launch
     rc = runtime.run(
         hosts=host_list,
@@ -888,7 +897,7 @@ def launch_inference(
         recipe=recipe,
         overrides=overrides,
         cluster_id=cluster_id,
-        env=recipe.env,
+        env=effective_env,
         cache_dir=effective_cache_dir,
         config=config,
         dry_run=dry_run,

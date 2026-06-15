@@ -117,6 +117,75 @@ def test_fabric_interfaces_round_trips(tmp_path: Path):
     assert "fabric_interfaces" not in manager.get("two").to_dict()
 
 
+def test_env_envfile_syncsource_round_trip(tmp_path: Path):
+    """env / env_file / sync_source survive create/update/load; empty omitted."""
+    manager = ClusterManager(tmp_path)
+
+    manager.create("plain", ["h1"])
+    plain = manager.get("plain")
+    assert plain.env == {} and plain.env_file is None and plain.sync_source is None
+    for key in ("env", "env_file", "sync_source"):
+        assert key not in plain.to_dict()
+
+    manager.create(
+        "svd",
+        ["a", "b"],
+        env={"HF_TOKEN": "${CONTAINER_HF_TOKEN}"},
+        env_file="/path/.env",
+        sync_source="spark_vllm_docker:/path/.env",
+    )
+    c = manager.get("svd")
+    assert c.env == {"HF_TOKEN": "${CONTAINER_HF_TOKEN}"}
+    assert c.env_file == "/path/.env"
+    assert c.sync_source == "spark_vllm_docker:/path/.env"
+
+    # Unrelated update preserves the import-owned fields (_UNSET sentinel).
+    manager.update("svd", description="hi")
+    assert manager.get("svd").env == {"HF_TOKEN": "${CONTAINER_HF_TOKEN}"}
+
+    # update replaces / clears.
+    manager.update("svd", env={}, env_file=None, sync_source=None)
+    cleared = manager.get("svd")
+    assert cleared.env == {} and cleared.env_file is None and cleared.sync_source is None
+
+
+def test_resolve_env_substitutes_from_env_file(tmp_path: Path):
+    """${VAR} resolves from env_file; literals pass through."""
+    envf = tmp_path / "svd.env"
+    envf.write_text('# c\nCONTAINER_HF_TOKEN="secret123"\nPLAINSRC=nope\n')
+    manager = ClusterManager(tmp_path)
+    manager.create(
+        "svd",
+        ["a"],
+        env={"HF_TOKEN": "${CONTAINER_HF_TOKEN}", "LIT": "literal"},
+        env_file=str(envf),
+    )
+    assert manager.get("svd").resolve_env() == {"HF_TOKEN": "secret123", "LIT": "literal"}
+
+
+def test_resolve_env_missing_var_is_hard_error(tmp_path: Path):
+    envf = tmp_path / "svd.env"
+    envf.write_text("OTHER=1\n")
+    manager = ClusterManager(tmp_path)
+    manager.create("svd", ["a"], env={"X": "${NOPE}"}, env_file=str(envf))
+    with pytest.raises(ClusterError, match=r"\$\{NOPE\}"):
+        manager.get("svd").resolve_env()
+
+
+def test_resolve_env_reference_without_env_file_errors(tmp_path: Path):
+    manager = ClusterManager(tmp_path)
+    manager.create("svd", ["a"], env={"X": "${Y}"})
+    with pytest.raises(ClusterError, match="no env_file"):
+        manager.get("svd").resolve_env()
+
+
+def test_resolve_env_no_refs_needs_no_file(tmp_path: Path):
+    """All-literal env resolves without reading any file."""
+    manager = ClusterManager(tmp_path)
+    manager.create("svd", ["a"], env={"A": "1", "B": "two"})
+    assert manager.get("svd").resolve_env() == {"A": "1", "B": "two"}
+
+
 def test_get_cluster_not_found(tmp_path: Path):
     """Getting a non-existent cluster raises ClusterError."""
     manager = ClusterManager(tmp_path)

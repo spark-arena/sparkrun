@@ -34,6 +34,38 @@ class ClusterError(Exception):
 # Sentinel for "not provided" to distinguish from explicit None
 _UNSET = object()
 
+# ``${VAR}`` reference in a cluster env value, resolved from ClusterDefinition.env_file.
+_ENV_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _parse_env_file(path: str) -> dict[str, str]:
+    """Parse a ``KEY=VALUE`` env file into a dict (no shell execution).
+
+    Skips blank lines and ``#`` comments; strips one layer of matching
+    single/double quotes from values.  Raises :class:`ClusterError` if the
+    file cannot be read.
+    """
+    p = Path(path).expanduser()
+    try:
+        text = p.read_text()
+    except OSError as e:
+        raise ClusterError("could not read env_file %s: %s" % (path, e)) from e
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or "=" not in s:
+            continue
+        key, _, value = s.partition("=")
+        key = key.strip()
+        if key.startswith("export "):
+            key = key[len("export ") :].strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        if key:
+            out[key] = value
+    return out
+
 
 @dataclass
 class ModelDistributionPrefs:
@@ -189,6 +221,60 @@ class ClusterDefinition:
     Takes precedence over :attr:`max_gpu_memory_utilization` but is overridden
     by a value set directly on an :class:`~sparkrun.core.hardware.AcceleratorSpec`.
     """
+    env: dict[str, str] = field(default_factory=dict)
+    """Cluster-level container environment, layered **under** recipe ``env``
+    and CLI overrides (precedence: CLI ``-e``/``-o`` > recipe ``env`` >
+    cluster ``env``).
+
+    Values may contain ``${VAR}`` references resolved at launch time from
+    :attr:`env_file` (see :meth:`resolve_env`) — so secrets stay in the
+    user's env file and never land in this YAML.  Typically populated by
+    ``cluster import`` as a rename/selection table over a legacy
+    ``CONTAINER_*`` block.  Import-owned (rewritten wholesale on sync).
+    """
+    env_file: str | None = None
+    """Path to an env file (``KEY=VALUE`` lines) that ``${VAR}`` references
+    in :attr:`env` resolve against.  Read locally on the control machine at
+    launch; values are emitted per host, so the file need not exist on
+    remote nodes.  Distinct from :attr:`sync_source` (which may point at the
+    same file but means "where this cluster was imported from")."""
+    sync_source: str | None = None
+    """Provenance + re-sync identity, formatted ``<type>:<location>``
+    (e.g. ``spark_vllm_docker:/path/to/.env``).  ``cluster import`` upserts
+    by matching this, so re-import updates the same cluster even if it was
+    renamed.  Generic by design so future import sources can reuse it."""
+
+    def resolve_env(self) -> dict[str, str]:
+        """Resolve :attr:`env`, substituting ``${VAR}`` from :attr:`env_file`.
+
+        ``${VAR}`` references resolve **only** against the cluster's own
+        ``env_file`` — never ``os.environ`` or recipe env — so this cannot
+        be used to exfiltrate arbitrary host secrets.  A reference with no
+        matching key in the file (or with no ``env_file`` configured at all)
+        raises :class:`ClusterError`.
+        """
+        if not self.env:
+            return {}
+        needs_file = any(_ENV_REF_RE.search(str(v)) for v in self.env.values())
+        file_vars: dict[str, str] = {}
+        if needs_file:
+            if not self.env_file:
+                raise ClusterError("cluster '%s' env uses ${...} references but has no env_file configured" % self.name)
+            file_vars = _parse_env_file(self.env_file)
+
+        resolved: dict[str, str] = {}
+        for key, raw in self.env.items():
+
+            def _sub(m: "re.Match[str]") -> str:
+                var = m.group(1)
+                if var not in file_vars:
+                    raise ClusterError(
+                        "cluster '%s' env[%s] references ${%s}, not found in env_file %s" % (self.name, key, var, self.env_file)
+                    )
+                return file_vars[var]
+
+            resolved[key] = _ENV_REF_RE.sub(_sub, str(raw))
+        return resolved
 
     def hardware_for(self, host: str) -> HostHardware:
         """Return hardware metadata for *host*, defaulting to DGX Spark.
@@ -217,6 +303,12 @@ class ClusterDefinition:
             d["topology"] = self.topology
         if self.fabric_interfaces:
             d["fabric_interfaces"] = list(self.fabric_interfaces)
+        if self.env:
+            d["env"] = dict(self.env)
+        if self.env_file:
+            d["env_file"] = self.env_file
+        if self.sync_source:
+            d["sync_source"] = self.sync_source
         if self.hosts_hardware:
             d["hosts_hardware"] = {h: hw.to_dict() for h, hw in self.hosts_hardware.items()}
         if self.executor:
@@ -339,6 +431,9 @@ class ClusterManager:
         transfer_interface: str | None = None,
         topology: str | None = None,
         fabric_interfaces: list[str] | None = None,
+        env: dict[str, str] | None = None,
+        env_file: str | None = None,
+        sync_source: str | None = None,
         hosts_hardware: dict[str, HostHardware] | None = None,
         executor: str | None = None,
         executor_config: dict[str, Any] | None = None,
@@ -359,6 +454,10 @@ class ClusterManager:
             topology: Optional CX7 topology (direct, switch, ring)
             fabric_interfaces: Optional high-speed-fabric interface globs/names
                 (e.g. ``["*np1"]``) pinning a specific CX7 port pair.
+            env: Optional cluster-level container env (values may use
+                ``${VAR}`` resolved from ``env_file``).
+            env_file: Optional path backing ``${VAR}`` references in ``env``.
+            sync_source: Optional ``<type>:<location>`` import provenance.
             hosts_hardware: Optional per-host hardware metadata.  Missing
                 entries fall back to DGX Spark via :meth:`ClusterDefinition.hardware_for`.
 
@@ -389,6 +488,9 @@ class ClusterManager:
             transfer_interface=transfer_interface,
             topology=topology,
             fabric_interfaces=list(fabric_interfaces) if fabric_interfaces else [],
+            env=dict(env) if env else {},
+            env_file=env_file,
+            sync_source=sync_source,
             hosts_hardware=dict(hosts_hardware) if hosts_hardware else {},
             executor=executor,
             executor_config=dict(executor_config) if executor_config else None,
@@ -428,6 +530,9 @@ class ClusterManager:
         transfer_interface: str | None = _UNSET,
         topology: str | None = _UNSET,
         fabric_interfaces: list[str] | None = _UNSET,
+        env: dict[str, str] | None = _UNSET,
+        env_file: str | None = _UNSET,
+        sync_source: str | None = _UNSET,
         hosts_hardware: dict[str, HostHardware] | None = _UNSET,
         executor: str | None = _UNSET,
         executor_config: dict[str, Any] | None = _UNSET,
@@ -447,6 +552,9 @@ class ClusterManager:
             transfer_interface: Transfer interface (if provided; pass ``None`` explicitly to clear)
             topology: CX7 topology (if provided; pass ``None`` explicitly to clear)
             fabric_interfaces: Fabric interface globs/names (if provided; pass empty list to clear)
+            env: Cluster-level container env (if provided; pass empty dict to clear)
+            env_file: Env file path backing ``${VAR}`` refs (if provided; pass ``None`` to clear)
+            sync_source: Import provenance / re-sync identity (if provided; pass ``None`` to clear)
             hosts_hardware: Per-host hardware metadata (if provided; pass empty dict to clear).
 
         Raises:
@@ -493,6 +601,18 @@ class ClusterManager:
         if fabric_interfaces is not _UNSET:
             cluster_def.fabric_interfaces = list(fabric_interfaces) if fabric_interfaces else []
             logger.debug("Updated fabric_interfaces for cluster '%s'", name)
+
+        if env is not _UNSET:
+            cluster_def.env = dict(env) if env else {}
+            logger.debug("Updated env for cluster '%s'", name)
+
+        if env_file is not _UNSET:
+            cluster_def.env_file = env_file
+            logger.debug("Updated env_file for cluster '%s'", name)
+
+        if sync_source is not _UNSET:
+            cluster_def.sync_source = sync_source
+            logger.debug("Updated sync_source for cluster '%s'", name)
 
         if hosts_hardware is not _UNSET:
             cluster_def.hosts_hardware = dict(hosts_hardware) if hosts_hardware else {}
@@ -634,6 +754,12 @@ class ClusterManager:
             data["topology"] = cluster_def.topology
         if cluster_def.fabric_interfaces:
             data["fabric_interfaces"] = list(cluster_def.fabric_interfaces)
+        if cluster_def.env:
+            data["env"] = dict(cluster_def.env)
+        if cluster_def.env_file:
+            data["env_file"] = cluster_def.env_file
+        if cluster_def.sync_source:
+            data["sync_source"] = cluster_def.sync_source
         if cluster_def.hosts_hardware:
             data["hosts_hardware"] = {h: hw.to_dict() for h, hw in cluster_def.hosts_hardware.items()}
         if cluster_def.executor:
@@ -681,6 +807,9 @@ class ClusterManager:
         raw_fabric_ifaces = data.get("fabric_interfaces") or []
         fabric_interfaces: list[str] = [str(x) for x in raw_fabric_ifaces] if isinstance(raw_fabric_ifaces, list) else []
 
+        raw_env = data.get("env") or {}
+        cluster_env: dict[str, str] = {str(k): str(v) for k, v in raw_env.items()} if isinstance(raw_env, dict) else {}
+
         accelerator_memory_limits: dict[str, float] = {}
         raw_accel_limits = data.get("accelerator_memory_limits")
         if isinstance(raw_accel_limits, dict):
@@ -700,6 +829,9 @@ class ClusterManager:
             transfer_interface=data.get("transfer_interface"),
             topology=data.get("topology"),
             fabric_interfaces=fabric_interfaces,
+            env=cluster_env,
+            env_file=data.get("env_file"),
+            sync_source=data.get("sync_source"),
             hosts_hardware=hosts_hardware,
             executor=data.get("executor"),
             executor_config=executor_config,
