@@ -70,6 +70,9 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
         # If recipe has an explicit command template, render it
         rendered = recipe.render_command(config)
         if rendered:
+            # Honor a defaults/-o value for the backend over a literal in the
+            # command template (e.g. -o distributed_executor_backend=ray).
+            rendered = self._apply_distributed_backend(rendered, config, skip_keys)
             # Ensure --distributed-executor-backend ray is present for cluster mode
             if is_cluster and "--distributed-executor-backend" not in rendered:
                 rendered = rendered.rstrip() + " --distributed-executor-backend ray"

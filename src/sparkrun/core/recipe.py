@@ -351,8 +351,15 @@ def _resolve_vllm_variant(recipe: Recipe) -> None:
     """Bare 'vllm' (or empty) -> 'vllm-distributed' (default) or 'vllm-ray' (Ray hints)."""
     if recipe.runtime not in ("vllm", ""):
         return
+    # An explicit CLI override wins over everything, including a literal
+    # `--distributed-executor-backend ray` baked into the command template —
+    # so `-o distributed_executor_backend=mp` can flip a legacy recipe off Ray.
     # noinspection PyProtectedMember
-    if str(recipe._effective_default("distributed_executor_backend", "")).lower() == "ray":
+    override = recipe._applied_overrides.get("distributed_executor_backend")
+    if override is not None:
+        recipe.runtime = "vllm-ray" if str(override).lower() == "ray" else "vllm-distributed"
+        return
+    if str(recipe.defaults.get("distributed_executor_backend", "")).lower() == "ray":
         recipe.runtime = "vllm-ray"
         return
     if recipe.command and _RAY_BACKEND_RE.search(recipe.command):
@@ -406,9 +413,13 @@ def resolve_runtime(data: dict[str, Any], overrides: dict[str, Any] | None = Non
         if defaults is not None and not isinstance(defaults, dict):
             raise RecipeError("Recipe 'defaults' field must be a mapping, got %s" % type(defaults).__name__)
         defaults = defaults or {}
-        # Overrides take precedence over defaults
-        deb = effective.get("distributed_executor_backend") or defaults.get("distributed_executor_backend", "")
-        if str(deb).lower() == "ray":
+        # An explicit override wins over the literal-command hint (mirrors
+        # _resolve_vllm_variant): -o distributed_executor_backend=mp flips a
+        # legacy ray-in-command recipe to vllm-distributed.
+        override = effective.get("distributed_executor_backend")
+        if override is not None:
+            return "vllm-ray" if str(override).lower() == "ray" else "vllm-distributed"
+        if str(defaults.get("distributed_executor_backend", "")).lower() == "ray":
             return "vllm-ray"
         if _RAY_BACKEND_RE.search(cmd):
             return "vllm-ray"

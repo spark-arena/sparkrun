@@ -551,6 +551,35 @@ class RuntimePlugin(Plugin):
         return parallelism.total_gpus
 
     @staticmethod
+    def reconcile_flag_in_command(command: str, flag: str, value: object, *, override: bool = False) -> str:
+        """Reconcile a rendered command string with a desired ``flag value``.
+
+        ``Recipe.render_command`` only substitutes ``{placeholders}``; a
+        literal flag baked into a recipe ``command`` is passed through
+        untouched, so a config/CLI value that is not wired as a placeholder
+        gets silently dropped.  This is the single primitive for fixing that
+        class of template exception, with two policies:
+
+        - ``override=False`` (*fill*): append ``flag value`` only when *flag*
+          is absent; an existing occurrence is left exactly as the template
+          author wrote it.  (Used for ``served_model_name``.)
+        - ``override=True``: force *flag* to *value* — replace the value of
+          an existing ``flag <token>`` occurrence, or append when absent.
+          (Used so e.g. ``-o distributed_executor_backend=mp`` wins over a
+          recipe command that hardcodes ``--distributed-executor-backend
+          ray``.)
+
+        Idempotent; *value* is stringified.
+        """
+        if flag in command:
+            if not override:
+                return command
+            import re
+
+            return re.sub(re.escape(flag) + r"\s+\S+", "%s %s" % (flag, value), command, count=1)
+        return "%s %s %s" % (command.rstrip(), flag, value)
+
+    @staticmethod
     def _augment_served_model_name(
         command: str,
         config,
@@ -561,9 +590,9 @@ class RuntimePlugin(Plugin):
 
         When a recipe uses an explicit command template that omits the
         ``{served_model_name}`` placeholder, CLI overrides for
-        ``--served-model-name`` are silently dropped.  This helper
-        checks whether the override was consumed and appends the
-        appropriate flag if not.
+        ``--served-model-name`` are silently dropped.  This helper appends
+        the flag (fill policy — an existing value is left intact) so the
+        override is honored.
 
         Args:
             command: The rendered command string.
@@ -580,9 +609,7 @@ class RuntimePlugin(Plugin):
         value = config.get("served_model_name")
         if value is None:
             return command
-        if flag in command:
-            return command
-        return "%s %s %s" % (command.rstrip(), flag, value)
+        return RuntimePlugin.reconcile_flag_in_command(command, flag, value, override=False)
 
     @staticmethod
     def build_flags_from_map(

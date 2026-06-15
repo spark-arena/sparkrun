@@ -39,6 +39,24 @@ class VllmMixin:
         cmds["vllm"] = "python3 -c 'import vllm; print(vllm.__version__)' 2>/dev/null || echo unknown"
         return cmds
 
+    def _apply_distributed_backend(self, command: str, config, skip_keys: set[str] | frozenset[str] = frozenset()) -> str:
+        """Sync a rendered command's ``--distributed-executor-backend`` value.
+
+        ``render_command`` leaves a literal ``--distributed-executor-backend
+        ray`` in a recipe ``command`` untouched, so a CLI override
+        (``-o distributed_executor_backend=mp``) would otherwise be ignored.
+        When the config chain resolves a value for the key — i.e. it was set
+        in ``defaults`` or via ``-o`` — force the command to that value;
+        when it resolves nothing (the value lives only in the literal
+        command), leave the command as-is.
+        """
+        if "distributed_executor_backend" in skip_keys:
+            return command
+        value = config.get("distributed_executor_backend")
+        if value is None:
+            return command
+        return self.reconcile_flag_in_command(command, "--distributed-executor-backend", value, override=True)
+
     def resolve_api_key(
         self,
         recipe: "Recipe",

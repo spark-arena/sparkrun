@@ -2215,6 +2215,28 @@ class TestResolveWithOverrides:
         recipe.resolve({"distributed_executor_backend": "mp"})
         assert recipe.runtime == "vllm-distributed"
 
+    def test_resolve_override_mp_beats_literal_command_ray(self):
+        """Legacy: --distributed-executor-backend ray hardcoded in command,
+        not in defaults. -o distributed_executor_backend=mp must still win."""
+        data = {
+            "model": "test-model",
+            "container": "img:latest",
+            "command": "vllm serve {model} --distributed-executor-backend ray",
+        }
+        recipe = Recipe.from_dict(data)
+        # No override: the command hint selects vllm-ray.
+        assert recipe.runtime == "vllm-ray"
+
+        recipe.resolve({"distributed_executor_backend": "mp"})
+        assert recipe.runtime == "vllm-distributed"
+
+        # And the lightweight resolver mirrors it.
+        from sparkrun.core.recipe import resolve_runtime
+
+        assert resolve_runtime(data) == "vllm-ray"
+        assert resolve_runtime(data, {"distributed_executor_backend": "mp"}) == "vllm-distributed"
+        assert resolve_runtime(data, {"distributed_executor_backend": "ray"}) == "vllm-ray"
+
     def test_resolve_non_affecting_overrides(self):
         """Overrides without runtime-affecting keys don't change runtime."""
         recipe = Recipe.from_dict(

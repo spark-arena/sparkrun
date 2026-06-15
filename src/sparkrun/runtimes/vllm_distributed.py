@@ -73,6 +73,10 @@ class VllmDistributedRuntime(VllmMixin, RuntimePlugin):
         # If recipe has an explicit command template, render it
         rendered = recipe.render_command(config)
         if rendered:
+            # A defaults/-o value for the backend wins over a literal in the
+            # command template (e.g. -o distributed_executor_backend=mp over a
+            # legacy command that hardcodes --distributed-executor-backend ray).
+            rendered = self._apply_distributed_backend(rendered, config, skip_keys)
             rendered = self._augment_served_model_name(
                 rendered,
                 config,
@@ -149,6 +153,10 @@ class VllmDistributedRuntime(VllmMixin, RuntimePlugin):
         # If recipe has an explicit command template, render it
         rendered = recipe.render_command(config)
         if rendered:
+            # A defaults/-o value for the backend wins over a literal in the
+            # command template (e.g. -o distributed_executor_backend=mp over a
+            # legacy command that hardcodes --distributed-executor-backend ray).
+            rendered = self._apply_distributed_backend(rendered, config, skip_keys)
             rendered = self._augment_served_model_name(
                 rendered,
                 config,

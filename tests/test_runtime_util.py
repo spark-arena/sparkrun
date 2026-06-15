@@ -271,3 +271,34 @@ def test_vllm_mixin_build_command_skip_keys_strips_from_flag_map():
     )
     assert "--served-model-name" not in cmd
     assert "--port 8000" in cmd
+
+
+def test_reconcile_flag_fill_mode():
+    """override=False (fill): append when absent, never touch an existing value."""
+    from sparkrun.runtimes.base import RuntimePlugin
+
+    rec = RuntimePlugin.reconcile_flag_in_command
+    # Absent -> appended.
+    assert rec("vllm serve m", "--served-model-name", "alias") == "vllm serve m --served-model-name alias"
+    # Present -> left exactly as-is (template author wins).
+    assert rec("vllm serve m --served-model-name keep", "--served-model-name", "alias", override=False) == (
+        "vllm serve m --served-model-name keep"
+    )
+
+
+def test_reconcile_flag_override_mode():
+    """override=True: replace an existing value, or append when absent. Idempotent."""
+    from sparkrun.runtimes.base import RuntimePlugin
+
+    rec = RuntimePlugin.reconcile_flag_in_command
+    flag = "--distributed-executor-backend"
+    # Replace existing value.
+    assert rec("vllm serve m %s ray" % flag, flag, "mp", override=True) == "vllm serve m %s mp" % flag
+    # Append when absent.
+    assert rec("vllm serve m", flag, "mp", override=True) == "vllm serve m %s mp" % flag
+    # Only the value changes; surrounding flags survive and no duplication.
+    out = rec("vllm serve m %s ray -tp 2" % flag, flag, "mp", override=True)
+    assert out == "vllm serve m %s mp -tp 2" % flag
+    assert out.count(flag) == 1
+    # Idempotent under the same target value.
+    assert rec(out, flag, "mp", override=True) == out

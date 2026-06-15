@@ -69,6 +69,32 @@ def test_vllm_distributed_generate_command_no_ray():
     assert "--distributed-executor-backend" not in cmd
 
 
+def test_vllm_distributed_command_literal_ray_overridden_to_mp():
+    """Legacy command hardcodes ray; -o distributed_executor_backend=mp rewrites it."""
+    recipe_data = {
+        "name": "legacy",
+        "model": "org/model",
+        "runtime": "vllm-distributed",
+        "command": "vllm serve {model} -tp 2 --distributed-executor-backend ray",
+    }
+    recipe = Recipe.from_dict(recipe_data)
+    runtime = VllmDistributedRuntime()
+
+    cmd = runtime.generate_command(recipe, {"distributed_executor_backend": "mp"}, is_cluster=True, num_nodes=2, head_ip="10.0.0.1")
+    assert "--distributed-executor-backend mp" in cmd
+    assert "--distributed-executor-backend ray" not in cmd
+    assert cmd.count("--distributed-executor-backend") == 1
+
+    # No override: the literal command value is left untouched.
+    cmd_none = runtime.generate_command(recipe, {}, is_cluster=True, num_nodes=2, head_ip="10.0.0.1")
+    assert "--distributed-executor-backend ray" in cmd_none
+
+    # The node command honors the override too.
+    node_cmd = runtime.generate_node_command(recipe, {"distributed_executor_backend": "mp"}, head_ip="10.0.0.1", num_nodes=2, node_rank=1)
+    assert "--distributed-executor-backend mp" in node_cmd
+    assert "--distributed-executor-backend ray" not in node_cmd
+
+
 def test_vllm_distributed_generate_command_cluster():
     """Cluster mode adds --nnodes, --master-addr, --master-port."""
     recipe_data = {
