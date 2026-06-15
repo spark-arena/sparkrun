@@ -18,7 +18,9 @@
 #   * Engine passthrough after `--` is translated to `-o key=value` (sparkrun's
 #     only sanctioned engine-override path), not appended verbatim. It only
 #     takes effect for recipe-templated / known engine keys.
-#   * No autodiscovery/.env workflow: --discover / --show-env / --config error out.
+#   * No autodiscovery: --discover / --show-env error out.
+#   * --config <.env> is imported into a sparkrun cluster (idempotent) and the
+#     run is retargeted at it; secrets stay in the .env via ${VAR} references.
 #   * --build-only / --download-only have no isolated phase under sparkrun
 #     (images/models are synced automatically during `run`).
 #
@@ -138,6 +140,7 @@ NO_RAY=0
 DAEMON=0
 TP_SET=0
 HAVE_PUBLISH=0
+CONFIG_ENV=""                   # legacy --config <.env>: imported to a sparkrun cluster
 declare -a ARGS=()              # sparkrun run arguments (after the recipe)
 declare -a PASSTHROUGH=()       # tokens after `--`
 
@@ -231,7 +234,8 @@ parse_args() {
             --ib-if)           unsupported "--ib-if"     "sparkrun auto-detects networking; no manual interface override." ;;
             --discover)        unsupported "--discover"  "use \`sparkrun setup wizard\` or \`sparkrun cluster create\`." ;;
             --show-env)        unsupported "--show-env"  "use \`sparkrun cluster show <name>\`." ;;
-            --config)          unsupported "--config"    "use \`--cluster NAME\`, \`-n/--nodes\`, or a hosts file." ;;
+            --config)
+                consume_value "--config"; CONFIG_ENV="$VAL"; shift; [[ $DBL -eq 1 ]] && shift; continue ;;
             --build-only)      unsupported "--build-only"    "sparkrun syncs images/models during run; no isolated phase." ;;
             --download-only)   unsupported "--download-only" "sparkrun syncs images/models during run; no isolated phase." ;;
             --force-build)     unsupported "--force-build"    "no build/download phase to force; re-pull the image manually if needed." ;;
@@ -333,6 +337,23 @@ main() {
     translate_passthrough
 
     resolve_runner
+
+    # Legacy --config <.env>: import it into a sparkrun cluster (idempotent
+    # upsert keyed on the file path) and target the run at that cluster.  The
+    # importer prints the resolved cluster name on stdout; its carried/dropped
+    # report goes to stderr.
+    if [[ -n "$CONFIG_ENV" ]]; then
+        if [[ "${RUN_RECIPE_DEBUG:-0}" == "1" ]]; then
+            err "DEBUG import: ${SPARKRUN[*]} cluster import --from-spark-vllm-docker-env ${CONFIG_ENV}"
+            CLUSTER_NAME="<from-env>"
+        else
+            CLUSTER_NAME="$("${SPARKRUN[@]}" cluster import --from-spark-vllm-docker-env "$CONFIG_ENV")" \
+                || die "cluster import failed for ${CONFIG_ENV}"
+            [[ -n "$CLUSTER_NAME" ]] || die "cluster import returned no cluster name for ${CONFIG_ENV}"
+            err "${PROG}: imported '${CONFIG_ENV}' as sparkrun cluster '${CLUSTER_NAME}'."
+        fi
+        ARGS=(--cluster "$CLUSTER_NAME" "${ARGS[@]}")
+    fi
 
     if [[ "${RUN_RECIPE_DEBUG:-0}" == "1" ]]; then
         err "DEBUG argv: ${SPARKRUN[*]} run ${RECIPE} ${ARGS[*]}"
