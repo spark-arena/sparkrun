@@ -189,10 +189,26 @@ class ProxyEngine:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         env = os.environ.copy()
 
-        # LiteLLM requires a database when master_key is set.
+        # LiteLLM's /model/new admin endpoint requires a backing database
+        # AND prisma to talk to it. Setting DATABASE_URL without prisma
+        # available crashes startup with ModuleNotFoundError. Only export
+        # DATABASE_URL when prisma is importable — otherwise the proxy
+        # comes up without DB-backed admin endpoints (acceptable: static
+        # config-file mode still works).
         if self.master_key:
-            db_path = self.state_dir / "litellm.db"
-            env["DATABASE_URL"] = "sqlite:///%s" % db_path
+            try:
+                import importlib.util
+                if importlib.util.find_spec("prisma") is not None:
+                    db_path = self.state_dir / "litellm.db"
+                    env["DATABASE_URL"] = "sqlite:///%s" % db_path
+                else:
+                    logger.warning(
+                        "master_key set but prisma not installed; "
+                        "starting proxy without DB-backed admin endpoints "
+                        "(use static litellm_config.yaml for model changes)."
+                    )
+            except Exception as exc:
+                logger.warning("prisma detection failed (%s); skipping DATABASE_URL", exc)
 
         if foreground:
             proc = subprocess.Popen(cmd, env=env)
@@ -443,6 +459,9 @@ class ProxyEngine:
         and removes registered models whose backends are no longer
         present in the discovered endpoints.
 
+        Falls back to config-file regeneration + proxy restart when the
+        LiteLLM management API is unavailable (e.g. no DB for /model/new).
+
         Args:
             endpoints: Healthy discovered endpoints.
 
@@ -490,6 +509,17 @@ class ProxyEngine:
                     if self.add_model_via_api(ep):
                         added += 1
                     break  # add_model_via_api handles all models for the endpoint
+
+        # Fallback: if we still have unregistered endpoints and the mgmt API
+        # failed (likely no DB for /model/new), regenerate config + restart.
+        if added == 0 and registered_keys and healthy_bases - set(
+            m.get("litellm_params", {}).get("api_base", "") for m in registered
+        ):
+            logger.warning(
+                "Mgmt API unavailable for all new models — regenerating config and restarting proxy",
+            )
+            self._regen_config_and_restart(endpoints)
+            return 0, 0
 
         return added, removed
 
@@ -612,6 +642,70 @@ class ProxyEngine:
                     removed += 1
 
         return added, removed
+
+    def _regen_config_and_restart(self, endpoints: list[DiscoveredEndpoint]) -> bool:
+        """Regenerate litellm_config.yaml from endpoints and restart the proxy.
+
+        Fallback path when the LiteLLM management API (/model/new) is
+        unavailable — e.g. no backing DB or prisma not installed.
+
+        Writes a fresh config file, SIGTERMs the proxy, and waits for the
+        proxy to come back (autodiscover monitors proxy PID and re-launches
+        on death).
+
+        Args:
+            endpoints: Healthy discovered endpoints to register.
+
+        Returns:
+            True if config was written and proxy is restarting.
+        """
+        try:
+            config = build_litellm_config(endpoints, master_key=self.master_key)
+            write_config(config, self.config_path)
+            logger.info(
+                "Mgmt API unavailable — regenerated litellm config (%d models), restarting proxy…",
+                len(config["model_list"]),
+            )
+
+            # Stop the proxy (not autodiscover — it monitors proxy PID).
+            pid = self._read_pid()
+            if pid:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                    logger.info("SIGTERM to proxy PID %d", pid)
+                except ProcessLookupError:
+                    pass
+                self._clear_state()
+
+            # Wait for old process to exit before we can start fresh.
+            import time
+            for _ in range(30):  # up to 30s
+                if pid is not None:
+                    try:
+                        os.kill(pid, 0)
+                    except ProcessLookupError:
+                        break
+                time.sleep(1)
+            else:
+                # Process didn't exit — force kill
+                if pid:
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                time.sleep(2)
+
+            # Start the proxy (will re-run build_litellm_config internally,
+            # which re-discovers endpoints — should match our list).
+            rc = self.start(foreground=False, autodiscover_kwargs={
+                "interval": 30,
+                "host_list": [ep.host for ep in endpoints if ep.healthy],
+            })
+            logger.info("Restart returned %d", rc)
+            return rc == 0
+        except Exception:
+            logger.error("Config regen + restart failed", exc_info=True)
+            return False
 
     def _api_request(self, method: str, path: str, payload: dict | None = None) -> dict:
         """Make an HTTP request to the litellm management API."""
