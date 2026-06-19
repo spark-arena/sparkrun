@@ -488,6 +488,14 @@ def launch_inference(
     exec_cfg = ExecutorConfig.from_chain(exec_chain)
     executor = DockerExecutor(exec_cfg)  # TODO: future flexible executor
 
+    # Add port publishing when using bridge network (rootless Docker compatibility)
+    if exec_cfg.network and exec_cfg.network != "host":
+        if extra_docker_opts is None:
+            extra_docker_opts = []
+        extra_docker_opts.extend(["-p", f"{serve_port}:{serve_port}"])
+        # Bind to all interfaces in bridge mode (containers use eth0, not host interfaces)
+        overrides.setdefault("host", "0.0.0.0")
+
     # Launch
     rc = runtime.run(
         hosts=host_list,

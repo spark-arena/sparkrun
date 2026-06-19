@@ -276,6 +276,11 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
         head_container = self.executor.container_name(cluster_id, "head")
         worker_container = self.executor.container_name(cluster_id, "worker")
 
+        # Inject eth0 socket defaults for bridge network mode
+        if self.executor.config.network != "host":
+            for key in ("GLOO_SOCKET_IFNAME", "NCCL_SOCKET_IFNAME", "MN_IF_NAME", "TP_SOCKET_IFNAME"):
+                ctx.all_env.setdefault(key, "eth0")
+
         if progress:
             progress.begin_runtime_steps(5)
 
@@ -301,6 +306,12 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
         ray_port = find_port(ctx, ctx.head_host, ray_port)
         if dashboard:
             dashboard_port = find_port(ctx, ctx.head_host, dashboard_port)
+
+        # Add port publishing when using bridge network (rootless Docker compatibility)
+        if self.executor.config.network and self.executor.config.network != "host":
+            combined_docker_opts.extend(["-p", f"{ray_port}:{ray_port}"])
+            if dashboard:
+                combined_docker_opts.extend(["-p", f"{dashboard_port}:{dashboard_port}"])
 
         # print banner AFTER finalizing ports
         self._print_cluster_banner(

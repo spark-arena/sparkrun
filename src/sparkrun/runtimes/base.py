@@ -817,6 +817,11 @@ class RuntimePlugin(Plugin):
             self.get_extra_env(),  # tuning/other overrides
         )
 
+
+        # Inject eth0 socket defaults for bridge network mode
+        if self.executor.config.network != "host":
+            for key in ("GLOO_SOCKET_IFNAME", "NCCL_SOCKET_IFNAME", "MN_IF_NAME", "TP_SOCKET_IFNAME"):
+                all_env.setdefault(key, "eth0")
         combined_docker_opts = (self.get_extra_docker_opts() or []) + (extra_docker_opts or [])
 
         # Step 1: InfiniBand detection (skip if pre-detected comm_env provided)

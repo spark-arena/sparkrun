@@ -347,6 +347,17 @@ def exec_serve_on_container(
 # ---------------------------------------------------------------------------
 # Full native cluster orchestration
 # ---------------------------------------------------------------------------
+def _inject_bridge_socket_env(runtime: RuntimePlugin, ctx: ClusterContext) -> None:
+    """Set socket interface defaults to eth0 for bridge network mode.
+
+    In bridge mode, containers have their own eth0 interface, not the
+    host's WiFi/Ethernet interfaces.  These defaults can be overridden
+    by user-provided env vars (already merged into ctx.all_env).
+    """
+    if runtime.executor.config.network == "host":
+        return
+    for key in ("GLOO_SOCKET_IFNAME", "NCCL_SOCKET_IFNAME", "MN_IF_NAME", "TP_SOCKET_IFNAME"):
+        ctx.all_env.setdefault(key, "eth0")
 
 
 def _attach_foreground(runtime: RuntimePlugin, ctx: ClusterContext, follow: bool) -> None:
@@ -406,6 +417,9 @@ def run_native_cluster(
     )
 
     executor = runtime.executor
+
+    # Inject eth0 socket defaults for bridge network mode
+    _inject_bridge_socket_env(runtime, ctx)
 
     if progress:
         progress.begin_runtime_steps(7)
@@ -499,6 +513,9 @@ def run_native_cluster(
 
     containers = [(host, cname) for host, _rank, cname in all_nodes]
     combined_docker_opts = (runtime.get_extra_docker_opts() or []) + (extra_docker_opts or [])
+    # Add init port publishing when using bridge network (rootless Docker compatibility)
+    if executor.config.network and executor.config.network != "host":
+        combined_docker_opts.extend(["-p", f"{init_port}:{init_port}"])
     rc = launch_containers_parallel(
         ctx,
         containers,
