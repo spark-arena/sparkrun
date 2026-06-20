@@ -825,8 +825,8 @@ class RuntimePlugin(Plugin):
             try:
                 host_ip = detect_host_ip(host, ssh_kwargs=ssh_kwargs, dry_run=False)
                 for key in ("GLOO_SOCKET_IFNAME", "NCCL_SOCKET_IFNAME", "MN_IF_NAME", "TP_SOCKET_IFNAME"):
-                    all_env.setdefault(key, host_ip)
-                all_env.setdefault("NODE_IP", host_ip)
+                    all_env[key] = host_ip
+                all_env["NODE_IP"] = host_ip
             except RuntimeError:
                 logger.warning("Could not detect IP for %s, skipping socket override", host)
 

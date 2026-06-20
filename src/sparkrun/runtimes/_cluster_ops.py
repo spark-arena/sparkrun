@@ -275,8 +275,8 @@ def launch_containers_parallel(
                 if host_nccl_env is None:
                     host_nccl_env = {}
                 for key in ("GLOO_SOCKET_IFNAME", "NCCL_SOCKET_IFNAME", "MN_IF_NAME", "TP_SOCKET_IFNAME"):
-                    host_nccl_env.setdefault(key, host_ip)
-                host_nccl_env.setdefault("NODE_IP", host_ip)
+                    host_nccl_env[key] = host_ip
+                host_nccl_env["NODE_IP"] = host_ip
 
             script = executor.generate_launch_script(
                 image=ctx.image,

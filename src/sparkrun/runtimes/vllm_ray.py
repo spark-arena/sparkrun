@@ -345,8 +345,8 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
             if head_nccl_env is None:
                 head_nccl_env = {}
             for key in ("GLOO_SOCKET_IFNAME", "NCCL_SOCKET_IFNAME", "MN_IF_NAME", "TP_SOCKET_IFNAME"):
-                head_nccl_env.setdefault(key, head_ip)
-            head_nccl_env.setdefault("NODE_IP", head_ip)
+                head_nccl_env[key] = head_ip
+            head_nccl_env["NODE_IP"] = head_ip
 
         head_script = self.executor.generate_ray_head_script(
             image=image,
@@ -424,8 +424,8 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
                         if _whost_env is None:
                             _whost_env = {}
                         for key in ("GLOO_SOCKET_IFNAME", "NCCL_SOCKET_IFNAME", "MN_IF_NAME", "TP_SOCKET_IFNAME"):
-                            _whost_env.setdefault(key, _whost_ip)
-                        _whost_env.setdefault("NODE_IP", _whost_ip)
+                            _whost_env[key] = _whost_ip
+                        _whost_env["NODE_IP"] = _whost_ip
 
                     _wscript = self.executor.generate_ray_worker_script(
                         image=image,
