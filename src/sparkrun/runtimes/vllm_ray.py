@@ -276,10 +276,19 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
         head_container = self.executor.container_name(cluster_id, "head")
         worker_container = self.executor.container_name(cluster_id, "worker")
 
-        # Inject eth0 socket defaults for bridge network mode
-        if self.executor.config.network != "host":
-            for key in ("GLOO_SOCKET_IFNAME", "NCCL_SOCKET_IFNAME", "MN_IF_NAME", "TP_SOCKET_IFNAME"):
-                ctx.all_env.setdefault(key, "eth0")
+        # Detect management IPs for bridge network socket vars
+        is_bridge = self.executor.config.network != "host"
+        if is_bridge and not dry_run:
+            from sparkrun.orchestration.primitives import detect_host_ip
+
+            host_ips: dict[str, str] = {}
+            for h in hosts:
+                try:
+                    host_ips[h] = detect_host_ip(h, ssh_kwargs=ctx.ssh_kwargs, dry_run=False)
+                except RuntimeError:
+                    logger.warning("Could not detect IP for %s, skipping socket override", h)
+        else:
+            host_ips = {}
 
         if progress:
             progress.begin_runtime_steps(5)
@@ -330,6 +339,15 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
         else:
             logger.info("Step 3/5: Launching Ray head on %s...", ctx.head_host)
         head_nccl_env = comm_env.get_env(ctx.head_host) if comm_env else None
+        # Override socket interfaces with host management IP for bridge mode
+        if is_bridge and ctx.head_host in host_ips:
+            head_ip = host_ips[ctx.head_host]
+            if head_nccl_env is None:
+                head_nccl_env = {}
+            for key in ("GLOO_SOCKET_IFNAME", "NCCL_SOCKET_IFNAME", "MN_IF_NAME", "TP_SOCKET_IFNAME"):
+                head_nccl_env.setdefault(key, head_ip)
+            head_nccl_env.setdefault("NODE_IP", head_ip)
+
         head_script = self.executor.generate_ray_head_script(
             image=image,
             container_name=head_container,
@@ -400,6 +418,15 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
                 _wfutures = {}
                 for _whost in ctx.worker_hosts:
                     _whost_env = comm_env.get_env(_whost) if comm_env else None
+                    # Override socket interfaces with host management IP for bridge mode
+                    if is_bridge and _whost in host_ips:
+                        _whost_ip = host_ips[_whost]
+                        if _whost_env is None:
+                            _whost_env = {}
+                        for key in ("GLOO_SOCKET_IFNAME", "NCCL_SOCKET_IFNAME", "MN_IF_NAME", "TP_SOCKET_IFNAME"):
+                            _whost_env.setdefault(key, _whost_ip)
+                        _whost_env.setdefault("NODE_IP", _whost_ip)
+
                     _wscript = self.executor.generate_ray_worker_script(
                         image=image,
                         container_name=worker_container,
