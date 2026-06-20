@@ -819,6 +819,7 @@ class RuntimePlugin(Plugin):
 
         # Detect host management IP for bridge network socket vars
         is_bridge = self.executor.config.network != "host"
+        host_ip = None
         if is_bridge and not dry_run:
             from sparkrun.orchestration.primitives import detect_host_ip
 
@@ -875,6 +876,7 @@ class RuntimePlugin(Plugin):
             volumes=volumes,
             nccl_env=comm_env.get_env(host) if comm_env else None,
             extra_docker_opts=combined_docker_opts or None,
+            host_ip=host_ip if is_bridge else None,
         )
         result = run_script_on_host(
             host,

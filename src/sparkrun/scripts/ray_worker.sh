@@ -10,6 +10,13 @@ if [ -z "$NODE_IP" ]; then
 fi
 echo "Detected Node IP: $NODE_IP"
 
+# Add host management IP as alias on eth0 for bridge network compatibility
+if [ -n "{HOST_IP}" ]; then
+    ip addr add "{HOST_IP}/24" dev eth0 2>/dev/null || true
+    NODE_IP="{HOST_IP}"
+    echo "Using host IP {HOST_IP} for bridge network"
+fi
+
 # Cleanup
 {cleanup_cmd}
 

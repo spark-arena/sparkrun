@@ -286,6 +286,7 @@ def launch_containers_parallel(
                 volumes=ctx.volumes,
                 nccl_env=host_nccl_env,
                 extra_docker_opts=extra_docker_opts,
+                host_ip=resolved_ips.get(host) if is_bridge and resolved_ips else None,
             )
             future = pool.submit(
                 run_remote_script,

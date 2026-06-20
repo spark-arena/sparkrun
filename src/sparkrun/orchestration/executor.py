@@ -215,6 +215,7 @@ class Executor(ABC):
         nccl_env: dict[str, str] | None = None,
         detach: bool = True,
         extra_docker_opts: list[str] | None = None,
+        host_ip: str | None = None,
     ) -> str:
         """Generate a script that cleans up then launches a container.
 
@@ -239,6 +240,7 @@ class Executor(ABC):
             image=quote(image),
             cleanup_cmd=cleanup,
             run_cmd=run,
+            HOST_IP=host_ip or "",
         )
 
     def generate_exec_serve_script(
@@ -282,6 +284,7 @@ class Executor(ABC):
         volumes: dict[str, str] | None = None,
         nccl_env: dict[str, str] | None = None,
         extra_docker_opts: list[str] | None = None,
+        host_ip: str | None = None,
     ) -> str:
         """Generate a script that starts a Ray head node in a container.
 
@@ -309,6 +312,7 @@ class Executor(ABC):
         return template.format(
             cleanup_cmd=cleanup,
             run_cmd=run,
+            HOST_IP=host_ip or "",
         )
 
     def generate_ray_worker_script(
@@ -321,6 +325,7 @@ class Executor(ABC):
         volumes: dict[str, str] | None = None,
         nccl_env: dict[str, str] | None = None,
         extra_docker_opts: list[str] | None = None,
+        host_ip: str | None = None,
     ) -> str:
         """Generate a script that starts a Ray worker node.
 
@@ -346,6 +351,7 @@ class Executor(ABC):
             run_cmd=run,
             head_ip=head_ip,
             ray_port=ray_port,
+            HOST_IP=host_ip or "",
         )
 
     def generate_node_script(

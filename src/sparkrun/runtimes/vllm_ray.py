@@ -358,6 +358,7 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
             volumes=ctx.volumes,
             nccl_env=head_nccl_env,
             extra_docker_opts=combined_docker_opts or None,
+            host_ip=host_ips.get(ctx.head_host) if is_bridge else None,
         )
         head_result = run_remote_script(
             ctx.head_host,
@@ -436,6 +437,7 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
                         volumes=ctx.volumes,
                         nccl_env=_whost_env,
                         extra_docker_opts=combined_docker_opts or None,
+                        host_ip=_whost_ip if is_bridge else None,
                     )
                     _wfutures[
                         _wpool.submit(
