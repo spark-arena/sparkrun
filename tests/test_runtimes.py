@@ -651,6 +651,15 @@ def test_sglang_speculative_skip_key_strips_flag():
     assert "--speculative-draft-model-path" not in cmd
 
 
+# --- Executor config defaults hook ---
+
+
+def test_base_runtime_executor_config_defaults_empty():
+    """Base runtimes contribute no executor config defaults."""
+    assert VllmDistributedRuntime().get_executor_config_defaults() == {}
+    assert SglangRuntime().get_executor_config_defaults() == {}
+
+
 # --- VllmDistributedRuntime Tests ---
 
 

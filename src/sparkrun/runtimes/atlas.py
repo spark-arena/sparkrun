@@ -391,6 +391,17 @@ class AtlasRuntime(RuntimePlugin):
             "NCCL_MAX_NCHANNELS": "2",
         }
 
+    def get_executor_config_defaults(self) -> dict:
+        """Clear the image's ENTRYPOINT so the generated ``bash -c`` runs.
+
+        The Atlas image ships its own ENTRYPOINT; sparkrun launches the
+        container with ``bash -c <command>``, so the entrypoint must be
+        cleared. Routed through ``executor_config`` (rather than a raw
+        ``--entrypoint`` in ``get_extra_docker_opts``) so a recipe can
+        still override it.
+        """
+        return {"entrypoint": ""}
+
     def get_extra_docker_opts(self) -> list[str]:
         """RDMA device + capabilities required by Atlas's NCCL/io_uring paths.
 
@@ -399,12 +410,13 @@ class AtlasRuntime(RuntimePlugin):
         run the storage path unconfined. ``IPC_LOCK`` + ``memlock=-1``
         unblock ``ibv_reg_mr``; ``SYS_NICE`` is needed by the SQPOLL
         kernel thread.
+
+        The ENTRYPOINT clear lives in ``get_executor_config_defaults`` so
+        recipes can override it; ``cap_add``/``security_opt`` stay here as
+        unconditional appends (they must not be dropped by, e.g., rootless
+        mode zeroing ``cap_add`` in the executor config chain).
         """
-        # TODO: this should transition to be executor_config pass-through [FUTURE; works well enough today]
         return [
-            # Allow bash
-            "--entrypoint",
-            '""',
             "--cap-add=IPC_LOCK",
             "--cap-add=SYS_NICE",
             "--security-opt",

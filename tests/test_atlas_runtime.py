@@ -229,6 +229,14 @@ def test_atlas_extra_docker_opts_include_required_capabilities():
     assert "seccomp=unconfined" in joined
 
 
+def test_atlas_clears_entrypoint_via_executor_config():
+    """Atlas clears the image ENTRYPOINT through executor_config, not raw docker opts."""
+    runtime = AtlasRuntime()
+    assert runtime.get_executor_config_defaults() == {"entrypoint": ""}
+    # The entrypoint must NOT be re-injected as a raw flag (would double up / not be overridable).
+    assert "--entrypoint" not in " ".join(runtime.get_extra_docker_opts())
+
+
 # --- validate_recipe ---
 
 

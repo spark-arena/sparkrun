@@ -306,6 +306,20 @@ class RuntimePlugin(Plugin):
         """
         return []
 
+    def get_executor_config_defaults(self) -> dict:
+        """Runtime-level defaults merged into the executor config chain.
+
+        Override to set executor options (e.g. ``entrypoint``) that should
+        apply by default for this runtime but remain overridable by the
+        recipe's ``executor_config`` and CLI flags. Sits just above the
+        built-in ``EXECUTOR_DEFAULTS`` in priority, so both the recipe and
+        the CLI win over it.
+
+        Returns:
+            Dict of executor config keys -> values (empty by default).
+        """
+        return {}
+
     def validate_recipe(self, recipe: Recipe) -> list[str]:
         """Return list of warnings/errors for runtime-specific fields.
 

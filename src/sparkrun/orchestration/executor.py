@@ -36,6 +36,7 @@ EXECUTOR_DEFAULTS = {
     "cap_add": None,
     "ulimit": None,
     "devices": None,
+    "entrypoint": None,
 }
 
 
@@ -61,6 +62,7 @@ class ExecutorConfig:
     devices: list[str] | None = None
     memory_limit: str | None = None
     labels: list[str] | None = None
+    entrypoint: str | None = None
 
     @classmethod
     def from_chain(cls, chain) -> ExecutorConfig:
@@ -105,6 +107,10 @@ class ExecutorConfig:
             devices=raw_devices or None,
             memory_limit=chain.get("memory_limit") or None,
             labels=raw_labels or None,
+            # NOTE: do not collapse with ``or None`` -- an empty string is a
+            # meaningful value here ("" clears the image's ENTRYPOINT), distinct
+            # from None ("not set", leave the image's ENTRYPOINT untouched).
+            entrypoint=chain.get("entrypoint"),
         )
 
     def __post_init__(self):
