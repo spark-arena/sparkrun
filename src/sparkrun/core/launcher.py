@@ -476,11 +476,13 @@ def launch_inference(
     if not isinstance(recipe_executor_config, dict):
         recipe_executor_config = {}
     cli_exec_opts = executor_config if isinstance(executor_config, dict) else {}
+    runtime_exec_defaults = runtime.get_executor_config_defaults() or {}
     exec_chain = Variables(
         sources=(
             cli_exec_opts,  # CLI flags (highest priority)
             recipe_executor_config,  # recipe YAML
             exec_adjustments,  # executor adjustments
+            runtime_exec_defaults,  # runtime-specific defaults
             EXECUTOR_DEFAULTS,  # hardcoded defaults
         ),
         env_placement=EnvPlacement.IGNORED,
