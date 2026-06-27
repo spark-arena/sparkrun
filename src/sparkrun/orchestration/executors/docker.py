@@ -87,6 +87,7 @@ DOCKER_DEFAULTS = {
     "ulimit": None,
     "devices": None,
     "volumes": None,
+    "entrypoint": None,
 }
 
 
@@ -170,6 +171,8 @@ class DockerExecutor(Executor):
         cfg = self.config
         opts: list[str] = []
 
+        if cfg.entrypoint is not None:
+            opts.extend(["--entrypoint", quote(cfg.entrypoint)])
         if cfg.privileged:
             opts.append("--privileged")
         opts.extend(self._accelerator_opts())

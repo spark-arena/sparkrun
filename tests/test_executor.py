@@ -117,6 +117,21 @@ class TestExecutorConfig:
         cfg = ExecutorConfig.from_chain(chain)
         assert cfg.memory_limit == "16G"
 
+    def test_entrypoint_default_none(self):
+        assert ExecutorConfig().entrypoint is None
+
+    def test_from_chain_entrypoint_value(self):
+        cfg = ExecutorConfig.from_chain({"entrypoint": "bash"})
+        assert cfg.entrypoint == "bash"
+
+    def test_from_chain_entrypoint_empty_preserved(self):
+        cfg = ExecutorConfig.from_chain({"entrypoint": ""})
+        assert cfg.entrypoint == ""
+
+    def test_from_chain_entrypoint_unset_is_none(self):
+        cfg = ExecutorConfig.from_chain({"gpus": "0"})
+        assert cfg.entrypoint is None
+
     def test_config_chain_layering(self):
         """Verify config chain resolution: CLI > recipe > defaults."""
         from scitrera_app_framework.api import EnvPlacement, Variables
@@ -219,6 +234,22 @@ class TestDockerExecutorConfig:
         executor = DockerExecutor(cfg)
         cmd = executor.run_cmd("img:latest")
         assert "--network=bridge" in cmd
+
+    def test_entrypoint_unset_omits_flag(self):
+        cmd = DockerExecutor(ExecutorConfig()).run_cmd("img:latest")
+        assert "--entrypoint" not in cmd
+
+    def test_entrypoint_empty_clears(self):
+        cmd = DockerExecutor(ExecutorConfig(entrypoint="")).run_cmd("img:latest")
+        assert "--entrypoint ''" in cmd
+
+    def test_entrypoint_value(self):
+        cmd = DockerExecutor(ExecutorConfig(entrypoint="bash")).run_cmd("img:latest")
+        assert "--entrypoint bash" in cmd
+
+    def test_entrypoint_precedes_image(self):
+        cmd = DockerExecutor(ExecutorConfig(entrypoint="")).run_cmd("img:latest", command="vllm serve")
+        assert cmd.index("--entrypoint") < cmd.index("img:latest")
 
     def test_memory_limit(self):
         cfg = ExecutorConfig(memory_limit="64G")

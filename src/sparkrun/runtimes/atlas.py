@@ -433,6 +433,15 @@ class AtlasRuntime(RuntimePlugin):
             "NCCL_MAX_NCHANNELS": "2",
         }
 
+    def default_executor_config(self) -> dict[str, Any]:
+        """Clear the Atlas image ENTRYPOINT by default.
+
+        The public Atlas image ships an ENTRYPOINT.  sparkrun needs its
+        generated ``bash -c`` launcher to run directly, but recipes and cluster
+        config can still override this default through executor_config.
+        """
+        return {"entrypoint": ""}
+
     def get_extra_docker_opts(self) -> list[str]:
         """RDMA device + capabilities required by Atlas's NCCL/io_uring paths.
 
@@ -442,11 +451,7 @@ class AtlasRuntime(RuntimePlugin):
         unblock ``ibv_reg_mr``; ``SYS_NICE`` is needed by the SQPOLL
         kernel thread.
         """
-        # TODO: this should transition to be executor_config pass-through [FUTURE; works well enough today]
         return [
-            # Allow bash
-            "--entrypoint",
-            '""',
             "--cap-add=IPC_LOCK",
             "--cap-add=SYS_NICE",
             "--security-opt",

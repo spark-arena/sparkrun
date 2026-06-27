@@ -238,6 +238,16 @@ class RuntimePlugin(Plugin):
         """
         return None
 
+    def default_executor_config(self) -> dict[str, Any]:
+        """Return runtime-specific executor config defaults.
+
+        This sits below recipe and cluster executor_config, but above global
+        SparkrunConfig and per-executor defaults.  Runtime authors should use it
+        for options that should be overridable by a workload, such as clearing
+        an image entrypoint for a runtime-specific container.
+        """
+        return {}
+
     def get_family(self) -> str:
         """Return the canonical runtime family name.
 

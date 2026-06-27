@@ -261,7 +261,7 @@ Any key can appear in `defaults` — there is no fixed schema. Runtime-specific 
 ## Executor Config
 
 Controls how the workload is launched. Layered:
-**CLI flags → recipe `executor` / `executor_config` → runtime defaults → `SparkrunConfig` → per-executor defaults → dataclass field defaults.**
+**CLI flags → recipe `executor` / `executor_config` → cluster `executor` / `executor_config` → executor adjustments → runtime executor-config defaults → `SparkrunConfig` → per-executor defaults → dataclass field defaults.**
 
 ### Selecting an executor
 
@@ -294,6 +294,7 @@ executor_config:
 | `ipc`            | string | `"host"`    | `--ipc`        | IPC namespace                                                                                                       |
 | `shm_size`       | string | `"10.24gb"` | `--shm-size`   | Shared memory size                                                                                                  |
 | `network`        | string | `"host"`    | `--network`    | Network mode                                                                                                        |
+| `entrypoint`     | string | `null`      | `--entrypoint` | Override the image `ENTRYPOINT`. `null` leaves it untouched; `""` clears it so sparkrun's serve command runs directly |
 | `user`           | string | `null`      | `--user`       | UID:GID or `$SHELL_USER` (auto: `$(id -u):$(id -g)` + mount passwd/group)                                           |
 | `security_opt`   | list   | `null`      | `--security-opt` | Repeated. Defaults to `[no-new-privileges]` in rootless mode.                                                     |
 | `cap_add`        | list   | `null`      | `--cap-add`    | Repeated.                                                                                                           |
@@ -301,6 +302,13 @@ executor_config:
 | `devices`        | list   | `null`      | `--device`     | Repeated. Rootless adds `/dev/infiniband`.                                                                          |
 | `memory_limit`   | string | `null`      | `--memory`     | Container memory cap.                                                                                               |
 | `labels`         | list   | `null`      | `--label`      | Repeated.                                                                                                           |
+
+Use `entrypoint: ""` for images that ship an ENTRYPOINT which consumes sparkrun's generated `bash -c <serve command>` tail:
+
+```yaml
+executor_config:
+  entrypoint: ""
+```
 
 ### LocalExecutor fields (experimental, `executor: local`)
 
@@ -355,6 +363,7 @@ executor_config:
 | `k8s_node_selector`      | `null`  | `key=value[,key=value]`. Emitted as `--overrides` JSON.                                              |
 | `k8s_image_pull_policy`  | `null`  | `--image-pull-policy`.                                                                               |
 | `kubeconfig`             | `null`  | `--kubeconfig`.                                                                                      |
+| `entrypoint`             | `null`  | When set, emits `kubectl run --command`. `""` uses `bash -c <serve command>` to bypass image ENTRYPOINT wrappers. |
 
 **CLI override:** `sparkrun run --no-rm --restart always my-recipe`
 

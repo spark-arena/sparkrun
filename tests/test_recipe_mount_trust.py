@@ -80,6 +80,11 @@ def test_untrusted_recipe_with_benign_executor_keys_is_allowed():
     _enforce_recipe_mount_trust(recipe, trusted=False)  # must not raise
 
 
+def test_untrusted_recipe_with_entrypoint_is_allowed():
+    recipe = _recipe(executor_config={"entrypoint": ""})
+    _enforce_recipe_mount_trust(recipe, trusted=False)  # must not raise
+
+
 def test_trusted_recipe_with_mounts_is_allowed():
     # --trust / local / default-registry recipes opt in; the gate is a no-op.
     recipe = _recipe(

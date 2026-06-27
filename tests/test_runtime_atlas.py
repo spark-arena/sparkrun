@@ -237,6 +237,12 @@ def test_atlas_extra_docker_opts_include_required_capabilities():
     assert "seccomp=unconfined" in joined
 
 
+def test_atlas_clears_entrypoint_via_executor_config_default():
+    runtime = AtlasRuntime()
+    assert runtime.default_executor_config() == {"entrypoint": ""}
+    assert "--entrypoint" not in " ".join(runtime.get_extra_docker_opts())
+
+
 # --- validate_recipe ---
 
 

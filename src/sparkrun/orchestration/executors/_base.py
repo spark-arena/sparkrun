@@ -100,6 +100,13 @@ class ExecutorConfig:
     are emitted in addition to the standard HuggingFace cache mount, so a recipe
     or cluster can grant the container access to extra host paths (calibration
     output dirs, datasets, …) without touching the model cache."""
+    entrypoint: str | None = None
+    """Container entrypoint override.
+
+    ``None`` leaves the image entrypoint untouched.  ``""`` is meaningful:
+    Docker treats it as "clear the image ENTRYPOINT"; K8s uses it to switch
+    from args mode into an explicit ``bash -c`` command override.
+    """
     memory_limit: str | None = None
     labels: list[str] | None = None
     accelerator_vendor: str | None = None
@@ -190,6 +197,12 @@ class ExecutorConfig:
             v = chain.get(key)
             if v:
                 kwargs[key] = v
+
+        # Empty string is meaningful for entrypoint: it clears Docker's image
+        # ENTRYPOINT and tells K8s to use an explicit bash command override.
+        entrypoint = chain.get("entrypoint")
+        if entrypoint is not None:
+            kwargs["entrypoint"] = str(entrypoint)
 
         # List-or-string fields — promote bare strings to single-item lists.
         for key in ("security_opt", "cap_add", "ulimit", "devices", "volumes", "labels"):

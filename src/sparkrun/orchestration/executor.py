@@ -202,6 +202,16 @@ def _runtime_exec_dict(runtime: "RuntimePlugin | None") -> dict:
     return {"executor": val} if val else {}
 
 
+def _runtime_exec_config_dict(runtime: "RuntimePlugin | None") -> dict:
+    """Flatten ``runtime.default_executor_config()`` into a chain layer."""
+    if runtime is None:
+        return {}
+    fn = getattr(runtime, "default_executor_config", None)
+    if not callable(fn):
+        return {}
+    return _coerce_dict(fn())
+
+
 def _config_exec_dict(config: "SparkrunConfig | None") -> dict:
     """Flatten SparkrunConfig executor defaults into a chain layer."""
     if config is None:
@@ -298,9 +308,10 @@ def resolve_executor(
         3. ``cluster.executor`` + ``cluster.executor_config``
         4. ``runtime.default_executor()``  *(name selection only)*
         5. ``cls.apply_runtime_adjustments(rootless=, auto_user=)``
-        6. ``config.default_executor`` + ``config.executor_config``
-        7. ``cls.default_config()``
-        8. :class:`ExecutorConfig` dataclass field defaults
+        6. ``runtime.default_executor_config()``
+        7. ``config.default_executor`` + ``config.executor_config``
+        8. ``cls.default_config()``
+        9. :class:`ExecutorConfig` dataclass field defaults
 
     The cluster layer sits between the recipe (workload-specific) and
     the runtime/config (generic) so a cluster's standing preferences
@@ -329,6 +340,7 @@ def resolve_executor(
             _cluster_exec_dict(cluster),
             _runtime_exec_dict(runtime),
             cls.apply_runtime_adjustments(rootless=rootless, auto_user=auto_user),
+            _runtime_exec_config_dict(runtime),
             _config_exec_dict(config),
             cls.default_config(),
         ),

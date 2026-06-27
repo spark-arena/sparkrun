@@ -16,13 +16,14 @@ point. It layers (highest priority first):
 1. **CLI overrides** — `cli_overrides` dict (`-o executor=local`, `-o
    k8s_namespace=...`, etc.).
 2. **Recipe** — `recipe.executor` (selector) + `recipe.executor_config` (dict).
-3. **Runtime** — `runtime.default_executor()` (`None` by default; runtimes can
-   force a non-Docker executor).
-4. **Per-executor adjustments** — `cls.apply_runtime_adjustments(rootless=,
+3. **Cluster** — `cluster.executor` (selector) + `cluster.executor_config` (dict).
+4. **Runtime executor selector** — `runtime.default_executor()` (`None` by default; runtimes can force a non-Docker executor).
+5. **Per-executor adjustments** — `cls.apply_runtime_adjustments(rootless=,
    auto_user=)`. Docker reads these here; Local/K8s ignore.
-5. **`SparkrunConfig`** — `config.default_executor` + `config.executor_config`.
-6. **Per-executor defaults** — `cls.default_config()` (e.g. `DOCKER_DEFAULTS`).
-7. **Dataclass field defaults** — `ExecutorConfig` declares the floor.
+6. **Runtime executor-config defaults** — `runtime.default_executor_config()` (`{}` by default; runtimes can set overridable executor defaults).
+7. **`SparkrunConfig`** — `config.default_executor` + `config.executor_config`.
+8. **Per-executor defaults** — `cls.default_config()` (e.g. `DOCKER_DEFAULTS`).
+9. **Dataclass field defaults** — `ExecutorConfig` declares the floor.
 
 Unknown selectors log a warning and degrade to `"docker"`. The set of known
 selectors is queried from SAF via `get_extensions(EXT_EXECUTOR, v=v)`; the
@@ -74,6 +75,7 @@ lists. Falsy values fall through to the dataclass defaults.
 | `devices`             | list[str]?  | Docker              | `None`        | Repeated `--device`. Rootless mode adds `/dev/infiniband`.                                     |
 | `memory_limit`        | str?        | Docker, K8s         | `None`        | Docker `--memory`; K8s `--limits=memory=...`.                                                  |
 | `labels`              | list[str]?  | Docker, K8s         | `None`        | Repeated `--label` / `--labels`.                                                               |
+| `entrypoint`          | str?        | Docker, K8s         | `None`        | Docker emits `--entrypoint`; `""` clears the image ENTRYPOINT. K8s emits `--command`; `""` uses `bash -c`. |
 | `accelerator_vendor`  | str?        | Docker              | `None`        | `nvidia` / `amd` / `intel` / `apple` / `cpu`. Drives accelerator-flag emission.                |
 
 ### Local-only (Docker / K8s ignore)
@@ -163,7 +165,7 @@ operation is a `kubectl` invocation.
 - `run_cmd`: `kubectl [--kubeconfig …] [--context …] [-n …] run <name>
   --image=<image> --restart=Never [--image-pull-policy=…] [--overrides=<JSON
   nodeSelector>] [--limits=nvidia.com/gpu=N] [--limits=memory=…] [--env=K=V …]
-  [--labels=…] -- bash -c <base64 cmd>`.
+  [--labels=…] [--command when `entrypoint` is set] -- bash -c <base64 cmd>`.
 - `exec_cmd`: `kubectl exec` (`-d`-like behavior synthesized via nohup).
 - `stop_cmd`: `kubectl delete pod --ignore-not-found [--grace-period=0 --force]`.
 - `logs_cmd`: `kubectl logs [-f] [--tail=N]`.
@@ -211,6 +213,7 @@ executor_config:
   k8s_image_pull_policy: IfNotPresent
   kubeconfig: /etc/k8s/admin.conf
   memory_limit: 128Gi
+  entrypoint: ""        # emits --command -- bash -c ...
 ```
 
 Docker fields (the existing ones — `privileged`, `cap_add`, `devices`, etc.)

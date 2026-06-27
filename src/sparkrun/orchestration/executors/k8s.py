@@ -99,6 +99,12 @@ class K8sExecutor(Executor):
         )
         return None
 
+    def _command_entrypoint(self) -> str:
+        """Return the executable used for explicit K8s command overrides."""
+        if self.config.entrypoint:
+            return self.config.entrypoint
+        return "bash"
+
     # ------------------------------------------------------------------
     # Low-level command generators (Executor ABC)
     # ------------------------------------------------------------------
@@ -166,8 +172,10 @@ class K8sExecutor(Executor):
         # Command runs inside the pod; wrap via base64 to dodge quoting
         # bugs in deeply nested shells.
         if command:
+            if cfg.entrypoint is not None:
+                parts.append("--command")
             parts.append("--")
-            parts.extend(["bash", "-c", b64_wrap_bash(command)])
+            parts.extend([quote(self._command_entrypoint()), "-c", b64_wrap_bash(command)])
 
         return " ".join(parts)
 

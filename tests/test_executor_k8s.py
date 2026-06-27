@@ -63,6 +63,7 @@ class TestExecutorConfigK8sFields:
         assert cfg.k8s_node_selector is None
         assert cfg.k8s_image_pull_policy is None
         assert cfg.kubeconfig is None
+        assert cfg.entrypoint is None
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +117,24 @@ class TestK8sExecutorBasics:
         assert "pod1" in cmd
         assert "--image=img:tag" in cmd
         assert "--restart=Never" in cmd
+        assert "--command" not in cmd
         assert "bash -c" in cmd
+
+    def test_run_cmd_entrypoint_empty_switches_to_command_override(self):
+        cmd = _k8s(entrypoint="").run_cmd(image="img:tag", command="echo hi", container_name="pod1")
+        assert "--command -- bash -c" in cmd
+
+    def test_run_cmd_entrypoint_value_uses_custom_command_override(self):
+        cmd = _k8s(entrypoint="/bin/sh").run_cmd(image="img:tag", command="echo hi", container_name="pod1")
+        assert "--command -- /bin/sh -c" in cmd
+
+    def test_exec_serve_script_honors_entrypoint_empty(self):
+        script = _k8s(entrypoint="").generate_exec_serve_script(
+            container_name="pod1",
+            serve_command="vllm serve foo",
+            env={"SPARKRUN_K8S_IMAGE": "vllm/vllm:latest"},
+        )
+        assert "--command -- bash -c" in script
 
     def test_run_cmd_includes_namespace_context_kubeconfig(self):
         cmd = _k8s(
@@ -293,7 +311,8 @@ class TestExecutorResolutionChain:
         2. Recipe executor_config (with recipe.executor merged in)
         3. Runtime.default_executor()
         4. exec_adjustments (rootless / auto_user — never set executor)
-        5. EXECUTOR_DEFAULTS (no executor key → falls back to "docker")
+        5. Runtime.default_executor_config()
+        6. EXECUTOR_DEFAULTS (no executor key → falls back to "docker")
     """
 
     def test_baseline_defaults_to_docker(self):
@@ -343,6 +362,7 @@ class TestRuntimePluginDefaultExecutor:
         # method that reads no instance state.
         stub = _Stub.__new__(_Stub)
         assert stub.default_executor() is None
+        assert stub.default_executor_config() == {}
 
 
 # ---------------------------------------------------------------------------

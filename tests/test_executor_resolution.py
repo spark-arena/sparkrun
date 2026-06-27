@@ -227,11 +227,15 @@ class _FakeRecipe:
 
 
 class _FakeRuntime:
-    def __init__(self, default_executor: str | None = None):
+    def __init__(self, default_executor: str | None = None, default_executor_config: dict | None = None):
         self._default = default_executor
+        self._default_config = dict(default_executor_config or {})
 
     def default_executor(self):
         return self._default
+
+    def default_executor_config(self):
+        return dict(self._default_config)
 
 
 class _FakeConfig:
@@ -375,6 +379,32 @@ class TestConfigChainOrdering:
         )
         assert isinstance(ex, K8sExecutor)
         assert ex.config.k8s_namespace == "global-ns"
+
+    def test_runtime_executor_config_default_fills_entrypoint(self):
+        ex = resolve_executor(
+            runtime=_FakeRuntime(default_executor_config={"entrypoint": ""}),
+            rootless=False,
+            auto_user=False,
+        )
+        assert ex.config.entrypoint == ""
+
+    def test_recipe_entrypoint_overrides_runtime_default(self):
+        ex = resolve_executor(
+            recipe=_FakeRecipe(executor_config={"entrypoint": "bash"}),
+            runtime=_FakeRuntime(default_executor_config={"entrypoint": ""}),
+            rootless=False,
+            auto_user=False,
+        )
+        assert ex.config.entrypoint == "bash"
+
+    def test_recipe_entrypoint_null_clears_runtime_default(self):
+        ex = resolve_executor(
+            recipe=_FakeRecipe(executor_config={"entrypoint": None}),
+            runtime=_FakeRuntime(default_executor_config={"entrypoint": ""}),
+            rootless=False,
+            auto_user=False,
+        )
+        assert ex.config.entrypoint is None
 
 
 # ---------------------------------------------------------------------------
