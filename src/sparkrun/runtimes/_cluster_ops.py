@@ -809,8 +809,8 @@ def run_native_cluster(
     cleanup_ranked_containers(ctx, executor)
     logger.info("Step 1/7: Cleanup done (%.1fs)", time.monotonic() - t0)
 
-    # Step 2: InfiniBand detection (also resolves IB IPs for runtimes
-    # that opt into IB-routed bootstrap via prefer_ib_for_init_addr).
+    # Step 2: InfiniBand detection also resolves IB/CX7 IPs used as a
+    # fallback when workers cannot reach the management init address.
     t0 = time.monotonic()
     if progress:
         progress.step("Detecting InfiniBand")
@@ -830,23 +830,27 @@ def run_native_cluster(
     except RuntimeError as e:
         logger.error("%s", e)
         return 1
-    logger.info("  Head IP: %s", head_ip)
-    logger.info("Step 3/7: IP detection done (%.1fs)", time.monotonic() - t0)
 
     # Substitute loopback entries (e.g. ``127.0.0.1`` from cluster config)
     # with routable IPs so NCCL / torch-distributed master addresses are
     # never broadcast as loopback to remote workers.
     resolved_hosts = resolve_hosts_for_init(ctx, head_ip)
+
+    # Do full reachability check to ensure that the head IP is reachable from all hosts.
+    from sparkrun.runtimes._init_network import InitNetworkCandidates, select_init_network
+
+    init_selection = select_init_network(
+        ctx,
+        InitNetworkCandidates.from_resolved(head_ip, resolved_hosts, ib_ip_map),
+    )
+    head_ip = init_selection.head_ip
+    resolved_hosts = list(init_selection.hosts)
+
+    # log after revised head_ip and resolved_hosts are finalized
+    logger.info("  Head IP: %s", head_ip)
+    logger.info("Step 3/7: IP detection done (%.1fs)", time.monotonic() - t0)
     if resolved_hosts != ctx.hosts:
         logger.info("  Resolved init hosts: %s", resolved_hosts)
-
-    # Optional IB-routed bootstrap: overlay IB IPs on head_ip and
-    # resolved_hosts when the runtime opts in.  Hosts without an IB
-    # entry keep their mgmt-resolved address.
-    if runtime.prefer_ib_for_init_addr() and ib_ip_map:
-        head_ip = ib_ip_map.get(ctx.head_host, head_ip)
-        resolved_hosts = [ib_ip_map.get(orig, fallback) for orig, fallback in zip(ctx.hosts, resolved_hosts)]
-        logger.info("  IB-routed init: head=%s, hosts=%s", head_ip, resolved_hosts)
 
     # Auto-detect available init port
     init_port = find_port(ctx, ctx.head_host, init_port)
