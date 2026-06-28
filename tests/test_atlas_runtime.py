@@ -178,27 +178,25 @@ def test_atlas_compute_required_nodes_solo():
     assert runtime.compute_required_nodes(_recipe()) is None
 
 
-# TODO: re-enable tests with multi-node / distributed support
-#
-# def test_atlas_compute_required_nodes_pure_ep():
-#     """ep_size=2, tp=1 → 2 nodes."""
-#     runtime = AtlasRuntime()
-#     recipe = _recipe(defaults={"ep_size": 2})
-#     assert runtime.compute_required_nodes(recipe) == 2
-#
-#
-# def test_atlas_compute_required_nodes_overlapping_tp_ep():
-#     """tp=2, ep=2 → 2 nodes (overlapping groups, not 4)."""
-#     runtime = AtlasRuntime()
-#     recipe = _recipe(defaults={"tensor_parallel": 2, "ep_size": 2})
-#     assert runtime.compute_required_nodes(recipe) == 2
-#
-#
-# def test_atlas_compute_required_nodes_orthogonal_tp_ep():
-#     """tp=2, ep=4 → 8 nodes (orthogonal mesh)."""
-#     runtime = AtlasRuntime()
-#     recipe = _recipe(defaults={"tensor_parallel": 2, "ep_size": 4})
-#     assert runtime.compute_required_nodes(recipe) == 8
+def test_atlas_compute_required_nodes_pure_ep():
+    """ep_size=2, tp=1 → 2 nodes."""
+    runtime = AtlasRuntime()
+    recipe = _recipe(defaults={"ep_size": 2})
+    assert runtime.compute_required_nodes(recipe) == 2
+
+
+def test_atlas_compute_required_nodes_overlapping_tp_ep():
+    """tp=2, ep=2 → 2 nodes (overlapping groups, not 4)."""
+    runtime = AtlasRuntime()
+    recipe = _recipe(defaults={"tensor_parallel": 2, "ep_size": 2})
+    assert runtime.compute_required_nodes(recipe) == 2
+
+
+def test_atlas_compute_required_nodes_orthogonal_tp_ep():
+    """tp=2, ep=4 → 8 nodes (orthogonal mesh)."""
+    runtime = AtlasRuntime()
+    recipe = _recipe(defaults={"tensor_parallel": 2, "ep_size": 4})
+    assert runtime.compute_required_nodes(recipe) == 8
 
 
 # --- Cluster env / docker opts ---
@@ -227,6 +225,14 @@ def test_atlas_extra_docker_opts_include_required_capabilities():
     assert "IPC_LOCK" in joined
     assert "SYS_NICE" in joined
     assert "seccomp=unconfined" in joined
+
+
+def test_atlas_clears_entrypoint_via_executor_config():
+    """Atlas clears the image ENTRYPOINT through executor_config, not raw docker opts."""
+    runtime = AtlasRuntime()
+    assert runtime.get_executor_config_defaults() == {"entrypoint": ""}
+    # The entrypoint must NOT be re-injected as a raw flag (would double up / not be overridable).
+    assert "--entrypoint" not in " ".join(runtime.get_extra_docker_opts())
 
 
 # --- validate_recipe ---

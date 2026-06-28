@@ -239,6 +239,7 @@ def arena_benchmark_run(
         framework,
         output_file,
         bench_options,
+        None,  # api_key_env
         exit_on_first_fail,
         no_stop,
         skip_run,

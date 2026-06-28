@@ -227,6 +227,14 @@ executor_config:
 | `ipc`            | string | `"host"`    | `--ipc`        | IPC namespace                                                                                                       |
 | `shm_size`       | string | `"10.24gb"` | `--shm-size`   | Shared memory size                                                                                                  |
 | `network`        | string | `"host"`    | `--network`    | Network mode                                                                                                        |
+| `entrypoint`     | string | `null`      | `--entrypoint` | Override the image `ENTRYPOINT`. `null` leaves it untouched; `""` clears it so the serve command runs directly       |
+
+**`entrypoint`** is for images that ship their own `ENTRYPOINT`. sparkrun launches the container as `<image> bash -c <command>`, so an image whose `ENTRYPOINT` swallows or wraps that command will fail to serve. Set `entrypoint: ""` to neutralize it — no need to rebuild the image with an emptied entrypoint:
+
+```yaml
+executor_config:
+  entrypoint: ""   # clear the image's ENTRYPOINT
+```
 
 **CLI override:** `sparkrun run --no-rm --restart always my-recipe`
 

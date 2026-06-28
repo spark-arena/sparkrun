@@ -22,6 +22,11 @@ class DockerExecutor(Executor):
         cfg = self.config
         opts: list[str] = []
 
+        if cfg.entrypoint is not None:
+            # ``--entrypoint ''`` clears an image's own ENTRYPOINT so the
+            # generated ``bash -c <command>`` runs directly. ``is not None``
+            # (not truthiness) is deliberate: "" is the clear-it value.
+            opts.extend(["--entrypoint", quote(cfg.entrypoint)])
         if cfg.privileged:
             opts.append("--privileged")
         if cfg.gpus:
