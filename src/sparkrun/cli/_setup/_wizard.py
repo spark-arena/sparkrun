@@ -76,6 +76,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
 
     # Track results for summary
     results = {}
+    wizard_run_kind = "initial_setup"
     sudo_password = None
     host_list = []
     cx7_detected_any = False
@@ -127,6 +128,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
         # Check for existing clusters
         existing = cluster_mgr.list_clusters()
         default_name = cluster_mgr.get_default() if existing else None
+        wizard_run_kind = "config_revision" if existing or default_name else "initial_setup"
         if existing and not cluster_name and not hosts:
             if default_name and not yes:
                 # Default cluster exists — offer to continue with it (low friction)
@@ -1080,4 +1082,15 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
     click.echo("  sparkrun show qwen3-1.7b-vllm           # Recipe details + VRAM estimate")
     click.echo("  sparkrun run qwen3-1.7b-vllm --dry-run  # Preview a launch")
     click.echo("  sparkrun run qwen3-1.7b-vllm            # Launch inference")
+
+    from sparkrun.telemetry import emit_setup_wizard_event
+
+    emit_setup_wizard_event(
+        config,
+        wizard_run_kind=wizard_run_kind,
+        results=results,
+        cluster_node_count=len(host_list),
+        dry_run=dry_run,
+        cx7_detected=cx7_detected_any,
+    )
     click.echo()

@@ -249,7 +249,7 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunRes
         # meaningful.
         pass
 
-    return RunResult(
+    run_result = RunResult(
         cluster_id=final_cluster_id,
         intent_id=final_intent_id,
         placement_token=final_placement_token,
@@ -270,6 +270,10 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunRes
         metadata=metadata,
         launch_result=result,
     )
+    from sparkrun.telemetry import emit_run_telemetry
+
+    emit_run_telemetry(config, result=run_result, recipe=recipe, cluster=cluster_def, options=options)
+    return run_result
 
 
 def _build_executor_overrides(options: RunOptions) -> dict[str, Any]:

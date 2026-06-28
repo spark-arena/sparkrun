@@ -10,6 +10,7 @@ from ._common import (
     REGISTRY_NAME,
     RUNTIME_NAME,
     _setup_logging,
+    _get_context,
     dry_run_option,
     host_options,
     json_option,
@@ -122,6 +123,12 @@ def update(ctx):
 
     from sparkrun import __version__ as old_version
 
+    new_version: str | None = old_version
+    self_upgrade_attempted = False
+
+    sctx = _get_context(ctx)
+    config = sctx.config
+
     # --- Step 1: Try self-upgrade via uv (best-effort) ---
     uv = shutil.which("uv")
     upgraded = False
@@ -132,6 +139,7 @@ def update(ctx):
             text=True,
         )
         if check.returncode == 0 and "sparkrun" in check.stdout:
+            self_upgrade_attempted = True
             click.echo("Checking for sparkrun updates (current: %s)..." % old_version)
             # TODO: check if next version is significant upgrade; handle warning if so!
             result = subprocess.run(
@@ -152,6 +160,7 @@ def update(ctx):
                     else:
                         click.echo("sparkrun updated: %s -> %s" % (old_version, new_version))
                 else:
+                    new_version = None
                     click.echo("sparkrun updated (could not determine new version).")
                 upgraded = True
             else:
@@ -177,3 +186,14 @@ def update(ctx):
     else:
         click.echo()
         ctx.invoke(registry_update)
+
+    from sparkrun.telemetry.emit import emit_update_event
+
+    emit_update_event(
+        config,
+        command="sparkrun update",
+        old_version=old_version,
+        new_version=new_version,
+        upgraded=upgraded,
+        self_upgrade_attempted=self_upgrade_attempted,
+    )

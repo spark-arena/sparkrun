@@ -78,3 +78,12 @@ See the [full CLI reference](https://sparkrun.dev/cli/overview/) for all command
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE) for details.
+
+## Anonymous Telemetry
+
+sparkrun sends basic anonymous usage telemetry to `https://telemetry.sparkrun.dev` by default. Events include a random installation id stored in `~/.config/sparkrun/config.yaml`, sparkrun version, OS/version, system architecture, and command-specific metadata such as run runtime/model/parallelism/source/hardware counts, benchmark category/framework/profile/result keys, update version and registry counts, and setup-wizard step choices.
+
+The data allows us to make informed decisions about new features for sparkrun or the greater DGX Spark ecosystem. 
+
+Telemetry very specifically does not include personally identifiable information or information that may reveal trade secrets. Telemetry does not include hostnames, usernames, local file paths, tokens, secrets, logs, private HF or local models, or full command arguments. Disable it persistently with `sparkrun setup telemetry --disable`, re-enable with `sparkrun setup telemetry --enable`, or opt out for one process with `SPARKRUN_NO_TELEMETRY=1`.
+

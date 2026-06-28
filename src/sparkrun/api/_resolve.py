@@ -93,9 +93,7 @@ def resolve_recipe(
         if registry_mgr is None:
             cfg = config or (sctx.config if sctx is not None else SparkrunConfig())
             try:
-                from sparkrun.core.registry import RegistryManager
-
-                registry_mgr = RegistryManager(cfg)
+                registry_mgr = cfg.get_registry_manager()
             except Exception:
                 logger.debug("Failed to construct RegistryManager for recipe lookup", exc_info=True)
 
@@ -106,6 +104,14 @@ def resolve_recipe(
         if not recipe_path:
             raise RecipeNotFound("Recipe %r not found in any configured registry" % recipe_input)
         recipe = Recipe.load(recipe_path, resolve=False)
+        if registry_mgr is not None:
+            try:
+                recipe.source_registry = registry_mgr.registry_for_path(recipe_path)
+                if recipe.source_registry:
+                    entry = registry_mgr.get_registry(recipe.source_registry)
+                    recipe.source_registry_url = entry.url
+            except Exception:
+                logger.debug("Failed to tag recipe registry source", exc_info=True)
 
     # Apply overrides if provided so downstream callers see a fully-
     # resolved recipe (runtime selection finalized, defaults merged).

@@ -48,7 +48,7 @@ def print_json(data: Any) -> None:
     click.echo(dumps_json(data))
 
 
-def _get_context(ctx) -> "SparkrunContext":
+def _get_context(ctx, config_path=None) -> "SparkrunContext":
     """Lazily create and cache a :class:`SparkrunContext` on the Click context.
 
     Calls ``init_sparkrun()`` and creates a ``SparkrunConfig``, bundling
@@ -59,18 +59,18 @@ def _get_context(ctx) -> "SparkrunContext":
     ``fixed_logger`` parameter means ``init_framework_desktop`` skips
     its own logging setup entirely.
     """
-    from sparkrun.core.context import SparkrunContext
-
     obj = ctx.ensure_object(dict)
-    sctx = obj.get("sparkrun_ctx")
+    sctx = obj.get("sparkrun_ctx", None)
     if sctx is not None:
         return sctx
 
     from sparkrun.core.bootstrap import init_sparkrun
     from sparkrun.core.config import SparkrunConfig
+    from sparkrun.core.context import SparkrunContext
 
     v = init_sparkrun()
-    config_path = obj.get("config_path")
+    if config_path is None:
+        config_path = obj.get("config_path")
     config = SparkrunConfig(config_path) if config_path else SparkrunConfig()
 
     from sparkrun.core.progress import LaunchProgress, Verbosity

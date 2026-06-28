@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+from sparkrun.core.recipe import Recipe
+
 import pytest
 
 from sparkrun.api import (
@@ -78,7 +80,7 @@ def test_surface_exports():
 def test_options_dataclass_is_frozen():
     opts = BenchmarkOptions(recipe="my-recipe")
     with pytest.raises(Exception):
-        opts.recipe = "other"  # type: ignore[misc]
+        setattr(opts, "recipe", "other")
 
 
 def test_result_dataclass_is_frozen():
@@ -90,7 +92,7 @@ def test_result_dataclass_is_frozen():
         profile=None,
     )
     with pytest.raises(Exception):
-        r.success = False  # type: ignore[misc]
+        setattr(r, "success", False)
 
 
 def test_benchmark_translates_benchmarkfailed_raised_directly():
@@ -128,6 +130,22 @@ def test_benchmark_translates_internal_result_to_api_result():
     assert result.container_image_longterm_ref == "ghcr.io/x/y@sha256:eee"
     assert result.outputs == {"yaml": "/tmp/x.yaml"}
     assert result.results == {"throughput": 100}
+
+
+def test_benchmark_calls_api_level_telemetry():
+    recipe = Recipe({"sparkrun_version": "2", "runtime": "vllm", "model": "org/model"})
+    fake = _fake_internal_result(recipe=recipe)
+    options = BenchmarkOptions(recipe="my-recipe", category="performance")
+    with (
+        patch("sparkrun.api._benchmark._execute_benchmark", return_value=fake),
+        patch("sparkrun.telemetry.emit_benchmark_telemetry") as emit,
+    ):
+        result = benchmark(options)
+
+    emit.assert_called_once()
+    assert emit.call_args.kwargs["result"] == result
+    assert emit.call_args.kwargs["options"].category == "performance"
+    assert emit.call_args.kwargs["recipe"] is recipe
 
 
 def test_benchmark_resolves_category_from_framework_primary():

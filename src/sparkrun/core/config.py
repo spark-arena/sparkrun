@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Any, TYPE_CHECKING, Optional
 
+import yaml
 from vpd.next.util import read_yaml
 
 if TYPE_CHECKING:
@@ -211,6 +212,24 @@ class SparkrunConfig:
             else:
                 return default
         return current
+
+    def set(self, key: str, value: Any) -> None:
+        """Set a config value by dot-separated key path."""
+        parts = key.split(".")
+        current = self._data
+        for part in parts[:-1]:
+            next_value = current.get(part)
+            if not isinstance(next_value, dict):
+                next_value = {}
+                current[part] = next_value
+            current = next_value
+        current[parts[-1]] = value
+
+    def save(self) -> None:
+        """Persist the current config data to disk."""
+        self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.config_path, "w") as f:
+            yaml.safe_dump(self._data, f, default_flow_style=False, sort_keys=False)
 
     def _get_defaults_section(self, section: str, name: str) -> dict[str, Any]:
         """Return ``defaults.<section>.<name>`` as a dict, or ``{}`` when missing or malformed."""

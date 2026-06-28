@@ -1311,7 +1311,16 @@ def benchmark(
     except Exception as exc:
         raise SparkrunError("benchmark failed: %s" % exc) from exc
 
-    return _build_result(effective_options, bench_result)
+    result = _build_result(effective_options, bench_result)
+    from sparkrun.telemetry import emit_benchmark_telemetry
+
+    emit_benchmark_telemetry(
+        sctx.config,
+        result=result,
+        options=effective_options,
+        recipe=getattr(bench_result, "recipe", None),
+    )
+    return result
 
 
 def _build_result(options: BenchmarkOptions, bench_result: Any) -> BenchmarkResult:

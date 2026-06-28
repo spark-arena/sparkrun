@@ -10,6 +10,7 @@ from .._common import (
     _detect_shell,
     _get_cluster_manager,
     _require_uv,
+    _get_context,
     resolve_cluster_config,
     _resolve_setup_context,
     _shell_rc_file,
@@ -173,6 +174,11 @@ def setup_update(ctx, no_update_registries):
 
     from sparkrun import __version__ as old_version
 
+    new_version: str | None = old_version
+
+    sctx = _get_context(ctx)
+    config = sctx.config
+
     uv = shutil.which("uv")
     if not uv:
         click.echo("Error: uv not found. Install uv first: https://docs.astral.sh/uv/", err=True)
@@ -216,6 +222,7 @@ def setup_update(ctx, no_update_registries):
         else:
             click.echo("sparkrun updated: %s -> %s" % (old_version, new_version))
     else:
+        new_version = None
         click.echo("sparkrun updated (could not determine new version)")
 
     # Update recipe registries from the newly installed binary — the
@@ -229,6 +236,57 @@ def setup_update(ctx, no_update_registries):
         )
         if reg_result.returncode != 0:
             click.echo("Warning: registry update failed (non-fatal).", err=True)
+
+    from sparkrun.telemetry import emit_update_event
+
+    emit_update_event(
+        config,
+        command="sparkrun setup update",
+        old_version=old_version,
+        new_version=new_version,
+        upgraded=True,
+        self_upgrade_attempted=True,
+    )
+
+
+@setup.command("telemetry")
+@click.option("--enable", "enable", is_flag=True, help="Enable anonymous telemetry in config")
+@click.option("--disable", "disable", is_flag=True, help="Disable anonymous telemetry in config")
+@click.pass_context
+def setup_telemetry(ctx, enable, disable):
+    """View or change anonymous telemetry settings."""
+    from sparkrun.telemetry.config import (
+        NO_TELEMETRY_ENV,
+        TELEMETRY_ENV,
+        env_telemetry_override,
+        persistent_telemetry_setting,
+        set_persistent_telemetry,
+        telemetry_enabled,
+    )
+
+    if enable and disable:
+        raise click.ClickException("Choose only one of --enable or --disable.")
+
+    sctx = _get_context(ctx)
+    config = sctx.config
+    if enable:
+        set_persistent_telemetry(config, True)
+        click.echo("Telemetry enabled in config.")
+    elif disable:
+        set_persistent_telemetry(config, False)
+        click.echo("Telemetry disabled in config.")
+
+    effective = telemetry_enabled(config)
+    persisted = persistent_telemetry_setting(config)
+    env_override = env_telemetry_override()
+
+    persisted_text = "default enabled" if persisted is None else ("enabled" if persisted else "disabled")
+    click.echo("Telemetry: %s" % ("enabled" if effective else "disabled"))
+    click.echo("Config:    %s" % persisted_text)
+    if env_override is not None:
+        click.echo("Env:       %s" % ("enabled" if env_override else "disabled"))
+    else:
+        click.echo("Env:       set %s=0 or %s=1 to opt out for one process" % (TELEMETRY_ENV, NO_TELEMETRY_ENV))
 
 
 def _run_ssh_diagnose(host_list, user, local_user):
