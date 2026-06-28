@@ -351,9 +351,10 @@ class AtlasRuntime(RuntimePlugin):
         else:
             result = tp * ep
 
-        if result > 1:
-            raise ValueError("Atlas runtime currently only supports single node. Support for multiple nodes is coming soon.")
-
+        # result > 1 drives the native NCCL cluster path: generate_node_command()
+        # assigns per-rank --rank/--world-size/--master-addr/--master-port and the
+        # cluster env carries the validated GB10 RoCEv2 NCCL settings. The published
+        # EP=2 recipes (qwen3.5-122b-a10b, minimax-m2.7) require this to launch.
         return result
 
     # --- Cluster env ---
