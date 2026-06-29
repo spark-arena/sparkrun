@@ -205,6 +205,23 @@ Explicit `runtime` always wins. Command-hint detection only fires when `runtime`
 Any key can appear in `defaults` — there is no fixed schema. Runtime-specific keys (e.g. `tool_call_parser`, `ctx_size`,
 `n_gpu_layers`, `reasoning_parser`) are passed through to command template substitution.
 
+#### Atlas high-speed swap
+
+Atlas's block-level KV streaming (`--high-speed-swap`) is enabled with the boolean `high_speed_swap` key, but it
+also needs tuning keys to be usable — Atlas requires `--high-speed-swap-dir` whenever the toggle is set. These keys
+map to the corresponding `--high-speed-swap-*` flags:
+
+```yaml
+defaults:
+  high_speed_swap: true
+  high_speed_swap_dir: /mnt/nvme/atlas-hss      # required; must differ from the --swap-space-gb mount
+  high_speed_swap_gb: 64                          # total NVMe budget (GiB)
+  high_speed_swap_resident_blocks: 512           # HBM scratch slots
+  high_speed_swap_rank: 32                        # predictor low-rank dim
+  high_speed_swap_qd: 8                           # io_uring submission queue depth
+  high_speed_swap_cache_blocks_per_seq: 64       # per-sequence HBM cache cap
+```
+
 ---
 
 ## Executor Config

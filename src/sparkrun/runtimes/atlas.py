@@ -74,6 +74,20 @@ _ATLAS_FLAG_MAP = {
     "model_from_path": "--model-from-path",
     "cache_dir": "--cache-dir",
     "gpu_ordinal": "--gpu-ordinal",
+    # High-speed-swap tuning keys.  These configure the block-level KV
+    # streaming path enabled by the `high_speed_swap` boolean toggle
+    # below; without them the feature is enabled but unconfigurable from
+    # a recipe (`--high-speed-swap-dir` is required by Atlas when the
+    # toggle is set).  `--high-speed-swap-graph` is intentionally omitted:
+    # Atlas parses it as Option<bool> needing a lowercase `true`/`false`
+    # value, which the bare-toggle and Python-bool rendering paths here
+    # cannot emit safely.
+    "high_speed_swap_dir": "--high-speed-swap-dir",
+    "high_speed_swap_gb": "--high-speed-swap-gb",
+    "high_speed_swap_resident_blocks": "--high-speed-swap-resident-blocks",
+    "high_speed_swap_rank": "--high-speed-swap-rank",
+    "high_speed_swap_qd": "--high-speed-swap-qd",
+    "high_speed_swap_cache_blocks_per_seq": "--high-speed-swap-cache-blocks-per-seq",
     # Boolean toggles — present when truthy, omitted otherwise.  Listed
     # in `_ATLAS_BOOL_FLAGS` so build/strip helpers treat them correctly.
     "enable_prefix_caching": "--enable-prefix-caching",
