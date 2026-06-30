@@ -115,6 +115,45 @@ def test_load_v1_recipe_no_mods_still_eugr(tmp_recipe_dir: Path):
     assert recipe.runtime_config.get("mods", []) == []
 
 
+def test_v1_migration_preserves_non_string_defaults():
+    """v1 migration must not crash on non-string default values.
+
+    The brace-escape collapse only applies to string values; numeric defaults
+    (port, max_num_seqs, gpu_memory_utilization — as used by the eugr
+    DiffusionGemma recipes) are passed through untouched. Regression for the
+    ``'int' object has no attribute 'replace'`` crash (issue #213).
+    """
+    recipe = Recipe.from_dict(
+        {
+            "name": "v1-numeric",
+            "model": "google/diffusiongemma-26B-A4B-it",
+            "recipe_version": "1",
+            "runtime": "vllm",
+            "defaults": {
+                "port": 8000,
+                "max_num_seqs": 10,
+                "gpu_memory_utilization": 0.8,
+                "max_model_len": 262144,
+            },
+        }
+    )
+    # from_dict already calls resolve(); reaching here means no crash.
+    assert recipe.defaults["port"] == 8000
+    assert recipe.defaults["max_num_seqs"] == 10
+    assert recipe.defaults["gpu_memory_utilization"] == 0.8
+    # string defaults still get their brace escapes collapsed
+    r2 = Recipe.from_dict(
+        {
+            "name": "v1-str",
+            "model": "m",
+            "recipe_version": "1",
+            "runtime": "vllm",
+            "defaults": {"diffusion_config": '{{"canvas_length": 256}}'},
+        }
+    )
+    assert r2.defaults["diffusion_config"] == '{"canvas_length": 256}'
+
+
 def test_recipe_from_dict(sample_v2_recipe_data: dict[str, Any]):
     """Create a recipe from a dict and verify all fields are correctly set.
 
@@ -396,6 +435,47 @@ def test_recipe_render_command_no_template():
     rendered = recipe.render_command(config)
 
     assert rendered is None
+
+
+def test_render_command_collapses_v1_brace_escapes():
+    """v1 recipes collapse ``{{``/``}}`` escapes after placeholder substitution.
+
+    eugr recipes write JSON-valued flags with doubled braces so the literal
+    braces survive ``{placeholder}`` substitution; ``render_command`` collapses
+    them back so the runtime receives valid JSON rather than ``{{...}}``.
+    Regression for issue #213.
+    """
+    recipe = Recipe.from_dict(
+        {
+            "name": "v1-json",
+            "model": "google/diffusiongemma-26B-A4B-it",
+            "recipe_version": "1",
+            "runtime": "vllm",
+            "defaults": {"port": 8000},
+            "command": "vllm serve m --port {port} --diffusion-config '{{\"canvas_length\": 256}}'",
+        }
+    )
+    rendered = recipe.render_command(recipe.build_config_chain({}))
+
+    assert "--diffusion-config '{\"canvas_length\": 256}'" in rendered
+    assert "{{" not in rendered
+    assert "}}" not in rendered
+    assert "--port 8000" in rendered
+
+
+def test_render_command_does_not_collapse_braces_for_v2():
+    """v2 recipes are unaffected by the v1 brace-escape collapse."""
+    recipe = Recipe.from_dict(
+        {
+            "name": "v2",
+            "model": "m",
+            "runtime": "vllm",
+            "command": "vllm serve m --x '{{literal}}'",
+        }
+    )
+    rendered = recipe.render_command(recipe.build_config_chain({}))
+
+    assert "{{literal}}" in rendered
 
 
 def test_render_command_fixes_trailing_space_continuations():
