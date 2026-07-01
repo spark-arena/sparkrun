@@ -37,7 +37,7 @@ class _FakeResponse:
 
 
 def test_telemetry_enabled_prefers_env_over_config(tmp_path, monkeypatch):
-    monkeypatch.delenv("SPARKRUN_TELEMETRY", raising=False)
+    monkeypatch.delenv("SPARKRUN_NO_TELEMETRY", raising=False)
     config = SparkrunConfig(tmp_path / "config.yaml")
 
     assert telemetry_enabled(config) is True
@@ -47,12 +47,12 @@ def test_telemetry_enabled_prefers_env_over_config(tmp_path, monkeypatch):
     config = SparkrunConfig(tmp_path / "config.yaml")
     assert telemetry_enabled(config) is False
 
-    monkeypatch.setenv("SPARKRUN_TELEMETRY", "1")
+    monkeypatch.setenv("SPARKRUN_NO_TELEMETRY", "0")
     assert telemetry_enabled(config) is True
 
 
 def test_installation_id_is_persistent(tmp_path, monkeypatch):
-    monkeypatch.delenv("SPARKRUN_TELEMETRY", raising=False)
+    monkeypatch.delenv("SPARKRUN_NO_TELEMETRY", raising=False)
     config = SparkrunConfig(tmp_path / "config.yaml")
 
     first = ensure_installation_id(config)
@@ -63,7 +63,7 @@ def test_installation_id_is_persistent(tmp_path, monkeypatch):
 
 
 def test_send_event_posts_json_with_auth_header(tmp_path, monkeypatch):
-    monkeypatch.delenv("SPARKRUN_TELEMETRY", raising=False)
+    monkeypatch.delenv("SPARKRUN_NO_TELEMETRY", raising=False)
     monkeypatch.setenv("SPARKRUN_TELEMETRY_ENDPOINT", "https://telemetry.test/")
     monkeypatch.setenv("SPARKRUN_TELEMETRY_KEY", "secret-key")
     config = SparkrunConfig(tmp_path / "config.yaml")
@@ -89,7 +89,7 @@ def test_send_event_posts_json_with_auth_header(tmp_path, monkeypatch):
 
 
 def test_prepare_event_returns_none_when_disabled(tmp_path, monkeypatch):
-    monkeypatch.setenv("SPARKRUN_TELEMETRY", "0")
+    monkeypatch.setenv("SPARKRUN_NO_TELEMETRY", "1")
     config = SparkrunConfig(tmp_path / "config.yaml")
 
     assert prepare_event(config, {"event_type": "unit_test"}) is None
@@ -213,7 +213,6 @@ def test_benchmark_event_is_anonymous_and_low_cardinality():
 def test_setup_telemetry_command_persists_preference(tmp_path, monkeypatch):
     import sparkrun.core.config as config_module
 
-    monkeypatch.delenv("SPARKRUN_TELEMETRY", raising=False)
     monkeypatch.delenv("SPARKRUN_NO_TELEMETRY", raising=False)
     monkeypatch.setattr(config_module, "DEFAULT_CONFIG_DIR", tmp_path / "config")
 

@@ -10,7 +10,6 @@ from sparkrun.core.config import SparkrunConfig
 
 logger = logging.getLogger(__name__)
 
-TELEMETRY_ENV = "SPARKRUN_TELEMETRY"
 NO_TELEMETRY_ENV = "SPARKRUN_NO_TELEMETRY"
 TELEMETRY_ENDPOINT_ENV = "SPARKRUN_TELEMETRY_ENDPOINT"
 TELEMETRY_KEY_ENV = "SPARKRUN_TELEMETRY_KEY"
@@ -43,11 +42,16 @@ def parse_bool(value: bool | str | int | float | None) -> bool | None:
 
 
 def env_telemetry_override() -> bool | None:
-    """Return the environment-level telemetry decision, if one is set."""
+    """Return the environment-level telemetry decision, if one is set.
+
+    ``SPARKRUN_NO_TELEMETRY`` is the single per-process override: a truthy value
+    opts out, a falsy value forces telemetry on, and an unset or unrecognized
+    value defers to the persisted config.
+    """
     no_telemetry = parse_bool(os.environ.get(NO_TELEMETRY_ENV))
-    if no_telemetry is True:
-        return False
-    return parse_bool(os.environ.get(TELEMETRY_ENV))
+    if no_telemetry is None:
+        return None
+    return not no_telemetry
 
 
 def telemetry_enabled(config: SparkrunConfig) -> bool:

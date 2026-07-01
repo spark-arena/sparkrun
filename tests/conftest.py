@@ -19,7 +19,7 @@ def isolate_stateful(tmp_path: Path, monkeypatch):
     Also resets the bootstrap singleton between tests.
     """
     monkeypatch.setenv("STATEFUL_ROOT", str(tmp_path / "stateful"))
-    monkeypatch.setenv("SPARKRUN_TELEMETRY", "0")
+    monkeypatch.setenv("SPARKRUN_NO_TELEMETRY", "1")
     import sparkrun.core.bootstrap
 
     sparkrun.core.bootstrap._variables = None

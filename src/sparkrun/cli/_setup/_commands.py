@@ -257,7 +257,6 @@ def setup_telemetry(ctx, enable, disable):
     """View or change anonymous telemetry settings."""
     from sparkrun.telemetry.config import (
         NO_TELEMETRY_ENV,
-        TELEMETRY_ENV,
         env_telemetry_override,
         persistent_telemetry_setting,
         set_persistent_telemetry,
@@ -286,7 +285,7 @@ def setup_telemetry(ctx, enable, disable):
     if env_override is not None:
         click.echo("Env:       %s" % ("enabled" if env_override else "disabled"))
     else:
-        click.echo("Env:       set %s=0 or %s=1 to opt out for one process" % (TELEMETRY_ENV, NO_TELEMETRY_ENV))
+        click.echo("Env:       set %s=1 to opt out for one process" % NO_TELEMETRY_ENV)
 
 
 def _run_ssh_diagnose(host_list, user, local_user):
