@@ -325,6 +325,18 @@ def _resolve_runtime_from_command_hint(recipe: Recipe) -> None:
         recipe.runtime = "trtllm"
 
 
+def _collapse_brace_escapes(value: str) -> str:
+    """Collapse vpd-style brace escapes (``{{`` -> ``{``, ``}}`` -> ``}``).
+
+    v1 (eugr) recipes double their braces so a literal ``{`` survives vpd
+    ``{placeholder}`` substitution — e.g. a JSON-valued flag written as
+    ``--diffusion-config '{{"canvas_length": 256}}'``.  Once substitution has
+    run, the doubled braces are collapsed back to single braces, matching
+    eugr's own ``run-recipe.sh``.
+    """
+    return value.replace("{{", "{").replace("}}", "}")
+
+
 def _resolve_v1_migration(recipe: Recipe) -> None:
     """v1 format recipes -> eugr builder (runtime left for vllm variant resolution)."""
     if recipe.recipe_version != "1":
@@ -332,9 +344,13 @@ def _resolve_v1_migration(recipe: Recipe) -> None:
     if recipe.runtime in ("vllm", ""):
         if not recipe.builder:
             recipe.builder = "eugr"
-        # TODO: verify possible failures from this; v1 recipes sometimes use '{{' in defaults values to escape '{'.
-        # replace '{{' in str defaults values with '{'
-        recipe.defaults = {k: v.replace("{{", "{") for k, v in recipe.defaults.items()}
+        # v1 recipes may escape literal braces as '{{'/'}}' in defaults values
+        # (e.g. a JSON-valued flag default).  Collapse them for string values
+        # only; non-string defaults (numeric port, max_num_seqs,
+        # gpu_memory_utilization, ...) are passed through untouched.
+        recipe.defaults = {
+            k: (_collapse_brace_escapes(v) if isinstance(v, str) else v) for k, v in recipe.defaults.items()
+        }
 
 
 def _resolve_eugr_signals(recipe: Recipe) -> None:
@@ -949,6 +965,14 @@ class Recipe:
         while last != rendered:
             last = rendered
             rendered = arg_substitute(rendered, config_chain)
+
+        # v1 (eugr) recipes escape literal braces as '{{'/'}}' so they survive
+        # the {placeholder} substitution above (e.g. JSON-valued flags like
+        # --diffusion-config '{{...}}').  Collapse them back now that
+        # substitution is done, so the runtime receives valid JSON rather than
+        # doubled braces.  Done post-substitution to preserve the escaping.
+        if self.recipe_version == "1":
+            rendered = _collapse_brace_escapes(rendered)
 
         # Fix trailing spaces after backslash line-continuations.
         # ``\<space><newline>`` → ``\<newline>``
