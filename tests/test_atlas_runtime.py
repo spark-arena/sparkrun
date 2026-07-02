@@ -78,6 +78,36 @@ def test_atlas_generate_command_bool_flags():
     assert "--high-speed-swap" not in cmd
 
 
+def test_atlas_high_speed_swap_subflags_render():
+    """High-speed-swap tuning keys map to their `--high-speed-swap-*` flags.
+
+    Regression: the `high_speed_swap` toggle was mapped but its required
+    sub-flags were not, so the feature could be turned on but not
+    configured from a recipe (Atlas requires `--high-speed-swap-dir`).
+    """
+    runtime = AtlasRuntime()
+    recipe = _recipe(
+        defaults={
+            "high_speed_swap": True,
+            "high_speed_swap_dir": "/mnt/nvme/atlas-hss",
+            "high_speed_swap_gb": 64,
+            "high_speed_swap_resident_blocks": 512,
+            "high_speed_swap_rank": 32,
+            "high_speed_swap_qd": 8,
+            "high_speed_swap_cache_blocks_per_seq": 64,
+        },
+    )
+
+    cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+    assert "--high-speed-swap" in cmd
+    assert "--high-speed-swap-dir /mnt/nvme/atlas-hss" in cmd
+    assert "--high-speed-swap-gb 64" in cmd
+    assert "--high-speed-swap-resident-blocks 512" in cmd
+    assert "--high-speed-swap-rank 32" in cmd
+    assert "--high-speed-swap-qd 8" in cmd
+    assert "--high-speed-swap-cache-blocks-per-seq 64" in cmd
+
+
 def test_atlas_generate_command_from_template():
     """Recipe with explicit command template renders it verbatim."""
     runtime = AtlasRuntime()

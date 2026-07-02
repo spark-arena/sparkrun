@@ -4768,8 +4768,12 @@ class TestUpdateCommand:
                 return mock.Mock(returncode=0, stdout="sparkrun v1.0.0\n", stderr="")
             if cmd[1:3] == ["tool", "upgrade"]:
                 return mock.Mock(returncode=0, stdout="", stderr="")
-            if cmd == ["sparkrun", "--version"]:
-                return mock.Mock(returncode=0, stdout="sparkrun, version 1.1.0", stderr="")
+            if cmd == ["sparkrun", "setup", "version", "--json"]:
+                return mock.Mock(
+                    returncode=0,
+                    stdout='{"version": "1.1.0", "channel": "stable", "commit": null}',
+                    stderr="",
+                )
             if cmd == ["sparkrun", "registry", "update"]:
                 return mock.Mock(returncode=0, stdout="", stderr="")
             return mock.Mock(returncode=0, stdout="", stderr="")

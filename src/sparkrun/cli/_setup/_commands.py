@@ -82,8 +82,12 @@ def setup_completion(ctx, shell):
 @setup.command("install")
 @click.option("--shell", type=click.Choice(["bash", "zsh", "fish"]), default=None, help="Shell type (auto-detected if not specified)")
 @click.option("--no-update-registries", is_flag=True, help="Skip updating recipe registries after installation")
+@click.option("--stable", is_flag=True, help="Install the stable channel (PyPI, default)")
+@click.option("--beta", is_flag=True, help="Install the beta channel (develop branch)")
+@click.option("--alpha", is_flag=True, help="Install the alpha channel (develop-next branch)")
+@click.option("--yolo", is_flag=True, help="Alias for --alpha")
 @click.pass_context
-def setup_install(ctx, shell, no_update_registries):
+def setup_install(ctx, shell, no_update_registries, stable, beta, alpha, yolo):
     """Install sparkrun and tab-completion.
 
     Requires uv (https://docs.astral.sh/uv/).  Typical usage:
@@ -94,8 +98,19 @@ def setup_install(ctx, shell, no_update_registries):
     This installs sparkrun as a uv tool (real binary on PATH), cleans up
     any old aliases/functions from previous installs, configures
     tab-completion, and updates recipe registries.
+
+    Channel flags (--beta/--alpha/--yolo) install from a git branch instead of
+    PyPI and persist the choice for future updates. No flag installs stable.
     """
     import subprocess
+
+    from sparkrun.cli._self_update import channel_from_flags, install_argv
+    from sparkrun.core.channels import CHANNEL_STABLE
+    from sparkrun.core.config import SparkrunConfig
+
+    config = SparkrunConfig()
+    requested = channel_from_flags(stable, beta, alpha, yolo)
+    channel = requested if requested is not None else config.self_update_channel
 
     if not shell:
         shell, rc_file = _detect_shell()
@@ -105,16 +120,18 @@ def setup_install(ctx, shell, no_update_registries):
     # Step 1: Install sparkrun via uv tool
     uv = _require_uv()
 
-    click.echo("Installing sparkrun via uv tool install...")
+    label = "" if channel == CHANNEL_STABLE else "%s channel " % channel
+    click.echo("Installing sparkrun %svia uv tool install..." % label)
     result = subprocess.run(
-        [uv, "tool", "install", "sparkrun", "--force"],
+        install_argv(uv, channel),
         capture_output=True,
         text=True,
     )
     if result.returncode != 0:
         click.echo("Error installing sparkrun: %s" % result.stderr.strip(), err=True)
         sys.exit(1)
-    click.echo("sparkrun installed on PATH")
+    config.set_self_update_channel(channel)
+    click.echo("sparkrun %sinstalled on PATH" % label)
 
     # Step 2: Clean up old aliases/functions from previous installs
     if rc_file.exists():
@@ -148,32 +165,49 @@ def setup_install(ctx, shell, no_update_registries):
 
 @setup.command("update")
 @click.option("--no-update-registries", is_flag=True, help="Skip updating recipe registries")
+@click.option("--stable", is_flag=True, help="Switch to and update the stable channel (PyPI)")
+@click.option("--beta", is_flag=True, help="Switch to and update the beta channel (develop branch)")
+@click.option("--alpha", is_flag=True, help="Switch to and update the alpha channel (develop-next branch)")
+@click.option("--yolo", is_flag=True, help="Alias for --alpha")
 @click.pass_context
-def setup_update(ctx, no_update_registries):
+def setup_update(ctx, no_update_registries, stable, beta, alpha, yolo):
     """Update sparkrun to the latest version.
 
-    Requires sparkrun to have been installed via ``uv tool install``.
-    After upgrading, recipe registries are also updated.
+    Requires sparkrun to have been installed via ``uv tool install``. With no
+    channel flag, updates the currently configured channel; a channel flag
+    switches channels. After upgrading, recipe registries are also updated.
 
     \b
       sparkrun setup update
+      sparkrun setup update --beta
     """
-    import shutil
     import subprocess
 
-    from sparkrun import __version__ as old_version
+    from sparkrun.cli._self_update import (
+        capture_old_identity,
+        channel_from_flags,
+        describe_change,
+        install_argv,
+        is_uv_tool_install,
+        new_binary_identity,
+        resolve_uv,
+        update_argv,
+        warn_if_downgrade,
+    )
+    from sparkrun.core.config import SparkrunConfig
 
-    uv = shutil.which("uv")
+    config = SparkrunConfig()
+    current = config.self_update_channel
+    requested = channel_from_flags(stable, beta, alpha, yolo)
+    channel = requested if requested is not None else current
+    switching = requested is not None and requested != current
+
+    uv = resolve_uv()
     if not uv:
         click.echo("Error: uv not found. Install uv first: https://docs.astral.sh/uv/", err=True)
         sys.exit(1)
 
-    check = subprocess.run(
-        [uv, "tool", "list"],
-        capture_output=True,
-        text=True,
-    )
-    if check.returncode != 0 or "sparkrun" not in check.stdout:
+    if not is_uv_tool_install(uv):
         click.echo(
             "Error: sparkrun was not installed via 'uv tool install'.\n"
             "Cannot safely upgrade — manage updates through your package manager instead.",
@@ -181,9 +215,14 @@ def setup_update(ctx, no_update_registries):
         )
         sys.exit(1)
 
-    click.echo("Checking for updates (current: %s)..." % old_version)
+    if switching:
+        warn_if_downgrade(current, channel)
+        click.echo("Switching to the %s channel..." % channel)
+
+    old_identity = capture_old_identity()
+    click.echo("Checking for updates (current: %s)..." % old_identity[0])
     result = subprocess.run(
-        [uv, "tool", "upgrade", "sparkrun"],
+        install_argv(uv, channel) if switching else update_argv(uv, channel),
         capture_output=True,
         text=True,
     )
@@ -191,22 +230,10 @@ def setup_update(ctx, no_update_registries):
         click.echo("Error updating sparkrun: %s" % result.stderr.strip(), err=True)
         sys.exit(1)
 
-    # The running process still has the old module cached, and reload
-    # won't help because uv tool installs into a separate virtualenv.
-    # Ask the newly installed binary instead.
-    ver_result = subprocess.run(
-        ["sparkrun", "--version"],
-        capture_output=True,
-        text=True,
-    )
-    if ver_result.returncode == 0:
-        new_version = ver_result.stdout.strip().rsplit(None, 1)[-1]
-        if new_version == old_version:
-            click.echo("sparkrun %s is already the latest version." % old_version)
-        else:
-            click.echo("sparkrun updated: %s -> %s" % (old_version, new_version))
-    else:
-        click.echo("sparkrun updated (could not determine new version)")
+    config.set_self_update_channel(channel)
+    # The running process still has the old module cached, so ask the newly
+    # installed binary for its identity (version for stable, commit for git).
+    click.echo(describe_change(channel, old_identity, new_binary_identity()))
 
     # Update recipe registries from the newly installed binary — the
     # running process still has old code, so we must shell out.
@@ -219,6 +246,27 @@ def setup_update(ctx, no_update_registries):
         )
         if reg_result.returncode != 0:
             click.echo("Warning: registry update failed (non-fatal).", err=True)
+
+
+@setup.command("version", hidden=True)
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable version identity (version, channel, commit)")
+def setup_version(as_json):
+    """Print the installed sparkrun version identity.
+
+    Hidden helper used by the self-update flow to compare builds across a uv
+    reinstall without scraping the human ``--version`` string.
+    """
+    import json as _json
+
+    from sparkrun.core.config import SparkrunConfig
+    from sparkrun.core.version import display_version, installed_identity
+
+    config = SparkrunConfig()
+    base, commit = installed_identity()
+    if as_json:
+        click.echo(_json.dumps({"version": base, "channel": config.self_update_channel, "commit": commit}))
+    else:
+        click.echo(display_version(config, base))
 
 
 def _run_ssh_diagnose(host_list, user, local_user):
