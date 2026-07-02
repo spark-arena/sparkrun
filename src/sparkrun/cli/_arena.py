@@ -179,7 +179,8 @@ def arena_benchmark_run(
 
       sparkrun arena benchmark qwen3-1.7b-sglang --tp 2
     """
-    from sparkrun import __version__
+    from sparkrun.core.config import SparkrunConfig
+    from sparkrun.core.version import display_version
     from sparkrun.arena.auth import load_refresh_token, exchange_token
     from sparkrun.arena.upload import generate_submission_id, upload_benchmark_results
     from ._benchmark import _run_benchmark
@@ -187,7 +188,7 @@ def arena_benchmark_run(
 
     # --- Pre-flight checks ---
     click.echo(ASCII_ART)
-    click.echo("sparkrun v%s — Spark Arena benchmark" % __version__)
+    click.echo("sparkrun v%s — Spark Arena benchmark" % display_version(SparkrunConfig()))
     click.echo()
 
     refresh_token = None

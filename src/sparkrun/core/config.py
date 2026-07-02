@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Any, TYPE_CHECKING, Optional
 
+import yaml
 from vpd.next.util import read_yaml
 
 if TYPE_CHECKING:
@@ -146,6 +147,41 @@ class SparkrunConfig:
             else:
                 return default
         return current
+
+    def set(self, key: str, value: Any) -> None:
+        """Set a config value by dot-separated key path (in memory; call ``save()`` to persist)."""
+        parts = key.split(".")
+        current = self._data
+        for part in parts[:-1]:
+            nxt = current.get(part)
+            if not isinstance(nxt, dict):
+                nxt = {}
+                current[part] = nxt
+            current = nxt
+        current[parts[-1]] = value
+
+    def save(self) -> None:
+        """Persist the current config to ``config_path`` as YAML."""
+        self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.config_path, "w") as f:
+            yaml.safe_dump(self._data, f, default_flow_style=False, sort_keys=False)
+
+    @property
+    def self_update_channel(self) -> str:
+        """Return the persisted update channel, normalized (default ``stable``)."""
+        from sparkrun.core.channels import normalize_channel
+
+        return normalize_channel(self.get("self_update.channel"))
+
+    def set_self_update_channel(self, channel: str) -> None:
+        """Persist the update channel (normalized) plus its source and requirement."""
+        from sparkrun.core.channels import channel_requirement, is_git_channel, normalize_channel
+
+        canonical = normalize_channel(channel)
+        self.set("self_update.channel", canonical)
+        self.set("self_update.source", "git" if is_git_channel(canonical) else "pypi")
+        self.set("self_update.requirement", channel_requirement(canonical))
+        self.save()
 
     def _get_defaults_section(self, section: str, name: str) -> dict[str, Any]:
         """Return ``defaults.<section>.<name>`` as a dict, or ``{}`` when missing or malformed."""
