@@ -159,6 +159,14 @@ def update(ctx, stable, beta, alpha, yolo):
         warn_if_downgrade,
     )
 
+    # Import telemetry NOW, before a possible cross-version downgrade (e.g. a
+    # 0.3.x -> 0.2.x switch) overwrites the on-disk package mid-run and makes
+    # the module unavailable. Keeping it resident lets the send still succeed.
+    try:
+        from sparkrun.telemetry.emit import emit_update_event
+    except Exception:
+        emit_update_event = None
+
     sctx = _get_context(ctx)
     config = sctx.config
     current = config.self_update_channel
@@ -215,15 +223,17 @@ def update(ctx, stable, beta, alpha, yolo):
         click.echo()
         ctx.invoke(registry_update)
 
-    from sparkrun.telemetry.emit import emit_update_event
-
-    emit_update_event(
-        config,
-        command="sparkrun update",
-        old_version=old_version,
-        new_version=new_version,
-        upgraded=upgraded,
-        self_upgrade_attempted=self_upgrade_attempted,
-        channel=channel,
-        requested_channel=requested,
-    )
+    if emit_update_event is not None:
+        try:
+            emit_update_event(
+                config,
+                command="sparkrun update",
+                old_version=old_version,
+                new_version=new_version,
+                upgraded=upgraded,
+                self_upgrade_attempted=self_upgrade_attempted,
+                channel=channel,
+                requested_channel=requested,
+            )
+        except Exception:
+            pass  # best-effort: telemetry must never break `update`

@@ -205,6 +205,13 @@ def setup_update(ctx, no_update_registries, stable, beta, alpha, yolo):
         warn_if_downgrade,
     )
 
+    # Import telemetry NOW, before a possible cross-version downgrade overwrites
+    # the on-disk package mid-run and makes the module unavailable.
+    try:
+        from sparkrun.telemetry import emit_update_event
+    except Exception:
+        emit_update_event = None
+
     config = _get_context(ctx).config
     current = config.self_update_channel
     requested = channel_from_flags(stable, beta, alpha, yolo)
@@ -259,18 +266,20 @@ def setup_update(ctx, no_update_registries, stable, beta, alpha, yolo):
         if reg_result.returncode != 0:
             click.echo("Warning: registry update failed (non-fatal).", err=True)
 
-    from sparkrun.telemetry import emit_update_event
-
-    emit_update_event(
-        config,
-        command="sparkrun setup update",
-        old_version=old_version,
-        new_version=new_version,
-        upgraded=True,
-        self_upgrade_attempted=True,
-        channel=channel,
-        requested_channel=requested,
-    )
+    if emit_update_event is not None:
+        try:
+            emit_update_event(
+                config,
+                command="sparkrun setup update",
+                old_version=old_version,
+                new_version=new_version,
+                upgraded=True,
+                self_upgrade_attempted=True,
+                channel=channel,
+                requested_channel=requested,
+            )
+        except Exception:
+            pass  # best-effort: telemetry must never break `setup update`
 
 
 @setup.command("version", hidden=True)

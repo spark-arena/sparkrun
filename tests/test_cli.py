@@ -5250,8 +5250,14 @@ class TestUpdateCommand:
         assert result.exit_code == 0
         assert "not installed via uv" in result.output
 
-    def test_update_uv_upgrade_succeeds(self, runner, monkeypatch):
+    def test_update_uv_upgrade_succeeds(self, runner, monkeypatch, tmp_path):
         """update performs uv upgrade and shells out for registry update."""
+        # Isolate config so the channel resolves to the default (stable) and the
+        # command never reads or writes the real ~/.config/sparkrun/config.yaml.
+        import sparkrun.core.config as config_module
+
+        monkeypatch.setattr(config_module, "DEFAULT_CONFIG_DIR", tmp_path / "config")
+        monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
 
         def fake_run(cmd, **kwargs):
