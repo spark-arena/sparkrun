@@ -369,10 +369,11 @@ def run(
         display_scheduler = effective_scheduler or FALLBACK_DEFAULT_SCHEDULER
 
     # Display summary before launch
-    from sparkrun import __version__
+    from sparkrun.core.config import SparkrunConfig
+    from sparkrun.core.version import display_version
 
     container_image = runtime.resolve_container(recipe, overrides)
-    click.echo("sparkrun v%s" % __version__)
+    click.echo("sparkrun v%s" % display_version(SparkrunConfig()))
     click.echo()
     click.echo("Runtime:   %s" % runtime.runtime_name)
     click.echo("Image:     %s" % container_image)

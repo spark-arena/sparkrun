@@ -29,10 +29,32 @@ from ._stop_logs import logs_cmd, stop
 from ._tune import tune
 
 
+def _print_version(ctx, param, value):
+    """Eager callback for --version: render the channel-aware display string."""
+    if not value or ctx.resilient_parsing:
+        return
+    try:
+        from sparkrun.core.config import SparkrunConfig
+        from sparkrun.core.version import display_version
+
+        rendered = display_version(SparkrunConfig())
+    except Exception:
+        rendered = __version__
+    click.echo("sparkrun, version %s" % rendered)
+    ctx.exit()
+
+
 @click.group()
 @click.option("-v", "--verbose", count=True, help="Increase verbosity (-v detail, -vv timestamps, -vvv debug)")
 @click.option("-q", "--quiet", is_flag=True, help="Suppress all output except errors (for scripting)")
-@click.version_option(__version__, prog_name="sparkrun")
+@click.option(
+    "--version",
+    is_flag=True,
+    is_eager=True,
+    expose_value=False,
+    callback=_print_version,
+    help="Show the version and exit.",
+)
 @click.pass_context
 def main(ctx, verbose, quiet):
     """sparkrun — Launch inference workloads on NVIDIA DGX Spark systems."""
@@ -107,67 +129,73 @@ def status(ctx, hosts, hosts_file, cluster_name, dry_run):
 
 
 @main.command("update")
+@click.option("--stable", is_flag=True, help="Switch to and update the stable channel (PyPI)")
+@click.option("--beta", is_flag=True, help="Switch to and update the beta channel (develop branch)")
+@click.option("--alpha", is_flag=True, help="Switch to and update the alpha channel (develop-next branch)")
+@click.option("--yolo", is_flag=True, help="Alias for --alpha")
 @click.pass_context
-def update(ctx):
+def update(ctx, stable, beta, alpha, yolo):
     """Update sparkrun and recipe registries.
 
-    Attempts to upgrade sparkrun via ``uv tool upgrade`` if it was
-    installed that way, then always updates recipe registries from git.
+    Attempts to upgrade sparkrun via uv if it was installed that way, then
+    always updates recipe registries from git. With no channel flag, updates
+    the currently configured channel; a channel flag switches channels.
 
     If sparkrun was not installed via uv (e.g. pip, pipx, editable
     install), the self-upgrade step is skipped and only registries
     are updated.
     """
-    import shutil
     import subprocess
 
-    from sparkrun import __version__ as old_version
-
-    new_version: str | None = old_version
-    self_upgrade_attempted = False
+    from sparkrun.cli._self_update import (
+        capture_old_identity,
+        channel_from_flags,
+        describe_change,
+        install_argv,
+        is_uv_tool_install,
+        new_binary_identity,
+        resolve_uv,
+        update_argv,
+        warn_if_downgrade,
+    )
 
     sctx = _get_context(ctx)
     config = sctx.config
+    current = config.self_update_channel
+    requested = channel_from_flags(stable, beta, alpha, yolo)
+    channel = requested if requested is not None else current
+    switching = requested is not None and requested != current
+
+    old_identity = capture_old_identity()
+    old_version = old_identity[0]
+    new_version: str | None = old_version
+    self_upgrade_attempted = False
 
     # --- Step 1: Try self-upgrade via uv (best-effort) ---
-    uv = shutil.which("uv")
+    uv = resolve_uv()
     upgraded = False
-    if uv:
-        check = subprocess.run(
-            [uv, "tool", "list"],
+    if uv and is_uv_tool_install(uv):
+        self_upgrade_attempted = True
+        if switching:
+            warn_if_downgrade(current, channel)
+            click.echo("Switching to the %s channel..." % channel)
+        click.echo("Checking for sparkrun updates (current: %s)..." % old_version)
+        result = subprocess.run(
+            install_argv(uv, channel) if switching else update_argv(uv, channel),
             capture_output=True,
             text=True,
         )
-        if check.returncode == 0 and "sparkrun" in check.stdout:
-            self_upgrade_attempted = True
-            click.echo("Checking for sparkrun updates (current: %s)..." % old_version)
-            # TODO: check if next version is significant upgrade; handle warning if so!
-            result = subprocess.run(
-                [uv, "tool", "upgrade", "sparkrun"],
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode == 0:
-                ver_result = subprocess.run(
-                    ["sparkrun", "--version"],
-                    capture_output=True,
-                    text=True,
-                )
-                if ver_result.returncode == 0:
-                    new_version = ver_result.stdout.strip().rsplit(None, 1)[-1]
-                    if new_version == old_version:
-                        click.echo("sparkrun %s is already the latest version." % old_version)
-                    else:
-                        click.echo("sparkrun updated: %s -> %s" % (old_version, new_version))
-                else:
-                    new_version = None
-                    click.echo("sparkrun updated (could not determine new version).")
-                upgraded = True
-            else:
-                click.echo("Warning: sparkrun upgrade failed: %s" % result.stderr.strip(), err=True)
-                click.echo("Continuing with registry update...", err=True)
+        if result.returncode == 0:
+            config.set_self_update_channel(channel)
+            new_identity = new_binary_identity()
+            new_version = new_identity[0] or new_version
+            click.echo(describe_change(channel, old_identity, new_identity))
+            upgraded = True
         else:
-            click.echo("sparkrun not installed via uv tool — skipping self-upgrade.")
+            click.echo("Warning: sparkrun upgrade failed: %s" % result.stderr.strip(), err=True)
+            click.echo("Continuing with registry update...", err=True)
+    elif uv:
+        click.echo("sparkrun not installed via uv tool — skipping self-upgrade.")
     else:
         click.echo("uv not found — skipping self-upgrade.")
 
@@ -196,4 +224,6 @@ def update(ctx):
         new_version=new_version,
         upgraded=upgraded,
         self_upgrade_attempted=self_upgrade_attempted,
+        channel=channel,
+        requested_channel=requested,
     )

@@ -30,6 +30,8 @@ def build_update_event(
     upgraded: bool,
     registries: Sequence,
     self_upgrade_attempted: bool = True,
+    channel: str | None = None,
+    requested_channel: str | None = None,
 ) -> TelemetryEvent:
     event = {
         "event_type": "update",
@@ -41,6 +43,10 @@ def build_update_event(
         "self_upgrade_succeeded": upgraded,
         "system": system_info(),
     }
+    if channel is not None:
+        event["channel"] = channel
+    if requested_channel is not None:
+        event["requested_channel"] = requested_channel
     event.update(registry_summary(registries))
     return event
 

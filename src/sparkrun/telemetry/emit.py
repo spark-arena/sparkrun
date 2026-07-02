@@ -22,6 +22,8 @@ def emit_update_event(
     new_version: str | None,
     upgraded: bool,
     self_upgrade_attempted: bool = True,
+    channel: str | None = None,
+    requested_channel: str | None = None,
 ) -> None:
     """Emit a best-effort update event."""
     try:
@@ -35,6 +37,8 @@ def emit_update_event(
                 upgraded=upgraded,
                 registries=registries,
                 self_upgrade_attempted=self_upgrade_attempted,
+                channel=channel,
+                requested_channel=requested_channel,
             ),
         )
     except Exception:  # noqa: BLE001  # noqa: BROAD_EXCEPT_OK

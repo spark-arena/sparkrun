@@ -187,7 +187,8 @@ def arena_benchmark_run(
 
       sparkrun arena benchmark qwen3-1.7b-sglang --tp 2
     """
-    from sparkrun import __version__
+    from sparkrun.core.config import SparkrunConfig
+    from sparkrun.core.version import display_version
     from sparkrun.api._benchmark_models import ResumeMode
     from sparkrun.cli._arena_flow import preflight_arena, finalize_arena
     from ._benchmark import _run_benchmark
@@ -196,7 +197,7 @@ def arena_benchmark_run(
 
     # --- Pre-flight checks ---
     click.echo(ASCII_ART)
-    click.echo("sparkrun v%s — Spark Arena benchmark" % __version__)
+    click.echo("sparkrun v%s — Spark Arena benchmark" % display_version(SparkrunConfig()))
     click.echo()
 
     submission_id, profile_override = preflight_arena(local_test=local_test, ctx=ctx)

@@ -35,7 +35,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
     import shutil
     import subprocess
 
-    from sparkrun import __version__
+    from sparkrun.core.version import display_version
     from sparkrun.core.cluster_manager import ClusterError
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.orchestration.networking import (
@@ -85,7 +85,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
     try:
         # ── Phase 0: Welcome + Install Check ─────────────────────────
         click.echo()
-        click.echo("Welcome to sparkrun %s setup wizard!" % __version__)
+        click.echo("Welcome to sparkrun %s setup wizard!" % display_version(SparkrunConfig()))
         click.echo("=" * 48)
         click.echo()
 
