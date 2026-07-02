@@ -46,6 +46,11 @@ sparkrun setup update
 
 # Update sparkrun only (skip registry sync)
 sparkrun setup update --no-update-registries
+
+# Update channels (advanced): stable (PyPI, default), beta (develop), alpha (develop-next)
+sparkrun update --beta      # switch to and update the beta channel
+sparkrun update --alpha     # or --yolo; bleeding-edge develop-next
+sparkrun update --stable    # switch back to the stable PyPI release
 ```
 
 ## Setup Wizard (Recommended for First-Time Setup)
@@ -249,6 +254,7 @@ When running SSH setup, the command is interactive and must be run with inherite
 - `sparkrun setup fix-permissions` and `clear-cache` try non-interactive sudo first, then prompt if needed
 - Use `--save-sudo` to install scoped sudoers entries for passwordless future runs
 - `sparkrun update` is a top-level shortcut that upgrades sparkrun (if uv-installed) and updates registries
+- Update channels: `--stable` (PyPI, default), `--beta` (develop), `--alpha`/`--yolo` (develop-next) on `update`, `setup install`, and `setup update`; no flag keeps the current channel, and switching to stable from a preview build may downgrade
 - Cluster `--transfer-mode` options: `auto` (default), `local` (no transfer), `push` (head pushes to workers), `delegated` (workers pull)
 - Cluster `--transfer-interface` options: `auto` (default), `cx7` (use CX7 IPs), `mgmt` (use management IPs)
 - Use `--add-host` / `--remove-host` for incremental cluster changes instead of replacing the full host list

@@ -51,6 +51,27 @@ Ctrl+C detaches from logs — it never kills your inference job. Your model keep
 
 See the [full CLI reference](https://sparkrun.dev/cli/overview/) for all commands and options.
 
+## Updating
+
+```bash
+sparkrun update
+```
+
+Upgrades sparkrun (when installed via `uv tool`) and refreshes recipe registries.
+
+### Update channels (advanced)
+
+Opt into preview builds installed from git instead of PyPI:
+
+```bash
+sparkrun update --stable   # PyPI stable release (default)
+sparkrun update --beta     # develop branch preview
+sparkrun update --alpha    # develop-next branch (bleeding edge)
+sparkrun update --yolo     # alias for --alpha
+```
+
+`sparkrun update` with no flag stays on your current channel; a channel flag switches and is remembered for future updates. The same flags work with `sparkrun setup install` and `sparkrun setup update`. Stable prints a plain version (`0.2.40`); beta/alpha add a channel suffix and commit (`0.3.0-alpha+g1a2b3c4`). Switching from a preview channel back to `--stable` may downgrade.
+
 ## Highlights
 
 - **Multi-runtime** — vLLM, SGLang, llama.cpp out of the box
