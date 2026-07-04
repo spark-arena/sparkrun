@@ -1227,6 +1227,47 @@ class TestDetectIbForHosts:
         assert result.ib_ip_map == {"h1": "10.0.0.1", "h2": "10.0.0.2"}
 
     @mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel")
+    def test_explicit_fabric_hosts_pin_per_host_control_env(self, mock_parallel):
+        """Fabric-addressed clusters do not retain default-route control interfaces."""
+        mock_parallel.return_value = [
+            RemoteResult(
+                host="192.168.0.155",
+                returncode=0,
+                stdout=(
+                    "IB_DETECTED=1\n"
+                    "DETECTED_SOCKET_IFNAME=wlP9s9\n"
+                    "DETECTED_MGMT_IP=192.168.1.155\n"
+                    "DETECTED_NET_LIST=enp1s0f1np1,enP2p1s0f1np1\n"
+                    "DETECTED_IB_IPS=192.168.0.155,192.168.200.155\n"
+                ),
+                stderr="",
+            ),
+            RemoteResult(
+                host="192.168.0.126",
+                returncode=0,
+                stdout=(
+                    "IB_DETECTED=1\n"
+                    "DETECTED_SOCKET_IFNAME=wlP9s9\n"
+                    "DETECTED_MGMT_IP=192.168.1.126\n"
+                    "DETECTED_NET_LIST=enp1s0f1np1,enP2p1s0f1np1\n"
+                    "DETECTED_IB_IPS=192.168.0.126,192.168.200.126\n"
+                ),
+                stderr="",
+            ),
+        ]
+        from sparkrun.orchestration.infiniband import detect_ib_for_hosts
+
+        result = detect_ib_for_hosts(["192.168.0.155", "192.168.0.126"])
+
+        for host in ("192.168.0.155", "192.168.0.126"):
+            host_env = result.comm_env.get_env(host)
+            assert host_env["GLOO_SOCKET_IFNAME"] == "enp1s0f1np1"
+            assert host_env["TP_SOCKET_IFNAME"] == "enp1s0f1np1"
+            assert host_env["NCCL_SOCKET_IFNAME"] == "enp1s0f1np1"
+            assert host_env["NODE_IP"] == host
+            assert host_env["VLLM_HOST_IP"] == host
+
+    @mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel")
     def test_no_ib_detected(self, mock_parallel):
         """When no IB is found, returns empty results."""
         mock_parallel.return_value = [

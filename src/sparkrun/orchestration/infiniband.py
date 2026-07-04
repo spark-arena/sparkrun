@@ -210,6 +210,40 @@ def extract_ib_ips(ib_info: dict[str, str]) -> list[str]:
     return [ip.strip() for ip in raw.split(",") if ip.strip()]
 
 
+def _pin_comm_env_to_fabric_host(
+    host: str,
+    ib_info: dict[str, str],
+    env: dict[str, str],
+) -> dict[str, str]:
+    """Bind communication libraries to an explicitly selected fabric IP.
+
+    When a cluster is defined using one of the detected IB/CX interface
+    addresses, that address is the operator's requested inter-node network.
+    Keep management/default-route behavior for hostname and management-IP
+    clusters, but prevent control sockets from silently using another network.
+    """
+    ib_ips = extract_ib_ips(ib_info)
+    net_ifaces = [name.strip() for name in ib_info.get("DETECTED_NET_LIST", "").split(",") if name.strip()]
+    try:
+        fabric_index = ib_ips.index(host)
+        fabric_ifname = net_ifaces[fabric_index]
+    except (ValueError, IndexError):
+        return env
+
+    for name in (
+        "MN_IF_NAME",
+        "OMPI_MCA_btl_tcp_if_include",
+        "GLOO_SOCKET_IFNAME",
+        "TP_SOCKET_IFNAME",
+    ):
+        env[name] = fabric_ifname
+
+    env["NCCL_SOCKET_IFNAME"] = fabric_ifname
+    env["NODE_IP"] = host
+    env["VLLM_HOST_IP"] = host
+    return env
+
+
 def validate_ib_connectivity(
     ib_candidates: dict[str, str] | dict[str, list[str]],
     ssh_kwargs: dict | None = None,
@@ -379,6 +413,7 @@ def detect_ib_for_hosts(
 
         # Per-host comm env (so heterogeneous socket interfaces work)
         host_env = generate_nccl_env(ib_info, topology=topology)
+        host_env = _pin_comm_env_to_fabric_host(result.host, ib_info, host_env)
         if host_env:
             per_host_env[result.host] = host_env
             if result.host == head_host:

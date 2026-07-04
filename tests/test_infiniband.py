@@ -3,6 +3,7 @@
 from unittest.mock import patch
 
 from sparkrun.orchestration.infiniband import (
+    _pin_comm_env_to_fabric_host,
     generate_ib_detect_script,
     parse_ib_detect_output,
     generate_nccl_env,
@@ -198,6 +199,62 @@ def test_generate_nccl_env_missing_ib_detected():
     env = generate_nccl_env(ib_info)
 
     assert env == {}
+
+
+def test_pin_comm_env_to_explicit_fabric_host():
+    """An explicit fabric host selects its matching interface for control traffic."""
+    ib_info = {
+        "DETECTED_IB_IPS": "192.168.0.155,192.168.200.155",
+        "DETECTED_NET_LIST": "enp1s0f1np1,enP2p1s0f1np1",
+    }
+    env = {
+        "GLOO_SOCKET_IFNAME": "wlP9s9",
+        "NCCL_SOCKET_IFNAME": "wlP9s9,enp1s0f1np1,enP2p1s0f1np1",
+        "NODE_IP": "192.168.1.155",
+    }
+
+    result = _pin_comm_env_to_fabric_host("192.168.200.155", ib_info, env)
+
+    assert result["MN_IF_NAME"] == "enP2p1s0f1np1"
+    assert result["OMPI_MCA_btl_tcp_if_include"] == "enP2p1s0f1np1"
+    assert result["GLOO_SOCKET_IFNAME"] == "enP2p1s0f1np1"
+    assert result["TP_SOCKET_IFNAME"] == "enP2p1s0f1np1"
+    assert result["NCCL_SOCKET_IFNAME"] == "enP2p1s0f1np1"
+    assert result["NODE_IP"] == "192.168.200.155"
+    assert result["VLLM_HOST_IP"] == "192.168.200.155"
+
+
+def test_pin_comm_env_preserves_management_host_behavior():
+    """A hostname or management address keeps the detected default-route env."""
+    ib_info = {
+        "DETECTED_IB_IPS": "192.168.0.155",
+        "DETECTED_NET_LIST": "enp1s0f1np1",
+    }
+    env = {
+        "GLOO_SOCKET_IFNAME": "wlP9s9",
+        "NCCL_SOCKET_IFNAME": "wlP9s9,enp1s0f1np1",
+        "NODE_IP": "192.168.1.155",
+    }
+    original = env.copy()
+
+    result = _pin_comm_env_to_fabric_host("spark", ib_info, env)
+
+    assert result == original
+    assert "VLLM_HOST_IP" not in result
+
+
+def test_pin_comm_env_ignores_unpaired_fabric_ip():
+    """Missing interface data cannot produce a mismatched binding."""
+    ib_info = {
+        "DETECTED_IB_IPS": "192.168.0.155,192.168.200.155",
+        "DETECTED_NET_LIST": "enp1s0f1np1",
+    }
+    env = {"GLOO_SOCKET_IFNAME": "wlP9s9"}
+    original = env.copy()
+
+    result = _pin_comm_env_to_fabric_host("192.168.200.155", ib_info, env)
+
+    assert result == original
 
 
 def test_parse_ib_detect_output_with_whitespace():
