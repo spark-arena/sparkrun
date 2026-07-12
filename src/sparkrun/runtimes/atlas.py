@@ -58,6 +58,13 @@ _ATLAS_FLAG_MAP = {
     "kv_high_precision_layers": "--kv-high-precision-layers",
     "tool_call_parser": "--tool-call-parser",
     "tool_max_tokens": "--tool-max-tokens",
+    # Takes an explicit bool VALUE (`--disable-tool-grammar true`), not a
+    # bare toggle: it overrides MODEL.toml's `[behavior].disable_tool_grammar`,
+    # so "absent" and "false" are genuinely different. Hence it is NOT in
+    # `_ATLAS_BOOL_FLAGS`; `_normalize_config` lowercases the value because
+    # Rust's bool parser rejects Python's `str(True)` == "True".
+    "disable_tool_grammar": "--disable-tool-grammar",
+    "fp8_kv_calibration_tokens": "--fp8-kv-calibration-tokens",
     "scheduling_policy": "--scheduling-policy",
     "tbt_deadline_ms": "--tbt-deadline-ms",
     "max_prefill_tokens": "--max-prefill-tokens",
@@ -200,11 +207,20 @@ class AtlasRuntime(RuntimePlugin):
         Accepts ``auth_token`` as an alias for the canonical ``api_key``
         key so users can use either in recipe defaults; flag emission
         only looks at the canonical key.
+
+        Also renders ``disable_tool_grammar`` as a lowercase ``true``/
+        ``false`` string.  It is a value-taking flag (not a toggle), and
+        the default ``str(value)`` rendering would emit Python's ``True``,
+        which Atlas' Rust bool parser rejects.
         """
         if not config.get("api_key"):
             alias = config.get("auth_token")
             if alias:
                 config.set("api_key", alias)
+
+        val = config.get("disable_tool_grammar")
+        if val is not None and isinstance(val, bool):
+            config.set("disable_tool_grammar", "true" if val else "false")
 
     def generate_command(
         self,
