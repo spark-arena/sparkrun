@@ -211,7 +211,11 @@ class AtlasRuntime(RuntimePlugin):
         Also renders ``disable_tool_grammar`` as a lowercase ``true``/
         ``false`` string.  It is a value-taking flag (not a toggle), and
         the default ``str(value)`` rendering would emit Python's ``True``,
-        which Atlas' Rust bool parser rejects.
+        which Atlas' Rust bool parser rejects.  A YAML bool (``True``) and
+        a quoted string (``"True"``/``"TRUE"``) reach us differently, so
+        both cases are folded to lowercase here; any non-bool-ish string is
+        left untouched so Atlas surfaces its own parse error rather than us
+        guessing.
         """
         if not config.get("api_key"):
             alias = config.get("auth_token")
@@ -219,8 +223,10 @@ class AtlasRuntime(RuntimePlugin):
                 config.set("api_key", alias)
 
         val = config.get("disable_tool_grammar")
-        if val is not None and isinstance(val, bool):
+        if isinstance(val, bool):
             config.set("disable_tool_grammar", "true" if val else "false")
+        elif isinstance(val, str) and val.strip().lower() in ("true", "false"):
+            config.set("disable_tool_grammar", val.strip().lower())
 
     def generate_command(
         self,
