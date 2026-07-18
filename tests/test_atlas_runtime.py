@@ -108,6 +108,56 @@ def test_atlas_high_speed_swap_subflags_render():
     assert "--high-speed-swap-cache-blocks-per-seq 64" in cmd
 
 
+def test_atlas_disable_tool_grammar_and_fp8_kv_calibration_render():
+    """`disable_tool_grammar` and `fp8_kv_calibration_tokens` are emitted.
+
+    Regression: neither key was in `_ATLAS_FLAG_MAP`, so sparkrun silently
+    dropped both from the serve command even when a recipe set them. The
+    bool is rendered as a lowercase VALUE (not a bare toggle) because it
+    overrides MODEL.toml's `[behavior].disable_tool_grammar`.
+    """
+    runtime = AtlasRuntime()
+    recipe = _recipe(
+        defaults={
+            "disable_tool_grammar": True,
+            "fp8_kv_calibration_tokens": 256,
+        },
+    )
+
+    cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+    assert "--disable-tool-grammar true" in cmd
+    assert "--fp8-kv-calibration-tokens 256" in cmd
+
+
+def test_atlas_disable_tool_grammar_false_renders_lowercase():
+    """A falsy `disable_tool_grammar` still emits an explicit `false` value.
+
+    "absent" and "false" are genuinely different states for Atlas, so unlike
+    a bool toggle the flag must be present with a value even when disabled.
+    """
+    runtime = AtlasRuntime()
+    recipe = _recipe(defaults={"disable_tool_grammar": False})
+
+    cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+    assert "--disable-tool-grammar false" in cmd
+    # Never Python's `str(False)` == "False", which Atlas' Rust parser rejects.
+    assert "--disable-tool-grammar False" not in cmd
+
+
+def test_atlas_disable_tool_grammar_string_value_lowercased():
+    """A quoted string bool (`"True"`/`"FALSE"`) is folded to lowercase.
+
+    YAML `disable_tool_grammar: "True"` reaches the config as a str, not a
+    bool, so the `isinstance(val, bool)` path would miss it and emit the
+    Atlas-rejected `True` verbatim. Bool-ish strings are normalized too.
+    """
+    runtime = AtlasRuntime()
+    for raw, expected in (("True", "true"), ("FALSE", "false"), ("  true  ", "true")):
+        recipe = _recipe(defaults={"disable_tool_grammar": raw})
+        cmd = runtime.generate_command(recipe, {}, is_cluster=False)
+        assert f"--disable-tool-grammar {expected}" in cmd
+
+
 def test_atlas_generate_command_from_template():
     """Recipe with explicit command template renders it verbatim."""
     runtime = AtlasRuntime()
