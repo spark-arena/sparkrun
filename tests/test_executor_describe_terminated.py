@@ -9,20 +9,32 @@ onto every executor (PR #243).
 
 from __future__ import annotations
 
+import base64
 from unittest.mock import patch
 
 import pytest
 
 from sparkrun.orchestration.executors._base import ExecutorConfig
-from sparkrun.orchestration.executors.docker import DockerExecutor, _parse_terminated_probe
+from sparkrun.orchestration.executors.docker import (
+    POST_MORTEM_LOG_MARKER,
+    DockerExecutor,
+    _parse_post_mortem_logs,
+    _parse_terminated_probe,
+)
 from sparkrun.orchestration.executors.k8s import K8sExecutor
 from sparkrun.orchestration.executors.local import LocalExecutor
 from sparkrun.orchestration.ssh import RemoteResult
-from sparkrun.core.log_source import LogSource
+from sparkrun.core.log_source import MODE_FILE, MODE_STDOUT, SERVE_LOG_PATH, LogSource
+from tests.test_log_diagnostics import ISSUE_280_LOG
 
 
 def _source(host: str, container: str) -> LogSource:
     return LogSource(host=host, container=container, role="solo")
+
+
+def _b64(text: str) -> str:
+    """Encode as the remote probe does, so the parser is tested on real framing."""
+    return base64.b64encode(text.encode("utf-8")).decode()
 
 
 class TestBaseDefault:
@@ -149,6 +161,207 @@ class TestParseProbe:
     @pytest.mark.parametrize("raw", ["", "   \n", "no-tab-here\n"])
     def test_ignores_unparseable_output(self, raw):
         assert _parse_terminated_probe(raw) == {}
+
+    def test_skips_the_post_mortem_log_lines(self):
+        """Both halves share one stdout and one tab-separated shape."""
+        raw = "a\tUp 2 hours\n%s\ta\t%s\n" % (POST_MORTEM_LOG_MARKER, _b64("hi"))
+        assert _parse_terminated_probe(raw) == {"a": "Up 2 hours"}
+
+
+class TestParsePostMortemLogs:
+    def test_decodes_per_container(self):
+        raw = "c1\tExited (1) ago\n%s\tc1\t%s\n" % (POST_MORTEM_LOG_MARKER, _b64("boom\n"))
+        assert _parse_post_mortem_logs(raw) == {"c1": "boom\n"}
+
+    def test_payload_cannot_be_confused_for_framing(self):
+        """A container is free to print anything, including our own marker.
+
+        Base64 is what makes the payload unable to inject a line the parser
+        would read as another container's log.
+        """
+        hostile = "%s\tother\tZmFrZQ==\n" % POST_MORTEM_LOG_MARKER
+        raw = "%s\tc1\t%s\n" % (POST_MORTEM_LOG_MARKER, _b64(hostile))
+        parsed = _parse_post_mortem_logs(raw)
+        assert set(parsed) == {"c1"}
+        assert parsed["c1"] == hostile
+
+    def test_undecodable_payload_is_dropped_not_raised(self):
+        """The payload came off a crashing workload; a mangled one costs a hint."""
+        raw = "%s\tc1\tnot~valid~base64\n" % POST_MORTEM_LOG_MARKER
+        assert _parse_post_mortem_logs(raw) == {}
+
+    def test_truncated_utf8_survives(self):
+        """``tail -c`` cuts mid-sequence, which is the normal case."""
+        import base64
+
+        payload = base64.b64encode("café".encode("utf-8")[:-1]).decode()
+        raw = "%s\tc1\t%s\n" % (POST_MORTEM_LOG_MARKER, payload)
+        assert _parse_post_mortem_logs(raw)["c1"].startswith("caf")
+
+    @pytest.mark.parametrize("raw", ["", "c1\tUp 2 hours\n", "%s\tc1\t\n" % POST_MORTEM_LOG_MARKER])
+    def test_nothing_to_decode(self, raw):
+        assert _parse_post_mortem_logs(raw) == {}
+
+
+class TestPostMortemAttribution:
+    """A launcher decision that kills the workload should say so.
+
+    sparkrun runs containers as the invoking uid; an image that JIT-compiles
+    into its own ``site-packages`` dies with a traceback that points at the
+    image and never at the ``--user`` flag that caused it (issue #280).
+    """
+
+    def _probe_output(self, container: str, status: str, log_text: str) -> str:
+        return "%s\t%s\n%s\t%s\t%s\n" % (container, status, POST_MORTEM_LOG_MARKER, container, _b64(log_text))
+
+    def test_recognised_failure_names_the_fix(self):
+        ex = DockerExecutor(ExecutorConfig(auto_remove=False))
+        results = [RemoteResult(host="h1", returncode=0, stdout=self._probe_output("c1", "Exited (1) ago", ISSUE_280_LOG), stderr="")]
+        with patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel", return_value=results):
+            info = ex.describe_terminated([_source("h1", "c1")])[("h1", "c1")]
+
+        assert info.exists is True
+        assert any("-o user=root" in h for h in info.investigate_hints)
+        # ``--rootful`` also adds --privileged; the image needs to write inside
+        # itself, not to own the host.
+        assert not any(h.startswith("relaunch with `--rootful`") for h in info.investigate_hints)
+
+    def test_attribution_precedes_the_generic_hints(self):
+        """It names a *likely* cause — the operator still wants the raw log."""
+        ex = DockerExecutor(ExecutorConfig(auto_remove=False))
+        results = [RemoteResult(host="h1", returncode=0, stdout=self._probe_output("c1", "Exited (1) ago", ISSUE_280_LOG), stderr="")]
+        with patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel", return_value=results):
+            hints = ex.describe_terminated([_source("h1", "c1")])[("h1", "c1")].investigate_hints
+
+        assert hints[-2:] == ("docker logs c1", "docker inspect c1")
+        assert "user=root" in hints[1]
+
+    def test_unrecognised_crash_adds_nothing(self):
+        ex = DockerExecutor(ExecutorConfig(auto_remove=False))
+        boring = "ValueError: No available memory for the cache blocks\n"
+        results = [RemoteResult(host="h1", returncode=0, stdout=self._probe_output("c1", "Exited (1) ago", boring), stderr="")]
+        with patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel", return_value=results):
+            hints = ex.describe_terminated([_source("h1", "c1")])[("h1", "c1")].investigate_hints
+
+        assert hints == ("docker logs c1", "docker inspect c1")
+
+    def test_gone_container_offers_no_attribution(self):
+        """Under ``--rm`` there is no log left to read.
+
+        Which is exactly what the ``auto_remove=false`` hint exists to change —
+        it must not be displaced by a guess.
+        """
+        ex = DockerExecutor(ExecutorConfig(auto_remove=True))
+        results = [RemoteResult(host="h1", returncode=0, stdout="", stderr="")]
+        with patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel", return_value=results):
+            info = ex.describe_terminated([_source("h1", "c1")])[("h1", "c1")]
+
+        assert info.exists is False
+        assert info.investigate_hints == ("relaunch with `-o auto_remove=false` to keep the container for inspection",)
+
+    def test_a_broken_detector_never_breaks_the_post_mortem(self):
+        ex = DockerExecutor(ExecutorConfig(auto_remove=False))
+        results = [RemoteResult(host="h1", returncode=0, stdout=self._probe_output("c1", "Exited (1) ago", ISSUE_280_LOG), stderr="")]
+        with (
+            patch("sparkrun.utils.log_diagnostics.detect_in_place_write_failure", side_effect=RuntimeError("boom")),
+            patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel", return_value=results),
+        ):
+            hints = ex.describe_terminated([_source("h1", "c1")])[("h1", "c1")].investigate_hints
+
+        assert hints == ("docker logs c1", "docker inspect c1")
+
+
+class TestPostMortemLogScript:
+    """Retrieval is mode-aware for the same reason ``read_logs_cmd`` is."""
+
+    def test_file_mode_reads_the_in_container_serve_log(self):
+        """``docker logs`` is empty for sleep-infinity + exec workloads.
+
+        That is sparkrun's dominant launch pattern, so a ``docker logs``-only
+        probe would find nothing to attribute on most recipes.  ``docker cp``
+        rather than ``read_logs_cmd``'s ``docker exec``: the container has
+        already exited and ``exec`` needs a running one.
+        """
+        script = DockerExecutor(ExecutorConfig())._post_mortem_log_script(
+            [LogSource(host="h1", container="c1", role="solo", mode=MODE_FILE, path=SERVE_LOG_PATH)]
+        )
+        assert "docker cp c1:%s -" % SERVE_LOG_PATH in script
+        assert "tar -xO" in script
+        assert "docker logs" not in script
+
+    def test_stdout_mode_reads_docker_logs_with_stderr(self):
+        """``docker logs`` demultiplexes — the traceback arrives on *its* stderr."""
+        script = DockerExecutor(ExecutorConfig())._post_mortem_log_script(
+            [LogSource(host="h1", container="w", role="worker", mode=MODE_STDOUT)]
+        )
+        assert "docker logs --tail" in script
+        assert "2>&1" in script
+        assert "docker cp" not in script
+
+    def test_one_line_per_distinct_source(self):
+        """Ray workers share a name across hosts; one script serves every host."""
+        sources = [
+            LogSource(host="h1", container="w", role="worker", mode=MODE_STDOUT),
+            LogSource(host="h2", container="w", role="worker", mode=MODE_STDOUT),
+            LogSource(host="h1", container="head", role="head", mode=MODE_FILE),
+        ]
+        script = DockerExecutor(ExecutorConfig())._post_mortem_log_script(sources)
+        assert len([ln for ln in script.splitlines() if ln.strip()]) == 2
+
+    def test_no_sources_emits_nothing(self):
+        assert DockerExecutor(ExecutorConfig())._post_mortem_log_script([]) == ""
+
+    def test_container_name_and_path_cannot_reach_the_shell_raw(self):
+        """Same rule as the ``ps`` half — this runs on an already-broken workload.
+
+        Checked with the shell's own parser: neither the ``;`` in the name nor
+        the space in the path may become word-splitting or a command separator.
+        """
+        import shlex
+
+        nasty = "evil; rm -rf /"
+        script = DockerExecutor(ExecutorConfig())._post_mortem_log_script(
+            [LogSource(host="h1", container=nasty, role="solo", mode=MODE_FILE, path="/tmp/a b.log")]
+        )
+        # A token may carry the `;` that legitimately ends the printf command;
+        # strip it so the comparison is about word-splitting, not punctuation.
+        tokens = [token.rstrip(";") for token in shlex.split(script)]
+
+        assert "rm" not in tokens
+        # Both interpolation sites survive as exactly one argv token each.
+        assert nasty in tokens
+        assert "%s:/tmp/a b.log" % nasty in tokens
+
+    def test_script_runs_under_real_bash(self):
+        """The framing is generated by ``printf`` in a ``%``-formatted string.
+
+        A mis-escaped ``%%`` yields a script that runs but frames nothing, which
+        no amount of substring-asserting would catch.
+        """
+        import os
+        import subprocess
+        import tempfile
+
+        ex = DockerExecutor(ExecutorConfig())
+        with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = os.path.join(tmp, "bin")
+            os.mkdir(bin_dir)
+            fake = os.path.join(bin_dir, "docker")
+            with open(fake, "w") as fh:
+                fh.write('#!/usr/bin/env bash\n[ "$1" = logs ] && printf %s "crash output" || true\n')
+            os.chmod(fake, 0o755)
+
+            script = ex._post_mortem_log_script([LogSource(host="h1", container="c1", role="solo", mode=MODE_STDOUT)])
+            proc = subprocess.run(
+                ["bash", "-s"],
+                input=script,
+                capture_output=True,
+                text=True,
+                env=dict(os.environ, PATH=bin_dir + os.pathsep + os.environ["PATH"]),
+            )
+
+        assert proc.returncode == 0
+        assert _parse_post_mortem_logs(proc.stdout) == {"c1": "crash output"}
 
 
 class TestLocalProbe:

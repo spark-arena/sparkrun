@@ -134,6 +134,18 @@ _CONTAINER_NAME_RE = re.compile(
 )
 
 
+#: First column of the post-mortem log lines, so ``_parse_terminated_probe``
+#: can tell them from the ``docker ps -a`` lines sharing the same stdout.
+POST_MORTEM_LOG_MARKER = "SPARKRUN_POSTMORTEM_LOG"
+
+#: How much of a dead workload's tail to retrieve.  Both bounds apply: the line
+#: count keeps a chatty engine's log from dominating the SSH round-trip, the
+#: byte cap keeps one pathological line from doing the same.  A crash signature
+#: is at the very end of the log, so a generous tail buys nothing.
+POST_MORTEM_LOG_LINES = 400
+POST_MORTEM_LOG_BYTES = 32768
+
+
 # Env-var keys whose values are likely secrets and must be masked in DEBUG
 # logs (case-insensitive substring match on token/key/password/secret).
 _SENSITIVE_ENV_KEY_RE = re.compile(r"token|key|password|secret", re.IGNORECASE)
@@ -663,6 +675,14 @@ class DockerExecutor(Executor):
         invites the caller to treat the most interesting failure as stale
         bookkeeping.  We know our own config, so we say which it was and point
         at the setting that would have preserved the evidence next time.
+
+        A container that *did* survive also gets its log tail retrieved in the
+        same round-trip, so a failure sparkrun can attribute
+        (:func:`~sparkrun.utils.log_diagnostics.detect_in_place_write_failure`)
+        becomes a hint naming the fix rather than a ``docker logs`` invitation
+        to go read the traceback again.  Nothing is retrieved when the
+        container is gone — under ``--rm`` there is no log left to read, which
+        is precisely what the ``auto_remove=false`` hint exists to change.
         """
         from sparkrun.orchestration.ssh import run_remote_scripts_parallel
 
@@ -679,7 +699,7 @@ class DockerExecutor(Executor):
         # probing the union of the names.  Attribution stays per-host below, so
         # a name that legitimately exists on several hosts — Ray worker
         # containers share one name across nodes — is never cross-reported.
-        script = self._terminated_probe_script(sorted({s.container for s in sources}))
+        script = self._terminated_probe_script(sorted({s.container for s in sources})) + self._post_mortem_log_script(sources)
         try:
             results = run_remote_scripts_parallel(
                 hosts,
@@ -706,8 +726,9 @@ class DockerExecutor(Executor):
                 logger.debug("describe_terminated: inconclusive for %r (rc=%s)", host, getattr(r, "returncode", "n/a"))
                 continue
             states = _parse_terminated_probe(r.stdout)
+            logs = _parse_post_mortem_logs(r.stdout)
             for container in by_host[host]:
-                found[(host, container)] = self._termination_info(container, states.get(container))
+                found[(host, container)] = self._termination_info(container, states.get(container), logs.get(container))
         return found
 
     def _terminated_probe_script(self, containers: list[str]) -> str:
@@ -721,7 +742,53 @@ class DockerExecutor(Executor):
         lines = ["docker ps -a --filter %s --format %s 2>/dev/null || true" % (quote("name=^%s$" % c), fmt) for c in containers]
         return "\n".join(lines) + "\n"
 
-    def _termination_info(self, container: str, status: str | None) -> "TerminationInfo":
+    def _post_mortem_log_script(self, sources: "list[LogSource]") -> str:
+        """Emit ``<marker>\\t<name>\\t<base64 log tail>`` for each source.
+
+        Retrieval is mode-aware for the same reason :meth:`read_logs_cmd` is:
+        sparkrun's sleep-infinity + exec launch makes container PID 1 ``sleep
+        infinity`` and redirects the serve process to a file *inside* the
+        container, so ``docker logs`` on those workloads is empty — the
+        traceback we want to attribute is in :data:`SERVE_LOG_PATH`.  Reading
+        it back is ``docker cp`` rather than the ``docker exec`` that
+        :meth:`read_logs_cmd` uses, because this runs on a container that has
+        already exited and ``exec`` needs a running one.
+
+        Base64 rather than a delimited block: engine logs carry control
+        characters and partial UTF-8, and a container is free to print anything
+        that looks like our marker.  Encoding makes each source exactly one
+        line whose payload cannot be confused for framing.
+
+        Deduplicated by ``(container, mode, path)``, mirroring the ``ps`` half's
+        union-of-names: one script serves every host, and per-host attribution
+        happens in :meth:`describe_terminated`.
+        """
+        seen: set[tuple[str, str, str]] = set()
+        lines: list[str] = []
+        for source in sources:
+            path = source.path or SERVE_LOG_PATH
+            key = (source.container, source.mode, path)
+            if key in seen:
+                continue
+            seen.add(key)
+
+            if source.mode == MODE_FILE:
+                # ``docker cp <c>:<path> -`` writes a tar stream; ``tar -xO``
+                # unpacks it to stdout.  Works on a stopped container.
+                read = "docker cp %s - 2>/dev/null | tar -xO 2>/dev/null" % quote("%s:%s" % (source.container, path))
+            else:
+                # ``2>&1`` is load-bearing: ``docker logs`` demultiplexes, so
+                # the container's *stderr* — where the traceback is — arrives on
+                # this command's stderr.  It also absorbs "No such container".
+                read = "docker logs --tail %d %s 2>&1" % (POST_MORTEM_LOG_LINES, quote(source.container))
+
+            lines.append(
+                "printf '%%s\\t%%s\\t' %s %s; %s | tail -c %d | base64 | tr -d '\\n' || true; echo"
+                % (quote(POST_MORTEM_LOG_MARKER), quote(source.container), read, POST_MORTEM_LOG_BYTES)
+            )
+        return "\n".join(lines) + "\n" if lines else ""
+
+    def _termination_info(self, container: str, status: str | None, log_text: str | None = None) -> "TerminationInfo":
         """Shape one container's ``docker ps -a`` result into a verdict."""
         from sparkrun.core.cluster_status import TerminationInfo
 
@@ -730,6 +797,7 @@ class DockerExecutor(Executor):
                 exists=True,
                 detail=status,
                 investigate_hints=(
+                    *self._attribution_hints(log_text),
                     "docker logs %s" % container,
                     "docker inspect %s" % container,
                 ),
@@ -741,6 +809,45 @@ class DockerExecutor(Executor):
                 investigate_hints=("relaunch with `-o auto_remove=false` to keep the container for inspection",),
             )
         return TerminationInfo(exists=False, detail="no container by that name exists on the host")
+
+    def _attribution_hints(self, log_text: str | None) -> tuple[str, ...]:
+        """Turn a recognised log signature into Docker's remedy for it.
+
+        The *detection* is substrate-independent and lives in
+        :mod:`sparkrun.utils.log_diagnostics`; the *wording* is ours, because
+        ``--user`` is a Docker concept.  A ``local`` job has no container user
+        to change and would need entirely different advice, which is the same
+        reason ``docker logs`` is not authored in ``api.logs``.
+
+        ``-o user=root`` rather than ``--rootful``: both make the container run
+        as root, but ``--rootful`` *also* drops ``--security-opt
+        no-new-privileges`` and adds ``--privileged`` (see
+        :meth:`apply_runtime_adjustments`).  The image needs to write inside
+        itself, not to own the host — recommending the wider flag would trade a
+        launch failure for a standing privilege grant.
+
+        Hints are prepended to the generic ``docker logs`` / ``docker inspect``
+        pair rather than replacing it: this names a *likely* cause, and the
+        operator still wants the raw log.
+        """
+        if not log_text:
+            return ()
+        try:
+            from sparkrun.utils.log_diagnostics import detect_in_place_write_failure
+
+            failure = detect_in_place_write_failure(log_text)
+        except Exception:  # noqa: BLE001 — a post-mortem hint must never raise
+            logger.debug("post-mortem attribution failed", exc_info=True)
+            return ()
+        if failure is None:
+            return ()
+
+        logger.debug("post-mortem: in-place write failure at %s (errno %d)", failure.path, failure.errno)
+        return (
+            "likely cause: the workload failed writing inside its own image installation "
+            "(%s: %s) — sparkrun runs containers as the invoking uid, which cannot write there" % (failure.message, failure.path),
+            "relaunch with `-o user=root` to run this container as root (narrower than `--rootful`, which also adds --privileged)",
+        )
 
     def verify_mount_sources(
         self,
@@ -784,15 +891,51 @@ def _parse_terminated_probe(stdout: str) -> dict[str, str]:
 
     A container that no longer exists contributes no line, so absence from the
     returned mapping is what "gone" looks like.
+
+    The post-mortem log lines share this stdout and have the same tab-separated
+    shape, so they are skipped by their marker column — a container cannot be
+    named :data:`POST_MORTEM_LOG_MARKER` (sparkrun generates the names, and the
+    filters are anchored), so this cannot drop a real status line.
     """
     states: dict[str, str] = {}
     for line in (stdout or "").splitlines():
         name, sep, status = line.partition("\t")
         name = name.strip()
-        if not name or not sep:
+        if not name or not sep or name == POST_MORTEM_LOG_MARKER:
             continue
         states[name] = status.strip()
     return states
+
+
+def _parse_post_mortem_logs(stdout: str) -> dict[str, str]:
+    """Decode the ``<marker>\\t<name>\\t<base64>`` lines into per-container text.
+
+    Best-effort in both directions: a line that does not decode is dropped
+    rather than raised on (the payload came off a crashing workload, and the
+    worst case for a mangled one is that no hint is offered), and the decoded
+    bytes are read with ``errors="replace"`` because engine logs routinely end
+    mid-UTF-8 sequence where ``tail -c`` cut them.
+    """
+    import base64
+    import binascii
+
+    logs: dict[str, str] = {}
+    for line in (stdout or "").splitlines():
+        marker, sep, rest = line.partition("\t")
+        if not sep or marker.strip() != POST_MORTEM_LOG_MARKER:
+            continue
+        name, sep, payload = rest.partition("\t")
+        name = name.strip()
+        if not name or not sep:
+            continue
+        payload = payload.strip()
+        if not payload:
+            continue
+        try:
+            logs[name] = base64.b64decode(payload, validate=True).decode("utf-8", errors="replace")
+        except (binascii.Error, ValueError):
+            logger.debug("post-mortem: undecodable log payload for %r", name)
+    return logs
 
 
 def _parse_docker_labels(raw: str) -> dict[str, str]:
