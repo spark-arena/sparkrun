@@ -1148,6 +1148,15 @@ def launch_inference(
     # is caught too, and before any container starts so --dry-run reports it.
     report_unmapped_config_keys(recipe, runtime, overrides)
 
+    # How this launch reaches its hosts, recorded with every metadata write
+    # below so ``stop`` / ``logs`` addressed by cluster_id can connect the same
+    # way (issue #277).  ``config.ssh_user`` is what the SSH layer will use for
+    # this launch — ``api.run`` has already folded the cluster's user into it —
+    # and stays ``None`` when nothing configured one, which is the signal not
+    # to record it.
+    job_cluster_name = getattr(cluster, "name", "") or ""
+    job_ssh_user = getattr(config, "ssh_user", None)
+
     # Save job metadata
     if not dry_run:
         try:
@@ -1161,6 +1170,8 @@ def launch_inference(
                 container_image=container_image,
                 runtime=runtime,
                 backends=backends,
+                cluster_name=job_cluster_name,
+                ssh_user=job_ssh_user,
             )
         except Exception:
             # Not fatal to the launch, but it is not cosmetic either: without
@@ -1296,6 +1307,8 @@ def launch_inference(
                     recipe_ref=recipe_ref,
                     runtime=runtime,
                     backends=backends,
+                    cluster_name=job_cluster_name,
+                    ssh_user=job_ssh_user,
                 )
             except Exception:
                 logger.debug("Failed to update job metadata: %s", cluster_id, exc_info=True)
@@ -1648,6 +1661,8 @@ def launch_inference(
                         container_image=container_image,
                         runtime=runtime,
                         backends=backends,
+                        cluster_name=job_cluster_name,
+                        ssh_user=job_ssh_user,
                     )
                 except Exception:
                     logger.debug("Failed to save runtime_info to job metadata", exc_info=True)

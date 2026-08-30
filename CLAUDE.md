@@ -943,7 +943,38 @@ entry, and a job that crashed under `auto_remove` is gone from docker before
 anything asks about it. Left alone this reaches hundreds of dead entries
 against a couple of dozen live intents.
 
-Three pieces keep it usable:
+**A job records how to *reach* it, not just where it ran.** `hosts` answers
+"where"; `cluster` + `ssh_user` answer "as what". Without them, `stop <cluster_id>`
+— which recovers its hosts from this file and so names no cluster — resolved to
+an *anonymous* `ClusterDefinition`, dropping the cluster's SSH user, executor
+pin, `executor_config` and transport, and SSH-ing as the control node's own
+login. On a cluster whose `user:` differs from that login, every teardown
+connection was refused while `stop` still printed a success line and the
+workload kept serving (issue #277). `api._resolve.resolve_cluster_for_job` is
+the read side, in strict order: an explicitly named cluster → the one the job
+recorded → the recorded `ssh_user` alone.
+
+Three properties are load-bearing:
+
+- The recorded cluster supplies **connection identity only**; hosts stay the
+  job's own, or the user's `--hosts`. A load-aware scheduler may have placed the
+  workload on a subset, and widening teardown back to the cluster's full host
+  list is not a fix, it is a different command.
+- `ssh_user` is recorded **separately** from the cluster name, so a job that
+  outlives its cluster (renamed, deleted, read on another control node) keeps
+  the part that decides whether the hosts are reachable at all. It only ever
+  *fills* a gap — a resolved cluster's own `user` wins, since that is current
+  configuration while the recorded value is history.
+- Both are **omitted when unknown**, never written empty: the read side has to
+  tell "anonymous `--hosts` launch" from "written before sparkrun recorded
+  this", and an empty `ssh_user` would be applied as a real username.
+
+All three `save_job_metadata` call sites in `launch_inference` must forward
+them, because each rewrites the file wholesale — a site that forgot would erase
+them a phase later, and the symptom (a teardown that cannot authenticate) looks
+nothing like the cause.
+
+Three more pieces keep the cache usable:
 
 - **`started_at`** is stamped at launch. The read side (`api.list_jobs`) always
   looked for it but nothing wrote it, so every job was untimed and the

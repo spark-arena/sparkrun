@@ -5217,6 +5217,50 @@ class TestClusterUserInCLICommands:
         assert result.exit_code == 0
         assert captured_kwargs.get("ssh_user") == "labadmin"
 
+    def test_stop_by_cluster_id_uses_the_recorded_cluster_user(self, runner, cluster_with_user, monkeypatch, tmp_path):
+        """``stop <id>`` with no ``--cluster`` connects as the job's cluster.
+
+        The hosts come from job metadata, so nothing on the command line names
+        a cluster — which used to leave the teardown on an anonymous cluster
+        definition, SSH-ing as the control node's own login.  Every connection
+        was refused while ``stop`` reported success and the workload kept
+        serving (issue #277).
+        """
+        import sparkrun.core.config
+        from sparkrun.orchestration.ssh import RemoteResult
+
+        cache_root = tmp_path / "cache"
+        (cache_root / "jobs").mkdir(parents=True)
+        monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CACHE_DIR", cache_root)
+
+        cluster_id = "sparkrun_aabbccdd1122eeff_0123456789ab"
+        (cache_root / "jobs" / "aabbccdd1122eeff_0123456789ab.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "cluster_id": cluster_id,
+                    "recipe": "test-recipe",
+                    "model": "test/model",
+                    "runtime": "sglang",
+                    "hosts": ["10.0.0.1", "10.0.0.2"],
+                    # Written by the launch — the whole point of the fix.
+                    "cluster": "userlab",
+                    "ssh_user": "labadmin",
+                }
+            )
+        )
+
+        captured_kwargs = {}
+
+        def mock_cleanup(host_containers, ssh_kwargs=None, dry_run=False, max_workers=None, *, executor=None):
+            captured_kwargs.update(ssh_kwargs or {})
+            return {h: RemoteResult(host=h, returncode=0, stdout="sparkrun_removed=1", stderr="") for h in host_containers}
+
+        monkeypatch.setattr("sparkrun.orchestration.primitives.cleanup_containers_by_host", mock_cleanup)
+
+        result = runner.invoke(main, ["stop", "aabbccdd1122eeff_0123456789ab"])
+        assert result.exit_code == 0, result.output
+        assert captured_kwargs.get("ssh_user") == "labadmin"
+
     def test_stop_all_uses_cluster_user(self, runner, cluster_with_user, monkeypatch):
         """stop --all with --cluster should use the cluster's SSH user."""
         captured_kwargs = {}
@@ -5777,6 +5821,44 @@ class TestStopLogsClusterIdAndOverrides:
             assert result.exit_code == 0
             assert "stopped" in result.output.lower()
             mock_cleanup.assert_called_once()
+
+    def test_stop_does_not_claim_success_when_teardown_fails(self, runner, config_setup):
+        """A teardown that didn't confirm must not print "Workload stopped".
+
+        The exit code has said so since 0.3.0, but the trailing success line was
+        printed regardless — so scripted teardown and humans alike read a failed
+        stop as a successful one, while the workload kept serving and holding
+        VRAM (issue #277).
+        """
+        from sparkrun.orchestration.ssh import RemoteResult
+
+        cache_root = config_setup["cache_root"]
+        jobs_dir = cache_root / "jobs"
+        jobs_dir.mkdir(parents=True, exist_ok=True)
+        meta = {
+            "cluster_id": "sparkrun_aabbccdd1122eeff_0123456789ab",
+            "recipe": "test-recipe",
+            "model": "test/model",
+            "runtime": "sglang",
+            "hosts": ["10.0.0.1"],
+        }
+        (jobs_dir / "aabbccdd1122eeff_0123456789ab.yaml").write_text(yaml.safe_dump(meta))
+
+        def failing_cleanup(host_containers, ssh_kwargs=None, dry_run=False, max_workers=None, *, executor=None):
+            return {
+                h: RemoteResult(host=h, returncode=255, stdout="", stderr="Permission denied (publickey,password).")
+                for h in host_containers
+            }
+
+        with mock.patch("sparkrun.orchestration.primitives.cleanup_containers_by_host", side_effect=failing_cleanup):
+            result = runner.invoke(main, ["stop", "aabbccdd1122eeff_0123456789ab"])
+
+        assert result.exit_code != 0
+        assert "Workload stopped on" not in result.output
+        assert "NOT fully stopped" in result.output
+        assert "10.0.0.1" in result.output
+        # Metadata is kept: the workload may still be running.
+        assert (jobs_dir / "aabbccdd1122eeff_0123456789ab.yaml").exists()
 
     def test_stop_by_cluster_id_no_metadata_no_hosts(self, runner, config_setup):
         """Stop by unknown cluster ID with no resolvable hosts shows helpful error."""

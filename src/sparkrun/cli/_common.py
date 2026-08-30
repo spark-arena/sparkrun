@@ -1535,20 +1535,29 @@ def resolve_hosts_with_metadata_fallback(
     target_label,
     v=None,
     sctx: SparkrunContext | None = None,
-) -> list[str]:
+) -> tuple[list[str], str | None]:
     """Resolve hosts from CLI args, job metadata, or defaults.
 
     Priority: CLI flags > metadata hosts > default cluster/config.
     Exits with error if no hosts can be resolved.
+
+    Returns:
+        ``(host_list, cluster_name)`` — the *effective* cluster the hosts
+        came from (see :class:`HostContext`), to forward to the ``api.*``
+        call, or ``None`` when the hosts came from the job's own metadata.
+        ``None`` there is deliberate and not a gap: it lets
+        ``api._resolve.resolve_cluster_for_job`` recover the cluster the
+        **job** recorded, which is a better answer than anything this
+        invocation could name (issue #277).
     """
     if hosts or hosts_file or cluster_name:
-        host_list, _ = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v, sctx=sctx)
-        return host_list
+        hctx = resolve_host_context(hosts, hosts_file, cluster_name, config, v, sctx=sctx)
+        return hctx.host_list, hctx.cluster_name
     if meta and meta.get("hosts"):
-        return meta["hosts"]
+        return list(meta["hosts"]), None
     try:
-        host_list, _ = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v, sctx=sctx)
-        return host_list
+        hctx = resolve_host_context(hosts, hosts_file, cluster_name, config, v, sctx=sctx)
+        return hctx.host_list, hctx.cluster_name
     except SystemExit:
         click.echo(
             "Error: No job metadata for '%s' and no hosts specified.\n"

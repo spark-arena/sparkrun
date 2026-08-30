@@ -818,6 +818,107 @@ def test_launch_inference_save_job_metadata_failure_is_best_effort(monkeypatch, 
     assert save_calls, "save_job_metadata should have been attempted"
 
 
+def test_launch_inference_records_cluster_and_ssh_user(monkeypatch, tmp_path):
+    """Every metadata write carries the launch's cluster name and SSH user.
+
+    That is what lets ``stop`` / ``logs`` addressed by cluster_id connect the
+    way the launch did instead of as the control node's own login (issue #277).
+    Asserted across *all* the save calls because each one rewrites the file
+    wholesale: a site that forgot to forward them would erase them a phase
+    later, and the symptom (a teardown that can't authenticate) would look
+    nothing like the cause.
+    """
+    from sparkrun.core import launcher
+    from sparkrun.core.cluster_manager import ClusterDefinition
+    from sparkrun.core.launcher import launch_inference
+
+    monkeypatch.setattr(
+        "sparkrun.orchestration.distribution.resolve_auto_transfer_mode",
+        lambda *a, **kw: type("R", (), {"mode": "local"})(),
+    )
+    monkeypatch.setattr(
+        "sparkrun.orchestration.distribution.distribute_from_config",
+        lambda *a, **kw: (None, {}, {}, {}),
+    )
+
+    save_kwargs: list[dict] = []
+    monkeypatch.setattr(
+        "sparkrun.orchestration.job_metadata.save_job_metadata",
+        lambda *a, **kw: save_kwargs.append(kw),
+    )
+    monkeypatch.setattr(
+        "sparkrun.orchestration.job_metadata.derive_cluster_id",
+        lambda *a, **kw: "sparkrun_identitycid01",
+    )
+    monkeypatch.setattr("sparkrun.orchestration.primitives.build_ssh_kwargs", lambda *a, **kw: {})
+    monkeypatch.setattr(launcher, "resolve_effective_cache_dir", lambda *a, **kw: str(tmp_path))
+    monkeypatch.setattr("sparkrun.orchestration.primitives.try_clear_page_cache", lambda *a, **kw: None)
+    monkeypatch.setattr("sparkrun.orchestration.executor.resolve_executor", lambda **kw: type("Ex", (), {})())
+    monkeypatch.setattr("sparkrun.tuning.sync.sync_registry_tuning", lambda *a, **kw: 0)
+    monkeypatch.setattr("sparkrun.tuning.distribute.distribute_tuning_to_hosts", lambda *a, **kw: [])
+
+    class _Cfg:
+        hf_cache_dir = tmp_path / "hf"
+        cache_dir = tmp_path / "cache"
+        missing_mount_source_policy = "fail"
+        readiness_port_timeout_s = 240.0
+        readiness_health_timeout_s = 600.0
+        # What api.run leaves on the config after folding in cluster.user.
+        ssh_user = "cluster-user"
+
+        def get_registry_manager(self):
+            return None
+
+    class _Recipe:
+        runtime = "stub"
+        model = "stub-model"
+        env = {}
+        builder = None
+        mods = []
+        source_registry = None
+        source_registry_url = None
+        defaults = {"port": 8000}
+        pre_exec = []
+        post_exec = []
+        post_commands = []
+        layout = None
+        stop_after_post = False
+        executor = ""
+        executor_config = None
+        is_url_sourced = False
+        cluster_config = None
+        qualified_name = "stub-recipe"
+        name = "stub-recipe"
+        container = "stub:latest"
+        model_revision = None
+        requires_capability: frozenset = frozenset()
+
+        def build_config_chain(self, overrides=None):
+            class _CC:
+                def get(self, k, default=None):
+                    return (overrides or {}).get(k, self_outer.defaults.get(k, default))
+
+            self_outer = self
+            return _CC()
+
+    launch_inference(
+        recipe=_Recipe(),
+        runtime=_StubRuntime(),
+        host_list=["nv-host"],
+        overrides={},
+        config=_Cfg(),
+        cluster=ClusterDefinition(name="lab", hosts=["nv-host"]),
+        is_solo=True,
+        dry_run=False,
+        sync_tuning=False,
+    )
+
+    assert save_kwargs, "save_job_metadata should have been called"
+    for kwargs in save_kwargs:
+        assert kwargs.get("cluster_name") == "lab"
+        assert kwargs.get("ssh_user") == "cluster-user"
+
+
 # ---------------------------------------------------------------------------
 # wait_for_serve_ready
 # ---------------------------------------------------------------------------

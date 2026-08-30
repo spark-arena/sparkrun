@@ -51,7 +51,9 @@ def stop(
     """
     from sparkrun.api._resolve import (
         discover_cluster_id_by_intent,
+        maybe_load_config,
         resolve_cluster,
+        resolve_cluster_for_job,
         resolve_recipe,
     )
     from sparkrun.orchestration.executor import resolve_executor
@@ -92,6 +94,11 @@ def stop(
             sctx=sctx,
         )
         meta = load_job_metadata(cluster_id, cache_dir=cache_dir)
+        # Discovery ran against the *invocation's* cluster; teardown runs
+        # against the *job's*, which the metadata may name even when this
+        # invocation didn't (see ``resolve_cluster_for_job``).  Hosts stay as
+        # resolved above — only the connection identity is recovered.
+        cluster_def = resolve_cluster_for_job(cluster, target_hosts, meta=meta, sctx=sctx)
     else:
         # cluster_id given — load metadata to recover hosts/executor.
         if cache_dir is None and sctx is not None:
@@ -115,9 +122,11 @@ def stop(
             raise JobNotFound("No hosts known for cluster_id %r" % cluster_id)
 
         # Now that we know the hosts, build a cluster definition for
-        # downstream consumers.  `resolve_cluster` synthesizes an
-        # anonymous one when no explicit cluster is given.
-        cluster_def = resolve_cluster(cluster, target_hosts, sctx=sctx)
+        # downstream consumers.  With no explicit cluster this is where the
+        # job's own recorded cluster (SSH user, executor pin, transport) is
+        # recovered — the alternative is an anonymous definition that
+        # connects as the control node's login (issue #277).
+        cluster_def = resolve_cluster_for_job(cluster, target_hosts, meta=meta, sctx=sctx)
 
     # Refresh provider-backed connection details before any SSH (no-op for ssh).
     from sparkrun.api._resolve import prepare_transport
@@ -171,7 +180,7 @@ def stop(
     # such container" to while continuing to serve.
     from sparkrun.orchestration.primitives import build_ssh_kwargs, cleanup_containers_by_host
 
-    config = sctx.config if sctx is not None else _maybe_load_config()
+    config = sctx.config if sctx is not None else maybe_load_config()
     if config is not None and cluster_def.user:
         # Apply cluster SSH user so downstream ssh_kwargs picks it up.
         try:
@@ -256,16 +265,6 @@ def _discover_executor_name(
                 if container.executor:
                     return container.executor
     return None
-
-
-def _maybe_load_config():
-    """Load SparkrunConfig once for the SSH kwargs, returning ``None`` on failure."""
-    try:
-        from sparkrun.core.config import SparkrunConfig
-
-        return SparkrunConfig()
-    except Exception:  # pragma: no cover - defensive
-        return None
 
 
 __all__ = ["stop"]

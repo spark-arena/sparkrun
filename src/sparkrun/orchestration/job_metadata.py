@@ -473,6 +473,8 @@ def save_job_metadata(
     runtime: "RuntimePlugin | None" = None,
     backends: "dict[str, BackendBundle] | None" = None,
     *,
+    cluster_name: str | None = None,
+    ssh_user: str | None = None,
     sctx: "SparkrunContext | None" = None,
 ) -> None:
     """Persist job metadata so ``cluster status`` can display recipe info.
@@ -485,6 +487,20 @@ def save_job_metadata(
         backends: Per-host backend bundles resolved by the launcher.
             Persisted as ``{host: {vendor, backend}}`` so ``stop``/``logs``
             can recover the collective backend without re-probing.
+        cluster_name: Name of the cluster this workload was launched on
+            (empty / ``None`` for an anonymous ``--hosts`` launch).  It is
+            the job's durable *connection* identity: ``stop`` / ``logs``
+            addressed by cluster_id resolve hosts from ``hosts`` above and
+            so name no cluster, which left them on an anonymous definition
+            carrying no SSH user, no executor pin and no transport — the
+            teardown then ran as the control node's login and reported
+            success while the workload kept serving (issue #277).
+        ssh_user: The SSH user this launch actually connected as.  The
+            fallback for when the recorded cluster can no longer be
+            resolved (renamed, deleted, or a different control node), and
+            the only identity an anonymous launch has.  Omitted when the
+            launch fell through to the ssh client's own default, so
+            "recorded" always means "we know", never "we guessed".
         sctx: Optional shared :class:`SparkrunContext`.  When provided
             (and *cache_dir* is unset) ``sctx.config.cache_dir`` is the
             cache root.
@@ -538,6 +554,15 @@ def save_job_metadata(
     }
     if recipe_ref:
         meta["recipe_ref"] = recipe_ref
+
+    # How to reach this job again.  ``hosts`` records *where* it runs; these
+    # record *as what* — see the argument docs above.  Both are omitted when
+    # unknown rather than written empty, so the read side can tell "anonymous
+    # launch" from "launched before sparkrun recorded this".
+    if cluster_name:
+        meta["cluster"] = str(cluster_name)
+    if ssh_user:
+        meta["ssh_user"] = str(ssh_user)
 
     # Store all parallelism values (not just tensor_parallel)
     for long_key, _ in PARALLELISM_KEYS:
