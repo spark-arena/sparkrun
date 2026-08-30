@@ -335,6 +335,52 @@ class SparkrunConfig:
         return val if val > 0 else math.inf
 
     @property
+    def hub_timeout_s(self) -> float:
+        """Per-request ceiling for every HuggingFace Hub HTTP call.
+
+        Set via ``hub.timeout_s`` in ``config.yaml``.  Applied to connect / read
+        / write on the shared client sparkrun installs into ``huggingface_hub``
+        (:func:`sparkrun.models.hub.configure_hub_client`), which by default has
+        no timeout at all.  ``read`` bounds the gap between received bytes, not
+        the total transfer, so this is safe for long weight downloads.
+
+        Unlike ``readiness.*`` there is no "unbounded" spelling: an unbounded
+        Hub client is the defect (issue #278), so a non-positive value falls
+        back to the default rather than restoring it.
+        """
+        from sparkrun.models.hub import DEFAULT_HUB_TIMEOUT_S
+
+        section = self._data.get("hub", {})
+        raw = section.get("timeout_s") if isinstance(section, dict) else None
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            return DEFAULT_HUB_TIMEOUT_S
+        return val if val > 0 else DEFAULT_HUB_TIMEOUT_S
+
+    @property
+    def hub_metadata_budget_s(self) -> float:
+        """Wall-clock budget for the whole advisory Hub-metadata phase.
+
+        Set via ``hub.metadata_budget_s`` in ``config.yaml``.  Spans every
+        config / quant-config / safetensors / visibility lookup a command makes;
+        once spent, the remainder are skipped and the launch proceeds without a
+        VRAM estimate.  ``0`` or negative means unbounded (which restores the
+        pre-fix behaviour of asking every time, now with bounded requests).
+        """
+        import math
+
+        from sparkrun.models.hub import DEFAULT_HUB_METADATA_BUDGET_S
+
+        section = self._data.get("hub", {})
+        raw = section.get("metadata_budget_s") if isinstance(section, dict) else None
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            return DEFAULT_HUB_METADATA_BUDGET_S
+        return val if val > 0 else math.inf
+
+    @property
     def jobs_autoprune(self) -> bool:
         """Whether ``sparkrun run`` prunes stale job metadata as it launches.
 

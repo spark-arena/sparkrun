@@ -16,6 +16,7 @@ import click
 
 import sparkrun.api as api
 from sparkrun.core.validation import FAIL_ON_CHOICES, validate_for_launch
+from sparkrun.models.hub import disable_hub_metadata, hub_degraded_message
 from sparkrun.orchestration.transfer import TransferError
 from sparkrun.runtimes.compatibility import IncompatibleHardwareError
 
@@ -67,6 +68,21 @@ _EXECUTOR_OVERRIDE_KEYS = frozenset(
         "entrypoint",
     }
 )
+
+
+def _echo_hub_notice() -> None:
+    """Report skipped HuggingFace Hub lookups, at most once per command.
+
+    Called at both points where the advisory phase can run out of budget — the
+    plan, and the VRAM table it renders afterwards — because either can be the
+    one that trips the breaker, and the notice has to land next to the pause it
+    explains.  ``hub_degraded_message`` returning the string only once is what
+    makes calling it from both sites correct rather than merely tolerable.
+    """
+    notice = hub_degraded_message()
+    if notice:
+        click.echo()
+        click.echo(notice, err=True)
 
 
 def _echo_endpoint_ready(readiness) -> None:
@@ -212,6 +228,11 @@ def _summarize_platforms(
 @click.option("--foreground", is_flag=True, help="Run in foreground (don't detach)")
 @click.option("--ensure", is_flag=True, default=False, help="Only launch if not already running; exit 0 if already up")
 @click.option("--no-follow", is_flag=True, help="Don't follow container logs after launch")
+@click.option(
+    "--no-auto-detect",
+    is_flag=True,
+    help="Skip HuggingFace Hub metadata lookups (VRAM estimate falls back to recipe metadata)",
+)
 @click.option("--no-sync-tuning", is_flag=True, help="Skip syncing tuning configs from registries")
 @click.option("--no-rm", is_flag=True, help="Don't auto-remove containers on exit (keeps containers after stop)")
 @click.option("--memory-limit", "memory", default=None, help="Container memory limit (e.g. 32G)")
@@ -323,6 +344,7 @@ def run(
     ensure,
     foreground,
     no_follow,
+    no_auto_detect,
     no_sync_tuning,
     no_rm,
     memory,
@@ -368,6 +390,13 @@ def run(
     sctx = _get_context(ctx)
     v = sctx.variables
     config = sctx.config
+
+    # Set before anything can reach the Hub.  Process-wide rather than threaded
+    # down as a parameter: ``estimate_vram`` is called from host resolution, the
+    # banner, the scheduling pass inside ``api.run`` and telemetry, and a flag
+    # that reached three of those four would still hang on the fourth.
+    if no_auto_detect:
+        disable_hub_metadata()
 
     # warn that --solo flag is not recommended if solo==True at this point
     if solo:
@@ -577,6 +606,26 @@ def run(
                 )
             sys.exit(0)
 
+    # Identity half of the banner, printed *before* the plan.
+    #
+    # Planning sweeps the cluster over SSH and resolves model metadata from the
+    # HuggingFace Hub, which on a slow or rate-limited Hub is the longest pause
+    # in the whole command — and used to be a completely silent one, with the
+    # first byte of output arriving only after it finished (issue #278).  These
+    # four lines need nothing from the plan, so printing them here makes the
+    # pause attributable without making the display disagree with the launch:
+    # everything placement-dependent still renders from ``run_plan`` below.
+    from sparkrun.core.config import SparkrunConfig
+    from sparkrun.core.version import display_version
+
+    container_image = runtime.resolve_container(recipe, overrides)
+    click.echo("sparkrun v%s" % display_version(SparkrunConfig()))
+    click.echo()
+    click.echo("Runtime:   %s" % runtime.runtime_name)
+    click.echo("Image:     %s" % container_image)
+    click.echo("Model:     %s" % recipe.model)
+    click.echo("Planning:  querying cluster occupancy and model metadata...", nl=False)
+
     # Decide the launch ONCE.  Everything below renders from this plan, and the
     # plan is handed back to ``api.run`` — so what is displayed is exactly what
     # is launched.  Scheduling here and passing the winners as ``hosts`` instead
@@ -586,12 +635,17 @@ def run(
     try:
         run_plan = api.plan(run_options, sctx=sctx)
     except api.InsufficientCapacity as e:
+        click.echo()
         click.echo("Error: %s" % e, err=True)
         _render_capacity_diagnostics(getattr(e, "status", None), list(getattr(e, "host_list", ()) or host_list))
         sys.exit(1)
     except api.SparkrunError as e:
+        click.echo()
         click.echo("Error: %s" % e, err=True)
         sys.exit(1)
+    click.echo(" done")
+
+    _echo_hub_notice()
 
     for _note in run_plan.notes:
         click.echo(_note)
@@ -601,17 +655,10 @@ def run(
     if recipe.mode == "cluster" and is_solo and not solo:
         click.echo("Warning: Recipe requires cluster mode but only one host specified", err=True)
 
-    # Display summary before launch
-    from sparkrun.core.config import SparkrunConfig
+    # Placement-dependent half of the summary; the identity half printed above
+    # the plan.
     from sparkrun.core.scheduler import default_scheduler_upgrade_hint
-    from sparkrun.core.version import display_version
 
-    container_image = runtime.resolve_container(recipe, overrides)
-    click.echo("sparkrun v%s" % display_version(SparkrunConfig()))
-    click.echo()
-    click.echo("Runtime:   %s" % runtime.runtime_name)
-    click.echo("Image:     %s" % container_image)
-    click.echo("Model:     %s" % recipe.model)
     if is_solo:
         click.echo("Mode:      solo")
     else:
@@ -647,6 +694,7 @@ def run(
         cluster=run_plan.cluster,
         placement=run_plan.placement,
     )
+    _echo_hub_notice()
 
     click.echo()
     click.echo("Hosts:     %s" % host_source)

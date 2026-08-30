@@ -1412,6 +1412,52 @@ Before launching, sparkrun can pre-sync models and container images from the con
   `bfloat16 (default)` rather than silently reporting a guessed value. Element widths live in the `models/dtypes.py`
   leaf (weights and KV are separate tables — NVFP4's KV packing carries block scales its weight packing does not).
 
+#### Hub Metadata Budget (`models/hub.py`)
+
+Everything that asks the HuggingFace Hub for **metadata** — `fetch_model_config`, `fetch_hf_quant_config`,
+`fetch_safetensors_size`, `fetch_safetensors_params`, `fetch_model_visibility` — routes through
+`hub_metadata_call`. Weight downloads do **not**: a 200 GB pull legitimately takes hours and must not be
+budgeted. The distinction is the whole design. Everything behind this seam is *advisory* — the launch already
+degrades to "no memory claim" when an estimate is unavailable (`api/_hosts.py`) — so none of it is worth a
+second of unexplained hang (issue #278, where `sparkrun run` sat for 10+ minutes printing nothing).
+
+**The guarantee: the advisory phase costs at most `hub.metadata_budget_s`** (default 30 s; `0` = unbounded).
+Four levers, because four separate things were unbounded and no one of them subsumes the rest:
+
+| Lever | Bounds | Why nothing simpler works |
+|-------|--------|---------------------------|
+| `configure_hub_client` | every httpx call in the library | `huggingface_hub` builds its shared client with `timeout=None`; `list_repo_tree` accepts no `timeout` argument, so the client factory is the only reachable knob |
+| `_align_download_timeouts` | `hf_hub_download`'s own ceilings | it passes `HF_HUB_ETAG_TIMEOUT` / `HF_HUB_DOWNLOAD_TIMEOUT` explicitly, which *override* the client — so the client default silently missed the calls sparkrun makes most |
+| `without_xet` | metadata transfers on Xet repos | `hf_xet` is a Rust HTTP stack honouring none of the Python timeouts. Metadata is kilobytes of JSON, where Xet's chunk dedup buys nothing; weight downloads keep it |
+| `_run_with_deadline` | one lookup, whatever it does inside | `http_backoff` retries 5× with exponential backoff at fixed call sites. Measured: ~40 s for one `hf_hub_download` with the client bounded at 3 s. **A per-request ceiling does not bound a lookup** |
+
+The last one is the only structural layer, and it is why the guarantee survives a `huggingface_hub` upgrade.
+It abandons a daemon thread rather than cancelling (Python cannot interrupt a blocked socket read); the
+breaker bounds that to one leaked thread per command, and a parked thread burns no CPU and cannot hold the
+interpreter open.
+
+Three rules are load-bearing:
+
+- **Only time trips the breaker.** A 404 for `hf_quant_config.json` is the normal outcome for most repos and
+  costs milliseconds; classifying library exceptions would report a missing optional file as an outage.
+- **Negatives are memoised, successes are not.** `Recipe.estimate_vram` writes *successful* detection back
+  into `metadata` and re-runs detection when it is absent — so an unreachable Hub failed `needs_detection`
+  every time and refetched on all three estimates a single `run` performs. Successes are already carried by
+  that write-back; duplicating it here would hand callers a shared mutable dict.
+- **`hub_degraded_message` returns its string once.** Fifteen lookups share one breaker. `cli/_run.py` calls
+  it from both points where the phase can run out (the plan, and the VRAM table after it) precisely because
+  the once-only contract makes that correct rather than merely tolerable.
+
+Escape hatches, in the order the message offers them: `HF_HUB_OFFLINE=1`, `--no-auto-detect` (which calls
+`disable_hub_metadata()` — process-wide rather than an `auto_detect=False` threaded down, because
+`estimate_vram` runs from host resolution, the banner, the scheduling pass *and* telemetry, and a flag
+reaching three of those four would look like it worked), and raising `hub.metadata_budget_s`.
+
+The other half of #278 was that **nothing was printed before `api.plan`**, so the pause was unattributable.
+`cli/_run.py` now prints the identity lines (version / runtime / image / model) above the plan — they need
+nothing from it — followed by a `Planning: ...` line. Everything placement-dependent still renders from
+`run_plan`, so the display cannot disagree with the launch.
+
 #### KV Cache Sizing (`models/kv/`)
 
 Sizing the KV cache is architecture-specific, so it is a seam rather than a branch. `vram.py` names no attention
@@ -1524,6 +1570,12 @@ Readiness budgets live under `readiness:` in `config.yaml`
 (`port_timeout_s` / `health_timeout_s`, `0` = unbounded) — raise
 `port_timeout_s` for engines with long graph-capture phases; see Launch
 Timing above.
+
+HuggingFace Hub budgets live under `hub:` (`timeout_s` per request,
+`metadata_budget_s` for the whole advisory phase, `0` = unbounded — see Hub
+Metadata Budget above). Note the asymmetry with `readiness.*`: a non-positive
+`timeout_s` falls back to the default rather than meaning "unbounded", because
+an unbounded Hub client is the defect and has no spelling.
 
 ### Feature Flags (`core/features.py`)
 
