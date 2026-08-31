@@ -95,6 +95,7 @@ Core domain logic extracted from the top-level package. All imports use `sparkru
 | `recipe_items.py`       | `register_recipe_item()` — plugin-owned top-level recipe keys                        |
 | `execution.py`          | `RecipeExecutionStrategy`, `PreparationStep` DAG, `LaunchAssetPolicy`                |
 | `launcher.py`           | `launch_inference()`, `resolve_per_host_backends()`, `resolve_recipe_trust()`        |
+| `validation.py`         | `RecipeIssue`, `validate_recipe()`, `validate_for_launch()` (see Recipe Validation)  |
 
 ### CLI Architecture (`cli/`)
 
@@ -1640,6 +1641,103 @@ Recipe resolution: CLI → `find_recipe()` (module-level function in `core/recip
 Two recipe format versions exist: v1 (eugr-style, auto-detected by `recipe_version: "1"` or presence of `build_args`/
 `mods`) and v2 (sparkrun native). vLLM recipes are resolved to either `vllm-ray` (if Ray hints are present) or
 `vllm-distributed` (default). See `RECIPES.md` for the full specification.
+
+### Recipe Validation (`core/validation.py`)
+
+The single aggregator behind `sparkrun recipe validate`, and — through
+`validate_for_launch` — behind what `run` / `benchmark` / `proxy launch` print
+and refuse, so the four cannot drift.
+
+Three severities, separated by one question: *if this recipe runs on a cluster
+that isn't the author's — or on a later sparkrun — does it break or behave
+differently?* **Errors** are things sparkrun cannot honor (always fatal).
+**Warnings** are yes. **Suggestions** are no: it works as written and merely
+gives something up, so they are for authors and registry CI and `run` does not
+print them at all. Only errors are fatal by default; `--strict` is
+`--fail-on warning`.
+
+The **"or on a later sparkrun"** clause is the deprecation axis, added
+deliberately rather than filed under suggestions. Read with place alone, a
+deprecation answers "no" — it behaves identically everywhere *today* — which
+would make `sparkrun run` silent about it. It does **not** add a fourth
+severity: `--fail-on` still ranks three.
+
+**Deprecations are collapsed at launch, not downgraded.** `RecipeIssue.deprecation`
+is a *display* flag; `summarize_deprecations` replaces every deprecation finding
+with one line naming the count and `sparkrun recipe validate <ref>`. The
+migration is the author's work and at launch you are usually running someone
+else's recipe — three deprecations printed in full is three paragraphs between
+you and your logs. It runs **after** `should_fail`, on the display list only, so
+`--strict` still fails on a deprecation it described in one line. `run` threads
+the reference the user typed (`recipe_ref`) so the suggested command is pasteable.
+
+**Two checks must read `recipe._raw`, and both would be silently wrong without
+it** — the parsed recipe is lossy exactly where they look:
+
+- `_resolve_brace_escapes` collapses `{{`→`{` in `defaults` **in place** at
+  load, so by validation time the evidence is gone from `recipe.defaults`.
+  (`command:` is untouched — masking happens inside `render_command`.)
+- `Recipe.__init__` **derives** `mode` from the node range (`auto` → `cluster`
+  when `min_nodes > 1`). Reporting the deprecated `mode:` key off the parsed
+  value would fire on every recipe that correctly uses `min_nodes`/`max_nodes`
+  and never wrote `mode` at all — i.e. on exactly what the finding advises.
+
+**Deprecation notices belong here, not at their point of use.** Two of them
+previously lived only as a `logger.warning` on a path `recipe validate` never
+takes: one inside `render_command` (reached only by an actual launch) and one
+inside `EugrVllmRayRuntime.prepare` (reached only *after* image distribution).
+So the command whose entire job is to report what is wrong with a recipe was
+silent while `sparkrun run` was not. Both are now findings; the original sites
+keep a `debug` line.
+
+Catalogue notes worth knowing before adding a check:
+
+- **A finding that fires on correct recipes is how a report teaches people to
+  skim it.** `_CONSUMED_RUNTIME_CONFIG_KEYS` exists solely for this:
+  `build_args` at the top level is the *v1 spelling* and is read by name, so
+  without the allowlist `unknown-top-level-key` would fire on every v1 recipe
+  ever published. New `runtime_config.get()` call sites must join that list.
+  `implicit-builder` is the same lesson measured: it reported all 47 registry
+  recipes with an inferred builder until it stopped reporting the 40 inferred
+  from a **first-party** `ghcr.io/spark-arena/` image. The concern is "sparkrun
+  guessed about an artifact it does not control"; for its own images sparkrun
+  owns both the image and the rule, so keeping them in step is its job.
+- **`mods` is not a builder signal**, and `resolve_builder` (the catalog peer of
+  the resolver chain, feeding `sparkrun list` / `api.search_recipes`) thought it
+  was. The two disagreed in *both* directions — the display path counted `mods`
+  (so a v2 recipe with `mods:` and an ordinary container was listed as
+  `builder: eugr` while resolving to no builder at all) and missed the
+  `container:` prefix (so a recipe that really does get an eugr build was listed
+  as having none). They now share `_has_eugr_signal`, with a test asserting they
+  agree rather than trusting the helper. A catalog that disagrees with the
+  launch about what will be built is worse than one that says nothing, because
+  it is read as an answer.
+- **`EUGR_CONTAINER_PREFIX` is narrower than `FIRST_PARTY_CONTAINER_PREFIX` on
+  purpose.** Being first-party does not make an image an eugr build
+  (`dgx-spark-sglang` is neither), so the *inference* stays pinned to the
+  `dgx-vllm-eugr-nightly*` families while the *advice* is suppressed for the
+  whole org. Widening the inference would change what gets built for recipes
+  that never asked for it. `core` cannot import `builders`, so the eugr prefix
+  is spelled twice and drift-guarded by a test.
+- **A finding names the signal it actually found**, not the catalogue of
+  signals it might have. A list reads as a guess and sends the reader to the
+  wrong entry — which is exactly how a recipe flagged for its `container:` was
+  diagnosed as having been flagged for its `mods:`.
+- **`misplaced-config-key` vs `unmapped-config-key`.** The latter
+  (`launcher.report_unmapped_config_keys`) reads `defaults` and `-o` overrides —
+  precisely the set an absorbed *top-level* key is not in. Nothing reported that
+  shape before: `max_model_len: 8192` at the top level lands in `runtime_config`,
+  which nothing consumes generically, and the rendered command shows nothing
+  missing.
+- **The two cache-env findings are opposite on purpose.** `get_extra_env()`
+  (`HF_HOME`/`HF_HUB_CACHE`) is merged **last** so a recipe setting them is
+  *discarded* (`overridden-cache-env`); the runtime-cache tier
+  (`XDG_CACHE_HOME`) is merged **first** so a recipe setting it *wins* and the
+  compile caches land off the mount (`managed-cache-env`). Same-looking
+  mistake, opposite outcome, opposite advice.
+- Every check runs through `_safe`, so a check that trips over an unexpected
+  recipe shape costs its own finding and nothing else — it must not be able to
+  block a launch it was only meant to describe.
 
 ### Registry System
 

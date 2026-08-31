@@ -401,6 +401,7 @@ def test_issue_to_dict_shape():
         "message": "some message",
         "summary": "some message",
         "fix": "",
+        "deprecation": False,
     }
     assert not issue.is_error
     assert str(issue) == "some message"
@@ -488,6 +489,7 @@ def test_issue_message_joins_summary_and_fix():
         "message": "Something is wrong. Do this instead.",
         "summary": "Something is wrong.",
         "fix": "Do this instead.",
+        "deprecation": False,
     }
 
 
@@ -790,3 +792,350 @@ def test_report_title_override():
 
     text = click.unstyle(format_validation_report("r", [RecipeIssue(ERROR, "c", "m")], title="Custom heading"))
     assert text.splitlines()[0] == "Custom heading: 1 error"
+
+
+# --------------------------------------------------------------------------
+# Deprecated recipe features
+#
+# The gap these close: two of these notices existed only as a ``logger.warning``
+# on a path ``recipe validate`` never takes — one inside ``render_command``
+# (reached only by an actual launch) and one inside ``EugrVllmRayRuntime.prepare``
+# (reached only *after* image distribution).  So the command whose job is to
+# report what is wrong with a recipe said nothing, while ``sparkrun run`` did.
+# --------------------------------------------------------------------------
+
+
+def test_v2_command_brace_escape_is_reported(v):
+    """The reported case: `{{` in `command:` validated clean but warned at launch."""
+    issues = validate_recipe(_recipe(command="vllm serve {model} --x '{{\"a\":1}}'"), v=v)
+    found = [i for i in issues if i.code == "deprecated-brace-escape"]
+    assert len(found) == 1
+    assert found[0].severity == WARNING
+    assert found[0].deprecation is True
+    assert "command:" in found[0].summary
+
+
+def test_v2_defaults_brace_escape_is_reported(v):
+    """Read off ``_raw``: the resolver collapses the escape in ``defaults`` at load."""
+    recipe = _recipe(defaults={"spec": '{{"method":"mtp"}}'}).resolve()
+    # Precondition — the parsed copy no longer carries the evidence, which is
+    # exactly why the check cannot use it.
+    assert recipe.defaults["spec"] == '{"method":"mtp"}'
+
+    found = [i for i in validate_recipe(recipe, v=v) if i.code == "deprecated-brace-escape"]
+    assert len(found) == 1
+    assert "defaults.spec" in found[0].summary
+
+
+def test_v1_brace_escapes_are_not_deprecated(v):
+    """v1 is the convention's home; advising against it there is advice to write
+    something the format does not support."""
+    recipe = Recipe(
+        {
+            "name": "v1",
+            "recipe_version": "1",
+            "model": "m",
+            "runtime": "vllm",
+            "container": "c",
+            "command": "vllm serve m --x '{{\"a\":1}}'",
+            "defaults": {"spec": '{{"a":1}}'},
+        }
+    ).resolve()
+    assert "deprecated-brace-escape" not in _codes(validate_recipe(recipe, v=v))
+
+
+def test_plain_json_is_not_reported_as_an_escape(v):
+    """`}}` closes nested plain JSON as often as it escapes a brace — `{{` is the
+    only reliable marker, and the idiomatic v2 spelling must stay silent."""
+    issues = validate_recipe(_recipe(command='vllm serve {model} --x \'{"a":{"b":1}}\''), v=v)
+    assert "deprecated-brace-escape" not in _codes(issues)
+
+
+def test_v1_recipe_format_is_reported(v):
+    recipe = Recipe({"name": "v1", "recipe_version": "1", "model": "m", "runtime": "vllm", "container": "c"}).resolve()
+    found = [i for i in validate_recipe(recipe, v=v) if i.code == "deprecated-recipe-format"]
+    assert len(found) == 1
+    assert found[0].deprecation is True
+
+
+def test_deprecated_runtime_is_reported(v):
+    """`eugr-vllm` announced itself only from prepare(), i.e. mid-launch."""
+    found = [i for i in validate_recipe(_recipe(runtime="eugr-vllm"), v=v) if i.code == "deprecated-runtime"]
+    assert len(found) == 1
+    assert "vllm-ray" in found[0].fix
+
+
+def test_deprecated_build_arg_is_reported(v):
+    recipe = _recipe(builder="eugr", runtime_config={"build_args": ["--cleanup", "--tf5"]})
+    found = [i for i in validate_recipe(recipe, v=v) if i.code == "deprecated-build-arg"]
+    assert len(found) == 1
+    assert "--tf5" in found[0].summary
+
+
+def test_live_build_args_are_not_reported(v):
+    recipe = _recipe(builder="eugr", runtime_config={"build_args": ["--cleanup"]})
+    assert "deprecated-build-arg" not in _codes(validate_recipe(recipe, v=v))
+
+
+def test_a_clean_v2_recipe_reports_no_deprecations(v):
+    assert not [i for i in validate_recipe(_recipe(), v=v) if i.deprecation]
+
+
+# --------------------------------------------------------------------------
+# Launch-path deprecation summary
+# --------------------------------------------------------------------------
+
+
+def test_launch_collapses_deprecations_to_one_line(v):
+    """The migration is the author's work; at launch you want one line and a pointer."""
+    from sparkrun.core.validation import validate_for_launch
+
+    recipe = _recipe(command="vllm serve {model} --x '{{\"a\":1}}'", defaults={"spec": '{{"a":1}}'})
+    assert len([i for i in validate_recipe(recipe, v=v) if i.deprecation]) == 2
+
+    shown, _failed = validate_for_launch(recipe, v=v, recipe_ref="my-recipe")
+    summaries = [i for i in shown if i.deprecation]
+    assert len(summaries) == 1
+    assert summaries[0].code == "deprecated-feature"
+    assert "2 deprecated recipe features" in summaries[0].summary
+    assert "sparkrun recipe validate my-recipe" in summaries[0].fix
+
+
+def test_launch_summary_does_not_soften_the_verdict(v):
+    """Collapsing is display-only: --strict still fails on a deprecation it
+    described in one line rather than five."""
+    from sparkrun.core.validation import validate_for_launch
+
+    recipe = _recipe(command="vllm serve {model} --x '{{\"a\":1}}'")
+    shown, failed = validate_for_launch(recipe, fail_on=WARNING, v=v)
+    assert failed is True
+    assert [i.code for i in shown if i.deprecation] == ["deprecated-feature"]
+
+
+def test_launch_summary_is_absent_without_deprecations(v):
+    from sparkrun.core.validation import validate_for_launch
+
+    shown, _ = validate_for_launch(_recipe(env={"NCCL_IB_HCA": "x"}), v=v)
+    assert "deprecated-feature" not in _codes(shown)
+
+
+def test_recipe_validate_keeps_the_full_deprecation_detail(v):
+    """The collapse belongs to the launch path only — `recipe validate` is where
+    the migration is meant to be read."""
+    recipe = _recipe(command="vllm serve {model} --x '{{\"a\":1}}'", defaults={"spec": '{{"a":1}}'})
+    codes = _codes(validate_recipe(recipe, v=v))
+    assert "deprecated-brace-escape" in codes
+    assert "deprecated-feature" not in codes
+
+
+# --------------------------------------------------------------------------
+# Inferred builder
+# --------------------------------------------------------------------------
+
+
+def test_inferred_builder_is_reported(v):
+    """`build_args` alone sets `builder: eugr` — a rule that versions with
+    sparkrun rather than with the recipe."""
+    recipe = _recipe(runtime="vllm", runtime_config={"build_args": ["--cleanup"]}).resolve()
+    assert recipe.builder == "eugr"
+    found = [i for i in validate_recipe(recipe, v=v) if i.code == "implicit-builder"]
+    assert len(found) == 1
+    assert found[0].severity == SUGGESTION
+    assert "builder: eugr" in found[0].fix
+
+
+def test_declared_builder_is_not_reported(v):
+    recipe = _recipe(runtime="vllm", builder="eugr", runtime_config={"build_args": ["--cleanup"]}).resolve()
+    assert "implicit-builder" not in _codes(validate_recipe(recipe, v=v))
+
+
+def test_v1_does_not_double_report_the_inferred_builder(v):
+    """`deprecated-recipe-format` already names it; saying it twice teaches skimming."""
+    recipe = Recipe(
+        {"name": "v1", "recipe_version": "1", "model": "m", "runtime": "vllm", "container": "c", "build_args": ["--cleanup"]}
+    ).resolve()
+    assert recipe.builder == "eugr"
+    assert "implicit-builder" not in _codes(validate_recipe(recipe, v=v))
+
+
+# --------------------------------------------------------------------------
+# Sparkrun-managed cache env
+#
+# The two tiers sit on opposite sides of ``recipe.env`` in ``merge_env``, so the
+# same-looking mistake has opposite outcomes and needs opposite advice.
+# --------------------------------------------------------------------------
+
+
+def test_recipe_hf_cache_env_is_reported_as_overridden(v):
+    """`get_extra_env` is merged last, so the recipe's value is discarded."""
+    found = [i for i in validate_recipe(_recipe(env={"HF_HOME": "/elsewhere"}), v=v) if i.code == "overridden-cache-env"]
+    assert len(found) == 1
+    assert found[0].severity == WARNING
+    assert "discarded" in found[0].summary
+
+
+def test_recipe_xdg_cache_env_is_reported_as_winning(v):
+    """The runtime-cache tier is merged first, so the recipe's value wins and the
+    compile caches land off the mount sparkrun persists."""
+    found = [i for i in validate_recipe(_recipe(env={"XDG_CACHE_HOME": "/elsewhere"}), v=v) if i.code == "managed-cache-env"]
+    assert len(found) == 1
+    assert "XDG_CACHE_HOME" in found[0].summary
+
+
+def test_the_two_cache_env_findings_do_not_overlap(v):
+    """A key cannot be both overridden and winning."""
+    issues = validate_recipe(_recipe(env={"HF_HOME": "/a", "XDG_CACHE_HOME": "/b"}), v=v)
+    overridden = next(i for i in issues if i.code == "overridden-cache-env")
+    wins = next(i for i in issues if i.code == "managed-cache-env")
+    assert overridden.summary.startswith("env: sets HF_HOME,")
+    assert wins.summary.startswith("env: sets XDG_CACHE_HOME,")
+
+
+def test_unrelated_env_is_not_reported(v):
+    assert not [i for i in validate_recipe(_recipe(env={"VLLM_USE_V1": "1"}), v=v) if "cache-env" in i.code]
+
+
+# --------------------------------------------------------------------------
+# Unknown top-level keys
+# --------------------------------------------------------------------------
+
+
+def test_misplaced_serve_key_is_reported(v):
+    """Only `defaults:` feeds the config chain. At the top level the key is
+    absorbed into runtime_config, reaches nothing, and the rendered command
+    shows nothing missing."""
+    found = [i for i in validate_recipe(_recipe(max_model_len=8192), v=v) if i.code == "misplaced-config-key"]
+    assert len(found) == 1
+    assert found[0].severity == WARNING
+    assert "max_model_len" in found[0].summary
+
+
+def test_unknown_top_level_key_is_a_suggestion(v):
+    """A key this build does not know is routinely a *newer* recipe."""
+    found = [i for i in validate_recipe(_recipe(totally_bogus=1), v=v) if i.code == "unknown-top-level-key"]
+    assert len(found) == 1
+    assert found[0].severity == SUGGESTION
+
+
+def test_v1_build_args_at_top_level_are_not_unknown(v):
+    """`build_args` at the top level is the v1 spelling and is read by name —
+    flagging it would fire on every v1 recipe ever published."""
+    recipe = Recipe(
+        {"name": "v1", "recipe_version": "1", "model": "m", "runtime": "vllm", "container": "c", "build_args": ["--cleanup"]}
+    ).resolve()
+    assert "unknown-top-level-key" not in _codes(validate_recipe(recipe, v=v))
+
+
+def test_explicit_runtime_config_is_not_reported(v):
+    """An explicit `runtime_config:` mapping is a deliberate statement about a
+    runtime that reads it by name, not an accident of the sweep."""
+    recipe = _recipe(runtime_config={"some_engine_knob": 1})
+    assert "unknown-top-level-key" not in _codes(validate_recipe(recipe, v=v))
+
+
+def test_known_top_level_keys_are_not_reported(v):
+    issues = validate_recipe(_recipe(description="d", min_nodes=1, capabilities=["tools"]), v=v)
+    assert "unknown-top-level-key" not in _codes(issues)
+    assert "misplaced-config-key" not in _codes(issues)
+
+
+# --------------------------------------------------------------------------
+# Deprecated topology surface (mode / solo_only / cluster_only)
+# --------------------------------------------------------------------------
+
+
+def _topo(**overrides) -> Recipe:
+    data = {"name": "t", "model": "m", "runtime": "vllm-distributed", "container": "c"}
+    data.update(overrides)
+    return Recipe(data).resolve()
+
+
+@pytest.mark.parametrize(
+    "declared,expected_migration",
+    [
+        ({"mode": "solo"}, "`max_nodes: 1`"),
+        ({"mode": "cluster"}, "`min_nodes: 2`"),
+        ({"solo_only": True}, "`max_nodes: 1`"),
+        ({"cluster_only": True}, "`min_nodes: 2`"),
+    ],
+)
+def test_declared_topology_key_is_reported(v, declared, expected_migration):
+    found = [i for i in validate_recipe(_topo(**declared), v=v) if i.code == "deprecated-topology"]
+    assert len(found) == 1
+    assert found[0].severity == WARNING
+    assert found[0].deprecation is True
+    assert expected_migration in found[0].fix
+
+
+def test_node_range_recipes_are_not_reported(v):
+    """The load-bearing one: ``Recipe.__init__`` *derives* ``mode`` from the node
+    range, so reporting off the parsed value would fire on exactly the recipes
+    this advises people to write."""
+    recipe = _topo(min_nodes=2)
+    assert recipe.mode == "cluster"  # derived, never declared
+    assert "deprecated-topology" not in _codes(validate_recipe(recipe, v=v))
+
+    solo = _topo(max_nodes=1)
+    assert solo.mode == "solo"
+    assert "deprecated-topology" not in _codes(validate_recipe(solo, v=v))
+
+
+def test_a_recipe_declaring_no_topology_is_not_reported(v):
+    assert "deprecated-topology" not in _codes(validate_recipe(_topo(), v=v))
+
+
+def test_falsy_topology_key_is_not_told_to_pin_a_range(v):
+    """`solo_only: false` constrains nothing; advising `max_nodes: 1` would be
+    the opposite instruction."""
+    found = next(i for i in validate_recipe(_topo(solo_only=False), v=v) if i.code == "deprecated-topology")
+    # The general advice still names the replacement fields; what must not
+    # appear is a concrete range to pin.
+    assert "`max_nodes: 1`" not in found.fix
+    assert "`solo_only` → nothing" in found.fix
+    assert "delete the key" in found.fix
+
+
+def test_multiple_topology_keys_are_one_finding(v):
+    """They are one concept and their migrations interact."""
+    found = [i for i in validate_recipe(_topo(mode="solo", solo_only=True), v=v) if i.code == "deprecated-topology"]
+    assert len(found) == 1
+    assert "`mode: solo`" in found[0].summary
+    assert "`solo_only`" in found[0].summary
+
+
+def test_topology_is_reported_for_v1_too(v):
+    """Unlike the brace escape, this is not a spelling v1 requires — the
+    replacement has always worked in both."""
+    recipe = Recipe(
+        {"name": "v1", "recipe_version": "1", "model": "m", "runtime": "vllm", "container": "c", "cluster_only": True}
+    ).resolve()
+    assert "deprecated-topology" in _codes(validate_recipe(recipe, v=v))
+
+
+def test_first_party_container_inference_is_not_reported(v):
+    """sparkrun owns the image *and* the rule, so keeping them in step is its
+    job. This is 40 of the 47 registry recipes with an inferred builder —
+    reporting them would make the finding mostly noise."""
+    from sparkrun.core.recipe import EUGR_CONTAINER_PREFIX
+
+    recipe = _recipe(runtime="vllm", container=EUGR_CONTAINER_PREFIX + "-b12x:latest").resolve()
+    assert recipe.builder == "eugr"  # still inferred — only the *advice* is withheld
+    assert "implicit-builder" not in _codes(validate_recipe(recipe, v=v))
+
+
+def test_third_party_container_with_build_args_is_reported(v):
+    """The 7 that remain: an inference over an artifact sparkrun does not
+    publish, which is the case the finding is actually about."""
+    recipe = _recipe(runtime="vllm", container="myorg/vllm:latest", runtime_config={"build_args": ["--cleanup"]}).resolve()
+    assert recipe.builder == "eugr"
+    found = next(i for i in validate_recipe(recipe, v=v) if i.code == "implicit-builder")
+    assert found.severity == SUGGESTION
+    assert "`build_args`" in found.summary
+
+
+def test_mods_alone_does_not_infer_a_builder(v):
+    """`mods` is part of the v2 spec and works with any builder, so it is not a
+    signal — and must not produce an `implicit-builder` finding."""
+    recipe = _recipe(runtime="vllm", mods=["mods/some-patch"]).resolve()
+    assert recipe.builder == ""
+    assert "implicit-builder" not in _codes(validate_recipe(recipe, v=v))

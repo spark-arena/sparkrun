@@ -487,9 +487,12 @@ def run(
         config=config,
         v=v,
         include_unmapped_keys=False,
+        # Echo back the reference the user typed: it is what the `recipe
+        # validate` hint has to be re-typable as, and for a URL recipe it beats
+        # the raw URL. Threaded into validation as well as into the report,
+        # because the collapsed deprecation line names the same command.
+        recipe_ref=recipe_name,
     )
-    # Echo back the reference the user typed: it is what the `recipe validate`
-    # hint has to be re-typable as, and for a URL recipe it beats the raw URL.
     report_launch_validation(recipe_name, issues, validation_failed)
     if validation_failed:
         sys.exit(1)
