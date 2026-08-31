@@ -1184,25 +1184,76 @@ orchestration.tailscale → {orchestration.ssh/sudo, core.config}`. Design spec:
 ### Inference Gateway (`proxy/` + `api/proxy/`)
 
 The **gateway** is the process fronting every discovered inference endpoint
-behind one OpenAI-compatible API. Today there is exactly one implementation —
-`ProxyEngine` (LiteLLM) — but the vocabulary and the seams are in place so a
-second can be added as a peer rather than a special case. One word throughout:
-**gateway** is the pluggable family, `proxy` is the user-facing command.
+behind one OpenAI-compatible API. Core ships one implementation — `ProxyEngine`
+(LiteLLM) — and everything a second needs is in place, including for one living
+outside the `sparkrun.proxy` tree entirely. One word throughout: **gateway** is
+the pluggable family, `proxy` is the user-facing command.
 
-Two mechanisms, deliberately separate:
+Three mechanisms, deliberately separate:
 
+- **Registration** — `proxy/gateway.py:register_gateway(name, feature_flag=,
+  loader=)`; `gateway_class(name)` is the one place a name becomes an
+  implementation. The registry is **in-process** rather than a SAF extension
+  point because an engine is *constructed with arguments* (host, port, master
+  key, state dir) rather than resolved as a stateless singleton — the same
+  reason `platforms` and `models/kv` stayed in-process. Registration carries a
+  **loader**, not the class, so `proxy.engine` can import this module without a
+  cycle and registering costs nothing at import time. Idempotent by name, which
+  is what lets an out-of-tree plugin substitute an in-tree implementation.
+  litellm registers in core, not from a plugin: `proxy` must resolve to
+  *something* with every plugin absent.
 - **Availability** — `gateway.<name>` feature flag. `gateway.litellm` ships
   **enabled on every channel** (`default=True`, like `executor.docker`); a
-  future gateway would ship off. Declared on the implementation as
-  `ProxyEngine.required_feature_flag` / `gateway_name`, pre-shaping the
-  eventual `GatewayPlugin`.
+  plugin-contributed gateway would ship off.
 - **Selection** — exactly one gateway is used at a time, arbitrated in
-  `proxy/gateway.py:resolve_gateway()`: an explicit name (`proxy.gateway:` in
-  `proxy.yaml`) must be known *and* enabled; with no name, the default wins
-  when enabled, else the single remaining enabled gateway, else
-  `AmbiguousGatewayError`. The flag registry has **no** notion of
-  mutually-exclusive flags — nothing stops a user enabling two, so resolution
-  refuses to guess (mirrors `_default_executor_name`).
+  `resolve_gateway()`: an explicit name (`proxy.gateway:` in `proxy.yaml`, or
+  `--gateway`) must be known *and* enabled; with no name, the default wins when
+  enabled, else the single remaining enabled gateway, else
+  `AmbiguousGatewayError`. Enabling a second gateway's flag does **not** switch
+  to it. The flag registry has **no** notion of mutually-exclusive flags —
+  nothing stops a user enabling two, so resolution refuses to guess (mirrors
+  `_default_executor_name`).
+
+"Unregistered" and "disabled" are deliberately distinct errors: a name can be
+known to the flag registry while its plugin failed to load, and telling that
+user to enable a flag that is already on is a dead end.
+
+**`GatewaySupervisor` (`proxy/_supervisor.py`)** holds everything a gateway
+does *as a local process* — spawn, startup grace, SIGTERM/reap/zombie
+detection, the `state.yaml` format, 0600/0700 permissions, the auto-discover
+sidecar, the insecure-bind warning. `ProxyEngine` subclasses it, so LiteLLM's
+argv, environment and config format are all that remain gateway-specific. Two
+implementations writing that state format independently would eventually
+disagree about it, and the symptom is a proxy nobody can stop.
+`GatewayState` is the read-only half, split out so a caller that only needs
+"what is running" (the auto-discover daemon, a status probe) doesn't construct
+a supervisor whose `gateway_name` is blank.
+
+Capabilities are **declared** rather than branched on by name, which is what
+keeps `gateway_class` the only place a name resolves to an implementation:
+
+| Attribute | Default | Why it exists |
+|-----------|---------|---------------|
+| `supports_autodiscover` | `True` | A gateway owning its own desired state would fight sparkrun's daemon. `start()` warns and disables rather than silently dropping a configured setting. |
+| `wants_proxy_config` | `False` | Management paths resolve their engine from the *state file*. A config-driven gateway without `proxy.yaml` computes an **empty** desired state, so `proxy alias add` would delete every deployment it wasn't told about. |
+| `data_plane_authenticated` | `False` | The safe assumption. A gateway that authenticates says so, rather than every gateway being trusted to have opted out of the warning by accident. |
+| `model_query_error` | `""` | Empty means the query succeeded, *including* an empty model list — collapsing the two reports an authenticated management failure as "no models registered". |
+
+`prepare_config(endpoints, aliases, write=)` puts config generation on the
+engine: what a gateway's config *is* — a rendering of discovered endpoints, or
+a list of desired bindings — is the implementation's business. `write=False`
+is not a convenience; a dry run reports which aliases *would* apply, and
+answering that from the same code that renders the real config is what keeps
+the preview honest.
+
+The model-management surface (`sync_models`, `sync_aliases`,
+`list_models_via_api`, `register_loaded_model`, `unregister_loaded_model`)
+lives on the base **because `api.proxy` resolves an engine from the state
+file** — a LiteLLM-only method reached against another running gateway was an
+`AttributeError` far from its cause. The first three raise
+`NotImplementedError` naming the gateway; the last two return `None`, meaning
+"discovery-driven, do the ordinary endpoint sync", which makes them a true
+no-op seam for LiteLLM while giving `proxy load` / `unload` somewhere to hook.
 
 **Gate placement**: `ProxyEngine.start()` is the *one* enforcement point —
 bringing a gateway up, checked before `--dry-run` so a dry run can't advertise
@@ -1210,17 +1261,80 @@ a start that would be refused. `stop` / `status` / `models` / `sync` /
 `alias_*` and the auto-discover daemon's `_restart_proxy` path are **ungated**:
 a proxy started while the flag was on must stay manageable (and stoppable)
 after it is turned off, and the daemon keeps driving the engine it was started
-with. Same rule `cleanup_cluster_transport` follows for transports.
+with. Same rule `cleanup_cluster_transport` follows for transports. That rule
+extends to a *missing* implementation: when the state file names a gateway
+whose plugin is not loaded, `_running_engine` falls back to a bare
+`GatewaySupervisor` bound to the recorded name rather than raising — state
+reading and SIGTERM are gateway-independent, and raising would strand a live
+process that nothing could then describe or kill.
+
+**The auto-discover daemon is gateway-neutral.** It is handed `{gateway,
+state_dir, interval, removal_grace_sweeps}` and reconciles through
+`api.proxy.sync`, which re-resolves the implementation from the state file on
+every sweep — so a `proxy start --restart` that swaps gateways is followed
+rather than fought. It therefore no longer carries the master key: the
+credential belongs to whichever engine the state file names. A previously
+healthy endpoint survives `discover_removal_grace_sweeps - 1` consecutive
+misses (default 2, `proxy.discover_removal_grace_sweeps`, `1` restores
+remove-on-first-miss) — one timed-out probe is not evidence a workload is gone,
+and evicting it costs a restart plus a window of 404s for a model that is
+serving fine. Identity is `cluster_id` when present, since an address is not
+stable across a relaunch.
+
+**`proxy.yaml` has two writers** — the daemon and any `sparkrun proxy` command
+— so `ProxyConfig.save()` locks a stable sidecar, re-reads, and merges only the
+sections *that instance* modified; a whole-document save silently discards the
+other's change. An alias removal is recorded as an explicit deletion, because
+"not in my copy" is not an instruction to delete a document this instance never
+saw. `fcntl` is imported **guarded**: `proxy/config.py` is reached from
+`SparkrunContext`, i.e. essentially every invocation, and a hard import would
+make sparkrun unimportable on a Windows control node. Without it the lock
+degrades to none (`os.replace` is still atomic, so the file is never
+half-written) — strictly weaker, and correct only because the daemon is a
+POSIX-only fork path.
 
 `api/proxy/` is the console-free facade (mirrors `api/tailscale/`): `start`,
-`stop`, `status`, `models`, `sync`, `add_alias` / `remove_alias` /
-`list_aliases`, plus `resolve_gateway` / `list_gateways`. `cli/_proxy.py` is a
-renderer over it, and the desktop sidecar calls it directly. `_engine_class()`
-is the single place a gateway name becomes an implementation. The state file
+`stop`, `status`, `models`, `sync`, `register_loaded_model` /
+`unregister_loaded_model`, `add_alias` / `remove_alias` / `list_aliases`, plus
+`resolve_gateway` / `list_gateways`. `cli/_proxy.py` is a renderer over it, and
+the desktop sidecar calls it directly. `ProxyUnsupported` is the "this gateway
+has no such capability" *answer*, distinct from a failure. `ProxyUpdateFailed`
+wraps `GatewayOperationError` (of which `ProxyRestartError` is the LiteLLM
+member) — a base every gateway's management failures derive from, so `sync`
+translates one exception type instead of catching bare `RuntimeError` and
+reporting an unrelated engine bug as a routine update failure. The state file
 records `gateway`, so management paths bind to *what is running* rather than to
 what is currently configured. Layering: `cli → api.proxy → sparkrun.proxy →
 {core, orchestration}`; `sparkrun.proxy` imports of `api` stay deferred
 (`proxy.discovery` imports `sparkrun.api`, so module-level would be circular).
+
+Two declarative seams a gateway consumes, both deliberately **outside** the
+workload's identity (`derive_recipe_fingerprint`) — describing what a
+deployment can do must not change what it *is*, or declaring a capability on a
+running deployment would force it to be re-admitted:
+
+- `RuntimePlugin.native_protocols(recipe)` — API dialects served natively, most
+  preferred first. **Fail-closed** (base returns `["openai"]`): a protocol
+  selects the upstream URL, headers, parser, streaming framing, error
+  vocabulary and retry classification, so under-claiming costs a translation
+  while over-claiming sends wrong-shaped bytes to a server that cannot parse
+  them. A runtime that gained a dialect at some version must gate on the
+  recipe's resolved container tag, not on the runtime name.
+- Recipe `capabilities:` / `unsupported_capabilities:` — declared in
+  `_KNOWN_KEYS` and parsed as real attributes precisely so they stay out of
+  `runtime_config` (which would put them in the fingerprint *and* the serve
+  command). sparkrun never infers them; nothing in a recipe reveals them.
+
+`RunOptions.owner` tags the component that launched a workload (persisted to
+job metadata, omitted when unset) so an automated supervisor can tell its own
+jobs from identically-configured ones a human started, and refuse to tear the
+latter down. `RunPlan.recipe_fingerprint` is derived in `api.plan` and threaded
+through `launch_inference` to **all three** `save_job_metadata` call sites —
+each rewrites the file wholesale, so a site that forgot would erase it a phase
+later. It must be pre-launch: `apply_platform_runtime_flag_defaults` mutates
+`recipe.defaults` keyed off the head host's hardware *before* metadata is
+saved, so a digest taken inside the launcher is placement-dependent and the
+caller that later matches on it can never reproduce the value.
 
 ### SSH Access Bootstrap (`api/setup/`)
 
