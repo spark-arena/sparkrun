@@ -55,6 +55,13 @@ def proxy():
 @click.option("--no-auto-discover", is_flag=True, help="Disable periodic endpoint re-scanning")
 @click.option("--discover-interval", type=int, default=None, help="Seconds between discovery sweeps (default: 30)")
 @click.option(
+    "--discover-removal-grace-sweeps",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Consecutive missed sweeps before a discovered endpoint is removed (default: 2).",
+)
+@click.option("--gateway", "gateway_name", default=None, help="Gateway implementation to select and persist.")
+@click.option(
     "--restart",
     is_flag=True,
     default=False,
@@ -71,6 +78,8 @@ def start(
     foreground,
     no_auto_discover,
     discover_interval,
+    discover_removal_grace_sweeps,
+    gateway_name,
     restart,
     dry_run,
 ):
@@ -92,6 +101,7 @@ def start(
     sctx = _get_context(click.get_current_context())
 
     options = api.proxy.ProxyStartOptions(
+        gateway=gateway_name,
         port=port,
         host=bind_host,
         master_key=master_key,
@@ -100,6 +110,7 @@ def start(
         # --no-auto-discover forces off; absent, proxy.yaml decides.
         auto_discover=False if no_auto_discover else None,
         discover_interval=discover_interval,
+        discover_removal_grace_sweeps=discover_removal_grace_sweeps,
         foreground=foreground,
         restart=restart,
         dry_run=dry_run,
@@ -109,7 +120,7 @@ def start(
     # read, and a disabled/unknown gateway should fail before the (slow,
     # SSH-backed) discovery sweep is advertised.
     try:
-        api.proxy.resolve_gateway(sctx=sctx)
+        api.proxy.resolve_gateway(gateway_name, sctx=sctx)
     except api.proxy.GatewayUnavailable as exc:
         click.echo("Error: %s" % exc, err=True)
         sys.exit(1)
@@ -155,7 +166,7 @@ def start(
 
     if result.dry_run:
         click.echo("")
-        click.echo("[dry-run] Would write litellm config and start proxy on %s:%d" % (result.host, result.port))
+        click.echo("[dry-run] Would prepare %s and start proxy on %s:%d" % (result.gateway, result.host, result.port))
         aliases = sctx.proxy_config.aliases
         if aliases:
             click.echo("[dry-run] Aliases: %s" % aliases)
@@ -176,7 +187,10 @@ def start(
     if effective_key:
         click.echo("Management API key: %s" % effective_key)
     if result.auto_discover:
-        click.echo("Auto-discover enabled (every %ds)" % result.discover_interval)
+        click.echo(
+            "Auto-discover enabled (every %ds; remove after %d missed sweep(s))"
+            % (result.discover_interval, result.discover_removal_grace_sweeps)
+        )
 
     # Aliases are baked into the config at generation time; report the ones
     # that actually resolved to a live backend.
@@ -260,8 +274,46 @@ def status(output_json):
                 click.echo("  %s" % m.model_name)
                 if m.api_base:
                     click.echo("    -> %s" % m.api_base)
+        elif result.model_query_error:
+            # Distinct from an empty list: the models may well be serving and
+            # only the management query failed.
+            click.echo("Model list unavailable: %s" % result.model_query_error)
         else:
-            click.echo("No models registered (or management API unavailable).")
+            click.echo("No models registered.")
+
+
+# ---------------------------------------------------------------------------
+# proxy sync
+# ---------------------------------------------------------------------------
+
+
+@proxy.command("sync")
+@json_option()
+def sync_cmd(output_json):
+    """Reconcile the proxy's model list with the workloads actually running."""
+    from sparkrun import api
+
+    sctx = _get_context(click.get_current_context())
+    try:
+        result = api.proxy.sync(require_running=True, sctx=sctx)
+    except api.proxy.ProxyUpdateFailed as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    payload = {
+        "proxy_running": result.proxy_running,
+        "changed": result.changed,
+        "added": result.added,
+        "removed": result.removed,
+    }
+    if output_json:
+        print_json(payload)
+        return
+    if not result.proxy_running:
+        click.echo("Proxy is not running. Start it with: sparkrun proxy start")
+    elif result.changed:
+        click.echo("Synchronized running models: +%d, -%d." % (result.added, result.removed))
+    else:
+        click.echo("Running models already in sync.")
 
 
 # NOTE: not deleting yet, but proxy discover as a CLI command serves no purpose...
@@ -342,7 +394,8 @@ def models(refresh, output_json):
 
     sctx = _get_context(click.get_current_context())
 
-    if not api.proxy.status(sctx=sctx).running:
+    proxy_status = api.proxy.status(sctx=sctx)
+    if not proxy_status.running:
         if output_json:
             print_json([])
             return
@@ -364,18 +417,26 @@ def models(refresh, output_json):
                     parts.append("added %d" % synced.added)
                 if synced.removed:
                     parts.append("removed %d stale" % synced.removed)
-                click.echo("Synced proxy models: %s (proxy restarted)." % ", ".join(parts))
+                click.echo("Synced proxy models: %s." % ", ".join(parts))
             else:
                 click.echo("Proxy models already in sync.")
 
-    model_list = api.proxy.models(sctx=sctx)
+    # Reuse the status query rather than re-asking, so an authenticated
+    # management failure is not collapsed into an empty list; re-read only when
+    # a refresh has since changed what the gateway serves.
+    if refresh:
+        proxy_status = api.proxy.status(sctx=sctx)
+    model_list = proxy_status.models
 
     if output_json:
         print_json([m.to_dict() for m in model_list])
         return
 
     if not model_list:
-        click.echo("No models registered with the proxy.")
+        if proxy_status.model_query_error:
+            click.echo("Model list unavailable: %s" % proxy_status.model_query_error, err=True)
+        else:
+            click.echo("No models registered with the proxy.")
         return
 
     click.echo("Models (%d):" % len(model_list))
@@ -642,12 +703,15 @@ def load_cmd(
             else:
                 click.echo("Registering with proxy...")
                 try:
-                    synced = api.proxy.sync(require_running=True, sctx=sctx)
+                    # Not a plain sync: a catalog-driven gateway persists an
+                    # activatable route here.  A discovery-driven one (LiteLLM)
+                    # falls through to exactly the sync this used to call.
+                    synced = api.proxy.register_loaded_model(recipe_name, sctx=sctx)
                 except api.proxy.ProxyUpdateFailed as exc:
                     click.echo("Error: %s" % exc, err=True)
                     sys.exit(1)
                 if synced.added:
-                    click.echo("Registered %d model(s) with proxy (restarted)." % synced.added)
+                    click.echo("Registered %d model(s) with proxy." % synced.added)
                 else:
                     click.echo(
                         "Note: proxy already served this endpoint; no config change needed.",
@@ -703,12 +767,12 @@ def unload_cmd(ctx, recipe_name, hosts, hosts_file, cluster_name, dry_run):
         if api.proxy.status(sctx=sctx).running:
             click.echo("Syncing proxy models...")
             try:
-                synced = api.proxy.sync(require_running=True, sctx=sctx)
+                synced = api.proxy.unregister_loaded_model(recipe_name, sctx=sctx)
             except api.proxy.ProxyUpdateFailed as exc:
                 click.echo("Error: %s" % exc, err=True)
                 sys.exit(1)
             if synced.removed:
-                click.echo("Removed %d stale model(s) from proxy (restarted)." % synced.removed)
+                click.echo("Removed %d stale model(s) from proxy." % synced.removed)
 
 
 # ---------------------------------------------------------------------------
