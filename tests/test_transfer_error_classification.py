@@ -16,6 +16,26 @@ from sparkrun.orchestration.transfer import (
     map_transfer_failures,
     map_transfer_failures_detailed,
     present_and_raise_transfer_failure,
+    rsync_attribute_errors_only,
+    rsync_transfer_ok,
+    split_rsync_results,
+)
+
+# Real rsync 3.2.7 stderr from a completed transfer into a destination
+# directory the SSH user does not own (reproduced against a root-owned dir).
+# Every byte arrived; only the generator's attribute pass failed.
+_ATTR_ONLY_STDERR = (
+    'rsync: [generator] failed to set times on "/home/u/.cache/sparkrun/tuning/sglang/.": Operation not permitted (1)\n'
+    'rsync: [generator] chgrp "/home/u/.cache/sparkrun/tuning/sglang/." failed: Operation not permitted (1)\n'
+    "rsync error: some files/attrs were not transferred (see previous errors) (code 23) at main.c(1338) [sender=3.2.7]\n"
+)
+
+# The same shape, but with a directory that genuinely could not be created —
+# the tuning configs did NOT arrive.  Must never be rescued.
+_REAL_FAILURE_STDERR = (
+    'rsync: [generator] failed to set times on "/home/u/.cache/sparkrun/tuning/sglang/.": Operation not permitted (1)\n'
+    'rsync: [generator] recv_generator: mkdir "/home/u/.cache/sparkrun/tuning/sglang/configs" failed: Permission denied (13)\n'
+    "rsync error: some files/attrs were not transferred (see previous errors) (code 23) at main.c(1338) [sender=3.2.7]\n"
 )
 
 
@@ -124,7 +144,21 @@ def test_map_transfer_failures_detailed_truncates_long_stderr():
     results = [_r("10.0.0.1", 23, big_stderr)]
     failures = map_transfer_failures_detailed(results, ["10.0.0.1"], ["m1"])
     assert len(failures) == 1
-    assert len(failures[0].detail) <= 400
+    assert len(failures[0].detail) <= 1300
+
+
+def test_map_transfer_failures_detailed_keeps_head_of_stderr():
+    """The excerpt keeps rsync's *first* errors, not its closing summary.
+
+    rsync names the path that failed in its first generator line and always
+    closes with a fixed "some files/attrs were not transferred" summary, so a
+    tail excerpt restates the exit code we already have and clips away the only
+    diagnostic content.
+    """
+    stderr = 'rsync: [generator] recv_generator: mkdir "/cache/configs" failed: Permission denied (13)\n' + ("noise\n" * 500)
+    failures = map_transfer_failures_detailed([_r("10.0.0.1", 23, stderr)], ["10.0.0.1"], ["m1"])
+    assert "mkdir" in failures[0].detail
+    assert '"/cache/configs" failed: Permission denied (13)' in failures[0].detail
 
 
 def test_map_transfer_failures_detailed_empty_on_success():
@@ -262,3 +296,78 @@ def test_present_and_raise_transfer_failure_raises_custom_exc_class():
             exc_class=MyError,
             _logger=log,
         )
+
+
+# ---------------------------------------------------------------------------
+# rsync_attribute_errors_only — "the data arrived, only the chmod failed"
+# ---------------------------------------------------------------------------
+
+
+def test_attribute_only_failure_is_not_a_failure():
+    """rc=23 with nothing but attribute errors means a completed transfer.
+
+    This is the NFS shared-cache case: rsync copies every file, then EPERMs
+    setting times/group on a destination root it does not own.  Treating it as
+    a failure aborted launches whose model or tuning configs were fully synced.
+    """
+    assert rsync_attribute_errors_only(_r("h1", 23, _ATTR_ONLY_STDERR)) is True
+    assert rsync_transfer_ok(_r("h1", 23, _ATTR_ONLY_STDERR)) is True
+
+
+def test_mkdir_failure_alongside_attribute_errors_is_still_a_failure():
+    """A real error is not laundered by the benign ones sharing its stderr.
+
+    The reported symptom carried both lines; only one of them means the
+    transfer completed, and guessing wrong here launches a workload against
+    files that never arrived.
+    """
+    assert rsync_attribute_errors_only(_r("h1", 23, _REAL_FAILURE_STDERR)) is False
+    assert rsync_transfer_ok(_r("h1", 23, _REAL_FAILURE_STDERR)) is False
+
+
+@pytest.mark.parametrize(
+    "rc, stderr",
+    [
+        # Not rc=23 — a different failure mode entirely.
+        (12, _ATTR_ONLY_STDERR),
+        (23, ""),  # nothing to reason about: assume the worst
+        (23, "rsync error: some files/attrs were not transferred (code 23)\n"),  # summary alone proves nothing
+        (23, 'rsync: [receiver] mkstemp "/cache/.x" failed: No space left on device (28)\n'),
+        (23, 'rsync: [sender] link_stat "/src/a" failed: No such file or directory (2)\n'),
+    ],
+)
+def test_attribute_only_is_conservative(rc, stderr):
+    """Anything not provably attribute-only is reported as the failure it may be."""
+    assert rsync_attribute_errors_only(_r("h1", rc, stderr)) is False
+
+
+def test_success_is_not_reclassified():
+    assert rsync_attribute_errors_only(_r("h1", 0)) is False
+    assert rsync_transfer_ok(_r("h1", 0)) is True
+
+
+def test_split_rsync_results_partitions_three_ways():
+    results = [
+        _r("ok", 0),
+        _r("benign", 23, _ATTR_ONLY_STDERR),
+        _r("broken", 23, _REAL_FAILURE_STDERR),
+    ]
+    failed, benign = split_rsync_results(results)
+    assert [r.host for r in failed] == ["broken"]
+    assert [r.host for r in benign] == ["benign"]
+
+
+def test_map_transfer_failures_drops_attribute_only_results():
+    """The mapping boundary is where a completed transfer stops being an error."""
+    results = [_r("10.0.0.1", 23, _ATTR_ONLY_STDERR), _r("10.0.0.2", 23, _REAL_FAILURE_STDERR)]
+    hosts = ["10.0.0.1", "10.0.0.2"]
+    assert map_transfer_failures(results, hosts, ["m1", "m2"]) == ["m2"]
+    detailed = map_transfer_failures_detailed(results, hosts, ["m1", "m2"])
+    assert [f.host for f in detailed] == ["m2"]
+
+
+def test_operation_not_permitted_is_classified():
+    """EPERM has different wording than EACCES and used to fall through."""
+    reason = classify_rsync_failure(_r("h1", 23, _REAL_FAILURE_STDERR))
+    assert reason != "rsync failed (rc=23)"
+    assert "permission" in reason.lower()

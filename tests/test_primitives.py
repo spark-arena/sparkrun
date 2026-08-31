@@ -84,6 +84,46 @@ def test_run_script_on_host_local_same_user_runs_locally(mock_local, mock_remote
     mock_remote.assert_not_called()
 
 
+@patch("sparkrun.orchestration.primitives.run_remote_script_streaming")
+@patch("sparkrun.orchestration.primitives.run_local_script_streaming")
+@patch.dict("os.environ", {"USER": "drew"})
+def test_run_script_on_host_streaming_dispatches_local(mock_local, mock_remote):
+    from sparkrun.orchestration.primitives import run_script_on_host_streaming
+
+    mock_local.return_value = RemoteResult(host="localhost", returncode=0, stdout="", stderr="")
+    run_script_on_host_streaming("127.0.0.1", "echo test", ssh_kwargs={"ssh_user": "drew"}, quiet=True)
+
+    mock_local.assert_called_once_with("echo test", dry_run=False, timeout=None, quiet=True)
+    mock_remote.assert_not_called()
+
+
+@patch("sparkrun.orchestration.primitives.run_remote_script_streaming")
+@patch("sparkrun.orchestration.primitives.run_local_script_streaming")
+@patch.dict("os.environ", {"USER": "drew"})
+def test_run_script_on_host_streaming_dispatches_cross_user_over_ssh(mock_local, mock_remote):
+    from sparkrun.orchestration.primitives import run_script_on_host_streaming
+
+    mock_remote.return_value = RemoteResult(host="127.0.0.1", returncode=0, stdout="", stderr="")
+    run_script_on_host_streaming(
+        "127.0.0.1",
+        "echo test",
+        ssh_kwargs={"ssh_user": "dgxuser"},
+        quiet=False,
+        session_guard=True,
+    )
+
+    mock_local.assert_not_called()
+    mock_remote.assert_called_once_with(
+        "127.0.0.1",
+        "echo test",
+        timeout=None,
+        dry_run=False,
+        quiet=False,
+        session_guard=True,
+        ssh_user="dgxuser",
+    )
+
+
 @patch("sparkrun.orchestration.primitives.run_remote_command")
 @patch("sparkrun.orchestration.primitives.run_local_script")
 @patch.dict("os.environ", {"USER": "drew"})

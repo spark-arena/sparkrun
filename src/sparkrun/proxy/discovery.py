@@ -71,6 +71,7 @@ def discover_endpoints(
     host_list: list[str] | None = None,
     ssh_kwargs: dict | None = None,
     *,
+    cluster_ids: "set[str] | frozenset[str] | None" = None,
     cluster_def: "ClusterDefinition | None" = None,
     sctx: "SparkrunContext | None" = None,
 ) -> list[DiscoveredEndpoint]:
@@ -90,6 +91,9 @@ def discover_endpoints(
         host_list: Hosts to inspect via :func:`sparkrun.api.status`.
             When ``None``, liveness is skipped (metadata-only mode).
         ssh_kwargs: Optional SSH kwargs forwarded to ``api.status``.
+        cluster_ids: Optional cluster-id allowlist applied *before* the health
+            probe.  A caller watching one known job would otherwise pay an HTTP
+            probe against every endpoint on the machine on every poll.
         cluster_def: Optional pre-resolved cluster definition forwarded
             to ``api.status``.
         sctx: Optional shared :class:`SparkrunContext`.
@@ -134,6 +138,8 @@ def discover_endpoints(
     candidates: dict[str, DiscoveredEndpoint] = {}
     for job in reversed(jobs):
         if running_ids is not None and job.cluster_id not in running_ids:
+            continue
+        if cluster_ids is not None and job.cluster_id not in cluster_ids:
             continue
 
         ep = _endpoint_from_job(job, ib_to_mgmt=ib_to_mgmt)

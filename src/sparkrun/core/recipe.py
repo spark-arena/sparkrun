@@ -15,7 +15,9 @@ import yaml
 from vpd.next.util import read_yaml
 from scitrera_app_framework.api import Variables, EnvPlacement
 
+from sparkrun.core.images import parse_container_entries
 from sparkrun.core.layout import RecipeLayout
+from sparkrun.core.recipe_items import get_recipe_item, registered_recipe_items
 from sparkrun.utils.text import mask_non_placeholder_braces, render_template, unmask_braces, uses_brace_escapes
 
 if TYPE_CHECKING:
@@ -61,6 +63,7 @@ _KNOWN_KEYS = {
     "min_nodes",
     "max_nodes",
     "container",
+    "containers",
     "defaults",
     "env",
     "command",
@@ -83,12 +86,29 @@ _KNOWN_KEYS = {
     "layout",
     "cluster_config",
     "runtime_cache",
+    "capabilities",
+    "unsupported_capabilities",
 }
 
 
 @dataclass
 class DistributionModelEntry:
-    """A single model to distribute during the distribution phase."""
+    """A single model to distribute during the distribution phase.
+
+    ``revision`` is **per-entry and authoritative** — there is no fallback to
+    the recipe's ``model_revision``.  A launch distributes several unrelated
+    repos (the served model plus any speculative draft model a runtime adds in
+    ``prepare()``), and a commit SHA is only meaningful in the repo it came
+    from: pinning the draft model to the served model's SHA asks the Hub for a
+    revision that repo has never had, and the download dies with
+    ``Revision Not Found`` after the served model has already synced.
+
+    The recipe-level pin reaches the served model by being stamped onto the
+    auto-generated entry at construction (see
+    :func:`_default_distribution_config`), so a recipe that hand-writes its
+    ``distribution_config`` entries states every revision it wants — an entry
+    with no ``revision`` is authoritatively unpinned.
+    """
 
     name: str
     target: list[int] = field(default_factory=list)
@@ -111,6 +131,18 @@ class DistributionResourceConfig:
 
     enabled: bool = True
     entries: list[DistributionModelEntry | DistributionContainerEntry] = field(default_factory=list)
+
+    explicit: bool = False
+    """True when the recipe wrote this resource's block itself.
+
+    Finer-grained than :attr:`DistributionConfig.externally_provided`, which is
+    whole-config: a recipe that customizes only ``models`` still gets the
+    *auto-generated* container entry, and the launcher must be able to tell that
+    apart from a hand-written one before it derives container entries from the
+    per-machine image plan (deriving over a hand-written block would discard the
+    user's choice; *not* deriving over the auto one would ship only the fallback
+    image to every machine).
+    """
 
 
 @dataclass
@@ -155,6 +187,7 @@ class DistributionConfig:
                     entry if isinstance(entry, (DistributionModelEntry, DistributionContainerEntry)) else entry_factory(entry)
                     for entry in raw.get("entries", [])
                 ],
+                explicit=bool(raw.get("explicit", False)),
             )
 
         return cls(
@@ -177,13 +210,24 @@ class DistributionConfig:
             externally_provided=data.get("externally_provided", True),
         )
 
-    def add_model(self, model: str):
-        """Add a model distribution config to the distribution config."""
+    def add_model(self, model: str, revision: str | None = None):
+        """Add a model distribution config to the distribution config.
+
+        ``revision`` pins *this* model only.  Runtimes call this from
+        ``prepare()`` to add a speculative draft model, which is a different
+        repo from the served model and must never inherit its pin — see
+        :class:`DistributionModelEntry`.
+        """
         # scan through existing models and make sure that we don't add a duplicate
         for existing_model in self.models.entries:
             if existing_model.name == model:
+                # A later caller with a pin outranks an earlier unpinned add:
+                # dropping it would fetch the model unpinned and silently
+                # discard the revision the recipe asked for.
+                if revision:
+                    existing_model.revision = revision
                 return
-        self.models.entries.append(DistributionModelEntry(name=model))
+        self.models.entries.append(DistributionModelEntry(name=model, revision=revision))
 
     def add_container(self, model_container_config: DistributionContainerEntry):
         self.containers.entries.append(model_container_config)
@@ -218,12 +262,23 @@ class DistributionConfig:
         return self
 
 
-def _default_distribution_config(model: str = "{model}", container: str = "{container}") -> DistributionConfig:
-    """Create the default distribution config for a recipe."""
+def _default_distribution_config(
+    model: str = "{model}",
+    container: str = "{container}",
+    model_revision: str | None = None,
+) -> DistributionConfig:
+    """Create the default distribution config for a recipe.
+
+    ``model_revision`` is the recipe's top-level pin.  Stamping it onto the
+    auto-generated entry here — rather than applying it at distribution time to
+    whatever entries happen to be present — is what keeps it attached to the
+    model it actually describes once a runtime has added a draft model
+    alongside it.
+    """
     return DistributionConfig(
         models=DistributionResourceConfig(
             enabled=True,
-            entries=[DistributionModelEntry(name=model)],
+            entries=[DistributionModelEntry(name=model, revision=model_revision)],
         ),
         containers=DistributionResourceConfig(
             enabled=True,
@@ -242,13 +297,18 @@ def _parse_distribution_config(data: dict[str, Any]) -> DistributionConfig:
     container it never customized.  A subkey that IS present is honored
     literally — an explicit ``entries: []`` or ``enabled: false`` still means
     "distribute nothing", not "use the default".
+
+    The recipe's top-level ``model_revision`` is stamped onto the auto-generated
+    model entry (and onto the one inherited when ``models`` is omitted), so a
+    recipe that lists its own entries owns their revisions outright.
     """
     raw = data.get("distribution_config")
+    model_revision = data.get("model_revision")
     # fallback if not provided (expected to be the default case)
     if not raw or not isinstance(raw, dict):
-        return _default_distribution_config()
+        return _default_distribution_config(model_revision=model_revision)
 
-    default = _default_distribution_config()
+    default = _default_distribution_config(model_revision=model_revision)
 
     def _parse_models(models_raw: Any) -> DistributionResourceConfig:
         if not isinstance(models_raw, dict):
@@ -268,7 +328,7 @@ def _parse_distribution_config(data: dict[str, Any]) -> DistributionConfig:
                 )
             elif isinstance(e, str):
                 entries.append(DistributionModelEntry(name=e))
-        return DistributionResourceConfig(enabled=models_raw.get("enabled", True), entries=entries)
+        return DistributionResourceConfig(enabled=models_raw.get("enabled", True), entries=entries, explicit=True)
 
     def _parse_containers(containers_raw: Any) -> DistributionResourceConfig:
         if not isinstance(containers_raw, dict):
@@ -287,7 +347,7 @@ def _parse_distribution_config(data: dict[str, Any]) -> DistributionConfig:
                 )
             elif isinstance(e, str):
                 entries.append(DistributionContainerEntry(name=e))
-        return DistributionResourceConfig(enabled=containers_raw.get("enabled", True), entries=entries)
+        return DistributionResourceConfig(enabled=containers_raw.get("enabled", True), entries=entries, explicit=True)
 
     return DistributionConfig(
         models=_parse_models(raw["models"]) if "models" in raw else default.models,
@@ -970,6 +1030,13 @@ class Recipe:
         # Container
         self.container: str = data.get("container", "")
 
+        # Optional per-machine images.  ``container`` above stays the fallback
+        # for any host without an entry; see :mod:`sparkrun.core.images` for why
+        # these bind to hostnames rather than ranks.  Parsed permissively — the
+        # cluster's host list isn't known here, so validation happens in
+        # ``resolve_image_plan`` at launch time.
+        self.containers: list[dict[str, str]] = parse_container_entries(data.get("containers"))
+
         # Configuration
         self.defaults: dict[str, Any] = dict(data.get("defaults") or {})
         # Use recipe-provided env values literally.  Do NOT expand control-machine
@@ -981,6 +1048,24 @@ class Recipe:
         # Metadata section (v2 extension for VRAM estimation, model info)
         raw_metadata = data.get("metadata", {})
         self.metadata: dict[str, Any] = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+
+        # Plugin-owned top-level recipe items.  The core owns only lifecycle;
+        # each registration owns parsing, validation, and canonical export.
+        # Parse after core identity fields so a handler may bind to model,
+        # runtime, or revision without reaching into raw YAML itself.
+        self.plugin_items: dict[str, Any] = {}
+        self._plugin_item_raw: dict[str, Any] = {}
+        for registration in registered_recipe_items():
+            if registration.key not in data:
+                continue
+            raw_item = data[registration.key]
+            self._plugin_item_raw[registration.key] = raw_item
+            try:
+                self.plugin_items[registration.key] = registration.handler.parse(raw_item, self)
+            except Exception as error:
+                raise RecipeError(
+                    "Plugin %s could not parse top-level recipe item '%s': %s" % (registration.owner, registration.key, error)
+                ) from error
 
         # Metadata values supplement missing top-level fields
         # if not self.name or self.name == default_name:
@@ -998,9 +1083,24 @@ class Recipe:
         # Runtime-specific config: explicit runtime_config key takes priority,
         # then unknown top-level keys are auto-swept in.
         self.runtime_config: dict[str, Any] = dict(data.get("runtime_config", {}))
+        plugin_keys = {registration.key for registration in registered_recipe_items()}
         for k, v in data.items():
-            if k not in _KNOWN_KEYS and k not in self.runtime_config:
+            if k not in _KNOWN_KEYS and k not in plugin_keys and k not in self.runtime_config:
                 self.runtime_config[k] = v
+
+        # Gateway capability declarations.  Optional, and *not* serve
+        # configuration: they describe what the served model can do, which an
+        # inference gateway needs in order to admit or reject a request before
+        # it reaches the backend.  Declared as real attributes (rather than
+        # swept into ``runtime_config``) precisely so they stay out of
+        # ``derive_recipe_fingerprint`` — editing a capability list must not
+        # change the workload's identity and force a running deployment to be
+        # re-admitted.
+        #
+        # Nothing in a recipe reveals these, so sparkrun never infers them; an
+        # undeclared capability is left to the gateway's own policy.
+        self.capabilities: list[str] = [str(c) for c in (data.get("capabilities") or [])]
+        self.unsupported_capabilities: list[str] = [str(c) for c in (data.get("unsupported_capabilities") or [])]
 
         # Lifecycle hooks
         self.pre_exec: list[str | dict[str, str]] = list(data.get("pre_exec", []))
@@ -1203,7 +1303,22 @@ class Recipe:
         return rendered
 
     def validate(self) -> list[str]:
-        """Validate the recipe and return a list of warnings/errors."""
+        """Validate the recipe and return a list of warnings/errors.
+
+        The flat string form kept for back-compat.  Callers that need to tell
+        a launch-blocking problem from a cosmetic one use
+        :func:`sparkrun.core.validation.validate_recipe`, which calls the two
+        halves below directly.
+        """
+        return self.validate_structure() + self.validate_metadata()
+
+    def validate_structure(self) -> list[str]:
+        """Problems that make the recipe unlaunchable.
+
+        A missing model or an out-of-range node range is not something any
+        later stage can work around, which is why these are the half
+        :func:`sparkrun.core.validation.validate_recipe` reports as errors.
+        """
         issues = []
         if not self.name:
             issues.append("Recipe missing 'name' field")
@@ -1217,8 +1332,21 @@ class Recipe:
             issues.append("min_nodes must be >= 1, got %d" % self.min_nodes)
         if self.max_nodes is not None and self.max_nodes < self.min_nodes:
             issues.append("max_nodes (%s) < min_nodes (%s)" % (self.max_nodes, self.min_nodes))
+        return issues
 
-        # Validate metadata if present
+    def validate_metadata(self) -> list[str]:
+        """Problems in ``metadata:`` that degrade a *estimate*, not the launch.
+
+        Every field here feeds VRAM estimation or display.  A bad value costs
+        an estimate — the estimator skips the claim and placement falls back to
+        capacity-only — so these are reported as warnings, never as a reason to
+        refuse to launch.  Real published recipes carry prose in
+        ``metadata.quantization`` ("NVFP4 (compressed-tensors, mixed
+        precision)"); aborting on that would strand a working recipe over a
+        label.
+        """
+        issues: list[str] = []
+
         if self.metadata:
             from sparkrun.models.kv import arch_fields, is_valid_kv_dtype
             from sparkrun.models.vram import parse_param_count, bytes_per_element
@@ -1269,7 +1397,24 @@ class Recipe:
                 if str(mq).lower().strip() not in _KNOWN_QUANT_METHODS:
                     issues.append("metadata.quantization %r is not a recognized method" % mq)
 
+        for key, value in self.plugin_items.items():
+            registration = get_recipe_item(key)
+            if registration is None:
+                issues.append("No plugin is registered to validate top-level recipe item '%s'" % key)
+                continue
+            try:
+                plugin_issues = registration.handler.validate(value, self)
+            except Exception as error:
+                issues.append("Plugin %s failed to validate top-level recipe item '%s': %s" % (registration.owner, key, error))
+                continue
+            issues.extend("%s.%s" % (key, issue) for issue in plugin_issues)
+
         return issues
+
+    def plugin_item(self, key: str, default: Any = None) -> Any:
+        """Return a parsed plugin-owned top-level item."""
+
+        return self.plugin_items.get(key, default)
 
     @classmethod
     def load(cls, path: str | Path, resolve: bool = True) -> Recipe:
@@ -1632,12 +1777,23 @@ class Recipe:
             "min_nodes": self.min_nodes,
             "max_nodes": self.max_nodes,
             "container": self.container,
+            "containers": [dict(e) for e in self.containers],
             "defaults": dict(self.defaults),
             "env": dict(self.env),
             "command": self.command,
             "metadata": dict(self.metadata),
+            "plugin_items": {
+                key: (
+                    get_recipe_item(key).handler.export(self.plugin_items[key], self)
+                    if get_recipe_item(key) is not None and key in self.plugin_items
+                    else self._plugin_item_raw[key]
+                )
+                for key in sorted(set(self._plugin_item_raw) | set(self.plugin_items))
+            },
             "maintainer": self.maintainer,
             "runtime_config": dict(self.runtime_config),
+            "capabilities": list(self.capabilities),
+            "unsupported_capabilities": list(self.unsupported_capabilities),
             "pre_exec": list(self.pre_exec),
             "post_exec": list(self.post_exec),
             "post_commands": list(self.post_commands),
@@ -1675,12 +1831,17 @@ class Recipe:
         self.min_nodes = state.get("min_nodes", 1)
         self.max_nodes = state.get("max_nodes")
         self.container = state.get("container", "")
+        self.containers = parse_container_entries(state.get("containers"))
         self.defaults = dict(state.get("defaults") or {})
         self.env = dict(state.get("env") or {})
         self.command = state.get("command")
         self.metadata = dict(state.get("metadata") or {})
+        self.plugin_items = {}
+        self._plugin_item_raw = dict(state.get("plugin_items") or {})
         self.maintainer = state.get("maintainer", "")
         self.runtime_config = dict(state.get("runtime_config") or {})
+        self.capabilities = list(state.get("capabilities") or [])
+        self.unsupported_capabilities = list(state.get("unsupported_capabilities") or [])
         self.pre_exec = list(state.get("pre_exec") or [])
         self.post_exec = list(state.get("post_exec") or [])
         self.post_commands = list(state.get("post_commands") or [])
@@ -1698,6 +1859,10 @@ class Recipe:
         self.layout = RecipeLayout.from_dict(layout_state) if isinstance(layout_state, dict) else None
         self.cluster_config = LaunchOverrides.from_dict(state.get("cluster_config"))
         self.runtime_cache = dict(state.get("runtime_cache") or {})
+        for key, raw_item in self._plugin_item_raw.items():
+            registration = get_recipe_item(key)
+            if registration is not None:
+                self.plugin_items[key] = registration.handler.parse(raw_item, self)
 
     @classmethod
     def _deserialize(cls, data: dict[str, Any]) -> Recipe:
@@ -1740,6 +1905,7 @@ class Recipe:
         "min_nodes",
         "max_nodes",
         "container",
+        "containers",
         "solo_only",
         "cluster_only",
         "layout",
@@ -1787,6 +1953,8 @@ class Recipe:
         # -- Container --
         if self.container:
             d["container"] = self.container
+        if self.containers:
+            d["containers"] = [dict(e) for e in self.containers]
 
         # # -- Preserve Raw Topology flags from v1 --
         # if self._raw.get("solo_only"):
@@ -1867,6 +2035,15 @@ class Recipe:
         # check for content in runtime_config and then sweep it to top-level for greater compat w/ v1 style
         if self.runtime_config:
             d.update(self.runtime_config)
+
+        # Plugin items stay at the top level they claimed. Unknown state from
+        # a serialized recipe is preserved verbatim if its plugin is disabled.
+        for key in sorted(set(self._plugin_item_raw) | set(self.plugin_items)):
+            registration = get_recipe_item(key)
+            if registration is not None and key in self.plugin_items:
+                d[key] = registration.handler.export(self.plugin_items[key], self)
+            else:
+                d[key] = self._plugin_item_raw[key]
 
         # add distribution_config iff it was provided in the input recipe
         dist_cfg = self.distribution_config

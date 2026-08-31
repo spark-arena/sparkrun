@@ -275,11 +275,10 @@ def _execute_benchmark(
     from sparkrun.core.benchmark_profiles import BenchmarkSpec
     from sparkrun.core.bootstrap import get_runtime, get_benchmarking_framework
     from sparkrun.utils import is_local_host
+    from sparkrun.core.launcher import wait_for_endpoint_ready
     from sparkrun.orchestration.primitives import (
         build_ssh_kwargs,
         detect_host_ip,
-        wait_for_healthy,
-        wait_for_port,
     )
     from sparkrun.core.recipe import (
         expand_recipe_shortcut as _expand_recipe_shortcut,
@@ -499,18 +498,23 @@ def _execute_benchmark(
         **cli_overrides,
     )
 
-    issues = recipe.validate()
-    for issue in issues:
-        emitter.warning(issue)
-
     try:
         runtime = get_runtime(recipe.runtime, v)
     except ValueError as e:
         raise BenchmarkFailed("Error: %s" % e, exit_code=1) from e
 
-    runtime_issues = runtime.validate_recipe(recipe)
-    for issue in runtime_issues:
-        emitter.warning(issue)
+    # Same contract as ``sparkrun run`` — shared helper so the two cannot
+    # drift on what they print or what they refuse.  A benchmark that launches
+    # its own workload has the same stake in the recipe being honorable.
+    from sparkrun.core.validation import validate_for_launch
+
+    issues, validation_failed = validate_for_launch(recipe, runtime=runtime, config=config, v=v, include_unmapped_keys=False)
+    for issue in issues:
+        emitter.warning(issue.message)
+    if validation_failed:
+        blocking = next((i for i in issues if i.is_error), None)
+        detail = blocking.message if blocking else "validation threshold not met"
+        raise BenchmarkFailed("Recipe '%s' cannot be launched: %s" % (recipe.name, detail), exit_code=1)
 
     # Resolve hosts — resolve_host_list expects a comma-separated string
     # (the raw CLI token), not a list; join any pre-resolved hosts back to string.
@@ -958,36 +962,42 @@ def _execute_benchmark(
                     raise BenchmarkFailed("Error detecting head IP: %s" % e, exit_code=1) from e
 
         if not dry_run and not skip_run:
-            head_container = runtime.get_head_container_name(cluster_id, is_solo=is_solo)
             logger.log(_PROGRESS_LEVEL, "Waiting for inference server on %s:%d...", head_host, serve_port)
             logger.log(_PROGRESS_LEVEL, "Note that this could take ~5 minutes!")
-            ready = wait_for_port(
-                head_host,
-                serve_port,
-                max_retries=180,
-                retry_interval=5,
+            # Shared with ``sparkrun run`` / ``proxy load`` rather than
+            # reimplemented: the two-stage wait is what produces the
+            # container-start → serving figure, and a second copy of it with
+            # its own retry budgets would make that number incomparable
+            # between `run` and `benchmark`.  The budgets stay this path's
+            # own (a benchmark is unattended, so it can afford to wait past
+            # the interactive default before calling a launch dead).
+            readiness = wait_for_endpoint_ready(
+                runtime=runtime,
+                cluster_id=cluster_id,
+                host_list=host_list,
+                is_solo=is_solo,
+                port=serve_port,
                 ssh_kwargs=ssh_kwargs,
                 dry_run=dry_run,
-                container_name=head_container,
+                port_timeout_s=3600.0,
+                port_retry_interval=5,
+                health_timeout_s=1800.0,
+                health_retry_interval=5,
+                timeline=launch_result.timeline if launch_result is not None else None,
             )
-            if not ready:
+            bench_result.readiness = readiness
+            if not readiness.ready:
                 if launched and not no_stop:
                     _stop_inference(runtime, host_list, cluster_id, config, dry_run, sctx=sctx, emitter=emitter)
-                raise BenchmarkFailed("Error: inference server did not become ready", exit_code=1)
-
-            health_url = "http://%s:%d/v1/models" % (target_ip, serve_port)
-            logger.log(_PROGRESS_LEVEL, "Waiting for model to finish loading (%s)...", health_url)
-            healthy = wait_for_healthy(
-                health_url,
-                max_retries=360,
-                retry_interval=5,
-                dry_run=dry_run,
-            )
-            if not healthy:
-                if launched and not no_stop:
-                    _stop_inference(runtime, host_list, cluster_id, config, dry_run, sctx=sctx, emitter=emitter)
+                if readiness.reason == "port":
+                    raise BenchmarkFailed("Error: inference server did not become ready", exit_code=1)
                 raise BenchmarkFailed("Error: inference server health check timed out", exit_code=1)
-            logger.log(_PROGRESS_LEVEL, "Inference server ready.")
+            logger.log(
+                _PROGRESS_LEVEL,
+                "Inference server ready (%.1fs to port, %.1fs to healthy).",
+                readiness.port_wait_s,
+                readiness.health_wait_s,
+            )
         elif dry_run:
             emitter.info("[dry-run] Would wait for inference server on %s:%d" % (head_host, serve_port))
 

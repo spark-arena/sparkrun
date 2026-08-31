@@ -27,10 +27,10 @@ from ._common import (
     _get_context,
     _is_cluster_id,
     _load_recipe,
-    _resolve_hosts_or_exit,
     build_cluster_id_overrides,
     dry_run_option,
     host_options,
+    resolve_host_context,
     resolve_hosts_with_metadata_fallback,
 )
 
@@ -82,11 +82,11 @@ def stop(ctx, target, hosts, hosts_file, cluster_name, stop_all, tp_override, po
 
     try:
         if cluster_id is not None:
-            host_list = _hosts_for_cluster_id_target(target, hosts, hosts_file, cluster_name, config)
+            host_list, effective_cluster = _hosts_for_cluster_id_target(target, hosts, hosts_file, cluster_name, config, sctx=sctx)
             result = api.stop(
                 cluster_id=cluster_id,
                 hosts=tuple(host_list) if host_list else None,
-                cluster=cluster_name,
+                cluster=effective_cluster,
                 cache_dir=str(config.cache_dir),
                 sctx=sctx,
             )
@@ -95,12 +95,15 @@ def stop(ctx, target, hosts, hosts_file, cluster_name, stop_all, tp_override, po
             # are honoured (the CLI patches ``discover_cwd_recipes`` for
             # tests; api.stop's resolver doesn't see those overrides).
             recipe, _path, _reg = _load_recipe(config, target)
-            host_list, _ = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config)
+            # The *effective* cluster, not the raw --cluster flag: hosts may
+            # have come from the default cluster, whose SSH user and executor
+            # pin a bare host list would drop (see ``HostContext``).
+            hctx = resolve_host_context(hosts, hosts_file, cluster_name, config, sctx=sctx)
             result = api.stop(
                 recipe=recipe,
-                hosts=tuple(host_list),
+                hosts=tuple(hctx.host_list),
                 overrides=overrides,
-                cluster=cluster_name,
+                cluster=hctx.cluster_name,
                 cache_dir=str(config.cache_dir),
                 sctx=sctx,
             )
@@ -123,17 +126,30 @@ def stop(ctx, target, hosts, hosts_file, cluster_name, stop_all, tp_override, po
     # containers may still be running.  Same contract as ``--all``.
     for line in result.errors:
         click.echo("Error: %s" % line, err=True)
-    click.echo("Workload stopped on %d host(s)." % len(result.hosts_targeted))
     if not result.success:
+        # Never claim a stop that didn't happen.  The exit code has said so
+        # since 0.3.0, but a trailing "Workload stopped on N host(s)." said
+        # the opposite to every human and every log — and on a Spark the
+        # workload it left behind still holds most of unified memory, so the
+        # next launch fails for reasons that look unrelated (issue #277).
+        scope = ", ".join(result.hosts_failed) if result.hosts_failed else "one or more of %s" % ", ".join(result.hosts_targeted)
+        click.echo(
+            "Workload NOT fully stopped: teardown did not confirm on %s\n"
+            "  Containers may still be running and holding VRAM — check with 'sparkrun status' or 'docker ps'." % scope,
+            err=True,
+        )
         sys.exit(1)
+    click.echo("Workload stopped on %d host(s)." % len(result.hosts_targeted))
 
 
-def _hosts_for_cluster_id_target(target, hosts, hosts_file, cluster_name, config) -> list[str]:
-    """Resolve the host list for a cluster_id target.
+def _hosts_for_cluster_id_target(target, hosts, hosts_file, cluster_name, config, sctx=None) -> tuple[list[str], str | None]:
+    """Resolve the hosts *and effective cluster* for a cluster_id target.
 
     Mirrors the priority chain used by ``api.stop`` so we can pass an
     explicit host list when CLI flags supply one (overriding any
-    metadata-recorded hosts).
+    metadata-recorded hosts).  See
+    :func:`resolve_hosts_with_metadata_fallback` for why the cluster comes
+    back as ``None`` on the metadata path.
     """
     from sparkrun.orchestration.job_metadata import load_job_metadata
 
@@ -146,6 +162,7 @@ def _hosts_for_cluster_id_target(target, hosts, hosts_file, cluster_name, config
         config,
         meta,
         target,
+        sctx=sctx,
     )
 
 
@@ -159,14 +176,19 @@ def _stop_all(hosts, hosts_file, cluster_name, config, dry_run, sctx=None):
     """
     from sparkrun.orchestration.primitives import build_ssh_kwargs
 
-    host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, sctx=sctx)
+    hctx = resolve_host_context(hosts, hosts_file, cluster_name, config, sctx=sctx)
+    host_list = hctx.host_list
 
     ssh_kwargs = build_ssh_kwargs(config)
 
+    # Name the target before tearing anything down on it.
+    click.echo(hctx.describe())
     click.echo("Discovering sparkrun containers on %d host(s)..." % len(host_list))
     # Status flows from the single source, ``api.status_report`` (cluster-aware
-    # resolution + cross-executor merge + display classification).
-    discovered = api.status_report(host_list, cluster=cluster_name or None, ssh_kwargs=ssh_kwargs, sctx=sctx)
+    # resolution + cross-executor merge + display classification).  The
+    # *effective* cluster is forwarded (see ``HostContext``): teardown reaches
+    # the right substrate only if discovery ran against the right one.
+    discovered = api.status_report(host_list, cluster=hctx.cluster_name, ssh_kwargs=ssh_kwargs, sctx=sctx)
 
     # A host that errored during discovery may still be running containers —
     # it must not silently read as "nothing to stop".
@@ -192,7 +214,7 @@ def _stop_all(hosts, hosts_file, cluster_name, config, dry_run, sctx=None):
     click.echo("Stopping all containers...")
     result = api.stop_all(
         host_list,
-        cluster=cluster_name or None,
+        cluster=hctx.cluster_name,
         cache_dir=str(config.cache_dir),
         ssh_kwargs=ssh_kwargs,
         dry_run=dry_run,
@@ -267,7 +289,7 @@ def logs_cmd(
     # discovery).  Host resolution stays here because the cluster_id form can
     # fall back to the hosts recorded in job metadata.
     if cluster_id_arg is not None:
-        host_list = resolve_hosts_with_metadata_fallback(
+        host_list, effective_cluster = resolve_hosts_with_metadata_fallback(
             hosts,
             hosts_file,
             cluster_name,
@@ -276,15 +298,24 @@ def logs_cmd(
             target,
             sctx=sctx,
         )
-        _render_logs(sctx, cluster_id=cluster_id_arg, hosts=host_list, scope=scope, lines=lines, follow=follow)
+        _render_logs(sctx, cluster_id=cluster_id_arg, hosts=host_list, cluster=effective_cluster, scope=scope, lines=lines, follow=follow)
         return
 
     # Recipe target — resolve through the CLI's loader so cwd-discovered
     # recipes and registry disambiguation behave as they do for ``run``, then
     # let api.logs find the live workload by intent.
     recipe, _path, _reg = _load_recipe(sctx.config, target)
-    host_list, _ = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, sctx.config, sctx=sctx)
-    _render_logs(sctx, recipe=recipe, hosts=host_list, overrides=overrides, scope=scope, lines=lines, follow=follow)
+    hctx = resolve_host_context(hosts, hosts_file, cluster_name, sctx.config, sctx=sctx)
+    _render_logs(
+        sctx,
+        recipe=recipe,
+        hosts=hctx.host_list,
+        cluster=hctx.cluster_name,
+        overrides=overrides,
+        scope=scope,
+        lines=lines,
+        follow=follow,
+    )
 
 
 def _load_job_metadata(sctx, cluster_id):
@@ -293,7 +324,7 @@ def _load_job_metadata(sctx, cluster_id):
     return load_job_metadata(cluster_id, cache_dir=str(sctx.config.cache_dir))
 
 
-def _render_logs(sctx, *, cluster_id=None, recipe=None, hosts, overrides=None, scope, lines, follow):
+def _render_logs(sctx, *, cluster_id=None, recipe=None, hosts, cluster=None, overrides=None, scope, lines, follow):
     """Render the ``api.logs`` iterator — the CLI's whole job for logs.
 
     Lines are prefixed with their source's ``host/role`` only when more than
@@ -305,6 +336,7 @@ def _render_logs(sctx, *, cluster_id=None, recipe=None, hosts, overrides=None, s
             cluster_id,
             recipe=recipe,
             hosts=tuple(hosts),
+            cluster=cluster,
             overrides=overrides,
             scope=scope,
             tail=lines,

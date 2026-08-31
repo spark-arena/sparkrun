@@ -18,7 +18,7 @@ from sparkrun.cli._setup._check import (
     evaluate_host,
 )
 from sparkrun.core.cluster_manager import ClusterManager
-from sparkrun.orchestration.networking import CX7HostDetection, CX7Interface
+from sparkrun.orchestration.networking import CX7HostDetection, CX7Interface, CX7Persistence
 from sparkrun.orchestration.ssh import RemoteResult
 
 
@@ -75,7 +75,16 @@ def _state(facts: dict[str, str], cx7=None, host: str = "10.0.0.1") -> HostState
     return HostState(host=host, facts=facts, cx7=cx7)
 
 
-def _cx7_detection(*, states: list[str], ips: list[str], netplan: bool = True) -> CX7HostDetection:
+def _cx7_detection(
+    *,
+    states: list[str],
+    ips: list[str],
+    netplan: bool = True,
+    persistence: CX7Persistence = CX7Persistence.PERSISTENT,
+    source: str = "netplan",
+    detail: str = "",
+    dhcp: bool = False,
+) -> CX7HostDetection:
     """Build a CX7HostDetection with one interface per (state, ip) pair."""
     ifaces = [
         CX7Interface(
@@ -86,6 +95,10 @@ def _cx7_detection(*, states: list[str], ips: list[str], netplan: bool = True) -
             mtu=9000,
             state=st,
             hca="mlx5_%d" % idx,
+            persistence=persistence,
+            persistence_source=source if persistence is CX7Persistence.PERSISTENT else "",
+            persistence_detail=detail,
+            dhcp=dhcp,
         )
         for idx, (st, ip) in enumerate(zip(states, ips))
     ]
@@ -171,13 +184,48 @@ def test_evaluate_cx7_warns_when_interface_down():
     assert "not ready" in cx7_item.detail
 
 
-def test_evaluate_cx7_warns_when_up_but_no_netplan():
-    # Up with IPs but no persistent config → won't survive reboot.
-    cx7 = _cx7_detection(states=["up"], ips=["192.168.10.1"], netplan=False)
+def test_evaluate_cx7_warns_when_nothing_persists_the_address():
+    # Up with IPs but no config source declares them → won't survive reboot.
+    cx7 = _cx7_detection(states=["up"], ips=["192.168.10.1"], netplan=False, persistence=CX7Persistence.EPHEMERAL)
     items = evaluate_host(_state(_FACTS_ALL_GOOD, cx7=cx7), CheckContext("mylab", True))
     cx7_item = next(i for i in items if i.key == "cx7")
     assert cx7_item.status == WARN
-    assert "netplan" in cx7_item.detail
+    assert "won't survive reboot" in cx7_item.detail
+
+
+def test_evaluate_cx7_ok_when_persisted_outside_sparkrun_netplan():
+    # The regression this check existed to cause: a cluster configured by hand
+    # (nmcli, a differently-numbered netplan file, a .network unit) has no
+    # 40-cx7.yaml, and was reported as "won't survive reboot" every time.
+    cx7 = _cx7_detection(
+        states=["up", "up"],
+        ips=["192.168.10.1", "192.168.11.1"],
+        netplan=False,
+        source="networkmanager",
+        detail="cx7-a",
+    )
+    items = evaluate_host(_state(_FACTS_ALL_GOOD, cx7=cx7), CheckContext("mylab", True))
+    cx7_item = next(i for i in items if i.key == "cx7")
+    assert cx7_item.status == OK
+    assert "networkmanager (cx7-a)" in cx7_item.detail
+
+
+def test_evaluate_cx7_unverifiable_persistence_is_visible_but_not_a_warning():
+    # No probe available on the host: "couldn't tell" must not read as "gone".
+    cx7 = _cx7_detection(states=["up"], ips=["192.168.10.1"], netplan=False, persistence=CX7Persistence.UNKNOWN)
+    items = evaluate_host(_state(_FACTS_ALL_GOOD, cx7=cx7), CheckContext("mylab", True))
+    cx7_item = next(i for i in items if i.key == "cx7")
+    assert cx7_item.status == OK
+    assert "could not verify persistence" in cx7_item.detail
+
+
+def test_evaluate_cx7_warns_on_dhcp_leased_fabric_address():
+    # Persistent, but not pinned — NCCL peer addressing needs stable IPs.
+    cx7 = _cx7_detection(states=["up"], ips=["192.168.10.1"], dhcp=True)
+    items = evaluate_host(_state(_FACTS_ALL_GOOD, cx7=cx7), CheckContext("mylab", True))
+    cx7_item = next(i for i in items if i.key == "cx7")
+    assert cx7_item.status == WARN
+    assert "DHCP" in cx7_item.detail
 
 
 def test_evaluate_cx7_skips_without_hardware():

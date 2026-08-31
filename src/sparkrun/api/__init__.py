@@ -63,11 +63,20 @@ from sparkrun.core.context import SparkrunContext
 from sparkrun.api._intent import IntentMatch, find_running_intent
 from sparkrun.api._jobs import list_jobs
 from sparkrun.api._logs import logs
+from sparkrun.api._materialize import materialize
 from sparkrun.api._models import (
     JobInfo,
     LogLine,
     LogSource,
     RecipeSummary,
+    ResolvedAdapterTopology,
+    ResolvedExecutionGraph,
+    ResolvedLaunchSpec,
+    ResolvedLaunchUnit,
+    ResolvedMount,
+    ResolvedProcessGroup,
+    ResolvedServiceDomain,
+    ResolvedWorker,
     RunOptions,
     RunPlan,
     RunResult,
@@ -81,6 +90,7 @@ from sparkrun.api._status import status, status_report
 from sparkrun.api._stop import stop
 from sparkrun.api._stop_all import stop_all
 from sparkrun.api._telemetry import LiveMonitorSession, live_monitor, open_live_monitor, open_telemetry
+from sparkrun.core.validation import RecipeIssue, validate_recipe
 
 __all__ = [
     # Subpackages
@@ -102,6 +112,14 @@ __all__ = [
     "JobInfo",
     "IntentMatch",
     "RecipeSummary",
+    "ResolvedLaunchSpec",
+    "ResolvedLaunchUnit",
+    "ResolvedMount",
+    "ResolvedWorker",
+    "ResolvedProcessGroup",
+    "ResolvedServiceDomain",
+    "ResolvedAdapterTopology",
+    "ResolvedExecutionGraph",
     # Benchmark data models
     "BenchmarkOptions",
     "BenchmarkResult",
@@ -125,6 +143,7 @@ __all__ = [
     "FrameworkCategoryMismatch",
     # Functions
     "plan",
+    "materialize",
     "run",
     "stop",
     "stop_all",
@@ -140,6 +159,8 @@ __all__ = [
     "find_running_intent",
     "search_recipes",
     "resolve_recipe_filter",
+    "validate_recipe",
+    "RecipeIssue",
     "benchmark",
     "resume_benchmark",
 ]

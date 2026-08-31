@@ -57,7 +57,7 @@ def test_vllm_generate_command_from_template():
     runtime = VllmRayRuntime()
 
     cmd = runtime.generate_command(recipe, {}, is_cluster=False)
-    assert cmd == "vllm serve meta-llama/Llama-2-7b-hf --port 8000"
+    assert cmd == ("vllm serve meta-llama/Llama-2-7b-hf --port 8000 --served-model-name meta-llama/Llama-2-7b-hf")
 
 
 def test_vllm_generate_command_structured():
@@ -143,7 +143,7 @@ def test_vllm_validate_recipe_no_model():
 
     issues = runtime.validate_recipe(recipe)
     assert len(issues) == 1
-    assert "model is required" in issues[0]
+    assert "model is required" in str(issues[0])
 
 
 def test_vllm_cluster_env():

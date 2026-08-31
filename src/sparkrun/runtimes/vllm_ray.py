@@ -36,10 +36,14 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
         issues = super().validate_recipe(recipe)
         dp = recipe.defaults.get("data_parallel")
         if dp is not None and int(dp) > 1:
+            # Declared as an error: the Ray backend cannot serve this, so the
+            # launch would spend image + model distribution to fail at startup.
             issues.append(
-                "[vllm-ray] data_parallel > 1 is not yet supported with the Ray backend; "
-                "switch to the vllm-distributed runtime (unset distributed_executor_backend=ray) "
-                "or set data_parallel=1."
+                self.recipe_error(
+                    "data_parallel > 1 is not yet supported with the Ray backend; "
+                    "switch to the vllm-distributed runtime (unset distributed_executor_backend=ray) "
+                    "or set data_parallel=1."
+                )
             )
         return issues
 
@@ -53,9 +57,9 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
         overrides: dict[str, Any] | None = None,
     ) -> None:
         """Detect and add a draft model to distribution config if needed"""
-        draft_model = self.detect_spec_config_draft_model(recipe)
+        draft_model, draft_revision = self.detect_spec_config_draft(recipe)
         if draft_model:
-            recipe.distribution_config.add_model(draft_model)
+            recipe.distribution_config.add_model(draft_model, revision=draft_revision)
 
     def generate_command(
         self,
@@ -78,10 +82,10 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
             # Ensure --distributed-executor-backend ray is present for cluster mode
             if is_cluster and "--distributed-executor-backend" not in rendered:
                 rendered = rendered.rstrip() + " --distributed-executor-backend ray"
-            rendered = self._augment_served_model_name(
+            rendered = self._augment_vllm_served_model_name(
                 rendered,
+                recipe,
                 config,
-                "--served-model-name",
                 skip_keys,
             )
             if skip_keys:

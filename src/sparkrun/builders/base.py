@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from logging import Logger
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Mapping
 
 from scitrera_app_framework import Plugin, Variables
 
@@ -13,11 +13,19 @@ from sparkrun.utils.shell import quote
 if TYPE_CHECKING:
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.core.recipe import Recipe
+    from sparkrun.core.validation import RecipeIssue
 
 EXT_BUILDER = "sparkrun.builder"
 
 # Fully qualified image prefixes that indicate a pullable registry image
 # (no build needed even if the image isn't present locally).
+#
+# DEPRECATED as a decision procedure -- kept only because it is importable API.
+# Prefer :func:`sparkrun.utils.images.is_pullable_image_ref`, which implements
+# Docker's actual reference grammar.  Matching on host prefixes alone rejects
+# the canonical short form of every Docker Hub image (``vllm/vllm-openai:tag``
+# carries no host), which the eugr builder then treated as a local image that
+# had gone missing and silently replaced with its own nightly.
 PULLABLE_REGISTRY_PREFIXES = (
     "docker.io/",
     "ghcr.io/",
@@ -94,6 +102,17 @@ class BuilderPlugin(Plugin):
     #: :class:`~sparkrun.transports.base.Transport`.
     required_feature_flag: ClassVar[str | None] = None
 
+    #: Whether :meth:`prepare` rewrites the image reference it is handed.
+    #:
+    #: ``prepare()`` is single-valued, so a recipe declaring per-machine images
+    #: (``containers:``) cannot be served by a builder that transforms one — and
+    #: calling it once per image is not an option when a build is minutes long.
+    #: The launcher fails fast on that combination.  An *environment* builder
+    #: (``uv-venv``) returns the ref untouched and sets this ``False``, so it
+    #: composes with per-machine images freely.  Precedent:
+    #: :attr:`~sparkrun.orchestration.executors._base.Executor.needs_image`.
+    transforms_image: ClassVar[bool] = True
+
     def name(self) -> str:
         return "sparkrun.builder.%s" % self.builder_name
 
@@ -131,6 +150,7 @@ class BuilderPlugin(Plugin):
         dry_run: bool = False,
         transfer_mode: str = "local",
         ssh_kwargs: dict | None = None,
+        builder_context: Mapping[str, Any] | None = None,
     ) -> str:
         """Prepare the execution environment. Returns the final image name.
 
@@ -257,9 +277,32 @@ class BuilderPlugin(Plugin):
         """
         return container_image, False
 
-    def validate_recipe(self, recipe: Recipe) -> list[str]:
-        """Validate builder-specific recipe fields."""
+    def validate_recipe(self, recipe: Recipe) -> list["str | RecipeIssue"]:
+        """Return builder-specific findings for *recipe*.
+
+        Same two return forms as
+        :meth:`~sparkrun.runtimes.base.RuntimePlugin.validate_recipe`: a plain
+        ``str`` leaves severity undeclared and is reported as a *suggestion*
+        (never fatal by default, not shown at launch), a
+        :class:`~sparkrun.core.validation.RecipeIssue` declares it.  Use
+        :meth:`recipe_error` for a recipe this builder cannot build — that
+        aborts the launch rather than letting ``prepare()`` fail after image
+        and model distribution have already run — and :meth:`recipe_warning`
+        for one that builds but not reproducibly elsewhere.
+        """
         return []
+
+    def recipe_error(self, message: str, code: str = "builder-field") -> "RecipeIssue":
+        """Build a launch-blocking :class:`RecipeIssue` tagged with this builder."""
+        from sparkrun.core.validation import ERROR, RecipeIssue
+
+        return RecipeIssue(ERROR, code, "[%s] %s" % (self.builder_name, message))
+
+    def recipe_warning(self, message: str, code: str = "builder-field") -> "RecipeIssue":
+        """Build a portability-class :class:`RecipeIssue` tagged with this builder."""
+        from sparkrun.core.validation import WARNING, RecipeIssue
+
+        return RecipeIssue(WARNING, code, "[%s] %s" % (self.builder_name, message))
 
     def __repr__(self) -> str:
         return "%s(builder_name=%r)" % (self.__class__.__name__, self.builder_name)

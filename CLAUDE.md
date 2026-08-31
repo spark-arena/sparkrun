@@ -62,7 +62,7 @@ src/sparkrun/
 ├── tuning/             # Triton fused MoE kernel tuning for SGLang and vLLM
 ├── builders/           # Image + environment builder plugins (docker-pull, eugr, uv-venv)
 ├── diagnostics/        # Host and run diagnostic collection (NDJSON output)
-├── plugins/            # In-tree cross-cutting integrations
+├── plugins/            # In-tree cross-cutting integrations (see docs/PLUGINS.md)
 ├── proxy/              # Inference gateway (LiteLLM engine + gateway selection seam)
 ├── benchmarking/       # Benchmark framework plugins and result export (llama-benchy)
 ├── utils/              # Shared helpers (coerce_value, suppress_noisy_loggers, etc.)
@@ -90,6 +90,10 @@ Core domain logic extracted from the top-level package. All imports use `sparkru
 | `backend_select.py`     | `select_backends(HostHardware) -> BackendBundle`, `NoMatchingBackendError`           |
 | `placement.py`          | `compute_placement()` — rank → (host, local-GPU) honoring `RecipeLayout`             |
 | `layout.py`             | `RecipeLayout` / `Placement` dataclasses parsed from recipe `layout:` block          |
+| `images.py`             | `ImagePlan` / `resolve_image_plan()` — per-machine `containers:` resolution           |
+| `image_preparation.py`  | `prepare_images()` / `stage_prepared_images()` — builder + image plan as one step     |
+| `recipe_items.py`       | `register_recipe_item()` — plugin-owned top-level recipe keys                        |
+| `execution.py`          | `RecipeExecutionStrategy`, `PreparationStep` DAG, `LaunchAssetPolicy`                |
 | `launcher.py`           | `launch_inference()`, `resolve_per_host_backends()`, `resolve_recipe_trust()`        |
 
 ### CLI Architecture (`cli/`)
@@ -207,6 +211,16 @@ One consequence worth knowing: `PluggableGroup` attaches plugin commands once
 per process, so the gate is effectively read once per CLI invocation (the test
 suite resets `_cli_ext_loaded`).
 
+**What a cross-cutting plugin gets.** `sparkrun.plugins` re-exports the two
+registration entry points — `register_recipe_item` (own a top-level recipe key,
+optionally with an execution strategy and preparation steps) and
+`register_cli_command`. Together with `Transport.open_host_session`,
+`api.materialize` and `SparkrunConfig.plugin_settings`, those are the seams that
+let an integration participate in a launch without forking it. See
+`docs/PLUGINS.md` for the author-facing version, and the Plugin-Owned Recipe
+Items / Recipe Execution Strategies / Launch Materialization sections below for
+the rationale.
+
 **Layering trap.** `init_sparkrun` runs on the console-free `sparkrun.api` path,
 and plugin scanning imports *every* submodule of a plugin package. So the CLI
 registry lives in `core/cli_registry.py` (Click-free; `cli/ext.py` re-exports it
@@ -274,6 +288,43 @@ recipe → `runtime.default_executor()` → per-executor adjustments →
 `SparkrunConfig` → per-executor defaults → dataclass field defaults). The
 previously-hardcoded `_KNOWN_EXECUTORS` set has been retired; selector
 validation queries SAF via `get_extensions(EXT_EXECUTOR)`.
+
+**Unmapped-key reporting** (`RuntimePlugin.known_config_keys` +
+`launcher.py:report_unmapped_config_keys`): a structured runtime builds its
+serve command by iterating a flag map, so a `defaults:` key — or a
+`-o key=value` — the map doesn't list is **dropped**: no error, no warning,
+nothing in the rendered command, and the engine quietly uses its own default.
+That is how an `@atlas` recipe's `lm_head_dtype: bf16` correctness pin served
+weeks of traffic at NVFP4 (#276), and the same gap as `--disable-tool-grammar`
+in #221.
+
+A runtime declares the keys it understands — its flag map **plus what it
+consumes outside it** (`prepare()`, parallelism, builder, executor); a key
+handled elsewhere reported as dropped is noise that trains people to ignore
+the report. `BASE_CONSUMED_CONFIG_KEYS` (`runtimes/base.py`) covers what the
+shared layers read for every runtime. `None` — the base default — means "not
+declared" and disables the check, which is what `eugr-vllm` returns: it
+inherits vLLM's map but routes v1 `defaults` through eugr's `build_args` /
+`mods`, so the inherited answer would be wrong.
+
+Three things are deliberately *not* reported, and each was load-bearing in
+getting the false-positive rate to zero across all 292 cached registry
+recipes: keys referenced as a `{placeholder}` in `command:` **or in another
+default's value** (`render_template` iterates, so one default may exist only
+to feed another), `_`-prefixed keys sparkrun injects mid-launch, and dotted
+keys routed by prefix (`-o env.KEY=VALUE`). It warns rather than raises
+because registries version independently of sparkrun — an unknown key is
+routinely a *newer* recipe, and hard-failing would strand a user between two
+published artifacts. It runs from `launch_inference` after the platform
+default tier (so a platform contributing an unmapped flag is caught too) and
+before anything starts, so `--dry-run` reports it.
+
+The atlas flag map is now exhaustive against Atlas's own machine-readable
+`vendor/serve-options.v1.json`, which also distinguishes the two boolean
+shapes: presence-only (`_ATLAS_BOOL_FLAGS`, bare flag) versus `Option<bool>`
+(`_ATLAS_VALUE_BOOL_FLAGS`, explicit lowercase `true`/`false`, where *absent*
+defers to MODEL.toml but `false` overrides it — so dropping the flag for a
+falsy value hands the decision back to the engine).
 
 **Trust gating** (`launcher.py:resolve_recipe_trust`): each launch resolves a
 single trust verdict shared by `pre_exec` (inside `runtime.run()`) and
@@ -381,6 +432,80 @@ All remote operations use **SSH stdin piping** — scripts are generated as Pyth
 - **`collectives/`** — `CollectiveBackend` ABC + implementations: `nccl.py` (default; wraps `infiniband.py`), `rccl.py` (AMD scaffold), `hccl.py` (Intel Gaudi scaffold). `get_backend(vendor)` is the lookup.
 - **`hooks.py`** — `pre_exec` / `post_exec` / `post_commands` runners. Trust gating via `_confirm_hook_execution(trust=...)`.
 
+**Management-interface detection** (`scripts/_mgmt_iface.sh`): every host probe
+needs to know which NIC is the *management* interface — it becomes
+`DETECTED_SOCKET_IFNAME` and from there `GLOO_SOCKET_IFNAME` /
+`TP_SOCKET_IFNAME` / `MN_IF_NAME`, the head of `NCCL_SOCKET_IFNAME`, and
+`NODE_IP`. Seven probes each answered it with `ip route get 8.8.8.8 || echo
+"eth0"`, which on an air-gapped Spark (no default route, by design in `push`
+mode) emitted an interface that does not exist on the hardware and killed the
+launch at gloo init (issue #275).
+
+They now share one helper with a four-step chain — operator pin
+(`SPARKRUN_MGMT_IFACE`) → default route → the interface holding the local end
+of our own `SSH_CONNECTION` → first physical NIC that is up with a global IPv4
+— and **print nothing when none of them resolves**. Empty is the load-bearing
+part: `generate_nccl_env` already falls back to `DETECTED_NET_LIST` (the
+fabric adapters, which exist), whereas a guessed name is unrecoverable. Every
+candidate is checked against sysfs first, so a pin naming an absent device
+warns and falls through rather than being passed along.
+
+Two details are easy to break. The `<sysfs>/<if>/device` test is what
+separates real NICs from `docker0` / `br-*` / `veth*` / `tailscale0` (several
+hold a global IPv4 and sort *ahead* of the mgmt NIC), and `device/infiniband`
+is what stops the scan claiming a CX7 port as "management" — pinning the
+fabric is a deliberate act (`pin_comm_env_to_ib`), never a fallback. The
+helper is also written **brace-free, including its comments**: `ray_head.sh` /
+`ray_worker.sh` / the combined probe run it through `str.format()`, so one
+brace raises `KeyError` inside a Ray launch. `tests/test_mgmt_iface.py` runs
+the helper under real bash against a fixture sysfs tree and guards both.
+
+Scripts compose via a `# sparkrun:include <file>` directive resolved in
+`scripts/read_script` (`load_script_resource` is the *raw* loader and does not
+expand it); `scripts.inject_shell_vars` passes config into a script piped to
+`bash -s`, which takes no arguments. An included helper must not default a
+var `inject_shell_vars` sets — it is included partway down and would clobber
+the injected value. `ClusterDefinition.mgmt_interface` is the persistent
+override, threaded through `detect_ib_for_hosts` / `distribute_from_config` /
+solo `_run_solo`.
+
+**Address-persistence attribution** (`scripts/_net_persist.sh`): "will this CX7
+address survive a reboot?" was answered by testing for
+`/etc/netplan/40-cx7.yaml`, which actually answers "did *sparkrun* write it?".
+Those are different questions, and `setup check` reported every host
+configured another way as a defect — pointing at a `sparkrun setup cx7` that
+then correctly did nothing, because `plan_cluster_cx7` already reads the live
+IPs and returns `"already configured"`. On Ubuntu 24.04 / DGX OS 7 the false
+positive is the *common* case: netplan renders through NetworkManager, and
+`nmcli con add` writes its own `90-NM-<uuid>.yaml`.
+
+The helper attributes the live address to whatever owns it, first hit wins:
+`netplan status --format=json` (an interface netplan owns carries an `id`;
+this is netplan's *merged* view, so any filename counts) → the active
+NetworkManager profile (`autoconnect` + `ipv4.method` + a matching
+`ipv4.addresses`) → `networkctl`'s `Network File:` → `/etc/network/interfaces`.
+Every probe is read-only and works unprivileged — deliberately, since `netplan
+get` does not (the files are mode 600) and detection runs as the SSH user.
+
+`CX7Persistence` is tri-state and that is the load-bearing part: **`UNKNOWN`
+(no probe available) must never render as "won't survive reboot"** — the rule
+`TerminationInfo.exists=None` follows. A failing `nmcli` counts as *unprobed*
+rather than as "NM says no", so a half-interrogated host degrades to `UNKNOWN`
+rather than to `EPHEMERAL`. `EPHEMERAL` is only claimed when a probe actually
+answered and nothing owned the address. `CX7HostDetection.netplan_exists`
+survives, but now means only "sparkrun's own file is present", which is what
+the *uninstall* path needs.
+
+Two consequences beyond the check. `plan_cluster_cx7` / `plan_ring_cx7` warn
+(never refuse) when they would reconfigure a device a non-netplan source
+persists — writing `CX7_NETPLAN_FILE` there leaves two owners, and which wins
+is a property of the host's renderer. And `cx7_unconfigure.sh` reports
+`FOREIGN:` for interfaces it cannot release instead of printing `SKIPPED` and
+letting `setup uninstall` claim a teardown it did not perform; `_teardown_cx7`
+renders those as `[WARN]`. `CX7_NETPLAN_FILE` is the one Python spelling of
+the path, drift-guarded against the two bash scripts by a test (they include
+brace-using helpers, so they cannot take it as a `.format()` placeholder).
+
 **Session guard** (`ssh.py:wrap_with_session_guard` + `scripts/session_guard.sh`):
 remote payloads run via `ssh <host> bash -s`, i.e. **without a PTY**, so on
 disconnect sshd's session process exits without signalling its child (the
@@ -408,6 +533,186 @@ from the `main` group callback: SIGTERM/SIGHUP raise `KeyboardInterrupt`, so
 every `KeyboardInterrupt` state-preservation path already in the codebase runs).
 `SIGKILL` remains unreachable — it leaves the ssh client alive, the session
 healthy, and the guard correctly dormant.
+
+### Launch Timing (`core/timing.py`)
+
+Launch-stage timings are collected as a **span timeline**, not a
+`{stage: seconds}` mapping: phases nest (phase 5 → runtime steps), fan-out
+spans repeat their name (one per host / distribution entry) so names are not
+keys, and consumers want the tree — a flattened summary is derivable from it,
+not the reverse.
+
+Almost no new call sites were needed, because the elapsed times were already
+being computed and thrown away. `LaunchProgress.phase()` / `step()` timed
+every bracket only to log `done (%.1fs)`; they now also record spans when a
+`Timeline` is attached. `PHASE_SLUGS` gives the phases stable span names
+(`launch.distribute`) deliberately *not* derived from `PHASE_LABELS` —
+rewording a display string must not rename a metric already in published
+artifacts. Step spans slugify the runtime's label and keep the raw label in
+`attrs`.
+
+| Piece | Role |
+|-------|------|
+| `Timeline.begin/end` | explicit brackets, for begin/end that aren't lexically paired |
+| `Timeline.span` / `timing.timed` | context managers; `timed` tolerates `timeline=None` |
+| `LaunchResult.timeline` / `RunResult.timeline` | the live collector, not a snapshot |
+| `SparkrunContext.timing` | caller-owned timeline, widening the window past one launch |
+| `format_launch_timings` | the `run` timing tree (on by default; `--no-timings`) |
+| `launcher.ReadinessWatcher` | the readiness poll, run alongside `run`'s log stream |
+
+`None` means "not collecting" everywhere and is byte-identical to the
+behaviour before the module existed — the convention `progress` and
+`backends` already use.
+
+Five things are load-bearing:
+
+- **Closing a span closes its open children, carrying its status.** Runtimes
+  call `step()` and never `step_done()`, so the phase boundary is what ends
+  the last step; and if the phase failed, the step that was running is *where*
+  it failed — reporting it `ok` points the reader at the wrong stage.
+- **Phases parent to an explicit root**, not to the timeline's open-span
+  stack. A phase skipped while the previous one is still open would otherwise
+  nest inside its predecessor — invisible at the call site, wrong in every
+  consumer.
+- **`skipped` is not a zero-duration success.** "Distribution found the image
+  already resident" and "distribution never ran" are different data points in
+  a benchmark artifact.
+- **`export()` reports unclosed spans as `open` without closing them.** A
+  launch that raised is when the breakdown is worth most, and the open spans
+  are exactly the path to the failure. But `LaunchResult` is never built on
+  that path, so **a caller that wants the timeline on failure must own it** —
+  set `sctx.timing` (what `run` / `--collect-diagnostics` do) rather than
+  letting `launch_inference` create one internally.
+- **Clocks are never mixed in a derived figure.** A measured span is on the
+  control node's `time.monotonic()` (`CLOCK_CONTROL`), which is what makes
+  durations subtractable. Spans recovered from a remote engine's own log
+  timestamps (`remote_clock(host)`) are a *different* clock, and with NTP
+  skew "container start → weights loaded" across the two comes out negative.
+  Two things enforce the rule rather than leaving it to discipline:
+  `Timeline.add_span` — the only way in for a foreign clock — **rejects
+  `CLOCK_CONTROL`** (a control-clock span must be *measured*, never asserted,
+  or a parsed duration lands in the set that gets summed), and
+  `Timeline.total` filters by clock and defaults to the control one. A
+  foreign span's `t_start` is a placement estimate derived through our
+  origin, so it keeps its unconverted `wall_start`; `export()` adds a
+  `clocks` key **only** when mixed, so a consumer that never sees it is
+  reading a single-clock timeline and may sum freely, and
+  `format_launch_timings` annotates foreign rows `[remote:h1]` so the tree
+  does not read as one arithmetic whole. Nothing produces a foreign-clock
+  span yet — this is the seam a log probe plugs into.
+
+**Time to first inference** is `serve.port_open` + `serve.health_ok`, recorded
+by `wait_for_serve_ready`. Note which stage is the long pole: sglang and vLLM
+V1 start their HTTP server **after** engine init, weight load *and*
+CUDA-graph capture have all finished, so `serve.port_open` absorbs nearly the
+whole startup and `serve.health_ok` is seconds. The original budgets assumed
+the opposite (port `120×2s`, health `120×5s`) and a 30B NVFP4 spec-decode
+model on 2 Sparks — 775s to bind, 570s of it capturing target-verify graphs —
+was reported as an endpoint that never came up.
+
+Two things follow, and both are in `DEFAULT_PORT_READY_TIMEOUT_S`'s docstring:
+
+- **Budgets are wall-clock, not retry counts.** A retry count is a poor proxy
+  for time because every attempt also pays a probe: `120 × 2s` bought 240s of
+  *sleeping* but ran 321s, and the "%ds elapsed" progress line understated it
+  by the same third. `wait_for_port` / `wait_for_healthy` take `timeout_s`
+  (superseding `max_retries`, which stays for the callers that predate it);
+  `math.inf` polls until cancelled. Overridable via `readiness.port_timeout_s`
+  / `readiness.health_timeout_s`, where `0` means unbounded.
+- **A generous budget is safe, because the budget is not what detects
+  failure.** `wait_for_port` re-checks container liveness on every attempt and
+  `wait_for_healthy` gives up after `max_consecutive_refused`, so a workload
+  that actually died is caught within one interval either way. The budget's
+  only job is to bound a *hang* — which is why the background watcher on `run`
+  uses `math.inf` (it is cancelled by the log stream ending, so a fixed budget
+  there could only ever expire early and mislabel a slow engine).
+
+`benchmark` used to reimplement that two-stage wait inline
+with its own retry budgets, which would have made the figure incomparable
+between `run` and `benchmark`; both now go through
+`launcher.wait_for_endpoint_ready` (the field-based form — the `--ensure`
+already-running path has no `LaunchResult` but still has to wait). That
+unification also fixed a live bug: the wait reconstructed the head container
+name as `<id>_node_0`, but Ray runtimes head `<id>_head`, and `wait_for_port`
+reads "that container isn't running" as proof the workload died — so every
+Ray launch reached via `proxy load` or a post-hook recipe aborted one retry
+interval in. It now asks `runtime.get_head_container_name()`, which also
+routes through the resolved executor.
+
+**On `run`, that wait is concurrent with the log stream** (`ReadinessWatcher`).
+`sparkrun run` attaches to the container logs immediately after launching, so
+the two obvious placements are both wrong: waiting *before* attaching blanks
+the screen for the most informative minutes of the launch, and not waiting at
+all is what the original `--timings` did — `wait_for_serve_ready` was reachable
+only from `post_launch_lifecycle`, so for any recipe **without** post hooks the
+tree reported distribution and container start while weight load and graph
+capture scrolled past unrecorded. The watcher polls on a background thread and
+reports through an `on_ready` callback; the CLI skips it when the recipe *has*
+post hooks (that path already waited synchronously and would double-record
+`serve.*`).
+
+Four properties are load-bearing:
+
+- **The live half is one line, the tree is not.** The callback fires on the
+  watcher thread while `docker logs -f` writes to the same terminal, so it
+  emits a single short line in one write. The multi-line table is printed by
+  the CLI's finalize step, after the stream has stopped — which is also the
+  fix for the original cosmetic bug, where the tree was printed and then
+  immediately buried under `--tail 100` plus a live stream.
+- **Cancelled is not failed.** `wait_for_port` / `wait_for_healthy` report
+  cancellation and genuine failure with the same `False`, so
+  `wait_for_endpoint_ready` checks the event before closing the span and
+  returns `reason="cancelled"` with the span left **open** — rendered "did not
+  finish" rather than an `error` claiming the endpoint never came up. Ctrl-C
+  must not write a verdict about the cluster into a benchmark artifact.
+- **A worker-thread span states its parent.** `parent=None` means "inherit
+  from the open-span stack", which is a sequential-control-flow convenience
+  and the wrong default off-thread: `Timeline.end` closes everything open
+  *above* its target, so a main-thread `end()` would close the watcher's span
+  too, stamp it with the main thread's status, and turn the watcher's own
+  `end()` into a silent no-op — defeating the open-span property above *and*
+  the ok/error verdict. `timing.ROOT` is the sentinel that lets a worker say
+  "root" rather than depend on the stack happening to be empty. The same
+  function nests under phase 6 when `post_launch_lifecycle` is the caller,
+  which is why the parent is the caller's to state rather than a constant.
+- **Cancellation reaches into the sleep.** Both waiters take a
+  `cancel: threading.Event` and wait *on it* between polls
+  (`health._interruptible_sleep`). At the readiness defaults the health stage
+  sleeps 5s at a time up to 120 times, so a plain `time.sleep` would leave a
+  cancelled watch polling over SSH for minutes after its caller exited — the
+  same orphaned-work failure the session guard exists to prevent.
+- **`serve.serving` closes the accounting.** A root-level sibling of `run`
+  and the two readiness stages, opened when the endpoint answers and closed
+  when the watch stops. Without it the tree stopped accounting at readiness
+  while the total kept running — a launch watched for two hours rendered
+  ~775s of rows under a 7695s total. It is **measured** (endpoint answered →
+  we stopped watching), not the arithmetic gap between the rows and the
+  total: a derived row would be invisible to `export()`, so the diagnostics
+  record and the tree would disagree, and it would put an unmeasured number
+  in the tree that `Timeline.add_span`'s refusal of `CLOCK_CONTROL` exists to
+  keep out. The post-hook path opens its own (it waited synchronously and has
+  no watcher), so both follow paths account the same.
+- **The watch is observational.** It runs on every launch now, so it never
+  touches the exit code: a model that outlasts the poll budget would otherwise
+  start failing everything scripted around `sparkrun run`. It warns instead,
+  and stays silent for `cancelled`.
+
+**Timings are on by default.** `--no-timings` (hidden) suppresses the *table
+only* — the readiness watch and its "endpoint ready" line still run, because
+"the endpoint is up now" is worth having while logs scroll whether or not you
+want a breakdown afterwards. `--collect-diagnostics` keeps the timeline for its
+own record regardless.
+
+**Sinks**: `run` (tree, on by default), `--collect-diagnostics` (`run_timeline`
+NDJSON record — additive to that collector's own phases, which bracket a
+strictly wider window including host diagnostics and `api.run`'s planning),
+and `BenchmarkResult.generate_metadata()` under `metadata["timing"]` as
+`serve_ready` + the full `launch` span list. That mapping is the Spark Arena
+submission, so the existing `start`/`end`/`duration` keys are untouched. A
+**resumed** run emits neither: its launch numbers came from a launch it did
+not perform, and reporting them beside freshly-measured throughput
+misattributes a stale launch — the same confusion `measured_at` exists to
+prevent for the benchmark numbers themselves (issue #267).
 
 ### Launch Placement (`api.plan` → `api.run`)
 
@@ -497,6 +802,234 @@ scheduler had put on exactly the host set being asked about — under an
   `already_running=True`, `launch_result=None`, describing the *pre-existing*
   deployment. Both go through `find_running_intent`.
 
+### Per-Machine Container Images (`core/images.py`)
+
+A recipe normally names one `container:` and every node runs it. A recipe
+serving **pre-optimized, machine-tuned** builds instead declares `containers:`,
+binding an image to a **hostname**:
+
+```yaml
+container: nvcr.io/nvidia/vllm:25.09      # fallback for unlisted machines
+containers:
+  - {host: spark-01, image: myorg/vllm-spark:node-01}
+  - {host: spark-02, image: myorg/vllm-spark:node-02}
+```
+
+Keyed by hostname, not rank or node index: the image is a property of the
+*machine*, so a rank-indexed map would be silently wrong the moment the
+scheduler ordered hosts differently — and "silently wrong image" is the entire
+failure mode this has to avoid. It is deliberately **not** spelled inside
+`layout:`, whose `placements` every scheduler honors verbatim; putting the
+image there would pin placement as a side effect of naming an image, wrong when
+the tuned images exist on every machine and a `--tp 2` launch should still be
+free to pick the two idlest. A recipe wanting both declares `layout:` as well.
+
+`ImagePlan` keeps **two** maps because they answer different questions:
+
+| Field | What it is | Consumers |
+|-------|------------|-----------|
+| `declared` | sorted `(host, image)` as the recipe wrote it | `generate_intent_id`, `derive_recipe_fingerprint` |
+| `images_by_node` | image per node, aligned with the resolved host list | container launch, distribution derivation |
+
+Hashing the *resolved* map would make the intent placement-dependent, so
+`stop` / `logs` / `--ensure` would stop matching a workload the moment the
+scheduler picked a different host subset. Both digests append their part only
+when a `containers:` block exists, so every recipe predating the feature hashes
+byte-identically (the same rule the fingerprint's `layout=` part could not
+follow, which is why `containers=` sits outside the unconditional attr loop).
+
+Because a wrong image on a tuned machine fails confusingly rather than loudly,
+resolution is strict and every guard fires **before any side effect** — before
+the builder runs, the image is pulled, or the model is synced:
+
+- A `host:` not in the cluster raises; a duplicate `host:` raises; a selected
+  host with neither an entry nor a `container:` fallback raises.
+- A host falling back to `container:` is logged **by name at default
+  verbosity** — on a machine-tuned cluster that is a material difference.
+- **The runtime must opt in** (`RuntimePlugin.supports_heterogeneous_images`),
+  fail-closed. Anything with a wire protocol between ranks breaks as a hang or
+  a cryptic deserialization error rather than a clean failure: Ray needs one
+  build across head and workers, MPI ranks must share an ABI. `sglang`,
+  `vllm-distributed` and `llama-cpp` opt in. Note `vllm-ray` is a *sibling* of
+  `vllm-distributed` (both are `VllmMixin` + `RuntimePlugin`), not a subclass,
+  so it does not inherit the opt-in.
+- **No image-transforming builder.** `prepare()` is single-valued so it cannot
+  serve N images, and calling it once per image is not an option when a build
+  is minutes long. `BuilderPlugin.transforms_image` separates those from
+  *environment* builders (`uv-venv`) and `docker-pull`, which return the ref
+  untouched and compose fine. Precedent: `Executor.needs_image`.
+- `--image` clears the block entirely (`core/resolve.py`, logged). Anything
+  subtler — override the fallback but keep the machine-specific images — would
+  leave most nodes on the image the user just replaced.
+
+Distribution is **derived** from the launch plan (`derive_container_entries`)
+rather than declared beside it, so "what to ship" and "what to run" cannot
+disagree. A hand-written `distribution_config.containers` still wins, which is
+what `DistributionResourceConfig.explicit` exists to detect — the whole-config
+`externally_provided` flag is too coarse, since a recipe customizing only
+`models` still receives an auto-generated container entry. Two consequences in
+`orchestration/distribution.py`:
+
+- `_distribute_image_plan` fans out **across** images concurrently (each
+  per-image call already fans out over its own targets under
+  `resolve_parallel_cap`). A single image is dispatched inline so the
+  overwhelmingly common case keeps its exact previous call shape and log order.
+- `delegated` is redirected to per-node `pull` when the launch is
+  heterogeneous: its head-pull-then-`docker save | ssh docker load` fan-out
+  would make the head pull images it does not run and copy a machine-tuned
+  image onto the wrong machine.
+
+The ENTRYPOINT preflight probes once per **distinct** image, on a host that
+actually runs it. The old single probe was correct only because distribution
+had established every host carried the same one.
+
+Job metadata records `effective_container_images` **alongside** — never instead
+of — the scalar `effective_container_image` (the head's), because proxy
+discovery, `logs` and the desktop sidecar all read the scalar. All three
+`save_job_metadata` call sites must forward it: each rewrites the file
+wholesale, so an omission is an erasure.
+
+### Transfer mode `pull`
+
+The fourth transfer mode. The other three route bytes through *somewhere* — the
+control machine (`local` / `push`) or the head (`delegated`); `pull` routes them
+through nobody: every node fetches from origin itself, concurrently. Faster than
+a serialized head-pull-and-fan-out when per-node egress is good, and the only
+correct strategy for heterogeneous images. Opt-in, because it costs N× egress
+and needs registry / HF credentials reachable on every node.
+
+- **A shared model cache overrides it.** With `prefs.skip_fan_out` the workers
+  already mount the head's copy, and N nodes downloading into one NFS path
+  concurrently is waste at best and a corrupted snapshot at worst.
+- **`--rebuild` must reach the side that actually pulls**, which here is every
+  node — `sync_image_to_hosts(force_pull=…)`. Its presence check is
+  metadata-only, so an image re-pushed under the same tag is otherwise never
+  refreshed.
+- An *inferred* mode (auto → delegated) still falls back to a control-machine
+  push for the hosts that failed; an explicitly-named `pull` is honored
+  literally, the rule `delegated` already follows.
+
+`models/distribute.py:_build_model_ensure_script` is shared by the head and
+per-node paths — a second copy would be free to drift on GGUF handling or token
+injection, and the drift would only surface on gated or quant-selected models.
+
+### Plugin-Owned Recipe Items (`core/recipe_items.py`)
+
+`register_recipe_item(key, handler, owner=…)` lets a cross-cutting plugin claim
+a **top-level recipe key** exclusively, without `Recipe` learning its schema and
+without hiding the settings in `metadata` (untyped, unvalidated, invisible to
+the fingerprint). The core owns lifecycle only; the handler owns
+`parse` / `validate` / `export`. Registration is idempotent for the same owner
+and handler; a second owner raises, so nothing can silently reinterpret an
+existing recipe surface.
+
+Four properties are load-bearing:
+
+- **Owned keys are excluded from the `runtime_config` sweep.** Unknown
+  top-level keys are otherwise absorbed into `runtime_config`, which feeds the
+  serve command — so without the exclusion a plugin's settings reach the engine
+  as flags.
+- **Items round-trip at the same top level** through `__getstate__`, registry
+  caching and `to_yaml_dict`. A plugin key is recipe content; re-exporting it
+  elsewhere would break the next load.
+- **A raw item survives its plugin being unavailable.** `_plugin_item_raw`
+  preserves it verbatim, so disabling a plugin never silently rewrites recipes.
+- **Items participate in `derive_recipe_fingerprint`** via the handler's
+  canonical export, appended only when present.
+
+Note the deliberate contrast with `capabilities:` / `unsupported_capabilities:`,
+which are core keys parsed as real attributes *specifically* to stay **out** of
+the fingerprint: describing what a deployment can do must not change what it is.
+A plugin item is the opposite — it changes how the workload is produced.
+
+`SparkrunConfig.plugin_settings(name)` reads `plugins.<name>` for site-local
+operational policy that does not belong in a portable recipe. `plugins.paths`
+stays reserved for external plugin discovery. This is the *only* sanctioned
+home for per-plugin config — a bespoke top-level block plus a property on
+`SparkrunConfig` would put plugin-specific knowledge back in core.
+
+### Recipe Execution Strategies (`core/execution.py`)
+
+An integration that changes *how* a workload is brought up — not which image or
+which model, but the act of starting it — would otherwise have to fork
+`launch_inference` and lose distribution, placement, preflight and job
+metadata. `RecipeExecutionStrategy` is the seam: a plugin's recipe item may opt
+its recipes into **one** strategy, which supplies preparation steps and replaces
+`runtime.run()` at the end. Everything else in the launcher still runs.
+
+| Hook | Runs | Returns |
+|------|------|---------|
+| `preparation_steps(ctx)` | in `api.run`, before `launch_inference` | `PreparationStep`s |
+| `finalize_preparation(ctx, receipts)` | after those steps | `PreparedExecution` |
+| `prepare_activation(ctx)` | phase 5, assets resident, **before** eviction | opaque receipt |
+| `activate(ctx, receipt)` | in place of `runtime.run()` | `ActivationResult` |
+
+Six rules:
+
+- **Recipe-local.** A strategy is reachable only through a top-level key its
+  plugin owns, so *installing* a plugin never changes what `sparkrun run` does
+  for a recipe that omits the key.
+- **One strategy, or an error.** Two things claiming to launch the workload
+  have no correct arbitration, so this is not a precedence rule.
+- **The replacement barrier stays core-owned.** The launcher completes plugin
+  preparation, normal image/model preparation *and* `prepare_activation` before
+  firing `before_start`. A strategy never decides when the deployment it
+  replaces is torn down — and by that point everything slow and interruptible
+  is behind it, the same reason eviction moved into that hook (see Launch
+  Placement above).
+- **Preparation is a named DAG with compensation.** Globally unique step names,
+  explicit `requires`, completed steps cleaned up in reverse on failure. Naming
+  beats positional ordering because two plugins contributing steps share no
+  list to order themselves within.
+- **`LaunchAssetPolicy` declines, it does not replace.** A strategy opts out of
+  builder / model / image distribution / entrypoint probe / tuning sync / page
+  cache and may supply `images_by_node`; whatever it does not decline still
+  runs, so it inherits the pipeline rather than reimplementing it.
+- **`RunOptions.strategy_options` is not workload identity.** Per-invocation
+  choices stay out of the fingerprint and intent id — the same rule that keeps
+  serve flags out of `generate_intent_id`.
+
+The activation path writes job metadata itself and must write **all** of it
+(cluster, ssh_user, fingerprint, owner): `save_job_metadata` rewrites the file
+wholesale, so an omission is an erasure whose symptom — a teardown that
+authenticates as the wrong user and reports success — looks nothing like its
+cause. The experimental k8s path returns before `launch_inference`, so it has
+neither the asset pipeline nor the barrier; a strategy there is **refused**
+rather than silently ignored.
+
+### Launch Materialization (`api.materialize`)
+
+`api.plan` stops at placement. `api.materialize(options, plan=…) ->
+ResolvedLaunchSpec` resolves the rest — per-unit argv, env, mounts, devices and
+the worker/rank topology — **read-only**: no image pull, no model distribution,
+no cache creation, no network probing. It reuses a `RunPlan`'s placement rather
+than re-deciding, so it cannot disagree with the launch it describes.
+
+The shape separates three things a flat "one container per host" model
+conflates, each of which silently produces a wrong launch:
+
+- **Launch units vs. workers.** A unit is a container / process tree; a worker
+  owns an accelerator. Scheduler ranks number *workers*, vLLM's `--node-rank`
+  numbers *process trees*, and the two diverge as soon as a host owns more than
+  one GPU. `generate_node_command` cannot express that (it takes one rank and
+  infers the rest), so `generate_launch_unit_command` takes both namespaces
+  explicitly; `_generate_parallel_command` is the shared renderer so the
+  single- and multi-worker paths cannot drift.
+- **Service domains.** A unit never crosses a service boundary, which permits
+  several DP/PD service containers on one host.
+- **Adapter topology.** Runtime-specific parallelism is opaque payload guarded
+  by a canonical digest, rather than schema fields growing per runtime.
+
+Two details: the command is a **bash argv** (`bash --noprofile --norc -c …`)
+because sparkrun executes generated serve commands as scripts, so pipes,
+redirects and expansions must survive the boundary; and executor mounts are
+resolved and included, since a strategy creating its own containers would
+otherwise simply not have what `ExecutorConfig.volumes` would have added. The
+HF cache and pinned model inputs are marked read-only — a privileged controller
+in the workload container must not leak ownership back into the shared cache.
+`image_digest` is populated only from an already-pinned `name@sha256:` ref;
+resolving one would need a remote probe, which is what "read-only" rules out.
+
 ### Workload identity — intent vs. fingerprint
 
 Three different questions, two digests. Getting them confused is destructive,
@@ -562,6 +1095,33 @@ tiers:
   aggregate in `core/cluster_manager.py`). Used by `cluster status` and `stop
   --all`.
 
+**Free ≠ idle.** A host that a pending model download or image distribution is
+staging onto is minutes from taking its whole GPU, so the display tier splits
+the reachable/zero-container hosts into `idle_hosts` and `preparing_hosts`
+using the pending-op locks (`core/pending_ops.py`), which have always recorded
+their `hosts` — the report simply discarded them and reported the targets as
+idle. Attribution is literal (case + `user@` normalized, no DNS): an op that
+matches nothing in the queried host list is dropped as another cluster's, while
+one that recorded *no* hosts is still shown but pinned to none — "unknown
+scope" must never read as "affects every host". Each op carries derived
+`matched_hosts` / `other_hosts`. This stays **display-only**: pending locks are
+control-node-local and best-effort, so `preparing_hosts` is a lower bound, and
+feeding it into the occupancy snapshot would let a stale lock refuse a launch
+onto a genuinely free host. Locks also carry `job_cluster_id` / `cluster`, so a
+pending op can name the job it is preparing (its lock *key* remains the
+image/model/host hash — distribution runs before the launch commits).
+
+**Which cluster is being reported** is `cli/_common.py:resolve_host_context()`
+→ `HostContext`. `resolve_hosts` consults the default cluster, so a flagless
+invocation ends up with a concrete host list; handing that to `api.status_report`
+with `cluster=None` made `resolve_cluster` short-circuit to an *anonymous*
+`ClusterDefinition` (`api/_resolve.py`: explicit hosts are checked **before**
+the default-cluster step) and silently dropped that cluster's executor pin,
+`executor_config`, `hosts_hardware` and transport from the sweep. Any command
+that pairs a resolved host list with an `api.*` cluster argument must forward
+`HostContext.cluster_name`; `HostContext.describe()` is the matching banner, so
+the report also *says* what it covers.
+
 Under the hood, `api.status` calls
 `orchestration/executor.py:query_status_for_cluster(cluster, hosts, …)`, which
 **sweeps every enabled executor on the cluster's status substrate and merges**:
@@ -625,7 +1185,38 @@ entry, and a job that crashed under `auto_remove` is gone from docker before
 anything asks about it. Left alone this reaches hundreds of dead entries
 against a couple of dozen live intents.
 
-Three pieces keep it usable:
+**A job records how to *reach* it, not just where it ran.** `hosts` answers
+"where"; `cluster` + `ssh_user` answer "as what". Without them, `stop <cluster_id>`
+— which recovers its hosts from this file and so names no cluster — resolved to
+an *anonymous* `ClusterDefinition`, dropping the cluster's SSH user, executor
+pin, `executor_config` and transport, and SSH-ing as the control node's own
+login. On a cluster whose `user:` differs from that login, every teardown
+connection was refused while `stop` still printed a success line and the
+workload kept serving (issue #277). `api._resolve.resolve_cluster_for_job` is
+the read side, in strict order: an explicitly named cluster → the one the job
+recorded → the recorded `ssh_user` alone.
+
+Three properties are load-bearing:
+
+- The recorded cluster supplies **connection identity only**; hosts stay the
+  job's own, or the user's `--hosts`. A load-aware scheduler may have placed the
+  workload on a subset, and widening teardown back to the cluster's full host
+  list is not a fix, it is a different command.
+- `ssh_user` is recorded **separately** from the cluster name, so a job that
+  outlives its cluster (renamed, deleted, read on another control node) keeps
+  the part that decides whether the hosts are reachable at all. It only ever
+  *fills* a gap — a resolved cluster's own `user` wins, since that is current
+  configuration while the recorded value is history.
+- Both are **omitted when unknown**, never written empty: the read side has to
+  tell "anonymous `--hosts` launch" from "written before sparkrun recorded
+  this", and an empty `ssh_user` would be applied as a real username.
+
+All three `save_job_metadata` call sites in `launch_inference` must forward
+them, because each rewrites the file wholesale — a site that forgot would erase
+them a phase later, and the symptom (a teardown that cannot authenticate) looks
+nothing like the cause.
+
+Three more pieces keep the cache usable:
 
 - **`started_at`** is stamped at launch. The read side (`api.list_jobs`) always
   looked for it but nothing wrote it, so every job was untimed and the
@@ -803,7 +1394,8 @@ a provider-transport cluster still uses the docker executor.
 
 - **`base.py`** — `Transport` SAF `Plugin` (selector `transport_name`, extension point `EXT_TRANSPORT`) with `prepare(cluster, *, dry_run=…)` (default no-op) and its delete-time counterpart `cleanup_cluster(cluster, *, dry_run=…)` (release out-of-band state — ssh alias/key — on cluster delete). A transport self-gates via `required_feature_flag` (like `Executor`). Discovered via `find_types_in_modules("sparkrun.transports", Transport)` in `core.bootstrap` — mirrors `Executor`.
 - **`ssh.py`** — `SshTransport` (`transport_name = "ssh"`), the default; `prepare()` is a no-op, so every existing cluster is byte-identical to before transports existed.
-- **`__init__.py`** — SAF-backed resolution: `resolve_transport(name)` / `list_transports()` query `get_extensions(EXT_TRANSPORT)` by `transport_name` (returning the stateless SAF singleton). `prepare_cluster_transport(cluster)` (run/status/logs/stop) and `cleanup_cluster_transport(cluster)` (delete) are the single call-site helpers. `_require_transport_enabled` reads the resolved transport's `required_feature_flag` and fails closed at the `prepare` call site (never a silent SSH downgrade, never SAF `is_multi_extension` hiding) — a gated selector yields a clear "enable it with …" error rather than "unknown transport". `cleanup_cluster_transport` is deliberately **ungated** (teardown must succeed even if the flag was later disabled) and tolerant of an absent transport plugin.
+- **`session.py`** — `HostSession` / `SshHostSession`, the *runtime* peer of `prepare`. `prepare` makes a host reachable; a session executes **exact argv** on it (plus `upload` and `docker_registry` against the host's own daemon). Everything else sparkrun runs remotely is a generated *script* piped to `bash -s`, which is wrong for a managed binary invoked with structured arguments — re-quoting through a generated shell script is a correctness hazard there, not a convenience. Local dispatch bypasses the shell entirely so the two paths cannot disagree about quoting; a non-zero command is *data* (only an unusable session raises); and `close()` is the cancellation handle, killing in-flight process groups so an interrupted caller does not orphan remote work. `Transport.open_host_session` defaults to `SshHostSession`, so every existing cluster has one without declaring anything.
+- **`__init__.py`** — SAF-backed resolution: `resolve_transport(name)` / `list_transports()` query `get_extensions(EXT_TRANSPORT)` by `transport_name` (returning the stateless SAF singleton). `prepare_cluster_transport(cluster)` (run/status/logs/stop), `open_cluster_host_session(cluster)` (executable session, gated the same way) and `cleanup_cluster_transport(cluster)` (delete) are the single call-site helpers. `_require_transport_enabled` reads the resolved transport's `required_feature_flag` and fails closed at the `prepare` call site (never a silent SSH downgrade, never SAF `is_multi_extension` hiding) — a gated selector yields a clear "enable it with …" error rather than "unknown transport". `cleanup_cluster_transport` is deliberately **ungated** (teardown must succeed even if the flag was later disabled) and tolerant of an absent transport plugin.
 - **Thunder Compute** (`transport: thunder`) is **no longer in core** — it was externalized to the out-of-tree `sparkrun_thunder` plugin (the reference example for the plugin system). It registers `ThunderTransport` (SAF), its own `transports.thunder` feature flag, and the `sparkrun cluster import thunder` command (via `register_cli_command`). Core keeps only the generic seam; a `transport: thunder` cluster fails closed unless the plugin is loaded (`core.external_plugins` + `transports.thunder`).
 
 `ClusterDefinition.transport: str = "ssh"` + `provider_ref` select the transport
@@ -835,25 +1427,76 @@ orchestration.tailscale → {orchestration.ssh/sudo, core.config}`. Design spec:
 ### Inference Gateway (`proxy/` + `api/proxy/`)
 
 The **gateway** is the process fronting every discovered inference endpoint
-behind one OpenAI-compatible API. Today there is exactly one implementation —
-`ProxyEngine` (LiteLLM) — but the vocabulary and the seams are in place so a
-second can be added as a peer rather than a special case. One word throughout:
-**gateway** is the pluggable family, `proxy` is the user-facing command.
+behind one OpenAI-compatible API. Core ships one implementation — `ProxyEngine`
+(LiteLLM) — and everything a second needs is in place, including for one living
+outside the `sparkrun.proxy` tree entirely. One word throughout: **gateway** is
+the pluggable family, `proxy` is the user-facing command.
 
-Two mechanisms, deliberately separate:
+Three mechanisms, deliberately separate:
 
+- **Registration** — `proxy/gateway.py:register_gateway(name, feature_flag=,
+  loader=)`; `gateway_class(name)` is the one place a name becomes an
+  implementation. The registry is **in-process** rather than a SAF extension
+  point because an engine is *constructed with arguments* (host, port, master
+  key, state dir) rather than resolved as a stateless singleton — the same
+  reason `platforms` and `models/kv` stayed in-process. Registration carries a
+  **loader**, not the class, so `proxy.engine` can import this module without a
+  cycle and registering costs nothing at import time. Idempotent by name, which
+  is what lets an out-of-tree plugin substitute an in-tree implementation.
+  litellm registers in core, not from a plugin: `proxy` must resolve to
+  *something* with every plugin absent.
 - **Availability** — `gateway.<name>` feature flag. `gateway.litellm` ships
   **enabled on every channel** (`default=True`, like `executor.docker`); a
-  future gateway would ship off. Declared on the implementation as
-  `ProxyEngine.required_feature_flag` / `gateway_name`, pre-shaping the
-  eventual `GatewayPlugin`.
+  plugin-contributed gateway would ship off.
 - **Selection** — exactly one gateway is used at a time, arbitrated in
-  `proxy/gateway.py:resolve_gateway()`: an explicit name (`proxy.gateway:` in
-  `proxy.yaml`) must be known *and* enabled; with no name, the default wins
-  when enabled, else the single remaining enabled gateway, else
-  `AmbiguousGatewayError`. The flag registry has **no** notion of
-  mutually-exclusive flags — nothing stops a user enabling two, so resolution
-  refuses to guess (mirrors `_default_executor_name`).
+  `resolve_gateway()`: an explicit name (`proxy.gateway:` in `proxy.yaml`, or
+  `--gateway`) must be known *and* enabled; with no name, the default wins when
+  enabled, else the single remaining enabled gateway, else
+  `AmbiguousGatewayError`. Enabling a second gateway's flag does **not** switch
+  to it. The flag registry has **no** notion of mutually-exclusive flags —
+  nothing stops a user enabling two, so resolution refuses to guess (mirrors
+  `_default_executor_name`).
+
+"Unregistered" and "disabled" are deliberately distinct errors: a name can be
+known to the flag registry while its plugin failed to load, and telling that
+user to enable a flag that is already on is a dead end.
+
+**`GatewaySupervisor` (`proxy/_supervisor.py`)** holds everything a gateway
+does *as a local process* — spawn, startup grace, SIGTERM/reap/zombie
+detection, the `state.yaml` format, 0600/0700 permissions, the auto-discover
+sidecar, the insecure-bind warning. `ProxyEngine` subclasses it, so LiteLLM's
+argv, environment and config format are all that remain gateway-specific. Two
+implementations writing that state format independently would eventually
+disagree about it, and the symptom is a proxy nobody can stop.
+`GatewayState` is the read-only half, split out so a caller that only needs
+"what is running" (the auto-discover daemon, a status probe) doesn't construct
+a supervisor whose `gateway_name` is blank.
+
+Capabilities are **declared** rather than branched on by name, which is what
+keeps `gateway_class` the only place a name resolves to an implementation:
+
+| Attribute | Default | Why it exists |
+|-----------|---------|---------------|
+| `supports_autodiscover` | `True` | A gateway owning its own desired state would fight sparkrun's daemon. `start()` warns and disables rather than silently dropping a configured setting. |
+| `wants_proxy_config` | `False` | Management paths resolve their engine from the *state file*. A config-driven gateway without `proxy.yaml` computes an **empty** desired state, so `proxy alias add` would delete every deployment it wasn't told about. |
+| `data_plane_authenticated` | `False` | The safe assumption. A gateway that authenticates says so, rather than every gateway being trusted to have opted out of the warning by accident. |
+| `model_query_error` | `""` | Empty means the query succeeded, *including* an empty model list — collapsing the two reports an authenticated management failure as "no models registered". |
+
+`prepare_config(endpoints, aliases, write=)` puts config generation on the
+engine: what a gateway's config *is* — a rendering of discovered endpoints, or
+a list of desired bindings — is the implementation's business. `write=False`
+is not a convenience; a dry run reports which aliases *would* apply, and
+answering that from the same code that renders the real config is what keeps
+the preview honest.
+
+The model-management surface (`sync_models`, `sync_aliases`,
+`list_models_via_api`, `register_loaded_model`, `unregister_loaded_model`)
+lives on the base **because `api.proxy` resolves an engine from the state
+file** — a LiteLLM-only method reached against another running gateway was an
+`AttributeError` far from its cause. The first three raise
+`NotImplementedError` naming the gateway; the last two return `None`, meaning
+"discovery-driven, do the ordinary endpoint sync", which makes them a true
+no-op seam for LiteLLM while giving `proxy load` / `unload` somewhere to hook.
 
 **Gate placement**: `ProxyEngine.start()` is the *one* enforcement point —
 bringing a gateway up, checked before `--dry-run` so a dry run can't advertise
@@ -861,17 +1504,80 @@ a start that would be refused. `stop` / `status` / `models` / `sync` /
 `alias_*` and the auto-discover daemon's `_restart_proxy` path are **ungated**:
 a proxy started while the flag was on must stay manageable (and stoppable)
 after it is turned off, and the daemon keeps driving the engine it was started
-with. Same rule `cleanup_cluster_transport` follows for transports.
+with. Same rule `cleanup_cluster_transport` follows for transports. That rule
+extends to a *missing* implementation: when the state file names a gateway
+whose plugin is not loaded, `_running_engine` falls back to a bare
+`GatewaySupervisor` bound to the recorded name rather than raising — state
+reading and SIGTERM are gateway-independent, and raising would strand a live
+process that nothing could then describe or kill.
+
+**The auto-discover daemon is gateway-neutral.** It is handed `{gateway,
+state_dir, interval, removal_grace_sweeps}` and reconciles through
+`api.proxy.sync`, which re-resolves the implementation from the state file on
+every sweep — so a `proxy start --restart` that swaps gateways is followed
+rather than fought. It therefore no longer carries the master key: the
+credential belongs to whichever engine the state file names. A previously
+healthy endpoint survives `discover_removal_grace_sweeps - 1` consecutive
+misses (default 2, `proxy.discover_removal_grace_sweeps`, `1` restores
+remove-on-first-miss) — one timed-out probe is not evidence a workload is gone,
+and evicting it costs a restart plus a window of 404s for a model that is
+serving fine. Identity is `cluster_id` when present, since an address is not
+stable across a relaunch.
+
+**`proxy.yaml` has two writers** — the daemon and any `sparkrun proxy` command
+— so `ProxyConfig.save()` locks a stable sidecar, re-reads, and merges only the
+sections *that instance* modified; a whole-document save silently discards the
+other's change. An alias removal is recorded as an explicit deletion, because
+"not in my copy" is not an instruction to delete a document this instance never
+saw. `fcntl` is imported **guarded**: `proxy/config.py` is reached from
+`SparkrunContext`, i.e. essentially every invocation, and a hard import would
+make sparkrun unimportable on a Windows control node. Without it the lock
+degrades to none (`os.replace` is still atomic, so the file is never
+half-written) — strictly weaker, and correct only because the daemon is a
+POSIX-only fork path.
 
 `api/proxy/` is the console-free facade (mirrors `api/tailscale/`): `start`,
-`stop`, `status`, `models`, `sync`, `add_alias` / `remove_alias` /
-`list_aliases`, plus `resolve_gateway` / `list_gateways`. `cli/_proxy.py` is a
-renderer over it, and the desktop sidecar calls it directly. `_engine_class()`
-is the single place a gateway name becomes an implementation. The state file
+`stop`, `status`, `models`, `sync`, `register_loaded_model` /
+`unregister_loaded_model`, `add_alias` / `remove_alias` / `list_aliases`, plus
+`resolve_gateway` / `list_gateways`. `cli/_proxy.py` is a renderer over it, and
+the desktop sidecar calls it directly. `ProxyUnsupported` is the "this gateway
+has no such capability" *answer*, distinct from a failure. `ProxyUpdateFailed`
+wraps `GatewayOperationError` (of which `ProxyRestartError` is the LiteLLM
+member) — a base every gateway's management failures derive from, so `sync`
+translates one exception type instead of catching bare `RuntimeError` and
+reporting an unrelated engine bug as a routine update failure. The state file
 records `gateway`, so management paths bind to *what is running* rather than to
 what is currently configured. Layering: `cli → api.proxy → sparkrun.proxy →
 {core, orchestration}`; `sparkrun.proxy` imports of `api` stay deferred
 (`proxy.discovery` imports `sparkrun.api`, so module-level would be circular).
+
+Two declarative seams a gateway consumes, both deliberately **outside** the
+workload's identity (`derive_recipe_fingerprint`) — describing what a
+deployment can do must not change what it *is*, or declaring a capability on a
+running deployment would force it to be re-admitted:
+
+- `RuntimePlugin.native_protocols(recipe)` — API dialects served natively, most
+  preferred first. **Fail-closed** (base returns `["openai"]`): a protocol
+  selects the upstream URL, headers, parser, streaming framing, error
+  vocabulary and retry classification, so under-claiming costs a translation
+  while over-claiming sends wrong-shaped bytes to a server that cannot parse
+  them. A runtime that gained a dialect at some version must gate on the
+  recipe's resolved container tag, not on the runtime name.
+- Recipe `capabilities:` / `unsupported_capabilities:` — declared in
+  `_KNOWN_KEYS` and parsed as real attributes precisely so they stay out of
+  `runtime_config` (which would put them in the fingerprint *and* the serve
+  command). sparkrun never infers them; nothing in a recipe reveals them.
+
+`RunOptions.owner` tags the component that launched a workload (persisted to
+job metadata, omitted when unset) so an automated supervisor can tell its own
+jobs from identically-configured ones a human started, and refuse to tear the
+latter down. `RunPlan.recipe_fingerprint` is derived in `api.plan` and threaded
+through `launch_inference` to **all three** `save_job_metadata` call sites —
+each rewrites the file wholesale, so a site that forgot would erase it a phase
+later. It must be pre-launch: `apply_platform_runtime_flag_defaults` mutates
+`recipe.defaults` keyed off the head host's hardware *before* metadata is
+saved, so a digest taken inside the launcher is placement-dependent and the
+caller that later matches on it can never reproduce the value.
 
 ### SSH Access Bootstrap (`api/setup/`)
 
@@ -923,8 +1629,9 @@ SSH-username prompts and before any other probe.
 
 ### Recipe System
 
-Recipes are YAML files with fields: `model`, `runtime`, `container`, `command`, `defaults`, `env`, `metadata`,
-`min_nodes`, `max_nodes`. The `Recipe` class (`core/recipe.py`) uses SAF `Variables` for config chain resolution —
+Recipes are YAML files with fields: `model`, `runtime`, `container`, `containers`, `command`, `defaults`, `env`,
+`metadata`, `min_nodes`, `max_nodes`. A plugin may also own additional top-level keys (see Plugin-Owned Recipe Items
+above). The `Recipe` class (`core/recipe.py`) uses SAF `Variables` for config chain resolution —
 CLI overrides → recipe defaults → runtime defaults.
 
 Recipe resolution: CLI → `find_recipe()` (module-level function in `core/recipe.py`) → searches bundled recipes, local
@@ -1063,6 +1770,52 @@ Before launching, sparkrun can pre-sync models and container images from the con
   `bfloat16 (default)` rather than silently reporting a guessed value. Element widths live in the `models/dtypes.py`
   leaf (weights and KV are separate tables — NVFP4's KV packing carries block scales its weight packing does not).
 
+#### Hub Metadata Budget (`models/hub.py`)
+
+Everything that asks the HuggingFace Hub for **metadata** — `fetch_model_config`, `fetch_hf_quant_config`,
+`fetch_safetensors_size`, `fetch_safetensors_params`, `fetch_model_visibility` — routes through
+`hub_metadata_call`. Weight downloads do **not**: a 200 GB pull legitimately takes hours and must not be
+budgeted. The distinction is the whole design. Everything behind this seam is *advisory* — the launch already
+degrades to "no memory claim" when an estimate is unavailable (`api/_hosts.py`) — so none of it is worth a
+second of unexplained hang (issue #278, where `sparkrun run` sat for 10+ minutes printing nothing).
+
+**The guarantee: the advisory phase costs at most `hub.metadata_budget_s`** (default 30 s; `0` = unbounded).
+Four levers, because four separate things were unbounded and no one of them subsumes the rest:
+
+| Lever | Bounds | Why nothing simpler works |
+|-------|--------|---------------------------|
+| `configure_hub_client` | every httpx call in the library | `huggingface_hub` builds its shared client with `timeout=None`; `list_repo_tree` accepts no `timeout` argument, so the client factory is the only reachable knob |
+| `_align_download_timeouts` | `hf_hub_download`'s own ceilings | it passes `HF_HUB_ETAG_TIMEOUT` / `HF_HUB_DOWNLOAD_TIMEOUT` explicitly, which *override* the client — so the client default silently missed the calls sparkrun makes most |
+| `without_xet` | metadata transfers on Xet repos | `hf_xet` is a Rust HTTP stack honouring none of the Python timeouts. Metadata is kilobytes of JSON, where Xet's chunk dedup buys nothing; weight downloads keep it |
+| `_run_with_deadline` | one lookup, whatever it does inside | `http_backoff` retries 5× with exponential backoff at fixed call sites. Measured: ~40 s for one `hf_hub_download` with the client bounded at 3 s. **A per-request ceiling does not bound a lookup** |
+
+The last one is the only structural layer, and it is why the guarantee survives a `huggingface_hub` upgrade.
+It abandons a daemon thread rather than cancelling (Python cannot interrupt a blocked socket read); the
+breaker bounds that to one leaked thread per command, and a parked thread burns no CPU and cannot hold the
+interpreter open.
+
+Three rules are load-bearing:
+
+- **Only time trips the breaker.** A 404 for `hf_quant_config.json` is the normal outcome for most repos and
+  costs milliseconds; classifying library exceptions would report a missing optional file as an outage.
+- **Negatives are memoised, successes are not.** `Recipe.estimate_vram` writes *successful* detection back
+  into `metadata` and re-runs detection when it is absent — so an unreachable Hub failed `needs_detection`
+  every time and refetched on all three estimates a single `run` performs. Successes are already carried by
+  that write-back; duplicating it here would hand callers a shared mutable dict.
+- **`hub_degraded_message` returns its string once.** Fifteen lookups share one breaker. `cli/_run.py` calls
+  it from both points where the phase can run out (the plan, and the VRAM table after it) precisely because
+  the once-only contract makes that correct rather than merely tolerable.
+
+Escape hatches, in the order the message offers them: `HF_HUB_OFFLINE=1`, `--no-auto-detect` (which calls
+`disable_hub_metadata()` — process-wide rather than an `auto_detect=False` threaded down, because
+`estimate_vram` runs from host resolution, the banner, the scheduling pass *and* telemetry, and a flag
+reaching three of those four would look like it worked), and raising `hub.metadata_budget_s`.
+
+The other half of #278 was that **nothing was printed before `api.plan`**, so the pause was unattributable.
+`cli/_run.py` now prints the identity lines (version / runtime / image / model) above the plan — they need
+nothing from it — followed by a `Planning: ...` line. Everything placement-dependent still renders from
+`run_plan`, so the display cannot disagree with the launch.
+
 #### KV Cache Sizing (`models/kv/`)
 
 Sizing the KV cache is architecture-specific, so it is a seam rather than a branch. `vram.py` names no attention
@@ -1170,6 +1923,17 @@ Shared helpers used across multiple modules to avoid circular imports:
 | `~/.cache/sparkrun/jobs/`            | Job metadata (cluster_id → recipe mapping)        |
 | `~/.cache/sparkrun/pending/`         | PID lock files for in-progress operations         |
 | `~/.cache/huggingface/`              | HuggingFace model cache (mounted into containers) |
+
+Readiness budgets live under `readiness:` in `config.yaml`
+(`port_timeout_s` / `health_timeout_s`, `0` = unbounded) — raise
+`port_timeout_s` for engines with long graph-capture phases; see Launch
+Timing above.
+
+HuggingFace Hub budgets live under `hub:` (`timeout_s` per request,
+`metadata_budget_s` for the whole advisory phase, `0` = unbounded — see Hub
+Metadata Budget above). Note the asymmetry with `readiness.*`: a non-positive
+`timeout_s` falls back to the default rather than meaning "unbounded", because
+an unbounded Hub client is the defect and has no spelling.
 
 ### Feature Flags (`core/features.py`)
 

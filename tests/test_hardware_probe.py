@@ -36,6 +36,7 @@ def _combined(accel: str, ib: str) -> str:
 _ACCEL_DGX = (
     "NVIDIA_PRESENT=1\n"
     "NVIDIA_GPU_COUNT=1\n"
+    "NVIDIA_DRIVER_VERSION=610.22.03\n"
     "NVIDIA_GPU_0_NAME=NVIDIA GB10\n"
     "NVIDIA_GPU_0_MEMORY_MIB=131072\n"
     "AMD_PRESENT=0\n"
@@ -142,6 +143,7 @@ def test_probe_host_parses_combined_output(monkeypatch):
     assert hw.accelerators[0].vendor == "nvidia"
     assert hw.accelerators[0].model == "gb10"
     assert hw.fingerprint and len(hw.fingerprint) == 16
+    assert hw.driver_versions == {"nvidia": "610.22.03"}
 
     # IB section parsed and attached
     assert hw.ib_info is not None

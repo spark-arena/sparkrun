@@ -213,6 +213,8 @@ def test_container_path_is_constant_regardless_of_keying():
 def test_vllm_declares_its_explicit_cache_vars():
     env = _mounts().env
     assert env["VLLM_CACHE_ROOT"] == "/cache/runtime/vllm"
+    assert env["TORCH_HOME"] == "/cache/runtime/torch"
+    assert env["TORCH_EXTENSIONS_DIR"] == "/cache/runtime/torch_extensions"
     assert env["TORCHINDUCTOR_CACHE_DIR"] == "/cache/runtime/inductor"
     assert env["TRITON_CACHE_DIR"] == "/cache/runtime/triton"
 
@@ -296,6 +298,11 @@ def test_sglang_jit_cache_is_declared_because_it_does_not_track_the_root():
 def test_sglang_declares_tilelang_cache():
     """TileLang defaults to ``~/.tilelang/cache`` — outside XDG *and* the SGLang root."""
     assert _mounts(runtime=SglangRuntime()).env["TILELANG_CACHE_DIR"] == "/cache/runtime/tilelang"
+
+
+def test_sglang_declares_tvm_ffi_cache():
+    """TVM-FFI ignores XDG and maps generated extension libraries from its own cache."""
+    assert _mounts(runtime=SglangRuntime()).env["TVM_FFI_CACHE_DIR"] == "/cache/runtime/tvm_ffi"
 
 
 def test_declared_directories_are_created():
@@ -472,6 +479,8 @@ def test_disabled_cache_leaves_the_env_untouched():
     assert set(with_cache) - set(without) == {
         "XDG_CACHE_HOME",
         "VLLM_CACHE_ROOT",
+        "TORCH_HOME",
+        "TORCH_EXTENSIONS_DIR",
         "TORCHINDUCTOR_CACHE_DIR",
         "TRITON_CACHE_DIR",
         "FLASHINFER_CACHE_DIR",

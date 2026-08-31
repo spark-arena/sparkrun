@@ -123,21 +123,34 @@ def create_pending_op(
     hosts: list[str] | None = None,
     cache_dir: str | None = None,
     token: str | None = None,
+    job_cluster_id: str = "",
+    cluster: str = "",
 ) -> Path:
     """Write a pending-operation lock file.
 
     Args:
-        cluster_id: The sparkrun cluster id (e.g. ``sparkrun_abc123``).
+        cluster_id: The lock *key* — a content hash over image/model/hosts,
+            not the launch's cluster_id (distribution runs before the launch
+            commits to one, and two runs sharing an image+model+host set must
+            share a lock).  See *job_cluster_id* for the launch's identity.
         operation: Short tag — ``"model_download"``, ``"image_distribute"``,
             ``"image_pull"``, etc.
         recipe: Recipe name for display.
         model: Model identifier for display.
         image: Container image reference for display.
-        hosts: Target hosts.
+        hosts: Target hosts.  Recorded so ``cluster status`` can attribute the
+            operation to the hosts it will occupy rather than reporting them
+            idle; an empty list means "unattributed" and must never be read as
+            "affects every host".
         cache_dir: Override for the sparkrun cache directory.
         token: Ownership token to record.  When ``None``, a fresh one is
             generated.  Pass an explicit token (see :func:`pending_op`) when
             the caller needs to compare against the on-disk token later.
+        job_cluster_id: The launch's real ``cluster_id``, so a reader can name
+            the job this operation is preparing (and recover its ``intent_id``
+            via ``parse_cluster_id``).  Empty for callers that have not
+            derived one yet.
+        cluster: Named cluster the launch targets, for display.
 
     Returns:
         Path to the created lock file.  When a live lock for the same key
@@ -161,6 +174,8 @@ def create_pending_op(
         "model": model,
         "image": image,
         "hosts": hosts or [],
+        "job_cluster_id": job_cluster_id,
+        "cluster": cluster,
     }
 
     path = _lock_path(d, cluster_id, operation)

@@ -376,3 +376,85 @@ def run_with_sudo_fallback(
     # Return results and hosts that still failed after fallback
     still_failed = [h for h in failed_hosts if h not in result_map or not result_map[h].success]
     return result_map, still_failed
+
+
+# ---------------------------------------------------------------------------
+# Directory-ownership repair
+# ---------------------------------------------------------------------------
+
+# Best-effort ownership fix for a sparkrun-managed cache directory.
+#
+# The recurring way one of these ends up root-owned is Docker: a bind mount
+# whose source does not exist on the host is *materialized by the daemon*, and
+# it creates the whole missing path chain owned by root.  From then on the SSH
+# user cannot write into it, so every later rsync into that tree fails with
+# EACCES — the transfer never happens, and no rsync flag can fix it because the
+# problem is the directory, not the attributes being requested.
+#
+# `sudo -n` only: this runs on the hot launch path, so it must never block on a
+# password prompt.  A host without NOPASSWD sudo simply reports failure and the
+# caller carries on — the point is to self-heal where we can, not to gate a
+# launch on sudo.
+_FIX_OWNERSHIP_SCRIPT = """set -euo pipefail
+TARGET="{path}"
+[ -d "$TARGET" ] || exit 0
+OWNER=$(stat -c "%U" "$TARGET" 2>/dev/null || echo "")
+ME=$(id -un)
+[ "$OWNER" = "$ME" ] && exit 0
+sudo -n /usr/bin/chown -R "$ME" "$TARGET" 2>/dev/null
+"""
+
+
+def ensure_remote_dir_ownership(
+    dir_path: str,
+    hosts: list[str],
+    ssh_user: str | None = None,
+    ssh_key: str | None = None,
+    ssh_options: list[str] | None = None,
+    dry_run: bool = False,
+    resource_label: str = "cache",
+) -> list[str]:
+    """Best-effort ``chown`` of *dir_path* to the SSH user on each host.
+
+    A no-op where the directory is absent or already owned by the SSH user, so
+    it is cheap to call unconditionally.  Never raises and never prompts.
+
+    Returns:
+        Hosts where ownership could not be fixed (empty = nothing to do, or
+        everything succeeded).  Callers treat a non-empty list as a warning,
+        not a failure: the repair is opportunistic, and the operation it is
+        clearing the way for will report its own error if it still cannot
+        proceed.
+    """
+    if not hosts:
+        return []
+
+    from sparkrun.utils.shell import safe_remote_path
+
+    # safe_remote_path, not assert_safe_path: a cache dir may be spelled "~/..."
+    # and tilde expansion does not happen inside the double quotes this script
+    # interpolates into, so it has to become "$HOME/...".
+    script = _FIX_OWNERSHIP_SCRIPT.format(path=safe_remote_path(dir_path))
+    results = _ssh.run_remote_scripts_parallel(
+        hosts,
+        script,
+        ssh_user=ssh_user,
+        ssh_key=ssh_key,
+        ssh_options=ssh_options,
+        timeout=60,
+        dry_run=dry_run,
+    )
+
+    failed = [r.host for r in results if not r.success]
+    if failed:
+        logger.warning(
+            "Could not fix %s ownership on %d host(s) (%s) — a root-owned "
+            "directory blocks writes by the SSH user.  Run 'sparkrun setup "
+            "fix-permissions --save-sudo' to allow passwordless chown, or "
+            "chown %s manually.",
+            resource_label,
+            len(failed),
+            ", ".join(failed),
+            dir_path,
+        )
+    return failed

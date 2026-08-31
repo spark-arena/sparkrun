@@ -419,6 +419,16 @@ def _snapshot_download(
         from huggingface_hub import snapshot_download
         from huggingface_hub.utils import enable_progress_bars
 
+        from sparkrun.models.hub import configure_hub_client
+
+        # Bound the library's shared HTTP client, which ships with no timeout at
+        # all.  The *budget* deliberately stops at metadata: a large weight pull
+        # legitimately runs for hours.  The per-request ceiling still applies,
+        # and is safe here because httpx's read timeout bounds the gap between
+        # received bytes rather than the total transfer.  Xet stays enabled —
+        # this is exactly the payload it exists for.
+        configure_hub_client()
+
         enable_progress_bars()
 
         kwargs: dict = {

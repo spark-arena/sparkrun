@@ -612,6 +612,17 @@ class LocalExecutor(Executor):
 
         return verify_host_paths(hosts, list(paths), ssh_kwargs)
 
+    def bind_mount_sources(self) -> list[str]:
+        """Nothing: a native process has no mounts.
+
+        ``executor_config.volumes`` is inert under this executor (the workload
+        reads the host filesystem directly), so the base ``[]`` is the honest
+        answer — checking those paths would fail a launch over a setting that
+        does nothing here.  Stated explicitly rather than inherited because it
+        is a real property of the substrate, not an unimplemented hook.
+        """
+        return []
+
     def ensure_runtime_cache(
         self,
         mounts: "RuntimeCacheMounts",

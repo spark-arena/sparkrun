@@ -41,8 +41,19 @@ class TestLoadScriptResource:
     def test_load_ip_detect(self):
         """ip_detect.sh loads and contains expected markers."""
         content = load_script_resource("ip_detect.sh")
-        assert "ip route get 8.8.8.8" in content
+        assert "sparkrun_mgmt_iface" in content
         assert "NODE_IP" in content
+
+    def test_load_script_resource_does_not_expand_includes(self):
+        """This is the *raw* loader — ``# sparkrun:include`` is left alone.
+
+        ``sparkrun.scripts.read_script`` is the entry point for anything that
+        will actually be executed; a script loaded here may reference helpers
+        it does not yet carry.
+        """
+        content = load_script_resource("ip_detect.sh")
+        assert "# sparkrun:include _mgmt_iface.sh" in content
+        assert "sparkrun_mgmt_iface() (" not in content
 
     def test_load_container_launch(self):
         """container_launch.sh is non-empty and starts with shebang."""

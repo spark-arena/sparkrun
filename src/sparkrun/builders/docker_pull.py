@@ -14,3 +14,8 @@ class DockerPullBuilder(BuilderPlugin):
     """
 
     builder_name = "docker-pull"
+
+    # Does nothing to the ref (distribution does the pulling), so it composes
+    # with per-machine `containers:` rather than being rejected alongside the
+    # builders that actually build.
+    transforms_image = False

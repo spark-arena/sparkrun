@@ -147,5 +147,6 @@ def resolved_hardware_for_scheduling(
             fingerprint=hw.fingerprint,
             notes=hw.notes,
             ib_info=hw.ib_info,
+            driver_versions=dict(hw.driver_versions),
         )
     return resolved

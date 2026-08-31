@@ -359,7 +359,7 @@ def test_vllm_distributed_validate_recipe_no_model():
 
     issues = runtime.validate_recipe(recipe)
     assert len(issues) == 1
-    assert "model is required" in issues[0]
+    assert "model is required" in str(issues[0])
 
 
 def test_vllm_distributed_container_name():
@@ -425,3 +425,59 @@ def test_vllm_distributed_overrides_in_command():
     cmd = runtime.generate_command(recipe, {"port": 9000}, is_cluster=False)
     assert "--port 9000" in cmd
     assert "--port 8000" not in cmd
+
+
+# --- prepare(): speculative draft-model pre-sync ---
+#
+# The draft model named inside `speculative_config` is a different repo from
+# the served model, so it takes its revision from that same JSON object (vLLM's
+# own `revision` field) and never from the recipe's `model_revision`.
+
+
+def _spec_recipe(spec_config, model_revision=None):
+    import json
+
+    data = {
+        "name": "test-recipe",
+        "model": "meta-llama/Llama-2-7b-hf",
+        "runtime": "vllm-distributed",
+        "defaults": {"speculative_config": json.dumps(spec_config)},
+    }
+    if model_revision:
+        data["model_revision"] = model_revision
+    return Recipe.from_dict(data)
+
+
+def _entry(recipe, name):
+    return next(e for e in recipe.distribution_config.models.entries if e.name == name)
+
+
+def test_vllm_prepare_draft_model_is_unpinned_by_default():
+    runtime = VllmDistributedRuntime()
+    recipe = _spec_recipe({"model": "org/draft", "num_speculative_tokens": 3}, model_revision="deadbeef")
+    runtime.prepare(recipe, hosts=["10.0.0.1"])
+    assert _entry(recipe, "org/draft").revision is None
+    assert _entry(recipe, "{model}").revision == "deadbeef"
+
+
+def test_vllm_prepare_pins_draft_revision_from_spec_config():
+    runtime = VllmDistributedRuntime()
+    recipe = _spec_recipe({"model": "org/draft", "revision": "cafe1234"}, model_revision="deadbeef")
+    runtime.prepare(recipe, hosts=["10.0.0.1"])
+    assert _entry(recipe, "org/draft").revision == "cafe1234"
+
+
+def test_vllm_prepare_malformed_spec_config_is_noop():
+    """A speculative_config that isn't parseable JSON must not raise."""
+    runtime = VllmDistributedRuntime()
+    recipe = Recipe.from_dict(
+        {
+            "name": "test-recipe",
+            "model": "meta-llama/Llama-2-7b-hf",
+            "runtime": "vllm-distributed",
+            "defaults": {"speculative_config": "not-json"},
+        }
+    )
+    before = [e.name for e in recipe.distribution_config.models.entries]
+    runtime.prepare(recipe, hosts=["10.0.0.1"])
+    assert [e.name for e in recipe.distribution_config.models.entries] == before

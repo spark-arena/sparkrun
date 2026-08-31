@@ -19,6 +19,8 @@ from ._common import (
     json_option,
     print_json,
 )
+from sparkrun.core.validation import FAIL_ON_CHOICES
+from sparkrun.utils.cli_formatters import format_validation_report
 
 
 @click.group()
@@ -153,39 +155,80 @@ def recipe_show(ctx, recipe_name, no_vram, tensor_parallel, gpu_mem, output_json
 
 @recipe.command("validate")
 @click.argument("recipe_name", type=RECIPE_NAME)
+@click.option("--strict", is_flag=True, help="Also fail on warnings (exit 1)")
+@click.option(
+    "--fail-on",
+    type=click.Choice(FAIL_ON_CHOICES),
+    default=None,
+    hidden=True,
+    help="Least-severe finding that fails (default: error; --strict means warning)",
+)
 @json_option()
 # @click.option("--config", "config_path", default=None, help="Path to config file")
 @click.pass_context
-def recipe_validate(ctx, recipe_name, output_json, config_path=None):
-    """Validate a recipe file."""
-    from sparkrun.core.bootstrap import get_runtime
+def recipe_validate(ctx, recipe_name, strict, fail_on, output_json, config_path=None):
+    """Validate a recipe file.
+
+    Findings come in three severities. ERRORS are things sparkrun cannot honor
+    (a missing field, a runtime that rejects the recipe, a builder or executor
+    that does not resolve) and always exit 1. WARNINGS mean the recipe runs but
+    breaks or behaves differently off the cluster it was written on (NCCL pinned
+    to one machine's devices, a bind mount only the author has). SUGGESTIONS
+    mean it works as written and merely gives something up, like a serve flag
+    hardcoded where the config chain cannot see it.
+
+    Only errors are fatal by default. Pass --strict to fail on warnings too —
+    the useful setting for registry CI.
+    """
+    from sparkrun.core.validation import ERROR, SUGGESTION, WARNING, should_fail, validate_recipe
 
     sctx = _get_context(ctx)
     v = sctx.variables
     config, _ = _get_config_and_registry(config_path)
     recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name)
 
-    issues = recipe.validate()
+    # --strict is the typeable spelling of the one threshold most people want;
+    # --fail-on is the full ladder, hidden because it is an advanced knob.
+    # Explicit --fail-on wins over --strict, and both beat validation.fail_on.
+    threshold = fail_on or (WARNING if strict else config.validation_fail_on)
 
-    try:
-        runtime = get_runtime(recipe.runtime, v)
-        issues.extend(runtime.validate_recipe(recipe))
-    except ValueError:
-        issues.append(f"Unknown runtime: {recipe.runtime}")
+    issues = validate_recipe(recipe, config=config, v=v)
+    counts = {level: sum(1 for i in issues if i.severity == level) for level in (ERROR, WARNING, SUGGESTION)}
+    failed = should_fail(issues, threshold)
 
     if output_json:
-        print_json({"recipe": recipe.qualified_name, "valid": len(issues) == 0, "issues": issues})
-        if issues:
+        print_json(
+            {
+                "recipe": recipe.qualified_name,
+                # `valid` is a property of the recipe (no errors) and stays
+                # that way whatever bar this invocation set; `failed` is the
+                # exit code, i.e. this invocation's bar.
+                "valid": counts[ERROR] == 0,
+                "failed": failed,
+                "fail_on": threshold,
+                "errors": counts[ERROR],
+                "warnings": counts[WARNING],
+                "suggestions": counts[SUGGESTION],
+                "issues": [i.to_dict() for i in issues],
+            }
+        )
+        if failed:
             sys.exit(1)
         return
 
-    if issues:
-        click.echo(f"Recipe '{recipe.qualified_name}' has {len(issues)} issue(s):")
-        for issue in issues:
-            click.echo(f"  - {issue}")
-        sys.exit(1)
-    else:
+    if not issues:
         click.echo(f"Recipe '{recipe.qualified_name}' is valid.")
+        return
+
+    click.echo(format_validation_report(recipe.qualified_name, issues))
+    if not failed:
+        if counts[WARNING]:
+            click.echo("\nNothing here blocks a launch. Use --strict to fail on warnings.")
+        else:
+            click.echo("\nSuggestions do not block a launch.")
+
+    if failed:
+        sys.exit(1)
 
 
 @recipe.command("vram")

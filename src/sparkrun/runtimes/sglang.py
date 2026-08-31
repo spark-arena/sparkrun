@@ -43,6 +43,7 @@ _SGLANG_FLAG_MAP = {
     # Speculative decoding (NEXTN / EAGLE / DSPARK).
     "speculative_algorithm": "--speculative-algorithm",
     "speculative_draft_model_path": "--speculative-draft-model-path",
+    "speculative_draft_model_revision": "--speculative-draft-model-revision",
     "speculative_num_steps": "--speculative-num-steps",
     "speculative_eagle_topk": "--speculative-eagle-topk",
     "speculative_num_draft_tokens": "--speculative-num-draft-tokens",
@@ -89,9 +90,37 @@ class SglangRuntime(RuntimePlugin):
     runtime_name = "sglang"
     default_image_prefix = "scitrera/dgx-spark-sglang"
 
+    # Native distribution: each node runs its own serve process and rendezvous
+    # is over the wire, so per-machine tuned images are meaningful here.  Ranks
+    # still share NCCL/torch ABI expectations — the images are expected to be
+    # differently-tuned builds of the same stack, not different stacks.
+    supports_heterogeneous_images = True
+
+    # Native distribution: each node runs its own serve process and rendezvous
+    # is over the wire, so per-machine tuned images are meaningful here.  Ranks
+    # still share NCCL/torch ABI expectations — the images are expected to be
+    # differently-tuned builds of the same stack, not different stacks.
+    supports_heterogeneous_images = True
+
     def cluster_strategy(self) -> str:
         """SGLang uses native multi-node distribution, not Ray."""
         return "native"
+
+    def known_config_keys(self) -> frozenset[str]:
+        """Flag-map keys plus the SGLang keys read outside it.
+
+        The speculative draft-model keys are consumed by ``prepare()`` /
+        distribution rather than emitted from the map.  See
+        :func:`sparkrun.core.launcher.report_unmapped_config_keys`.
+        """
+        return frozenset(_SGLANG_FLAG_MAP) | {
+            "speculative_draft_model",
+            "speculative_draft_model_path",
+            "speculative_draft_model_revision",
+        }
+
+    def serve_flag_map(self):
+        return _SGLANG_FLAG_MAP
 
     def resolve_api_key(
         self,
@@ -117,7 +146,7 @@ class SglangRuntime(RuntimePlugin):
         """Pre-sync the speculative draft model when configured."""
         draft_model = self._detect_speculative_draft_model(recipe)
         if draft_model:
-            recipe.distribution_config.add_model(draft_model)
+            recipe.distribution_config.add_model(draft_model, revision=self._detect_speculative_draft_revision(recipe))
 
     @staticmethod
     def _detect_speculative_draft_model(recipe: "Recipe") -> str | None:
@@ -133,6 +162,19 @@ class SglangRuntime(RuntimePlugin):
             if val:
                 return str(val)
         return None
+
+    @staticmethod
+    def _detect_speculative_draft_revision(recipe: "Recipe") -> str | None:
+        """Resolve the pin for the draft model's *own* repo, if declared.
+
+        Distribution-only, like the draft model path itself — SGLang has no
+        serve flag for it.  Absent a declaration the draft model is fetched
+        unpinned; the recipe's ``model_revision`` is emphatically not a
+        substitute, since that SHA exists only in the served model's repo.
+        """
+        # noinspection PyProtectedMember
+        val = recipe._effective_default("speculative_draft_model_revision")
+        return str(val) if val else None
 
     def generate_command(
         self,
@@ -341,18 +383,26 @@ class SglangRuntime(RuntimePlugin):
             cmd = recipe.command or ""
             cmd_has_tokenizer = "--tokenizer-path" in cmd or "{tokenizer_path}" in cmd
 
+            # Both are declared errors: SGLang refuses to load a GGUF model
+            # without a tokenizer path, so either shape fails at startup —
+            # after the weights have been downloaded and fanned out.
             if not tokenizer and not cmd_has_tokenizer:
                 issues.append(
-                    "[sglang] GGUF model detected but no tokenizer path configured. "
-                    "SGLang requires --tokenizer-path pointing to the base (non-GGUF) HF model. "
-                    "Set 'tokenizer_path' in defaults (e.g. tokenizer_path: Qwen/Qwen3-1.7B) "
-                    "or add --tokenizer-path to the command template."
+                    self.recipe_error(
+                        "GGUF model detected but no tokenizer path configured. "
+                        "SGLang requires --tokenizer-path pointing to the base (non-GGUF) HF model. "
+                        "Set 'tokenizer_path' in defaults (e.g. tokenizer_path: Qwen/Qwen3-1.7B) "
+                        "or add --tokenizer-path to the command template."
+                    )
                 )
             if tokenizer and cmd and not cmd_has_tokenizer:
                 issues.append(
-                    "[sglang] GGUF recipe has 'tokenizer_path' in defaults but the command "
-                    "template does not reference {tokenizer_path} or --tokenizer-path. "
-                    "Add '--tokenizer-path {tokenizer_path}' to the command template."
+                    self.recipe_error(
+                        "GGUF recipe has 'tokenizer_path' in defaults but the command "
+                        "template does not reference {tokenizer_path} or --tokenizer-path, "
+                        "so the value is dropped. "
+                        "Add '--tokenizer-path {tokenizer_path}' to the command template."
+                    )
                 )
 
         return issues
@@ -419,6 +469,11 @@ class SglangRuntime(RuntimePlugin):
         library — SGLang's TileLang kernels default to ``~/.tilelang/cache``,
         outside both XDG and the SGLang root.  Harmless when TileLang is absent
         from the image.
+
+        ``TVM_FFI_CACHE_DIR`` covers SGLang's generated TVM-FFI extension
+        libraries.  TVM-FFI defaults to the literal ``~/.cache/tvm-ffi`` and
+        does not consult XDG, so a CRIU restore otherwise cannot reopen the
+        mapped JIT ``.so`` after the capture container is gone.
         """
         from sparkrun.core.runtime_cache import CachePath
 
@@ -432,6 +487,7 @@ class SglangRuntime(RuntimePlugin):
             "SGLANG_CACHE_DIR": CachePath("sglang"),
             "SGLANG_JIT_CACHE_DIR": CachePath("sglang/jit"),
             "TILELANG_CACHE_DIR": CachePath("tilelang"),
+            "TVM_FFI_CACHE_DIR": CachePath("tvm_ffi"),
         }
 
     # --- Cluster stop ---

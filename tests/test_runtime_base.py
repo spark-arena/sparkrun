@@ -222,8 +222,8 @@ class TestAugmentServedModelName:
         cmd = runtime.generate_command(recipe, {}, is_cluster=False)
         assert cmd.count("--served-model-name") == 1
 
-    def test_vllm_ray_no_override_no_change(self):
-        """vllm-ray: no served_model_name in config → command unchanged."""
+    def test_vllm_ray_no_override_uses_recipe_model(self):
+        """vllm-ray keeps the recipe model id stable across offline rewrites."""
         from sparkrun.runtimes.vllm_ray import VllmRayRuntime
 
         recipe = self._make_recipe(
@@ -232,7 +232,7 @@ class TestAugmentServedModelName:
         )
         runtime = VllmRayRuntime()
         cmd = runtime.generate_command(recipe, {}, is_cluster=False)
-        assert "--served-model-name" not in cmd
+        assert "--served-model-name org/some-model" in cmd
 
     def test_vllm_ray_skip_keys_suppresses(self):
         """vllm-ray: skip_keys={served_model_name} → no augmentation."""

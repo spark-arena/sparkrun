@@ -131,6 +131,7 @@ def test_run_dry_run_returns_run_result_without_ssh():
             "runtime_info": {},
             "builder": None,
             "backends": {},
+            "timeline": None,
         },
     )()
 
@@ -189,6 +190,7 @@ def test_run_solo_mode_truncates_to_one_host():
                 "runtime_info": {},
                 "builder": None,
                 "backends": {},
+                "timeline": None,
             },
         )()
 
@@ -638,6 +640,7 @@ def _run_with_scheduler_chain(*, options_scheduler, recipe_scheduler, cluster_sc
             "runtime_info": {},
             "builder": None,
             "backends": {},
+            "timeline": None,
         },
     )()
 
@@ -744,6 +747,7 @@ def _build_multihost_run_fixtures(num_hosts: int = 4):
             "runtime_info": {},
             "builder": None,
             "backends": {},
+            "timeline": None,
         },
     )()
 
@@ -886,6 +890,7 @@ def _capture_launch_cluster_id(opts):
                 "runtime_info": {},
                 "builder": None,
                 "backends": {},
+                "timeline": None,
             },
         )()
 

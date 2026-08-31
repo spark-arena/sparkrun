@@ -37,8 +37,28 @@ def fetch_hf_quant_config(
     ``hf_quant_config.json`` with quantization details not present in
     ``config.json``.
 
-    Returns the parsed JSON dict, or ``None`` if the file doesn't exist.
+    Returns the parsed JSON dict, or ``None`` if the file doesn't exist — or if
+    the shared Hub metadata budget (:mod:`sparkrun.models.hub`) is spent.
+
+    Most repos do **not** ship this file, so a ``None`` here is the common case
+    and costs one 404.  It is memoised all the same: without that, the three
+    ``estimate_vram`` calls a single ``sparkrun run`` performs each re-ask.
     """
+    from sparkrun.models.hub import hub_metadata_call
+
+    return hub_metadata_call(
+        "hf_quant_config.json",
+        model_id,
+        revision,
+        lambda: _fetch_hf_quant_config(model_id, revision, cache_dir),
+    )
+
+
+def _fetch_hf_quant_config(
+    model_id: str,
+    revision: str | None,
+    cache_dir: str | None,
+) -> dict[str, Any] | None:
     try:
         from huggingface_hub import hf_hub_download
         from huggingface_hub.utils import disable_progress_bars, enable_progress_bars
