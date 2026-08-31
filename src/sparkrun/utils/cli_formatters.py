@@ -575,7 +575,7 @@ def _wrap(text: str, width: int, indent: str) -> list[str]:
     )
 
 
-def format_launch_timings(export: dict, *, width: int = 62) -> str:
+def format_launch_timings(export: dict, *, width: int = 62, title: str = "Launch timings") -> str:
     """Render a :meth:`~sparkrun.core.timing.Timeline.export` as a tree.
 
     Spans nest by parent id rather than by name, because fan-out spans
@@ -592,7 +592,7 @@ def format_launch_timings(export: dict, *, width: int = 62) -> str:
     for group in children.values():
         group.sort(key=lambda s: (s.get("t_start", 0.0), s.get("id", 0)))
 
-    lines = ["Launch timings (total %.1fs):" % export.get("duration_s", 0.0)]
+    lines = ["%s (total %.1fs):" % (title, export.get("duration_s", 0.0))]
 
     def walk(parent: int | None, depth: int) -> None:
         for span in children.get(parent, ()):

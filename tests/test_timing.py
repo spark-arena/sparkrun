@@ -317,3 +317,14 @@ def test_formatter_names_the_clock_so_the_tree_does_not_read_as_one_total():
     # The measured span carries no annotation.
     launch_line = next(ln for ln in rendered.splitlines() if "launch" in ln and "engine" not in ln)
     assert "[" not in launch_line
+
+
+def test_formatter_accepts_operation_specific_title():
+    from sparkrun.utils.cli_formatters import format_launch_timings
+
+    tl = Timeline()
+    with tl.span("plugin.capture"):
+        pass
+
+    rendered = format_launch_timings(tl.export(), title="Capture timings")
+    assert rendered.startswith("Capture timings")

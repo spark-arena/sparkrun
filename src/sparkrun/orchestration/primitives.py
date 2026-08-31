@@ -17,8 +17,10 @@ from sparkrun.orchestration.ssh import (
     RemoteResult,
     resolve_parallel_cap,
     run_local_script,
+    run_local_script_streaming,
     run_remote_command,
     run_remote_script,
+    run_remote_script_streaming,
     run_remote_scripts_parallel,
     should_run_locally,
 )
@@ -783,6 +785,40 @@ def run_script_on_host(
     if should_run_locally(host, kw.get("ssh_user")):
         return run_local_script(script, dry_run=dry_run, timeout=timeout)
     return run_remote_script(host, script, timeout=timeout, dry_run=dry_run, **kw)
+
+
+def run_script_on_host_streaming(
+    host: str,
+    script: str,
+    ssh_kwargs: dict | None = None,
+    timeout: int | None = None,
+    dry_run: bool = False,
+    quiet: bool = False,
+    session_guard: bool = False,
+) -> RemoteResult:
+    """Run a local-or-remote script with live output when ``quiet`` is false.
+
+    The streaming peer of :func:`run_script_on_host`, dispatching on the same
+    :func:`should_run_locally` rule so a payload does not change behaviour
+    depending on which side of that boundary it lands.
+    """
+    kw = ssh_kwargs or {}
+    if should_run_locally(host, kw.get("ssh_user")):
+        return run_local_script_streaming(
+            script,
+            dry_run=dry_run,
+            timeout=timeout,
+            quiet=quiet,
+        )
+    return run_remote_script_streaming(
+        host,
+        script,
+        timeout=timeout,
+        dry_run=dry_run,
+        quiet=quiet,
+        session_guard=session_guard,
+        **kw,
+    )
 
 
 def run_command_on_host(

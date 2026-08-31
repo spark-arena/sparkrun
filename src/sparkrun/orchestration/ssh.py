@@ -261,6 +261,52 @@ def run_local_script(script: str, dry_run: bool = False, timeout: int | None = N
     )
 
 
+def run_local_script_streaming(
+    script: str,
+    dry_run: bool = False,
+    timeout: int | None = None,
+    quiet: bool = False,
+) -> RemoteResult:
+    """Execute a local script with the same output contract as remote streaming.
+
+    The local peer of :func:`run_remote_script_streaming`, so a caller that
+    dispatches local-or-remote (``run_script_on_host_streaming``) gets one
+    behaviour either way.  Non-``quiet`` inherits the terminal, which is what
+    keeps a long build visibly alive; ``quiet`` keeps the captured result for
+    callers that render their own progress.
+    """
+    if quiet:
+        return run_local_script(script, dry_run=dry_run, timeout=timeout)
+    if dry_run:
+        logger.info("[dry-run] Would execute locally (streaming; %d bytes)", len(script))
+        return RemoteResult(host="localhost", returncode=0, stdout="[dry-run]", stderr="")
+
+    started = time.monotonic()
+    try:
+        proc = subprocess.run(
+            ["bash", "-s"],
+            input=stdin_bytes(script),
+            text=False,
+            timeout=timeout,
+            stdout=None,
+            stderr=None,
+        )
+        elapsed = time.monotonic() - started
+        if proc.returncode == 0:
+            logger.debug("  Local script (streaming) <- OK (%.1fs)", elapsed)
+        else:
+            logger.warning("  Local script (streaming) <- FAILED rc=%d (%.1fs)", proc.returncode, elapsed)
+        return RemoteResult(host="localhost", returncode=proc.returncode, stdout="", stderr="")
+    except subprocess.TimeoutExpired:
+        elapsed = time.monotonic() - started
+        logger.error("  Local script (streaming) <- TIMEOUT after %.0fs", elapsed)
+        return RemoteResult(host="localhost", returncode=124, stdout="", stderr="Execution timed out")
+    except Exception as error:
+        elapsed = time.monotonic() - started
+        logger.error("  Local script (streaming) <- ERROR (%.1fs): %s", elapsed, error)
+        return RemoteResult(host="localhost", returncode=-1, stdout="", stderr=str(error))
+
+
 def _decode(raw: bytes | str | None) -> str:
     """Normalize subprocess output to text.
 
@@ -559,8 +605,11 @@ def run_remote_script_streaming(
             logger.debug("  SSH script (streaming) <- %s OK (%.1fs)", host, elapsed)
         else:
             logger.warning("  SSH script (streaming) <- %s FAILED rc=%d (%.1fs)", host, proc.returncode, elapsed)
-        stdout = getattr(proc, "stdout", "") or ""
-        stderr = getattr(proc, "stderr", "") or ""
+        # Decoded, not used raw: the streaming path runs in binary mode like
+        # every other subprocess here, so `quiet` callers logging or matching on
+        # these would otherwise be handed bytes.
+        stdout = _decode(getattr(proc, "stdout", ""))
+        stderr = _decode(getattr(proc, "stderr", ""))
         if quiet and stdout:
             logger.debug("Captured stdout on %s:\n%s", host, stdout[-2000:])
         if quiet and stderr:
