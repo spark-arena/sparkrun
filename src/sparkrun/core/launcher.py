@@ -1061,6 +1061,11 @@ def launch_inference(
     # the guards must fire before the builder runs, the image is pulled, or the
     # model is synced.  The plan itself is resolved after the builder phase,
     # since a builder may rewrite the fallback image ref.
+    #
+    # The check reads ``containers`` with getattr, not attribute access: this
+    # path is reached with objects that only duck-type as recipes (see
+    # extract_served_model_name_from_command for the same accommodation), and a
+    # launch must not die on a missing optional field.
     from sparkrun.core.image_preparation import validate_image_configuration
 
     validate_image_configuration(

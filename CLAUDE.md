@@ -62,7 +62,7 @@ src/sparkrun/
 ├── tuning/             # Triton fused MoE kernel tuning for SGLang and vLLM
 ├── builders/           # Image + environment builder plugins (docker-pull, eugr, uv-venv)
 ├── diagnostics/        # Host and run diagnostic collection (NDJSON output)
-├── plugins/            # In-tree cross-cutting integrations
+├── plugins/            # In-tree cross-cutting integrations (see docs/PLUGINS.md)
 ├── proxy/              # Inference gateway (LiteLLM engine + gateway selection seam)
 ├── benchmarking/       # Benchmark framework plugins and result export (llama-benchy)
 ├── utils/              # Shared helpers (coerce_value, suppress_noisy_loggers, etc.)
@@ -90,6 +90,10 @@ Core domain logic extracted from the top-level package. All imports use `sparkru
 | `backend_select.py`     | `select_backends(HostHardware) -> BackendBundle`, `NoMatchingBackendError`           |
 | `placement.py`          | `compute_placement()` — rank → (host, local-GPU) honoring `RecipeLayout`             |
 | `layout.py`             | `RecipeLayout` / `Placement` dataclasses parsed from recipe `layout:` block          |
+| `images.py`             | `ImagePlan` / `resolve_image_plan()` — per-machine `containers:` resolution           |
+| `image_preparation.py`  | `prepare_images()` / `stage_prepared_images()` — builder + image plan as one step     |
+| `recipe_items.py`       | `register_recipe_item()` — plugin-owned top-level recipe keys                        |
+| `execution.py`          | `RecipeExecutionStrategy`, `PreparationStep` DAG, `LaunchAssetPolicy`                |
 | `launcher.py`           | `launch_inference()`, `resolve_per_host_backends()`, `resolve_recipe_trust()`        |
 
 ### CLI Architecture (`cli/`)
@@ -206,6 +210,16 @@ far from its cause.
 One consequence worth knowing: `PluggableGroup` attaches plugin commands once
 per process, so the gate is effectively read once per CLI invocation (the test
 suite resets `_cli_ext_loaded`).
+
+**What a cross-cutting plugin gets.** `sparkrun.plugins` re-exports the two
+registration entry points — `register_recipe_item` (own a top-level recipe key,
+optionally with an execution strategy and preparation steps) and
+`register_cli_command`. Together with `Transport.open_host_session`,
+`api.materialize` and `SparkrunConfig.plugin_settings`, those are the seams that
+let an integration participate in a launch without forking it. See
+`docs/PLUGINS.md` for the author-facing version, and the Plugin-Owned Recipe
+Items / Recipe Execution Strategies / Launch Materialization sections below for
+the rationale.
 
 **Layering trap.** `init_sparkrun` runs on the console-free `sparkrun.api` path,
 and plugin scanning imports *every* submodule of a plugin package. So the CLI
@@ -788,6 +802,234 @@ scheduler had put on exactly the host set being asked about — under an
   `already_running=True`, `launch_result=None`, describing the *pre-existing*
   deployment. Both go through `find_running_intent`.
 
+### Per-Machine Container Images (`core/images.py`)
+
+A recipe normally names one `container:` and every node runs it. A recipe
+serving **pre-optimized, machine-tuned** builds instead declares `containers:`,
+binding an image to a **hostname**:
+
+```yaml
+container: nvcr.io/nvidia/vllm:25.09      # fallback for unlisted machines
+containers:
+  - {host: spark-01, image: myorg/vllm-spark:node-01}
+  - {host: spark-02, image: myorg/vllm-spark:node-02}
+```
+
+Keyed by hostname, not rank or node index: the image is a property of the
+*machine*, so a rank-indexed map would be silently wrong the moment the
+scheduler ordered hosts differently — and "silently wrong image" is the entire
+failure mode this has to avoid. It is deliberately **not** spelled inside
+`layout:`, whose `placements` every scheduler honors verbatim; putting the
+image there would pin placement as a side effect of naming an image, wrong when
+the tuned images exist on every machine and a `--tp 2` launch should still be
+free to pick the two idlest. A recipe wanting both declares `layout:` as well.
+
+`ImagePlan` keeps **two** maps because they answer different questions:
+
+| Field | What it is | Consumers |
+|-------|------------|-----------|
+| `declared` | sorted `(host, image)` as the recipe wrote it | `generate_intent_id`, `derive_recipe_fingerprint` |
+| `images_by_node` | image per node, aligned with the resolved host list | container launch, distribution derivation |
+
+Hashing the *resolved* map would make the intent placement-dependent, so
+`stop` / `logs` / `--ensure` would stop matching a workload the moment the
+scheduler picked a different host subset. Both digests append their part only
+when a `containers:` block exists, so every recipe predating the feature hashes
+byte-identically (the same rule the fingerprint's `layout=` part could not
+follow, which is why `containers=` sits outside the unconditional attr loop).
+
+Because a wrong image on a tuned machine fails confusingly rather than loudly,
+resolution is strict and every guard fires **before any side effect** — before
+the builder runs, the image is pulled, or the model is synced:
+
+- A `host:` not in the cluster raises; a duplicate `host:` raises; a selected
+  host with neither an entry nor a `container:` fallback raises.
+- A host falling back to `container:` is logged **by name at default
+  verbosity** — on a machine-tuned cluster that is a material difference.
+- **The runtime must opt in** (`RuntimePlugin.supports_heterogeneous_images`),
+  fail-closed. Anything with a wire protocol between ranks breaks as a hang or
+  a cryptic deserialization error rather than a clean failure: Ray needs one
+  build across head and workers, MPI ranks must share an ABI. `sglang`,
+  `vllm-distributed` and `llama-cpp` opt in. Note `vllm-ray` is a *sibling* of
+  `vllm-distributed` (both are `VllmMixin` + `RuntimePlugin`), not a subclass,
+  so it does not inherit the opt-in.
+- **No image-transforming builder.** `prepare()` is single-valued so it cannot
+  serve N images, and calling it once per image is not an option when a build
+  is minutes long. `BuilderPlugin.transforms_image` separates those from
+  *environment* builders (`uv-venv`) and `docker-pull`, which return the ref
+  untouched and compose fine. Precedent: `Executor.needs_image`.
+- `--image` clears the block entirely (`core/resolve.py`, logged). Anything
+  subtler — override the fallback but keep the machine-specific images — would
+  leave most nodes on the image the user just replaced.
+
+Distribution is **derived** from the launch plan (`derive_container_entries`)
+rather than declared beside it, so "what to ship" and "what to run" cannot
+disagree. A hand-written `distribution_config.containers` still wins, which is
+what `DistributionResourceConfig.explicit` exists to detect — the whole-config
+`externally_provided` flag is too coarse, since a recipe customizing only
+`models` still receives an auto-generated container entry. Two consequences in
+`orchestration/distribution.py`:
+
+- `_distribute_image_plan` fans out **across** images concurrently (each
+  per-image call already fans out over its own targets under
+  `resolve_parallel_cap`). A single image is dispatched inline so the
+  overwhelmingly common case keeps its exact previous call shape and log order.
+- `delegated` is redirected to per-node `pull` when the launch is
+  heterogeneous: its head-pull-then-`docker save | ssh docker load` fan-out
+  would make the head pull images it does not run and copy a machine-tuned
+  image onto the wrong machine.
+
+The ENTRYPOINT preflight probes once per **distinct** image, on a host that
+actually runs it. The old single probe was correct only because distribution
+had established every host carried the same one.
+
+Job metadata records `effective_container_images` **alongside** — never instead
+of — the scalar `effective_container_image` (the head's), because proxy
+discovery, `logs` and the desktop sidecar all read the scalar. All three
+`save_job_metadata` call sites must forward it: each rewrites the file
+wholesale, so an omission is an erasure.
+
+### Transfer mode `pull`
+
+The fourth transfer mode. The other three route bytes through *somewhere* — the
+control machine (`local` / `push`) or the head (`delegated`); `pull` routes them
+through nobody: every node fetches from origin itself, concurrently. Faster than
+a serialized head-pull-and-fan-out when per-node egress is good, and the only
+correct strategy for heterogeneous images. Opt-in, because it costs N× egress
+and needs registry / HF credentials reachable on every node.
+
+- **A shared model cache overrides it.** With `prefs.skip_fan_out` the workers
+  already mount the head's copy, and N nodes downloading into one NFS path
+  concurrently is waste at best and a corrupted snapshot at worst.
+- **`--rebuild` must reach the side that actually pulls**, which here is every
+  node — `sync_image_to_hosts(force_pull=…)`. Its presence check is
+  metadata-only, so an image re-pushed under the same tag is otherwise never
+  refreshed.
+- An *inferred* mode (auto → delegated) still falls back to a control-machine
+  push for the hosts that failed; an explicitly-named `pull` is honored
+  literally, the rule `delegated` already follows.
+
+`models/distribute.py:_build_model_ensure_script` is shared by the head and
+per-node paths — a second copy would be free to drift on GGUF handling or token
+injection, and the drift would only surface on gated or quant-selected models.
+
+### Plugin-Owned Recipe Items (`core/recipe_items.py`)
+
+`register_recipe_item(key, handler, owner=…)` lets a cross-cutting plugin claim
+a **top-level recipe key** exclusively, without `Recipe` learning its schema and
+without hiding the settings in `metadata` (untyped, unvalidated, invisible to
+the fingerprint). The core owns lifecycle only; the handler owns
+`parse` / `validate` / `export`. Registration is idempotent for the same owner
+and handler; a second owner raises, so nothing can silently reinterpret an
+existing recipe surface.
+
+Four properties are load-bearing:
+
+- **Owned keys are excluded from the `runtime_config` sweep.** Unknown
+  top-level keys are otherwise absorbed into `runtime_config`, which feeds the
+  serve command — so without the exclusion a plugin's settings reach the engine
+  as flags.
+- **Items round-trip at the same top level** through `__getstate__`, registry
+  caching and `to_yaml_dict`. A plugin key is recipe content; re-exporting it
+  elsewhere would break the next load.
+- **A raw item survives its plugin being unavailable.** `_plugin_item_raw`
+  preserves it verbatim, so disabling a plugin never silently rewrites recipes.
+- **Items participate in `derive_recipe_fingerprint`** via the handler's
+  canonical export, appended only when present.
+
+Note the deliberate contrast with `capabilities:` / `unsupported_capabilities:`,
+which are core keys parsed as real attributes *specifically* to stay **out** of
+the fingerprint: describing what a deployment can do must not change what it is.
+A plugin item is the opposite — it changes how the workload is produced.
+
+`SparkrunConfig.plugin_settings(name)` reads `plugins.<name>` for site-local
+operational policy that does not belong in a portable recipe. `plugins.paths`
+stays reserved for external plugin discovery. This is the *only* sanctioned
+home for per-plugin config — a bespoke top-level block plus a property on
+`SparkrunConfig` would put plugin-specific knowledge back in core.
+
+### Recipe Execution Strategies (`core/execution.py`)
+
+An integration that changes *how* a workload is brought up — not which image or
+which model, but the act of starting it — would otherwise have to fork
+`launch_inference` and lose distribution, placement, preflight and job
+metadata. `RecipeExecutionStrategy` is the seam: a plugin's recipe item may opt
+its recipes into **one** strategy, which supplies preparation steps and replaces
+`runtime.run()` at the end. Everything else in the launcher still runs.
+
+| Hook | Runs | Returns |
+|------|------|---------|
+| `preparation_steps(ctx)` | in `api.run`, before `launch_inference` | `PreparationStep`s |
+| `finalize_preparation(ctx, receipts)` | after those steps | `PreparedExecution` |
+| `prepare_activation(ctx)` | phase 5, assets resident, **before** eviction | opaque receipt |
+| `activate(ctx, receipt)` | in place of `runtime.run()` | `ActivationResult` |
+
+Six rules:
+
+- **Recipe-local.** A strategy is reachable only through a top-level key its
+  plugin owns, so *installing* a plugin never changes what `sparkrun run` does
+  for a recipe that omits the key.
+- **One strategy, or an error.** Two things claiming to launch the workload
+  have no correct arbitration, so this is not a precedence rule.
+- **The replacement barrier stays core-owned.** The launcher completes plugin
+  preparation, normal image/model preparation *and* `prepare_activation` before
+  firing `before_start`. A strategy never decides when the deployment it
+  replaces is torn down — and by that point everything slow and interruptible
+  is behind it, the same reason eviction moved into that hook (see Launch
+  Placement above).
+- **Preparation is a named DAG with compensation.** Globally unique step names,
+  explicit `requires`, completed steps cleaned up in reverse on failure. Naming
+  beats positional ordering because two plugins contributing steps share no
+  list to order themselves within.
+- **`LaunchAssetPolicy` declines, it does not replace.** A strategy opts out of
+  builder / model / image distribution / entrypoint probe / tuning sync / page
+  cache and may supply `images_by_node`; whatever it does not decline still
+  runs, so it inherits the pipeline rather than reimplementing it.
+- **`RunOptions.strategy_options` is not workload identity.** Per-invocation
+  choices stay out of the fingerprint and intent id — the same rule that keeps
+  serve flags out of `generate_intent_id`.
+
+The activation path writes job metadata itself and must write **all** of it
+(cluster, ssh_user, fingerprint, owner): `save_job_metadata` rewrites the file
+wholesale, so an omission is an erasure whose symptom — a teardown that
+authenticates as the wrong user and reports success — looks nothing like its
+cause. The experimental k8s path returns before `launch_inference`, so it has
+neither the asset pipeline nor the barrier; a strategy there is **refused**
+rather than silently ignored.
+
+### Launch Materialization (`api.materialize`)
+
+`api.plan` stops at placement. `api.materialize(options, plan=…) ->
+ResolvedLaunchSpec` resolves the rest — per-unit argv, env, mounts, devices and
+the worker/rank topology — **read-only**: no image pull, no model distribution,
+no cache creation, no network probing. It reuses a `RunPlan`'s placement rather
+than re-deciding, so it cannot disagree with the launch it describes.
+
+The shape separates three things a flat "one container per host" model
+conflates, each of which silently produces a wrong launch:
+
+- **Launch units vs. workers.** A unit is a container / process tree; a worker
+  owns an accelerator. Scheduler ranks number *workers*, vLLM's `--node-rank`
+  numbers *process trees*, and the two diverge as soon as a host owns more than
+  one GPU. `generate_node_command` cannot express that (it takes one rank and
+  infers the rest), so `generate_launch_unit_command` takes both namespaces
+  explicitly; `_generate_parallel_command` is the shared renderer so the
+  single- and multi-worker paths cannot drift.
+- **Service domains.** A unit never crosses a service boundary, which permits
+  several DP/PD service containers on one host.
+- **Adapter topology.** Runtime-specific parallelism is opaque payload guarded
+  by a canonical digest, rather than schema fields growing per runtime.
+
+Two details: the command is a **bash argv** (`bash --noprofile --norc -c …`)
+because sparkrun executes generated serve commands as scripts, so pipes,
+redirects and expansions must survive the boundary; and executor mounts are
+resolved and included, since a strategy creating its own containers would
+otherwise simply not have what `ExecutorConfig.volumes` would have added. The
+HF cache and pinned model inputs are marked read-only — a privileged controller
+in the workload container must not leak ownership back into the shared cache.
+`image_digest` is populated only from an already-pinned `name@sha256:` ref;
+resolving one would need a remote probe, which is what "read-only" rules out.
+
 ### Workload identity — intent vs. fingerprint
 
 Three different questions, two digests. Getting them confused is destructive,
@@ -1152,7 +1394,8 @@ a provider-transport cluster still uses the docker executor.
 
 - **`base.py`** — `Transport` SAF `Plugin` (selector `transport_name`, extension point `EXT_TRANSPORT`) with `prepare(cluster, *, dry_run=…)` (default no-op) and its delete-time counterpart `cleanup_cluster(cluster, *, dry_run=…)` (release out-of-band state — ssh alias/key — on cluster delete). A transport self-gates via `required_feature_flag` (like `Executor`). Discovered via `find_types_in_modules("sparkrun.transports", Transport)` in `core.bootstrap` — mirrors `Executor`.
 - **`ssh.py`** — `SshTransport` (`transport_name = "ssh"`), the default; `prepare()` is a no-op, so every existing cluster is byte-identical to before transports existed.
-- **`__init__.py`** — SAF-backed resolution: `resolve_transport(name)` / `list_transports()` query `get_extensions(EXT_TRANSPORT)` by `transport_name` (returning the stateless SAF singleton). `prepare_cluster_transport(cluster)` (run/status/logs/stop) and `cleanup_cluster_transport(cluster)` (delete) are the single call-site helpers. `_require_transport_enabled` reads the resolved transport's `required_feature_flag` and fails closed at the `prepare` call site (never a silent SSH downgrade, never SAF `is_multi_extension` hiding) — a gated selector yields a clear "enable it with …" error rather than "unknown transport". `cleanup_cluster_transport` is deliberately **ungated** (teardown must succeed even if the flag was later disabled) and tolerant of an absent transport plugin.
+- **`session.py`** — `HostSession` / `SshHostSession`, the *runtime* peer of `prepare`. `prepare` makes a host reachable; a session executes **exact argv** on it (plus `upload` and `docker_registry` against the host's own daemon). Everything else sparkrun runs remotely is a generated *script* piped to `bash -s`, which is wrong for a managed binary invoked with structured arguments — re-quoting through a generated shell script is a correctness hazard there, not a convenience. Local dispatch bypasses the shell entirely so the two paths cannot disagree about quoting; a non-zero command is *data* (only an unusable session raises); and `close()` is the cancellation handle, killing in-flight process groups so an interrupted caller does not orphan remote work. `Transport.open_host_session` defaults to `SshHostSession`, so every existing cluster has one without declaring anything.
+- **`__init__.py`** — SAF-backed resolution: `resolve_transport(name)` / `list_transports()` query `get_extensions(EXT_TRANSPORT)` by `transport_name` (returning the stateless SAF singleton). `prepare_cluster_transport(cluster)` (run/status/logs/stop), `open_cluster_host_session(cluster)` (executable session, gated the same way) and `cleanup_cluster_transport(cluster)` (delete) are the single call-site helpers. `_require_transport_enabled` reads the resolved transport's `required_feature_flag` and fails closed at the `prepare` call site (never a silent SSH downgrade, never SAF `is_multi_extension` hiding) — a gated selector yields a clear "enable it with …" error rather than "unknown transport". `cleanup_cluster_transport` is deliberately **ungated** (teardown must succeed even if the flag was later disabled) and tolerant of an absent transport plugin.
 - **Thunder Compute** (`transport: thunder`) is **no longer in core** — it was externalized to the out-of-tree `sparkrun_thunder` plugin (the reference example for the plugin system). It registers `ThunderTransport` (SAF), its own `transports.thunder` feature flag, and the `sparkrun cluster import thunder` command (via `register_cli_command`). Core keeps only the generic seam; a `transport: thunder` cluster fails closed unless the plugin is loaded (`core.external_plugins` + `transports.thunder`).
 
 `ClusterDefinition.transport: str = "ssh"` + `provider_ref` select the transport
@@ -1386,8 +1629,9 @@ SSH-username prompts and before any other probe.
 
 ### Recipe System
 
-Recipes are YAML files with fields: `model`, `runtime`, `container`, `command`, `defaults`, `env`, `metadata`,
-`min_nodes`, `max_nodes`. The `Recipe` class (`core/recipe.py`) uses SAF `Variables` for config chain resolution —
+Recipes are YAML files with fields: `model`, `runtime`, `container`, `containers`, `command`, `defaults`, `env`,
+`metadata`, `min_nodes`, `max_nodes`. A plugin may also own additional top-level keys (see Plugin-Owned Recipe Items
+above). The `Recipe` class (`core/recipe.py`) uses SAF `Variables` for config chain resolution —
 CLI overrides → recipe defaults → runtime defaults.
 
 Recipe resolution: CLI → `find_recipe()` (module-level function in `core/recipe.py`) → searches bundled recipes, local
