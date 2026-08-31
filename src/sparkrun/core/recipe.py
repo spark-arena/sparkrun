@@ -205,6 +205,11 @@ class DistributionConfig:
         # scan through existing models and make sure that we don't add a duplicate
         for existing_model in self.models.entries:
             if existing_model.name == model:
+                # A later caller with a pin outranks an earlier unpinned add:
+                # dropping it would fetch the model unpinned and silently
+                # discard the revision the recipe asked for.
+                if revision:
+                    existing_model.revision = revision
                 return
         self.models.entries.append(DistributionModelEntry(name=model, revision=revision))
 

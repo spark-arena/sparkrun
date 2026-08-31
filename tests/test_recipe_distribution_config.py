@@ -138,6 +138,29 @@ def test_add_model_pins_its_own_revision():
     assert entries == {"{model}": "deadbeef", "org/draft": "cafe1234"}
 
 
+def test_add_model_pin_upgrades_an_earlier_unpinned_entry():
+    """A later caller with a revision outranks an earlier unpinned add.
+
+    Dedup used to return on the first name match, so whichever call happened to
+    run first won — and an unpinned add silently discarded a pin that arrived
+    afterwards, fetching the draft model unpinned.
+    """
+    r = _rev_recipe(model_revision="deadbeef")
+    r.distribution_config.add_model("org/draft")
+    r.distribution_config.add_model("org/draft", revision="cafe1234")
+    entries = {e.name: e.revision for e in r.distribution_config.models.entries}
+    assert entries == {"{model}": "deadbeef", "org/draft": "cafe1234"}
+
+
+def test_add_model_without_a_pin_never_clears_one():
+    """The reverse order must not un-pin what a previous caller pinned."""
+    r = _rev_recipe(model_revision="deadbeef")
+    r.distribution_config.add_model("org/draft", revision="cafe1234")
+    r.distribution_config.add_model("org/draft")
+    entries = {e.name: e.revision for e in r.distribution_config.models.entries}
+    assert entries == {"{model}": "deadbeef", "org/draft": "cafe1234"}
+
+
 def test_hand_written_entries_are_authoritative_about_revision():
     """A recipe that lists its own entries states every revision it wants."""
     dc = _rev_recipe(

@@ -43,6 +43,7 @@ _SGLANG_FLAG_MAP = {
     # Speculative decoding (NEXTN / EAGLE / DSPARK).
     "speculative_algorithm": "--speculative-algorithm",
     "speculative_draft_model_path": "--speculative-draft-model-path",
+    "speculative_draft_model_revision": "--speculative-draft-model-revision",
     "speculative_num_steps": "--speculative-num-steps",
     "speculative_eagle_topk": "--speculative-eagle-topk",
     "speculative_num_draft_tokens": "--speculative-num-draft-tokens",
@@ -88,6 +89,12 @@ class SglangRuntime(RuntimePlugin):
 
     runtime_name = "sglang"
     default_image_prefix = "scitrera/dgx-spark-sglang"
+
+    # Native distribution: each node runs its own serve process and rendezvous
+    # is over the wire, so per-machine tuned images are meaningful here.  Ranks
+    # still share NCCL/torch ABI expectations — the images are expected to be
+    # differently-tuned builds of the same stack, not different stacks.
+    supports_heterogeneous_images = True
 
     def cluster_strategy(self) -> str:
         """SGLang uses native multi-node distribution, not Ray."""
@@ -456,6 +463,11 @@ class SglangRuntime(RuntimePlugin):
         library — SGLang's TileLang kernels default to ``~/.tilelang/cache``,
         outside both XDG and the SGLang root.  Harmless when TileLang is absent
         from the image.
+
+        ``TVM_FFI_CACHE_DIR`` covers SGLang's generated TVM-FFI extension
+        libraries.  TVM-FFI defaults to the literal ``~/.cache/tvm-ffi`` and
+        does not consult XDG, so a CRIU restore otherwise cannot reopen the
+        mapped JIT ``.so`` after the capture container is gone.
         """
         from sparkrun.core.runtime_cache import CachePath
 
@@ -469,6 +481,7 @@ class SglangRuntime(RuntimePlugin):
             "SGLANG_CACHE_DIR": CachePath("sglang"),
             "SGLANG_JIT_CACHE_DIR": CachePath("sglang/jit"),
             "TILELANG_CACHE_DIR": CachePath("tilelang"),
+            "TVM_FFI_CACHE_DIR": CachePath("tvm_ffi"),
         }
 
     # --- Cluster stop ---

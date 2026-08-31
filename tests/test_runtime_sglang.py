@@ -332,6 +332,21 @@ def test_sglang_prepare_canonical_key_adds_draft_model():
     assert "draft/repo" in _model_names(recipe)
 
 
+def test_sglang_prepare_pins_draft_model_revision_and_emits_flag():
+    runtime = SglangRuntime()
+    recipe = _sglang_recipe(
+        defaults={
+            "speculative_draft_model_path": "draft/repo",
+            "speculative_draft_model_revision": "b" * 40,
+        }
+    )
+    runtime.prepare(recipe, hosts=["10.0.0.1"])
+
+    draft = next(entry for entry in recipe.distribution_config.models.entries if entry.name == "draft/repo")
+    assert draft.revision == "b" * 40
+    assert "--speculative-draft-model-revision %s" % ("b" * 40) in runtime.generate_command(recipe, {}, is_cluster=False)
+
+
 def test_sglang_prepare_alias_key_adds_draft_model():
     """speculative_draft_model alias also triggers add_model."""
     runtime = SglangRuntime()

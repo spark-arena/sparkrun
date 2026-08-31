@@ -100,6 +100,8 @@ class VllmMixin:
 
         return {
             "VLLM_CACHE_ROOT": CachePath("vllm"),
+            "TORCH_HOME": CachePath("torch"),
+            "TORCH_EXTENSIONS_DIR": CachePath("torch_extensions"),
             "TORCHINDUCTOR_CACHE_DIR": CachePath("inductor"),
             "TRITON_CACHE_DIR": CachePath("triton"),
             "FLASHINFER_CACHE_DIR": CachePath("flashinfer"),
