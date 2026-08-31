@@ -16,6 +16,7 @@ from vpd.next.util import read_yaml
 from scitrera_app_framework.api import Variables, EnvPlacement
 
 from sparkrun.core.layout import RecipeLayout
+from sparkrun.core.recipe_items import get_recipe_item, registered_recipe_items
 from sparkrun.utils.text import mask_non_placeholder_braces, render_template, unmask_braces, uses_brace_escapes
 
 if TYPE_CHECKING:
@@ -1026,6 +1027,24 @@ class Recipe:
         raw_metadata = data.get("metadata", {})
         self.metadata: dict[str, Any] = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
 
+        # Plugin-owned top-level recipe items.  The core owns only lifecycle;
+        # each registration owns parsing, validation, and canonical export.
+        # Parse after core identity fields so a handler may bind to model,
+        # runtime, or revision without reaching into raw YAML itself.
+        self.plugin_items: dict[str, Any] = {}
+        self._plugin_item_raw: dict[str, Any] = {}
+        for registration in registered_recipe_items():
+            if registration.key not in data:
+                continue
+            raw_item = data[registration.key]
+            self._plugin_item_raw[registration.key] = raw_item
+            try:
+                self.plugin_items[registration.key] = registration.handler.parse(raw_item, self)
+            except Exception as error:
+                raise RecipeError(
+                    "Plugin %s could not parse top-level recipe item '%s': %s" % (registration.owner, registration.key, error)
+                ) from error
+
         # Metadata values supplement missing top-level fields
         # if not self.name or self.name == default_name:
         #     meta_name = self.metadata.get("name")
@@ -1042,8 +1061,9 @@ class Recipe:
         # Runtime-specific config: explicit runtime_config key takes priority,
         # then unknown top-level keys are auto-swept in.
         self.runtime_config: dict[str, Any] = dict(data.get("runtime_config", {}))
+        plugin_keys = {registration.key for registration in registered_recipe_items()}
         for k, v in data.items():
-            if k not in _KNOWN_KEYS and k not in self.runtime_config:
+            if k not in _KNOWN_KEYS and k not in plugin_keys and k not in self.runtime_config:
                 self.runtime_config[k] = v
 
         # Gateway capability declarations.  Optional, and *not* serve
@@ -1355,7 +1375,24 @@ class Recipe:
                 if str(mq).lower().strip() not in _KNOWN_QUANT_METHODS:
                     issues.append("metadata.quantization %r is not a recognized method" % mq)
 
+        for key, value in self.plugin_items.items():
+            registration = get_recipe_item(key)
+            if registration is None:
+                issues.append("No plugin is registered to validate top-level recipe item '%s'" % key)
+                continue
+            try:
+                plugin_issues = registration.handler.validate(value, self)
+            except Exception as error:
+                issues.append("Plugin %s failed to validate top-level recipe item '%s': %s" % (registration.owner, key, error))
+                continue
+            issues.extend("%s.%s" % (key, issue) for issue in plugin_issues)
+
         return issues
+
+    def plugin_item(self, key: str, default: Any = None) -> Any:
+        """Return a parsed plugin-owned top-level item."""
+
+        return self.plugin_items.get(key, default)
 
     @classmethod
     def load(cls, path: str | Path, resolve: bool = True) -> Recipe:
@@ -1722,6 +1759,14 @@ class Recipe:
             "env": dict(self.env),
             "command": self.command,
             "metadata": dict(self.metadata),
+            "plugin_items": {
+                key: (
+                    get_recipe_item(key).handler.export(self.plugin_items[key], self)
+                    if get_recipe_item(key) is not None and key in self.plugin_items
+                    else self._plugin_item_raw[key]
+                )
+                for key in sorted(set(self._plugin_item_raw) | set(self.plugin_items))
+            },
             "maintainer": self.maintainer,
             "runtime_config": dict(self.runtime_config),
             "capabilities": list(self.capabilities),
@@ -1767,6 +1812,8 @@ class Recipe:
         self.env = dict(state.get("env") or {})
         self.command = state.get("command")
         self.metadata = dict(state.get("metadata") or {})
+        self.plugin_items = {}
+        self._plugin_item_raw = dict(state.get("plugin_items") or {})
         self.maintainer = state.get("maintainer", "")
         self.runtime_config = dict(state.get("runtime_config") or {})
         self.capabilities = list(state.get("capabilities") or [])
@@ -1788,6 +1835,10 @@ class Recipe:
         self.layout = RecipeLayout.from_dict(layout_state) if isinstance(layout_state, dict) else None
         self.cluster_config = LaunchOverrides.from_dict(state.get("cluster_config"))
         self.runtime_cache = dict(state.get("runtime_cache") or {})
+        for key, raw_item in self._plugin_item_raw.items():
+            registration = get_recipe_item(key)
+            if registration is not None:
+                self.plugin_items[key] = registration.handler.parse(raw_item, self)
 
     @classmethod
     def _deserialize(cls, data: dict[str, Any]) -> Recipe:
@@ -1957,6 +2008,15 @@ class Recipe:
         # check for content in runtime_config and then sweep it to top-level for greater compat w/ v1 style
         if self.runtime_config:
             d.update(self.runtime_config)
+
+        # Plugin items stay at the top level they claimed. Unknown state from
+        # a serialized recipe is preserved verbatim if its plugin is disabled.
+        for key in sorted(set(self._plugin_item_raw) | set(self.plugin_items)):
+            registration = get_recipe_item(key)
+            if registration is not None and key in self.plugin_items:
+                d[key] = registration.handler.export(self.plugin_items[key], self)
+            else:
+                d[key] = self._plugin_item_raw[key]
 
         # add distribution_config iff it was provided in the input recipe
         dist_cfg = self.distribution_config

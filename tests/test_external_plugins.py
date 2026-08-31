@@ -210,6 +210,19 @@ def test_external_plugin_paths_defaults_empty(tmp_path):
     assert SparkrunConfig(config_path=cfg).external_plugin_paths == []
 
 
+def test_plugin_settings_returns_isolated_plugin_mapping(tmp_path):
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("plugins:\n  paths: /plugins\n  coldsnap:\n    artifact_generations: 2\n")
+    config = SparkrunConfig(config_path=cfg)
+
+    settings = config.plugin_settings("coldsnap")
+    settings["artifact_generations"] = 99
+
+    assert config.plugin_settings("coldsnap") == {"artifact_generations": 2}
+    assert config.plugin_settings("missing") == {}
+    assert config.external_plugin_paths == [Path("/plugins")]
+
+
 def test_feature_flag_registered_and_off_by_default():
     from sparkrun.core.channels import CHANNEL_ALPHA, CHANNEL_BETA, CHANNEL_STABLE
     from sparkrun.core.features import get_feature

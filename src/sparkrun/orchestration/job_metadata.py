@@ -312,6 +312,8 @@ def derive_recipe_fingerprint(recipe: "Recipe", overrides: dict | None = None) -
       config chain, so hashing the template is what catches it.
     * ``mods`` and ``runtime_config`` — the latter absorbs unknown top-level
       keys such as v1 ``build_args``, which change the image that gets built
+    * plugin-owned top-level recipe items, using each plugin's canonical
+      export representation
     * the recipe's *declared* ``pre_exec`` / ``post_exec`` / ``post_commands``,
       read from the raw recipe so runtime- and builder-injected hooks don't
       move the digest (v1 ``mods`` are injected into ``pre_exec`` during
@@ -359,6 +361,25 @@ def derive_recipe_fingerprint(recipe: "Recipe", overrides: dict | None = None) -
     raw = getattr(recipe, "_raw", None) or {}
     for hook in ("pre_exec", "post_exec", "post_commands"):
         parts.append("%s=%s" % (hook, _val(raw.get(hook) or [])))
+
+    # Plugin-owned top-level items are declared configuration too.  Omitting
+    # them makes two recipes with different extension policy share caches and
+    # other provenance keyed by this fingerprint.  Use the handler's canonical
+    # export when available; serialized recipes whose plugin is unavailable
+    # retain and hash their raw item instead.  Appended only when present, so
+    # every recipe predating the seam hashes byte-identically.
+    plugin_items = getattr(recipe, "plugin_items", None) or {}
+    raw_plugin_items = getattr(recipe, "_plugin_item_raw", None) or {}
+    if plugin_items or raw_plugin_items:
+        from sparkrun.core.recipe_items import get_recipe_item
+
+        for name in sorted(set(plugin_items) | set(raw_plugin_items)):
+            registration = get_recipe_item(name)
+            if registration is not None and name in plugin_items:
+                value = registration.handler.export(plugin_items[name], recipe)
+            else:
+                value = raw_plugin_items[name]
+            parts.append("plugin:%s=%s" % (name, _val(value)))
 
     key = "\0".join(parts)
     return hashlib.sha256(key.encode()).hexdigest()[:RECIPE_FINGERPRINT_LEN]

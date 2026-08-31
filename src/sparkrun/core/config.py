@@ -651,6 +651,19 @@ class SparkrunConfig:
             return []
         return [Path(os.path.expanduser(str(entry))) for entry in raw if entry]
 
+    def plugin_settings(self, name: str) -> dict[str, Any]:
+        """Return a copy of the user-level ``plugins.<name>`` settings.
+
+        ``plugins.paths`` remains reserved for external plugin discovery;
+        individual plugins may use their own mapping for operational policy
+        that should not be embedded in a portable recipe.
+        """
+        plugins = self._data.get("plugins", {})
+        if not isinstance(plugins, dict):
+            return {}
+        settings = plugins.get(name, {})
+        return dict(settings) if isinstance(settings, dict) else {}
+
     def get_recipe_search_paths(self) -> list[Path]:
         """Return ordered list of paths to search for recipes."""
         paths = []
