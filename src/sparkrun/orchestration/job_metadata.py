@@ -473,6 +473,8 @@ def save_job_metadata(
     runtime: "RuntimePlugin | None" = None,
     backends: "dict[str, BackendBundle] | None" = None,
     *,
+    recipe_fingerprint: str | None = None,
+    owner: str | None = None,
     cluster_name: str | None = None,
     ssh_user: str | None = None,
     sctx: "SparkrunContext | None" = None,
@@ -487,6 +489,19 @@ def save_job_metadata(
         backends: Per-host backend bundles resolved by the launcher.
             Persisted as ``{host: {vendor, backend}}`` so ``stop``/``logs``
             can recover the collective backend without re-probing.
+        recipe_fingerprint: Pre-computed :func:`derive_recipe_fingerprint`
+            digest to persist verbatim.  **Callers that need the digest to
+            match a value they computed themselves must pass it**: by the time
+            the launcher saves metadata it has already folded platform
+            runtime-flag defaults into ``recipe.defaults``
+            (:func:`sparkrun.core.launcher.apply_platform_runtime_flag_defaults`),
+            so deriving here would digest a *host-dependent* recipe that no
+            caller can reproduce without probing the same hardware.
+        owner: Opaque tag naming the component that created this job (e.g. an
+            automated supervisor).  Lets it distinguish workloads it launched
+            from identically-configured ones a human started, and refuse to
+            tear the latter down.  ``None`` omits the key, which every
+            pre-existing job also reads as.
         cluster_name: Name of the cluster this workload was launched on
             (empty / ``None`` for an anonymous ``--hosts`` launch).  It is
             the job's durable *connection* identity: ``stop`` / ``logs``
@@ -538,6 +553,9 @@ def save_job_metadata(
         "sparkrun_version": _sparkrun_version,
         "cluster_id": cluster_id,
         "recipe": recipe.qualified_name,
+        # Deriving here is the fallback for callers that do not pass one; see
+        # the argument's docstring for why the launcher must.
+        "recipe_fingerprint": recipe_fingerprint or derive_recipe_fingerprint(recipe, overrides),
         "model": recipe.model,
         "runtime": recipe.runtime,
         "hosts": hosts,
@@ -554,6 +572,10 @@ def save_job_metadata(
     }
     if recipe_ref:
         meta["recipe_ref"] = recipe_ref
+    # Omitted rather than written empty: the read side must be able to tell
+    # "nobody claimed this job" from "written before sparkrun recorded owners".
+    if owner:
+        meta["owner"] = owner
 
     # How to reach this job again.  ``hosts`` records *where* it runs; these
     # record *as what* — see the argument docs above.  Both are omitted when

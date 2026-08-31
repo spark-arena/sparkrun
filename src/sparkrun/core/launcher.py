@@ -808,6 +808,13 @@ def launch_inference(
     # to widen the window beyond this call (e.g. to include planning) or to
     # share a timeline across several launches.
     timeline: "Timeline | None" = None,
+    # Provenance persisted into job metadata.  ``recipe_fingerprint`` must be
+    # derived *before* this call when the caller needs to match on it later:
+    # apply_platform_runtime_flag_defaults() below mutates recipe.defaults, so
+    # a digest taken after that point is host-dependent and no caller can
+    # reproduce it.  ``owner`` tags the component that created the job.
+    recipe_fingerprint: str | None = None,
+    owner: str | None = None,
 ) -> LaunchResult:
     """Launch an inference workload.
 
@@ -1170,6 +1177,8 @@ def launch_inference(
                 container_image=container_image,
                 runtime=runtime,
                 backends=backends,
+                recipe_fingerprint=recipe_fingerprint,
+                owner=owner,
                 cluster_name=job_cluster_name,
                 ssh_user=job_ssh_user,
             )
@@ -1307,6 +1316,8 @@ def launch_inference(
                     recipe_ref=recipe_ref,
                     runtime=runtime,
                     backends=backends,
+                    recipe_fingerprint=recipe_fingerprint,
+                    owner=owner,
                     cluster_name=job_cluster_name,
                     ssh_user=job_ssh_user,
                 )
@@ -1661,6 +1672,8 @@ def launch_inference(
                         container_image=container_image,
                         runtime=runtime,
                         backends=backends,
+                        recipe_fingerprint=recipe_fingerprint,
+                        owner=owner,
                         cluster_name=job_cluster_name,
                         ssh_user=job_ssh_user,
                     )

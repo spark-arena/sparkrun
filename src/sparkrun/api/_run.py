@@ -81,6 +81,7 @@ def plan(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunPl
     )
     from sparkrun.orchestration.job_metadata import (
         derive_placement_token_from_hosts,
+        derive_recipe_fingerprint,
         generate_cluster_id,
         generate_intent_id,
         generate_placement_token,
@@ -145,6 +146,14 @@ def plan(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunPl
     # still-running containers from the occupancy snapshot instead of treating
     # them as foreign load.  Reused below as the composed cluster_id's intent.
     intent_id = generate_intent_id(recipe, options.overrides)
+
+    # Serve-configuration digest, taken here for the same reason the intent is:
+    # ``launch_inference`` folds platform runtime-flag defaults into
+    # recipe.defaults before it persists metadata, so a digest derived down
+    # there depends on the *hardware* the job landed on and no caller could
+    # reproduce it.  Deriving from the declared recipe keeps it a stable pin —
+    # which is what callers that later match a job by fingerprint actually need.
+    recipe_fingerprint = derive_recipe_fingerprint(recipe, options.overrides)
 
     placement: "RankAssignment | None"
     is_solo_request = bool(options.solo) or recipe.mode == "solo"
@@ -217,6 +226,7 @@ def plan(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunPl
         intent_id=intent_id,
         placement_token=placement_token,
         cluster_id=cluster_id_for_launch,
+        recipe_fingerprint=recipe_fingerprint,
     )
 
 
@@ -411,6 +421,8 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
         # ``None`` under --dry-run: the launcher also guards, but a dry run
         # must not depend on a callee honouring the contract to stay read-only.
         "before_start": None if options.dry_run else _evict_before_start,
+        "recipe_fingerprint": plan.recipe_fingerprint,
+        "owner": options.owner,
     }
 
     # 5. Launch.
@@ -457,6 +469,7 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
         cluster_id=final_cluster_id,
         intent_id=final_intent_id,
         placement_token=final_placement_token,
+        recipe_fingerprint=plan.recipe_fingerprint,
         host_list=tuple(result.host_list),
         placement=placement,
         scheduler=plan.scheduler or _resolve_scheduler_name(effective_scheduler, sctx),

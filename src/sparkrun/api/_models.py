@@ -72,6 +72,11 @@ class RunOptions:
     *pre-existing* deployment.  A cluster that can't be queried counts as "not
     running" — refusing to launch because a status probe failed is the worse
     outcome."""
+    owner: str | None = None
+    """Opaque tag naming the component launching this workload, persisted into
+    job metadata.  Lets an automated supervisor distinguish jobs it created
+    from identically-configured ones a human started — and so refuse to tear
+    the latter down.  ``None`` (the CLI default) records no owner."""
 
     # Scheduler selection.
     scheduler: str | None = None
@@ -217,6 +222,13 @@ class RunPlan:
     """``sparkrun_<intent_id>_<placement_token>`` — the id the launch will
     use, so a renderer can show it (and ``--ensure`` can look it up) before
     anything starts."""
+    recipe_fingerprint: str = ""
+    """Serve-configuration digest of the *declared* recipe.
+
+    Decided here for the same reason :attr:`intent_id` is: ``launch_inference``
+    folds host-dependent platform runtime-flag defaults into ``recipe.defaults``
+    before it persists job metadata, so a digest taken after that point varies
+    with the hardware the job landed on and no caller could reproduce it."""
 
 
 @dataclass(frozen=True)
@@ -284,6 +296,13 @@ class RunResult:
     serving, so nothing was launched.  :attr:`cluster_id` / :attr:`host_list`
     then describe the **pre-existing** deployment, and
     :attr:`launch_result` is ``None`` (there was no launch)."""
+    recipe_fingerprint: str = ""
+    """Serve-configuration digest persisted into this job's metadata.
+
+    Derived from the *declared* recipe before the launcher folds in
+    host-dependent platform runtime-flag defaults, so a caller can reproduce it
+    without probing hardware — and so matching a job by fingerprint after the
+    fact actually works."""
 
 
 # --------------------------------------------------------------------------
