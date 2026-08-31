@@ -63,11 +63,20 @@ from sparkrun.core.context import SparkrunContext
 from sparkrun.api._intent import IntentMatch, find_running_intent
 from sparkrun.api._jobs import list_jobs
 from sparkrun.api._logs import logs
+from sparkrun.api._materialize import materialize
 from sparkrun.api._models import (
     JobInfo,
     LogLine,
     LogSource,
     RecipeSummary,
+    ResolvedAdapterTopology,
+    ResolvedExecutionGraph,
+    ResolvedLaunchSpec,
+    ResolvedLaunchUnit,
+    ResolvedMount,
+    ResolvedProcessGroup,
+    ResolvedServiceDomain,
+    ResolvedWorker,
     RunOptions,
     RunPlan,
     RunResult,
@@ -103,6 +112,14 @@ __all__ = [
     "JobInfo",
     "IntentMatch",
     "RecipeSummary",
+    "ResolvedLaunchSpec",
+    "ResolvedLaunchUnit",
+    "ResolvedMount",
+    "ResolvedWorker",
+    "ResolvedProcessGroup",
+    "ResolvedServiceDomain",
+    "ResolvedAdapterTopology",
+    "ResolvedExecutionGraph",
     # Benchmark data models
     "BenchmarkOptions",
     "BenchmarkResult",
@@ -126,6 +143,7 @@ __all__ = [
     "FrameworkCategoryMismatch",
     # Functions
     "plan",
+    "materialize",
     "run",
     "stop",
     "stop_all",

@@ -242,6 +242,104 @@ class RunPlan:
 
 
 @dataclass(frozen=True)
+class ResolvedMount:
+    """One host-to-container mount in a materialized launch."""
+
+    source: str
+    target: str
+    read_only: bool = False
+
+
+@dataclass(frozen=True)
+class ResolvedLaunchUnit:
+    """One container/process-tree boundary in a materialized launch."""
+
+    id: str
+    index: int
+    host: str
+    devices: tuple[str, ...]
+    image: str
+    image_digest: str
+    command: tuple[str, ...]
+    environment: dict[str, str]
+    mounts: tuple[ResolvedMount, ...]
+
+
+@dataclass(frozen=True)
+class ResolvedWorker:
+    """One accelerator-owning engine worker inside a launch unit."""
+
+    id: str
+    unit: str
+    service: str
+    process_slot: int
+    device_slots: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class ResolvedProcessGroup:
+    """An ordered, runtime-owned rank namespace."""
+
+    id: str
+    kind: str
+    service: str
+    members: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ResolvedServiceDomain:
+    """An independently addressable engine or cooperating service role."""
+
+    id: str
+    role: str
+    workers: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ResolvedAdapterTopology:
+    """Opaque runtime topology identity guarded by a canonical digest."""
+
+    schema: str
+    digest: str
+    payload: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ResolvedExecutionGraph:
+    """Portable worker/group topology independent of physical placement."""
+
+    workers: tuple[ResolvedWorker, ...]
+    groups: tuple[ResolvedProcessGroup, ...]
+    services: tuple[ResolvedServiceDomain, ...]
+    adapter: ResolvedAdapterTopology
+
+
+@dataclass(frozen=True)
+class ResolvedLaunchSpec:
+    """Serializable pre-launch profile for an execution-strategy integration.
+
+    Materialization is read-only and does not launch, distribute, or mutate
+    cluster state. Container images must be digest-pinned in the recipe for
+    ``image_digest`` to be populated without a remote probe.
+    """
+
+    format: int
+    kind: str
+    recipe: str
+    cluster_id: str
+    runtime: str
+    engine: str
+    model: str
+    model_revision: str
+    world_size: int
+    tensor_parallel: int
+    node_count: int
+    cache_dir: str
+    units: tuple[ResolvedLaunchUnit, ...]
+    execution: ResolvedExecutionGraph
+
+
+@dataclass(frozen=True)
 class RunResult:
     """Outputs of a successful :func:`sparkrun.api.run`."""
 

@@ -156,6 +156,85 @@ class VllmDistributedRuntime(VllmMixin, RuntimePlugin):
             replica_size=replica_size,
         )
 
+        return self._generate_parallel_command(
+            recipe=recipe,
+            config=config,
+            skip_keys=skip_keys,
+            replica_size=replica_size,
+            replica_node_count=int(node_args["num_nodes"]),
+            replica_node_rank=intra_replica_rank,
+            master_addr=node_args["master_addr"],
+            master_port=int(node_args["master_port"]),
+            dp=dp,
+            dp_rank=dp_rank,
+            dp_address=hosts[0] if hosts else head_ip,
+        )
+
+    def generate_launch_unit_command(
+        self,
+        recipe: Recipe,
+        overrides: dict[str, Any],
+        head_ip: str,
+        init_port: int,
+        worker_ranks: tuple[int, ...],
+        service_index: int,
+        service_unit_index: int,
+        service_unit_count: int,
+        service_hosts: list[str],
+    ) -> str:
+        """Generate one vLLM process tree for several local GPU workers.
+
+        Scheduler ranks identify accelerator *workers*. vLLM's ``--node-rank``
+        identifies *process trees*, and the two numbers diverge as soon as a
+        host owns more than one GPU — which ``generate_node_command`` cannot
+        express, since it takes a single rank and infers everything else.
+        Materialization passes both namespaces explicitly instead.
+        """
+        from sparkrun.core.parallelism import extract_parallelism
+
+        if not worker_ranks or service_unit_count <= 0 or not 0 <= service_unit_index < service_unit_count:
+            raise ValueError("invalid vLLM launch-unit topology")
+        config = recipe.build_config_chain(overrides)
+        p = extract_parallelism(config)
+        replica_size = p.tensor_parallel * p.pipeline_parallel
+        if replica_size <= 0:
+            raise ValueError("vLLM tensor/pipeline replica size must be positive")
+        expected_service = {rank // replica_size for rank in worker_ranks}
+        if expected_service != {service_index}:
+            raise ValueError("a vLLM launch unit cannot cross data-parallel replicas")
+        if len(service_hosts) != service_unit_count:
+            raise ValueError("vLLM service host inventory is incomplete")
+        return self._generate_parallel_command(
+            recipe=recipe,
+            config=config,
+            skip_keys=frozenset(),
+            replica_size=replica_size,
+            replica_node_count=service_unit_count,
+            replica_node_rank=service_unit_index,
+            master_addr=service_hosts[0],
+            master_port=init_port,
+            dp=p.data_parallel,
+            dp_rank=service_index,
+            dp_address=head_ip,
+        )
+
+    def _generate_parallel_command(
+        self,
+        *,
+        recipe: Recipe,
+        config,
+        skip_keys: set[str] | frozenset[str],
+        replica_size: int,
+        replica_node_count: int,
+        replica_node_rank: int,
+        master_addr: str,
+        master_port: int,
+        dp: int,
+        dp_rank: int,
+        dp_address: str,
+    ) -> str:
+        """Render vLLM flags from explicit worker and launch-unit topology."""
+
         # If recipe has an explicit command template, render it
         rendered = recipe.render_command(config)
         if rendered:
@@ -183,24 +262,21 @@ class VllmDistributedRuntime(VllmMixin, RuntimePlugin):
         parts = [base]
 
         # Torch-distributed coordination for cross-node tp/pp (intra-replica).
-        # ``node_args["node_rank"]`` is the *global* rank (used by
-        # _resolve_master_addr); --node-rank emits the intra-replica rank.
         if replica_size > 1:
             parts.extend(
                 [
-                    "--nnodes %s" % node_args["num_nodes"],
-                    "--node-rank %d" % intra_replica_rank,
-                    "--master-addr %s" % node_args["master_addr"],
-                    "--master-port %s" % node_args["master_port"],
+                    "--nnodes %d" % replica_node_count,
+                    "--node-rank %d" % replica_node_rank,
+                    "--master-addr %s" % master_addr,
+                    "--master-port %d" % master_port,
                 ]
             )
-            if intra_replica_rank > 0:
+            if replica_node_rank > 0:
                 parts.append("--headless")
 
         # vLLM data-parallel coordination (inter-replica).
         if dp > 1:
             dp_rpc_port = int(config.get("data_parallel_rpc_port") or 13345)
-            dp_address = hosts[0] if hosts else head_ip
             # Only inject --data-parallel-size when the recipe template
             # didn't already supply it (mirrors how we handle -tp today).
             if "--data-parallel-size" not in (base or ""):
