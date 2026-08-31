@@ -38,7 +38,6 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
     from sparkrun.core.cluster_manager import ClusterError
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.orchestration.networking import (
-        CX7_NETPLAN_FILE,
         CX7Topology,
         _group_interfaces_by_port,
         build_host_detection,
@@ -788,7 +787,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                                     "cx7",
                                     subnets=[str(s) for s in all_subnets],
                                     cx7_ips=all_cx7_ips,
-                                    netplan_file=CX7_NETPLAN_FILE,
+                                    netplan_file="/etc/netplan/40-cx7.yaml",
                                     topology=effective_topology.value,
                                 )
 

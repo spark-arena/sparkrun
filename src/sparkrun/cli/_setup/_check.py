@@ -308,23 +308,10 @@ def _check_cx7(state: HostState, ctx: CheckContext) -> CheckItem | None:
     """Vet *effective* CX7 state via :func:`detect_cx7_for_hosts` output.
 
     Reuses the same detection the real CX7 flow uses — per-interface link
-    state, assigned IP, subnet, and *who persists the address* — so this
-    reflects working networking rather than the presence of one config file.
-
-    Persistence is attributed to whatever owns the interface (any netplan
-    file, a NetworkManager profile, a ``.network`` unit, ifupdown), because
-    the question is "will this address come back after a reboot", not "did
-    sparkrun write it". Checking for sparkrun's own ``40-cx7.yaml`` flagged
-    every hand-configured cluster — including one set up with ``nmcli``,
-    which on Ubuntu 24.04 writes its own ``90-NM-<uuid>.yaml``.
-
-    :attr:`CX7Persistence.UNKNOWN` (no probe available on the host) is
-    reported but is **not** a warning: "couldn't tell" is not "won't persist".
-
-    CX7 is inter-node, so it is only evaluated for multi-host clusters.
+    state, assigned IP, subnet and whether a persistent netplan exists — so
+    this reflects working networking, not merely the presence of a config
+    file. CX7 is inter-node, so it is only evaluated for multi-host clusters.
     """
-    from sparkrun.orchestration.networking import CX7Persistence
-
     if not ctx.multi_host:
         return None
     det = state.cx7
@@ -358,41 +345,15 @@ def _check_cx7(state: HostState, ctx: CheckContext) -> CheckItem | None:
             "%s; not ready: %s" % (detail, bad),
             "sparkrun setup cx7%s" % ctx.cluster_flag,
         )
-    ephemeral = [i for i in up if i.persistence is CX7Persistence.EPHEMERAL]
-    if ephemeral:
-        # Nothing on the host declares these addresses — they were added by
-        # hand (or by a profile that won't auto-connect) and are gone on boot.
-        named = ", ".join("%s (%s)" % (i.name, i.describe_persistence()) if i.persistence_source else i.name for i in ephemeral)
+    if not det.netplan_exists:
         return CheckItem(
             "cx7",
             "CX7 high-speed networking",
             WARN,
-            "%s but no network config declares %s (won't survive reboot)" % (detail, named),
+            "%s but no persistent netplan (won't survive reboot)" % detail,
             "sparkrun setup cx7%s" % ctx.cluster_flag,
         )
-
-    leased = [i for i in up if i.dhcp]
-    if leased:
-        # Persistent, but not pinned: NCCL peer addressing needs these stable.
-        return CheckItem(
-            "cx7",
-            "CX7 high-speed networking",
-            WARN,
-            "%s but %s hold DHCP leases, so the addresses may change" % (detail, ", ".join(i.name for i in leased)),
-            "sparkrun setup cx7%s" % ctx.cluster_flag,
-        )
-
-    unknown = [i for i in up if i.persistence is CX7Persistence.UNKNOWN]
-    if unknown:
-        return CheckItem(
-            "cx7",
-            "CX7 high-speed networking",
-            OK,
-            "%s; could not verify persistence of %s (no netplan/nmcli/networkctl on host)" % (detail, ", ".join(i.name for i in unknown)),
-        )
-
-    owners = sorted({i.describe_persistence() for i in up})
-    return CheckItem("cx7", "CX7 high-speed networking", OK, "%s; persisted by %s" % (detail, ", ".join(owners)))
+    return CheckItem("cx7", "CX7 high-speed networking", OK, detail)
 
 
 @dataclass

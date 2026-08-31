@@ -45,13 +45,7 @@ def test_failure_detail_no_output_is_explicit():
 
 
 def test_failure_detail_truncates():
-    # Truncation is marked, so a reader can tell a clipped message from a
-    # complete one instead of guessing at the tail.
-    assert _failure_detail(_res(stderr="x" * 500), limit=200) == "x" * 200 + "… (truncated)"
-
-
-def test_failure_detail_does_not_mark_untruncated_output():
-    assert _failure_detail(_res(stderr="short"), limit=200) == "short"
+    assert _failure_detail(_res(stderr="x" * 500), limit=200) == "x" * 200
 
 
 # ---------------------------------------------------------------------------

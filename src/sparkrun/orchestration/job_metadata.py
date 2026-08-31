@@ -268,16 +268,6 @@ def generate_intent_id(recipe: "Recipe", overrides: dict | None = None) -> str:
     # hashing as before rather than all colliding on a placeholder.
     if getattr(recipe, "container", None):
         parts.append("image=%s" % recipe.container)
-    # Per-machine images (``containers:``) participate for the same reason the
-    # single image does: the intent is the *destroy* key, and two recipes that
-    # differ only in one machine's tuned image are workloads a user runs side by
-    # side.  The **declared** map is hashed, never the placement-resolved one —
-    # the intent must not change when the scheduler picks a different host
-    # subset, or `stop` / `logs` / `--ensure` stop matching their own workload.
-    # Appended only when non-empty, so every recipe predating this feature
-    # hashes byte-identically and no running workload is orphaned.
-    for host, img in sorted((e["host"], e["image"]) for e in getattr(recipe, "containers", None) or ()):
-        parts.append("image@%s=%s" % (host, img))
     if port is not None:
         parts.append("port=%s" % port)
     if served_name is not None:
@@ -322,8 +312,6 @@ def derive_recipe_fingerprint(recipe: "Recipe", overrides: dict | None = None) -
       config chain, so hashing the template is what catches it.
     * ``mods`` and ``runtime_config`` — the latter absorbs unknown top-level
       keys such as v1 ``build_args``, which change the image that gets built
-    * plugin-owned top-level recipe items, using each plugin's canonical
-      export representation
     * the recipe's *declared* ``pre_exec`` / ``post_exec`` / ``post_commands``,
       read from the raw recipe so runtime- and builder-injected hooks don't
       move the digest (v1 ``mods`` are injected into ``pre_exec`` during
@@ -365,39 +353,12 @@ def derive_recipe_fingerprint(recipe: "Recipe", overrides: dict | None = None) -
     layout = recipe.layout.to_dict() if getattr(recipe, "layout", None) is not None else None
     parts.append("layout=%s" % _val(layout))
 
-    # Per-machine images, appended only when declared.  Kept out of the attr
-    # loop above on purpose: an unconditional ``containers=[]`` part would move
-    # the digest for every existing recipe, invalidating recorded benchmark
-    # identities and the TRT-LLM autotuner cache filenames that embed it.
-    declared_images = getattr(recipe, "containers", None) or []
-    if declared_images:
-        parts.append("containers=%s" % _val(sorted((e["host"], e["image"]) for e in declared_images)))
-
     # Declared hooks only — ``recipe.pre_exec`` and friends are extended in
     # place by v1 mods / builders during resolution (see core/mods.py), and
     # those additions are resolved artifacts, not declared configuration.
     raw = getattr(recipe, "_raw", None) or {}
     for hook in ("pre_exec", "post_exec", "post_commands"):
         parts.append("%s=%s" % (hook, _val(raw.get(hook) or [])))
-
-    # Plugin-owned top-level items are declared configuration too.  Omitting
-    # them makes two recipes with different extension policy share caches and
-    # other provenance keyed by this fingerprint.  Use the handler's canonical
-    # export when available; serialized recipes whose plugin is unavailable
-    # retain and hash their raw item instead.  Appended only when present, so
-    # every recipe predating the seam hashes byte-identically.
-    plugin_items = getattr(recipe, "plugin_items", None) or {}
-    raw_plugin_items = getattr(recipe, "_plugin_item_raw", None) or {}
-    if plugin_items or raw_plugin_items:
-        from sparkrun.core.recipe_items import get_recipe_item
-
-        for name in sorted(set(plugin_items) | set(raw_plugin_items)):
-            registration = get_recipe_item(name)
-            if registration is not None and name in plugin_items:
-                value = registration.handler.export(plugin_items[name], recipe)
-            else:
-                value = raw_plugin_items[name]
-            parts.append("plugin:%s=%s" % (name, _val(value)))
 
     key = "\0".join(parts)
     return hashlib.sha256(key.encode()).hexdigest()[:RECIPE_FINGERPRINT_LEN]
@@ -509,14 +470,9 @@ def save_job_metadata(
     recipe_ref: str | None = None,
     runtime_info: dict[str, str] | None = None,
     container_image: Optional[str] = None,
-    container_images: "list[str] | tuple[str, ...] | None" = None,
     runtime: "RuntimePlugin | None" = None,
     backends: "dict[str, BackendBundle] | None" = None,
     *,
-    recipe_fingerprint: str | None = None,
-    owner: str | None = None,
-    cluster_name: str | None = None,
-    ssh_user: str | None = None,
     sctx: "SparkrunContext | None" = None,
 ) -> None:
     """Persist job metadata so ``cluster status`` can display recipe info.
@@ -529,33 +485,6 @@ def save_job_metadata(
         backends: Per-host backend bundles resolved by the launcher.
             Persisted as ``{host: {vendor, backend}}`` so ``stop``/``logs``
             can recover the collective backend without re-probing.
-        recipe_fingerprint: Pre-computed :func:`derive_recipe_fingerprint`
-            digest to persist verbatim.  **Callers that need the digest to
-            match a value they computed themselves must pass it**: by the time
-            the launcher saves metadata it has already folded platform
-            runtime-flag defaults into ``recipe.defaults``
-            (:func:`sparkrun.core.launcher.apply_platform_runtime_flag_defaults`),
-            so deriving here would digest a *host-dependent* recipe that no
-            caller can reproduce without probing the same hardware.
-        owner: Opaque tag naming the component that created this job (e.g. an
-            automated supervisor).  Lets it distinguish workloads it launched
-            from identically-configured ones a human started, and refuse to
-            tear the latter down.  ``None`` omits the key, which every
-            pre-existing job also reads as.
-        cluster_name: Name of the cluster this workload was launched on
-            (empty / ``None`` for an anonymous ``--hosts`` launch).  It is
-            the job's durable *connection* identity: ``stop`` / ``logs``
-            addressed by cluster_id resolve hosts from ``hosts`` above and
-            so name no cluster, which left them on an anonymous definition
-            carrying no SSH user, no executor pin and no transport — the
-            teardown then ran as the control node's login and reported
-            success while the workload kept serving (issue #277).
-        ssh_user: The SSH user this launch actually connected as.  The
-            fallback for when the recorded cluster can no longer be
-            resolved (renamed, deleted, or a different control node), and
-            the only identity an anonymous launch has.  Omitted when the
-            launch fell through to the ssh client's own default, so
-            "recorded" always means "we know", never "we guessed".
         sctx: Optional shared :class:`SparkrunContext`.  When provided
             (and *cache_dir* is unset) ``sctx.config.cache_dir`` is the
             cache root.
@@ -593,9 +522,6 @@ def save_job_metadata(
         "sparkrun_version": _sparkrun_version,
         "cluster_id": cluster_id,
         "recipe": recipe.qualified_name,
-        # Deriving here is the fallback for callers that do not pass one; see
-        # the argument's docstring for why the launcher must.
-        "recipe_fingerprint": recipe_fingerprint or derive_recipe_fingerprint(recipe, overrides),
         "model": recipe.model,
         "runtime": recipe.runtime,
         "hosts": hosts,
@@ -612,19 +538,6 @@ def save_job_metadata(
     }
     if recipe_ref:
         meta["recipe_ref"] = recipe_ref
-    # Omitted rather than written empty: the read side must be able to tell
-    # "nobody claimed this job" from "written before sparkrun recorded owners".
-    if owner:
-        meta["owner"] = owner
-
-    # How to reach this job again.  ``hosts`` records *where* it runs; these
-    # record *as what* — see the argument docs above.  Both are omitted when
-    # unknown rather than written empty, so the read side can tell "anonymous
-    # launch" from "launched before sparkrun recorded this".
-    if cluster_name:
-        meta["cluster"] = str(cluster_name)
-    if ssh_user:
-        meta["ssh_user"] = str(ssh_user)
 
     # Store all parallelism values (not just tensor_parallel)
     for long_key, _ in PARALLELISM_KEYS:
@@ -676,12 +589,6 @@ def save_job_metadata(
         meta["runtime_info"] = runtime_info
     if container_image:
         meta["effective_container_image"] = container_image
-    # Per-node images, aligned with ``hosts``.  Recorded alongside — never
-    # instead of — the scalar above: proxy discovery, ``logs`` and the desktop
-    # sidecar all read ``effective_container_image``, and repurposing it into a
-    # list would break every one of them.  The scalar stays the head's image.
-    if container_images:
-        meta["effective_container_images"] = [str(i) for i in container_images]
 
     # Persist per-host backend bundle so stop/logs can recover collective
     # backend selection without re-probing hardware.  Schema:

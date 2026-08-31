@@ -16,7 +16,6 @@ from ._common import (
     _get_context,
     _is_cluster_id,
     _resolve_hosts_or_exit,
-    resolve_host_context,
     build_cluster_id_overrides,
     dry_run_option,
     host_options,
@@ -67,7 +66,7 @@ def cluster(ctx):
 @click.option(
     "--transfer-mode",
     default=None,
-    type=click.Choice(["auto", "local", "push", "delegated", "pull"], case_sensitive=False),
+    type=click.Choice(["auto", "local", "push", "delegated"], case_sensitive=False),
     help="Resource transfer mode (auto, local, push, delegated)",
 )
 @click.option(
@@ -341,7 +340,7 @@ cluster_import.add_command(cluster_import_svd, "eugr")
 @click.option(
     "--transfer-mode",
     default=None,
-    type=click.Choice(["auto", "local", "push", "delegated", "pull"], case_sensitive=False),
+    type=click.Choice(["auto", "local", "push", "delegated"], case_sensitive=False),
     help="Resource transfer mode (auto, local, push, delegated)",
 )
 @click.option(
@@ -355,12 +354,6 @@ cluster_import.add_command(cluster_import_svd, "eugr")
     default=None,
     type=click.Choice(["none", "direct", "switch", "ring"], case_sensitive=False),
     help="CX7 topology (none=remove, direct/switch=switched fabric, ring=3-node mesh/ring)",
-)
-@click.option(
-    "--mgmt-interface",
-    default=None,
-    help="Pin the management/control interface name on every host (e.g. enP7s7), overriding detection. "
-    "Needed only where detection can't decide — e.g. a bonded or VLAN management link. Pass empty string to clear.",
 )
 @click.option(
     "--infer-hardware",
@@ -414,7 +407,6 @@ def cluster_update(
     transfer_mode,
     transfer_interface,
     topology,
-    mgmt_interface,
     infer_hardware,
     executor_name,
     executor_opts,
@@ -457,7 +449,6 @@ def cluster_update(
     transfer_mode_provided = ctx.get_parameter_source("transfer_mode") == ParameterSource.COMMANDLINE
     transfer_interface_provided = ctx.get_parameter_source("transfer_interface") == ParameterSource.COMMANDLINE
     topology_provided = ctx.get_parameter_source("topology") == ParameterSource.COMMANDLINE
-    mgmt_interface_provided = ctx.get_parameter_source("mgmt_interface") == ParameterSource.COMMANDLINE
     executor_provided = ctx.get_parameter_source("executor_name") == ParameterSource.COMMANDLINE
     executor_opts_provided = bool(executor_opts) or clear_executor_config
     scheduler_provided = ctx.get_parameter_source("scheduler_name") == ParameterSource.COMMANDLINE
@@ -472,7 +463,6 @@ def cluster_update(
         and not transfer_mode_provided
         and not transfer_interface_provided
         and not topology_provided
-        and not mgmt_interface_provided
         and not infer_hardware
         and not executor_provided
         and not executor_opts_provided
@@ -482,7 +472,7 @@ def cluster_update(
         click.echo(
             "Error: Nothing to update. Provide --hosts, --hosts-file, --add-host, "
             "--remove-host, -d, --user, --cache-dir, --transfer-mode, "
-            "--transfer-interface, --topology, --mgmt-interface, --infer-hardware, --executor, "
+            "--transfer-interface, --topology, --infer-hardware, --executor, "
             "--executor-opt, --clear-executor-config, --scheduler, or --max-gpu-mem-util.",
             err=True,
         )
@@ -546,9 +536,6 @@ def cluster_update(
             update_kwargs["topology"] = "switch"
         else:
             update_kwargs["topology"] = topology
-    if mgmt_interface_provided:
-        # Empty string clears the pin and restores per-host detection
-        update_kwargs["mgmt_interface"] = mgmt_interface.strip() if mgmt_interface and mgmt_interface.strip() else None
     if executor_provided:
         # Empty string clears the executor selector
         update_kwargs["executor"] = executor_name if executor_name else None
@@ -699,8 +686,6 @@ def cluster_show(ctx, name, output_json):
         click.echo(f"Xfer iface:  {c.transfer_interface}")
     if c.topology:
         click.echo(f"Topology:    {c.topology}")
-    if c.mgmt_interface:
-        click.echo(f"Mgmt iface:  {c.mgmt_interface}")
     if c.executor:
         click.echo(f"Executor:    {c.executor}")
     if c.executor_config:
@@ -845,8 +830,7 @@ def cluster_monitor(ctx, hosts, hosts_file, cluster_name, dry_run, interval, sim
     from sparkrun.orchestration.primitives import build_ssh_kwargs
 
     config = _get_context(ctx).config
-    hctx = resolve_host_context(hosts, hosts_file, cluster_name, config)
-    host_list = hctx.host_list
+    host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config)
     ssh_kwargs = build_ssh_kwargs(config)
 
     # Resolve monitoring backend
@@ -873,7 +857,7 @@ def cluster_monitor(ctx, hosts, hosts_file, cluster_name, dry_run, interval, sim
         try:
             for frame in api.live_monitor(
                 host_list,
-                cluster=hctx.cluster_name,
+                cluster=cluster_name or None,
                 ssh_kwargs=ssh_kwargs,
                 interval=interval,
                 backend=backend,
@@ -894,7 +878,7 @@ def cluster_monitor(ctx, hosts, hosts_file, cluster_name, dry_run, interval, sim
             # the TUI shows local/provider workloads (not just docker).
             session = api.open_live_monitor(
                 host_list,
-                cluster=hctx.cluster_name,
+                cluster=cluster_name or None,
                 ssh_kwargs=ssh_kwargs,
                 interval=interval,
                 backend=backend,
@@ -922,7 +906,7 @@ def cluster_monitor(ctx, hosts, hosts_file, cluster_name, dry_run, interval, sim
     try:
         for frame in api.live_monitor(
             host_list,
-            cluster=hctx.cluster_name,
+            cluster=cluster_name or None,
             ssh_kwargs=ssh_kwargs,
             interval=interval,
             backend=backend,
@@ -954,13 +938,12 @@ def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, output_json, c
 
       sparkrun cluster status --cluster mylab
     """
-    from sparkrun.utils.cli_formatters import format_job_label, format_job_commands, format_host_display, format_pending_op
+    from sparkrun.utils.cli_formatters import format_job_label, format_job_commands, format_host_display
     from sparkrun.orchestration.primitives import build_ssh_kwargs
 
     sctx = _get_context(ctx)
     config = sctx.config
-    hctx = resolve_host_context(hosts, hosts_file, cluster_name, config, sctx=sctx)
-    host_list = hctx.host_list
+    host_list, _cluster_mgr = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, sctx=sctx)
 
     ssh_kwargs = build_ssh_kwargs(config)
 
@@ -974,10 +957,8 @@ def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, output_json, c
     # (cluster-aware, so a cluster's ``executor_config`` incl. ``pid_dir`` is
     # honored), the cross-executor merge, and classification into the
     # display-oriented ``ClusterStatusResult`` (per-container role/status/image,
-    # idle hosts, pending ops).  The *effective* cluster is forwarded (see
-    # ``HostContext``) so a default-cluster sweep keeps that cluster's
-    # executor pin and hardware instead of resolving to an anonymous one.
-    result = api.status_report(host_list, cluster=hctx.cluster_name, ssh_kwargs=ssh_kwargs, sctx=sctx)
+    # idle hosts, pending ops).
+    result = api.status_report(host_list, cluster=cluster_name or None, ssh_kwargs=ssh_kwargs, sctx=sctx)
 
     if output_json:
         out = result.to_dict()
@@ -990,12 +971,6 @@ def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, output_json, c
         return
 
     # --- Display rendering ---
-
-    # Say what is being reported on.  With no flags the host list comes from
-    # the default cluster, and without this line there was no way to tell
-    # which machines the report covers.
-    click.echo(hctx.describe())
-    click.echo()
 
     # Display grouped clusters
     if result.groups:
@@ -1032,17 +1007,9 @@ def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, output_json, c
         if host in result.errors:
             click.echo(f"  {host}: Error: {result.errors[host]}")
 
-    # Display hosts a launch is staging onto — free right now, but spoken for.
-    if result.preparing_hosts:
-        click.echo("Preparing (launch in progress, will consume VRAM):")
-        for h in result.preparing_hosts:
-            for op in result.pending_by_host.get(h, []):
-                click.echo(f"  {h:<20s} {format_pending_op(op, with_detail=False)}")
-        click.echo()
-
     # Display idle hosts
     if result.idle_hosts:
-        click.echo("Idle hosts (no sparkrun containers, nothing pending):")
+        click.echo("Idle hosts (no sparkrun containers):")
         for h in result.idle_hosts:
             click.echo(f"  {h}")
         click.echo()
@@ -1051,17 +1018,19 @@ def cluster_status(ctx, hosts, hosts_file, cluster_name, dry_run, output_json, c
     if result.pending_ops:
         click.echo("Pending operations (downloads/distributions in progress):")
         for op in result.pending_ops:
-            click.echo(f"  {format_pending_op(op)}")
-            matched = op.get("matched_hosts") or []
-            other = op.get("other_hosts") or []
-            if matched:
-                click.echo("    hosts: %s%s" % (", ".join(matched), " (+%d outside this cluster)" % len(other) if other else ""))
-            else:
-                # A lock that recorded no hosts cannot be pinned to any of
-                # them; say so rather than leaving the reader to assume.
-                click.echo("    hosts: not recorded")
+            elapsed = op.get("elapsed_seconds", 0)
+            mins, secs = divmod(int(elapsed), 60)
+            elapsed_str = f"{mins}m{secs:02d}s" if mins else f"{secs}s"
+            label = op.get("recipe") or op.get("cluster_id", "?")
+            detail = op.get("operation", "unknown").replace("_", " ")
+            extra = ""
+            if op.get("model") and "model" in detail:
+                extra = f"  model={op['model']}"
+            elif op.get("image") and "image" in detail:
+                extra = f"  image={op['image']}"
+            click.echo(f"  {label}: {detail} ({elapsed_str}){extra}")
         click.echo()
-        click.echo("  Note: only launches started from this machine are visible here.")
+        click.echo("  Note: pending operations will consume VRAM once launched.")
         click.echo()
 
     # Summary
@@ -1263,14 +1232,7 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
     # Resolve auto transfer mode to a concrete value
     from sparkrun.orchestration.distribution import resolve_auto_transfer_mode
 
-    xfer_result = resolve_auto_transfer_mode(
-        xfer_mode,
-        host_list,
-        ssh_kwargs=ssh_kwargs,
-        dry_run=dry_run,
-        topology=cluster_cfg.topology,
-        mgmt_interface=cluster_cfg.mgmt_interface,
-    )
+    xfer_result = resolve_auto_transfer_mode(xfer_mode, host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run, topology=cluster_cfg.topology)
     resolved_mode = xfer_result.mode
 
     # Detect IB / NCCL env — reuse from transfer mode resolution if available,
@@ -1279,9 +1241,7 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
     if ib_result is None and not dry_run:
         from sparkrun.orchestration.infiniband import detect_ib_for_hosts
 
-        ib_result = detect_ib_for_hosts(
-            host_list, ssh_kwargs=ssh_kwargs, topology=cluster_cfg.topology, mgmt_interface=cluster_cfg.mgmt_interface
-        )
+        ib_result = detect_ib_for_hosts(host_list, ssh_kwargs=ssh_kwargs, topology=cluster_cfg.topology)
 
     nccl_env = ib_result.comm_env.get_env(host_list[0]) if ib_result else {}
 
@@ -1347,7 +1307,6 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
         "transfer_interface": xfer_iface or "auto",
         "transfer_interface_resolved": resolved_iface,
         "topology": cluster_cfg.topology,
-        "mgmt_interface": cluster_cfg.mgmt_interface,
         "hf_cache_local": local_hf,
         "hf_cache_remote": remote_hf,
         "sparkrun_cache": local_sparkrun,
@@ -1404,7 +1363,6 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
     cfg_iface = xfer_iface or "auto"
     click.echo("  transfer_interface: %s" % _fmt_resolved(cfg_iface, resolved_iface))
     click.echo("  topology:           %s" % (cluster_cfg.topology or "(none)"))
-    click.echo("  mgmt_interface:     %s" % (cluster_cfg.mgmt_interface or "(auto-detect)"))
     if scheduler_defaulted:
         click.echo("  scheduler:          %s (default — not set on this cluster)" % effective_scheduler)
     else:

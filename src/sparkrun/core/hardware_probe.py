@@ -21,7 +21,6 @@ import logging
 from typing import Any
 
 from sparkrun.core.hardware import HostHardware
-from sparkrun.scripts import inject_shell_vars, read_script
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +45,6 @@ _IB_END = "SPARKRUN_PROBE_IB_END"
 _COMBINED_PROBE_SCRIPT = r"""#!/bin/bash
 set -uo pipefail
 
-{mgmt_helper}
-
 # ===========================================================================
 # SECTION 1: Accelerator fingerprint
 # ===========================================================================
@@ -57,9 +54,7 @@ emit() {{ printf '%s=%s\n' "$1" "$2"; }}
 
 # --- NVIDIA ---
 NVIDIA_COUNT=0
-NVIDIA_DRIVER_VERSION=""
 if command -v nvidia-smi >/dev/null 2>&1; then
-    NVIDIA_DRIVER_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader,nounits 2>/dev/null | head -1 | awk '{{$1=$1}};1' || true)
     while IFS= read -r line; do
         [[ -z "$line" ]] && continue
         name=$(printf '%s' "$line" | awk -F', *' '{{print $1}}')
@@ -71,7 +66,6 @@ if command -v nvidia-smi >/dev/null 2>&1; then
 fi
 emit NVIDIA_GPU_COUNT "$NVIDIA_COUNT"
 emit NVIDIA_PRESENT "$([[ $NVIDIA_COUNT -gt 0 ]] && echo 1 || echo 0)"
-emit NVIDIA_DRIVER_VERSION "$NVIDIA_DRIVER_VERSION"
 
 # --- AMD ROCm ---
 AMD_COUNT=0
@@ -216,17 +210,12 @@ if [ ${{#ACTIVE_HCAS[@]}} -eq 0 ]; then
     exit 0
 fi
 
+DEFAULT_IF=$(ip route get 8.8.8.8 2>/dev/null | grep -oP 'dev \K\S+' || echo "eth0")
+MGMT_IP=$(ip -4 addr show "$DEFAULT_IF" 2>/dev/null | grep -oP 'inet \K[0-9.]+' | head -1)
+
 HCA_LIST=$(IFS=,; echo "${{ACTIVE_HCAS[*]}}")
 NET_LIST=$(IFS=,; echo "${{ACTIVE_NETIFS[*]}}")
 UCX_LIST=$(IFS=,; echo "${{UCX_DEVS[*]}}")
-
-# Management interface, resolved after NET_LIST so the fabric adapters are
-# excluded from the heuristic scan.  May be empty -- see _mgmt_iface.sh.
-DEFAULT_IF=$(sparkrun_mgmt_iface "$NET_LIST")
-MGMT_IP=""
-if [ -n "$DEFAULT_IF" ]; then
-    MGMT_IP=$(ip -4 addr show "$DEFAULT_IF" 2>/dev/null | grep -oP 'inet \K[0-9.]+' | head -1)
-fi
 
 IB_IPS=()
 for net_if in "${{ACTIVE_NETIFS[@]}}"; do
@@ -252,23 +241,15 @@ echo "{ib_end}"
     accel_end=_ACCEL_END,
     ib_start=_IB_START,
     ib_end=_IB_END,
-    # Substituted verbatim — the helper is written brace-free precisely so it
-    # survives this .format() pass.  See _mgmt_iface.sh.
-    mgmt_helper=read_script("_mgmt_iface.sh"),
 )
 
 
-def generate_combined_probe_script(mgmt_interface: str | None = None) -> str:
+def generate_combined_probe_script() -> str:
     """Return the combined accelerator + IB probe script.
 
     Run over SSH and parse stdout with :func:`split_probe_output`.
-
-    Args:
-        mgmt_interface: Optional management interface to pin, overriding
-            detection on the host (see
-            :attr:`~sparkrun.core.cluster_manager.ClusterDefinition.mgmt_interface`).
     """
-    return inject_shell_vars(_COMBINED_PROBE_SCRIPT, SPARKRUN_MGMT_IFACE=mgmt_interface)
+    return _COMBINED_PROBE_SCRIPT
 
 
 # ---------------------------------------------------------------------------

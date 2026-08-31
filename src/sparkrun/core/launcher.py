@@ -10,15 +10,9 @@ from __future__ import annotations
 
 import copy
 import logging
-import math
 import os
-import re
-import threading
-import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
-
-from sparkrun.core.timing import ROOT as TIMELINE_ROOT, STATUS_ERROR, Timeline, timed
 
 if TYPE_CHECKING:
     from sparkrun.core.backend_select import BackendBundle
@@ -30,7 +24,6 @@ if TYPE_CHECKING:
     from sparkrun.orchestration.comm_env import ClusterCommEnv
     from sparkrun.runtimes.base import RuntimePlugin
     from sparkrun.builders.base import BuilderPlugin
-    from sparkrun.core.execution import ExecutionContext, PreparedExecution, RecipeExecutionStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -66,13 +59,6 @@ class LaunchResult:
     threading) — runtimes then fall back to the legacy NCCL generator
     in :func:`sparkrun.runtimes._cluster_ops.resolve_comm_env`.
     """
-    timeline: Timeline | None = None
-    """Launch-stage span timeline.
-
-    Covers up to the point containers are running; the readiness wait that
-    follows is recorded by :func:`wait_for_serve_ready` onto the same
-    timeline, so a consumer reading it after readiness sees the whole
-    launch-to-serving story."""
 
 
 def resolve_recipe_trust(recipe: Recipe, trust_cli: bool) -> bool:
@@ -248,38 +234,16 @@ def _enforce_recipe_mount_trust(recipe: Recipe, trusted: bool) -> None:
         )
 
 
-def _format_missing_mounts(missing: dict, keep: set) -> str:
-    """Render ``{host: [path, ...]}`` as ``host: a, b; host2: c``, filtered to *keep*."""
-    parts = []
-    for host, paths in sorted(missing.items()):
-        relevant = [p for p in paths if p in keep]
-        if relevant:
-            parts.append("%s: %s" % (host, ", ".join(sorted(relevant))))
-    return "; ".join(parts)
+def _verify_pre_placed_model(recipe, hosts, ssh_kwargs, *, runtime, cluster, config, overrides) -> None:
+    """Fail fast when pre-placed model weights are missing on the target substrate.
 
-
-def _verify_mount_sources(recipe, hosts, ssh_kwargs, *, runtime, cluster, config, overrides) -> None:
-    """Fail fast when host paths the launch will bind are missing on the targets.
-
-    Two path sets, probed in **one** pass because they share a substrate and an
-    SSH fan-out, but reported separately because they mean different things:
-
-    * **Pre-placed model weights** — an absolute-path ``model:`` or
-      ``cluster_config.resolved_model_path`` promises the weights already exist
-      on every node, so download + distribution are *skipped*.  Verifying that
-      promise before committing to the skip is unconditional: there is no
-      configuration under which serving weights that aren't there is what the
-      user meant.
-    * **``executor_config.volumes`` sources** — extra bind mounts the recipe or
-      cluster asked for.  Governed by ``mounts.missing_source`` (default
-      ``fail``); see :attr:`SparkrunConfig.missing_mount_source_policy` for why
-      failing is the default and when ``warn`` is the honest setting.
-
-    Which volumes count is the **executor's** answer
-    (:meth:`~sparkrun.orchestration.executors._base.Executor.bind_mount_sources`),
-    not a read of ``executor_config`` here — the ``local`` executor mounts
-    nothing, so its ``volumes:`` are inert and checking them would fail a
-    working launch.
+    An absolute-path ``model:`` or ``cluster_config.resolved_model_path`` tells
+    sparkrun the weights already exist at that path on every node, so download +
+    distribution are skipped and the path is identity-mounted.  This verifies
+    that promise *before* the skip via the launching executor's
+    :meth:`~sparkrun.orchestration.executors._base.Executor.verify_mount_sources`
+    (host substrate → SSH ``test -e``; provider executors probe their own
+    volumes).  Raises :class:`RecipeError` listing the host→path gaps.
 
     Best-effort and non-fatal by design: an unresolvable executor (e.g. a
     gated-off provider) or an unreachable/unverifiable host is *skipped* rather
@@ -290,68 +254,31 @@ def _verify_mount_sources(recipe, hosts, ssh_kwargs, *, runtime, cluster, config
     from sparkrun.orchestration.executor import resolve_executor
     from sparkrun.orchestration.primitives import resolved_model_volume
 
-    model_paths = list(resolved_model_volume(recipe))  # identity-mount source path(s)
+    paths = list(resolved_model_volume(recipe))  # identity-mount source path(s)
+    if not paths:
+        return
 
     try:
         executor = resolve_executor(recipe=recipe, cluster=cluster, runtime=runtime, config=config, cli_overrides=overrides)
     except Exception:
         # If the executor can't be resolved here, the runtime will surface the
         # real error at launch — don't pre-empt it with a preflight failure.
-        logger.debug("mount-source preflight: executor unresolvable; skipping probe", exc_info=True)
-        return
-
-    policy = config.missing_mount_source_policy if config is not None else "fail"
-    volume_paths: list[str] = []
-    if policy != "ignore":
-        try:
-            volume_paths = [p for p in (executor.bind_mount_sources() or []) if p not in model_paths]
-        except Exception:
-            logger.debug("mount-source preflight: bind_mount_sources failed; skipping volumes", exc_info=True)
-
-    probe = model_paths + volume_paths
-    if not probe:
+        logger.debug("pre-placed model preflight: executor unresolvable; skipping probe", exc_info=True)
         return
 
     try:
-        missing = executor.verify_mount_sources(probe, hosts, ssh_kwargs=ssh_kwargs) or {}
+        missing = executor.verify_mount_sources(paths, hosts, ssh_kwargs=ssh_kwargs) or {}
     except Exception:
-        logger.debug("mount-source preflight: probe failed; skipping", exc_info=True)
-        return
-    if not missing:
+        logger.debug("pre-placed model preflight: probe failed; skipping", exc_info=True)
         return
 
-    model_detail = _format_missing_mounts(missing, set(model_paths))
-    if model_detail:
+    if missing:
+        detail = "; ".join("%s: %s" % (host, ", ".join(miss)) for host, miss in sorted(missing.items()))
         raise RecipeError(
             "Pre-placed model weights were not found on the target host(s). The model "
             "path must already exist on every node (download + distribution are skipped "
-            "for on-disk weights). Missing — %s" % model_detail
+            "for on-disk weights). Missing — %s" % detail
         )
-
-    volume_detail = _format_missing_mounts(missing, set(volume_paths))
-    if not volume_detail:
-        return
-
-    message = (
-        "Bind mount source(s) from executor_config.volumes do not exist on the target host(s). Docker "
-        "creates a missing source as an empty root-owned directory instead of failing, and sparkrun runs "
-        "the container as the SSH user by default — so the workload would start without the content it "
-        "expects, or die with a permission error from inside the container. Missing — %s. Create the "
-        "path(s) on every host, package the content as a `mods:` entry (copied into the container at "
-        "launch, so it needs no host path), bake it into the image, or set `mounts.missing_source: warn` "
-        "in config.yaml to launch anyway." % volume_detail
-    )
-    if policy == "warn":
-        logger.warning(message)
-        return
-    raise RecipeError(message)
-
-
-def builder_transforms_image(recipe, v=None) -> bool:
-    """Backward-compatible facade for shared image preparation."""
-    from sparkrun.core.image_preparation import builder_transforms_image as _shared_check
-
-    return _shared_check(recipe, v)
 
 
 def _verify_image_command_passthrough(
@@ -544,129 +471,6 @@ def apply_platform_runtime_flag_defaults(recipe: Recipe, runtime_name: str, host
     return applied
 
 
-#: A ``{placeholder}`` in a recipe ``command:`` template or in another
-#: default's value.  Matches the name only; the surrounding-brace rules live
-#: in :func:`sparkrun.utils.text.mask_non_placeholder_braces`.
-_TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
-
-
-def _is_internal_config_key(key: str) -> bool:
-    """True for keys excluded from the unmapped-key report regardless of runtime.
-
-    A leading underscore marks a value sparkrun injects into the config chain
-    mid-launch (``_gguf_model_path``, ``_mmproj_path``); a dot marks a
-    namespaced override (``-o env.KEY=VALUE``) routed by prefix rather than
-    looked up as a whole key.
-    """
-    return key.startswith("_") or "." in key
-
-
-def _referenced_placeholders(recipe: Recipe) -> set[str]:
-    """Names a recipe resolves through ``{placeholder}`` substitution.
-
-    Covers the ``command:`` template and the *values* of ``defaults`` and
-    ``env`` — ``render_template`` iterates, so one default may legitimately
-    exist only to be interpolated into another (``base_url:
-    "http://localhost:{port}"``), which is a use even though no flag map
-    lists it.
-    """
-    found: set[str] = set()
-    sources = [recipe.command or ""]
-    sources.extend(str(val) for val in recipe.defaults.values() if isinstance(val, str))
-    sources.extend(str(val) for val in (recipe.env or {}).values() if isinstance(val, str))
-    for text in sources:
-        if "{" in text:
-            found.update(_TEMPLATE_PLACEHOLDER_RE.findall(text))
-    return found
-
-
-def report_unmapped_config_keys(
-    recipe: Recipe,
-    runtime: RuntimePlugin,
-    overrides: dict[str, Any] | None = None,
-    *,
-    log: bool = True,
-) -> list[str]:
-    """Warn about ``defaults:`` / ``-o`` keys that reach nothing.
-
-    A structured runtime renders its serve command by iterating a flag map,
-    so a key the map doesn't list is not passed through — it is *dropped*,
-    with no error, no warning, and no trace in the rendered command.  The
-    engine then falls back to its own default, which is exactly what a
-    recipe pinning ``lm_head_dtype: bf16`` for correctness was trying to
-    prevent (issue #276; ``--disable-tool-grammar`` in #221 was the same
-    gap).  Nothing about the resulting deployment looks wrong.
-
-    A key counts as reaching something when it is any of:
-
-    * listed in :meth:`~sparkrun.runtimes.base.RuntimePlugin.known_config_keys`
-      (the runtime's flag map plus whatever it consumes outside it),
-    * in :data:`~sparkrun.runtimes.base.BASE_CONSUMED_CONFIG_KEYS`,
-    * referenced as a ``{placeholder}`` in the recipe's ``command:``
-      template — the documented escape hatch for runtime-specific keys
-      (RECIPES.md), and the reason this cannot just diff against the flag
-      map,
-    * internal or namespaced (see :func:`_is_internal_config_key`).
-
-    Returns the warning lines (logged too unless *log* is False — the
-    ``recipe validate`` path renders them itself and would otherwise emit
-    each one twice).  Empty when the runtime does
-    not declare ``known_config_keys`` — silence is the safe default for a
-    runtime whose consumed-key set has not been established.
-
-    Warns rather than raises deliberately: recipes are fetched from
-    registries that version independently of sparkrun, so a key this build
-    doesn't know is routinely a *newer* recipe rather than a broken one,
-    and hard-failing would strand a user between two published artifacts.
-    The report names the launch's runtime because the same recipe key can
-    be live under one runtime and dead under another.
-    """
-    from sparkrun.runtimes.base import BASE_CONSUMED_CONFIG_KEYS
-
-    # Resolved defensively: this is a diagnostic, and an out-of-tree runtime
-    # built against an older base class (or one whose hook raises) must cost
-    # the launch nothing more than the report it would have produced.
-    hook = getattr(runtime, "known_config_keys", None)
-    try:
-        known = hook() if callable(hook) else None
-    except Exception:
-        logger.debug("Runtime %r known_config_keys raised", getattr(runtime, "runtime_name", "?"), exc_info=True)
-        return []
-    if known is None:
-        return []
-
-    consumed = set(known) | BASE_CONSUMED_CONFIG_KEYS | _referenced_placeholders(recipe)
-
-    def _unmapped(keys) -> list[str]:
-        return sorted(k for k in keys if not _is_internal_config_key(k) and k not in consumed)
-
-    # An override is reported separately from a recipe default: it was typed
-    # at this invocation, so "did nothing" is a failed instruction rather
-    # than an inherited defect, and the fix is the user's to make.
-    override_keys = _unmapped(overrides or {})
-    default_keys = _unmapped(k for k in recipe.defaults if k not in (overrides or {}))
-
-    messages: list[str] = []
-    if default_keys:
-        messages.append(
-            "Recipe '%s' sets defaults the '%s' runtime does not understand, so they are dropped from the serve "
-            "command and the engine will use its own default instead: %s. Remove them, or reference them from the "
-            "recipe's 'command:' template if this build of sparkrun predates the engine flag."
-            % (recipe.name, runtime.runtime_name, ", ".join(default_keys))
-        )
-    if override_keys:
-        messages.append(
-            "Override(s) %s have no effect: the '%s' runtime does not understand %s, so nothing is added to the "
-            "serve command."
-            % (", ".join("-o %s" % k for k in override_keys), runtime.runtime_name, "them" if len(override_keys) > 1 else "it")
-        )
-
-    if log:
-        for message in messages:
-            logger.warning(message)
-    return messages
-
-
 def resolve_platform_env_defaults(runtime: RuntimePlugin, host_hardware) -> dict[str, str]:
     """Return the platform's container-env defaults for *runtime*.
 
@@ -811,24 +615,6 @@ def launch_inference(
     # ``None`` means "nothing was asked for" and defers to recipe / cluster /
     # config / runtime defaults.
     runtime_cache_override: dict | None = None,
-    # Span collector for launch-stage timing.  ``None`` creates one, so every
-    # caller of this function gets timings without wiring anything; pass one
-    # to widen the window beyond this call (e.g. to include planning) or to
-    # share a timeline across several launches.
-    timeline: "Timeline | None" = None,
-    # Provenance persisted into job metadata.  ``recipe_fingerprint`` must be
-    # derived *before* this call when the caller needs to match on it later:
-    # apply_platform_runtime_flag_defaults() below mutates recipe.defaults, so
-    # a digest taken after that point is host-dependent and no caller can
-    # reproduce it.  ``owner`` tags the component that created the job.
-    recipe_fingerprint: str | None = None,
-    owner: str | None = None,
-    # Optional recipe-local execution strategy.  The shared launcher still
-    # owns asset preparation and the before_start replacement barrier; only
-    # final activation is delegated.
-    execution_context: "ExecutionContext | None" = None,
-    execution_strategy: "RecipeExecutionStrategy | None" = None,
-    prepared_execution: "PreparedExecution | None" = None,
 ) -> LaunchResult:
     """Launch an inference workload.
 
@@ -891,27 +677,6 @@ def launch_inference(
         if progress is None:
             progress = sctx.progress
     p = progress  # short alias
-
-    # Resolve the span collector and attach it to the progress tracker, whose
-    # phase/step brackets are already exactly where the timings belong.
-    if timeline is None:
-        timeline = (sctx.timing if sctx is not None else None) or (p.timeline if p is not None else None) or Timeline()
-    launch_span = timeline.begin(
-        "launch",
-        recipe=getattr(recipe, "qualified_name", None) or getattr(recipe, "name", ""),
-        runtime=runtime.runtime_name,
-        hosts=len(host_list),
-        dry_run=dry_run,
-    )
-    if p is not None:
-        p.timeline = timeline
-        p.set_root_span(launch_span)
-
-    if (execution_strategy is None) != (prepared_execution is None):
-        raise ValueError("execution_strategy and prepared_execution must be provided together")
-    if execution_strategy is not None and execution_context is None:
-        raise ValueError("execution_context is required with an execution strategy")
-    asset_policy = prepared_execution.assets if prepared_execution is not None else None
 
     from sparkrun.orchestration.distribution import resolve_auto_transfer_mode
 
@@ -981,17 +746,14 @@ def launch_inference(
 
     ssh_kwargs = build_ssh_kwargs(config)
 
-    # Preflight: verify the host paths this launch will bind actually exist on
-    # the substrate where the workload runs — pre-placed weights (whose
-    # presence is what licenses skipping download + distribution) and the
-    # executor's own bind-mount sources from ``executor_config.volumes``.
+    # Preflight: pre-placed weights (resolved_model_path / absolute-path model)
+    # skip download + distribution, so verify the path actually exists on the
+    # substrate where the workload will run before committing to that skip.
     # Substrate-aware via the launching executor (host → SSH ``test -e``;
     # provider executors probe their own volumes). Best-effort: skipped on
     # dry-run, and an unresolvable executor / unreachable host never blocks.
-    # Runs unconditionally now: a recipe with no pre-placed model can still
-    # carry volumes, and that was the unchecked half.
-    if not dry_run:
-        _verify_mount_sources(
+    if _resolved_model_path and not dry_run:
+        _verify_pre_placed_model(
             recipe,
             host_list,
             ssh_kwargs,
@@ -1009,18 +771,12 @@ def launch_inference(
         config,
         dry_run=dry_run,
     )
-    # Management interface pinned by the cluster, threaded into every host
-    # probe this launch performs (see ClusterDefinition.mgmt_interface).
-    # ``None`` for host-list-only launches, which detect per host.
-    mgmt_interface = cluster.mgmt_interface if cluster is not None else None
-
     transfer_result = resolve_auto_transfer_mode(
         transfer_mode or "auto",
         host_list,
         ssh_kwargs=ssh_kwargs,
         dry_run=dry_run,
         topology=topology,
-        mgmt_interface=mgmt_interface,
     )
     effective_transfer_mode = transfer_result.mode
 
@@ -1057,25 +813,6 @@ def launch_inference(
     # Resolve container image
     container_image = runtime.resolve_container(recipe, overrides)
 
-    # Per-machine images (``containers:``) are gated *before* any side effect —
-    # the guards must fire before the builder runs, the image is pulled, or the
-    # model is synced.  The plan itself is resolved after the builder phase,
-    # since a builder may rewrite the fallback image ref.
-    #
-    # The check reads ``containers`` with getattr, not attribute access: this
-    # path is reached with objects that only duck-type as recipes (see
-    # extract_served_model_name_from_command for the same accommodation), and a
-    # launch must not die on a missing optional field.
-    from sparkrun.core.image_preparation import validate_image_configuration
-
-    validate_image_configuration(
-        recipe,
-        runtime,
-        v=v,
-        run_builder=asset_policy is None or asset_policy.run_builder,
-        transform_check=builder_transforms_image,
-    )
-
     # Resolve recipe.mods to pre_exec entries (builder-agnostic).
     # Part of preparation — surfaces resolution failures before any
     # builder/distribution work, and keeps the builder ignorant of mods.
@@ -1100,46 +837,42 @@ def launch_inference(
     if p:
         p.phase_end()
 
-    # -- Phase 2: shared image preparation / optional builder --
-    #
-    # The builder call and the per-node image plan are one step because the
-    # plan's fallback is the builder's *output*: a builder that rewrites the
-    # image ref must be reflected before `containers:` is resolved against it.
-    # `prepare_images` owns both, so an integration that stages images without
-    # launching resolves them identically instead of reimplementing the order.
-    _run_builder = asset_policy is None or asset_policy.run_builder
-    if recipe.builder and _run_builder:
+    # -- Phase 2: Builder --
+    builder = None
+    if recipe.builder:
         if p:
             p.phase(2)
+        from sparkrun.builders.base import BuilderUnavailableError
+        from sparkrun.core.bootstrap import get_builder
+
+        # Only *lookup* is tolerated failing here. A ValueError out of
+        # prepare() is a real build failure, and reporting it as "builder not
+        # found, skipping" would launch the workload without the environment
+        # it asked for. A gated builder is likewise never skipped: the user
+        # named one that exists (see BuilderUnavailableError).
+        try:
+            builder = get_builder(recipe.builder, v)
+        except BuilderUnavailableError:
+            raise
+        except ValueError:
+            builder = None
+            logger.warning("Builder '%s' not found, skipping", recipe.builder)
+
+        if builder is not None:
+            container_image = builder.prepare(
+                container_image,
+                recipe,
+                host_list,
+                config=config,
+                dry_run=dry_run,
+                transfer_mode=effective_transfer_mode,
+                ssh_kwargs=ssh_kwargs,
+            )
+        if p:
+            p.phase_end()
     else:
         if p:
-            p.phase_skip(2, "execution strategy" if recipe.builder else "no builder")
-
-    from sparkrun.core.image_preparation import prepare_images
-
-    prepared_images = prepare_images(
-        recipe,
-        runtime,
-        host_list,
-        overrides,
-        config=config,
-        v=v,
-        cluster=cluster,
-        dry_run=dry_run,
-        transfer_mode=effective_transfer_mode,
-        ssh_kwargs=ssh_kwargs,
-        run_builder=_run_builder,
-        images_by_node=(asset_policy.images_by_node if asset_policy is not None else None),
-        strategy_name=(prepared_execution.strategy if prepared_execution is not None else ""),
-        source_image=container_image,
-        # Already gated above, before the builder could run.
-        validate=False,
-    )
-    builder = prepared_images.builder
-    image_plan = prepared_images.image_plan
-    container_image = prepared_images.head_image
-    if recipe.builder and _run_builder and p:
-        p.phase_end()
+            p.phase_skip(2, "no builder")
 
     # Resolve per-host backends from cluster hardware (or DGX Spark default).
     # Used by NCCL/RCCL/HCCL env emission inside the cluster orchestrator;
@@ -1196,20 +929,6 @@ def launch_inference(
     if _applied_flags:
         logger.debug("Applied platform runtime-flag defaults: %s", _applied_flags)
 
-    # Report recipe defaults / -o overrides this runtime will silently drop.
-    # Runs after the platform tier so a platform contributing an unmapped flag
-    # is caught too, and before any container starts so --dry-run reports it.
-    report_unmapped_config_keys(recipe, runtime, overrides)
-
-    # How this launch reaches its hosts, recorded with every metadata write
-    # below so ``stop`` / ``logs`` addressed by cluster_id can connect the same
-    # way (issue #277).  ``config.ssh_user`` is what the SSH layer will use for
-    # this launch — ``api.run`` has already folded the cluster's user into it —
-    # and stays ``None`` when nothing configured one, which is the signal not
-    # to record it.
-    job_cluster_name = getattr(cluster, "name", "") or ""
-    job_ssh_user = getattr(config, "ssh_user", None)
-
     # Save job metadata
     if not dry_run:
         try:
@@ -1221,13 +940,8 @@ def launch_inference(
                 cache_dir=str(config.cache_dir),
                 recipe_ref=recipe_ref,
                 container_image=container_image,
-                container_images=(image_plan.images_by_node if image_plan.heterogeneous else None),
                 runtime=runtime,
                 backends=backends,
-                recipe_fingerprint=recipe_fingerprint,
-                owner=owner,
-                cluster_name=job_cluster_name,
-                ssh_user=job_ssh_user,
             )
         except Exception:
             # Not fatal to the launch, but it is not cosmetic either: without
@@ -1241,15 +955,14 @@ def launch_inference(
             )
 
     # Pre-launch preparation (post-container builds)
-    if asset_policy is None or asset_policy.prepare_runtime:
-        runtime.prepare(
-            recipe,
-            host_list,
-            config=config,
-            dry_run=dry_run,
-            transfer_mode=effective_transfer_mode,
-            overrides=overrides,
-        )
+    runtime.prepare(
+        recipe,
+        host_list,
+        config=config,
+        dry_run=dry_run,
+        transfer_mode=effective_transfer_mode,
+        overrides=overrides,
+    )
 
     # -- Phase 3: Distribution --
     comm_env = None
@@ -1277,7 +990,7 @@ def launch_inference(
         # (``distribution.model.enabled: false``) or a recipe points at
         # pre-placed weights (``cluster_config.resolved_model_path``).
         _model_dist_enabled = getattr(_dist_model, "enabled", True)
-        _skip_model = _skip_model_distribution or not _model_dist_enabled or (asset_policy is not None and not asset_policy.prepare_model)
+        _skip_model = _skip_model_distribution or not _model_dist_enabled
 
         # Skip container-image distribution for container-less executors (the
         # `local` executor has no image to distribute — and the image may not
@@ -1303,8 +1016,6 @@ def launch_inference(
         except Exception:
             logger.debug("Could not resolve executor for image-skip decision; distributing image", exc_info=True)
             _skip_container = False
-        if asset_policy is not None and not asset_policy.distribute_images:
-            _skip_container = True
 
         # Preflight: does this image actually run the command sparkrun appends?
         # Runs from the distribution hook — i.e. once the image is resident on
@@ -1313,50 +1024,22 @@ def launch_inference(
         # has not yet paid for the long, routinely-interrupted transfer.
         # Skipped on dry-run (no SSH) and for container-less executors.
         def _probe_image_entrypoint() -> None:
-            if dry_run or _skip_container or (asset_policy is not None and not asset_policy.probe_images):
+            if dry_run or _skip_container:
                 return
-
-            def _probe(img: str, hs: list[str]) -> None:
-                _verify_image_command_passthrough(
-                    recipe,
-                    img,
-                    hs,
-                    ssh_kwargs,
-                    runtime=runtime,
-                    cluster=cluster,
-                    config=config,
-                    executor_config=executor_config,
-                    rootless=rootless,
-                    auto_user=auto_user,
-                    host_hardware=_head_hw,
-                    v=v,
-                )
-
-            # One probe per *distinct* image.  The single-image shortcut used to
-            # be the whole story — the verdict is a property of the image, and
-            # distribution had established every host carried the same one.  With
-            # per-machine images that premise is gone, so each image is probed on
-            # a host that actually runs it.
-            groups: dict[str, list[str]] = {}
-            for _host, _img in zip(host_list, image_plan.images_by_node):
-                groups.setdefault(_img, []).append(_host)
-
-            if len(groups) <= 1:
-                _probe(container_image, host_list)
-                return
-
-            from concurrent.futures import ThreadPoolExecutor as _TPE, as_completed as _as_completed
-
-            errors: list[Exception] = []
-            with _TPE(max_workers=min(len(groups), 8)) as pool:
-                futures = [pool.submit(_probe, img, hs) for img, hs in groups.items()]
-                for future in _as_completed(futures):
-                    try:
-                        future.result()
-                    except Exception as e:  # RecipeError from a confirmed bad image
-                        errors.append(e)
-            if errors:
-                raise errors[0]
+            _verify_image_command_passthrough(
+                recipe,
+                container_image,
+                host_list,
+                ssh_kwargs,
+                runtime=runtime,
+                cluster=cluster,
+                config=config,
+                executor_config=executor_config,
+                rootless=rootless,
+                auto_user=auto_user,
+                host_hardware=_head_hw,
+                v=v,
+            )
 
         comm_env, ib_ip_map, mgmt_ip_map, ib_iface_map = distribute_from_config(
             recipe,
@@ -1365,20 +1048,17 @@ def launch_inference(
             effective_cache_dir,
             config,
             dry_run,
+            model_revision=recipe.model_revision,
             recipe_name=recipe.name,
             transfer_mode=effective_transfer_mode,
             transfer_interface=transfer_interface,
             local_cache_dir=effective_local_cache,
             pre_ib=transfer_result,
             topology=topology,
-            mgmt_interface=mgmt_interface,
             prefs=_model_prefs,
             skip_model=_skip_model,
             skip_container=_skip_container,
             after_container_sync=_probe_image_entrypoint,
-            timeline=timeline,
-            job_cluster_id=cluster_id,
-            cluster_name=getattr(cluster, "name", "") or "",
         )
         # Re-save job metadata with IP maps from IB detection
         if not dry_run and (ib_ip_map or mgmt_ip_map):
@@ -1392,14 +1072,8 @@ def launch_inference(
                     ib_ip_map=ib_ip_map,
                     mgmt_ip_map=mgmt_ip_map,
                     recipe_ref=recipe_ref,
-                    container_image=container_image,
-                    container_images=(image_plan.images_by_node if image_plan.heterogeneous else None),
                     runtime=runtime,
                     backends=backends,
-                    recipe_fingerprint=recipe_fingerprint,
-                    owner=owner,
-                    cluster_name=job_cluster_name,
-                    ssh_user=job_ssh_user,
                 )
             except Exception:
                 logger.debug("Failed to update job metadata: %s", cluster_id, exc_info=True)
@@ -1410,8 +1084,7 @@ def launch_inference(
             p.phase_skip(3, "delegating runtime")
 
     # -- Phase 4: Tuning --
-    _strategy_tuning = asset_policy is None or asset_policy.sync_tuning
-    _needs_tuning = _strategy_tuning and ((sync_tuning and not dry_run) or not runtime.is_delegating_runtime())
+    _needs_tuning = (sync_tuning and not dry_run) or not runtime.is_delegating_runtime()
     if _needs_tuning:
         if p:
             p.phase(4)
@@ -1419,7 +1092,7 @@ def launch_inference(
         if p:
             p.phase_skip(4, "disabled")
 
-    if _strategy_tuning and sync_tuning and not dry_run:
+    if sync_tuning and not dry_run:
         from sparkrun.tuning.sync import sync_registry_tuning
 
         try:
@@ -1434,53 +1107,18 @@ def launch_inference(
         except Exception:
             logger.debug("Failed to sync tuning configs", exc_info=True)
 
-    # Distribute tuning configs to remote hosts.  The tuning cache lives under
-    # the SSH user's $HOME, so it hits the same shared-filesystem conditions the
-    # model cache does; its prefs inherit `distribution.model` unless the
-    # cluster spells out a `distribution.tuning` block (see
-    # ClusterDistributionConfig.tuning_prefs).
-    if _strategy_tuning and not runtime.is_delegating_runtime():
-        from sparkrun.tuning._common import tuning_configs_present
-        from sparkrun.tuning.distribute import distribute_tuning_to_hosts, ensure_remote_tuning_dirs
-        from sparkrun.tuning.sync import _get_local_tuning_dir
-
-        _dist_cfg = getattr(cluster, "distribution", None)
-        _tuning_prefs = getattr(_dist_cfg, "tuning_prefs", None)
-        _tuning_enabled = getattr(_tuning_prefs, "enabled", True)
+    # Distribute tuning configs to remote hosts
+    if not runtime.is_delegating_runtime():
+        from sparkrun.tuning.distribute import distribute_tuning_to_hosts
 
         try:
-            # Create the tuning directory on every host before anything mounts
-            # it — and deliberately *outside* the enabled/skip_fan_out checks
-            # below.  Those govern whether we copy configs there; the bind
-            # mount happens either way, decided from the control node's copy,
-            # so a host missing the path has it created root-owned by the
-            # Docker daemon and is locked out of its own tuning cache from then
-            # on.  Gated by the same predicate as the mount so the two cannot
-            # drift apart.
-            if tuning_configs_present(_get_local_tuning_dir(recipe.runtime)):
-                ensure_remote_tuning_dirs(
-                    recipe.runtime,
-                    host_list,
-                    dry_run=dry_run,
-                    **ssh_kwargs,
-                )
-        except Exception:
-            logger.debug("Failed to ensure remote tuning directories", exc_info=True)
-
-        try:
-            if not _tuning_enabled:
-                logger.debug("Tuning distribution disabled for this cluster; skipping")
-                tuning_failed = []
-            else:
-                tuning_failed = distribute_tuning_to_hosts(
-                    recipe.runtime,
-                    host_list,
-                    dry_run=dry_run,
-                    transfer_mode=effective_transfer_mode,
-                    preserve_perms=getattr(_tuning_prefs, "preserve_perms", True),
-                    skip_fan_out=getattr(_tuning_prefs, "skip_fan_out", False),
-                    **ssh_kwargs,
-                )
+            tuning_failed = distribute_tuning_to_hosts(
+                recipe.runtime,
+                host_list,
+                dry_run=dry_run,
+                transfer_mode=effective_transfer_mode,
+                **ssh_kwargs,
+            )
             if tuning_failed:
                 logger.warning(
                     "Tuning config distribution failed on: %s",
@@ -1534,7 +1172,7 @@ def launch_inference(
     )
 
     # Best-effort page cache clear
-    if not runtime.is_delegating_runtime() and (asset_policy is None or asset_policy.clear_page_cache):
+    if not runtime.is_delegating_runtime():
         from sparkrun.orchestration.primitives import try_clear_page_cache
 
         try_clear_page_cache(host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
@@ -1545,96 +1183,6 @@ def launch_inference(
 
         _rt_display = RUNTIME_DISPLAY.get(runtime.runtime_name, runtime.runtime_name)
         p.phase(5, "Launching %s runtime" % _rt_display)
-
-    # A strategy gets one final prepare-only call with sparkrun's resolved
-    # transport and resident image/model state.  It must complete before the
-    # core-owned eviction barrier below: everything slow and interruptible is
-    # behind us, so this is the last point at which failing costs nothing.
-    # Normal runtime launches retain their existing sequence.
-    if execution_strategy is not None:
-        from sparkrun.core.execution import ActivationContext
-
-        activation_context = ActivationContext(
-            execution=execution_context,
-            prepared=prepared_execution,
-            cluster_id=cluster_id,
-            hosts=tuple(host_list),
-            container_image=container_image,
-            images_by_node=tuple(image_plan.images_by_node),
-            effective_cache_dir=effective_cache_dir,
-            serve_port=serve_port,
-            serve_command=serve_command,
-            comm_env=comm_env,
-            ib_ip_map=ib_ip_map,
-            ib_iface_map=ib_iface_map,
-        )
-        with timed(timeline, "execution.prepare_activation", strategy=prepared_execution.strategy):
-            activation_receipt = execution_strategy.prepare_activation(activation_context)
-        # The barrier stays core-owned. A strategy never decides when the
-        # deployment it replaces is torn down.
-        if before_start is not None and not dry_run:
-            before_start()
-        with timed(timeline, "execution.activate", strategy=prepared_execution.strategy):
-            activation_result = execution_strategy.activate(activation_context, activation_receipt)
-        rc = int(activation_result.rc)
-        runtime_info = dict(activation_result.runtime_info)
-        runtime_info.setdefault("execution_strategy", prepared_execution.strategy)
-        if not dry_run:
-            try:
-                # Every field the normal path records must be recorded here too:
-                # save_job_metadata rewrites the file wholesale, so an omission
-                # is an erasure, and the symptom (a teardown that cannot
-                # authenticate) looks nothing like the cause.
-                save_job_metadata(
-                    cluster_id,
-                    recipe,
-                    host_list,
-                    overrides=overrides,
-                    cache_dir=str(config.cache_dir),
-                    ib_ip_map=ib_ip_map,
-                    mgmt_ip_map=mgmt_ip_map,
-                    recipe_ref=recipe_ref,
-                    runtime_info=runtime_info,
-                    container_image=container_image,
-                    container_images=(image_plan.images_by_node if image_plan.heterogeneous else None),
-                    runtime=runtime,
-                    backends=backends,
-                    recipe_fingerprint=recipe_fingerprint,
-                    owner=owner,
-                    cluster_name=job_cluster_name,
-                    ssh_user=job_ssh_user,
-                )
-            except Exception:
-                logger.warning(
-                    "Could not persist execution-strategy metadata for %s; later lifecycle commands may lose strategy context",
-                    cluster_id,
-                    exc_info=True,
-                )
-        if p:
-            p.phase_end()
-        timeline.end(launch_span, status=STATUS_ERROR if rc else "ok", rc=rc, cluster_id=cluster_id)
-        return LaunchResult(
-            rc=rc,
-            cluster_id=cluster_id,
-            host_list=host_list,
-            is_solo=is_solo,
-            runtime=runtime,
-            recipe=recipe,
-            overrides=overrides,
-            container_image=container_image,
-            effective_cache_dir=effective_cache_dir,
-            serve_port=serve_port,
-            config=config,
-            recipe_ref=recipe_ref,
-            comm_env=comm_env,
-            ib_ip_map=ib_ip_map,
-            ib_iface_map=ib_iface_map,
-            serve_command=serve_command,
-            runtime_info=runtime_info,
-            builder=builder,
-            backends=backends,
-            timeline=timeline,
-        )
 
     # Last point before containers start.  Everything that can fail slowly and
     # cheaply — image distribution, model download, tuning sync — is behind us,
@@ -1767,7 +1315,6 @@ def launch_inference(
     rc = runtime.run(
         hosts=host_list,
         image=container_image,
-        images_by_node=(image_plan.images_by_node if image_plan.heterogeneous else None),
         serve_command=serve_command,
         recipe=recipe,
         overrides=overrides,
@@ -1842,24 +1389,13 @@ def launch_inference(
                         recipe_ref=recipe_ref,
                         runtime_info=runtime_info,
                         container_image=container_image,
-                        container_images=(image_plan.images_by_node if image_plan.heterogeneous else None),
                         runtime=runtime,
                         backends=backends,
-                        recipe_fingerprint=recipe_fingerprint,
-                        owner=owner,
-                        cluster_name=job_cluster_name,
-                        ssh_user=job_ssh_user,
                     )
                 except Exception:
                     logger.debug("Failed to save runtime_info to job metadata", exc_info=True)
         except Exception:
             logger.debug("Runtime info collection failed", exc_info=True)
-
-    # A raise between here and the top leaves ``launch`` open; ``export()``
-    # reports open spans as ``status="open"`` so the failing phase is still
-    # visible.  Callers that need the timeline on the failure path must pass
-    # ``timeline=`` in — the LaunchResult below never gets built.
-    timeline.end(launch_span, status=STATUS_ERROR if rc else "ok", rc=rc, cluster_id=cluster_id)
 
     return LaunchResult(
         rc=rc,
@@ -1881,30 +1417,7 @@ def launch_inference(
         runtime_info=runtime_info,
         builder=builder,
         backends=backends,
-        timeline=timeline,
     )
-
-
-#: Wall-clock budget for "the head port is listening".
-#:
-#: Sized for the stage the *engine* spends its time in, which is not the one
-#: the two-stage split originally assumed.  sglang and vLLM V1 start their
-#: HTTP server **after** engine init, weight load and CUDA-graph capture are
-#: all finished, so nearly the whole startup lands here and the health stage
-#: that follows is seconds.  A 30B NVFP4 spec-decode model on 2 Sparks was
-#: measured at 775s to bind (570s of it capturing target-verify graphs)
-#: against a budget that expired at 321s — reported, wrongly, as an endpoint
-#: that never came up.
-#:
-#: Generous is safe: `wait_for_port` re-checks container liveness on every
-#: attempt, so a workload that actually died is caught within one interval
-#: regardless of the budget.  The budget's only job is to bound a *hang*.
-DEFAULT_PORT_READY_TIMEOUT_S = 1800.0
-
-#: Wall-clock budget for ``/v1/models`` answering once the port is open.
-#: Short by comparison on purpose — by this point the engine is up, and a
-#: server that dies is caught by the consecutive-refusal check, not here.
-DEFAULT_HEALTH_READY_TIMEOUT_S = 900.0
 
 
 @dataclass(frozen=True)
@@ -1912,13 +1425,8 @@ class ServeReadiness:
     """Outcome of waiting for a launched workload's head endpoint.
 
     ``reason`` is empty when ready, else ``"port"`` (never started
-    listening / container exited), ``"health"`` (listening but never
-    returned HTTP 200), or ``"cancelled"`` (the caller abandoned the wait).
-
-    ``"cancelled"`` is deliberately not folded into the other two: they
-    say the workload is broken, this one says only that we stopped
-    looking.  Rendering "the server never came up" because the user
-    pressed Ctrl-C would be a lie about the cluster.
+    listening / container exited) or ``"health"`` (listening but never
+    returned HTTP 200).
     """
 
     ready: bool
@@ -1927,24 +1435,10 @@ class ServeReadiness:
     port: int
     container: str
     reason: str = ""
-    port_wait_s: float = 0.0
-    """Seconds from the start of the wait until the head port was listening.
-
-    Covers engine init / distributed rendezvous — an inference server
-    refuses connections outright until then."""
-    health_wait_s: float = 0.0
-    """Seconds from the port opening until ``/v1/models`` returned 200.
-
-    Covers weight load and graph capture."""
 
     @property
     def health_url(self) -> str:
         return "http://%s:%d/v1/models" % (self.head_ip, self.port)
-
-    @property
-    def total_wait_s(self) -> float:
-        """Containers-running → serving.  The time-to-first-inference figure."""
-        return self.port_wait_s + self.health_wait_s
 
 
 def wait_for_serve_ready(
@@ -1952,49 +1446,10 @@ def wait_for_serve_ready(
     *,
     ssh_kwargs: dict | None = None,
     dry_run: bool = False,
-    port_timeout_s: float = DEFAULT_PORT_READY_TIMEOUT_S,
+    port_max_retries: int = 120,
     port_retry_interval: int = 2,
-    health_timeout_s: float = DEFAULT_HEALTH_READY_TIMEOUT_S,
+    health_max_retries: int = 120,
     health_retry_interval: int = 5,
-    timeline: "Timeline | None" = None,
-    cancel: "threading.Event | None" = None,
-    parent: int | None = None,
-) -> ServeReadiness:
-    """Adapter over :func:`wait_for_endpoint_ready` for a :class:`LaunchResult`."""
-    return wait_for_endpoint_ready(
-        runtime=result.runtime,
-        cluster_id=result.cluster_id,
-        host_list=result.host_list,
-        is_solo=result.is_solo,
-        port=result.serve_port,
-        ssh_kwargs=ssh_kwargs,
-        dry_run=dry_run,
-        port_timeout_s=port_timeout_s,
-        port_retry_interval=port_retry_interval,
-        health_timeout_s=health_timeout_s,
-        health_retry_interval=health_retry_interval,
-        timeline=timeline if timeline is not None else result.timeline,
-        cancel=cancel,
-        parent=parent,
-    )
-
-
-def wait_for_endpoint_ready(
-    *,
-    runtime: RuntimePlugin,
-    cluster_id: str,
-    host_list: list[str],
-    is_solo: bool,
-    port: int,
-    ssh_kwargs: dict | None = None,
-    dry_run: bool = False,
-    port_timeout_s: float = DEFAULT_PORT_READY_TIMEOUT_S,
-    port_retry_interval: int = 2,
-    health_timeout_s: float = DEFAULT_HEALTH_READY_TIMEOUT_S,
-    health_retry_interval: int = 5,
-    timeline: "Timeline | None" = None,
-    cancel: "threading.Event | None" = None,
-    parent: int | None = None,
 ) -> ServeReadiness:
     """Wait for a detached launch's head endpoint to answer ``/v1/models``.
 
@@ -2011,54 +1466,30 @@ def wait_for_endpoint_ready(
     only then is :func:`wait_for_healthy`'s connection-refused-means-dead
     heuristic sound.
 
-    This is the field-based form, callable when there is no
-    :class:`LaunchResult` — a workload found already serving by ``--ensure``
-    still has to be waited on, and it never produced one.
-
     Args:
-        runtime: Runtime plugin, asked for the head container name.
-        cluster_id: Cluster id of the workload.
-        host_list: Hosts the workload runs on; the first is the head.
-        is_solo: Whether the workload launched in solo mode.
-        port: Inference HTTP port on the head.
+        result: The :class:`LaunchResult` to wait on.
         ssh_kwargs: SSH parameters for probing the head host.
         dry_run: Report ready without waiting.
-        port_timeout_s: Wall-clock budget for the port stage
-            (:data:`DEFAULT_PORT_READY_TIMEOUT_S`).  ``math.inf`` polls
-            until cancelled, which is what the background watcher on
-            ``sparkrun run`` uses.
+        port_max_retries: Port-poll attempts (``port_retry_interval`` apart).
         port_retry_interval: Seconds between port polls.
-        health_timeout_s: Wall-clock budget for the health stage
-            (:data:`DEFAULT_HEALTH_READY_TIMEOUT_S`).
+        health_max_retries: Health-poll attempts (``health_retry_interval`` apart).
         health_retry_interval: Seconds between health polls.
-        timeline: Span collector for the two waits.  Pass the launch's own so
-            the readiness spans join its phases in one artifact.
-        cancel: Set to abandon the wait.  Yields ``reason="cancelled"`` and
-            leaves the in-flight span *open*, so a rendered timeline shows
-            "did not finish" rather than claiming a stage failed.
-        parent: Span to record the two stages under.  ``None`` inherits from
-            the timeline's open-span stack, which is what nests them inside
-            phase 6 when ``post_launch_lifecycle`` is the caller.  A caller
-            running this **off the main thread** must not inherit — pass a
-            span id or :data:`~sparkrun.core.timing.ROOT`.
 
     Returns:
-        A :class:`ServeReadiness` describing the head endpoint, whether it
-        became ready, and how long each stage took.
+        A :class:`ServeReadiness` describing the head endpoint and
+        whether it became ready.
     """
+    from sparkrun.orchestration.docker import generate_container_name, generate_node_container_name
     from sparkrun.orchestration.health import wait_for_healthy, wait_for_port
     from sparkrun.orchestration.primitives import detect_host_ip
     from sparkrun.utils import is_local_host
 
-    head_host = host_list[0] if host_list else "localhost"
+    head_host = result.host_list[0] if result.host_list else "localhost"
 
-    # Ask the runtime, don't reconstruct.  ``wait_for_port`` treats "that
-    # container isn't running" as proof the workload died, so a name that
-    # merely doesn't match aborts the wait one interval in — and the two
-    # naming schemes differ: a Ray runtime's head is ``<id>_head`` while
-    # native ones use ``<id>_node_0``.  The runtime also routes the name
-    # through the resolved executor, which the docker generators cannot.
-    container = runtime.get_head_container_name(cluster_id, is_solo=is_solo)
+    if result.is_solo:
+        container = generate_container_name(result.cluster_id, "solo")
+    else:
+        container = generate_node_container_name(result.cluster_id, 0)
 
     if is_local_host(head_host):
         head_ip = "127.0.0.1"
@@ -2068,200 +1499,31 @@ def wait_for_endpoint_ready(
         except RuntimeError:
             head_ip = head_host
 
+    port = result.serve_port
     base = ServeReadiness(True, head_host, head_ip, port, container)
     if dry_run:
         return base
 
-    # Recorded onto the launch's own timeline so the phases and the readiness
-    # wait land in one artifact.  Parenting is the caller's to state: from
-    # ``post_launch_lifecycle`` these nest inside phase 6, and from the
-    # background ``ReadinessWatcher`` they must be explicitly rooted rather
-    # than inheriting whatever the main thread has open.
-    tl = timeline
-
-    def cancelled() -> bool:
-        return cancel is not None and cancel.is_set()
-
-    t0 = time.monotonic()
-    port_span = tl.begin("serve.port_open", parent=parent, host=head_host, port=port) if tl else None
-    port_ready = wait_for_port(
+    if not wait_for_port(
         head_host,
         port,
-        timeout_s=port_timeout_s,
+        max_retries=port_max_retries,
         retry_interval=port_retry_interval,
         ssh_kwargs=ssh_kwargs,
         dry_run=dry_run,
         container_name=container,
-        cancel=cancel,
-    )
-    port_wait_s = time.monotonic() - t0
-    # Checked before the span is closed: the waiters report cancellation and
-    # genuine failure with the same ``False``, and closing this ``error``
-    # would put "the port never opened" in the artifact for a workload that
-    # was merely still starting when we stopped watching.
-    if not port_ready and cancelled():
-        return ServeReadiness(False, head_host, head_ip, port, container, reason="cancelled", port_wait_s=port_wait_s)
-    if tl and port_span is not None:
-        tl.end(port_span, status="ok" if port_ready else STATUS_ERROR)
-    if not port_ready:
-        return ServeReadiness(False, head_host, head_ip, port, container, reason="port", port_wait_s=port_wait_s)
+    ):
+        return ServeReadiness(False, head_host, head_ip, port, container, reason="port")
 
-    t1 = time.monotonic()
-    health_span = tl.begin("serve.health_ok", parent=parent, url=base.health_url) if tl else None
-    healthy = wait_for_healthy(
+    if not wait_for_healthy(
         base.health_url,
-        timeout_s=health_timeout_s,
+        max_retries=health_max_retries,
         retry_interval=health_retry_interval,
         dry_run=dry_run,
-        cancel=cancel,
-    )
-    health_wait_s = time.monotonic() - t1
-    if not healthy and cancelled():
-        return ServeReadiness(
-            False, head_host, head_ip, port, container, reason="cancelled", port_wait_s=port_wait_s, health_wait_s=health_wait_s
-        )
-    if tl and health_span is not None:
-        tl.end(health_span, status="ok" if healthy else STATUS_ERROR)
-    if not healthy:
-        return ServeReadiness(
-            False, head_host, head_ip, port, container, reason="health", port_wait_s=port_wait_s, health_wait_s=health_wait_s
-        )
+    ):
+        return ServeReadiness(False, head_host, head_ip, port, container, reason="health")
 
-    return ServeReadiness(True, head_host, head_ip, port, container, port_wait_s=port_wait_s, health_wait_s=health_wait_s)
-
-
-class ReadinessWatcher:
-    """Run :func:`wait_for_endpoint_ready` on a background thread.
-
-    Exists for the one case where the readiness wait cannot own the
-    terminal: ``sparkrun run`` attaches to the container logs immediately
-    after launching, and the minutes of weight load and graph capture that
-    the wait measures are exactly the minutes the user is watching scroll
-    past.  Waiting first would hide the boot log; not waiting at all left
-    the whole expensive half of the launch unmeasured.
-
-    So the poll runs alongside the log stream and reports through
-    *on_ready*, which is called **on the watcher thread** while another
-    process is writing to the same terminal.  A callback must therefore
-    emit a single short line in one write; anything multi-line belongs in
-    the caller's finalize step, after the stream has stopped.
-
-    Console-free by construction — the callback supplies all presentation.
-
-    On success it also opens a ``serve.serving`` span, closed by
-    :meth:`stop`.  Without it the tree stops accounting at the moment the
-    endpoint answered while the total kept running, so a launch watched for
-    two hours showed ~775s of rows under a 7695s total.  It is *measured*
-    (endpoint answered → we stopped watching) rather than derived from that
-    gap, which is what lets it reach the diagnostics record and keeps the
-    formatter free of a synthesized row that no artifact contains.
-
-    Not reusable: one watcher per launch, started once.
-    """
-
-    def __init__(
-        self,
-        result: LaunchResult,
-        *,
-        ssh_kwargs: dict | None = None,
-        on_ready: "Callable[[ServeReadiness], None] | None" = None,
-        timeline: "Timeline | None" = None,
-        dry_run: bool = False,
-    ) -> None:
-        self._result = result
-        self._ssh_kwargs = ssh_kwargs
-        self._on_ready = on_ready
-        self._timeline = timeline
-        self._dry_run = dry_run
-        self._cancel = threading.Event()
-        self._thread: threading.Thread | None = None
-        self._serving_span: int | None = None
-        self.readiness: ServeReadiness | None = None
-        """Outcome, once the wait has finished.  ``None`` while still polling."""
-
-    def start(self) -> "ReadinessWatcher":
-        # ``daemon=True`` is a backstop, not the plan: ``stop()`` cancels and
-        # joins.  It only matters if the process exits by a path that never
-        # reaches the finalize step.
-        self._thread = threading.Thread(target=self._run, name="sparkrun-readiness", daemon=True)
-        self._thread.start()
-        return self
-
-    def _run(self) -> None:
-        try:
-            readiness = wait_for_serve_ready(
-                self._result,
-                ssh_kwargs=self._ssh_kwargs,
-                timeline=self._timeline,
-                cancel=self._cancel,
-                dry_run=self._dry_run,
-                # Explicit, not inherited: this runs off the main thread, and
-                # a span taken from the shared open-span stack would be closed
-                # (with the wrong status) by the next main-thread ``end()``.
-                parent=TIMELINE_ROOT,
-                # Unbounded on purpose.  A timeout here would buy nothing: the
-                # watch is observational, costs one cheap probe per interval,
-                # and `stop()` ends it when the log stream does — so its
-                # natural budget is "as long as the user is watching".  A
-                # fixed budget could only ever expire *early* and report a
-                # still-starting engine as an endpoint that never came up.
-                port_timeout_s=math.inf,
-                health_timeout_s=math.inf,
-            )
-        except Exception:
-            # Observational only — this thread must never be why a launch
-            # that already succeeded reports a problem.
-            logger.debug("Readiness watch failed", exc_info=True)
-            return
-        self.readiness = readiness
-        if not readiness.ready:
-            return
-        # Opened before the callback renders, so the span starts when the
-        # endpoint answered rather than when we finished saying so.
-        if self._timeline is not None:
-            self._serving_span = self._timeline.begin("serve.serving", parent=TIMELINE_ROOT, label="serving")
-        if self._on_ready is not None:
-            try:
-                self._on_ready(readiness)
-            except Exception:
-                logger.debug("Readiness callback failed", exc_info=True)
-
-    def stop(self, timeout: float = 12.0) -> ServeReadiness | None:
-        """Cancel the wait and join, returning whatever was observed.
-
-        The cancel event only shortens the *gaps between* probes; it cannot
-        interrupt one in flight, and those are bounded at 5s (port probe) to
-        10s (container liveness, with ``ConnectTimeout=10`` under it).  A
-        join shorter than that abandons the thread — with a live ``ssh``
-        child — in precisely the case worth waiting for: a log stream that
-        ended on its own means the container exited, and the probe about to
-        return is what would say so.
-
-        A longer join costs nothing on Ctrl-C.  The probe runs in this
-        process group, so SIGINT reaches the ``ssh`` child too and the
-        in-flight probe dies with it; the loop then sees the cancel at the
-        top of its next iteration.
-
-        Still bounded, and ``daemon=True`` remains the backstop: a watcher
-        that somehow misses both must not hold up the exit.
-
-        Also closes the ``serve.serving`` span, since "we stopped watching"
-        is exactly where the observed serving interval ends.
-        """
-        self._cancel.set()
-        if self._thread is not None:
-            self._thread.join(timeout=timeout)
-            if self._thread.is_alive():
-                # Deliberate, but worth a breadcrumb: the readiness outcome
-                # reported to the user is "unknown" rather than observed.
-                logger.debug("Readiness watch did not stop within %.1fs; abandoning it", timeout)
-        # After the join, so a span the thread opened as we cancelled is
-        # still closed.  An abandoned thread that opens one later leaves it
-        # ``open`` — reported as "did not finish", which is accurate.
-        if self._serving_span is not None and self._timeline is not None:
-            self._timeline.end(self._serving_span)
-            self._serving_span = None
-        return self.readiness
+    return base
 
 
 def post_launch_lifecycle(
@@ -2312,18 +1574,7 @@ def post_launch_lifecycle(
     _ssh_kw = build_ssh_kwargs(config)
 
     click.echo("Waiting for server to become ready...")
-    # Same budget as every other readiness wait, config-overridable.  This
-    # path blocks the CLI, which is the argument for keeping it *tight* —
-    # but the failure it would guard against (a dead workload) is already
-    # caught within one interval by the container-liveness check, so a
-    # tight budget here only ever mislabels a slow engine as a broken one.
-    readiness = wait_for_serve_ready(
-        result,
-        ssh_kwargs=_ssh_kw,
-        dry_run=dry_run,
-        port_timeout_s=config.readiness_port_timeout_s,
-        health_timeout_s=config.readiness_health_timeout_s,
-    )
+    readiness = wait_for_serve_ready(result, ssh_kwargs=_ssh_kw, dry_run=dry_run)
     head_host = readiness.head_host
     head_ip = readiness.head_ip
     effective_port = readiness.port

@@ -241,7 +241,6 @@ def test_api_run_passes_placement_to_launch_inference():
                 "runtime_info": {},
                 "builder": None,
                 "backends": {},
-                "timeline": None,
             },
         )()
 
@@ -310,7 +309,6 @@ def test_api_run_passes_placement_when_multi_host_with_parallelism():
                 "runtime_info": {},
                 "builder": None,
                 "backends": {},
-                "timeline": None,
             },
         )()
 

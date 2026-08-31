@@ -660,40 +660,6 @@ class Executor(Plugin):
         del paths, hosts, ssh_kwargs  # base is a no-op; substrate-aware executors override
         return {}
 
-    def bind_mount_sources(self) -> list[str]:
-        """Host paths this executor will actually bind from ``config.volumes``.
-
-        The *input* peer of :meth:`verify_mount_sources`: that answers "do
-        these paths exist?", this answers "which paths am I going to mount?"
-        — and only the executor can say, because ``executor_config.volumes``
-        is **not** honored uniformly.  Docker turns each entry into a ``-v``
-        bind and so depends on the source existing; the ``local`` executor
-        runs a native process with no mounts at all, and the k8s draft does
-        not wire them either.  Verifying an inert setting would block a
-        working launch, which is why this is a substrate question rather than
-        a read of the config from the launcher.
-
-        Returns absolute host-side sources only.  Relative paths and named
-        Docker volumes are not host-path claims and are excluded.  The base
-        default is ``[]`` — an executor that mounts nothing verifies nothing.
-        """
-        return []
-
-    @staticmethod
-    def _parse_bind_sources(volumes: "list[str] | None") -> list[str]:
-        """Host sources of ``src``/``src:dst``/``src:dst:ro`` specs, absolute only.
-
-        Shared by the executors that do bind ``config.volumes``; matches the
-        parsing in :meth:`DockerExecutor._extra_docker_opts` so the preflight
-        can never check a different path than the launch mounts.
-        """
-        out: list[str] = []
-        for vol in volumes or []:
-            src = str(vol).split(":", 1)[0]
-            if src.startswith("/") and src not in out:
-                out.append(src)
-        return out
-
     def ensure_runtime_cache(
         self,
         mounts: "RuntimeCacheMounts",

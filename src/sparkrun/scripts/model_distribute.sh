@@ -37,11 +37,9 @@ for TARGET in $TARGETS; do
     echo "  Syncing $MODEL_PATH -> $TARGET ..."
     # HF cache is content-addressed (blobs/<sha256>): --size-only lets
     # rsync skip already-synced shards instantly.  Quantized weights
-    # don't compress, so -z is omitted.  RSYNC_ATTR_FLAGS defaults to
-    # "-a --no-perms --no-group --omit-dir-times" -- the attributes rsync
-    # cannot apply to a destination directory it does not own, which is
-    # what made a completed transfer exit 23 on a shared/NFS cache.  It
-    # becomes "-r --links" when preserve_perms is off (also drops times).
+    # don't compress, so -z is omitted.  RSYNC_ATTR_FLAGS is "-a" by
+    # default, or "-r --links" for shared/NFS caches where preserving
+    # owner/group/perms would fail under root_squash (rsync rc=23).
     (
         if rsync $RSYNC_ATTR_FLAGS --size-only --mkpath --partial -e "ssh $SSH_OPTS" "$MODEL_PATH/" "$DEST"; then
             echo "  OK: $TARGET"

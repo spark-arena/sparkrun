@@ -1,21 +1,10 @@
 """Gateway selection — which implementation backs ``sparkrun proxy``.
 
 A *gateway* is the process that fronts every discovered inference endpoint
-behind one OpenAI-compatible API.  Core ships one implementation,
-:class:`~sparkrun.proxy.engine.ProxyEngine` (LiteLLM); others register here.
-
-Implementations become resolvable via :func:`register_gateway`, which is what
-lets one live outside the ``sparkrun.proxy`` tree entirely.  The registry is
-in-process rather than a SAF extension point because an engine is *constructed
-with arguments* (host, port, master key, state dir) rather than resolved as a
-stateless singleton — the same reason ``platforms`` and ``models.kv`` stayed
-in-process.  Registration carries a **loader** rather than the class, so
-``proxy.engine`` can import this module without a cycle and a registration
-never drags in the implementation it names.
-
-Note that enabling a second gateway's flag does **not** switch to it: with the
-default enabled, the default wins.  Selecting a non-default gateway is an
-explicit ``gateway:`` under ``proxy:`` in ``proxy.yaml``.
+behind one OpenAI-compatible API.  Today there is exactly one implementation,
+:class:`~sparkrun.proxy.engine.ProxyEngine` (LiteLLM), but the vocabulary and
+the resolution chain are in place so an alternate can be added as a peer
+rather than a special case.
 
 Two mechanisms, deliberately separate:
 
@@ -30,6 +19,10 @@ Two mechanisms, deliberately separate:
   flags, so nothing stops a user enabling two — resolution refuses to guess
   instead.  This mirrors ``_default_executor_name`` in
   :mod:`sparkrun.orchestration.executor`.
+
+When a second gateway lands this module becomes a lookup over a SAF extension
+point (``GatewayPlugin.gateway_name`` / ``required_feature_flag``) with the
+same public signatures; the flag names are already shaped for that move.
 """
 
 from __future__ import annotations
@@ -38,8 +31,6 @@ import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from sparkrun.core.config import SparkrunConfig
 
 logger = logging.getLogger(__name__)
@@ -48,12 +39,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_GATEWAY = "litellm"
 
 #: Known gateway name -> the feature flag gating its availability.
-#:
-#: Maintained by :func:`register_gateway`; read by availability resolution.
-GATEWAY_FEATURE_FLAGS: dict[str, str] = {}
-
-#: Known gateway name -> zero-arg callable returning its engine class.
-_GATEWAY_LOADERS: dict[str, "Callable[[], type]"] = {}
+GATEWAY_FEATURE_FLAGS: dict[str, str] = {
+    "litellm": "gateway.litellm",
+}
 
 
 class GatewayError(RuntimeError):
@@ -82,57 +70,6 @@ class AmbiguousGatewayError(GatewayError):
     def __init__(self, message: str, *, available: tuple[str, ...] = ()) -> None:
         super().__init__(message)
         self.available = available
-
-
-def register_gateway(name: str, *, feature_flag: str, loader: "Callable[[], type]") -> None:
-    """Make gateway *name* resolvable.
-
-    Args:
-        name: Selector used by ``proxy.gateway`` in ``proxy.yaml``.
-        feature_flag: Flag gating availability; resolution refuses a gateway
-            whose flag is off rather than silently falling back.
-        loader: Zero-arg callable returning the engine class.  Deferred so a
-            registration can name a class this module must not import at
-            module scope, and so registering costs nothing at import time.
-
-    Idempotent by name — re-registering replaces, which is what lets an
-    out-of-tree plugin substitute an in-tree implementation.
-    """
-    GATEWAY_FEATURE_FLAGS[name] = feature_flag
-    _GATEWAY_LOADERS[name] = loader
-
-
-def gateway_class(name: str) -> type:
-    """Return the engine class implementing gateway *name*.
-
-    The one place a gateway name becomes an implementation.
-
-    Raises:
-        GatewayUnavailableError: No implementation is registered.  Deliberately
-            distinct from "disabled": a name can be known to the flag registry
-            while its plugin failed to load, and telling someone to enable a
-            flag that is already on is a dead end.
-    """
-    loader = _GATEWAY_LOADERS.get(name)
-    if loader is None:
-        raise GatewayUnavailableError(
-            "No implementation registered for gateway %r" % name,
-            gateway=name,
-            available=tuple(sorted(_GATEWAY_LOADERS)),
-        )
-    return loader()
-
-
-def _load_litellm_engine() -> type:
-    """Deferred import of the built-in LiteLLM engine."""
-    from sparkrun.proxy.engine import ProxyEngine
-
-    return ProxyEngine
-
-
-# The built-in default.  Registered here rather than by a plugin because it is
-# core: ``proxy`` must resolve to *something* even with every plugin absent.
-register_gateway("litellm", feature_flag="gateway.litellm", loader=_load_litellm_engine)
 
 
 def gateway_feature_flag(name: str) -> str | None:
@@ -251,11 +188,9 @@ __all__ = [
     "AmbiguousGatewayError",
     "GatewayError",
     "GatewayUnavailableError",
-    "gateway_class",
     "gateway_feature_flag",
     "is_gateway_enabled",
     "list_gateways",
-    "register_gateway",
     "require_gateway_enabled",
     "resolve_gateway",
 ]

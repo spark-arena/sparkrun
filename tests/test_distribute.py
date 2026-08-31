@@ -1042,7 +1042,7 @@ class TestDistributeModelFromLocal:
         )
         assert [f.host for f in failed] == ["mgmt2"]
 
-    @mock.patch("sparkrun.models.distribute.ensure_remote_dir_ownership")
+    @mock.patch("sparkrun.models.distribute.run_remote_scripts_parallel")
     @mock.patch("sparkrun.models.distribute.run_rsync_parallel")
     @mock.patch("sparkrun.models.distribute.download_model")
     def test_preserve_perms_default_uses_archive(self, mock_dl, mock_rsync, mock_fix):
@@ -1054,35 +1054,11 @@ class TestDistributeModelFromLocal:
 
         distribute_model_from_local("org/model", ["h1"])
         opts = mock_rsync.call_args.kwargs["rsync_options"]
-        assert opts == ["-a", "--size-only", "--mkpath", "--partial", "--links", "--no-perms", "--no-group", "--omit-dir-times"]
+        assert opts == ["-a", "--size-only", "--mkpath", "--partial", "--links"]
         # Best-effort chown runs when preserving perms.
         mock_fix.assert_called_once()
 
-    @mock.patch("sparkrun.models.distribute.ensure_remote_dir_ownership")
-    @mock.patch("sparkrun.models.distribute.run_rsync_parallel")
-    @mock.patch("sparkrun.models.distribute.download_model")
-    def test_preserve_perms_still_omits_unownable_attributes(self, mock_dl, mock_rsync, mock_fix):
-        """Even the archive default must not ask for attributes it cannot set.
-
-        ``-a`` implies ``-rlptgoD``; ``-p``, ``-g`` and directory times are the
-        three that EPERM on a destination directory the SSH user does not own,
-        which is the ordinary case for a cache on NFS.  rsync transfers the data
-        anyway and then exits 23, so requesting them turned a complete model
-        distribution into a launch-aborting failure.
-        """
-        mock_dl.return_value = 0
-        mock_fix.return_value = [RemoteResult(host="h1", returncode=0, stdout="", stderr="")]
-        mock_rsync.return_value = [RemoteResult(host="h1", returncode=0, stdout="ok", stderr="")]
-        from sparkrun.models.distribute import distribute_model_from_local
-
-        distribute_model_from_local("org/model", ["h1"])
-        opts = mock_rsync.call_args.kwargs["rsync_options"]
-        assert {"--no-perms", "--no-group", "--omit-dir-times"} <= set(opts)
-        # File times are deliberately still preserved: rsync writes via
-        # temp-file+rename, so it owns what it creates and -t cannot EPERM.
-        assert "--no-times" not in opts
-
-    @mock.patch("sparkrun.models.distribute.ensure_remote_dir_ownership")
+    @mock.patch("sparkrun.models.distribute.run_remote_scripts_parallel")
     @mock.patch("sparkrun.models.distribute.run_rsync_parallel")
     @mock.patch("sparkrun.models.distribute.download_model")
     def test_no_preserve_perms_drops_archive_and_skips_chown(self, mock_dl, mock_rsync, mock_fix):
@@ -1100,7 +1076,7 @@ class TestDistributeModelFromLocal:
         # chown fix is pointless when not preserving perms — must be skipped.
         mock_fix.assert_not_called()
 
-    @mock.patch("sparkrun.models.distribute.ensure_remote_dir_ownership")
+    @mock.patch("sparkrun.models.distribute.run_remote_scripts_parallel")
     @mock.patch("sparkrun.models.distribute.run_rsync_parallel")
     @mock.patch("sparkrun.models.distribute.download_model")
     def test_skip_fan_out_downloads_but_skips_rsync(self, mock_dl, mock_rsync, mock_fix):
@@ -1215,9 +1191,7 @@ class TestDistributeModelFromHead:
 
         distribute_model_from_head("org/model", ["head", "w1"])
         dist_script = mock_run.call_args_list[1][0][1]
-        # The head→worker hop lands on the same kind of destination as the
-        # control→host one, so it carries the same NFS-safe relaxation.
-        assert 'RSYNC_ATTR_FLAGS="-a --no-perms --no-group --omit-dir-times"' in dist_script
+        assert 'RSYNC_ATTR_FLAGS="-a"' in dist_script
 
     @mock.patch("sparkrun.orchestration.ssh.run_remote_script_streaming")
     def test_no_preserve_perms_renders_recursive_flag(self, mock_run):

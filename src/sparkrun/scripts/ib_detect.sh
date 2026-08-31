@@ -7,8 +7,6 @@
 
 set -uo pipefail
 
-# sparkrun:include _mgmt_iface.sh
-
 # --- Helper: Find RoCEv2 GID Index via show_gids ---
 find_rocev2_ipv4_index() {
     local hca=$1
@@ -90,20 +88,14 @@ if [ ${#ACTIVE_HCAS[@]} -eq 0 ]; then
     exit 0
 fi
 
+# Detect management network interface (default route) and its IP
+DEFAULT_IF=$(ip route get 8.8.8.8 2>/dev/null | grep -oP 'dev \K\S+' || echo "eth0")
+MGMT_IP=$(ip -4 addr show "$DEFAULT_IF" 2>/dev/null | grep -oP 'inet \K[0-9.]+' | head -1)
+
 # Build comma-separated lists
 HCA_LIST=$(IFS=,; echo "${ACTIVE_HCAS[*]}")
 NET_LIST=$(IFS=,; echo "${ACTIVE_NETIFS[*]}")
 UCX_LIST=$(IFS=,; echo "${UCX_DEVS[*]}")
-
-# Detect the management network interface and its IP.  Computed *after*
-# NET_LIST so the fabric adapters can be excluded from the heuristic scan --
-# they are not management interfaces.  May legitimately come back empty on a
-# host with no management network we can identify; see _mgmt_iface.sh.
-DEFAULT_IF=$(sparkrun_mgmt_iface "$NET_LIST")
-MGMT_IP=""
-if [ -n "$DEFAULT_IF" ]; then
-    MGMT_IP=$(ip -4 addr show "$DEFAULT_IF" 2>/dev/null | grep -oP 'inet \K[0-9.]+' | head -1)
-fi
 
 # Resolve IPv4 addresses of active IB network interfaces
 IB_IPS=()

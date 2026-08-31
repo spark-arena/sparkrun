@@ -12,7 +12,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 
 from sparkrun.orchestration.infiniband import parse_kv_output
-from sparkrun.scripts import inject_shell_vars, read_script
+from sparkrun.scripts import read_script
 from sparkrun.utils.shell import quote
 
 logger = logging.getLogger(__name__)
@@ -26,17 +26,6 @@ _RFC1918_RANGES = [
 
 DEFAULT_MTU = 9000
 DEFAULT_PREFIX_LEN = 24
-
-#: The netplan file sparkrun itself writes.  Must stay in sync with the literal
-#: in ``cx7_configure.sh`` / ``cx7_unconfigure.sh`` (those scripts cannot take
-#: it as a ``.format()`` placeholder — they include brace-using helpers).
-#: ``tests/test_networking.py`` asserts they agree.
-#:
-#: Note this is *sparkrun's* file, not "the" CX7 config: a host may be
-#: configured just as validly by another netplan file, a NetworkManager
-#: profile or a ``.network`` unit.  Use :class:`CX7Persistence` to ask whether
-#: an address persists; use this only to talk about what sparkrun wrote.
-CX7_NETPLAN_FILE = "/etc/netplan/40-cx7.yaml"
 
 
 # ---------------------------------------------------------------------------
@@ -53,19 +42,6 @@ class CX7Topology(str, Enum):
     UNKNOWN = "unknown"
 
 
-class CX7Persistence(str, Enum):
-    """Whether an interface's live address is declared by a config source.
-
-    Tri-state on purpose: :attr:`UNKNOWN` means *we could not tell* (no probe
-    available on the host), and must never be rendered as "won't survive a
-    reboot" — the same rule ``TerminationInfo.exists=None`` follows.
-    """
-
-    PERSISTENT = "persistent"
-    EPHEMERAL = "ephemeral"
-    UNKNOWN = "unknown"
-
-
 @dataclass
 class CX7Interface:
     """A single CX7/RoCE network interface on a host."""
@@ -79,35 +55,6 @@ class CX7Interface:
     hca: str
     mac: str = ""
 
-    persistence: CX7Persistence = CX7Persistence.UNKNOWN
-    """Whether *some* config source declares this interface's address."""
-
-    persistence_source: str = ""
-    """``netplan`` / ``networkmanager`` / ``systemd-networkd`` / ``ifupdown``."""
-
-    persistence_detail: str = ""
-    """Netplan id, NM profile name or ``.network`` path — whatever owns it."""
-
-    dhcp: bool = False
-    """The live address is a DHCP lease, so it is not pinned to this host."""
-
-    @property
-    def persisted_elsewhere(self) -> bool:
-        """Persistent, but by something other than a netplan file.
-
-        The case where writing :data:`CX7_NETPLAN_FILE` would create a second
-        owner for the same device, and where removing it would not release it.
-        """
-        return self.persistence is CX7Persistence.PERSISTENT and self.persistence_source not in ("", "netplan")
-
-    def describe_persistence(self) -> str:
-        """Human-readable owner, e.g. ``netplan (enp1s0f0np0)``."""
-        if not self.persistence_source:
-            return self.persistence.value
-        if self.persistence_detail:
-            return "%s (%s)" % (self.persistence_source, self.persistence_detail)
-        return self.persistence_source
-
 
 @dataclass
 class CX7HostDetection:
@@ -118,23 +65,9 @@ class CX7HostDetection:
     mgmt_ip: str = ""
     mgmt_iface: str = ""
     used_subnets: set[str] = field(default_factory=set)
-
     netplan_exists: bool = False
-    """:data:`CX7_NETPLAN_FILE` — *sparkrun's own* file — is present.
-
-    Deliberately **not** the persistence signal: use
-    :attr:`CX7Interface.persistence`, which asks who actually owns the
-    address. This answers only "did sparkrun configure this host", which is
-    what the uninstall path needs to know.
-    """
-
     sudo_ok: bool = False
     detected: bool = False
-
-    @property
-    def foreign_owners(self) -> list[CX7Interface]:
-        """Interfaces persisted by something other than netplan."""
-        return [i for i in self.interfaces if i.persisted_elsewhere]
 
 
 @dataclass
@@ -185,16 +118,9 @@ class CX7ClusterPlan:
 # ---------------------------------------------------------------------------
 
 
-def generate_cx7_detect_script(mgmt_interface: str | None = None) -> str:
-    """Load the CX7 detection bash script.
-
-    Args:
-        mgmt_interface: Optional management interface to pin, overriding
-            detection on the host.  The script uses it only to exclude the
-            management NIC from the CX7 interface list (see
-            :attr:`~sparkrun.core.cluster_manager.ClusterDefinition.mgmt_interface`).
-    """
-    return inject_shell_vars(read_script("cx7_detect.sh"), SPARKRUN_MGMT_IFACE=mgmt_interface)
+def generate_cx7_detect_script() -> str:
+    """Load the CX7 detection bash script."""
+    return read_script("cx7_detect.sh")
 
 
 def parse_cx7_detect_output(output: str) -> dict[str, str]:
@@ -225,13 +151,6 @@ def build_host_detection(host: str, raw: dict[str, str]) -> CX7HostDetection:
     for i in range(count):
         prefix_str = raw.get("CX7_IFACE_%d_PREFIX" % i, "")
         mtu_str = raw.get("CX7_IFACE_%d_MTU" % i, "0")
-        # An unrecognized (or absent, on a host running an older detect
-        # script) persistence value degrades to UNKNOWN — "couldn't tell",
-        # never "not persistent".
-        try:
-            persistence = CX7Persistence(raw.get("CX7_IFACE_%d_PERSIST" % i, ""))
-        except ValueError:
-            persistence = CX7Persistence.UNKNOWN
         iface = CX7Interface(
             name=raw.get("CX7_IFACE_%d_NAME" % i, ""),
             ip=raw.get("CX7_IFACE_%d_IP" % i, ""),
@@ -241,10 +160,6 @@ def build_host_detection(host: str, raw: dict[str, str]) -> CX7HostDetection:
             state=raw.get("CX7_IFACE_%d_STATE" % i, ""),
             hca=raw.get("CX7_IFACE_%d_HCA" % i, ""),
             mac=raw.get("CX7_IFACE_%d_MAC" % i, ""),
-            persistence=persistence,
-            persistence_source=raw.get("CX7_IFACE_%d_PERSIST_SOURCE" % i, ""),
-            persistence_detail=raw.get("CX7_IFACE_%d_PERSIST_DETAIL" % i, ""),
-            dhcp=raw.get("CX7_IFACE_%d_DHCP" % i) == "1",
         )
         detection.interfaces.append(iface)
 
@@ -744,37 +659,10 @@ def plan_cluster_cx7(
         if host_plan.needs_change and not det.sudo_ok:
             plan.warnings.append("%s: passwordless sudo not available" % host)
 
-        plan.warnings.extend(_foreign_owner_warnings(host, det, host_plan))
-
         plan.host_plans.append(host_plan)
 
     plan.all_valid = all_valid
     return plan
-
-
-def _foreign_owner_warnings(host: str, det: CX7HostDetection, host_plan: CX7HostPlan) -> list[str]:
-    """Warn when the plan would reconfigure a device something else persists.
-
-    sparkrun writes :data:`CX7_NETPLAN_FILE`, so an interface already owned by
-    a NetworkManager profile or a ``.network`` unit ends up with two owners,
-    and which one wins is a property of the host's renderer rather than of the
-    plan. Warn rather than refuse: the plan is still valid, and a user whose
-    config we can see but did not write should not be blocked by it.
-    """
-    if not host_plan.needs_change:
-        return []
-    planned = {a.iface_name for a in host_plan.assignments}
-    return [
-        "%s: %s is already persisted by %s — writing %s leaves two owners for the device"
-        % (
-            host,
-            iface.name,
-            iface.describe_persistence(),
-            CX7_NETPLAN_FILE,
-        )
-        for iface in det.foreign_owners
-        if iface.name in planned
-    ]
 
 
 # ---------------------------------------------------------------------------
@@ -1559,8 +1447,6 @@ def plan_ring_cx7(
         if host_plan.needs_change and not det.sudo_ok:
             plan.warnings.append("%s: passwordless sudo not available" % host)
 
-        plan.warnings.extend(_foreign_owner_warnings(host, det, host_plan))
-
         plan.host_plans.append(host_plan)
 
     plan.all_valid = all_valid
@@ -1638,24 +1524,18 @@ def _generate_dynamic_configure_script(host_plan: CX7HostPlan, mtu: int, prefix_
         'echo "Configuring %d CX7 interfaces:" >&2\n'
         "%s\n"
         "\n"
-        "sudo tee %s > /dev/null <<NETPLAN_EOF\n"
+        "sudo tee /etc/netplan/40-cx7.yaml > /dev/null <<NETPLAN_EOF\n"
         "# Auto-generated by sparkrun on $GENERATED_DATE\n"
         "# Do not edit manually — re-run 'sparkrun setup cx7' to update.\n"
         "%s"
         "NETPLAN_EOF\n"
         "\n"
-        "sudo chmod 600 %s\n"
+        "sudo chmod 600 /etc/netplan/40-cx7.yaml\n"
         'echo "Applying netplan configuration..." >&2\n'
         "sudo netplan apply\n"
         "\n"
         'echo "Verifying configuration..." >&2\n'
-    ) % (
-        len(host_plan.assignments),
-        "\n".join(summary_lines),
-        CX7_NETPLAN_FILE,
-        netplan_content,
-        CX7_NETPLAN_FILE,
-    )
+    ) % (len(host_plan.assignments), "\n".join(summary_lines), netplan_content)
 
     # Add verification for each interface
     for a in host_plan.assignments:

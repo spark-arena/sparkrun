@@ -304,7 +304,7 @@ def test_sglang_validate_recipe_no_model():
 
     issues = runtime.validate_recipe(recipe)
     assert len(issues) == 1
-    assert "model is required" in str(issues[0])
+    assert "model is required" in issues[0]
 
 
 # --- SGLang prepare(): speculative draft-model pre-sync ---
@@ -330,21 +330,6 @@ def test_sglang_prepare_canonical_key_adds_draft_model():
     recipe = _sglang_recipe(defaults={"speculative_draft_model_path": "draft/repo"})
     runtime.prepare(recipe, hosts=["10.0.0.1"])
     assert "draft/repo" in _model_names(recipe)
-
-
-def test_sglang_prepare_pins_draft_model_revision_and_emits_flag():
-    runtime = SglangRuntime()
-    recipe = _sglang_recipe(
-        defaults={
-            "speculative_draft_model_path": "draft/repo",
-            "speculative_draft_model_revision": "b" * 40,
-        }
-    )
-    runtime.prepare(recipe, hosts=["10.0.0.1"])
-
-    draft = next(entry for entry in recipe.distribution_config.models.entries if entry.name == "draft/repo")
-    assert draft.revision == "b" * 40
-    assert "--speculative-draft-model-revision %s" % ("b" * 40) in runtime.generate_command(recipe, {}, is_cluster=False)
 
 
 def test_sglang_prepare_alias_key_adds_draft_model():
@@ -377,38 +362,6 @@ def test_sglang_prepare_no_speculative_is_noop():
     before = list(_model_names(recipe))
     runtime.prepare(recipe, hosts=["10.0.0.1"])
     assert _model_names(recipe) == before
-
-
-def _draft_entry(recipe, name):
-    return next(e for e in recipe.distribution_config.models.entries if e.name == name)
-
-
-def test_sglang_prepare_draft_model_is_unpinned_by_default():
-    """The draft repo must not inherit the served model's revision pin."""
-    runtime = SglangRuntime()
-    recipe = _sglang_recipe(model_revision="deadbeef", defaults={"speculative_draft_model_path": "draft/repo"})
-    runtime.prepare(recipe, hosts=["10.0.0.1"])
-    assert _draft_entry(recipe, "draft/repo").revision is None
-
-
-def test_sglang_prepare_pins_draft_model_revision_when_declared():
-    """speculative_draft_model_revision pins the draft repo, not the served one."""
-    runtime = SglangRuntime()
-    recipe = _sglang_recipe(
-        model_revision="deadbeef",
-        defaults={
-            "speculative_draft_model_path": "draft/repo",
-            "speculative_draft_model_revision": "cafe1234",
-        },
-    )
-    runtime.prepare(recipe, hosts=["10.0.0.1"])
-    assert _draft_entry(recipe, "draft/repo").revision == "cafe1234"
-    assert _draft_entry(recipe, "{model}").revision == "deadbeef"
-
-
-def test_sglang_draft_revision_key_is_declared_known():
-    """Otherwise report_unmapped_config_keys warns the key was dropped."""
-    assert "speculative_draft_model_revision" in SglangRuntime().known_config_keys()
 
 
 def test_sglang_speculative_canonical_emits_flag():

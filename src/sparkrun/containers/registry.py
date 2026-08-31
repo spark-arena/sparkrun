@@ -10,8 +10,6 @@ from __future__ import annotations
 import logging
 import subprocess
 
-from sparkrun.utils.images import is_pullable_image_ref, parse_image_ref
-
 logger = logging.getLogger(__name__)
 
 
@@ -133,12 +131,8 @@ def ensure_image(image: str, dry_run: bool = False, force_pull: bool = False) ->
         logger.info("Force pull requested for image: %s", image)
         return pull_image(image, dry_run=dry_run)
 
-    # "latest" means a mutable tag, so an opportunistic re-pull is worthwhile.
-    # Parse the reference rather than testing `":" not in image`: that read the
-    # port of a ported registry (`myreg.io:5000/foo`) as a tag and so never
-    # refreshed those, and it missed a digest-pinned ref entirely.
-    ref = parse_image_ref(image)
-    is_latest = is_pullable_image_ref(image) and ref.digest is None and ref.tag in (None, "latest")
+    # latest if explicit ":latest" or no tag AND can be tied to registry (has slash)
+    is_latest = "/" in image and (image.endswith(":latest") or ":" not in image)
     exists_locally = image_exists_locally(image)
 
     # if image exists and uses latest tag, then we can opportunistically pull it but not failure mode without force_pull

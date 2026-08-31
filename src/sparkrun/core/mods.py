@@ -271,9 +271,7 @@ def _rsync_to_head(
         ssh_options=kw.get("ssh_options"),
         timeout=120,
     )
-    from sparkrun.orchestration.transfer import rsync_transfer_ok
-
-    if not rsync_transfer_ok(result):
+    if not result.success:
         from sparkrun.orchestration.transfer import TransferFailure, classify_rsync_failure, present_and_raise_transfer_failure
 
         failure = TransferFailure(

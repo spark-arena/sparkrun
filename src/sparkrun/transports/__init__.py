@@ -28,7 +28,6 @@ from sparkrun.transports.ssh import SshTransport
 
 if TYPE_CHECKING:
     from sparkrun.core.cluster_manager import ClusterDefinition
-    from sparkrun.transports.session import HostSession
 
 logger = logging.getLogger(__name__)
 
@@ -110,14 +109,6 @@ def prepare_cluster_transport(cluster: "ClusterDefinition | None", *, dry_run: b
     transport.prepare(cluster, dry_run=dry_run)
 
 
-def open_cluster_host_session(cluster: "ClusterDefinition | None", *, ssh_kwargs: dict | None = None) -> "HostSession":
-    """Open the executable session owned by a cluster's prepared transport."""
-    name = (getattr(cluster, "transport", None) or DEFAULT_TRANSPORT) if cluster is not None else DEFAULT_TRANSPORT
-    transport = resolve_transport(name)
-    _require_transport_enabled(name, transport)
-    return transport.open_host_session(cluster, ssh_kwargs=ssh_kwargs)
-
-
 def cleanup_cluster_transport(cluster: "ClusterDefinition | None", *, dry_run: bool = False) -> None:
     """Run the transport ``cleanup_cluster`` step for *cluster* on deletion.
 
@@ -141,14 +132,13 @@ def cleanup_cluster_transport(cluster: "ClusterDefinition | None", *, dry_run: b
 
 
 __all__ = [
-    "DEFAULT_TRANSPORT",
     "EXT_TRANSPORT",
-    "SshTransport",
+    "DEFAULT_TRANSPORT",
     "Transport",
     "TransportError",
-    "cleanup_cluster_transport",
+    "SshTransport",
     "list_transports",
-    "open_cluster_host_session",
-    "prepare_cluster_transport",
     "resolve_transport",
+    "prepare_cluster_transport",
+    "cleanup_cluster_transport",
 ]

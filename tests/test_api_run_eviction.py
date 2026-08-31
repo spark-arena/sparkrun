@@ -281,7 +281,6 @@ def _run_with_stubbed_launcher(opts):
                 "runtime_info": {},
                 "builder": None,
                 "backends": {},
-                "timeline": None,
             },
         )()
 

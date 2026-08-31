@@ -85,12 +85,6 @@ class ProxyStatus:
     autodiscover_pid: int | None = None
     autodiscover_running: bool = False
     models: tuple[ProxyModel, ...] = ()
-    #: Non-secret diagnostic when model enumeration failed.  Empty means the
-    #: management query succeeded, *including* a legitimately empty model list —
-    #: without the distinction an authenticated management failure renders
-    #: identically to "no models registered", which is the wrong thing to tell
-    #: someone whose models are in fact serving.
-    model_query_error: str = ""
     #: False when no state file exists at all (never started / cleaned up).
     known: bool = True
 
@@ -106,8 +100,6 @@ class ProxyStatus:
         }
         if self.autodiscover_pid is not None:
             data["autodiscover"] = {"pid": self.autodiscover_pid, "running": self.autodiscover_running}
-        if self.model_query_error:
-            data["model_query_error"] = self.model_query_error
         return data
 
 
@@ -130,7 +122,6 @@ class ProxyStartOptions:
     ssh_kwargs: dict | None = None
     auto_discover: bool | None = None
     discover_interval: int | None = None
-    discover_removal_grace_sweeps: int | None = None
     foreground: bool = False
     #: Replace a running proxy instead of raising :class:`ProxyAlreadyRunning`.
     restart: bool = False
@@ -155,7 +146,6 @@ class ProxyStartResult:
     aliases_pending: tuple[str, ...] = ()
     auto_discover: bool = False
     discover_interval: int = 0
-    discover_removal_grace_sweeps: int = 0
     config_path: str | None = None
     #: True when a previously-running proxy was stopped to make way for this one.
     restarted: bool = False
@@ -253,16 +243,15 @@ def _as_gateway_unavailable(exc: Exception) -> GatewayUnavailable:
 def _engine_class(gateway: str):
     """Return the engine class implementing *gateway*.
 
-    Delegates to the registry in :mod:`sparkrun.proxy.gateway`, which plugins
-    populate — so adding a gateway needs no change here, and an implementation
-    may live outside the ``sparkrun.proxy`` tree entirely.
+    The one place a gateway name becomes an implementation.  A second gateway
+    becomes another branch here (and later, a plugin lookup) — no caller
+    signature changes.
     """
-    from sparkrun.proxy.gateway import GatewayError, gateway_class
+    if gateway == "litellm":
+        from sparkrun.proxy.engine import ProxyEngine
 
-    try:
-        return gateway_class(gateway)
-    except GatewayError as exc:
-        raise _as_gateway_unavailable(exc) from exc
+        return ProxyEngine
+    raise GatewayUnavailable("No implementation registered for gateway %r" % gateway, gateway=gateway)
 
 
 def _new_engine(gateway: str, **kwargs):
@@ -284,52 +273,7 @@ def _running_engine(sctx: "SparkrunContext | None" = None):
     gateway = str(state.get("gateway") or DEFAULT_GATEWAY)
     if gateway == DEFAULT_GATEWAY:
         return probe
-    try:
-        return _new_engine(gateway, **_engine_config_kwargs(gateway, sctx))
-    except GatewayUnavailable:
-        # The state file names a gateway whose implementation is not loaded —
-        # its plugin was removed, or its flag turned off since it started.
-        # Raising here would strand a *running* process: `proxy status` could
-        # not describe it and `proxy stop` could not kill it, which is exactly
-        # the outcome the ungated management paths exist to prevent.
-        #
-        # The base supervisor is enough for both: state reading and SIGTERM are
-        # gateway-independent.  Anything implementation-specific (the model
-        # list) raises NotImplementedError naming the gateway, which the
-        # callers already surface as ``model_query_error``.
-        logger.warning(
-            "No implementation is loaded for the running gateway %r; only process-level management is available.",
-            gateway,
-        )
-        from sparkrun.proxy._supervisor import GatewaySupervisor
-
-        orphan = GatewaySupervisor(state_dir=probe.state_dir)
-        orphan.gateway_name = gateway
-        orphan.host = str(state.get("host") or "")
-        orphan.port = int(state.get("port") or 0)
-        return orphan
-
-
-def _engine_config_kwargs(gateway: str, sctx: "SparkrunContext | None") -> dict[str, Any]:
-    """Config kwargs for engines that declare ``wants_proxy_config``.
-
-    Management paths resolve their engine from the state file, but a
-    config-driven gateway still needs ``proxy.yaml`` — without it a reconcile
-    would compute an *empty* desired state and replace the running
-    configuration with nothing, so ``proxy alias add`` would silently delete
-    every deployment it was not told about.
-
-    Declared as a capability rather than branched on by name, so
-    :func:`_engine_class` stays the one place a name becomes an implementation.
-    """
-    try:
-        engine_cls = _engine_class(gateway)
-    except GatewayUnavailable:
-        return {}
-    if not getattr(engine_cls, "wants_proxy_config", False):
-        return {}
-    sctx = resolve_sctx(sctx)
-    return {"proxy_config": sctx.proxy_config, "sctx": sctx}
+    return _new_engine(gateway)
 
 
 # --------------------------------------------------------------------------
@@ -346,6 +290,7 @@ def start(options: ProxyStartOptions | None = None, *, sctx: "SparkrunContext | 
         ProxyStartFailed: the gateway process did not come up (or the
             superseded one refused to exit).
     """
+    from sparkrun.proxy.engine import build_litellm_config, write_config
     from sparkrun.proxy.gateway import GatewayError
 
     options = options or ProxyStartOptions()
@@ -360,11 +305,6 @@ def start(options: ProxyStartOptions | None = None, *, sctx: "SparkrunContext | 
     # legacy-0.0.0.0 security warning inside the engine.
     host_configured = options.host is not None or proxy_cfg.host_configured
     effective_key = options.master_key if options.master_key is not None else proxy_cfg.master_key
-    removal_grace_sweeps = (
-        proxy_cfg.discover_removal_grace_sweeps if options.discover_removal_grace_sweeps is None else options.discover_removal_grace_sweeps
-    )
-    if removal_grace_sweeps < 1:
-        raise ProxyStartFailed("Discovery removal grace must be at least one sweep.")
 
     warnings: list[str] = []
     if proxy_cfg.enable_ui:
@@ -385,37 +325,12 @@ def start(options: ProxyStartOptions | None = None, *, sctx: "SparkrunContext | 
     healthy = [ep for ep in endpoints if ep.healthy]
 
     aliases = proxy_cfg.aliases
-
-    # Build the engine before the config: what a gateway's config *is* — a
-    # rendering of discovered endpoints, or a list of desired bindings — is the
-    # implementation's business, so config generation hangs off the engine
-    # rather than being computed here for one gateway and adapted for the rest.
-    engine_kwargs: dict[str, Any] = {
-        "host": effective_host,
-        "port": effective_port,
-        "master_key": effective_key,
-        "host_configured": host_configured,
-    }
-    engine_cls = _engine_class(gateway)
-    if getattr(engine_cls, "wants_proxy_config", False):
-        engine_kwargs["proxy_config"] = proxy_cfg
-        engine_kwargs["sctx"] = sctx
-    engine = engine_cls(**engine_kwargs)
+    config_dict = build_litellm_config(healthy, effective_key, aliases=aliases)
+    applied = {e["model_name"] for e in config_dict["model_list"]} & set(aliases)
+    pending = set(aliases) - applied
 
     auto_discover = proxy_cfg.auto_discover if options.auto_discover is None else options.auto_discover
-    if auto_discover and not getattr(engine, "supports_autodiscover", True):
-        # The gateway's own config owns desired state; sparkrun's daemon has an
-        # independent opinion about the same endpoints and the two would fight.
-        # Say so rather than silently dropping a configured setting.
-        warnings.append("auto-discover is not used with the %s gateway: its own config owns the desired state. Ignoring." % gateway)
-        auto_discover = False
     interval = options.discover_interval or proxy_cfg.discover_interval
-
-    # A dry run still reports which aliases would apply, so the alias split is
-    # computed either way and only the write is conditional — answering that
-    # from the same code that renders the real config is what keeps the
-    # preview honest.
-    config_path, applied, pending = engine.prepare_config(healthy, aliases, write=not options.dry_run)
 
     common = {
         "gateway": gateway,
@@ -426,13 +341,22 @@ def start(options: ProxyStartOptions | None = None, *, sctx: "SparkrunContext | 
         "aliases_pending": tuple(sorted(pending)),
         "auto_discover": auto_discover,
         "discover_interval": interval,
-        "discover_removal_grace_sweeps": removal_grace_sweeps,
         "persisted": persisted,
         "warnings": tuple(warnings),
     }
 
     if options.dry_run:
         return ProxyStartResult(started=False, dry_run=True, **common)
+
+    config_path = write_config(config_dict)
+
+    engine = _new_engine(
+        gateway,
+        host=effective_host,
+        port=effective_port,
+        master_key=effective_key,
+        host_configured=host_configured,
+    )
 
     restarted = False
     if engine.is_running():
@@ -450,12 +374,7 @@ def start(options: ProxyStartOptions | None = None, *, sctx: "SparkrunContext | 
 
     ad_kwargs = None
     if auto_discover:
-        ad_kwargs = {
-            "interval": interval,
-            "removal_grace_sweeps": removal_grace_sweeps,
-            "host_list": live_hosts,
-            "ssh_kwargs": ssh_kwargs,
-        }
+        ad_kwargs = {"interval": interval, "host_list": live_hosts, "ssh_kwargs": ssh_kwargs}
 
     try:
         rc = engine.start(config_path=config_path, foreground=options.foreground, autodiscover_kwargs=ad_kwargs)
@@ -505,7 +424,6 @@ def status(*, sctx: "SparkrunContext | None" = None) -> ProxyStatus:
     except (TypeError, ValueError):
         ad_pid = None
 
-    served_models = _models_via_api(engine) if running else ()
     return ProxyStatus(
         running=running,
         gateway=str(state.get("gateway") or engine.gateway_name),
@@ -515,8 +433,7 @@ def status(*, sctx: "SparkrunContext | None" = None) -> ProxyStatus:
         started_at=state.get("started_at"),
         autodiscover_pid=ad_pid,
         autodiscover_running=_pid_alive(ad_pid),
-        models=served_models,
-        model_query_error=str(getattr(engine, "model_query_error", "")) if running else "",
+        models=_models_via_api(engine) if running else (),
     )
 
 
@@ -538,10 +455,9 @@ def sync(
 ) -> ProxySyncResult:
     """Reconcile the gateway's model list with what is actually running.
 
-    When *endpoints* is ``None`` a discovery sweep is run first.  How the
-    change is applied is the gateway's business: LiteLLM rewrites its config
-    and restarts, another implementation may update its control plane in
-    place.  A steady state costs nothing either way.
+    Rewrites the gateway config and restarts the proxy when the desired model
+    set differs; a steady state costs nothing.  When *endpoints* is ``None``
+    a discovery sweep is run first.
 
     Ungated: this manages an already-running gateway.
 
@@ -552,9 +468,10 @@ def sync(
             still updates the config so the change lands on the next start.
 
     Raises:
-        ProxyUpdateFailed: the running gateway could not adopt the change.
+        ProxyUpdateFailed: the config was rewritten but the proxy could not
+            be replaced.
     """
-    from sparkrun.proxy._supervisor import GatewayOperationError
+    from sparkrun.proxy.engine import ProxyRestartError
 
     engine = _running_engine(sctx)
     running = engine.is_running()
@@ -568,67 +485,10 @@ def sync(
 
     try:
         added, removed = engine.sync_models(endpoints, aliases)
-    except GatewayOperationError as exc:
-        # Deliberately not a bare ``RuntimeError``: every gateway's management
-        # failures derive from GatewayOperationError, so widening further would
-        # report an unrelated engine bug as a routine update failure.
+    except ProxyRestartError as exc:
         raise ProxyUpdateFailed(str(exc)) from exc
 
     return ProxySyncResult(added=added, removed=removed, proxy_running=running)
-
-
-def register_loaded_model(
-    recipe: str,
-    *,
-    overrides: dict[str, Any] | None = None,
-    cluster: str | None = None,
-    sctx: "SparkrunContext | None" = None,
-) -> ProxySyncResult:
-    """Register a recipe after ``proxy load`` successfully made it ready.
-
-    A discovery-driven gateway (the engine returns ``None``) simply rescans
-    live endpoints, which is byte-identical to calling :func:`sync` directly.
-    A catalog-driven gateway persists an activatable binding instead, so the
-    same workload can be brought back after it goes cold.
-    """
-    from sparkrun.proxy._supervisor import GatewayOperationError
-
-    engine = _running_engine(sctx)
-    if not engine.is_running():
-        return ProxySyncResult(proxy_running=False)
-    try:
-        result = engine.register_loaded_model(recipe, overrides, cluster)
-    except GatewayOperationError as exc:
-        raise ProxyUpdateFailed(str(exc)) from exc
-    if result is None:
-        return sync(require_running=True, sctx=sctx)
-    added, removed = result
-    return ProxySyncResult(added=added, removed=removed, proxy_running=True)
-
-
-def unregister_loaded_model(
-    recipe: str,
-    *,
-    sctx: "SparkrunContext | None" = None,
-) -> ProxySyncResult:
-    """Remove a recipe after ``proxy unload`` stopped its workload.
-
-    ``None`` from the engine has the same discovery-driven meaning as in
-    :func:`register_loaded_model`.
-    """
-    from sparkrun.proxy._supervisor import GatewayOperationError
-
-    engine = _running_engine(sctx)
-    if not engine.is_running():
-        return ProxySyncResult(proxy_running=False)
-    try:
-        result = engine.unregister_loaded_model(recipe)
-    except GatewayOperationError as exc:
-        raise ProxyUpdateFailed(str(exc)) from exc
-    if result is None:
-        return sync(require_running=True, sctx=sctx)
-    added, removed = result
-    return ProxySyncResult(added=added, removed=removed, proxy_running=True)
 
 
 # --------------------------------------------------------------------------
@@ -768,11 +628,6 @@ def _persist_overrides(proxy_cfg, options: ProxyStartOptions) -> list[str]:
         ("port", options.port, proxy_cfg.port),
         ("host", options.host, proxy_cfg.host),
         ("master_key", options.master_key, proxy_cfg.master_key),
-        (
-            "discover_removal_grace_sweeps",
-            options.discover_removal_grace_sweeps,
-            proxy_cfg.discover_removal_grace_sweeps,
-        ),
         ("discover_interval", options.discover_interval, proxy_cfg.discover_interval),
         ("gateway", options.gateway, proxy_cfg.gateway),
     ]
@@ -808,20 +663,9 @@ def _stop_and_wait(engine) -> bool:
 
 
 def _models_via_api(engine) -> tuple[ProxyModel, ...]:
-    """Normalize the management API's model rows into :class:`ProxyModel`.
-
-    A gateway that cannot enumerate its models at all reports that through
-    ``engine.model_query_error`` rather than by raising: ``proxy status`` is a
-    diagnostic and must still describe the *process* when the management query
-    is the part that failed.
-    """
-    try:
-        rows = engine.list_models_via_api()
-    except NotImplementedError as exc:
-        engine.model_query_error = str(exc)
-        return ()
+    """Normalize the management API's model rows into :class:`ProxyModel`."""
     out: list[ProxyModel] = []
-    for m in rows:
+    for m in engine.list_models_via_api():
         params = m.get("litellm_params") or m.get("model_info", {}).get("litellm_params", {})
         info = m.get("model_info") or {}
         mml = info.get("max_input_tokens") or info.get("max_tokens") or info.get("max_model_len")
@@ -871,12 +715,10 @@ __all__ = [
     "list_aliases",
     "list_gateways",
     "models",
-    "register_loaded_model",
     "remove_alias",
     "resolve_gateway",
     "start",
     "status",
     "stop",
     "sync",
-    "unregister_loaded_model",
 ]

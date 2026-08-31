@@ -75,13 +75,6 @@ class TokenaryRuntime(RuntimePlugin):
     def cluster_strategy(self) -> str:
         return "native"
 
-    def known_config_keys(self) -> frozenset[str]:
-        """Flag-map keys plus ``command_binary`` (read by ``_build_base_command``).
-
-        See :func:`sparkrun.core.launcher.report_unmapped_config_keys`.
-        """
-        return frozenset(_TOKENARY_FLAG_MAP) | {"command_binary"}
-
     # --- command construction ---
 
     def _build_base_command(

@@ -17,9 +17,6 @@ Functions:
 - :func:`status` — process state plus the models currently served.
 - :func:`models` — just the served model list.
 - :func:`sync` — reconcile the served model list with what is running.
-- :func:`register_loaded_model` / :func:`unregister_loaded_model` — preserve
-  ``proxy load`` / ``unload`` semantics across discovery- and catalog-driven
-  gateways.
 - :func:`add_alias` / :func:`remove_alias` / :func:`list_aliases`.
 - :func:`resolve_gateway` / :func:`list_gateways` — gateway selection.
 """
@@ -30,7 +27,6 @@ from ._errors import (
     GatewayUnavailable,
     ProxyAlreadyRunning,
     ProxyStartFailed,
-    ProxyUnsupported,
     ProxyUpdateFailed,
 )
 from ._ops import (
@@ -46,14 +42,12 @@ from ._ops import (
     list_aliases,
     list_gateways,
     models,
-    register_loaded_model,
     remove_alias,
     resolve_gateway,
     start,
     status,
     stop,
     sync,
-    unregister_loaded_model,
 )
 
 __all__ = [
@@ -63,8 +57,6 @@ __all__ = [
     "status",
     "models",
     "sync",
-    "register_loaded_model",
-    "unregister_loaded_model",
     "add_alias",
     "remove_alias",
     "list_aliases",
@@ -83,6 +75,5 @@ __all__ = [
     "GatewayUnavailable",
     "ProxyAlreadyRunning",
     "ProxyStartFailed",
-    "ProxyUnsupported",
     "ProxyUpdateFailed",
 ]

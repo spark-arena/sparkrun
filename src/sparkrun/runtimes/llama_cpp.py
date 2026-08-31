@@ -98,23 +98,6 @@ class LlamaCppRuntime(RuntimePlugin):
     runtime_name = "llama-cpp"
     default_image_prefix = "scitrera/dgx-spark-llama-cpp"
 
-    def known_config_keys(self) -> frozenset[str]:
-        """Flag-map keys, bool toggles, and the bespoke-emission keys.
-
-        ``_LLAMA_CPP_SPECIAL_KEYS`` (``flash_attn`` / ``webui`` / ``mmap``)
-        are emitted by ``_special_flags`` rather than the generic map pass,
-        and ``mmproj`` is resolved into a container path by the launcher.
-        See :func:`sparkrun.core.launcher.report_unmapped_config_keys`.
-        """
-        return frozenset(_LLAMA_CPP_FLAG_MAP) | frozenset(_LLAMA_CPP_BOOL_FLAGS) | _LLAMA_CPP_SPECIAL_KEYS | {"mmproj"}
-
-    def serve_flag_map(self):
-        return {**_LLAMA_CPP_FLAG_MAP, **_LLAMA_CPP_BOOL_FLAGS}
-
-    # RPC workers talk to the head over llama.cpp's own RPC protocol rather than
-    # sharing a process group, so a worker genuinely may run a different build.
-    supports_heterogeneous_images = True
-
     def cluster_strategy(self) -> str:
         """llama.cpp uses native RPC-based distribution, not Ray."""
         return "native"
@@ -405,17 +388,13 @@ class LlamaCppRuntime(RuntimePlugin):
         pp = defaults.get("pipeline_parallel")
         if tp and pp and int(tp) > 1 and int(pp) > 1:
             issues.append(
-                self.recipe_error(
-                    "tensor_parallel and pipeline_parallel are mutually "
-                    "exclusive; use one for --split-mode row (TP) or layer (PP), not both"
-                )
+                "[llama-cpp] tensor_parallel and pipeline_parallel are mutually "
+                "exclusive; use one for --split-mode row (TP) or layer (PP), not both"
             )
         dp = defaults.get("data_parallel")
         if dp is not None and int(dp) > 1:
             issues.append(
-                self.recipe_error(
-                    "data_parallel > 1 is not supported (got %d); llama.cpp has no native multi-replica DP coordination" % int(dp)
-                )
+                "[llama-cpp] data_parallel > 1 is not supported (got %d); llama.cpp has no native multi-replica DP coordination" % int(dp)
             )
         return issues
 
@@ -530,7 +509,6 @@ class LlamaCppRuntime(RuntimePlugin):
         trust = kwargs.pop("trust", False)
         placement = kwargs.pop("placement", None)
         runtime_cache = kwargs.pop("runtime_cache", None)
-        images_by_node = kwargs.pop("images_by_node", None)
 
         ctx = ClusterContext.build(
             self,
@@ -545,7 +523,6 @@ class LlamaCppRuntime(RuntimePlugin):
             recipe=recipe,
             placement=placement,
             runtime_cache=runtime_cache,
-            images_by_node=images_by_node,
         )
         head_container = self._container_name(cluster_id, "head")
         worker_container_name = self._container_name(cluster_id, "worker")
@@ -557,7 +534,6 @@ class LlamaCppRuntime(RuntimePlugin):
             cluster_id,
             {"RPC Port": rpc_port},
             dry_run,
-            images_by_node=ctx.images_by_node,
         )
 
         if progress:

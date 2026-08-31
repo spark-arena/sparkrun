@@ -34,7 +34,6 @@ Everything else is optional. When `command` is omitted, the runtime generates it
 | `runtime`         | string | no          | auto-detected   | Runtime identifier. See [Runtime Resolution](#runtime-resolution) |
 | `runtime_version` | string | no          | `""`            | Informational version tag                                         |
 | `container`       | string | recommended | runtime default | Container image reference                                         |
-| `containers`      | list   | no          | `[]`            | Per-machine image overrides. See [Per-machine images](#per-machine-images) |
 
 GGUF models use colon syntax (`repo:quant`) to download only the matching quantization files. When pre-synced, sparkrun
 rewrites `-hf` to `-m` with the resolved container cache path.
@@ -56,59 +55,6 @@ unverifiable node never blocks the launch.
 
 `model_revision` affects download, cache checking, VRAM auto-detection, and model sync. Pin to a commit hash for
 reproducible deployments.
-
-It pins **`model` only**. A launch may distribute several repos — notably a speculative draft model, which the runtime
-adds automatically — and a commit hash is only valid in the repo it came from, so nothing else inherits it. Pin a draft
-model with its own key:
-
-| Runtime                          | Draft model key                  | Revision key                          |
-|----------------------------------|----------------------------------|---------------------------------------|
-| `sglang`                         | `speculative_draft_model_path`   | `speculative_draft_model_revision`    |
-| `vllm-ray`, `vllm-distributed`   | `speculative_config` → `model`   | `speculative_config` → `revision`     |
-| `atlas`                          | `draft_model`                    | `draft_model_revision`                |
-
-The same rule applies to a hand-written `distribution_config`: each entry's `revision` is authoritative, and an entry
-without one is fetched unpinned.
-
-### Per-machine images
-
-Normally every node runs `container:`. A recipe serving **pre-optimized, machine-tuned images** instead declares a
-`containers:` block binding an image to a hostname:
-
-```yaml
-container: nvcr.io/nvidia/vllm:25.09          # fallback for unlisted machines
-containers:
-  - image: myorg/vllm-spark:node-01
-    host: spark-01
-  - image: myorg/vllm-spark:node-02
-    host: spark-02
-```
-
-The key is the **hostname**, because the image is a property of the machine. Binding to a rank would be silently wrong
-the moment the scheduler ordered hosts differently. Declaring more machines than a given launch uses is expected — the
-block usually covers the whole cluster, and a `--tp 2` launch still picks whichever two hosts the scheduler prefers.
-
-Because a wrong image on a tuned machine fails in confusing ways rather than loudly, resolution is strict:
-
-- A `host:` not in the cluster raises (a typo would otherwise silently fall through to the generic image).
-- A duplicate `host:` raises.
-- A selected host with no entry **and** no `container:` fallback raises.
-- A selected host that falls back to `container:` is logged by name at default verbosity — never silent.
-
-Two constraints:
-
-- **Runtime must opt in.** Supported by `sglang`, `vllm-distributed` and `llama-cpp`. `vllm-ray` and `trtllm` fail
-  closed: Ray requires one build across head and workers, and MPI ranks must share an ABI.
-- **No image-building builder.** `prepare()` produces a single image, so `containers:` cannot be combined with a
-  builder that builds one. Build the per-machine images out of band and reference them by tag. Environment builders
-  (`uv-venv`) and `docker-pull` compose fine — they return the image ref untouched.
-
-`--image` overrides the whole block: every node runs the named image, and the override is logged.
-
-Distribution follows automatically. sparkrun ships each image only to the machines that run it, and switches to
-per-node parallel pulls (see `--transfer-mode pull`) rather than the head-pull-and-fan-out path, which would copy a
-machine-tuned image onto the wrong machine. Note the per-node pull skips an image that is already present by tag, so an
-image re-pushed under the same tag needs `--rebuild`.
 
 ### Topology
 
@@ -438,51 +384,6 @@ Explicit `runtime` always wins. Command-hint detection only fires when `runtime`
 
 Any key can appear in `defaults` — there is no fixed schema. Runtime-specific keys (e.g. `tool_call_parser`, `ctx_size`,
 `n_gpu_layers`, `reasoning_parser`) are passed through to command template substitution.
-
-#### Keys the runtime doesn't recognise
-
-A recipe with no `command:` template has its serve command built by iterating the runtime's flag map, so a `defaults`
-key that map doesn't list reaches nothing — it is **dropped**, and the engine uses its own default instead. The same
-is true of a `-o key=value` override. Nothing about the resulting deployment looks wrong, which is how an `@atlas`
-recipe's `lm_head_dtype: bf16` correctness pin served weeks of traffic at NVFP4 ([#276]).
-
-sparkrun now reports these at launch (including under `--dry-run`):
-
-```
-Recipe 'my-recipe' sets defaults the 'atlas' runtime does not understand, so they are dropped from the serve
-command and the engine will use its own default instead: lm_head_dytpe. ...
-Override(s) -o max_num_seqz have no effect: the 'atlas' runtime does not understand it, ...
-```
-
-A key is *not* reported when it is referenced as a `{placeholder}` in the recipe's `command:` template or in another
-default's value — that is the documented pass-through above, and it doubles as the workaround if your sparkrun build
-predates an engine flag you need:
-
-```yaml
-command: spark serve {model} --port {port} --brand-new-flag {brand_new_knob}
-defaults:
-  brand_new_knob: 7
-```
-
-It is a warning rather than an error on purpose: recipes come from registries that version independently of sparkrun,
-so a key this build doesn't know is routinely a *newer* recipe rather than a broken one. Runtimes that haven't
-declared their key set (`eugr-vllm`) report nothing at all.
-
-[#276]: https://github.com/spark-arena/sparkrun/issues/276
-
-#### Atlas booleans come in two shapes
-
-Atlas spells boolean options two ways and they are not interchangeable:
-
-- **presence-only** (`enable_prefix_caching`, `disable_thinking`, `video_allow_ffmpeg`, …) — the bare flag when
-  truthy, nothing when falsy.
-- **value-taking** (`disable_tool_grammar`, `ssm_tail_midchunk`, `gdn_fused_norm`, `prefill_varlen_batch`,
-  `ssm_batched_recurrent`, `exact_verify`, `content_loop_watchdog`, `high_speed_swap_graph`) — parsed as
-  `Option<bool>`, so *absent* defers to MODEL.toml / the engine default while an explicit `false` **overrides** it.
-  Writing `ssm_tail_midchunk: false` emits `--ssm-tail-midchunk false`, not nothing.
-
-Write them as ordinary YAML booleans either way; sparkrun renders the lowercase `true`/`false` Atlas's parser
-requires.
 
 #### Atlas high-speed swap
 

@@ -5,11 +5,10 @@ from __future__ import annotations
 import logging
 from abc import abstractmethod
 from logging import Logger
-from typing import Any, Mapping, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from scitrera_app_framework import Plugin, Variables, ext_parse_bool
 
-from sparkrun.core.validation import ERROR, WARNING, RecipeIssue
 from sparkrun.core.log_source import (
     MODE_FILE,
     MODE_STDOUT,
@@ -32,53 +31,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 EXT_RUNTIME = "sparkrun.runtime"
-
-#: Config-chain keys the *shared* machinery consumes for every runtime, so a
-#: runtime declaring :meth:`RuntimePlugin.known_config_keys` need not repeat
-#: them.  None of these is a serve flag; each is read by sparkrun itself, and
-#: listing them here is what keeps the unmapped-key report free of noise it
-#: would train people to ignore.
-BASE_CONSUMED_CONFIG_KEYS = frozenset(
-    {
-        # Injected into every config chain by Recipe.build_config_chain for
-        # `{model}` / `{resolved_model_path}` template substitution.
-        "model",
-        "resolved_model_path",
-        # Parallelism dims — resolved into ParallelismConfig and folded into
-        # world size / placement whether or not a given runtime emits a flag
-        # for them.  A runtime that ignores one still *consumed* it.
-        "tensor_parallel",
-        "pipeline_parallel",
-        "data_parallel",
-        "expert_parallel",
-        "ep_size",
-        # Distributed bootstrap port; sparkrun emits the coordination flags.
-        "init_port",
-        # Portable keys the shared layers read off the recipe regardless of
-        # which runtime (and regardless of whether that runtime emits a flag
-        # for them): the VRAM estimator (max_model_len, kv_cache_dtype,
-        # gpu_memory_utilization), served-name resolution, api-key
-        # resolution, and port/host handling.
-        "max_model_len",
-        "gpu_memory_utilization",
-        "kv_cache_dtype",
-        "served_model_name",
-        "api_key",
-        "port",
-        "host",
-        # Executor / builder selectors read off recipe defaults.
-        "executor",
-        "image_prefix",
-        "launcher_image",
-        "use_sentinel_image",
-        "save_build_logs",
-        "transformers",
-        "kubectl",
-        # Benchmark-path keys (api/_benchmark.py reads these off the recipe).
-        "benchmark_framework",
-        "benchmark_output_dir",
-    }
-)
 
 
 class RuntimePlugin(Plugin):
@@ -109,21 +61,6 @@ class RuntimePlugin(Plugin):
     :attr:`AcceleratorSpec.model` equals the entry.  This lets runtimes
     pin to specific accelerator models (e.g. ``"gb10"`` for Atlas/Eugr)
     without having to coordinate a separate capability-tag taxonomy.
-    """
-
-    # --- Heterogeneous images ---
-    supports_heterogeneous_images: bool = False
-    """Whether this runtime tolerates a different container image per node.
-
-    Fails closed by default.  Anything with a wire protocol between ranks
-    breaks in ways that surface as a hang or a cryptic deserialization error
-    rather than a clean failure: Ray requires head and workers to share a build,
-    and MPI ranks must share an ABI.  Runtimes where per-node images are
-    meaningful (native-distributed serving, llama.cpp's RPC workers) opt in.
-
-    Consumed by :func:`sparkrun.core.launcher.launch_inference`, which raises
-    before any side effect when a recipe declares ``containers:`` for a runtime
-    that has not opted in.
     """
 
     # --- Executor ---
@@ -301,35 +238,6 @@ class RuntimePlugin(Plugin):
             ``--dist-init-addr``, ``--nnodes``, ``--node-rank``.
         """
         return "ray"
-
-    def native_protocols(self, recipe) -> list[str]:
-        """Inference API dialects this runtime serves *natively*, preferred first.
-
-        Consumed by an inference gateway to decide whether it can route matching
-        ingress straight through instead of translating.  A protocol selects the
-        upstream URL, headers, parser, streaming framing, error vocabulary and
-        retry classification, so it is a **routing dimension** rather than an
-        optional model feature.
-
-        It is therefore **fail-closed**: never report a dialect unless this
-        runtime, at this recipe's version, is known to serve it.  Under-claiming
-        costs a translation; over-claiming sends wrong-shaped bytes to a server
-        that cannot parse them.  That is why the base returns only ``openai``,
-        and why a runtime that gained (say) Anthropic Messages at a particular
-        version must gate on the recipe's resolved container tag rather than on
-        the runtime name.
-
-        Deliberately *not* part of
-        :func:`~sparkrun.orchestration.job_metadata.derive_recipe_fingerprint`:
-        learning that a deployment also speaks another dialect describes the
-        same workload more precisely, so it must not change the workload's
-        identity or force a running deployment to be re-admitted.
-
-        Returns:
-            Lowercase protocol names (``openai``, ``anthropic``, ``gemini``,
-            ``bedrock``), most-preferred first.
-        """
-        return ["openai"]
 
     def default_executor(self) -> str | None:
         """Return the runtime's preferred executor when nothing else is set.
@@ -696,101 +604,17 @@ class RuntimePlugin(Plugin):
         """
         return []
 
-    def validate_recipe(self, recipe: Recipe) -> list[str | RecipeIssue]:
-        """Return runtime-specific findings for *recipe*.
+    def validate_recipe(self, recipe: Recipe) -> list[str]:
+        """Return list of warnings/errors for runtime-specific fields.
 
-        Two return forms, and the difference is severity:
-
-        * a plain ``str`` leaves severity **undeclared** and is reported as a
-          *suggestion* — the least severe level, never fatal by default and
-          not printed by ``sparkrun run`` at all.  This is the original
-          contract; a plugin written against an older base class keeps
-          behaving exactly as it did.
-        * a :class:`~sparkrun.core.validation.RecipeIssue` **declares** it.
-          :meth:`recipe_error` for a configuration this runtime genuinely
-          cannot serve (an unsupported parallelism, a missing tokenizer for a
-          GGUF model) — that aborts the launch before any side effect.
-          :meth:`recipe_warning` for one that *will* run but does something
-          different off the cluster it was written on.
-
-        The dividing question for the middle tier is in
-        :mod:`sparkrun.core.validation`: *if this runs on someone else's
-        cluster, does it break or behave differently?*  Declare anything a
-        launch would otherwise only fail on later; leave genuine advice as a
-        bare string.  Subclasses should call ``super().validate_recipe(recipe)``
-        and extend the returned list.
+        The base implementation checks that a model is specified.
+        Subclasses should call ``super().validate_recipe(recipe)`` and
+        extend the returned list with runtime-specific checks.
         """
-        issues: list[str | RecipeIssue] = []
+        issues = []
         if not recipe.model:
-            issues.append(self.recipe_error("model is required"))
+            issues.append("[%s] model is required" % self.runtime_name)
         return issues
-
-    def recipe_error(self, message: str, code: str = "runtime-field") -> RecipeIssue:
-        """Build a launch-blocking :class:`RecipeIssue` tagged with this runtime.
-
-        Sugar for :meth:`validate_recipe` implementations so declaring severity
-        costs one word rather than an import and a constructor.
-        """
-        return RecipeIssue(ERROR, code, "[%s] %s" % (self.runtime_name, message))
-
-    def recipe_warning(self, message: str, code: str = "runtime-field") -> RecipeIssue:
-        """Build a portability-class :class:`RecipeIssue` tagged with this runtime.
-
-        Not fatal by default; fatal under ``--strict`` / ``validation.fail_on:
-        warning``.  The peer of :meth:`recipe_error` for findings that run but
-        run *differently* somewhere else.
-        """
-        return RecipeIssue(WARNING, code, "[%s] %s" % (self.runtime_name, message))
-
-    def known_config_keys(self) -> frozenset[str] | None:
-        """Config-chain keys this runtime does something with, or ``None``.
-
-        A structured runtime builds its serve command by iterating a flag
-        map, so a ``defaults:`` key (or a ``-o key=value``) the map doesn't
-        list reaches nothing at all and is dropped without a trace.  That
-        is how an ``@atlas`` recipe's ``lm_head_dtype: bf16`` correctness
-        pin served weeks of traffic at NVFP4 (issue #276), and the same
-        shape as the ``--disable-tool-grammar`` gap in #221.
-
-        Declaring the answer here lets
-        :func:`sparkrun.core.launcher.report_unmapped_config_keys` say so
-        at launch.  The set is *everything the runtime understands*, not
-        just its flag map: keys consumed by ``prepare()``, parallelism
-        resolution, the builder or the executor belong here too, or they
-        would be reported as dropped when they are merely handled
-        elsewhere.  :data:`BASE_CONSUMED_CONFIG_KEYS` covers the ones the
-        shared machinery reads for every runtime, so subclasses typically
-        return ``frozenset(_MY_FLAG_MAP) | {…runtime extras…}``.
-
-        ``None`` — the default — means "not declared" and disables the
-        check for this runtime.  A wrong answer here is worse than no
-        answer: it either cries wolf on a working recipe or, if a real key
-        is listed by mistake, restores exactly the silence being fixed.
-        """
-        return None
-
-    def serve_flag_map(self) -> Mapping[str, str] | None:
-        """This runtime's ``{config_key: serve_flag}`` map, or ``None``.
-
-        The *spelling* peer of :meth:`known_config_keys`: that answers which
-        keys reach something, this answers what each one is called on the
-        engine's command line (``kv_cache_dtype`` → ``--kv-cache-dtype`` for
-        vLLM, ``max_model_len`` → ``--ctx-size`` for llama.cpp).
-
-        Used by :func:`sparkrun.core.validation.validate_recipe` to spot a
-        flag written *literally* into a recipe's ``command:`` template when
-        sparkrun reads the same value from the config chain — a hardcoded
-        ``--kv-cache-dtype auto`` is invisible to VRAM estimation (issue
-        #248), and a hardcoded ``--served-model-name`` is invisible to the
-        benchmark's request target (#257).  Only the small curated set in
-        :data:`~sparkrun.core.validation.SPARKRUN_READ_CONFIG_KEYS` is
-        checked, so a runtime may return its whole map without generating
-        noise about flags recipes are meant to hardcode.
-
-        ``None`` — the default — disables that check for this runtime,
-        matching the discipline on :meth:`known_config_keys`.
-        """
-        return None
 
     # noinspection PyUnusedLocal
     def world_size(
@@ -1258,13 +1082,9 @@ class RuntimePlugin(Plugin):
 
         if len(hosts) <= 1:
             # Pop cluster-aware kwargs that solo path doesn't need yet
-            # (placement is meaningless for single-host workloads).  The
-            # cluster's pinned management interface *is* needed though: solo
-            # still runs IB detection, so a bad interface name reaches
-            # GLOO_SOCKET_IFNAME and kills the launch (issue #275).
-            solo_cluster = kwargs.pop("cluster", None)
+            # (placement is meaningless for single-host workloads).
+            kwargs.pop("cluster", None)
             return self._run_solo(
-                mgmt_interface=solo_cluster.mgmt_interface if solo_cluster is not None else None,
                 host=hosts[0] if hosts else "localhost",
                 image=image,
                 serve_command=serve_command,
@@ -1391,7 +1211,6 @@ class RuntimePlugin(Plugin):
         backends: "dict[str, BackendBundle] | None" = None,
         trust: bool = False,
         runtime_cache: "RuntimeCacheMounts | None" = None,
-        mgmt_interface: str | None = None,
     ) -> int:
         """Launch a single-node inference workload.
 
@@ -1461,13 +1280,12 @@ class RuntimePlugin(Plugin):
             else:
                 logger.info("Step 1/3: Detecting InfiniBand on %s...", host)
             if is_local:
-                comm_env = detect_infiniband_local(dry_run=dry_run, mgmt_interface=mgmt_interface)
+                comm_env = detect_infiniband_local(dry_run=dry_run)
             else:
                 comm_env = detect_infiniband(
                     [host],
                     ssh_kwargs=ssh_kwargs,
                     dry_run=dry_run,
-                    mgmt_interface=mgmt_interface,
                 )
             logger.info("Step 1/3: IB detection done (%.1fs)", time.monotonic() - t0)
 
@@ -1662,7 +1480,7 @@ class RuntimePlugin(Plugin):
 
     # --- Banner / connection info ---
 
-    def _print_cluster_banner(self, title, hosts, image, cluster_id, ports, dry_run, images_by_node=None):
+    def _print_cluster_banner(self, title, hosts, image, cluster_id, ports, dry_run):
         """Print standardized cluster launch banner.
 
         Args:
@@ -1672,22 +1490,13 @@ class RuntimePlugin(Plugin):
             cluster_id: Cluster identifier.
             ports: Mapping of label to value for port lines.
             dry_run: Whether this is a dry-run invocation.
-            images_by_node: Optional per-node images aligned with *hosts*.  When
-                they are not all the same, the banner lists them per host — a
-                single ``Image:`` line would misreport which build each machine
-                is actually running.
         """
         mode = "DRY-RUN" if dry_run else "LIVE"
         logger.info("=" * 60)
         logger.info("sparkrun %s", title)
         logger.info("=" * 60)
         logger.info("Cluster ID:     %s", cluster_id)
-        if images_by_node and len(set(images_by_node)) > 1:
-            logger.info("Images:")
-            for host, node_image in zip(hosts, images_by_node):
-                logger.info("  %-14s%s", host + ":", node_image)
-        else:
-            logger.info("Image:          %s", image)
+        logger.info("Image:          %s", image)
         logger.info("Head Node:      %s", hosts[0])
         logger.info(
             "Worker Nodes:   %s",
@@ -1807,7 +1616,6 @@ class RuntimePlugin(Plugin):
         cluster = kwargs.pop("cluster", None)
         placement = kwargs.pop("placement", None)
         runtime_cache = kwargs.pop("runtime_cache", None)
-        images_by_node = kwargs.pop("images_by_node", None)
         ctx = ClusterContext.build(
             runtime=self,
             hosts=hosts,
@@ -1822,7 +1630,6 @@ class RuntimePlugin(Plugin):
             recipe=recipe,
             placement=placement,
             runtime_cache=runtime_cache,
-            images_by_node=images_by_node,
         )
         return run_native_cluster(
             runtime=self,

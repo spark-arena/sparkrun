@@ -3,12 +3,7 @@
 import pytest
 
 from sparkrun.core.recipe import Recipe
-from sparkrun.runtimes.atlas import (
-    _ATLAS_BOOL_FLAGS,
-    _ATLAS_FLAG_MAP,
-    _ATLAS_VALUE_BOOL_FLAGS,
-    AtlasRuntime,
-)
+from sparkrun.runtimes.atlas import AtlasRuntime
 
 
 def _recipe(**overrides) -> Recipe:
@@ -335,7 +330,7 @@ def test_atlas_validate_recipe_no_model():
     recipe = Recipe.from_dict({"name": "test", "runtime": "atlas"})
     issues = runtime.validate_recipe(recipe)
     assert len(issues) == 1
-    assert "model is required" in str(issues[0])
+    assert "model is required" in issues[0]
 
 
 # --- Bool flag stripping (regression: bool flags were not stripped from
@@ -426,34 +421,6 @@ def test_atlas_prepare_dedupes_when_draft_equals_main_model():
     # Default entry holds the templated "{model}" placeholder; the draft
     # is added as a separate entry (substitution happens later via resolve()).
     assert names.count("Sehyo/Qwen3.5-35B-A3B-NVFP4") == 1
-
-
-def _atlas_entry(recipe, name):
-    return next(e for e in recipe.distribution_config.models.entries if e.name == name)
-
-
-def test_atlas_prepare_draft_model_is_unpinned_by_default():
-    """The draft repo must not inherit the served model's revision pin."""
-    runtime = AtlasRuntime()
-    recipe = _recipe(model_revision="deadbeef", defaults={"draft_model": "Sehyo/Qwen3.5-35B-Draft"})
-    runtime.prepare(recipe, hosts=["10.0.0.1"])
-    assert _atlas_entry(recipe, "Sehyo/Qwen3.5-35B-Draft").revision is None
-
-
-def test_atlas_prepare_pins_draft_model_revision_when_declared():
-    runtime = AtlasRuntime()
-    recipe = _recipe(
-        model_revision="deadbeef",
-        defaults={"draft_model": "Sehyo/Qwen3.5-35B-Draft", "draft_model_revision": "cafe1234"},
-    )
-    runtime.prepare(recipe, hosts=["10.0.0.1"])
-    assert _atlas_entry(recipe, "Sehyo/Qwen3.5-35B-Draft").revision == "cafe1234"
-    assert _atlas_entry(recipe, "{model}").revision == "deadbeef"
-
-
-def test_atlas_draft_revision_key_is_declared_known():
-    """Otherwise report_unmapped_config_keys warns the key was dropped."""
-    assert "draft_model_revision" in AtlasRuntime().known_config_keys()
 
 
 def test_atlas_prepare_with_cli_override():
@@ -595,92 +562,3 @@ def test_atlas_world_size_ignores_pp_and_dp():
     cluster = ClusterDefinition(name="c", hosts=["h1"])
     # tp * ep == 6, regardless of pp and dp.
     assert runtime.world_size(parallelism, recipe=_recipe(), cluster=cluster) == 6
-
-
-# --- Flag-map completeness (issue #276) ---
-
-
-def test_atlas_lm_head_dtype_renders():
-    """`lm_head_dtype` reaches the serve command.
-
-    Regression for issue #276: the key was absent from `_ATLAS_FLAG_MAP`, so a
-    recipe pinning `lm_head_dtype: bf16` as a documented correctness measure
-    was silently dropped and Atlas fell back to the model config's NVFP4 head.
-    Nothing about the resulting deployment looked wrong — the damage only
-    shows on long structured generation.
-    """
-    runtime = AtlasRuntime()
-    recipe = _recipe(defaults={"lm_head_dtype": "bf16"})
-
-    assert "--lm-head-dtype bf16" in runtime.generate_command(recipe, {}, is_cluster=False)
-
-
-def test_atlas_video_and_ssm_keys_render():
-    """The other keys live @atlas recipes set but the map omitted."""
-    runtime = AtlasRuntime()
-    recipe = _recipe(
-        defaults={
-            "video_allow_ffmpeg": True,
-            "ssm_h_dtype": "f16-pool",
-            "mtp_gate": "force",
-            "request_timeout": 0,
-            "max_inter_tool_prose": 64,
-        },
-    )
-
-    cmd = runtime.generate_command(recipe, {}, is_cluster=False)
-    assert "--video-allow-ffmpeg" in cmd  # presence-only toggle
-    assert "--ssm-h-dtype f16-pool" in cmd
-    assert "--mtp-gate force" in cmd
-    assert "--request-timeout 0" in cmd
-    assert "--max-inter-tool-prose 64" in cmd
-
-
-@pytest.mark.parametrize("key", sorted(_ATLAS_VALUE_BOOL_FLAGS))
-def test_atlas_value_bool_flags_emit_explicit_lowercase_value(key):
-    """Every `Option<bool>` flag emits an explicit lowercase value, both ways.
-
-    These are not presence-only toggles: "absent" defers to MODEL.toml / the
-    engine default while `false` overrides it, so a recipe pinning
-    `ssm_tail_midchunk: false` must produce `--ssm-tail-midchunk false` rather
-    than nothing.  And the value must never be Python's `str(True)`, which
-    Atlas' Rust bool parser rejects.
-    """
-    runtime = AtlasRuntime()
-    flag = _ATLAS_FLAG_MAP[key]
-
-    for value, expected in ((True, "true"), (False, "false")):
-        cmd = runtime.generate_command(_recipe(defaults={key: value}), {}, is_cluster=False)
-        assert "%s %s" % (flag, expected) in cmd
-        assert "%s %s" % (flag, str(value)) not in cmd
-
-
-def test_atlas_value_bool_flags_are_not_presence_only():
-    """The two bool sets are disjoint.
-
-    A key in both would be rendered as a bare toggle by
-    `build_flags_from_map`, which is exactly the emission that loses the
-    explicit `false`.
-    """
-    assert not (_ATLAS_VALUE_BOOL_FLAGS & _ATLAS_BOOL_FLAGS)
-
-
-def test_atlas_bool_flags_all_have_a_flag_mapping():
-    """`build_flags_from_map` iterates the map, so a key only in a bool set is dead."""
-    assert _ATLAS_BOOL_FLAGS <= frozenset(_ATLAS_FLAG_MAP)
-    assert _ATLAS_VALUE_BOOL_FLAGS <= frozenset(_ATLAS_FLAG_MAP)
-
-
-def test_atlas_known_config_keys_covers_map_and_sparkrun_owned():
-    """The declared key set is the map plus what sparkrun emits itself.
-
-    `known_config_keys` is what makes an omission audible (see
-    `report_unmapped_config_keys`), so it must not under-report the map —
-    and must not report sparkrun's own rank-coordination flags as dropped.
-    """
-    known = AtlasRuntime().known_config_keys()
-
-    assert frozenset(_ATLAS_FLAG_MAP) <= known
-    for owned in ("auth_token", "rank", "world_size", "master_addr", "master_port"):
-        assert owned in known
-    assert "lm_head_dytpe" not in known  # a typo stays unknown

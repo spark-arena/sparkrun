@@ -298,89 +298,6 @@ class SparkrunConfig:
         return val if val > 0 else DEFAULT_MAX_PARALLEL_SSH
 
     @property
-    def readiness_port_timeout_s(self) -> float:
-        """Wall-clock budget for "the head port is listening".
-
-        Set via ``readiness.port_timeout_s`` in ``config.yaml``.  Raise it
-        for models whose engine init runs long — sglang and vLLM V1 bind
-        their HTTP port only *after* weight load and CUDA-graph capture, so
-        this stage absorbs nearly the whole startup.  ``0`` or negative
-        means "no budget", i.e. poll until cancelled.
-        """
-        from sparkrun.core.launcher import DEFAULT_PORT_READY_TIMEOUT_S
-
-        return self._readiness_timeout("port_timeout_s", DEFAULT_PORT_READY_TIMEOUT_S)
-
-    @property
-    def readiness_health_timeout_s(self) -> float:
-        """Wall-clock budget for ``/v1/models`` answering once the port is open.
-
-        Set via ``readiness.health_timeout_s`` in ``config.yaml``.
-        """
-        from sparkrun.core.launcher import DEFAULT_HEALTH_READY_TIMEOUT_S
-
-        return self._readiness_timeout("health_timeout_s", DEFAULT_HEALTH_READY_TIMEOUT_S)
-
-    def _readiness_timeout(self, key: str, default: float) -> float:
-        import math
-
-        section = self._data.get("readiness", {})
-        raw = section.get(key) if isinstance(section, dict) else None
-        try:
-            val = float(raw)
-        except (TypeError, ValueError):
-            return default
-        # A budget can only ever expire early — liveness checks are what
-        # detect a genuine failure — so "unbounded" is a legitimate ask.
-        return val if val > 0 else math.inf
-
-    @property
-    def hub_timeout_s(self) -> float:
-        """Per-request ceiling for every HuggingFace Hub HTTP call.
-
-        Set via ``hub.timeout_s`` in ``config.yaml``.  Applied to connect / read
-        / write on the shared client sparkrun installs into ``huggingface_hub``
-        (:func:`sparkrun.models.hub.configure_hub_client`), which by default has
-        no timeout at all.  ``read`` bounds the gap between received bytes, not
-        the total transfer, so this is safe for long weight downloads.
-
-        Unlike ``readiness.*`` there is no "unbounded" spelling: an unbounded
-        Hub client is the defect (issue #278), so a non-positive value falls
-        back to the default rather than restoring it.
-        """
-        from sparkrun.models.hub import DEFAULT_HUB_TIMEOUT_S
-
-        section = self._data.get("hub", {})
-        raw = section.get("timeout_s") if isinstance(section, dict) else None
-        try:
-            val = float(raw)
-        except (TypeError, ValueError):
-            return DEFAULT_HUB_TIMEOUT_S
-        return val if val > 0 else DEFAULT_HUB_TIMEOUT_S
-
-    @property
-    def hub_metadata_budget_s(self) -> float:
-        """Wall-clock budget for the whole advisory Hub-metadata phase.
-
-        Set via ``hub.metadata_budget_s`` in ``config.yaml``.  Spans every
-        config / quant-config / safetensors / visibility lookup a command makes;
-        once spent, the remainder are skipped and the launch proceeds without a
-        VRAM estimate.  ``0`` or negative means unbounded (which restores the
-        pre-fix behaviour of asking every time, now with bounded requests).
-        """
-        import math
-
-        from sparkrun.models.hub import DEFAULT_HUB_METADATA_BUDGET_S
-
-        section = self._data.get("hub", {})
-        raw = section.get("metadata_budget_s") if isinstance(section, dict) else None
-        try:
-            val = float(raw)
-        except (TypeError, ValueError):
-            return DEFAULT_HUB_METADATA_BUDGET_S
-        return val if val > 0 else math.inf
-
-    @property
     def jobs_autoprune(self) -> bool:
         """Whether ``sparkrun run`` prunes stale job metadata as it launches.
 
@@ -404,73 +321,6 @@ class SparkrunConfig:
         # `ext_parse_bool` returns None for anything it doesn't recognise;
         # an unparseable value must not silently disable pruning.
         return True if parsed is None else parsed
-
-    @property
-    def missing_mount_source_policy(self) -> str:
-        """What a confirmed-missing ``executor_config.volumes`` source does.
-
-        ``"fail"`` (default) aborts the launch, ``"warn"`` logs and continues,
-        ``"ignore"`` skips the probe entirely.  Set ``mounts.missing_source``
-        in ``config.yaml``.
-
-        Failing is the default because the silent outcome is the bad one:
-        Docker materializes a missing bind source as an empty **root-owned**
-        directory rather than erroring, so a patch file or config the recipe
-        meant to shadow simply is not there and the container starts anyway,
-        serving unpatched. ``"warn"`` exists for the case the check cannot
-        distinguish — a mount the workload only needs on *some* hosts, or one
-        a ``pre_exec`` hook creates after this preflight has run.
-
-        An unrecognized value resolves to ``"fail"``: this is a safety check,
-        and a typo must not quietly disable it.
-        """
-        mounts = self._data.get("mounts", {})
-        raw = mounts.get("missing_source") if isinstance(mounts, dict) else None
-        value = str(raw).strip().lower() if raw is not None else ""
-        if value in ("fail", "warn", "ignore"):
-            return value
-        if value:
-            logger.warning(
-                "Unrecognized mounts.missing_source %r (expected fail/warn/ignore); using 'fail'",
-                raw,
-            )
-        return "fail"
-
-    @property
-    def validation_fail_on(self) -> str:
-        """Least-severe validation finding that is fatal.
-
-        ``"error"`` (default) fails only on what sparkrun cannot honor —
-        today's behaviour, unchanged.  ``"warning"`` adds the portability
-        class (a recipe that runs but runs *differently* off its author's
-        cluster); ``"suggestion"`` fails on everything; ``"none"`` never
-        fails.  Set ``validation.fail_on`` in ``config.yaml``.
-
-        Advanced.  It applies to ``sparkrun run`` as well as ``recipe
-        validate``, so raising it on a shared machine makes launches refuse
-        recipes that would previously only have warned — which is the point
-        for a locked-down site, and a surprise anywhere else.  Registry CI
-        wants ``sparkrun recipe validate --strict`` per-invocation rather than
-        this.
-
-        An unrecognized value resolves to the default: a typo must not
-        silently loosen (or tighten) the gate.
-        """
-        from sparkrun.core.validation import DEFAULT_FAIL_ON, FAIL_ON_CHOICES
-
-        validation = self._data.get("validation", {})
-        raw = validation.get("fail_on") if isinstance(validation, dict) else None
-        value = str(raw).strip().lower() if raw is not None else ""
-        if value in FAIL_ON_CHOICES:
-            return value
-        if value:
-            logger.warning(
-                "Unrecognized validation.fail_on %r (expected one of %s); using %r",
-                raw,
-                ", ".join(FAIL_ON_CHOICES),
-                DEFAULT_FAIL_ON,
-            )
-        return DEFAULT_FAIL_ON
 
     def get(self, key: str, default: Any = None) -> Any:
         """Get a config value by dot-separated key path."""
@@ -650,19 +500,6 @@ class SparkrunConfig:
         if not isinstance(raw, (list, tuple)):
             return []
         return [Path(os.path.expanduser(str(entry))) for entry in raw if entry]
-
-    def plugin_settings(self, name: str) -> dict[str, Any]:
-        """Return a copy of the user-level ``plugins.<name>`` settings.
-
-        ``plugins.paths`` remains reserved for external plugin discovery;
-        individual plugins may use their own mapping for operational policy
-        that should not be embedded in a portable recipe.
-        """
-        plugins = self._data.get("plugins", {})
-        if not isinstance(plugins, dict):
-            return {}
-        settings = plugins.get(name, {})
-        return dict(settings) if isinstance(settings, dict) else {}
 
     def get_recipe_search_paths(self) -> list[Path]:
         """Return ordered list of paths to search for recipes."""

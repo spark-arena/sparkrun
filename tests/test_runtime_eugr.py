@@ -72,7 +72,7 @@ def test_eugr_generate_command_from_template():
     runtime = EugrVllmRayRuntime()
 
     cmd = runtime.generate_command(recipe, {}, is_cluster=False)
-    assert cmd == ("vllm serve meta-llama/Llama-2-7b-hf --port 8000 --served-model-name meta-llama/Llama-2-7b-hf")
+    assert cmd == "vllm serve meta-llama/Llama-2-7b-hf --port 8000"
 
 
 def test_eugr_generate_command_structured():
@@ -105,7 +105,7 @@ def test_eugr_validate_recipe():
 
     issues = runtime.validate_recipe(recipe)
     # Should pass validation
-    assert all("model is required" not in str(issue) for issue in issues)
+    assert all("model is required" not in issue for issue in issues)
 
 
 class TestEugrPrepare:

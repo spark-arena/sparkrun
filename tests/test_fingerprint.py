@@ -72,7 +72,7 @@ def _probe_dgx_spark() -> str:
 
 
 def test_build_host_hardware_dgx_spark():
-    hw = build_host_hardware(parse_fingerprint_output(_probe_dgx_spark() + "NVIDIA_DRIVER_VERSION=610.22.03\n"))
+    hw = build_host_hardware(parse_fingerprint_output(_probe_dgx_spark()))
     assert len(hw.accelerators) == 1
     a = hw.accelerators[0]
     assert a.vendor == "nvidia"
@@ -83,7 +83,6 @@ def test_build_host_hardware_dgx_spark():
     assert "rdma:roce-v2" in a.capabilities
     assert hw.fingerprint and len(hw.fingerprint) == 16
     assert "Linux/aarch64" in hw.notes
-    assert hw.driver_versions == {"nvidia": "610.22.03"}
 
 
 def test_build_host_hardware_h200_8gpu():

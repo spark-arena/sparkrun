@@ -68,16 +68,6 @@ class ModularMaxRuntime(RuntimePlugin):
     runtime_name = "modular-max"
     default_image_prefix = "modular/max-nvidia-full"
 
-    def known_config_keys(self) -> frozenset[str]:
-        """Flag-map keys plus ``devices`` (the local-GPU list MAX takes for TP).
-
-        See :func:`sparkrun.core.launcher.report_unmapped_config_keys`.
-        """
-        return frozenset(_MAX_FLAG_MAP) | {"devices"}
-
-    def serve_flag_map(self):
-        return _MAX_FLAG_MAP
-
     # --- placement: single node, always ---
 
     # noinspection PyUnusedLocal
@@ -201,11 +191,9 @@ class ModularMaxRuntime(RuntimePlugin):
         issues = super().validate_recipe(recipe)
         if recipe.min_nodes and recipe.min_nodes > 1:
             issues.append(
-                self.recipe_error(
-                    "is single-node only: min_nodes=%d (or cluster_only) "
-                    "is not supported. MAX uses local GPUs via --devices, not multi-node "
-                    "tensor parallelism." % recipe.min_nodes
-                )
+                "[modular-max] is single-node only: min_nodes=%d (or cluster_only) "
+                "is not supported. MAX uses local GPUs via --devices, not multi-node "
+                "tensor parallelism." % recipe.min_nodes
             )
         return issues
 

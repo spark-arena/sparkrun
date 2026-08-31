@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from sparkrun.orchestration.comm_env import ClusterCommEnv
-from sparkrun.scripts import inject_shell_vars, read_script
+from sparkrun.scripts import read_script
 from sparkrun.utils import parse_kv_output
 
 if TYPE_CHECKING:
@@ -76,7 +76,7 @@ class IBDetectionResult:
     """
 
 
-def generate_ib_detect_script(mgmt_interface: str | None = None) -> str:
+def generate_ib_detect_script() -> str:
     """Generate a bash script that detects InfiniBand interfaces.
 
     The script outputs key=value pairs on stdout that can be parsed
@@ -95,22 +95,10 @@ def generate_ib_detect_script(mgmt_interface: str | None = None) -> str:
 
         IB_DETECTED=0
 
-    ``DETECTED_SOCKET_IFNAME`` and ``DETECTED_MGMT_IP`` may be **empty** when
-    no management interface can be identified on the host — see
-    ``scripts/_mgmt_iface.sh``.  Empty is the honest answer and
-    :func:`generate_nccl_env` handles it by pinning the socket-interface env
-    to the detected fabric adapters instead; a guessed name would name a
-    device that does not exist and abort the workload at init (issue #275).
-
-    Args:
-        mgmt_interface: Optional management interface to pin, overriding
-            detection on the host (see
-            :attr:`~sparkrun.core.cluster_manager.ClusterDefinition.mgmt_interface`).
-
     Returns:
         Bash script content as a string.
     """
-    return inject_shell_vars(read_script("ib_detect.sh"), SPARKRUN_MGMT_IFACE=mgmt_interface)
+    return read_script("ib_detect.sh")
 
 
 def parse_ib_detect_output(output: str) -> dict[str, str]:
@@ -123,47 +111,6 @@ def parse_ib_detect_output(output: str) -> dict[str, str]:
         Dictionary of detected key=value pairs.
     """
     return parse_kv_output(output)
-
-
-#: Every env var :func:`generate_nccl_env` (plus its ring-topology and
-#: per-host peers) can emit for a cluster launch.
-#:
-#: These are *computed per cluster* from live IB detection — HCA names, GID
-#: index and interface names are properties of the hardware in front of us,
-#: not of the recipe.  A recipe that sets one of them wins outright
-#: (``merge_env(nccl_env, env)`` in
-#: :mod:`sparkrun.orchestration.executors._base` puts ``recipe.env`` last), so
-#: the value silently replaces whatever was detected.  That is a deliberate
-#: escape hatch and stays supported — but it pins the recipe to one machine's
-#: device naming, which is why
-#: :func:`sparkrun.core.validation.validate_recipe` warns about it.
-#:
-#: Kept next to the generators so the two move together;
-#: ``tests/test_recipe_validation.py`` asserts the generated keys stay a
-#: subset of this set.
-MANAGED_COMM_ENV_KEYS = frozenset(
-    {
-        # generate_nccl_env
-        "NCCL_IGNORE_CPU_AFFINITY",
-        "NCCL_NET",
-        "NCCL_IB_DISABLE",
-        "NCCL_CROSS_NIC",
-        "NCCL_IB_HCA",
-        "NCCL_IB_GID_INDEX",
-        "NCCL_SOCKET_IFNAME",
-        "UCX_NET_DEVICES",
-        "NODE_IP",
-        # _set_eth_interfaces
-        "MN_IF_NAME",
-        "OMPI_MCA_btl_tcp_if_include",
-        "GLOO_SOCKET_IFNAME",
-        "TP_SOCKET_IFNAME",
-        # generate_ring_nccl_overrides
-        "NCCL_NET_PLUGIN",
-        "NCCL_IB_SUBNET_AWARE_ROUTING",
-        "NCCL_IB_MERGE_NICS",
-    }
-)
 
 
 def generate_ring_nccl_overrides(ib_info: dict[str, str]) -> dict[str, str]:
@@ -465,7 +412,6 @@ def detect_ib_for_hosts(
     dry_run: bool = False,
     topology: str | None = None,
     backends: "dict[str, BackendBundle] | None" = None,
-    mgmt_interface: str | None = None,
 ) -> IBDetectionResult:
     """Run IB detection on all hosts and return aggregated results.
 
@@ -484,9 +430,6 @@ def detect_ib_for_hosts(
             Hosts missing from *backends* fall back to the legacy
             :func:`generate_nccl_env` (NCCL) path.  When *backends* is
             ``None`` every host uses the legacy path.
-        mgmt_interface: Optional management interface to pin on every host,
-            overriding detection (see
-            :attr:`~sparkrun.core.cluster_manager.ClusterDefinition.mgmt_interface`).
 
     Returns:
         :class:`IBDetectionResult` with NCCL env and IB IP mapping.
@@ -500,7 +443,7 @@ def detect_ib_for_hosts(
     head_host = hosts[0]
 
     logger.info("Detecting InfiniBand on %d host(s)...", len(hosts))
-    ib_script = generate_ib_detect_script(mgmt_interface)
+    ib_script = generate_ib_detect_script()
     ib_results = run_remote_scripts_parallel(
         hosts,
         ib_script,
@@ -519,19 +462,6 @@ def detect_ib_for_hosts(
         if not result.success:
             continue
         ib_info = parse_ib_detect_output(result.stdout)
-
-        # Detection degraded to "no management interface".  Not fatal — the
-        # socket-interface env falls back to the fabric adapters below — but
-        # the operator should hear about it, because everything downstream
-        # (NODE_IP, the rendezvous address) is now fabric-bound.  Only
-        # meaningful when IB was found; without it the whole block is empty.
-        if ib_info.get("IB_DETECTED") == "1" and not ib_info.get("DETECTED_SOCKET_IFNAME", "").strip():
-            logger.warning(
-                "  No management interface identified on %s (no default route, and none inferable) — "
-                "pinning control traffic to the detected fabric interface(s) instead. "
-                "Set the cluster's `mgmt_interface` to pin one explicitly.",
-                result.host,
-            )
 
         # Per-host comm env: route through backend when provided so
         # NCCL/RCCL/HCCL hosts emit the right env block.  Hosts missing

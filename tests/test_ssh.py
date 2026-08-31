@@ -4,14 +4,13 @@ import subprocess
 from unittest.mock import MagicMock, patch
 
 from sparkrun.orchestration.ssh import (
-    RemoteResult,
     build_ssh_cmd,
-    detect_sudo_on_hosts,
-    run_local_script_streaming,
-    run_remote_command,
+    RemoteResult,
     run_remote_script,
+    run_remote_command,
     run_remote_scripts_parallel,
     run_remote_sudo_script,
+    detect_sudo_on_hosts,
 )
 
 
@@ -87,21 +86,6 @@ def test_remote_result_last_line_with_blank_lines():
         stderr="",
     )
     assert result.last_line == "line2"
-
-
-def test_local_streaming_script_inherits_terminal_output(capfd):
-    result = run_local_script_streaming("printf 'builder-visible\\n'\n")
-
-    assert result.success
-    assert result.stdout == ""
-    assert "builder-visible" in capfd.readouterr().out
-
-
-def test_quiet_local_streaming_script_captures_output():
-    result = run_local_script_streaming("printf 'builder-captured\\n'\n", quiet=True)
-
-    assert result.success
-    assert result.stdout == "builder-captured\n"
 
 
 def test_run_remote_script_dry_run():

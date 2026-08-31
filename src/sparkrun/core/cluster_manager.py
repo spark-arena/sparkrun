@@ -20,10 +20,8 @@ logger = logging.getLogger(__name__)
 # Name validation pattern: start with alphanumeric, contain alphanumeric/underscore/hyphen
 CLUSTER_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$")
 
-# Valid transfer modes for resource distribution.  ``pull`` = every node fetches
-# from origin itself, in parallel (docker pull / hf download per node); nothing
-# crosses the head or the control machine.
-VALID_TRANSFER_MODES = ("auto", "local", "push", "delegated", "pull")
+# Valid transfer modes for resource distribution
+VALID_TRANSFER_MODES = ("auto", "local", "push", "delegated")
 
 # Valid transfer interfaces for selecting network path
 VALID_TRANSFER_INTERFACES = ("cx7", "mgmt")
@@ -72,8 +70,8 @@ def _parse_env_file(path: str) -> dict[str, str]:
 
 
 @dataclass
-class ResourceDistributionPrefs:
-    """Per-cluster distribution preferences for one resource kind.
+class ModelDistributionPrefs:
+    """Per-cluster model-distribution preferences.
 
     Defaults reproduce the historical behavior exactly:
       * ``preserve_perms=True`` — rsync uses ``-a`` (archive) and the
@@ -86,15 +84,11 @@ class ResourceDistributionPrefs:
     ``skip_fan_out=True`` skips the redundant per-host rsync because the
     model is already visible on every node once downloaded once.
 
-    ``enabled=False`` turns distribution of that resource off entirely — no
-    local download and no per-host transfer.  Use it when the resource is
-    already present on every node (e.g. a shared NFS mount populated
-    out-of-band), so sparkrun should never fetch or copy it.  This is stronger
-    than ``skip_fan_out`` (which still downloads the resource once locally).
-
-    Used for both ``distribution.model`` (the HuggingFace cache) and
-    ``distribution.tuning`` (the Triton tuning-config cache) — the questions are
-    identical, only the destination directory differs.
+    ``enabled=False`` turns model distribution off entirely — no local
+    download and no per-host transfer.  Use it when the weights are already
+    present on every node (e.g. a shared NFS mount populated out-of-band), so
+    sparkrun should never fetch or copy them.  This is stronger than
+    ``skip_fan_out`` (which still downloads the model once locally).
     """
 
     preserve_perms: bool = True
@@ -102,7 +96,7 @@ class ResourceDistributionPrefs:
     enabled: bool = True
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> "ResourceDistributionPrefs":
+    def from_dict(cls, data: dict[str, Any] | None) -> "ModelDistributionPrefs":
         if not isinstance(data, dict):
             return cls()
         return cls(
@@ -125,65 +119,26 @@ class ResourceDistributionPrefs:
         return out
 
 
-# Backwards-compatible alias: these prefs were model-only before the tuning
-# cache started using them, and the old name is part of the public surface.
-ModelDistributionPrefs = ResourceDistributionPrefs
-
-
 @dataclass
 class ClusterDistributionConfig:
     """Cluster-level resource-distribution preferences (``distribution:`` block)."""
 
-    model: ResourceDistributionPrefs = field(default_factory=ResourceDistributionPrefs)
-
-    tuning: ResourceDistributionPrefs | None = None
-    """Preferences for the Triton tuning-config cache.  ``None`` means *inherit
-    :attr:`model`*, which is what makes the common case need one setting.
-
-    The two caches are different directories (``~/.cache/huggingface`` vs
-    ``~/.cache/sparkrun/tuning``) but on almost every cluster they share one
-    filesystem — the SSH user's ``$HOME`` — so whatever made the model cache
-    need ``preserve_perms: false`` or ``skip_fan_out: true`` is true of the
-    tuning cache for exactly the same reason.  Inheriting means an existing
-    NFS cluster's ``distribution.model`` block covers tuning without the user
-    discovering a second knob after hitting the same failure twice.
-
-    Set it explicitly for the split case: an HF cache on a dedicated shared
-    mount (``cache_dir: /mnt/models``, so ``skip_fan_out: true``) while
-    ``$HOME`` stays node-local and tuning configs genuinely must fan out.
-    """
-
-    @property
-    def tuning_prefs(self) -> ResourceDistributionPrefs:
-        """Effective tuning prefs — the explicit block, else :attr:`model`."""
-        return self.tuning if self.tuning is not None else self.model
+    model: ModelDistributionPrefs = field(default_factory=ModelDistributionPrefs)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "ClusterDistributionConfig":
         if not isinstance(data, dict):
             return cls()
-        raw_tuning = data.get("tuning")
-        return cls(
-            model=ResourceDistributionPrefs.from_dict(data.get("model")),
-            # Absent stays None (inherit); a present-but-empty block is an
-            # explicit "use the defaults for tuning", which is how a user opts
-            # *out* of inheriting a relaxed model block.
-            tuning=ResourceDistributionPrefs.from_dict(raw_tuning) if isinstance(raw_tuning, dict) else None,
-        )
+        return cls(model=ModelDistributionPrefs.from_dict(data.get("model")))
 
     def is_default(self) -> bool:
-        return self.model.is_default() and self.tuning is None
+        return self.model.is_default()
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {}
         model = self.model.to_dict()
         if model:
             out["model"] = model
-        # Serialized whenever set, *including* when it round-trips to an empty
-        # mapping: "explicitly default" and "inherit the model block" are
-        # different instructions and only differ by the key's presence.
-        if self.tuning is not None:
-            out["tuning"] = self.tuning.to_dict()
         return out
 
 
@@ -209,24 +164,6 @@ class ClusterDefinition:
     generically (not ``cx7_interfaces``) so it survives the planned
     high-speed-fabric abstraction; distinct from
     :attr:`transfer_interface`, which selects the data-transfer NIC.
-    """
-    mgmt_interface: str | None = None
-    """Optional management/control interface name to pin for this cluster.
-
-    Injected into every host probe as ``SPARKRUN_MGMT_IFACE`` and consumed by
-    ``scripts/_mgmt_iface.sh``, where it outranks the whole detection chain.
-    It becomes ``DETECTED_SOCKET_IFNAME`` and from there the control-socket
-    env (``GLOO_SOCKET_IFNAME``, ``TP_SOCKET_IFNAME``, ``MN_IF_NAME``, the head
-    of ``NCCL_SOCKET_IFNAME``) plus ``NODE_IP``.
-
-    The escape hatch for hosts where detection cannot decide — most of the
-    fabric/management split is unambiguous, but a bonded or VLAN management
-    link has no ``device`` entry in sysfs and so is invisible to the heuristic
-    scan.  Unlike :attr:`fabric_interfaces` this is a single exact name, not a
-    glob: it is one interface per host and it must exist, or the probe warns
-    and falls back to detection rather than emitting a name that isn't there
-    (issue #275).  Distinct from :attr:`transfer_interface` (data-transfer NIC
-    selection) and :attr:`fabric_interfaces` (which CX7 ports to configure).
     """
     distribution: ClusterDistributionConfig = field(default_factory=ClusterDistributionConfig)
     """Cluster-level model/resource distribution preferences (see
@@ -390,8 +327,6 @@ class ClusterDefinition:
             d["topology"] = self.topology
         if self.fabric_interfaces:
             d["fabric_interfaces"] = list(self.fabric_interfaces)
-        if self.mgmt_interface:
-            d["mgmt_interface"] = self.mgmt_interface
         if self.env:
             d["env"] = dict(self.env)
         if self.env_file:
@@ -447,25 +382,8 @@ class ClusterStatusResult:
     groups: dict[str, ClusterGroup]  # cluster_id -> group
     solo_entries: list[ClusterSoloEntry]
     errors: dict[str, str]  # host -> error message
-    idle_hosts: list[str]
-    """Hosts that are reachable, running nothing, and *not* being prepared.
-
-    Narrower than "zero containers": a host that a pending download or image
-    distribution is targeting is about to consume its whole GPU, and calling
-    it idle is the one reading that leads somewhere expensive.  Those hosts
-    are in :attr:`preparing_hosts` instead — the two lists are disjoint and
-    together cover every free, reachable host.
-    """
-    pending_ops: list[dict[str, Any]]
-    """Live pending operations touching this cluster.
-
-    Each entry is the on-disk lock plus two derived keys: ``matched_hosts``
-    (targets within the queried host list, in that list's spelling) and
-    ``other_hosts`` (targets outside it — the operation spans more than the
-    cluster being looked at).  An op with **no** recorded hosts is kept but
-    attributed to nothing: "unknown scope" must not read as "affects every
-    host".
-    """
+    idle_hosts: list[str]  # hosts with no containers and no errors
+    pending_ops: list[dict[str, Any]]  # relevant pending operations
     total_containers: int
     host_count: int
     container_executors: dict[tuple[str, str], str] = field(default_factory=dict)
@@ -477,17 +395,6 @@ class ClusterStatusResult:
     tear each workload down through its own substrate; a missing entry means
     unattributed and falls back to the cluster's default executor.
     """
-    preparing_hosts: list[str] = field(default_factory=list)
-    """Reachable, container-free hosts targeted by a live pending operation.
-
-    A **lower bound**, not an authority: pending-op locks are written by the
-    control node doing the launching, so a launch driven from another machine
-    leaves no trace here.  Display-only for that reason — the occupancy
-    snapshot that drives placement and eviction is deliberately not derived
-    from it, since a stale lock would refuse a launch onto a free host.
-    """
-    pending_by_host: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
-    """``host`` → the entries of :attr:`pending_ops` targeting it."""
 
     def to_dict(self) -> dict[str, Any]:
         """Convert the result to a JSON-serializable dictionary."""
@@ -495,10 +402,6 @@ class ClusterStatusResult:
             "groups": {},
             "solo_entries": [],
             "idle_hosts": self.idle_hosts,
-            "preparing_hosts": self.preparing_hosts,
-            # ``pending_by_host`` is intentionally not emitted: each op already
-            # carries ``matched_hosts``, so the mapping is derivable and would
-            # only duplicate every entry.
             "pending_ops": self.pending_ops,
             "errors": self.errors,
             "total_containers": self.total_containers,
@@ -567,7 +470,6 @@ class ClusterManager:
         transfer_interface: str | None = None,
         topology: str | None = None,
         fabric_interfaces: list[str] | None = None,
-        mgmt_interface: str | None = None,
         env: dict[str, str] | None = None,
         env_file: str | None = None,
         sync_source: str | None = None,
@@ -593,9 +495,6 @@ class ClusterManager:
             topology: Optional CX7 topology (direct, switch, ring)
             fabric_interfaces: Optional high-speed-fabric interface globs/names
                 (e.g. ``["*np1"]``) pinning a specific CX7 port pair.
-            mgmt_interface: Optional management interface name to pin,
-                overriding per-host detection (see
-                :attr:`ClusterDefinition.mgmt_interface`).
             env: Optional cluster-level container env (values may use
                 ``${VAR}`` resolved from ``env_file``).
             env_file: Optional path backing ``${VAR}`` references in ``env``.
@@ -630,7 +529,6 @@ class ClusterManager:
             transfer_interface=transfer_interface,
             topology=topology,
             fabric_interfaces=list(fabric_interfaces) if fabric_interfaces else [],
-            mgmt_interface=mgmt_interface,
             env=dict(env) if env else {},
             env_file=env_file,
             sync_source=sync_source,
@@ -675,7 +573,6 @@ class ClusterManager:
         transfer_interface: str | None = _UNSET,
         topology: str | None = _UNSET,
         fabric_interfaces: list[str] | None = _UNSET,
-        mgmt_interface: str | None = _UNSET,
         env: dict[str, str] | None = _UNSET,
         env_file: str | None = _UNSET,
         sync_source: str | None = _UNSET,
@@ -698,7 +595,6 @@ class ClusterManager:
             transfer_interface: Transfer interface (if provided; pass ``None`` explicitly to clear)
             topology: CX7 topology (if provided; pass ``None`` explicitly to clear)
             fabric_interfaces: Fabric interface globs/names (if provided; pass empty list to clear)
-            mgmt_interface: Pinned management interface (if provided; pass ``None`` explicitly to clear)
             env: Cluster-level container env (if provided; pass empty dict to clear)
             env_file: Env file path backing ``${VAR}`` refs (if provided; pass ``None`` to clear)
             sync_source: Import provenance / re-sync identity (if provided; pass ``None`` to clear)
@@ -748,10 +644,6 @@ class ClusterManager:
         if fabric_interfaces is not _UNSET:
             cluster_def.fabric_interfaces = list(fabric_interfaces) if fabric_interfaces else []
             logger.debug("Updated fabric_interfaces for cluster '%s'", name)
-
-        if mgmt_interface is not _UNSET:
-            cluster_def.mgmt_interface = mgmt_interface or None
-            logger.debug("Updated mgmt_interface for cluster '%s'", name)
 
         if env is not _UNSET:
             cluster_def.env = dict(env) if env else {}
@@ -905,8 +797,6 @@ class ClusterManager:
             data["topology"] = cluster_def.topology
         if cluster_def.fabric_interfaces:
             data["fabric_interfaces"] = list(cluster_def.fabric_interfaces)
-        if cluster_def.mgmt_interface:
-            data["mgmt_interface"] = cluster_def.mgmt_interface
         if cluster_def.env:
             data["env"] = dict(cluster_def.env)
         if cluster_def.env_file:
@@ -969,9 +859,6 @@ class ClusterManager:
         raw_fabric_ifaces = data.get("fabric_interfaces") or []
         fabric_interfaces: list[str] = [str(x) for x in raw_fabric_ifaces] if isinstance(raw_fabric_ifaces, list) else []
 
-        raw_mgmt_iface = data.get("mgmt_interface")
-        mgmt_interface = str(raw_mgmt_iface).strip() or None if raw_mgmt_iface else None
-
         raw_env = data.get("env") or {}
         cluster_env: dict[str, str] = {str(k): str(v) for k, v in raw_env.items()} if isinstance(raw_env, dict) else {}
 
@@ -994,7 +881,6 @@ class ClusterManager:
             transfer_interface=data.get("transfer_interface"),
             topology=data.get("topology"),
             fabric_interfaces=fabric_interfaces,
-            mgmt_interface=mgmt_interface,
             env=cluster_env,
             env_file=data.get("env_file"),
             sync_source=data.get("sync_source"),
@@ -1029,15 +915,14 @@ def classify_cluster_status(
     produced by :func:`sparkrun.api.status` (the single status source, which
     owns executor resolution + the cross-executor merge); this classifies its
     workloads into cluster groups vs solo entries, enriches each with cached
-    job metadata, and splits the free hosts into idle vs *preparing* using the
-    pending-operation locks (see :attr:`ClusterStatusResult.idle_hosts`).
+    job metadata, and derives idle hosts + relevant pending ops.
 
     Args:
         snapshot: The merged :class:`ClusterStatus` from ``api.status``.
         cache_dir: Cache directory for job metadata and pending ops.
-        host_list: The hosts that were queried (used to classify free hosts and
-            attribute pending ops); a host absent from ``snapshot.hosts`` and
-            not in ``snapshot.errors`` is neither reachable nor idle.
+        host_list: The hosts that were queried (used to derive idle hosts and
+            filter pending ops); a host absent from ``snapshot.hosts`` and not
+            in ``snapshot.errors`` is neither reachable nor idle.
 
     Returns:
         A :class:`ClusterStatusResult` with all collected data.
@@ -1085,18 +970,15 @@ def classify_cluster_status(
     # Unreachable hosts (absent from the snapshot's hosts) surfaced as errors.
     errors = dict(snapshot.errors)
 
-    # Pending operations, attributed to the hosts they will occupy.
-    relevant_ops, pending_by_host = _classify_pending_ops(list_pending_ops(cache_dir=cache_dir), host_list)
-
-    # Free hosts: reachable (present in the merged snapshot) with zero
+    # Idle hosts: reachable (present in the merged snapshot) with zero
     # containers and no error.  A host absent from the snapshot is an error
-    # (or was never reachable), not free — matches the pre-refactor behavior.
-    free_hosts = [h for h in host_list if h in reachable_hosts and host_container_counts.get(h, 0) == 0 and h not in errors]
-    # ...split into "being prepared" vs genuinely idle.  A host staging a
-    # multi-GB image or model download is minutes away from taking its whole
-    # GPU; reporting it as idle is what sends the next launch at it.
-    preparing_hosts = [h for h in free_hosts if pending_by_host.get(h)]
-    idle_hosts = [h for h in free_hosts if not pending_by_host.get(h)]
+    # (or was never reachable), not idle — matches the pre-refactor behavior.
+    idle_hosts = [h for h in host_list if h in reachable_hosts and host_container_counts.get(h, 0) == 0 and h not in errors]
+
+    # Pending operations filtered to relevant hosts
+    pending = list_pending_ops(cache_dir=cache_dir)
+    host_set = set(host_list)
+    relevant_ops = [op for op in pending if not op.get("hosts") or host_set & set(op["hosts"])]
 
     return ClusterStatusResult(
         groups=cluster_groups,
@@ -1107,56 +989,7 @@ def classify_cluster_status(
         total_containers=total_containers,
         host_count=len(host_list),
         container_executors=container_executors,
-        preparing_hosts=preparing_hosts,
-        pending_by_host=pending_by_host,
     )
-
-
-def _pending_host_key(host: str) -> str:
-    """Normalize a host for pending-op ↔ cluster-host matching.
-
-    Locks record whatever spelling the launch was given, which is usually but
-    not always the spelling ``cluster status`` is asked about.  Case and an
-    ``ssh``-style ``user@`` prefix are cheap to reconcile; anything further
-    (DNS, IP-vs-name) is not attempted — an unmatched op stays visible under
-    "pending operations", it just isn't pinned to a host.
-    """
-    h = str(host).strip()
-    if "@" in h:
-        h = h.rsplit("@", 1)[1]
-    return h.lower()
-
-
-def _classify_pending_ops(
-    pending: list[dict[str, Any]],
-    host_list: list[str],
-) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
-    """Filter *pending* to the ops touching *host_list* and attribute them.
-
-    Returns ``(relevant_ops, pending_by_host)``.  Each returned op is a copy
-    carrying ``matched_hosts`` / ``other_hosts``; the originals are left
-    alone.  Ops recording no hosts are kept (they may well concern this
-    cluster — there is no way to tell) but attributed to none, because
-    marking every host busy on a "don't know" is unrecoverable for the
-    reader, while an unpinned line is merely less useful.
-    """
-    known = {_pending_host_key(h) for h in host_list}
-    relevant: list[dict[str, Any]] = []
-    by_host: dict[str, list[dict[str, Any]]] = {}
-
-    for op in pending:
-        op_hosts = [str(h) for h in (op.get("hosts") or [])]
-        op_keys = {_pending_host_key(h) for h in op_hosts}
-        matched = [h for h in host_list if _pending_host_key(h) in op_keys]
-        if op_hosts and not matched:
-            continue  # targets some other cluster entirely
-        other = [h for h in op_hosts if _pending_host_key(h) not in known]
-        entry = dict(op, matched_hosts=matched, other_hosts=other)
-        relevant.append(entry)
-        for h in matched:
-            by_host.setdefault(h, []).append(entry)
-
-    return relevant, by_host
 
 
 @dataclass
@@ -1173,9 +1006,6 @@ class ResolvedClusterConfig:
     transfer_mode: str | None = None
     transfer_interface: str | None = None
     topology: str | None = None
-    mgmt_interface: str | None = None
-    """Pinned management interface for host probes.  Mirrors
-    :attr:`ClusterDefinition.mgmt_interface`."""
     transport: str = "ssh"
     """Cluster connectivity transport selector (see :mod:`sparkrun.transports`).
     Mirrors :attr:`ClusterDefinition.transport`; ``"ssh"`` for plain clusters."""
@@ -1288,12 +1118,6 @@ def resolve_cluster_config(
     cfg.executor = cluster_def.executor
     cfg.executor_config = dict(cluster_def.executor_config) if cluster_def.executor_config else None
     cfg.scheduler = cluster_def.scheduler
-
-    # Management interface is a property of the *machines*, not of how their
-    # addresses were supplied — the same NIC names apply whether the host list
-    # came from the cluster or from --hosts.  So it applies whenever the
-    # cluster is named, like executor/transport above and unlike transfer_mode.
-    cfg.mgmt_interface = cluster_def.mgmt_interface
 
     # Transport is a cluster-deployment property (like executor): it governs
     # how the cluster's hosts are reached, so it applies whenever the cluster

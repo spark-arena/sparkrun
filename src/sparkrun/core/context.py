@@ -13,7 +13,6 @@ if TYPE_CHECKING:
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.core.progress import LaunchProgress
     from sparkrun.core.registry import RegistryManager
-    from sparkrun.core.timing import Timeline
     from sparkrun.proxy.config import ProxyConfig
 
 
@@ -29,12 +28,6 @@ class SparkrunContext:
     config: SparkrunConfig
     verbose: bool = False
     progress: LaunchProgress | None = None
-    timing: Timeline | None = None
-    """Optional span collector spanning more than one launch.
-
-    ``launch_inference`` creates its own when this is ``None``, so a caller
-    only sets it to widen the window (e.g. to include planning) or to share
-    one timeline across several launches."""
 
     @cached_property
     def registry_manager(self) -> RegistryManager:

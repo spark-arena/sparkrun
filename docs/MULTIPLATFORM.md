@@ -16,7 +16,6 @@ class HostHardware:
     fingerprint: str | None
     notes: str
     ib_info: dict | None
-    driver_versions: dict[str, str]
 ```
 
 - `accelerators` is a list of `AcceleratorSpec(vendor, model, count, memory_gb,
@@ -27,9 +26,6 @@ class HostHardware:
 - `has_capability("rdma:roce-v2")` walks every accelerator on the host.
 - `ib_info` is the raw KV output from the IB section of the combined probe.
   Populated by `hardware_probe.probe_host`. Not serialized to cluster YAML.
-- `driver_versions` stores detected host driver versions by vendor (currently
-  NVIDIA) and is serialized when present. It is software compatibility
-  metadata and therefore is not part of the stable hardware fingerprint.
 
 The convenience default is `default_dgx_spark_hardware()` — 1 × GB10, 121 GB,
 capabilities `{cuda, unified-memory, rdma:roce-v2}`. Every code path that lacks
@@ -59,7 +55,6 @@ SPARKRUN_PROBE_ACCEL_START
 NVIDIA_GPU_0_NAME=NVIDIA GB10
 NVIDIA_GPU_0_MEMORY_MIB=124032
 NVIDIA_GPU_COUNT=1
-NVIDIA_DRIVER_VERSION=610.22.03
 ...
 IB_PRESENT=1
 SPARKRUN_PROBE_ACCEL_END

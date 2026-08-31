@@ -7,8 +7,6 @@
 
 set -uo pipefail
 
-# sparkrun:include _mgmt_iface.sh
-
 echo "Running spark diagnostics..." >&2
 
 # --- Hostname ---
@@ -141,12 +139,9 @@ for netdev in /sys/class/net/*; do
 done
 echo "DIAG_NET_COUNT=$NET_IDX"
 
-# --- Management interface ---
-DIAG_DEFAULT_IFACE=$(sparkrun_mgmt_iface "")
-DIAG_MGMT_IP=""
-if [ -n "$DIAG_DEFAULT_IFACE" ]; then
-    DIAG_MGMT_IP=$(ip -4 addr show "$DIAG_DEFAULT_IFACE" 2>/dev/null | grep -oP 'inet \K[0-9.]+' | head -1 || echo "")
-fi
+# --- Default route ---
+DIAG_DEFAULT_IFACE=$(ip route get 8.8.8.8 2>/dev/null | grep -oP 'dev \K\S+' || echo "")
+DIAG_MGMT_IP=$(ip -4 addr show "$DIAG_DEFAULT_IFACE" 2>/dev/null | grep -oP 'inet \K[0-9.]+' | head -1 || echo "")
 echo "DIAG_DEFAULT_IFACE=$DIAG_DEFAULT_IFACE"
 echo "DIAG_MGMT_IP=$DIAG_MGMT_IP"
 

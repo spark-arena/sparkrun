@@ -18,7 +18,7 @@ from sparkrun.core.bootstrap import EXT_BENCHMARKING_FRAMEWORKS
 
 if TYPE_CHECKING:
     from sparkrun.core.recipe import Recipe
-    from sparkrun.core.launcher import LaunchResult, ServeReadiness
+    from sparkrun.core.launcher import LaunchResult
     from sparkrun.benchmarking.scheduler import BenchTask
 
 logger = logging.getLogger(__name__)
@@ -378,13 +378,6 @@ class BenchmarkResult:
     resumed: bool = False
     measured_at: Optional[str] = None
 
-    # Launch-stage timing.  ``readiness`` carries the two-stage
-    # containers-running → serving wait; the span timeline comes off
-    # ``launch_result``.  Both are absent under ``--skip-run`` (nothing was
-    # launched) and are omitted from the metadata rather than zeroed — a
-    # recorded 0.0s would read as an instantaneous launch.
-    readiness: Optional["ServeReadiness"] = None
-
     @property
     def output_csv(self):
         return self.outputs.get("csv") if self.outputs else None
@@ -414,32 +407,6 @@ class BenchmarkResult:
         if self.outputs is None:
             self.outputs = {}
         self.outputs["yaml"] = value
-
-    def _launch_timing_meta(self) -> dict[str, Any]:
-        """Launch-stage timing for ``metadata["timing"]``.
-
-        Returns ``{}`` when nothing was launched in this invocation, which
-        keeps the key absent rather than present-and-zero.  A **resumed**
-        run is the case that matters: its numbers come from a launch it did
-        not perform (and under ``--skip-run`` from one it never saw), so
-        emitting them beside freshly-measured throughput would misattribute
-        a stale launch to this result — the same confusion ``measured_at``
-        exists to prevent for the benchmark numbers themselves (issue #267).
-        """
-        if self.resumed:
-            return {}
-
-        meta: dict[str, Any] = {}
-        if self.readiness is not None:
-            meta["serve_ready"] = {
-                "port_open_s": round(self.readiness.port_wait_s, 2),
-                "health_ok_s": round(self.readiness.health_wait_s, 2),
-                "total_s": round(self.readiness.total_wait_s, 2),
-            }
-        timeline = getattr(self.launch_result, "timeline", None)
-        if timeline is not None:
-            meta["launch"] = timeline.export()
-        return meta
 
     def generate_metadata(self, *, redact_hosts: bool = True):
         """Build the provenance mapping for this result.
@@ -537,7 +504,6 @@ class BenchmarkResult:
                 "start": self.start_time.isoformat(),
                 "end": self.end_time.isoformat(),
                 "duration": (self.end_time - self.start_time).total_seconds(),
-                **self._launch_timing_meta(),
             },
             "cluster": _build_cluster_meta(recipe, overrides, cluster_id, host_list, redact=redact_hosts),
             "benchmark": {

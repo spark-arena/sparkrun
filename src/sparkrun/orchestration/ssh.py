@@ -19,69 +19,12 @@ import os
 import subprocess
 import time
 from dataclasses import dataclass, replace
-from pathlib import Path
 
 from sparkrun.utils.shell import quote, quote_list, args_list_to_shell_str, stdin_bytes
 
 logger = logging.getLogger(__name__)
 
-# The three attribute classes rsync cannot apply to a *destination directory it
-# does not own* — the common case for a cache on NFS (root_squash, a differing
-# uid mapping, or a directory a container created as root).  rsync transfers the
-# data fine, then the generator EPERMs applying attributes to the destination
-# root and exits 23, so a complete transfer is reported as a failure:
-#
-#     rsync: [generator] chgrp "/cache/." failed: Operation not permitted (1)
-#     rsync error: some files/attrs were not transferred (code 23)
-#
-# ``-a`` implies ``-rlptgoD``; of those only ``-p``, ``-g`` and directory times
-# can fail this way (``-o`` is already a no-op for a non-root user).  Dropping
-# them costs nothing we rely on: rsync still creates *new* files with the
-# source's mode masked by the receiving umask, so executability survives (which
-# matters for the hook/mod paths that stage scripts) — ``--no-perms`` only
-# declines to chmod files that already exist.  File times (``-t``) are kept,
-# since rsync writes via temp-file+rename and therefore owns what it creates.
-#
-# This is the *default* relaxation, applied everywhere.  ``preserve_perms:
-# false`` remains the harder one (it also drops ``-t``) but is no longer needed
-# for the ordinary shared-cache case.
-NFS_SAFE_ATTR_OPTS = ["--no-perms", "--no-group", "--omit-dir-times"]
-
-_DEFAULT_RSYNC_OPTIONS = ["-az", "--mkpath", "--partial", "--links", *NFS_SAFE_ATTR_OPTS]
-
-# What the automatic retry falls back to: everything in NFS_SAFE_ATTR_OPTS plus
-# file times.  Times are *not* in the default set because rsync writes via
-# temp-file+rename and so owns what it creates — but a destination file that
-# already exists and belongs to someone else still refuses ``utime``, and no
-# amount of anticipation covers every filesystem.  Equivalent to what
-# ``preserve_perms: false`` asks for, reached automatically instead of by
-# configuration.
-RSYNC_RELAXED_ATTR_OPTS = [*NFS_SAFE_ATTR_OPTS, "--no-times"]
-
-# Env kill-switch for the relaxed retry (see :func:`relax_rsync_options`).
-NO_RSYNC_RETRY_ENV = "SPARKRUN_NO_RSYNC_RETRY"
-
-
-def rsync_retry_disabled() -> bool:
-    """True when the relaxed rsync retry is switched off via the environment."""
-    return os.environ.get(NO_RSYNC_RETRY_ENV, "").strip().lower() not in ("", "0", "false", "no")
-
-
-def relax_rsync_options(rsync_options: list[str]) -> list[str]:
-    """Append :data:`RSYNC_RELAXED_ATTR_OPTS`, or return ``None``-equivalent input.
-
-    Appending rather than rewriting is deliberate: rsync resolves repeated
-    attribute flags last-wins, so ``-a … --no-times`` disables times without
-    parsing what the caller asked for — which means this works for any option
-    set, including ones added later that this function has never seen.
-    """
-    return [*rsync_options, *(o for o in RSYNC_RELAXED_ATTR_OPTS if o not in rsync_options)]
-
-
-def rsync_options_are_relaxed(rsync_options: list[str]) -> bool:
-    """True when *rsync_options* already carries every relaxation the retry adds."""
-    return all(o in rsync_options for o in RSYNC_RELAXED_ATTR_OPTS)
-
+_DEFAULT_RSYNC_OPTIONS = ["-az", "--mkpath", "--partial", "--links"]
 
 # Default cap on concurrent SSH/rsync fan-out workers.  At 32+ hosts an
 # uncapped ``max_workers=len(hosts)`` spawns one SSH (or ``docker save|ssh
@@ -261,52 +204,6 @@ def run_local_script(script: str, dry_run: bool = False, timeout: int | None = N
     )
 
 
-def run_local_script_streaming(
-    script: str,
-    dry_run: bool = False,
-    timeout: int | None = None,
-    quiet: bool = False,
-) -> RemoteResult:
-    """Execute a local script with the same output contract as remote streaming.
-
-    The local peer of :func:`run_remote_script_streaming`, so a caller that
-    dispatches local-or-remote (``run_script_on_host_streaming``) gets one
-    behaviour either way.  Non-``quiet`` inherits the terminal, which is what
-    keeps a long build visibly alive; ``quiet`` keeps the captured result for
-    callers that render their own progress.
-    """
-    if quiet:
-        return run_local_script(script, dry_run=dry_run, timeout=timeout)
-    if dry_run:
-        logger.info("[dry-run] Would execute locally (streaming; %d bytes)", len(script))
-        return RemoteResult(host="localhost", returncode=0, stdout="[dry-run]", stderr="")
-
-    started = time.monotonic()
-    try:
-        proc = subprocess.run(
-            ["bash", "-s"],
-            input=stdin_bytes(script),
-            text=False,
-            timeout=timeout,
-            stdout=None,
-            stderr=None,
-        )
-        elapsed = time.monotonic() - started
-        if proc.returncode == 0:
-            logger.debug("  Local script (streaming) <- OK (%.1fs)", elapsed)
-        else:
-            logger.warning("  Local script (streaming) <- FAILED rc=%d (%.1fs)", proc.returncode, elapsed)
-        return RemoteResult(host="localhost", returncode=proc.returncode, stdout="", stderr="")
-    except subprocess.TimeoutExpired:
-        elapsed = time.monotonic() - started
-        logger.error("  Local script (streaming) <- TIMEOUT after %.0fs", elapsed)
-        return RemoteResult(host="localhost", returncode=124, stdout="", stderr="Execution timed out")
-    except Exception as error:
-        elapsed = time.monotonic() - started
-        logger.error("  Local script (streaming) <- ERROR (%.1fs): %s", elapsed, error)
-        return RemoteResult(host="localhost", returncode=-1, stdout="", stderr=str(error))
-
-
 def _decode(raw: bytes | str | None) -> str:
     """Normalize subprocess output to text.
 
@@ -322,18 +219,8 @@ def _decode(raw: bytes | str | None) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
-# Truncation budget for a failed command's captured output.  The default suits
-# a probe that fails on one line.  rsync does not: it reports one line *per
-# problem file* and its most diagnostic line is rarely the first, so 200 chars
-# routinely cut a message mid-path — leaving ``mkdir ".../sglang/c`` with the
-# reason it failed truncated away, which is precisely the byte that decides
-# whether a transfer completed.
-_DEFAULT_FAILURE_DETAIL_LIMIT = 200
-RSYNC_FAILURE_DETAIL_LIMIT = 2000
-
-
-def _failure_detail(result: "RemoteResult", limit: int = _DEFAULT_FAILURE_DETAIL_LIMIT) -> str:
-    """Best available explanation for a failed remote script.
+def _failure_detail(result: "RemoteResult", limit: int = 200) -> str:
+    """Best available one-line explanation for a failed remote script.
 
     Falls back from stderr to stdout, then to an explicit ``(no output)``.
     Logging stderr alone produced a bare ``FAILED rc=1 (0.3s):`` with nothing
@@ -342,16 +229,11 @@ def _failure_detail(result: "RemoteResult", limit: int = _DEFAULT_FAILURE_DETAIL
     diagnostics. An empty reason reads as a tool malfunction rather than as a
     remote command that failed for a stated reason.  Mirrors the fallback
     :func:`sparkrun.orchestration.hooks._run_exec_command` already applies.
-
-    Truncation is marked when it happens, so a reader can tell a complete
-    message from a clipped one rather than guessing at the tail.
     """
     for stream in (result.stderr, result.stdout):
         text = (stream or "").strip()
         if text:
-            if len(text) > limit:
-                return text[:limit] + "… (truncated)"
-            return text
+            return text[:limit]
     return "(no output)"
 
 
@@ -363,7 +245,6 @@ def _run_subprocess(
     input_data: str | None = None,
     shell: bool = False,
     quiet: bool = False,
-    detail_limit: int = _DEFAULT_FAILURE_DETAIL_LIMIT,
 ) -> RemoteResult:
     """Run a subprocess and return a RemoteResult with standard error handling.
 
@@ -379,9 +260,6 @@ def _run_subprocess(
         shell: Whether to use shell=True.
         quiet: If True, downgrade failure logging from WARNING to DEBUG.
             Used for expected-failure probes (e.g. NOPASSWD sudo checks).
-        detail_limit: Truncation budget for the logged failure output.
-            Commands whose diagnostics run to many lines (rsync) pass a
-            larger budget — see :data:`RSYNC_FAILURE_DETAIL_LIMIT`.
 
     Returns:
         RemoteResult with returncode, stdout, stderr.
@@ -416,7 +294,7 @@ def _run_subprocess(
                 host,
                 proc.returncode,
                 elapsed,
-                _failure_detail(result, limit=detail_limit),
+                _failure_detail(result),
             )
         return result
     except subprocess.TimeoutExpired:
@@ -605,11 +483,8 @@ def run_remote_script_streaming(
             logger.debug("  SSH script (streaming) <- %s OK (%.1fs)", host, elapsed)
         else:
             logger.warning("  SSH script (streaming) <- %s FAILED rc=%d (%.1fs)", host, proc.returncode, elapsed)
-        # Decoded, not used raw: the streaming path runs in binary mode like
-        # every other subprocess here, so `quiet` callers logging or matching on
-        # these would otherwise be handed bytes.
-        stdout = _decode(getattr(proc, "stdout", ""))
-        stderr = _decode(getattr(proc, "stderr", ""))
+        stdout = getattr(proc, "stdout", "") or ""
+        stderr = getattr(proc, "stderr", "") or ""
         if quiet and stdout:
             logger.debug("Captured stdout on %s:\n%s", host, stdout[-2000:])
         if quiet and stderr:
@@ -1241,86 +1116,10 @@ def _run_rsync_impl(
     logger.info("  Rsync %s %s%s", direction, host, f" [timeout={timeout}s]" if timeout else "")
     logger.debug("Rsync command: %s", " ".join(cmd))
 
-    result = _run_subprocess(cmd, host, "Rsync", timeout=timeout, detail_limit=RSYNC_FAILURE_DETAIL_LIMIT)
+    result = _run_subprocess(cmd, host, "Rsync", timeout=timeout)
     if result.success:
         logger.info("  Rsync %s %s OK", direction, host)
-        return result
-
-    # One relaxed retry when the failure was an attribute the destination
-    # refused.  NFS_SAFE_ATTR_OPTS covers the attributes we can anticipate;
-    # this covers the ones we cannot, so an unfamiliar filesystem costs a
-    # second pass rather than a failed launch and a config change.  Cheap:
-    # rsync is incremental, so the retry re-walks the tree but re-sends
-    # almost nothing.
-    #
-    # Deferred import — transfer.py imports RemoteResult from this module, so
-    # a module-level import here would be circular.
-    from sparkrun.orchestration.transfer import rsync_attribute_errors_only, rsync_has_attribute_permission_error
-
-    if rsync_attribute_errors_only(result):
-        # Every byte arrived and only attributes were refused.  The caller's
-        # mapping boundary already accepts this, so a retry would re-walk the
-        # whole tree to reach a state we are in — and on a model cache that
-        # walk is the expensive part, not the bytes.
-        return result
-    if rsync_options_are_relaxed(rsync_options) or rsync_retry_disabled():
-        return result
-    if not rsync_has_attribute_permission_error(result):
-        # A destination we cannot write to at all is not fixed by asking for
-        # fewer attributes; retrying would double the wait and change nothing.
-        return result
-
-    retry_options = relax_rsync_options(rsync_options)
-    logger.warning(
-        "  Rsync %s %s could not set file attributes on the destination; retrying without owner/group/permission/time preservation.",
-        direction,
-        host,
-    )
-    retry_cmd = ["rsync"] + retry_options + ["-e", f"ssh {ssh_opts}", source, dest]
-    logger.debug("Rsync retry command: %s", " ".join(retry_cmd))
-
-    retry = _run_subprocess(retry_cmd, host, "Rsync", timeout=timeout, detail_limit=RSYNC_FAILURE_DETAIL_LIMIT)
-    if retry.success:
-        logger.info("  Rsync %s %s OK (after relaxing attribute preservation)", direction, host)
-        return retry
-
-    # The retry is strictly more permissive, so its failure is the more
-    # informative one — reporting the first would point at attributes that are
-    # no longer being requested.
-    return retry
-
-
-def guard_rsync_delete(rsync_options: list[str], local_source: str) -> list[str]:
-    """Strip ``--delete*`` when *local_source* is missing or empty.
-
-    ``--delete`` makes the destination match the source, so an empty or absent
-    source turns a sync into "erase the destination".  Nothing in sparkrun ever
-    means that: an empty source directory is a bug, a race, or a resource that
-    was never staged — never an instruction to clear the far side.  The cost of
-    being wrong is asymmetric and unrecoverable (the destination is a user's
-    model or tuning cache), while the cost of the guard is a stale file that
-    the next non-empty sync prunes anyway.
-
-    Only meaningful for the push direction, where the source is local and can
-    be inspected; :func:`run_rsync_from_remote` cannot use it.
-    """
-    if not any(o.startswith("--delete") for o in rsync_options):
-        return rsync_options
-
-    src = Path(local_source)
-    try:
-        populated = src.is_dir() and any(src.iterdir())
-    except OSError:
-        # Unreadable source: we cannot show it is safe, so we do not assume it.
-        populated = False
-    if populated:
-        return rsync_options
-
-    logger.warning(
-        "  Refusing to rsync --delete from an empty or unreadable source (%s) — dropping --delete so the destination is not cleared.",
-        local_source,
-    )
-    return [o for o in rsync_options if not o.startswith("--delete")]
+    return result
 
 
 def run_rsync(
@@ -1339,13 +1138,9 @@ def run_rsync(
 
     Runs ``rsync {rsync_options} -e "ssh {opts}" source user@host:dest``.
     Default *rsync_options* are ``["-az", "--mkpath", "--partial", "--links"]``
-    plus :data:`NFS_SAFE_ATTR_OPTS`, which create the destination path and
-    preserve symlinks (important for HuggingFace cache layout).
-
-    Any ``--delete`` is gated by :func:`guard_rsync_delete`.
+    which create the destination path and preserve symlinks (important for
+    HuggingFace cache layout).
     """
-    if rsync_options is not None:
-        rsync_options = guard_rsync_delete(rsync_options, source_path)
     src = source_path.rstrip("/") + "/"
     target = f"{ssh_user}@{host}:{dest_path}" if ssh_user else f"{host}:{dest_path}"
     return _run_rsync_impl(

@@ -63,11 +63,6 @@ def load_script_resource(name: str) -> str:
     This is a convenience wrapper around :func:`load_resource` that hard-codes
     the *package* argument to ``"sparkrun.scripts"``.
 
-    Returns the script **verbatim**: ``# sparkrun:include`` directives are not
-    expanded, so the result may call helpers it does not carry.  Use
-    :func:`sparkrun.scripts.read_script` for anything that will be executed;
-    this loader is for inspecting the file as authored.
-
     Args:
         name: Script filename (e.g. ``"ip_detect.sh"``).
 

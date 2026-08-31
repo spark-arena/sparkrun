@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sparkrun.utils.prometheus import extract_label, parse_prometheus_text
+from sparkrun.core.prometheus import extract_label, parse_prometheus_text
 from sparkrun.core.monitoring import prometheus_to_sample
 
 

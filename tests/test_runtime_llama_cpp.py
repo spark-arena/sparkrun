@@ -270,7 +270,7 @@ def test_llama_cpp_validate_recipe_no_model():
 
     issues = runtime.validate_recipe(recipe)
     assert len(issues) == 1
-    assert "model is required" in str(issues[0])
+    assert "model is required" in issues[0]
 
 
 def test_llama_cpp_build_rpc_head_command():
@@ -682,14 +682,14 @@ class TestLlamaCppValidateRecipe:
         recipe = self._make_recipe(defaults={"tensor_parallel": 2, "pipeline_parallel": 2})
         runtime = LlamaCppRuntime()
         issues = runtime.validate_recipe(recipe)
-        assert any("mutually" in str(issue) and "llama-cpp" in str(issue) for issue in issues)
+        assert any("mutually" in issue and "llama-cpp" in issue for issue in issues)
 
     def test_dp_gt_1_flagged(self):
         """data_parallel > 1 → flagged (llama.cpp has no native DP coordination)."""
         recipe = self._make_recipe(defaults={"data_parallel": 2})
         runtime = LlamaCppRuntime()
         issues = runtime.validate_recipe(recipe)
-        assert any("data_parallel" in str(issue) and "llama-cpp" in str(issue) for issue in issues)
+        assert any("data_parallel" in issue and "llama-cpp" in issue for issue in issues)
 
     def test_dp_eq_1_passes(self):
         """data_parallel=1 is a no-op → not flagged."""

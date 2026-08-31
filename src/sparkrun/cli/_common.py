@@ -6,7 +6,6 @@ import functools
 import logging
 import os
 import sys
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import click
@@ -534,59 +533,15 @@ def _load_recipe(config, recipe_name, resolve=True, retry_after_update=False):
     return recipe, recipe_path, registry_mgr
 
 
-@dataclass(frozen=True)
-class HostContext:
-    """Resolved hosts, the cluster manager, and the cluster they came from.
+def _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v=None, sctx: SparkrunContext | None = None):
+    """Resolve hosts from CLI args; exit if none are found.
 
-    :attr:`cluster_name` is the *effective* cluster: the one named with
-    ``--cluster`` or, when no hosts were supplied explicitly, the default
-    cluster (``sparkrun cluster set-default``) that
-    :func:`sparkrun.core.hosts.resolve_hosts` took the host list from.
+    Also applies the cluster's SSH user to *config* when a cluster is
+    resolved and has a user configured.  This replaces the previous
+    separate ``_apply_cluster_user()`` call.
 
-    **A command that forwards a resolved host list to an ``api.*`` entry
-    point must pass this name, not the raw ``--cluster`` option.**
-    ``api._resolve.resolve_cluster`` short-circuits to an *anonymous*
-    ``ClusterDefinition`` as soon as an explicit host list is given without a
-    cluster, so ``cluster=None`` silently drops the default cluster's
-    executor pin, ``executor_config`` (incl. ``pid_dir``), ``hosts_hardware``
-    and transport — the sweep then runs against the wrong substrate with no
-    error.
-    """
-
-    host_list: list[str]
-    cluster_mgr: Any
-    cluster: ResolvedClusterConfig
-    source: str = "config"
-    """Which link of the host-resolution chain supplied :attr:`host_list` —
-    one of ``hosts`` / ``hosts-file`` / ``cluster`` / ``default-cluster`` /
-    ``config``.  Commands report it so a user can tell *what* they are looking
-    at when they named nothing."""
-
-    @property
-    def cluster_name(self) -> str | None:
-        """The effective cluster name, or ``None`` when hosts are unattached."""
-        return self.cluster.name or None
-
-    def describe(self) -> str:
-        """One-line "what am I looking at?" banner for command output."""
-        n = "%d host(s)" % len(self.host_list)
-        if self.source == "cluster":
-            return "Cluster: %s — %s" % (self.cluster_name, n)
-        if self.source == "default-cluster":
-            return "Cluster: %s (default) — %s" % (self.cluster_name, n)
-        if self.source == "hosts":
-            return "Hosts: %s (--hosts)" % n
-        if self.source == "hosts-file":
-            return "Hosts: %s (--hosts-file)" % n
-        return "Hosts: %s (config default_hosts)" % n
-
-
-def resolve_host_context(hosts, hosts_file, cluster_name, config, v=None, sctx: SparkrunContext | None = None) -> HostContext:
-    """Resolve hosts *and* the cluster they came from; exit if none are found.
-
-    The full form of :func:`_resolve_hosts_or_exit` — same resolution, but it
-    keeps the :class:`ResolvedClusterConfig` instead of discarding everything
-    but the SSH user.  See :class:`HostContext` for why that matters.
+    Returns:
+        Tuple of (host_list, cluster_mgr).
     """
     from sparkrun.core.hosts import resolve_hosts
 
@@ -601,39 +556,12 @@ def resolve_host_context(hosts, hosts_file, cluster_name, config, v=None, sctx: 
     if not host_list:
         click.echo("Error: No hosts specified. Use --hosts or configure defaults.", err=True)
         sys.exit(1)
-    # Resolve the cluster once: its name identifies what the user is looking
-    # at (including the default-cluster fallback), and its SSH user is applied
-    # to *config* so downstream SSH calls pick it up automatically.
-    cluster_cfg = resolve_cluster_config(cluster_name, hosts, hosts_file, cluster_mgr)
-    if cluster_cfg.user:
-        config.ssh_user = cluster_cfg.user
-
-    if hosts:
-        source = "hosts"
-    elif hosts_file:
-        source = "hosts-file"
-    elif cluster_name:
-        source = "cluster"
-    elif cluster_cfg.name:
-        source = "default-cluster"
-    else:
-        source = "config"
-    return HostContext(host_list=host_list, cluster_mgr=cluster_mgr, cluster=cluster_cfg, source=source)
-
-
-def _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v=None, sctx: SparkrunContext | None = None):
-    """Resolve hosts from CLI args; exit if none are found.
-
-    Also applies the cluster's SSH user to *config* when a cluster is
-    resolved and has a user configured.  This replaces the previous
-    separate ``_apply_cluster_user()`` call.
-
-    Returns:
-        Tuple of (host_list, cluster_mgr).  Commands that pass a cluster on
-        to the api layer want :func:`resolve_host_context` instead.
-    """
-    hctx = resolve_host_context(hosts, hosts_file, cluster_name, config, v, sctx=sctx)
-    return hctx.host_list, hctx.cluster_mgr
+    # Apply cluster-level SSH user (if defined) so downstream SSH calls
+    # automatically use it.
+    cluster_user = resolve_cluster_config(cluster_name, hosts, hosts_file, cluster_mgr).user
+    if cluster_user:
+        config.ssh_user = cluster_user
+    return host_list, cluster_mgr
 
 
 def with_host_context(func):
@@ -716,39 +644,6 @@ def _display_recipe_detail(recipe, show_vram=True, registry_name=None, cli_overr
     from sparkrun.utils.cli_formatters import display_recipe_detail
 
     display_recipe_detail(recipe, show_vram=show_vram, registry_name=registry_name, cli_overrides=cli_overrides, cache_dir=cache_dir)
-
-
-def report_launch_validation(recipe_ref: str, issues, failed: bool) -> None:
-    """Print launch-path validation findings, and say what they mean.
-
-    The launch peer of ``recipe validate``'s output, sharing its renderer so
-    the two cannot drift.  Two things it adds that a bare list of messages
-    could not:
-
-    * a **heading naming validation as the source**.  Amid a launch there is
-      no other clue — the findings arrive before anything has started, so
-      unlabelled they read as failures of whatever ran last.
-    * a **verdict**.  The same three findings can be fatal or advisory
-      depending on the threshold (see
-      :func:`sparkrun.core.validation.validate_for_launch`), and "did this
-      stop my launch?" is the one question the reader actually has.
-
-    On failure it points at ``recipe validate``, which is the only place the
-    withheld suggestions can be seen.  Everything goes to stderr, keeping
-    stdout free for the launch's own output.
-    """
-    from sparkrun.utils.cli_formatters import format_validation_report
-
-    if not issues:
-        return
-    click.echo(
-        format_validation_report(recipe_ref, issues, title="Recipe validation for '%s'" % recipe_ref),
-        err=True,
-    )
-    if failed:
-        click.echo("\nCannot launch: fix the above, or see `sparkrun recipe validate %s` for the full report." % recipe_ref, err=True)
-    else:
-        click.echo("\nNothing above blocks the launch. Continuing.", err=True)
 
 
 def _display_vram_estimate(
@@ -1535,29 +1430,20 @@ def resolve_hosts_with_metadata_fallback(
     target_label,
     v=None,
     sctx: SparkrunContext | None = None,
-) -> tuple[list[str], str | None]:
+) -> list[str]:
     """Resolve hosts from CLI args, job metadata, or defaults.
 
     Priority: CLI flags > metadata hosts > default cluster/config.
     Exits with error if no hosts can be resolved.
-
-    Returns:
-        ``(host_list, cluster_name)`` — the *effective* cluster the hosts
-        came from (see :class:`HostContext`), to forward to the ``api.*``
-        call, or ``None`` when the hosts came from the job's own metadata.
-        ``None`` there is deliberate and not a gap: it lets
-        ``api._resolve.resolve_cluster_for_job`` recover the cluster the
-        **job** recorded, which is a better answer than anything this
-        invocation could name (issue #277).
     """
     if hosts or hosts_file or cluster_name:
-        hctx = resolve_host_context(hosts, hosts_file, cluster_name, config, v, sctx=sctx)
-        return hctx.host_list, hctx.cluster_name
+        host_list, _ = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v, sctx=sctx)
+        return host_list
     if meta and meta.get("hosts"):
-        return list(meta["hosts"]), None
+        return meta["hosts"]
     try:
-        hctx = resolve_host_context(hosts, hosts_file, cluster_name, config, v, sctx=sctx)
-        return hctx.host_list, hctx.cluster_name
+        host_list, _ = _resolve_hosts_or_exit(hosts, hosts_file, cluster_name, config, v, sctx=sctx)
+        return host_list
     except SystemExit:
         click.echo(
             "Error: No job metadata for '%s' and no hosts specified.\n"

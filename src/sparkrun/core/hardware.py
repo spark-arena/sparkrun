@@ -104,15 +104,6 @@ class HostHardware:
         once the dict shape has stabilised across all callers.
     """
 
-    driver_versions: dict[str, str] = field(default_factory=dict)
-    """Detected host driver versions keyed by accelerator vendor.
-
-    Driver versions are software compatibility metadata, so they are
-    intentionally excluded from :attr:`fingerprint`.  They are persisted in
-    cluster hardware inventory when available and may also be refreshed by a
-    capability-specific live preflight.
-    """
-
     @property
     def total_gpus(self) -> int:
         """Total accelerator count across all ``accelerators`` entries."""
@@ -161,8 +152,6 @@ class HostHardware:
             d["fingerprint"] = self.fingerprint
         if self.notes:
             d["notes"] = self.notes
-        if self.driver_versions:
-            d["driver_versions"] = dict(sorted(self.driver_versions.items()))
         # ib_info is intentionally not serialised to YAML — it is ephemeral
         # probe data, not stored cluster metadata.
         return d
@@ -175,7 +164,6 @@ class HostHardware:
             accelerators=accels,
             fingerprint=data.get("fingerprint") or None,
             notes=str(data.get("notes", "")),
-            driver_versions={str(vendor): str(version) for vendor, version in (data.get("driver_versions") or {}).items()},
         )
 
 

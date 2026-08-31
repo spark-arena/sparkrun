@@ -135,15 +135,7 @@ def _teardown_docker_group(host_list, user, ssh_kwargs, sudo_fn, dry_run):
 
 
 def _teardown_cx7(host_list, manifest_phase, ssh_kwargs, sudo_fn, dry_run):
-    """Remove sparkrun's CX7 netplan config, reporting config it does not own.
-
-    Deleting our file does not tear down a host whose CX7 addresses are
-    persisted by another netplan file, a NetworkManager profile or a
-    ``.network`` unit. The script leaves those alone and reports them
-    (``FOREIGN:`` lines); surfacing that as ``[WARN]`` rather than ``[OK]`` is
-    what keeps the uninstall from claiming a teardown it did not perform.
-    """
-    from sparkrun.orchestration.networking import CX7_NETPLAN_FILE
+    """Remove CX7 netplan configuration."""
     from sparkrun.scripts import read_script
 
     script = read_script("cx7_unconfigure.sh")
@@ -151,20 +143,14 @@ def _teardown_cx7(host_list, manifest_phase, ssh_kwargs, sudo_fn, dry_run):
     results = {}
     for h in host_list:
         if dry_run:
-            click.echo("    [dry-run] %s: would remove %s" % (h, CX7_NETPLAN_FILE))
+            click.echo("    [dry-run] %s: would remove /etc/netplan/40-cx7.yaml" % h)
             continue
         r = sudo_fn(h, script)
         results[h] = r
-        if not r.success:
-            click.echo("    [FAIL] %s: %s" % (h, r.stderr.strip()[:100]))
-            continue
-        foreign = [ln.strip()[len("FOREIGN:") :].strip() for ln in (r.stdout or "").splitlines() if ln.strip().startswith("FOREIGN:")]
-        if foreign:
-            click.echo("    [WARN] %s: CX7 config sparkrun did not write was left in place" % h)
-            for line in foreign:
-                click.echo("           %s" % line)
-        else:
+        if r.success:
             click.echo("    [OK]   %s" % h)
+        else:
+            click.echo("    [FAIL] %s: %s" % (h, r.stderr.strip()[:100]))
 
     # Remove CX7 IPs from known_hosts on all hosts
     if manifest_phase and manifest_phase.extra.get("cx7_ips") and not dry_run:

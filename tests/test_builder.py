@@ -193,44 +193,6 @@ class TestEugrPrepareImage:
 
         assert result == "vllm-node"
 
-    @pytest.mark.parametrize(
-        "image",
-        [
-            # The reported case: the canonical Docker Hub spelling of the upstream
-            # vLLM image, which carries no registry host.
-            "vllm/vllm-openai:qwen38-flash-next",
-            # The `docker.io/` workaround users were told to apply must keep working.
-            "docker.io/vllm/vllm-openai:qwen38-flash-next",
-            "eugr-fork/spark-vllm:custom",
-        ],
-    )
-    def test_eugr_prepare_dockerhub_short_ref_is_pullable_not_substituted(self, eugr_builder_with_repo, image):
-        """A namespaced registry ref is pulled as-is, never replaced by our nightly.
-
-        Regression: `is_pullable` matched a hardcoded allowlist of registry *hosts*,
-        so `vllm/vllm-openai:tag` -- which has none -- was read as a missing local
-        image and silently swapped for `dgx-vllm-eugr-nightly:latest`, running
-        entirely different software than the recipe named.
-        """
-        builder, repo_dir = eugr_builder_with_repo
-        recipe = Recipe.from_dict(
-            {
-                "name": "test",
-                "model": "some/model",
-                "runtime": "eugr-vllm",
-                "container": image,
-            }
-        )
-        # Absent everywhere: a pullable ref must not need to be present already.
-        with mock.patch("sparkrun.containers.registry.image_exists_locally", return_value=False):
-            with mock.patch.object(builder, "ensure_repo") as mock_ensure:
-                with mock.patch("sparkrun.builders.eugr._run_build_capturing") as mock_build:
-                    result = builder.prepare_image(image, recipe, ["10.0.0.1"])
-
-        assert result == image
-        mock_build.assert_not_called()
-        mock_ensure.assert_not_called()
-
     def test_eugr_prepare_missing_image_without_use_wheels_substitutes_nightly(self, eugr_builder_with_repo):
         """Pull-first: a missing non-pullable eugr image without --use-wheels pulls our nightly.
 

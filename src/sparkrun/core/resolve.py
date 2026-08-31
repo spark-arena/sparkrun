@@ -75,17 +75,6 @@ def apply_recipe_overrides(
         overrides["max_model_len"] = max_model_len
     if image and recipe is not None:
         recipe.container = image
-        if recipe.containers:
-            # An explicit --image is a whole-launch override: anything subtler
-            # (override the fallback but keep the machine-specific images) would
-            # silently leave most nodes on the image the user just replaced.
-            logger.info(
-                "--image %s overrides the recipe's per-machine `containers:` block (%d entr%s); every node will run this image.",
-                image,
-                len(recipe.containers),
-                "y" if len(recipe.containers) == 1 else "ies",
-            )
-            recipe.containers = []
 
     for k, v in kwargs.items():
         if v is not None:

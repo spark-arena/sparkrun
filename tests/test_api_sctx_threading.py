@@ -187,7 +187,6 @@ def test_api_run_forwards_sctx_to_launch_inference():
                 "runtime_info": {},
                 "builder": None,
                 "backends": {},
-                "timeline": None,
             },
         )()
 
@@ -243,7 +242,6 @@ def test_api_run_builds_default_sctx_when_omitted():
                 "runtime_info": {},
                 "builder": None,
                 "backends": {},
-                "timeline": None,
             },
         )()
 

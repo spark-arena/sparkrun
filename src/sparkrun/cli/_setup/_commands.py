@@ -1154,7 +1154,6 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
     """
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.orchestration.networking import (
-        CX7_NETPLAN_FILE,
         CX7Topology,
         _group_interfaces_by_port,
         configure_cx7_host,
@@ -1525,7 +1524,7 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
             "cx7",
             subnets=subnet_strs,
             cx7_ips=cx7_ips,
-            netplan_file=CX7_NETPLAN_FILE,
+            netplan_file="/etc/netplan/40-cx7.yaml",
         )
 
     if failed:

@@ -1843,12 +1843,6 @@ class TestCLI:
                 "sparkrun.proxy.config.ProxyConfig.discover_interval",
                 new_callable=lambda: property(lambda s: 30),
             ),
-            # __init__ is stubbed out above, so there is no _data to read from:
-            # every property start() touches has to be patched here.
-            patch(
-                "sparkrun.proxy.config.ProxyConfig.discover_removal_grace_sweeps",
-                new_callable=lambda: property(lambda s: 2),
-            ),
         ):
             result = runner.invoke(proxy, ["start", "--dry-run"])
 

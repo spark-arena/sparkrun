@@ -4,15 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from sparkrun.core.config import resolve_hf_token as _get_hf_token
 from sparkrun.core.hosts import is_control_in_cluster
-from sparkrun.core.timing import timed as _timed
 from sparkrun.utils import is_local_host
-from sparkrun.utils.images import image_has_explicit_version, parse_image_ref
 
 from sparkrun.orchestration.transfer import TransferError
 
@@ -26,7 +23,6 @@ if TYPE_CHECKING:
     from sparkrun.orchestration.infiniband import IBDetectionResult
     from sparkrun.orchestration.transfer import TransferFailure
     from sparkrun.core.recipe import Recipe
-    from sparkrun.core.timing import Timeline
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +72,6 @@ def resolve_auto_transfer_mode(
     ssh_kwargs: dict | None = None,
     dry_run: bool = False,
     topology: str | None = None,
-    mgmt_interface: str | None = None,
 ) -> TransferModeResult:
     """Resolve ``"auto"`` transfer mode to a concrete strategy.
 
@@ -123,7 +118,7 @@ def resolve_auto_transfer_mode(
     # resolve definitively and cache results for distribute_resources().
     from sparkrun.orchestration.infiniband import detect_ib_for_hosts, validate_ib_connectivity
 
-    ib_result = detect_ib_for_hosts(host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run, topology=topology, mgmt_interface=mgmt_interface)
+    ib_result = detect_ib_for_hosts(host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run, topology=topology)
     ib_validated = validate_ib_connectivity(ib_result.ib_candidates, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
 
     if ib_validated:
@@ -436,19 +431,6 @@ def distribute_resources(
 
     prefs = prefs or ModelDistributionPrefs()
 
-    # An untagged reference is not an error -- docker resolves it to the mutable
-    # `:latest` and says so ("Using default tag: latest") -- but for an inference
-    # workload it is almost always a dropped tag, and the launch then serves
-    # whatever `latest` happens to point at.  Nothing else in the pipeline
-    # remarks on it, so the only signal was docker's own line buried in a pull.
-    if not image_has_explicit_version(image):
-        logger.warning(
-            "Container image '%s' has no tag or digest; docker will resolve it to '%s:latest', "
-            "which is mutable and may not be the build this recipe expects. Pin an explicit tag.",
-            image,
-            parse_image_ref(image).repository,
-        )
-
     # Common kwargs for pending-op lock files
     _pop_kw = dict(
         recipe=recipe_name,
@@ -735,20 +717,17 @@ def distribute_from_config(
     cache_dir: str,
     config: SparkrunConfig,
     dry_run: bool,
+    model_revision: str | None = None,
     recipe_name: str = "",
     transfer_mode: str = "auto",
     transfer_interface: str | None = None,
     local_cache_dir: str | None = None,
     pre_ib: TransferModeResult | None = None,
     topology: str | None = None,
-    mgmt_interface: str | None = None,
     prefs: ModelDistributionPrefs | None = None,
     skip_model: bool = False,
     skip_container: bool = False,
     after_container_sync: "Callable[[], None] | None" = None,
-    timeline: "Timeline | None" = None,
-    job_cluster_id: str = "",
-    cluster_name: str = "",
 ) -> tuple["ClusterCommEnv | None", dict[str, str], dict[str, str]]:
     """Distribute resources based on recipe ``distribution_config``.
 
@@ -764,6 +743,7 @@ def distribute_from_config(
         cache_dir: HuggingFace cache directory.
         config: SparkrunConfig instance.
         dry_run: Show what would be done without executing.
+        model_revision: Optional HuggingFace model revision to pin.
         recipe_name: Recipe name for pending-op lock display.
         transfer_mode: Distribution strategy.
         transfer_interface: Network interface for transfers.
@@ -776,13 +756,6 @@ def distribute_from_config(
             has not been paid for yet, so image-level preflights (see
             ``launcher._verify_image_command_passthrough``) run here rather than
             after Phase 3.  Raising from the hook aborts the launch.
-        timeline: Optional span collector.  Image and model transfers are the
-            longest and most variable part of a launch, so each entry is timed
-            separately with its mode and target count.
-        job_cluster_id: The launch's ``cluster_id``, recorded in the pending-op
-            locks so ``cluster status`` can name the job a distribution is
-            preparing.  The lock's own key stays the image/model/host hash.
-        cluster_name: Named cluster the launch targets, recorded likewise.
 
     Returns:
         Tuple of (comm_env, ib_ip_map, mgmt_ip_map, ib_iface_map).
@@ -813,19 +786,12 @@ def distribute_from_config(
     hf_token = _get_hf_token()
     if len(host_list) <= 1 and is_local_host(host_list[0]) and not _is_cross_user(ssh_kwargs):
         _do_local_ensure = dist_cfg.containers.enabled and not skip_container
-        _model_entries = list(dist_cfg.models.entries) if (dist_cfg.models.enabled and not skip_model) else []
-        _model_names = [e.name for e in _model_entries]
+        _model_names = [e.name for e in dist_cfg.models.entries] if (dist_cfg.models.enabled and not skip_model) else []
         lock_parts = [image] + _model_names
         _lock_key = hashlib.sha256("|".join(lock_parts).encode()).hexdigest()[:12]
         _lock_id = f"sparkrun_{_lock_key}"
         _pop_kw = dict(
-            recipe=recipe_name,
-            model=_model_names[0] if _model_names else "",
-            image=image,
-            hosts=host_list,
-            cache_dir=str(config.cache_dir),
-            job_cluster_id=job_cluster_id,
-            cluster=cluster_name,
+            recipe=recipe_name, model=_model_names[0] if _model_names else "", image=image, hosts=host_list, cache_dir=str(config.cache_dir)
         )
 
         if _do_local_ensure:
@@ -835,15 +801,12 @@ def distribute_from_config(
                     raise DistributionError(f"Failed to pull or locate image: {image}")
         if after_container_sync is not None:
             after_container_sync()
-        if _model_entries:
+        if _model_names:
             with pending_op(_lock_id, "model_download", **_pop_kw):
-                for entry in _model_entries:
-                    mn = entry.name
+                for mn in _model_names:
                     logger.info("Ensuring model %s is available locally...", mn)
-                    # Per-entry revision, as on the cluster path below.
-                    entry_revision = getattr(entry, "revision", None)
                     if (
-                        download_model(mn, cache_dir=local_cache_dir or cache_dir, token=hf_token, revision=entry_revision, dry_run=dry_run)
+                        download_model(mn, cache_dir=local_cache_dir or cache_dir, token=hf_token, revision=model_revision, dry_run=dry_run)
                         != 0
                     ):
                         raise DistributionError(f"Failed to download model: {mn}")
@@ -855,7 +818,7 @@ def distribute_from_config(
         _ib_validated = pre_ib.ib_validated
         _auto_delegated = pre_ib.auto_delegated
     else:
-        ib_result = detect_ib_for_hosts(host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run, topology=topology, mgmt_interface=mgmt_interface)
+        ib_result = detect_ib_for_hosts(host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run, topology=topology)
         _ib_validated = None
         if transfer_mode in ("auto", "local"):
             _ib_validated = validate_ib_connectivity(ib_result.ib_candidates, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
@@ -899,54 +862,32 @@ def distribute_from_config(
     effective_local_cache = local_cache_dir or cache_dir
     _lock_key = hashlib.sha256(f"{image}|{','.join(host_list)}".encode()).hexdigest()[:12]
     _lock_id = f"sparkrun_{_lock_key}"
-    _pop_kw = dict(
-        recipe=recipe_name,
-        model=image,
-        image=image,
-        hosts=host_list,
-        cache_dir=str(config.cache_dir),
-        job_cluster_id=job_cluster_id,
-        cluster=cluster_name,
-    )
+    _pop_kw = dict(recipe=recipe_name, model=image, image=image, hosts=host_list, cache_dir=str(config.cache_dir))
 
     # Distribute container images (skipped entirely when skip_container — e.g.
     # a container-less executor like `local` that has no image to distribute).
     if dist_cfg.containers.enabled and not skip_container:
-        image_plan: list[tuple[str, list[str]]] = []
         for entry in dist_cfg.containers.entries:
             if not isinstance(entry, DistributionContainerEntry):
                 continue
             entry_name = entry.name or image
             targets = _resolve_targets(entry.target if entry.target else [-1], host_list)
-            if targets:
-                image_plan.append((entry_name, targets))
-
-        # More than one distinct image means the nodes are running *different*
-        # images, which rules out delegated's head-pull-and-fan-out (see
-        # _distribute_single_image).
-        _heterogeneous = len({name for name, _ in image_plan}) > 1
-
-        if image_plan:
-            with _timed(
-                timeline,
-                "launch.distribute.image",
-                image=",".join(name for name, _ in image_plan),
-                mode=transfer_mode,
-                targets=sum(len(targets) for _, targets in image_plan),
-            ):
-                with pending_op(_lock_id, "image_distribute", **_pop_kw):
-                    img_failed = _distribute_image_plan(
-                        image_plan,
-                        host_list,
-                        transfer_mode,
-                        transfer_hosts,
-                        worker_transfer_hosts,
-                        ssh_kwargs,
-                        dry_run,
-                        _auto_delegated,
-                        force_pull=_force_pull,
-                        heterogeneous=_heterogeneous,
-                    )
+            if not targets:
+                continue
+            logger.log(_PROGRESS_LEVEL, "  Distributing image %s to %d host(s)", entry_name, len(targets))
+            with pending_op(_lock_id, "image_distribute", **_pop_kw):
+                img_failed = _distribute_single_image(
+                    entry_name,
+                    targets,
+                    host_list,
+                    transfer_mode,
+                    transfer_hosts,
+                    worker_transfer_hosts,
+                    ssh_kwargs,
+                    dry_run,
+                    _auto_delegated,
+                    force_pull=_force_pull,
+                )
             if img_failed:
                 raise DistributionError("Image distribution failed on: %s" % ", ".join(img_failed))
 
@@ -966,30 +907,25 @@ def distribute_from_config(
             targets = _resolve_targets(entry.target if entry.target else [-1], host_list)
             if not targets:
                 continue
-            # Per-entry and authoritative: the recipe's top-level model_revision
-            # is already stamped on the served model's entry, and a draft model
-            # added by runtime.prepare() is a different repo whose SHAs are its
-            # own (see DistributionModelEntry).
-            entry_revision = entry.revision
+            entry_revision = entry.revision or model_revision
             logger.log(_PROGRESS_LEVEL, "  Distributing model %s to %d host(s)", entry.name, len(targets))
-            with _timed(timeline, "launch.distribute.model", model=entry.name, mode=transfer_mode, targets=len(targets)):
-                with pending_op(_lock_id, "model_download", **_pop_kw):
-                    mdl_failed = _distribute_single_model(
-                        entry.name,
-                        targets,
-                        host_list,
-                        cache_dir,
-                        effective_local_cache,
-                        transfer_mode,
-                        transfer_hosts,
-                        worker_transfer_hosts,
-                        ssh_kwargs,
-                        entry_revision,
-                        hf_token,
-                        dry_run,
-                        _auto_delegated,
-                        prefs=prefs,
-                    )
+            with pending_op(_lock_id, "model_download", **_pop_kw):
+                mdl_failed = _distribute_single_model(
+                    entry.name,
+                    targets,
+                    host_list,
+                    cache_dir,
+                    effective_local_cache,
+                    transfer_mode,
+                    transfer_hosts,
+                    worker_transfer_hosts,
+                    ssh_kwargs,
+                    entry_revision,
+                    hf_token,
+                    dry_run,
+                    _auto_delegated,
+                    prefs=prefs,
+                )
             if mdl_failed:
                 from sparkrun.orchestration.transfer import present_and_raise_transfer_failure
 
@@ -1038,78 +974,6 @@ def _subset_transfer_hosts(
     return [t for h, t in zip(host_subset_source, transfer_hosts) if h in target_set]
 
 
-def _distribute_image_plan(
-    image_plan: list[tuple[str, list[str]]],
-    host_list: list[str],
-    transfer_mode: str,
-    transfer_hosts: list[str] | None,
-    worker_transfer_hosts: list[str] | None,
-    ssh_kwargs: dict,
-    dry_run: bool,
-    auto_delegated: bool,
-    force_pull: bool = False,
-    heterogeneous: bool = False,
-) -> list[str]:
-    """Distribute every ``(image, targets)`` pair, overlapping across images.
-
-    A recipe with N distinct images used to pay N serialized fan-outs; each
-    image's transfer is independent of the others, so they run concurrently.
-
-    Grouping is **by image, executed in parallel across images** rather than by
-    (image, host) pair, because each per-image call already fans out over its
-    own targets under ``resolve_parallel_cap``.  A single image is dispatched
-    inline so the overwhelmingly common case keeps its exact previous call
-    shape and log ordering.
-
-    Returns the union of failed hosts across all images.
-    """
-    from sparkrun.core.progress import PROGRESS as _PROGRESS
-
-    def _one(name: str, targets: list[str]) -> list[str]:
-        logger.log(_PROGRESS, "  Distributing image %s to %d host(s)", name, len(targets))
-        return _distribute_single_image(
-            name,
-            targets,
-            host_list,
-            transfer_mode,
-            transfer_hosts,
-            worker_transfer_hosts,
-            ssh_kwargs,
-            dry_run,
-            auto_delegated,
-            force_pull=force_pull,
-            heterogeneous=heterogeneous,
-        )
-
-    if len(image_plan) == 1:
-        name, targets = image_plan[0]
-        return _one(name, targets)
-
-    from sparkrun.orchestration.ssh import resolve_parallel_cap
-
-    failed: list[str] = []
-    with ThreadPoolExecutor(max_workers=resolve_parallel_cap(len(image_plan))) as pool:
-        futures = {pool.submit(_one, name, targets): name for name, targets in image_plan}
-        for future in as_completed(futures):
-            name = futures[future]
-            try:
-                failed.extend(future.result())
-            except Exception:
-                logger.error("Image distribution raised for '%s'", name, exc_info=True)
-                # Every target of this image is unusable; attribute them all so
-                # the caller's error names hosts rather than dying on an empty
-                # failure list that reads as success.
-                failed.extend(t for n, ts in image_plan if n == name for t in ts)
-
-    # Preserve host_list order and de-duplicate: a host can appear under more
-    # than one image (multi-image-per-node recipes), and the caller renders this
-    # straight into an error message.
-    failed_set = set(failed)
-    ordered = [h for h in host_list if h in failed_set]
-    ordered.extend(h for h in dict.fromkeys(failed) if h not in host_list)
-    return ordered
-
-
 def _distribute_single_image(
     image: str,
     targets: list[str],
@@ -1121,50 +985,18 @@ def _distribute_single_image(
     dry_run: bool,
     auto_delegated: bool,
     force_pull: bool = False,
-    heterogeneous: bool = False,
 ) -> list[str]:
     """Distribute a single image to a subset of hosts.
 
     *force_pull* (``sparkrun run --rebuild``) is routed to whichever side
     actually pulls from the registry for the mode in play: the control machine
-    under ``local``/``push``, the head under ``delegated``, every node under
-    ``pull``.  It is deliberately *not* applied to a head→worker leg that
-    follows a push — the head has just received the fresh image over the wire,
-    and re-pulling there would both duplicate the transfer and defeat push mode,
-    which exists for heads that cannot reach the registry at all.
-
-    *heterogeneous* says this launch runs more than one distinct image.  It
-    redirects ``delegated`` to per-node ``pull``: delegated's head-pull-then-
-    ``docker save | ssh docker load`` fan-out would make the head pull images it
-    does not run and copy a machine-tuned image onto the wrong machine.
+    under ``local``/``push``, the head under ``delegated``.  It is deliberately
+    *not* applied to a head→worker leg that follows a push — the head has just
+    received the fresh image over the wire, and re-pulling there would both
+    duplicate the transfer and defeat push mode, which exists for heads that
+    cannot reach the registry at all.
     """
     from sparkrun.containers.distribute import distribute_image_from_local, distribute_image_from_head
-    from sparkrun.containers.sync import sync_image_to_hosts
-
-    if transfer_mode == "pull" or (transfer_mode == "delegated" and heterogeneous):
-        failed = sync_image_to_hosts(image, targets, dry_run=dry_run, force_pull=force_pull, **ssh_kwargs)
-        # Registry-unreachable fallback: the control machine may hold
-        # credentials or a route the nodes lack, so push it each node's own
-        # image.  Armed only when the mode was *inferred* (auto → delegated) —
-        # an explicitly-named mode is honored literally, the rule `delegated`
-        # already follows.
-        if failed and auto_delegated:
-            logger.info(
-                "Per-node pull of '%s' failed on %d host(s); falling back to push from the control machine",
-                image,
-                len(failed),
-            )
-            push_failed = distribute_image_from_local(
-                image, failed, transfer_hosts=None, dry_run=dry_run, force_pull=force_pull, **ssh_kwargs
-            )
-            if push_failed:
-                logger.error(
-                    "Image '%s' unavailable on %s: the node(s) could not pull it and the control machine could not supply it either.",
-                    image,
-                    ", ".join(push_failed),
-                )
-            failed = push_failed
-        return failed
 
     # Map transfer hosts to target subset.  transfer_hosts is positionally aligned with
     # full_hosts (one entry per host, value = IB IP or mgmt IP), so we filter by index
@@ -1237,7 +1069,7 @@ def _distribute_single_model(
     external control cache is not the shared one) but does honor
     *preserve_perms*.
     """
-    from sparkrun.models.distribute import distribute_model_from_local, distribute_model_from_head, distribute_model_per_node
+    from sparkrun.models.distribute import distribute_model_from_local, distribute_model_from_head
     from sparkrun.orchestration.transfer import TransferFailure
 
     prefs = prefs or ModelDistributionPrefs()
@@ -1246,38 +1078,6 @@ def _distribute_single_model(
     target_set = set(targets)
     t_hosts = _subset_transfer_hosts(full_hosts, transfer_hosts, target_set)
     w_hosts = _subset_transfer_hosts(full_hosts[1:], worker_transfer_hosts, target_set)
-
-    if transfer_mode == "pull":
-        # Every node downloads from HuggingFace itself, in parallel — the model
-        # analogue of a per-node image pull.  Costs N× egress and needs a token
-        # reachable on every node, which is why it is opt-in.
-        #
-        # A shared cache overrides it: with skip_fan_out set the workers already
-        # mount the head's copy, and N nodes writing one NFS path concurrently
-        # is waste at best and a corrupted snapshot at worst.
-        if prefs.skip_fan_out and len(targets) > 1:
-            logger.info("Shared model cache: downloading '%s' on the head only rather than per-node", model)
-            return distribute_model_from_head(
-                model,
-                targets,
-                cache_dir=cache_dir,
-                revision=revision,
-                hf_token=hf_token,
-                worker_transfer_hosts=w_hosts,
-                dry_run=dry_run,
-                preserve_perms=prefs.preserve_perms,
-                skip_fan_out=True,
-                **ssh_kwargs,
-            )
-        return distribute_model_per_node(
-            model,
-            targets,
-            cache_dir=cache_dir,
-            revision=revision,
-            hf_token=hf_token,
-            dry_run=dry_run,
-            **ssh_kwargs,
-        )
 
     if transfer_mode == "local":
         return distribute_model_from_local(

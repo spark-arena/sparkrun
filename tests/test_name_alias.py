@@ -32,11 +32,6 @@ def test_run_with_name_override(monkeypatch):
     mock_recipe.layout = None
     mock_recipe.post_exec = None
     mock_recipe.post_commands = None
-    # Recipe validation resolves ``builder``/``executor`` selectors and errors
-    # on one that doesn't exist; a bare MagicMock reads as a truthy unknown
-    # name for both. Empty means "not declared", which is this recipe's intent.
-    mock_recipe.builder = ""
-    mock_recipe.executor = ""
     mock_recipe.build_config_chain.return_value = {"port": 8000}
     monkeypatch.setattr("sparkrun.cli._run._load_recipe", lambda *args, **kwargs: (mock_recipe, "path", None))
 

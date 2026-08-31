@@ -82,19 +82,6 @@ def _get_tuning_dir(cache_subdir: str) -> Path:
     return DEFAULT_CACHE_DIR / cache_subdir
 
 
-def tuning_configs_present(tuning_dir: Path) -> bool:
-    """True when *tuning_dir* holds at least one tuning config.
-
-    The single predicate behind both "mount the tuning directory into the
-    container" and "make sure that directory exists on the hosts first".  They
-    must not diverge: the mount is decided from the **control node's** copy but
-    applied on every host, so a host where the path is missing gets it created
-    by the Docker daemon — and the daemon creates a missing bind-mount source
-    **root-owned**, which locks the SSH user out of the tree for good.
-    """
-    return tuning_dir.is_dir() and any(tuning_dir.rglob("*.json"))
-
-
 def _get_tuning_volumes(
     tuning_dir_fn: callable,
     container_path: str,
@@ -109,7 +96,7 @@ def _get_tuning_volumes(
         Dict mapping host dir to container dir, or ``None``.
     """
     tuning_dir = tuning_dir_fn()
-    if tuning_configs_present(tuning_dir):
+    if tuning_dir.is_dir() and any(tuning_dir.rglob("*.json")):
         return {str(tuning_dir): container_path}
     return None
 

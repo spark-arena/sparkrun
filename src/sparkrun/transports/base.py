@@ -1,15 +1,16 @@
 """Transport seam: how sparkrun reaches / prepares a cluster's hosts.
 
-A :class:`Transport` owns the *connectivity and host-session* concern: how a
-cluster is prepared and how exact-argv operations are subsequently executed on
-its hosts. For ordinary clusters preparation is empty and the executable
-session uses Sparkrun's shared SSH configuration.
+A :class:`Transport` owns the *connectivity* concern — everything that must
+happen before sparkrun's SSH machinery (``orchestration.ssh``) can talk to a
+cluster's hosts.  For ordinary clusters this is nothing: the hosts are already
+reachable via plain ``ssh``, so :class:`~sparkrun.transports.ssh.SshTransport`
+is a pure no-op and behavior is byte-identical to before transports existed.
 
 Provider-backed clusters (e.g. Thunder Compute) override :meth:`prepare` to
 materialize connection details — refresh ephemeral IP/port, provision SSH keys,
 and write a managed ``ssh_config`` alias — so that once ``prepare`` returns,
-every host in the cluster is a plain SSH host. A transport with another
-substrate may also override :meth:`open_host_session`.
+every host in the cluster is a plain SSH host and the rest of sparkrun runs
+unchanged.
 
 Transport (how you *reach* the host) is orthogonal to Executor
 (``orchestration.executors`` — how you *run the workload* on the host).  A
@@ -30,13 +31,12 @@ never imports ``transports`` (it stays the generic SSH/Docker leaf).
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, ClassVar
+from typing import ClassVar, TYPE_CHECKING
 
 from scitrera_app_framework import Plugin, Variables
 
 if TYPE_CHECKING:
     from sparkrun.core.cluster_manager import ClusterDefinition
-    from sparkrun.transports.session import HostSession
 
 logger = logging.getLogger(__name__)
 
@@ -106,18 +106,6 @@ class Transport(Plugin):
         privileged/expensive remote calls beyond read-only lookups.
         """
         return None
-
-    def open_host_session(self, cluster: "ClusterDefinition | None", *, ssh_kwargs: dict | None = None) -> "HostSession":
-        """Open an executable session through this prepared transport.
-
-        Provider transports may override this when their connection substrate
-        is not ordinary SSH. The default intentionally uses Sparkrun's shared
-        SSH configuration after :meth:`prepare` has made host aliases and keys
-        available.
-        """
-        from sparkrun.transports.session import SshHostSession
-
-        return SshHostSession(**(ssh_kwargs or {}))
 
     def cleanup_cluster(self, cluster: "ClusterDefinition", *, dry_run: bool = False) -> None:
         """Tear down transport-owned state for *cluster* on deletion.

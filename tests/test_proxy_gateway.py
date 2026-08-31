@@ -14,7 +14,6 @@ Covers three things:
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from unittest.mock import patch
 
@@ -238,28 +237,10 @@ class TestApiFacade:
         with patch("sparkrun.proxy.engine.ProxyEngine.get_state", return_value={"pid": 1, "gateway": "litellm"}):
             assert isinstance(_running_engine(), ProxyEngine)
 
-    def test_management_engine_degrades_for_an_unknown_recorded_gateway(self, caplog):
-        """A live process must not be left undescribable and unkillable.
-
-        This used to raise ``GatewayUnavailable``, which made ``proxy status``
-        traceback and ``proxy stop`` impossible for a proxy whose plugin had
-        been removed or whose flag was turned off after it started — the exact
-        outcome the ungated management paths exist to prevent. State reading and
-        SIGTERM are gateway-independent, so the base supervisor covers both;
-        anything implementation-specific still fails, naming the gateway.
-        """
+    def test_management_engine_rejects_an_unknown_recorded_gateway(self):
+        from sparkrun import api
         from sparkrun.api.proxy._ops import _running_engine
-        from sparkrun.proxy._supervisor import GatewaySupervisor
 
         with patch("sparkrun.proxy.engine.ProxyEngine.get_state", return_value={"pid": 1, "gateway": "ghost"}):
-            with caplog.at_level(logging.WARNING):
-                engine = _running_engine()
-
-        assert isinstance(engine, GatewaySupervisor)
-        assert engine.gateway_name == "ghost"
-        # Degrading is not the same as staying quiet about it.
-        assert "ghost" in caplog.text
-
-        with pytest.raises(NotImplementedError) as exc:
-            engine.list_models_via_api()
-        assert "ghost" in str(exc.value)
+            with pytest.raises(api.proxy.GatewayUnavailable):
+                _running_engine()

@@ -14,7 +14,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from sparkrun.models.dtypes import bytes_per_element, kv_bytes_per_element, normalize_dtype
-from sparkrun.models.hub import hub_metadata_call
 from sparkrun.models.kv import ArchInfo, KVSizing, arch_marker_names, extract_arch_fields, resolve_kv_strategy
 
 logger = logging.getLogger(__name__)
@@ -176,23 +175,8 @@ def fetch_model_config(
         revision: Optional revision (branch, tag, or commit hash).
         cache_dir: Optional HuggingFace cache directory override.
 
-    Returns the config dict or None on failure.  Advisory: runs under the shared
-    Hub metadata budget (:mod:`sparkrun.models.hub`), so it also returns ``None``
-    when the budget is already spent.
+    Returns the config dict or None on failure.
     """
-    return hub_metadata_call(
-        "config.json",
-        model_id,
-        revision,
-        lambda: _fetch_model_config(model_id, revision, cache_dir),
-    )
-
-
-def _fetch_model_config(
-    model_id: str,
-    revision: str | None,
-    cache_dir: str | None,
-) -> dict[str, Any] | None:
     try:
         from huggingface_hub import hf_hub_download
         from huggingface_hub.utils import disable_progress_bars, enable_progress_bars
@@ -239,26 +223,16 @@ def fetch_model_visibility(model_id: str, revision: str | None = None) -> str:
     says nothing about visibility — a user with a token resolves their own
     private repos perfectly well.
 
-    Every failure mode — offline, rate-limited, typo'd id, no such repo, or the
-    shared Hub metadata budget being spent — collapses to ``unknown``, so callers
-    must treat ``unknown`` as "not established" rather than "not public".  That
-    this fails closed is what lets it run under the budget at all: a skipped
-    lookup can only ever *withhold* the model name from telemetry.
+    Every failure mode — offline, rate-limited, typo'd id, no such repo —
+    collapses to ``unknown``, so callers must treat ``unknown`` as "not
+    established" rather than "not public".
     """
     key = (model_id, revision)
     memo = _VISIBILITY_MEMO.get(key)
     if memo is not None:
         return memo
 
-    verdict = hub_metadata_call("model visibility", model_id, revision, lambda: _fetch_model_visibility(model_id, revision))
-    if verdict is None:
-        verdict = MODEL_VISIBILITY_UNKNOWN
-
-    _VISIBILITY_MEMO[key] = verdict
-    return verdict
-
-
-def _fetch_model_visibility(model_id: str, revision: str | None) -> str | None:
+    verdict = MODEL_VISIBILITY_UNKNOWN
     try:
         from huggingface_hub import model_info as _model_info
 
@@ -269,11 +243,14 @@ def _fetch_model_visibility(model_id: str, revision: str | None) -> str | None:
         # `gated` is False, "auto", or "manual" — anything truthy means the
         # repo id is not freely readable and is treated as non-public.
         if bool(getattr(mi, "private", False)) or bool(getattr(mi, "gated", False)):
-            return MODEL_VISIBILITY_PRIVATE
-        return MODEL_VISIBILITY_PUBLIC
+            verdict = MODEL_VISIBILITY_PRIVATE
+        else:
+            verdict = MODEL_VISIBILITY_PUBLIC
     except Exception as e:
         logger.debug("Could not resolve HF visibility for %s: %s", model_id, e)
-        return None
+
+    _VISIBILITY_MEMO[key] = verdict
+    return verdict
 
 
 def fetch_safetensors_size(
@@ -301,25 +278,8 @@ def fetch_safetensors_size(
         cache_dir: Optional HuggingFace cache directory override.
 
     Returns:
-        Total size in bytes, or ``None`` if unavailable — including when the
-        shared Hub metadata budget is already spent.
-
-    All three attempts run behind one budget entry: they answer the same
-    question and only differ in which endpoint can answer it.
+        Total size in bytes, or ``None`` if unavailable.
     """
-    return hub_metadata_call(
-        "safetensors size",
-        model_id,
-        revision,
-        lambda: _fetch_safetensors_size(model_id, revision, cache_dir),
-    )
-
-
-def _fetch_safetensors_size(
-    model_id: str,
-    revision: str | None,
-    cache_dir: str | None,
-) -> int | None:
     try:
         from huggingface_hub import hf_hub_download
         from huggingface_hub.utils import disable_progress_bars, enable_progress_bars
@@ -467,18 +427,8 @@ def fetch_safetensors_params(
         revision: Optional revision (branch, tag, or commit hash).
 
     Returns:
-        Total parameter count, or ``None`` if unavailable — including when the
-        shared Hub metadata budget is already spent.
+        Total parameter count, or ``None`` if unavailable.
     """
-    return hub_metadata_call(
-        "safetensors params",
-        model_id,
-        revision,
-        lambda: _fetch_safetensors_params(model_id, revision),
-    )
-
-
-def _fetch_safetensors_params(model_id: str, revision: str | None) -> int | None:
     try:
         from huggingface_hub import model_info as _model_info
 

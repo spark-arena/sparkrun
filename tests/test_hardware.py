@@ -57,7 +57,6 @@ def test_host_hardware_round_trip():
         ],
         fingerprint="abc123",
         notes="laptop dev box",
-        driver_versions={"nvidia": "610.22.03"},
     )
     d = hw.to_dict()
     restored = HostHardware.from_dict(d)
@@ -70,7 +69,6 @@ def test_host_hardware_omits_empty_optional_fields():
     d = hw.to_dict()
     assert "fingerprint" not in d
     assert "notes" not in d
-    assert "driver_versions" not in d
 
 
 def test_host_hardware_total_gpus_sums_counts():

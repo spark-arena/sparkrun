@@ -231,7 +231,7 @@ def prometheus_to_sample(metrics: dict[str, float], hostname: str) -> MonitorSam
     Maps nv-monitor metric names to MonitorSample fields.
 
     Args:
-        metrics: Flat dict from :func:`~sparkrun.utils.prometheus.parse_prometheus_text`.
+        metrics: Flat dict from :func:`~sparkrun.core.prometheus.parse_prometheus_text`.
         hostname: Hostname to set on the sample.
 
     Returns:
@@ -239,7 +239,7 @@ def prometheus_to_sample(metrics: dict[str, float], hostname: str) -> MonitorSam
     """
     import time
 
-    from sparkrun.utils.prometheus import extract_label
+    from sparkrun.core.prometheus import extract_label
 
     def _get(key: str, default: str = "") -> str:
         """Get a metric value as a formatted string."""

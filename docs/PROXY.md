@@ -68,8 +68,6 @@ sparkrun proxy start --foreground             # run in foreground (blocking)
 sparkrun proxy start --master-key sk-mykey    # enable LiteLLM auth
 sparkrun proxy start --no-auto-discover       # disable periodic re-scanning
 sparkrun proxy start --discover-interval 60   # re-scan every 60s (default: 30)
-sparkrun proxy start --discover-removal-grace-sweeps 1  # remove on first miss (default: 2)
-sparkrun proxy start --gateway litellm        # pin the gateway implementation
 sparkrun proxy start --dry-run                # show what would be done
 ```
 
@@ -90,15 +88,6 @@ currently serving (read via the LiteLLM management API).
 
 ```bash
 sparkrun proxy status
-```
-
-### `sparkrun proxy sync`
-
-Reconciles the proxy's model list with the workloads actually running. Equivalent to the reconciliation an
-auto-discover sweep performs, on demand.
-
-```bash
-sparkrun proxy sync
 ```
 
 ### `sparkrun proxy models`
@@ -170,23 +159,14 @@ sparkrun proxy alias list
 When the proxy starts with auto-discover enabled (the default), a background process runs alongside the proxy:
 
 - Periodically calls `discover_endpoints` at the configured interval (default: 30 seconds)
-- Reconciles models **and** aliases in one gateway-neutral `api.proxy.sync` call — for a config-file gateway they
-  share a single file, so applying them separately would rewrite and restart the proxy twice per sweep
-- Applies the change only when the desired model set differs. *How* is the gateway's business: LiteLLM rewrites its
-  config and restarts; another implementation may update its control plane in place
-- Keeps a previously healthy endpoint through `discover_removal_grace_sweeps - 1` consecutive misses (default 2). One
-  timed-out health probe is not evidence a workload is gone, and evicting it costs a restart plus a window of 404s for
-  a model that is serving fine. Set it to `1` for the historical remove-on-first-miss behaviour
+- Reconciles models **and** aliases in one `apply_desired_state` call — they share a single config file, so applying
+  them separately would rewrite and restart the proxy twice per sweep
+- Rewrites the config and restarts the proxy only when the desired model set differs from what is on disk
 - Re-reads the proxy PID from the state file each sweep, so it follows a restart instead of mistaking it for a
   shutdown, and exits automatically when the proxy is really gone
-- Re-resolves the gateway from the state file every sweep, so a `proxy start --restart` that swaps implementations is
-  followed rather than fought. It is handed `{gateway, state_dir, interval, removal_grace_sweeps}` and therefore never
-  carries the master key — the credential belongs to whichever engine the state file names
 - Runs as a detached subprocess (`python -m sparkrun.proxy.autodiscover`)
 
-Disable with `--no-auto-discover` or set `auto_discover: false` in `proxy.yaml`. A gateway that owns its own desired
-state declares `supports_autodiscover = False`; `proxy start` then warns and disables it rather than letting two
-components fight over the same endpoints.
+Disable with `--no-auto-discover` or set `auto_discover: false` in `proxy.yaml`.
 
 ## Configuration
 
@@ -200,7 +180,6 @@ proxy:
   gateway: litellm        # optional; pins the gateway implementation
   auto_discover: true
   discover_interval: 30   # seconds between re-scans
-  discover_removal_grace_sweeps: 2  # missed sweeps before removing an endpoint (1 = remove on first miss)
 
 aliases:
   my-model: "Qwen/Qwen3-1.7B"
@@ -210,44 +189,25 @@ aliases:
 CLI flags override config file values for a given invocation, and explicitly
 supplied values are persisted back (`api/proxy/_ops.py:_persist_overrides`).
 
-Two processes write this file — the auto-discover daemon and any `sparkrun
-proxy` command — so `save()` locks a sidecar, re-reads the newest document, and
-merges only the sections that instance changed. A whole-document save would
-silently discard the other writer's alias or listener change.
-
 ## Gateway Selection
 
 The *gateway* is the pluggable family; `proxy` is the user-facing command.
-Core ships LiteLLM, enabled on every channel via the `gateway.litellm` feature
-flag (`default=True`, like `executor.docker`). A plugin may contribute another,
-including one living outside the `sparkrun.proxy` tree.
+LiteLLM is currently the only implementation, enabled on every channel via the
+`gateway.litellm` feature flag (`default=True`, like `executor.docker`).
 
-Three mechanisms, deliberately separate (`proxy/gateway.py`):
+Two mechanisms, deliberately separate (`proxy/gateway.py`):
 
-- **Registration** — `register_gateway(name, feature_flag=, loader=)`, with
-  `gateway_class(name)` the one place a name becomes an implementation. The
-  registry is in-process (an engine is *constructed with arguments*, not
-  resolved as a stateless singleton) and carries a **loader** rather than the
-  class, so registering imports nothing. Idempotent by name, which lets an
-  out-of-tree plugin substitute an in-tree implementation.
 - **Availability** — the `gateway.<name>` feature flag.
 - **Selection** — exactly one gateway at a time, arbitrated by
-  `resolve_gateway()`: an explicit pin (`proxy.gateway`, or `--gateway`) must
-  be known *and* enabled; with no pin the default wins when enabled, else the
-  sole remaining enabled gateway, else `AmbiguousGatewayError`. Enabling a
-  second gateway's flag does **not** switch to it. The flag registry has no
+  `resolve_gateway()`: an explicit pin (`proxy.gateway`) must be known *and*
+  enabled; with no pin the default wins when enabled, else the sole remaining
+  enabled gateway, else `AmbiguousGatewayError`. The flag registry has no
   notion of mutually-exclusive flags, so resolution refuses to guess rather
   than picking.
 
-"Unregistered" and "disabled" are distinct errors: a name can be known to the
-flag registry while its plugin failed to load, and telling that user to enable
-a flag that is already on is a dead end.
-
-An implementation subclasses `GatewaySupervisor` (`proxy/_supervisor.py`),
-which owns the process, state-file and auto-discover machinery every gateway
-shares, and declares its capabilities — `supports_autodiscover`,
-`wants_proxy_config`, `data_plane_authenticated` — rather than being
-special-cased by name anywhere above it.
+`ProxyEngine.gateway_name` / `required_feature_flag` are the seam a second
+implementation plugs into; the flag name is already shaped to become a future
+`GatewayPlugin.required_feature_flag` verbatim.
 
 **Gate placement.** `ProxyEngine.start()` is the single enforcement point —
 bringing a gateway *up*, checked before the `--dry-run` branch so a dry run
@@ -256,18 +216,11 @@ cannot advertise a start that would be refused. `stop` / `status` / model sync
 ungated: a proxy started while the flag was on must stay manageable and
 stoppable after it is turned off, and the daemon keeps driving the engine it
 was started with. The state file records `gateway`, so management paths bind to
-what is *running* rather than to what is configured — and when that gateway's
-implementation is not loaded at all, they fall back to the base supervisor
-rather than raising, since state reading and SIGTERM are gateway-independent
-and a live process must not be left undescribable and unkillable.
+what is *running* rather than to what is configured.
 
 `api/proxy/` is the console-free facade (`start`, `stop`, `status`, `models`,
-`sync`, `register_loaded_model` / `unregister_loaded_model`, `add_alias` /
-`remove_alias` / `list_aliases`, `resolve_gateway`, `list_gateways`);
-`cli/_proxy.py` renders it. `register_loaded_model` returning `None` from the
-engine means "discovery-driven, do the ordinary sync", so `proxy load` behaves
-identically under LiteLLM while a catalog-driven gateway can persist an
-activatable binding instead.
+`sync`, `add_alias` / `remove_alias` / `list_aliases`, `resolve_gateway`,
+`list_gateways`); `cli/_proxy.py` renders it.
 
 ## State & Files
 
