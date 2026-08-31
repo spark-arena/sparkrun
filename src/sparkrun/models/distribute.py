@@ -271,6 +271,84 @@ def distribute_model_from_local(
     return failures
 
 
+def _build_model_ensure_script(
+    model_id: str,
+    cache: str,
+    revision: str | None = None,
+    hf_token: str | None = None,
+) -> str:
+    """Build the bash script that ensures *model_id* is present in *cache*.
+
+    Shared by the head-download path and the per-node ``pull`` path so both
+    fetch identically — a second copy of this would be free to drift on GGUF
+    handling or token injection, and the drift would only show on gated or
+    quant-selected models.
+    """
+    from sparkrun.models.download import is_gguf_model, parse_gguf_model_spec
+    from sparkrun.utils.shell import quote
+
+    revision_flag = "--revision %s " % revision if revision else ""
+    if is_gguf_model(model_id):
+        repo_id, quant = parse_gguf_model_spec(model_id)
+        script = read_script("model_sync_gguf.sh").format(
+            repo_id=repo_id,
+            quant=quant or "",
+            cache=cache,
+            revision_flag=revision_flag,
+        )
+    else:
+        script = read_script("model_sync.sh").format(
+            model_id=model_id,
+            cache=cache,
+            revision_flag=revision_flag,
+        )
+
+    # Inject HF token for gated models
+    if hf_token:
+        script = 'export HF_TOKEN="' + str(quote(hf_token)) + '";\n' + script
+    return script
+
+
+def distribute_model_per_node(
+    model_id: str,
+    hosts: list[str],
+    cache_dir: str | None = None,
+    revision: str | None = None,
+    hf_token: str | None = None,
+    ssh_user: str | None = None,
+    ssh_key: str | None = None,
+    ssh_options: list[str] | None = None,
+    dry_run: bool = False,
+) -> list[TransferFailure]:
+    """Have every host download the model itself, in parallel (``pull`` mode).
+
+    No head node downloads on anyone's behalf and nothing crosses the control
+    machine.  Faster than head-then-rsync when egress is good, at the cost of
+    N× bandwidth and an HF token that must be reachable on every node.
+
+    Callers must not use this when the cache is shared across hosts — see the
+    ``skip_fan_out`` guard in ``_distribute_single_model``.
+    """
+    from sparkrun.orchestration.primitives import sync_resource_to_hosts
+
+    if not hosts:
+        return []
+
+    cache = resolve_hf_cache_home(cache_dir)
+    script = _build_model_ensure_script(model_id, cache, revision=revision, hf_token=hf_token)
+
+    logger.log(PROGRESS, "  Downloading model '%s' on %d host(s) in parallel", model_id, len(hosts))
+    failed_hosts = sync_resource_to_hosts(
+        script,
+        hosts,
+        "Model '%s'" % model_id,
+        ssh_user=ssh_user,
+        ssh_key=ssh_key,
+        dry_run=dry_run,
+    )
+    return [TransferFailure(host=h, reason="model download failed on host (see log above)") for h in failed_hosts]
+
+
 def distribute_model_from_head(
     model_id: str,
     hosts: list[str],
@@ -311,7 +389,6 @@ def distribute_model_from_head(
         List of hostnames where distribution failed (empty = full success).
     """
     from sparkrun.orchestration.distribution import _distribute_from_head
-    from sparkrun.utils.shell import quote
 
     if not hosts:
         return []
@@ -320,28 +397,7 @@ def distribute_model_from_head(
     head = hosts[0]
     logger.debug("Distributing model '%s' from head (%s) to %d host(s)", model_id, head, len(hosts))
 
-    # Build ensure script (download model on head)
-    from sparkrun.models.download import is_gguf_model, parse_gguf_model_spec
-
-    revision_flag = "--revision %s " % revision if revision else ""
-    if is_gguf_model(model_id):
-        repo_id, quant = parse_gguf_model_spec(model_id)
-        ensure_script = read_script("model_sync_gguf.sh").format(
-            repo_id=repo_id,
-            quant=quant or "",
-            cache=cache,
-            revision_flag=revision_flag,
-        )
-    else:
-        ensure_script = read_script("model_sync.sh").format(
-            model_id=model_id,
-            cache=cache,
-            revision_flag=revision_flag,
-        )
-
-    # Inject HF token for gated models
-    if hf_token:
-        ensure_script = 'export HF_TOKEN="' + str(quote(hf_token)) + '";\n' + ensure_script
+    ensure_script = _build_model_ensure_script(model_id, cache, revision=revision, hf_token=hf_token)
 
     # Shared-cache fast path: download once on the head, skip the head→worker
     # rsync entirely (workers already mount the same cache).  Running

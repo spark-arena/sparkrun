@@ -1040,13 +1040,39 @@ def _distribute_single_image(
 
     *force_pull* (``sparkrun run --rebuild``) is routed to whichever side
     actually pulls from the registry for the mode in play: the control machine
-    under ``local``/``push``, the head under ``delegated``.  It is deliberately
-    *not* applied to a head→worker leg that follows a push — the head has just
-    received the fresh image over the wire, and re-pulling there would both
-    duplicate the transfer and defeat push mode, which exists for heads that
-    cannot reach the registry at all.
+    under ``local``/``push``, the head under ``delegated``, every node under
+    ``pull``.  It is deliberately *not* applied to a head→worker leg that
+    follows a push — the head has just received the fresh image over the wire,
+    and re-pulling there would both duplicate the transfer and defeat push mode,
+    which exists for heads that cannot reach the registry at all.
     """
     from sparkrun.containers.distribute import distribute_image_from_local, distribute_image_from_head
+    from sparkrun.containers.sync import sync_image_to_hosts
+
+    if transfer_mode == "pull":
+        failed = sync_image_to_hosts(image, targets, dry_run=dry_run, force_pull=force_pull, **ssh_kwargs)
+        # Registry-unreachable fallback: the control machine may hold
+        # credentials or a route the nodes lack, so push it each node's own
+        # image.  Armed only when the mode was *inferred* (auto → delegated) —
+        # an explicitly-named mode is honored literally, the rule `delegated`
+        # already follows.
+        if failed and auto_delegated:
+            logger.info(
+                "Per-node pull of '%s' failed on %d host(s); falling back to push from the control machine",
+                image,
+                len(failed),
+            )
+            push_failed = distribute_image_from_local(
+                image, failed, transfer_hosts=None, dry_run=dry_run, force_pull=force_pull, **ssh_kwargs
+            )
+            if push_failed:
+                logger.error(
+                    "Image '%s' unavailable on %s: the node(s) could not pull it and the control machine could not supply it either.",
+                    image,
+                    ", ".join(push_failed),
+                )
+            failed = push_failed
+        return failed
 
     # Map transfer hosts to target subset.  transfer_hosts is positionally aligned with
     # full_hosts (one entry per host, value = IB IP or mgmt IP), so we filter by index
@@ -1119,7 +1145,7 @@ def _distribute_single_model(
     external control cache is not the shared one) but does honor
     *preserve_perms*.
     """
-    from sparkrun.models.distribute import distribute_model_from_local, distribute_model_from_head
+    from sparkrun.models.distribute import distribute_model_from_local, distribute_model_from_head, distribute_model_per_node
     from sparkrun.orchestration.transfer import TransferFailure
 
     prefs = prefs or ModelDistributionPrefs()
@@ -1128,6 +1154,38 @@ def _distribute_single_model(
     target_set = set(targets)
     t_hosts = _subset_transfer_hosts(full_hosts, transfer_hosts, target_set)
     w_hosts = _subset_transfer_hosts(full_hosts[1:], worker_transfer_hosts, target_set)
+
+    if transfer_mode == "pull":
+        # Every node downloads from HuggingFace itself, in parallel — the model
+        # analogue of a per-node image pull.  Costs N× egress and needs a token
+        # reachable on every node, which is why it is opt-in.
+        #
+        # A shared cache overrides it: with skip_fan_out set the workers already
+        # mount the head's copy, and N nodes writing one NFS path concurrently
+        # is waste at best and a corrupted snapshot at worst.
+        if prefs.skip_fan_out and len(targets) > 1:
+            logger.info("Shared model cache: downloading '%s' on the head only rather than per-node", model)
+            return distribute_model_from_head(
+                model,
+                targets,
+                cache_dir=cache_dir,
+                revision=revision,
+                hf_token=hf_token,
+                worker_transfer_hosts=w_hosts,
+                dry_run=dry_run,
+                preserve_perms=prefs.preserve_perms,
+                skip_fan_out=True,
+                **ssh_kwargs,
+            )
+        return distribute_model_per_node(
+            model,
+            targets,
+            cache_dir=cache_dir,
+            revision=revision,
+            hf_token=hf_token,
+            dry_run=dry_run,
+            **ssh_kwargs,
+        )
 
     if transfer_mode == "local":
         return distribute_model_from_local(

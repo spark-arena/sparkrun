@@ -571,7 +571,7 @@ def test_valid_transfer_modes_constant():
     """VALID_TRANSFER_MODES contains the expected values."""
     from sparkrun.core.cluster_manager import VALID_TRANSFER_MODES
 
-    assert VALID_TRANSFER_MODES == ("auto", "local", "push", "delegated")
+    assert VALID_TRANSFER_MODES == ("auto", "local", "push", "delegated", "pull")
 
 
 # ---------------------------------------------------------------------------

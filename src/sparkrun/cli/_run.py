@@ -247,8 +247,13 @@ def _summarize_platforms(
 @click.option(
     "--transfer-mode",
     default=None,
-    type=click.Choice(["auto", "local", "push", "delegated"], case_sensitive=False),
-    help="Resource transfer mode (overrides cluster setting)",
+    type=click.Choice(["auto", "local", "push", "delegated", "pull"], case_sensitive=False),
+    help=(
+        "Resource transfer mode (overrides cluster setting). 'pull' has every node fetch from "
+        "origin itself in parallel — needs registry/HF credentials on each node, costs N x egress, "
+        "and does not fall back to the control machine (use 'auto' for that). Note a re-pushed "
+        "image tag is not re-pulled unless you also pass --rebuild."
+    ),
     hidden=True,
 )
 @click.option(

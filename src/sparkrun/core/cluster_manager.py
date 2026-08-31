@@ -20,8 +20,10 @@ logger = logging.getLogger(__name__)
 # Name validation pattern: start with alphanumeric, contain alphanumeric/underscore/hyphen
 CLUSTER_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$")
 
-# Valid transfer modes for resource distribution
-VALID_TRANSFER_MODES = ("auto", "local", "push", "delegated")
+# Valid transfer modes for resource distribution.  ``pull`` = every node fetches
+# from origin itself, in parallel (docker pull / hf download per node); nothing
+# crosses the head or the control machine.
+VALID_TRANSFER_MODES = ("auto", "local", "push", "delegated", "pull")
 
 # Valid transfer interfaces for selecting network path
 VALID_TRANSFER_INTERFACES = ("cx7", "mgmt")

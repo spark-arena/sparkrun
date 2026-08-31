@@ -67,7 +67,7 @@ def cluster(ctx):
 @click.option(
     "--transfer-mode",
     default=None,
-    type=click.Choice(["auto", "local", "push", "delegated"], case_sensitive=False),
+    type=click.Choice(["auto", "local", "push", "delegated", "pull"], case_sensitive=False),
     help="Resource transfer mode (auto, local, push, delegated)",
 )
 @click.option(
@@ -341,7 +341,7 @@ cluster_import.add_command(cluster_import_svd, "eugr")
 @click.option(
     "--transfer-mode",
     default=None,
-    type=click.Choice(["auto", "local", "push", "delegated"], case_sensitive=False),
+    type=click.Choice(["auto", "local", "push", "delegated", "pull"], case_sensitive=False),
     help="Resource transfer mode (auto, local, push, delegated)",
 )
 @click.option(
