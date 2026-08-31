@@ -287,6 +287,35 @@ class RuntimePlugin(Plugin):
         """
         return "ray"
 
+    def native_protocols(self, recipe) -> list[str]:
+        """Inference API dialects this runtime serves *natively*, preferred first.
+
+        Consumed by an inference gateway to decide whether it can route matching
+        ingress straight through instead of translating.  A protocol selects the
+        upstream URL, headers, parser, streaming framing, error vocabulary and
+        retry classification, so it is a **routing dimension** rather than an
+        optional model feature.
+
+        It is therefore **fail-closed**: never report a dialect unless this
+        runtime, at this recipe's version, is known to serve it.  Under-claiming
+        costs a translation; over-claiming sends wrong-shaped bytes to a server
+        that cannot parse them.  That is why the base returns only ``openai``,
+        and why a runtime that gained (say) Anthropic Messages at a particular
+        version must gate on the recipe's resolved container tag rather than on
+        the runtime name.
+
+        Deliberately *not* part of
+        :func:`~sparkrun.orchestration.job_metadata.derive_recipe_fingerprint`:
+        learning that a deployment also speaks another dialect describes the
+        same workload more precisely, so it must not change the workload's
+        identity or force a running deployment to be re-admitted.
+
+        Returns:
+            Lowercase protocol names (``openai``, ``anthropic``, ``gemini``,
+            ``bedrock``), most-preferred first.
+        """
+        return ["openai"]
+
     def default_executor(self) -> str | None:
         """Return the runtime's preferred executor when nothing else is set.
 

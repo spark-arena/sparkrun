@@ -83,6 +83,8 @@ _KNOWN_KEYS = {
     "layout",
     "cluster_config",
     "runtime_cache",
+    "capabilities",
+    "unsupported_capabilities",
 }
 
 
@@ -1039,6 +1041,20 @@ class Recipe:
             if k not in _KNOWN_KEYS and k not in self.runtime_config:
                 self.runtime_config[k] = v
 
+        # Gateway capability declarations.  Optional, and *not* serve
+        # configuration: they describe what the served model can do, which an
+        # inference gateway needs in order to admit or reject a request before
+        # it reaches the backend.  Declared as real attributes (rather than
+        # swept into ``runtime_config``) precisely so they stay out of
+        # ``derive_recipe_fingerprint`` — editing a capability list must not
+        # change the workload's identity and force a running deployment to be
+        # re-admitted.
+        #
+        # Nothing in a recipe reveals these, so sparkrun never infers them; an
+        # undeclared capability is left to the gateway's own policy.
+        self.capabilities: list[str] = [str(c) for c in (data.get("capabilities") or [])]
+        self.unsupported_capabilities: list[str] = [str(c) for c in (data.get("unsupported_capabilities") or [])]
+
         # Lifecycle hooks
         self.pre_exec: list[str | dict[str, str]] = list(data.get("pre_exec", []))
         self.post_exec: list[str] = list(data.get("post_exec", []))
@@ -1703,6 +1719,8 @@ class Recipe:
             "metadata": dict(self.metadata),
             "maintainer": self.maintainer,
             "runtime_config": dict(self.runtime_config),
+            "capabilities": list(self.capabilities),
+            "unsupported_capabilities": list(self.unsupported_capabilities),
             "pre_exec": list(self.pre_exec),
             "post_exec": list(self.post_exec),
             "post_commands": list(self.post_commands),
@@ -1746,6 +1764,8 @@ class Recipe:
         self.metadata = dict(state.get("metadata") or {})
         self.maintainer = state.get("maintainer", "")
         self.runtime_config = dict(state.get("runtime_config") or {})
+        self.capabilities = list(state.get("capabilities") or [])
+        self.unsupported_capabilities = list(state.get("unsupported_capabilities") or [])
         self.pre_exec = list(state.get("pre_exec") or [])
         self.post_exec = list(state.get("post_exec") or [])
         self.post_commands = list(state.get("post_commands") or [])
