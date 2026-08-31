@@ -48,6 +48,16 @@ class RunOptions:
     overrides: dict[str, Any] = field(default_factory=dict)
     """Recipe / runtime overrides (tensor_parallel, port, gpu_memory_utilization, …)."""
 
+    strategy_options: dict[str, Any] = field(default_factory=dict)
+    """Run-scoped inputs for the recipe-selected execution strategy.
+
+    These control *execution*, not workload identity, so they are deliberately
+    absent from recipe fingerprints and intent IDs — the same rule that keeps
+    serve flags out of `generate_intent_id`. A plugin CLI uses this for
+    imperative, per-invocation choices such as a restore provider or an
+    artifact path.
+    """
+
     # Mode / lifecycle knobs.
     solo: bool = False
     """Force single-host mode regardless of host count."""

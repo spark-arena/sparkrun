@@ -18,7 +18,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
-from sparkrun.core.timing import ROOT as TIMELINE_ROOT, STATUS_ERROR, Timeline
+from sparkrun.core.timing import ROOT as TIMELINE_ROOT, STATUS_ERROR, Timeline, timed
 
 if TYPE_CHECKING:
     from sparkrun.core.backend_select import BackendBundle
@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from sparkrun.orchestration.comm_env import ClusterCommEnv
     from sparkrun.runtimes.base import RuntimePlugin
     from sparkrun.builders.base import BuilderPlugin
+    from sparkrun.core.execution import ExecutionContext, PreparedExecution, RecipeExecutionStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -822,6 +823,12 @@ def launch_inference(
     # reproduce it.  ``owner`` tags the component that created the job.
     recipe_fingerprint: str | None = None,
     owner: str | None = None,
+    # Optional recipe-local execution strategy.  The shared launcher still
+    # owns asset preparation and the before_start replacement barrier; only
+    # final activation is delegated.
+    execution_context: "ExecutionContext | None" = None,
+    execution_strategy: "RecipeExecutionStrategy | None" = None,
+    prepared_execution: "PreparedExecution | None" = None,
 ) -> LaunchResult:
     """Launch an inference workload.
 
@@ -899,6 +906,12 @@ def launch_inference(
     if p is not None:
         p.timeline = timeline
         p.set_root_span(launch_span)
+
+    if (execution_strategy is None) != (prepared_execution is None):
+        raise ValueError("execution_strategy and prepared_execution must be provided together")
+    if execution_strategy is not None and execution_context is None:
+        raise ValueError("execution_context is required with an execution strategy")
+    asset_policy = prepared_execution.assets if prepared_execution is not None else None
 
     from sparkrun.orchestration.distribution import resolve_auto_transfer_mode
 
@@ -1054,7 +1067,7 @@ def launch_inference(
         recipe,
         runtime,
         v=v,
-        run_builder=True,
+        run_builder=asset_policy is None or asset_policy.run_builder,
         transform_check=builder_transforms_image,
     )
 
@@ -1089,12 +1102,13 @@ def launch_inference(
     # image ref must be reflected before `containers:` is resolved against it.
     # `prepare_images` owns both, so an integration that stages images without
     # launching resolves them identically instead of reimplementing the order.
-    if recipe.builder:
+    _run_builder = asset_policy is None or asset_policy.run_builder
+    if recipe.builder and _run_builder:
         if p:
             p.phase(2)
     else:
         if p:
-            p.phase_skip(2, "no builder")
+            p.phase_skip(2, "execution strategy" if recipe.builder else "no builder")
 
     from sparkrun.core.image_preparation import prepare_images
 
@@ -1109,6 +1123,9 @@ def launch_inference(
         dry_run=dry_run,
         transfer_mode=effective_transfer_mode,
         ssh_kwargs=ssh_kwargs,
+        run_builder=_run_builder,
+        images_by_node=(asset_policy.images_by_node if asset_policy is not None else None),
+        strategy_name=(prepared_execution.strategy if prepared_execution is not None else ""),
         source_image=container_image,
         # Already gated above, before the builder could run.
         validate=False,
@@ -1116,7 +1133,7 @@ def launch_inference(
     builder = prepared_images.builder
     image_plan = prepared_images.image_plan
     container_image = prepared_images.head_image
-    if recipe.builder and p:
+    if recipe.builder and _run_builder and p:
         p.phase_end()
 
     # Resolve per-host backends from cluster hardware (or DGX Spark default).
@@ -1219,14 +1236,15 @@ def launch_inference(
             )
 
     # Pre-launch preparation (post-container builds)
-    runtime.prepare(
-        recipe,
-        host_list,
-        config=config,
-        dry_run=dry_run,
-        transfer_mode=effective_transfer_mode,
-        overrides=overrides,
-    )
+    if asset_policy is None or asset_policy.prepare_runtime:
+        runtime.prepare(
+            recipe,
+            host_list,
+            config=config,
+            dry_run=dry_run,
+            transfer_mode=effective_transfer_mode,
+            overrides=overrides,
+        )
 
     # -- Phase 3: Distribution --
     comm_env = None
@@ -1254,7 +1272,7 @@ def launch_inference(
         # (``distribution.model.enabled: false``) or a recipe points at
         # pre-placed weights (``cluster_config.resolved_model_path``).
         _model_dist_enabled = getattr(_dist_model, "enabled", True)
-        _skip_model = _skip_model_distribution or not _model_dist_enabled
+        _skip_model = _skip_model_distribution or not _model_dist_enabled or (asset_policy is not None and not asset_policy.prepare_model)
 
         # Skip container-image distribution for container-less executors (the
         # `local` executor has no image to distribute — and the image may not
@@ -1280,6 +1298,8 @@ def launch_inference(
         except Exception:
             logger.debug("Could not resolve executor for image-skip decision; distributing image", exc_info=True)
             _skip_container = False
+        if asset_policy is not None and not asset_policy.distribute_images:
+            _skip_container = True
 
         # Preflight: does this image actually run the command sparkrun appends?
         # Runs from the distribution hook — i.e. once the image is resident on
@@ -1288,7 +1308,7 @@ def launch_inference(
         # has not yet paid for the long, routinely-interrupted transfer.
         # Skipped on dry-run (no SSH) and for container-less executors.
         def _probe_image_entrypoint() -> None:
-            if dry_run or _skip_container:
+            if dry_run or _skip_container or (asset_policy is not None and not asset_policy.probe_images):
                 return
 
             def _probe(img: str, hs: list[str]) -> None:
@@ -1385,7 +1405,8 @@ def launch_inference(
             p.phase_skip(3, "delegating runtime")
 
     # -- Phase 4: Tuning --
-    _needs_tuning = (sync_tuning and not dry_run) or not runtime.is_delegating_runtime()
+    _strategy_tuning = asset_policy is None or asset_policy.sync_tuning
+    _needs_tuning = _strategy_tuning and ((sync_tuning and not dry_run) or not runtime.is_delegating_runtime())
     if _needs_tuning:
         if p:
             p.phase(4)
@@ -1393,7 +1414,7 @@ def launch_inference(
         if p:
             p.phase_skip(4, "disabled")
 
-    if sync_tuning and not dry_run:
+    if _strategy_tuning and sync_tuning and not dry_run:
         from sparkrun.tuning.sync import sync_registry_tuning
 
         try:
@@ -1413,7 +1434,7 @@ def launch_inference(
     # model cache does; its prefs inherit `distribution.model` unless the
     # cluster spells out a `distribution.tuning` block (see
     # ClusterDistributionConfig.tuning_prefs).
-    if not runtime.is_delegating_runtime():
+    if _strategy_tuning and not runtime.is_delegating_runtime():
         from sparkrun.tuning._common import tuning_configs_present
         from sparkrun.tuning.distribute import distribute_tuning_to_hosts, ensure_remote_tuning_dirs
         from sparkrun.tuning.sync import _get_local_tuning_dir
@@ -1508,7 +1529,7 @@ def launch_inference(
     )
 
     # Best-effort page cache clear
-    if not runtime.is_delegating_runtime():
+    if not runtime.is_delegating_runtime() and (asset_policy is None or asset_policy.clear_page_cache):
         from sparkrun.orchestration.primitives import try_clear_page_cache
 
         try_clear_page_cache(host_list, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
@@ -1519,6 +1540,96 @@ def launch_inference(
 
         _rt_display = RUNTIME_DISPLAY.get(runtime.runtime_name, runtime.runtime_name)
         p.phase(5, "Launching %s runtime" % _rt_display)
+
+    # A strategy gets one final prepare-only call with sparkrun's resolved
+    # transport and resident image/model state.  It must complete before the
+    # core-owned eviction barrier below: everything slow and interruptible is
+    # behind us, so this is the last point at which failing costs nothing.
+    # Normal runtime launches retain their existing sequence.
+    if execution_strategy is not None:
+        from sparkrun.core.execution import ActivationContext
+
+        activation_context = ActivationContext(
+            execution=execution_context,
+            prepared=prepared_execution,
+            cluster_id=cluster_id,
+            hosts=tuple(host_list),
+            container_image=container_image,
+            images_by_node=tuple(image_plan.images_by_node),
+            effective_cache_dir=effective_cache_dir,
+            serve_port=serve_port,
+            serve_command=serve_command,
+            comm_env=comm_env,
+            ib_ip_map=ib_ip_map,
+            ib_iface_map=ib_iface_map,
+        )
+        with timed(timeline, "execution.prepare_activation", strategy=prepared_execution.strategy):
+            activation_receipt = execution_strategy.prepare_activation(activation_context)
+        # The barrier stays core-owned. A strategy never decides when the
+        # deployment it replaces is torn down.
+        if before_start is not None and not dry_run:
+            before_start()
+        with timed(timeline, "execution.activate", strategy=prepared_execution.strategy):
+            activation_result = execution_strategy.activate(activation_context, activation_receipt)
+        rc = int(activation_result.rc)
+        runtime_info = dict(activation_result.runtime_info)
+        runtime_info.setdefault("execution_strategy", prepared_execution.strategy)
+        if not dry_run:
+            try:
+                # Every field the normal path records must be recorded here too:
+                # save_job_metadata rewrites the file wholesale, so an omission
+                # is an erasure, and the symptom (a teardown that cannot
+                # authenticate) looks nothing like the cause.
+                save_job_metadata(
+                    cluster_id,
+                    recipe,
+                    host_list,
+                    overrides=overrides,
+                    cache_dir=str(config.cache_dir),
+                    ib_ip_map=ib_ip_map,
+                    mgmt_ip_map=mgmt_ip_map,
+                    recipe_ref=recipe_ref,
+                    runtime_info=runtime_info,
+                    container_image=container_image,
+                    container_images=(image_plan.images_by_node if image_plan.heterogeneous else None),
+                    runtime=runtime,
+                    backends=backends,
+                    recipe_fingerprint=recipe_fingerprint,
+                    owner=owner,
+                    cluster_name=job_cluster_name,
+                    ssh_user=job_ssh_user,
+                )
+            except Exception:
+                logger.warning(
+                    "Could not persist execution-strategy metadata for %s; later lifecycle commands may lose strategy context",
+                    cluster_id,
+                    exc_info=True,
+                )
+        if p:
+            p.phase_end()
+        timeline.end(launch_span, status=STATUS_ERROR if rc else "ok", rc=rc, cluster_id=cluster_id)
+        return LaunchResult(
+            rc=rc,
+            cluster_id=cluster_id,
+            host_list=host_list,
+            is_solo=is_solo,
+            runtime=runtime,
+            recipe=recipe,
+            overrides=overrides,
+            container_image=container_image,
+            effective_cache_dir=effective_cache_dir,
+            serve_port=serve_port,
+            config=config,
+            recipe_ref=recipe_ref,
+            comm_env=comm_env,
+            ib_ip_map=ib_ip_map,
+            ib_iface_map=ib_iface_map,
+            serve_command=serve_command,
+            runtime_info=runtime_info,
+            builder=builder,
+            backends=backends,
+            timeline=timeline,
+        )
 
     # Last point before containers start.  Everything that can fail slowly and
     # cheaply — image distribution, model download, tuning sync — is behind us,

@@ -67,6 +67,62 @@ core keys parsed as real attributes *specifically* to stay out of the
 fingerprint: describing what a deployment can do must not change what it is.
 A plugin item is the opposite — it changes how the workload is produced.
 
+## Owning how a recipe is executed
+
+An owned item may also opt its recipes into **one** execution strategy and
+contribute typed preparation steps:
+
+```python
+register_recipe_item(
+    "snapshot",
+    SnapshotHandler(),
+    owner=__name__,
+    execution_strategy=SnapshotExecutionStrategy(),
+    preparation_steps=contribute_snapshot_preparation,
+)
+```
+
+Both are **recipe-local**: installing the plugin has no effect on a recipe that
+omits its key, so merely having it on disk never changes what `sparkrun run`
+does. More than one active strategy is an error rather than a precedence rule —
+two things claiming to launch the workload have no correct arbitration.
+
+A strategy implements four hooks:
+
+| Hook | Runs | Returns |
+|---|---|---|
+| `preparation_steps(ctx)` | before the launcher | `PreparationStep`s to schedule |
+| `finalize_preparation(ctx, receipts)` | after those steps | `PreparedExecution` (asset policy + state) |
+| `prepare_activation(ctx)` | assets resident, **before** eviction | an opaque receipt |
+| `activate(ctx, receipt)` | in place of `runtime.run()` | `ActivationResult` |
+
+Preparation steps form a small deterministic DAG — globally unique names,
+explicit `requires` — and completed steps are compensated in reverse order if a
+later one fails. Naming beats ordering here because two plugins contributing
+steps have no shared list to order themselves within.
+
+`LaunchAssetPolicy` is how a strategy declines parts of the shared pipeline
+(builder, model, image distribution, entrypoint probe, tuning sync, page-cache
+clear) and how it supplies `images_by_node` when it prepared the images itself.
+Everything it does not decline still runs, so a strategy inherits distribution,
+placement and preflight rather than reimplementing them.
+
+Three boundaries are not negotiable:
+
+- **The replacement barrier stays core-owned.** sparkrun completes plugin
+  preparation, normal image/model preparation, *and* the strategy's
+  prepare-only `prepare_activation` before it fires the `before_start` eviction
+  hook. A strategy never decides when the deployment it replaces is torn down,
+  and by the time eviction happens everything slow and interruptible is behind
+  it.
+- **The launcher still records job metadata**, with the same identity a normal
+  launch records — cluster, SSH user, fingerprint, owner. `save_job_metadata`
+  rewrites the file wholesale, so an omission here is an erasure, and the
+  symptom (a teardown that cannot authenticate) looks nothing like the cause.
+- **`RunOptions.strategy_options` is not workload identity.** Per-invocation
+  choices belong there and are deliberately excluded from the recipe
+  fingerprint and intent ID, the same way serve flags are.
+
 ## Plugin settings that do not belong in a recipe
 
 A recipe is portable; operational policy for a given site is not. `plugins.<name>`

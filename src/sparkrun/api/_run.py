@@ -305,6 +305,55 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
         except Exception:
             logger.debug("Failed to apply cluster SSH user to config", exc_info=True)
 
+    # Recipe-owned execution strategies are selected only from top-level items
+    # present in this recipe.  Preparation happens before the shared launcher
+    # starts pulling images or distributing a model, and therefore before its
+    # core-owned replacement barrier can evict a serving workload.
+    from sparkrun.core.execution import ExecutionContext, resolve_recipe_execution, run_preparation_steps
+    from sparkrun.core.timing import Timeline, timed
+
+    if getattr(sctx, "timing", None) is None:
+        setattr(sctx, "timing", Timeline())
+
+    execution_context = ExecutionContext(options=options, plan=plan, sctx=sctx)
+    try:
+        execution_strategy, preparation_steps = resolve_recipe_execution(execution_context)
+        if execution_strategy is not None or preparation_steps:
+            strategy_name = execution_strategy.name if execution_strategy is not None else "recipe-hooks"
+            with timed(
+                sctx.timing,
+                "execution.prepare",
+                strategy=strategy_name,
+                steps=len(preparation_steps),
+            ) as preparation_span:
+                preparation_receipts = run_preparation_steps(
+                    execution_context,
+                    preparation_steps,
+                    timeline=sctx.timing,
+                    parent=preparation_span,
+                )
+                if execution_strategy is not None:
+                    with timed(
+                        sctx.timing,
+                        "execution.finalize",
+                        parent=preparation_span,
+                        strategy=strategy_name,
+                    ):
+                        prepared_execution = execution_strategy.finalize_preparation(execution_context, preparation_receipts)
+                else:
+                    prepared_execution = None
+        else:
+            preparation_receipts = {}
+            prepared_execution = None
+        if execution_strategy is not None and prepared_execution.strategy != execution_strategy.name:
+            raise ValueError(
+                "execution strategy prepared itself as %r, expected %r" % (prepared_execution.strategy, execution_strategy.name)
+            )
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception as error:
+        raise SparkrunError("launch preparation failed: %s" % error) from error
+
     # 3a-bis. Evict this intent's superseded deployments.  ``exclude_intent_id``
     # in the planning pass told the scheduler "my own containers aren't foreign
     # load, I'm replacing them" — this is the half that actually replaces them.
@@ -357,6 +406,8 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
         except ExecutorUnavailableError:
             _executor_name = None
         if _executor_name == "k8s":
+            if execution_strategy is not None:
+                raise SparkrunError("execution strategy %r does not support the Kubernetes launch path" % execution_strategy.name)
             from sparkrun.api._run_k8s import run_k8s
 
             # This path returns without going through ``launch_inference``, so
@@ -423,6 +474,9 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
         "before_start": None if options.dry_run else _evict_before_start,
         "recipe_fingerprint": plan.recipe_fingerprint,
         "owner": options.owner,
+        "execution_context": execution_context,
+        "execution_strategy": execution_strategy,
+        "prepared_execution": prepared_execution,
     }
 
     # 5. Launch.
