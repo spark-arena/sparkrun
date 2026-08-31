@@ -57,7 +57,9 @@ emit() {{ printf '%s=%s\n' "$1" "$2"; }}
 
 # --- NVIDIA ---
 NVIDIA_COUNT=0
+NVIDIA_DRIVER_VERSION=""
 if command -v nvidia-smi >/dev/null 2>&1; then
+    NVIDIA_DRIVER_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader,nounits 2>/dev/null | head -1 | awk '{{$1=$1}};1' || true)
     while IFS= read -r line; do
         [[ -z "$line" ]] && continue
         name=$(printf '%s' "$line" | awk -F', *' '{{print $1}}')
@@ -69,6 +71,7 @@ if command -v nvidia-smi >/dev/null 2>&1; then
 fi
 emit NVIDIA_GPU_COUNT "$NVIDIA_COUNT"
 emit NVIDIA_PRESENT "$([[ $NVIDIA_COUNT -gt 0 ]] && echo 1 || echo 0)"
+emit NVIDIA_DRIVER_VERSION "$NVIDIA_DRIVER_VERSION"
 
 # --- AMD ROCm ---
 AMD_COUNT=0
