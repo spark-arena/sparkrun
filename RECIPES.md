@@ -34,6 +34,7 @@ Everything else is optional. When `command` is omitted, the runtime generates it
 | `runtime`         | string | no          | auto-detected   | Runtime identifier. See [Runtime Resolution](#runtime-resolution) |
 | `runtime_version` | string | no          | `""`            | Informational version tag                                         |
 | `container`       | string | recommended | runtime default | Container image reference                                         |
+| `containers`      | list   | no          | `[]`            | Per-machine image overrides. See [Per-machine images](#per-machine-images) |
 
 GGUF models use colon syntax (`repo:quant`) to download only the matching quantization files. When pre-synced, sparkrun
 rewrites `-hf` to `-m` with the resolved container cache path.
@@ -68,6 +69,46 @@ model with its own key:
 
 The same rule applies to a hand-written `distribution_config`: each entry's `revision` is authoritative, and an entry
 without one is fetched unpinned.
+
+### Per-machine images
+
+Normally every node runs `container:`. A recipe serving **pre-optimized, machine-tuned images** instead declares a
+`containers:` block binding an image to a hostname:
+
+```yaml
+container: nvcr.io/nvidia/vllm:25.09          # fallback for unlisted machines
+containers:
+  - image: myorg/vllm-spark:node-01
+    host: spark-01
+  - image: myorg/vllm-spark:node-02
+    host: spark-02
+```
+
+The key is the **hostname**, because the image is a property of the machine. Binding to a rank would be silently wrong
+the moment the scheduler ordered hosts differently. Declaring more machines than a given launch uses is expected — the
+block usually covers the whole cluster, and a `--tp 2` launch still picks whichever two hosts the scheduler prefers.
+
+Because a wrong image on a tuned machine fails in confusing ways rather than loudly, resolution is strict:
+
+- A `host:` not in the cluster raises (a typo would otherwise silently fall through to the generic image).
+- A duplicate `host:` raises.
+- A selected host with no entry **and** no `container:` fallback raises.
+- A selected host that falls back to `container:` is logged by name at default verbosity — never silent.
+
+Two constraints:
+
+- **Runtime must opt in.** Supported by `sglang`, `vllm-distributed` and `llama-cpp`. `vllm-ray` and `trtllm` fail
+  closed: Ray requires one build across head and workers, and MPI ranks must share an ABI.
+- **No image-building builder.** `prepare()` produces a single image, so `containers:` cannot be combined with a
+  builder that builds one. Build the per-machine images out of band and reference them by tag. Environment builders
+  (`uv-venv`) and `docker-pull` compose fine — they return the image ref untouched.
+
+`--image` overrides the whole block: every node runs the named image, and the override is logged.
+
+Distribution follows automatically. sparkrun ships each image only to the machines that run it, and switches to
+per-node parallel pulls (see `--transfer-mode pull`) rather than the head-pull-and-fan-out path, which would copy a
+machine-tuned image onto the wrong machine. Note the per-node pull skips an image that is already present by tag, so an
+image re-pushed under the same tag needs `--rebuild`.
 
 ### Topology
 

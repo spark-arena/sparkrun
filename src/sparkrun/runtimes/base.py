@@ -111,6 +111,21 @@ class RuntimePlugin(Plugin):
     without having to coordinate a separate capability-tag taxonomy.
     """
 
+    # --- Heterogeneous images ---
+    supports_heterogeneous_images: bool = False
+    """Whether this runtime tolerates a different container image per node.
+
+    Fails closed by default.  Anything with a wire protocol between ranks
+    breaks in ways that surface as a hang or a cryptic deserialization error
+    rather than a clean failure: Ray requires head and workers to share a build,
+    and MPI ranks must share an ABI.  Runtimes where per-node images are
+    meaningful (native-distributed serving, llama.cpp's RPC workers) opt in.
+
+    Consumed by :func:`sparkrun.core.launcher.launch_inference`, which raises
+    before any side effect when a recipe declares ``containers:`` for a runtime
+    that has not opted in.
+    """
+
     # --- Executor ---
     #
     # The active executor is set by :meth:`run` (which receives one
@@ -1647,7 +1662,7 @@ class RuntimePlugin(Plugin):
 
     # --- Banner / connection info ---
 
-    def _print_cluster_banner(self, title, hosts, image, cluster_id, ports, dry_run):
+    def _print_cluster_banner(self, title, hosts, image, cluster_id, ports, dry_run, images_by_node=None):
         """Print standardized cluster launch banner.
 
         Args:
@@ -1657,13 +1672,22 @@ class RuntimePlugin(Plugin):
             cluster_id: Cluster identifier.
             ports: Mapping of label to value for port lines.
             dry_run: Whether this is a dry-run invocation.
+            images_by_node: Optional per-node images aligned with *hosts*.  When
+                they are not all the same, the banner lists them per host — a
+                single ``Image:`` line would misreport which build each machine
+                is actually running.
         """
         mode = "DRY-RUN" if dry_run else "LIVE"
         logger.info("=" * 60)
         logger.info("sparkrun %s", title)
         logger.info("=" * 60)
         logger.info("Cluster ID:     %s", cluster_id)
-        logger.info("Image:          %s", image)
+        if images_by_node and len(set(images_by_node)) > 1:
+            logger.info("Images:")
+            for host, node_image in zip(hosts, images_by_node):
+                logger.info("  %-14s%s", host + ":", node_image)
+        else:
+            logger.info("Image:          %s", image)
         logger.info("Head Node:      %s", hosts[0])
         logger.info(
             "Worker Nodes:   %s",
@@ -1783,6 +1807,7 @@ class RuntimePlugin(Plugin):
         cluster = kwargs.pop("cluster", None)
         placement = kwargs.pop("placement", None)
         runtime_cache = kwargs.pop("runtime_cache", None)
+        images_by_node = kwargs.pop("images_by_node", None)
         ctx = ClusterContext.build(
             runtime=self,
             hosts=hosts,
@@ -1797,6 +1822,7 @@ class RuntimePlugin(Plugin):
             recipe=recipe,
             placement=placement,
             runtime_cache=runtime_cache,
+            images_by_node=images_by_node,
         )
         return run_native_cluster(
             runtime=self,

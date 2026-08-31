@@ -32,6 +32,12 @@ class VllmDistributedRuntime(VllmMixin, RuntimePlugin):
     runtime_name = "vllm-distributed"
     default_image_prefix = "ghcr.io/spark-arena/dgx-vllm-eugr-nightly-tf5"
 
+    # See SglangRuntime: native distribution, so per-machine tuned images work.
+    # vllm-ray is a *sibling* (both are VllmMixin + RuntimePlugin), not a
+    # subclass, so it does not pick this up — which is what we want: Ray needs
+    # one build across head and workers.
+    supports_heterogeneous_images = True
+
     def get_family(self) -> str:
         return "vllm"
 

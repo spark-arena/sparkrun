@@ -15,6 +15,7 @@ import yaml
 from vpd.next.util import read_yaml
 from scitrera_app_framework.api import Variables, EnvPlacement
 
+from sparkrun.core.images import parse_container_entries
 from sparkrun.core.layout import RecipeLayout
 from sparkrun.core.recipe_items import get_recipe_item, registered_recipe_items
 from sparkrun.utils.text import mask_non_placeholder_braces, render_template, unmask_braces, uses_brace_escapes
@@ -62,6 +63,7 @@ _KNOWN_KEYS = {
     "min_nodes",
     "max_nodes",
     "container",
+    "containers",
     "defaults",
     "env",
     "command",
@@ -130,6 +132,18 @@ class DistributionResourceConfig:
     enabled: bool = True
     entries: list[DistributionModelEntry | DistributionContainerEntry] = field(default_factory=list)
 
+    explicit: bool = False
+    """True when the recipe wrote this resource's block itself.
+
+    Finer-grained than :attr:`DistributionConfig.externally_provided`, which is
+    whole-config: a recipe that customizes only ``models`` still gets the
+    *auto-generated* container entry, and the launcher must be able to tell that
+    apart from a hand-written one before it derives container entries from the
+    per-machine image plan (deriving over a hand-written block would discard the
+    user's choice; *not* deriving over the auto one would ship only the fallback
+    image to every machine).
+    """
+
 
 @dataclass
 class DistributionConfig:
@@ -173,6 +187,7 @@ class DistributionConfig:
                     entry if isinstance(entry, (DistributionModelEntry, DistributionContainerEntry)) else entry_factory(entry)
                     for entry in raw.get("entries", [])
                 ],
+                explicit=bool(raw.get("explicit", False)),
             )
 
         return cls(
@@ -313,7 +328,7 @@ def _parse_distribution_config(data: dict[str, Any]) -> DistributionConfig:
                 )
             elif isinstance(e, str):
                 entries.append(DistributionModelEntry(name=e))
-        return DistributionResourceConfig(enabled=models_raw.get("enabled", True), entries=entries)
+        return DistributionResourceConfig(enabled=models_raw.get("enabled", True), entries=entries, explicit=True)
 
     def _parse_containers(containers_raw: Any) -> DistributionResourceConfig:
         if not isinstance(containers_raw, dict):
@@ -332,7 +347,7 @@ def _parse_distribution_config(data: dict[str, Any]) -> DistributionConfig:
                 )
             elif isinstance(e, str):
                 entries.append(DistributionContainerEntry(name=e))
-        return DistributionResourceConfig(enabled=containers_raw.get("enabled", True), entries=entries)
+        return DistributionResourceConfig(enabled=containers_raw.get("enabled", True), entries=entries, explicit=True)
 
     return DistributionConfig(
         models=_parse_models(raw["models"]) if "models" in raw else default.models,
@@ -1014,6 +1029,13 @@ class Recipe:
 
         # Container
         self.container: str = data.get("container", "")
+
+        # Optional per-machine images.  ``container`` above stays the fallback
+        # for any host without an entry; see :mod:`sparkrun.core.images` for why
+        # these bind to hostnames rather than ranks.  Parsed permissively — the
+        # cluster's host list isn't known here, so validation happens in
+        # ``resolve_image_plan`` at launch time.
+        self.containers: list[dict[str, str]] = parse_container_entries(data.get("containers"))
 
         # Configuration
         self.defaults: dict[str, Any] = dict(data.get("defaults") or {})
@@ -1755,6 +1777,7 @@ class Recipe:
             "min_nodes": self.min_nodes,
             "max_nodes": self.max_nodes,
             "container": self.container,
+            "containers": [dict(e) for e in self.containers],
             "defaults": dict(self.defaults),
             "env": dict(self.env),
             "command": self.command,
@@ -1808,6 +1831,7 @@ class Recipe:
         self.min_nodes = state.get("min_nodes", 1)
         self.max_nodes = state.get("max_nodes")
         self.container = state.get("container", "")
+        self.containers = parse_container_entries(state.get("containers"))
         self.defaults = dict(state.get("defaults") or {})
         self.env = dict(state.get("env") or {})
         self.command = state.get("command")
@@ -1881,6 +1905,7 @@ class Recipe:
         "min_nodes",
         "max_nodes",
         "container",
+        "containers",
         "solo_only",
         "cluster_only",
         "layout",
@@ -1928,6 +1953,8 @@ class Recipe:
         # -- Container --
         if self.container:
             d["container"] = self.container
+        if self.containers:
+            d["containers"] = [dict(e) for e in self.containers]
 
         # # -- Preserve Raw Topology flags from v1 --
         # if self._raw.get("solo_only"):

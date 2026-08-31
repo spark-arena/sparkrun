@@ -268,6 +268,16 @@ def generate_intent_id(recipe: "Recipe", overrides: dict | None = None) -> str:
     # hashing as before rather than all colliding on a placeholder.
     if getattr(recipe, "container", None):
         parts.append("image=%s" % recipe.container)
+    # Per-machine images (``containers:``) participate for the same reason the
+    # single image does: the intent is the *destroy* key, and two recipes that
+    # differ only in one machine's tuned image are workloads a user runs side by
+    # side.  The **declared** map is hashed, never the placement-resolved one —
+    # the intent must not change when the scheduler picks a different host
+    # subset, or `stop` / `logs` / `--ensure` stop matching their own workload.
+    # Appended only when non-empty, so every recipe predating this feature
+    # hashes byte-identically and no running workload is orphaned.
+    for host, img in sorted((e["host"], e["image"]) for e in getattr(recipe, "containers", None) or ()):
+        parts.append("image@%s=%s" % (host, img))
     if port is not None:
         parts.append("port=%s" % port)
     if served_name is not None:
@@ -354,6 +364,14 @@ def derive_recipe_fingerprint(recipe: "Recipe", overrides: dict | None = None) -
 
     layout = recipe.layout.to_dict() if getattr(recipe, "layout", None) is not None else None
     parts.append("layout=%s" % _val(layout))
+
+    # Per-machine images, appended only when declared.  Kept out of the attr
+    # loop above on purpose: an unconditional ``containers=[]`` part would move
+    # the digest for every existing recipe, invalidating recorded benchmark
+    # identities and the TRT-LLM autotuner cache filenames that embed it.
+    declared_images = getattr(recipe, "containers", None) or []
+    if declared_images:
+        parts.append("containers=%s" % _val(sorted((e["host"], e["image"]) for e in declared_images)))
 
     # Declared hooks only — ``recipe.pre_exec`` and friends are extended in
     # place by v1 mods / builders during resolution (see core/mods.py), and
@@ -491,6 +509,7 @@ def save_job_metadata(
     recipe_ref: str | None = None,
     runtime_info: dict[str, str] | None = None,
     container_image: Optional[str] = None,
+    container_images: "list[str] | tuple[str, ...] | None" = None,
     runtime: "RuntimePlugin | None" = None,
     backends: "dict[str, BackendBundle] | None" = None,
     *,
@@ -657,6 +676,12 @@ def save_job_metadata(
         meta["runtime_info"] = runtime_info
     if container_image:
         meta["effective_container_image"] = container_image
+    # Per-node images, aligned with ``hosts``.  Recorded alongside — never
+    # instead of — the scalar above: proxy discovery, ``logs`` and the desktop
+    # sidecar all read ``effective_container_image``, and repurposing it into a
+    # list would break every one of them.  The scalar stays the head's image.
+    if container_images:
+        meta["effective_container_images"] = [str(i) for i in container_images]
 
     # Persist per-host backend bundle so stop/logs can recover collective
     # backend selection without re-probing hardware.  Schema:

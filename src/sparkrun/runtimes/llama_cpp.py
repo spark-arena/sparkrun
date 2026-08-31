@@ -111,6 +111,10 @@ class LlamaCppRuntime(RuntimePlugin):
     def serve_flag_map(self):
         return {**_LLAMA_CPP_FLAG_MAP, **_LLAMA_CPP_BOOL_FLAGS}
 
+    # RPC workers talk to the head over llama.cpp's own RPC protocol rather than
+    # sharing a process group, so a worker genuinely may run a different build.
+    supports_heterogeneous_images = True
+
     def cluster_strategy(self) -> str:
         """llama.cpp uses native RPC-based distribution, not Ray."""
         return "native"
@@ -526,6 +530,7 @@ class LlamaCppRuntime(RuntimePlugin):
         trust = kwargs.pop("trust", False)
         placement = kwargs.pop("placement", None)
         runtime_cache = kwargs.pop("runtime_cache", None)
+        images_by_node = kwargs.pop("images_by_node", None)
 
         ctx = ClusterContext.build(
             self,
@@ -540,6 +545,7 @@ class LlamaCppRuntime(RuntimePlugin):
             recipe=recipe,
             placement=placement,
             runtime_cache=runtime_cache,
+            images_by_node=images_by_node,
         )
         head_container = self._container_name(cluster_id, "head")
         worker_container_name = self._container_name(cluster_id, "worker")
@@ -551,6 +557,7 @@ class LlamaCppRuntime(RuntimePlugin):
             cluster_id,
             {"RPC Port": rpc_port},
             dry_run,
+            images_by_node=ctx.images_by_node,
         )
 
         if progress:

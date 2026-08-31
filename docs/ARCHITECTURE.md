@@ -67,6 +67,7 @@ with `MULTIPLATFORM.md`, `EXECUTORS.md`, and `SECURITY.md` for the deeper dives.
 | `backend_select.py`  | `select_backends(host_hardware) -> BackendBundle`. Raises `NoMatchingBackendError` when no collective matches.                               |
 | `placement.py`       | `compute_placement()` — maps a `ParallelismConfig` onto hosts, honoring explicit `RecipeLayout` or auto-packing single-vendor clusters.      |
 | `layout.py`          | `RecipeLayout` / `Placement` dataclasses (per-rank `(host, local_gpu)`). Parsed from recipe `layout:` block.                                 |
+| `image_preparation.py` | Shared builder, per-node image-plan, distribution-entry, image-only staging, and immutable identity receipts used by launch and integrations. |
 | `launcher.py`        | `launch_inference()`. Resolves trust, per-host backends, runs the central compatibility check, threads `BackendBundle` to `runtime.run()`.   |
 
 ### `orchestration/`
@@ -147,7 +148,8 @@ logs warnings (does not raise).
 3. Generate `cluster_id`.
 4. Resolve container image (delegated to `runtime.resolve_container`).
 5. Expand `recipe.mods` into `pre_exec`.
-6. Builder phase (optional).
+6. Shared image preparation (`prepare_images`): optional builder, per-node
+   image plan, and distribution entries.
 7. **`resolve_per_host_backends(host_list, cluster=...)`** — returns
    `dict[host, BackendBundle]`. Hosts that fail to resolve are dropped from the
    dict; per-host env then flows through
@@ -159,7 +161,7 @@ logs warnings (does not raise).
 9. **Platform validation** — `resolve_platform(hw).validate_host(hw)` per host;
    warnings logged, never raised.
 10. Persist job metadata (includes serialized `backends`).
-11. Distribution phase (container image + model + IB probe).
+11. Distribution phase (the prepared container image plan + model + IB probe).
 12. Tuning sync.
 13. GGUF resolution.
 14. `runtime.generate_command()`.

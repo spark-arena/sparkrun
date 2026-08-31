@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from logging import Logger
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Mapping
 
 from scitrera_app_framework import Plugin, Variables
 
@@ -102,6 +102,17 @@ class BuilderPlugin(Plugin):
     #: :class:`~sparkrun.transports.base.Transport`.
     required_feature_flag: ClassVar[str | None] = None
 
+    #: Whether :meth:`prepare` rewrites the image reference it is handed.
+    #:
+    #: ``prepare()`` is single-valued, so a recipe declaring per-machine images
+    #: (``containers:``) cannot be served by a builder that transforms one — and
+    #: calling it once per image is not an option when a build is minutes long.
+    #: The launcher fails fast on that combination.  An *environment* builder
+    #: (``uv-venv``) returns the ref untouched and sets this ``False``, so it
+    #: composes with per-machine images freely.  Precedent:
+    #: :attr:`~sparkrun.orchestration.executors._base.Executor.needs_image`.
+    transforms_image: ClassVar[bool] = True
+
     def name(self) -> str:
         return "sparkrun.builder.%s" % self.builder_name
 
@@ -139,6 +150,7 @@ class BuilderPlugin(Plugin):
         dry_run: bool = False,
         transfer_mode: str = "local",
         ssh_kwargs: dict | None = None,
+        builder_context: Mapping[str, Any] | None = None,
     ) -> str:
         """Prepare the execution environment. Returns the final image name.
 

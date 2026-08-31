@@ -346,6 +346,13 @@ def _verify_mount_sources(recipe, hosts, ssh_kwargs, *, runtime, cluster, config
     raise RecipeError(message)
 
 
+def builder_transforms_image(recipe, v=None) -> bool:
+    """Backward-compatible facade for shared image preparation."""
+    from sparkrun.core.image_preparation import builder_transforms_image as _shared_check
+
+    return _shared_check(recipe, v)
+
+
 def _verify_image_command_passthrough(
     recipe,
     image,
@@ -1037,6 +1044,20 @@ def launch_inference(
     # Resolve container image
     container_image = runtime.resolve_container(recipe, overrides)
 
+    # Per-machine images (``containers:``) are gated *before* any side effect —
+    # the guards must fire before the builder runs, the image is pulled, or the
+    # model is synced.  The plan itself is resolved after the builder phase,
+    # since a builder may rewrite the fallback image ref.
+    from sparkrun.core.image_preparation import validate_image_configuration
+
+    validate_image_configuration(
+        recipe,
+        runtime,
+        v=v,
+        run_builder=True,
+        transform_check=builder_transforms_image,
+    )
+
     # Resolve recipe.mods to pre_exec entries (builder-agnostic).
     # Part of preparation — surfaces resolution failures before any
     # builder/distribution work, and keeps the builder ignorant of mods.
@@ -1061,39 +1082,42 @@ def launch_inference(
     if p:
         p.phase_end()
 
-    # -- Phase 2: Builder --
-    builder = None
+    # -- Phase 2: shared image preparation / optional builder --
+    #
+    # The builder call and the per-node image plan are one step because the
+    # plan's fallback is the builder's *output*: a builder that rewrites the
+    # image ref must be reflected before `containers:` is resolved against it.
+    # `prepare_images` owns both, so an integration that stages images without
+    # launching resolves them identically instead of reimplementing the order.
     if recipe.builder:
         if p:
             p.phase(2)
-        from sparkrun.core.bootstrap import get_builder
-
-        # A named builder that does not resolve is fatal, in either flavour:
-        # gated off (BuilderUnavailableError) or unknown (ValueError). This
-        # used to warn-and-skip for the unknown case, which meant the recipe's
-        # image or environment was never built and the workload launched
-        # against whatever `container:` happened to pull — a clean-looking
-        # launch running something the recipe did not describe. A builder is
-        # not a serve flag: there is no engine default to fall back to, so
-        # silence here has no safe reading. (`prepare()` raising is likewise
-        # not caught — that is a build failure, not a lookup failure.)
-        builder = get_builder(recipe.builder, v)
-
-        if builder is not None:
-            container_image = builder.prepare(
-                container_image,
-                recipe,
-                host_list,
-                config=config,
-                dry_run=dry_run,
-                transfer_mode=effective_transfer_mode,
-                ssh_kwargs=ssh_kwargs,
-            )
-        if p:
-            p.phase_end()
     else:
         if p:
             p.phase_skip(2, "no builder")
+
+    from sparkrun.core.image_preparation import prepare_images
+
+    prepared_images = prepare_images(
+        recipe,
+        runtime,
+        host_list,
+        overrides,
+        config=config,
+        v=v,
+        cluster=cluster,
+        dry_run=dry_run,
+        transfer_mode=effective_transfer_mode,
+        ssh_kwargs=ssh_kwargs,
+        source_image=container_image,
+        # Already gated above, before the builder could run.
+        validate=False,
+    )
+    builder = prepared_images.builder
+    image_plan = prepared_images.image_plan
+    container_image = prepared_images.head_image
+    if recipe.builder and p:
+        p.phase_end()
 
     # Resolve per-host backends from cluster hardware (or DGX Spark default).
     # Used by NCCL/RCCL/HCCL env emission inside the cluster orchestrator;
@@ -1175,6 +1199,7 @@ def launch_inference(
                 cache_dir=str(config.cache_dir),
                 recipe_ref=recipe_ref,
                 container_image=container_image,
+                container_images=(image_plan.images_by_node if image_plan.heterogeneous else None),
                 runtime=runtime,
                 backends=backends,
                 recipe_fingerprint=recipe_fingerprint,
@@ -1265,20 +1290,48 @@ def launch_inference(
         def _probe_image_entrypoint() -> None:
             if dry_run or _skip_container:
                 return
-            _verify_image_command_passthrough(
-                recipe,
-                container_image,
-                host_list,
-                ssh_kwargs,
-                runtime=runtime,
-                cluster=cluster,
-                config=config,
-                executor_config=executor_config,
-                rootless=rootless,
-                auto_user=auto_user,
-                host_hardware=_head_hw,
-                v=v,
-            )
+
+            def _probe(img: str, hs: list[str]) -> None:
+                _verify_image_command_passthrough(
+                    recipe,
+                    img,
+                    hs,
+                    ssh_kwargs,
+                    runtime=runtime,
+                    cluster=cluster,
+                    config=config,
+                    executor_config=executor_config,
+                    rootless=rootless,
+                    auto_user=auto_user,
+                    host_hardware=_head_hw,
+                    v=v,
+                )
+
+            # One probe per *distinct* image.  The single-image shortcut used to
+            # be the whole story — the verdict is a property of the image, and
+            # distribution had established every host carried the same one.  With
+            # per-machine images that premise is gone, so each image is probed on
+            # a host that actually runs it.
+            groups: dict[str, list[str]] = {}
+            for _host, _img in zip(host_list, image_plan.images_by_node):
+                groups.setdefault(_img, []).append(_host)
+
+            if len(groups) <= 1:
+                _probe(container_image, host_list)
+                return
+
+            from concurrent.futures import ThreadPoolExecutor as _TPE, as_completed as _as_completed
+
+            errors: list[Exception] = []
+            with _TPE(max_workers=min(len(groups), 8)) as pool:
+                futures = [pool.submit(_probe, img, hs) for img, hs in groups.items()]
+                for future in _as_completed(futures):
+                    try:
+                        future.result()
+                    except Exception as e:  # RecipeError from a confirmed bad image
+                        errors.append(e)
+            if errors:
+                raise errors[0]
 
         comm_env, ib_ip_map, mgmt_ip_map, ib_iface_map = distribute_from_config(
             recipe,
@@ -1314,6 +1367,8 @@ def launch_inference(
                     ib_ip_map=ib_ip_map,
                     mgmt_ip_map=mgmt_ip_map,
                     recipe_ref=recipe_ref,
+                    container_image=container_image,
+                    container_images=(image_plan.images_by_node if image_plan.heterogeneous else None),
                     runtime=runtime,
                     backends=backends,
                     recipe_fingerprint=recipe_fingerprint,
@@ -1596,6 +1651,7 @@ def launch_inference(
     rc = runtime.run(
         hosts=host_list,
         image=container_image,
+        images_by_node=(image_plan.images_by_node if image_plan.heterogeneous else None),
         serve_command=serve_command,
         recipe=recipe,
         overrides=overrides,
@@ -1670,6 +1726,7 @@ def launch_inference(
                         recipe_ref=recipe_ref,
                         runtime_info=runtime_info,
                         container_image=container_image,
+                        container_images=(image_plan.images_by_node if image_plan.heterogeneous else None),
                         runtime=runtime,
                         backends=backends,
                         recipe_fingerprint=recipe_fingerprint,

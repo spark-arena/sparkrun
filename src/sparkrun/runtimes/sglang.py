@@ -96,6 +96,12 @@ class SglangRuntime(RuntimePlugin):
     # differently-tuned builds of the same stack, not different stacks.
     supports_heterogeneous_images = True
 
+    # Native distribution: each node runs its own serve process and rendezvous
+    # is over the wire, so per-machine tuned images are meaningful here.  Ranks
+    # still share NCCL/torch ABI expectations — the images are expected to be
+    # differently-tuned builds of the same stack, not different stacks.
+    supports_heterogeneous_images = True
+
     def cluster_strategy(self) -> str:
         """SGLang uses native multi-node distribution, not Ray."""
         return "native"

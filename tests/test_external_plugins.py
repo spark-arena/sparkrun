@@ -212,13 +212,13 @@ def test_external_plugin_paths_defaults_empty(tmp_path):
 
 def test_plugin_settings_returns_isolated_plugin_mapping(tmp_path):
     cfg = tmp_path / "config.yaml"
-    cfg.write_text("plugins:\n  paths: /plugins\n  coldsnap:\n    artifact_generations: 2\n")
+    cfg.write_text("plugins:\n  paths: /plugins\n  snapshot:\n    artifact_generations: 2\n")
     config = SparkrunConfig(config_path=cfg)
 
-    settings = config.plugin_settings("coldsnap")
+    settings = config.plugin_settings("snapshot")
     settings["artifact_generations"] = 99
 
-    assert config.plugin_settings("coldsnap") == {"artifact_generations": 2}
+    assert config.plugin_settings("snapshot") == {"artifact_generations": 2}
     assert config.plugin_settings("missing") == {}
     assert config.external_plugin_paths == [Path("/plugins")]
 

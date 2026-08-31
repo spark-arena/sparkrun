@@ -64,6 +64,15 @@ class ClusterContext:
     don't thread a cluster through still work.
     """
 
+    images_by_node: tuple[str, ...] | None = None
+    """Per-node container images, positionally aligned with :attr:`hosts`.
+
+    ``None`` (the default) means every node runs :attr:`image` — byte-identical
+    to the behavior before per-machine images existed.  Populated from
+    :class:`sparkrun.core.images.ImagePlan` when a recipe declares
+    ``containers:``.  Read via :meth:`image_for_host`, never indexed directly.
+    """
+
     placement: RankAssignment | None = None
     """Rank-to-host placement from the scheduler (``sparkrun.api.schedule``).
 
@@ -81,6 +90,24 @@ class ClusterContext:
         :attr:`~sparkrun.core.cluster_manager.ClusterDefinition.mgmt_interface`.
         """
         return self.cluster.mgmt_interface if self.cluster is not None else None
+
+    def image_for_host(self, host: str) -> str:
+        """Container image *host* runs, falling back to the cluster-wide one.
+
+        Resolved by host rather than by rank because the image is a property of
+        the machine (see :mod:`sparkrun.core.images`) — and because callers pass
+        subsets of :attr:`hosts`, where a positional index would be wrong.
+        """
+        if self.images_by_node:
+            try:
+                return self.images_by_node[self.hosts.index(host)]
+            except (ValueError, IndexError):
+                logger.debug("No per-node image for host %s; using cluster image", host)
+        return self.image
+
+    def heterogeneous_images(self) -> bool:
+        """True when this launch runs more than one distinct image."""
+        return bool(self.images_by_node) and len(set(self.images_by_node)) > 1
 
     def hardware_for(self, host: str):
         """Return per-host :class:`HostHardware` (DGX Spark default when unknown)."""
@@ -107,6 +134,7 @@ class ClusterContext:
         recipe: Recipe | None = None,
         placement: "RankAssignment | None" = None,
         runtime_cache: "RuntimeCacheMounts | None" = None,
+        images_by_node: "tuple[str, ...] | None" = None,
     ) -> ClusterContext:
         """Build context from runtime hooks and config.
 
@@ -212,6 +240,7 @@ class ClusterContext:
             topology=topology,
             cluster=cluster,
             placement=placement,
+            images_by_node=images_by_node,
         )
 
 
@@ -656,7 +685,7 @@ def launch_containers_parallel(
                 rank=rank,
             )
             script = executor.generate_launch_script(
-                image=ctx.image,
+                image=ctx.image_for_host(host),
                 container_name=cname,
                 command="sleep infinity",
                 env=ctx.all_env,
@@ -930,6 +959,7 @@ def run_native_cluster(
         ctx.cluster_id,
         {port_label: init_port},
         ctx.dry_run,
+        images_by_node=ctx.images_by_node,
     )
 
     # Generate per-node commands

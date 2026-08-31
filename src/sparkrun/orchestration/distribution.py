@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -911,19 +912,31 @@ def distribute_from_config(
     # Distribute container images (skipped entirely when skip_container — e.g.
     # a container-less executor like `local` that has no image to distribute).
     if dist_cfg.containers.enabled and not skip_container:
+        image_plan: list[tuple[str, list[str]]] = []
         for entry in dist_cfg.containers.entries:
             if not isinstance(entry, DistributionContainerEntry):
                 continue
             entry_name = entry.name or image
             targets = _resolve_targets(entry.target if entry.target else [-1], host_list)
-            if not targets:
-                continue
-            logger.log(_PROGRESS_LEVEL, "  Distributing image %s to %d host(s)", entry_name, len(targets))
-            with _timed(timeline, "launch.distribute.image", image=entry_name, mode=transfer_mode, targets=len(targets)):
+            if targets:
+                image_plan.append((entry_name, targets))
+
+        # More than one distinct image means the nodes are running *different*
+        # images, which rules out delegated's head-pull-and-fan-out (see
+        # _distribute_single_image).
+        _heterogeneous = len({name for name, _ in image_plan}) > 1
+
+        if image_plan:
+            with _timed(
+                timeline,
+                "launch.distribute.image",
+                image=",".join(name for name, _ in image_plan),
+                mode=transfer_mode,
+                targets=sum(len(targets) for _, targets in image_plan),
+            ):
                 with pending_op(_lock_id, "image_distribute", **_pop_kw):
-                    img_failed = _distribute_single_image(
-                        entry_name,
-                        targets,
+                    img_failed = _distribute_image_plan(
+                        image_plan,
                         host_list,
                         transfer_mode,
                         transfer_hosts,
@@ -932,6 +945,7 @@ def distribute_from_config(
                         dry_run,
                         _auto_delegated,
                         force_pull=_force_pull,
+                        heterogeneous=_heterogeneous,
                     )
             if img_failed:
                 raise DistributionError("Image distribution failed on: %s" % ", ".join(img_failed))
@@ -1024,6 +1038,78 @@ def _subset_transfer_hosts(
     return [t for h, t in zip(host_subset_source, transfer_hosts) if h in target_set]
 
 
+def _distribute_image_plan(
+    image_plan: list[tuple[str, list[str]]],
+    host_list: list[str],
+    transfer_mode: str,
+    transfer_hosts: list[str] | None,
+    worker_transfer_hosts: list[str] | None,
+    ssh_kwargs: dict,
+    dry_run: bool,
+    auto_delegated: bool,
+    force_pull: bool = False,
+    heterogeneous: bool = False,
+) -> list[str]:
+    """Distribute every ``(image, targets)`` pair, overlapping across images.
+
+    A recipe with N distinct images used to pay N serialized fan-outs; each
+    image's transfer is independent of the others, so they run concurrently.
+
+    Grouping is **by image, executed in parallel across images** rather than by
+    (image, host) pair, because each per-image call already fans out over its
+    own targets under ``resolve_parallel_cap``.  A single image is dispatched
+    inline so the overwhelmingly common case keeps its exact previous call
+    shape and log ordering.
+
+    Returns the union of failed hosts across all images.
+    """
+    from sparkrun.core.progress import PROGRESS as _PROGRESS
+
+    def _one(name: str, targets: list[str]) -> list[str]:
+        logger.log(_PROGRESS, "  Distributing image %s to %d host(s)", name, len(targets))
+        return _distribute_single_image(
+            name,
+            targets,
+            host_list,
+            transfer_mode,
+            transfer_hosts,
+            worker_transfer_hosts,
+            ssh_kwargs,
+            dry_run,
+            auto_delegated,
+            force_pull=force_pull,
+            heterogeneous=heterogeneous,
+        )
+
+    if len(image_plan) == 1:
+        name, targets = image_plan[0]
+        return _one(name, targets)
+
+    from sparkrun.orchestration.ssh import resolve_parallel_cap
+
+    failed: list[str] = []
+    with ThreadPoolExecutor(max_workers=resolve_parallel_cap(len(image_plan))) as pool:
+        futures = {pool.submit(_one, name, targets): name for name, targets in image_plan}
+        for future in as_completed(futures):
+            name = futures[future]
+            try:
+                failed.extend(future.result())
+            except Exception:
+                logger.error("Image distribution raised for '%s'", name, exc_info=True)
+                # Every target of this image is unusable; attribute them all so
+                # the caller's error names hosts rather than dying on an empty
+                # failure list that reads as success.
+                failed.extend(t for n, ts in image_plan if n == name for t in ts)
+
+    # Preserve host_list order and de-duplicate: a host can appear under more
+    # than one image (multi-image-per-node recipes), and the caller renders this
+    # straight into an error message.
+    failed_set = set(failed)
+    ordered = [h for h in host_list if h in failed_set]
+    ordered.extend(h for h in dict.fromkeys(failed) if h not in host_list)
+    return ordered
+
+
 def _distribute_single_image(
     image: str,
     targets: list[str],
@@ -1035,6 +1121,7 @@ def _distribute_single_image(
     dry_run: bool,
     auto_delegated: bool,
     force_pull: bool = False,
+    heterogeneous: bool = False,
 ) -> list[str]:
     """Distribute a single image to a subset of hosts.
 
@@ -1045,11 +1132,16 @@ def _distribute_single_image(
     follows a push — the head has just received the fresh image over the wire,
     and re-pulling there would both duplicate the transfer and defeat push mode,
     which exists for heads that cannot reach the registry at all.
+
+    *heterogeneous* says this launch runs more than one distinct image.  It
+    redirects ``delegated`` to per-node ``pull``: delegated's head-pull-then-
+    ``docker save | ssh docker load`` fan-out would make the head pull images it
+    does not run and copy a machine-tuned image onto the wrong machine.
     """
     from sparkrun.containers.distribute import distribute_image_from_local, distribute_image_from_head
     from sparkrun.containers.sync import sync_image_to_hosts
 
-    if transfer_mode == "pull":
+    if transfer_mode == "pull" or (transfer_mode == "delegated" and heterogeneous):
         failed = sync_image_to_hosts(image, targets, dry_run=dry_run, force_pull=force_pull, **ssh_kwargs)
         # Registry-unreachable fallback: the control machine may hold
         # credentials or a route the nodes lack, so push it each node's own

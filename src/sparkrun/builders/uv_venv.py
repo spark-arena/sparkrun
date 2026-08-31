@@ -313,6 +313,10 @@ class UvVenvBuilder(BuilderPlugin):
     builder_aliases = ("venv",)
     required_feature_flag = "builder.uv_venv"
 
+    # An *environment* builder: it provisions a host-side venv and returns the
+    # image ref untouched, so it composes with per-machine `containers:`.
+    transforms_image = False
+
     def prepare(
         self,
         image: str,
@@ -322,6 +326,7 @@ class UvVenvBuilder(BuilderPlugin):
         dry_run: bool = False,
         transfer_mode: str = "local",
         ssh_kwargs: dict | None = None,
+        builder_context=None,
     ) -> str:
         """Provision the venv on every target host. Returns *image* unchanged (no container)."""
         spec = _resolve_spec(recipe)
