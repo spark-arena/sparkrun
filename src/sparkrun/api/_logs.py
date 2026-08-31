@@ -83,8 +83,10 @@ def logs(
     """
     from sparkrun.api._resolve import (
         discover_cluster_id_by_intent,
+        maybe_load_config,
         prepare_transport,
         resolve_cluster,
+        resolve_cluster_for_job,
         resolve_recipe,
     )
     from sparkrun.orchestration.executor import resolve_executor
@@ -117,6 +119,14 @@ def logs(
             sctx=sctx,
         )
         meta = load_job_metadata(cluster_id, cache_dir=cache_dir)
+        # Discovery ran against the invocation's cluster; the reads below run
+        # against the job's own, which its metadata may name (see
+        # ``resolve_cluster_for_job``).  Re-prepare the transport only if that
+        # actually changed which cluster we are talking to.
+        job_cluster = resolve_cluster_for_job(cluster, target_hosts, meta=meta, sctx=sctx)
+        if (job_cluster.name, job_cluster.user) != (cluster_def.name, cluster_def.user):
+            cluster_def = job_cluster
+            prepare_transport(cluster_def)
     else:
         meta = load_job_metadata(cluster_id, cache_dir=cache_dir)
         if hosts:
@@ -125,7 +135,10 @@ def logs(
             target_hosts = list(meta["hosts"])
         else:
             raise JobNotFound("No hosts known for cluster_id %r" % cluster_id)
-        cluster_def = resolve_cluster(cluster, target_hosts, sctx=sctx)
+        # No explicit cluster → recover the one the job was launched on, so
+        # the log reads connect as that launch did rather than as this
+        # control node's own login (issue #277).
+        cluster_def = resolve_cluster_for_job(cluster, target_hosts, meta=meta, sctx=sctx)
         prepare_transport(cluster_def)
 
     runtime = _resolve_runtime_for_job(meta, cluster_id, recipe=resolved_recipe, sctx=sctx)
@@ -137,7 +150,12 @@ def logs(
         v=sctx.variables if sctx is not None else None,
     )
 
-    config = sctx.config if sctx is not None else None
+    # Load a config even without an sctx (as ``api.stop`` does): it is what
+    # carries the SSH user, key and options into every read below.  Without
+    # it a library caller — the desktop sidecar, or anything driving api.logs
+    # directly — connected with no SSH configuration at all, so the cluster's
+    # user could not be applied even once it was known.
+    config = sctx.config if sctx is not None else maybe_load_config()
     if config is not None and getattr(cluster_def, "user", None):
         try:
             config.ssh_user = cluster_def.user

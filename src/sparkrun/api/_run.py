@@ -81,6 +81,7 @@ def plan(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunPl
     )
     from sparkrun.orchestration.job_metadata import (
         derive_placement_token_from_hosts,
+        derive_recipe_fingerprint,
         generate_cluster_id,
         generate_intent_id,
         generate_placement_token,
@@ -145,6 +146,14 @@ def plan(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunPl
     # still-running containers from the occupancy snapshot instead of treating
     # them as foreign load.  Reused below as the composed cluster_id's intent.
     intent_id = generate_intent_id(recipe, options.overrides)
+
+    # Serve-configuration digest, taken here for the same reason the intent is:
+    # ``launch_inference`` folds platform runtime-flag defaults into
+    # recipe.defaults before it persists metadata, so a digest derived down
+    # there depends on the *hardware* the job landed on and no caller could
+    # reproduce it.  Deriving from the declared recipe keeps it a stable pin —
+    # which is what callers that later match a job by fingerprint actually need.
+    recipe_fingerprint = derive_recipe_fingerprint(recipe, options.overrides)
 
     placement: "RankAssignment | None"
     is_solo_request = bool(options.solo) or recipe.mode == "solo"
@@ -217,6 +226,7 @@ def plan(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunPl
         intent_id=intent_id,
         placement_token=placement_token,
         cluster_id=cluster_id_for_launch,
+        recipe_fingerprint=recipe_fingerprint,
     )
 
 
@@ -295,6 +305,55 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
         except Exception:
             logger.debug("Failed to apply cluster SSH user to config", exc_info=True)
 
+    # Recipe-owned execution strategies are selected only from top-level items
+    # present in this recipe.  Preparation happens before the shared launcher
+    # starts pulling images or distributing a model, and therefore before its
+    # core-owned replacement barrier can evict a serving workload.
+    from sparkrun.core.execution import ExecutionContext, resolve_recipe_execution, run_preparation_steps
+    from sparkrun.core.timing import Timeline, timed
+
+    if getattr(sctx, "timing", None) is None:
+        setattr(sctx, "timing", Timeline())
+
+    execution_context = ExecutionContext(options=options, plan=plan, sctx=sctx)
+    try:
+        execution_strategy, preparation_steps = resolve_recipe_execution(execution_context)
+        if execution_strategy is not None or preparation_steps:
+            strategy_name = execution_strategy.name if execution_strategy is not None else "recipe-hooks"
+            with timed(
+                sctx.timing,
+                "execution.prepare",
+                strategy=strategy_name,
+                steps=len(preparation_steps),
+            ) as preparation_span:
+                preparation_receipts = run_preparation_steps(
+                    execution_context,
+                    preparation_steps,
+                    timeline=sctx.timing,
+                    parent=preparation_span,
+                )
+                if execution_strategy is not None:
+                    with timed(
+                        sctx.timing,
+                        "execution.finalize",
+                        parent=preparation_span,
+                        strategy=strategy_name,
+                    ):
+                        prepared_execution = execution_strategy.finalize_preparation(execution_context, preparation_receipts)
+                else:
+                    prepared_execution = None
+        else:
+            preparation_receipts = {}
+            prepared_execution = None
+        if execution_strategy is not None and prepared_execution.strategy != execution_strategy.name:
+            raise ValueError(
+                "execution strategy prepared itself as %r, expected %r" % (prepared_execution.strategy, execution_strategy.name)
+            )
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except Exception as error:
+        raise SparkrunError("launch preparation failed: %s" % error) from error
+
     # 3a-bis. Evict this intent's superseded deployments.  ``exclude_intent_id``
     # in the planning pass told the scheduler "my own containers aren't foreign
     # load, I'm replacing them" — this is the half that actually replaces them.
@@ -347,6 +406,8 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
         except ExecutorUnavailableError:
             _executor_name = None
         if _executor_name == "k8s":
+            if execution_strategy is not None:
+                raise SparkrunError("execution strategy %r does not support the Kubernetes launch path" % execution_strategy.name)
             from sparkrun.api._run_k8s import run_k8s
 
             # This path returns without going through ``launch_inference``, so
@@ -411,6 +472,11 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
         # ``None`` under --dry-run: the launcher also guards, but a dry run
         # must not depend on a callee honouring the contract to stay read-only.
         "before_start": None if options.dry_run else _evict_before_start,
+        "recipe_fingerprint": plan.recipe_fingerprint,
+        "owner": options.owner,
+        "execution_context": execution_context,
+        "execution_strategy": execution_strategy,
+        "prepared_execution": prepared_execution,
     }
 
     # 5. Launch.
@@ -457,6 +523,7 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
         cluster_id=final_cluster_id,
         intent_id=final_intent_id,
         placement_token=final_placement_token,
+        recipe_fingerprint=plan.recipe_fingerprint,
         host_list=tuple(result.host_list),
         placement=placement,
         scheduler=plan.scheduler or _resolve_scheduler_name(effective_scheduler, sctx),
@@ -472,6 +539,7 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
         effective_cache_dir=result.effective_cache_dir or "",
         runtime_info=dict(result.runtime_info or {}),
         metadata=metadata,
+        timeline=result.timeline,
         launch_result=result,
     )
     _prune_stale_job_metadata(

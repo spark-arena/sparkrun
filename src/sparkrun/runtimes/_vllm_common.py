@@ -20,6 +20,18 @@ class VllmMixin:
     def get_common_env(self):
         return default_env_hf_offline()
 
+    def known_config_keys(self) -> frozenset[str]:
+        """Flag-map keys plus the vLLM keys read outside it.
+
+        ``data_parallel_rpc_port`` is consumed by the vllm-distributed rank
+        wiring rather than emitted from the map.  See
+        :func:`sparkrun.core.launcher.report_unmapped_config_keys`.
+        """
+        return frozenset(VLLM_FLAG_MAP) | {"data_parallel_rpc_port"}
+
+    def serve_flag_map(self):
+        return VLLM_FLAG_MAP
+
     def default_executor_config(self) -> dict:
         """Allow attaching a stack sampler to a hung vLLM engine.
 
@@ -88,6 +100,8 @@ class VllmMixin:
 
         return {
             "VLLM_CACHE_ROOT": CachePath("vllm"),
+            "TORCH_HOME": CachePath("torch"),
+            "TORCH_EXTENSIONS_DIR": CachePath("torch_extensions"),
             "TORCHINDUCTOR_CACHE_DIR": CachePath("inductor"),
             "TRITON_CACHE_DIR": CachePath("triton"),
             "FLASHINFER_CACHE_DIR": CachePath("flashinfer"),
@@ -146,6 +160,39 @@ class VllmMixin:
         """
         return resolve_api_key(recipe, overrides, "VLLM_API_KEY", "--api-key")
 
+    def _augment_vllm_served_model_name(
+        self,
+        command: str,
+        recipe: "Recipe",
+        config,
+        skip_keys: set[str] | frozenset[str] = frozenset(),
+    ) -> str:
+        """Keep vLLM's public model name stable across local-path rewrites.
+
+        The base :meth:`~sparkrun.runtimes.base.RuntimePlugin._augment_served_model_name`
+        only fills the flag when the *config chain* names one, which was
+        sufficient while vLLM derived the served name from the model id it was
+        given.  Newer offline builds replace that id with the mounted snapshot
+        path first, so with no explicit flag the endpoint advertises an
+        implementation path — and everything that routes on the model name
+        (proxy discovery, benchmarks, validation) asks for a name the server
+        does not serve.
+
+        A configured alias still wins; otherwise fall back to the recipe's
+        effective public name, which is the same value
+        :func:`~sparkrun.core.recipe.resolve_served_model_name` reports for
+        display and routing.  ``generate_intent_id`` is unaffected: it hashes
+        the *declared* name, never the rendered command.
+        """
+        if "served_model_name" in skip_keys:
+            return command
+        value = config.get("served_model_name")
+        if value is None:
+            value = recipe.effective_served_model_name
+        if not value:
+            return command
+        return self.reconcile_flag_in_command(command, "--served-model-name", value, override=False)
+
     def _build_base_command(
         self,
         recipe: "Recipe",
@@ -176,7 +223,12 @@ class VllmMixin:
             )
         )
 
-        return " ".join(parts)
+        return self._augment_vllm_served_model_name(
+            " ".join(parts),
+            recipe,
+            config,
+            skip_keys,
+        )
 
     def _build_command(
         self,
@@ -230,16 +282,24 @@ class VllmMixin:
 
         return base
 
-    def detect_spec_config_draft_model(self, recipe: "Recipe") -> str | None:
+    def detect_spec_config_draft(self, recipe: "Recipe") -> tuple[str | None, str | None]:
+        """Return ``(draft_model, draft_revision)`` from ``speculative_config``.
+
+        The revision is read from the same JSON object as the model — it is
+        vLLM's own ``revision`` field, and it pins the *draft* repo.  It is
+        deliberately not defaulted to the recipe's ``model_revision``: that SHA
+        belongs to the served model's repo and does not exist in the draft's,
+        so inheriting it fails the download with ``Revision Not Found``.
+        """
         try:
             # TODO: support various ways that speculative config can be specified
             # noinspection PyProtectedMember
             spec_cfg = recipe._effective_default("speculative_config")
             spec_cfg_dict = json.loads(spec_cfg) or {}
             # intended primarily for dflash, but we allow any "model" field for future extensibility
-            return spec_cfg_dict.get("model", None)
+            return spec_cfg_dict.get("model", None), spec_cfg_dict.get("revision", None)
         except Exception:
-            return None
+            return None, None
 
 
 # Standard vLLM CLI flags and their recipe default keys

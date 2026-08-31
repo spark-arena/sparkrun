@@ -595,17 +595,21 @@ def test_launch_inference_absolute_model_path_keeps_explicit_served_name(monkeyp
 
 
 # ---------------------------------------------------------------------------
-# Pre-placed model preflight (_verify_pre_placed_model via the executor seam)
+# Mount-source preflight (_verify_mount_sources via the executor seam)
 # ---------------------------------------------------------------------------
 
 
 class _StubExecutor:
-    """Minimal executor exposing only the verify_mount_sources seam."""
+    """Minimal executor exposing only the mount-source seams."""
 
-    def __init__(self, missing=None, raises=False):
+    def __init__(self, missing=None, raises=False, volumes=()):
         self._missing = missing or {}
         self._raises = raises
+        self._volumes = list(volumes)
         self.calls = []
+
+    def bind_mount_sources(self):
+        return list(self._volumes)
 
     def verify_mount_sources(self, paths, hosts, *, ssh_kwargs=None):
         self.calls.append((list(paths), list(hosts), ssh_kwargs))
@@ -626,7 +630,7 @@ def test_preflight_passes_when_paths_present(monkeypatch):
     ex = _StubExecutor(missing={})
     monkeypatch.setattr("sparkrun.orchestration.executor.resolve_executor", lambda **kw: ex)
 
-    launcher._verify_pre_placed_model(
+    launcher._verify_mount_sources(
         _preflight_recipe(), ["nv-host"], {"ssh_user": "u"}, runtime=_StubRuntime(), cluster=None, config=None, overrides={}
     )
     # The identity-mount path was probed on the target host.
@@ -643,7 +647,7 @@ def test_preflight_raises_when_path_missing(monkeypatch):
     monkeypatch.setattr("sparkrun.orchestration.executor.resolve_executor", lambda **kw: ex)
 
     with pytest.raises(RecipeError, match="not found on the target"):
-        launcher._verify_pre_placed_model(
+        launcher._verify_mount_sources(
             _preflight_recipe(), ["nv-host"], {}, runtime=_StubRuntime(), cluster=None, config=None, overrides={}
         )
 
@@ -656,7 +660,7 @@ def test_preflight_skips_when_executor_unresolvable(monkeypatch):
 
     monkeypatch.setattr("sparkrun.orchestration.executor.resolve_executor", _boom)
     # Unresolvable executor must not block — the runtime surfaces the real error.
-    launcher._verify_pre_placed_model(_preflight_recipe(), ["nv-host"], {}, runtime=_StubRuntime(), cluster=None, config=None, overrides={})
+    launcher._verify_mount_sources(_preflight_recipe(), ["nv-host"], {}, runtime=_StubRuntime(), cluster=None, config=None, overrides={})
 
 
 def test_preflight_best_effort_on_probe_failure(monkeypatch):
@@ -665,18 +669,136 @@ def test_preflight_best_effort_on_probe_failure(monkeypatch):
     ex = _StubExecutor(raises=True)
     monkeypatch.setattr("sparkrun.orchestration.executor.resolve_executor", lambda **kw: ex)
     # A probe that errors (SSH broken, etc.) is best-effort — never blocks.
-    launcher._verify_pre_placed_model(_preflight_recipe(), ["nv-host"], {}, runtime=_StubRuntime(), cluster=None, config=None, overrides={})
+    launcher._verify_mount_sources(_preflight_recipe(), ["nv-host"], {}, runtime=_StubRuntime(), cluster=None, config=None, overrides={})
 
 
 def test_preflight_noop_without_pre_placed_path(monkeypatch):
     from sparkrun.core import launcher
 
-    resolved = {"n": 0}
-    monkeypatch.setattr(
-        "sparkrun.orchestration.executor.resolve_executor",
-        lambda **kw: resolved.__setitem__("n", resolved["n"] + 1) or _StubExecutor(),
-    )
-    # Ordinary repo-id model → no identity mount → executor never resolved.
+    ex = _StubExecutor()
+    monkeypatch.setattr("sparkrun.orchestration.executor.resolve_executor", lambda **kw: ex)
+    # Ordinary repo-id model and no executor volumes → nothing to probe. The
+    # executor *is* resolved (it owns the "which volumes?" answer) but no SSH
+    # happens, which is what the empty ``calls`` list asserts.
     recipe = _Recipe(cluster_config=None)  # model = "Qwen/Qwen3-1.7B"
-    launcher._verify_pre_placed_model(recipe, ["nv-host"], {}, runtime=_StubRuntime(), cluster=None, config=None, overrides={})
-    assert resolved["n"] == 0
+    launcher._verify_mount_sources(recipe, ["nv-host"], {}, runtime=_StubRuntime(), cluster=None, config=None, overrides={})
+    assert ex.calls == []
+
+
+# ---------------------------------------------------------------------------
+# executor_config.volumes half of the mount-source preflight
+# ---------------------------------------------------------------------------
+
+
+class _PolicyConfig:
+    """Stand-in for SparkrunConfig exposing only the policy knob."""
+
+    def __init__(self, policy="fail"):
+        self.missing_mount_source_policy = policy
+
+
+def test_volume_sources_are_probed(monkeypatch):
+    from sparkrun.core import launcher
+
+    ex = _StubExecutor(volumes=["/opt/patches/ple.py"])
+    monkeypatch.setattr("sparkrun.orchestration.executor.resolve_executor", lambda **kw: ex)
+
+    recipe = _Recipe(cluster_config=None)  # repo-id model → no identity mount
+    launcher._verify_mount_sources(recipe, ["nv-host"], {}, runtime=_StubRuntime(), cluster=None, config=_PolicyConfig(), overrides={})
+    assert ex.calls == [(["/opt/patches/ple.py"], ["nv-host"], {})]
+
+
+def test_missing_volume_source_fails_by_default(monkeypatch):
+    import pytest
+
+    from sparkrun.core import launcher
+    from sparkrun.core.recipe import RecipeError
+
+    ex = _StubExecutor(missing={"nv-host": ["/opt/patches/ple.py"]}, volumes=["/opt/patches/ple.py"])
+    monkeypatch.setattr("sparkrun.orchestration.executor.resolve_executor", lambda **kw: ex)
+
+    with pytest.raises(RecipeError, match="root-owned"):
+        launcher._verify_mount_sources(
+            _Recipe(cluster_config=None), ["nv-host"], {}, runtime=_StubRuntime(), cluster=None, config=_PolicyConfig(), overrides={}
+        )
+
+
+def test_missing_volume_source_warns_under_policy(monkeypatch, caplog):
+    import logging
+
+    from sparkrun.core import launcher
+
+    ex = _StubExecutor(missing={"nv-host": ["/opt/patches/ple.py"]}, volumes=["/opt/patches/ple.py"])
+    monkeypatch.setattr("sparkrun.orchestration.executor.resolve_executor", lambda **kw: ex)
+
+    with caplog.at_level(logging.WARNING):
+        launcher._verify_mount_sources(
+            _Recipe(cluster_config=None),
+            ["nv-host"],
+            {},
+            runtime=_StubRuntime(),
+            cluster=None,
+            config=_PolicyConfig("warn"),
+            overrides={},
+        )
+    assert "/opt/patches/ple.py" in caplog.text
+
+
+def test_ignore_policy_skips_the_volume_probe(monkeypatch):
+    from sparkrun.core import launcher
+
+    ex = _StubExecutor(volumes=["/opt/patches/ple.py"])
+    monkeypatch.setattr("sparkrun.orchestration.executor.resolve_executor", lambda **kw: ex)
+
+    launcher._verify_mount_sources(
+        _Recipe(cluster_config=None), ["nv-host"], {}, runtime=_StubRuntime(), cluster=None, config=_PolicyConfig("ignore"), overrides={}
+    )
+    assert ex.calls == []
+
+
+def test_ignore_policy_still_checks_pre_placed_weights(monkeypatch):
+    """The policy governs *volumes*; skipping model download is not negotiable."""
+    import pytest
+
+    from sparkrun.core import launcher
+    from sparkrun.core.recipe import RecipeError
+
+    ex = _StubExecutor(missing={"nv-host": ["/nfs/models/qwen3"]}, volumes=["/opt/patches/ple.py"])
+    monkeypatch.setattr("sparkrun.orchestration.executor.resolve_executor", lambda **kw: ex)
+
+    with pytest.raises(RecipeError, match="Pre-placed model weights"):
+        launcher._verify_mount_sources(
+            _preflight_recipe(), ["nv-host"], {}, runtime=_StubRuntime(), cluster=None, config=_PolicyConfig("ignore"), overrides={}
+        )
+    # Only the model path was probed; the volume was excluded by the policy.
+    assert ex.calls == [(["/nfs/models/qwen3"], ["nv-host"], {})]
+
+
+def test_both_path_sets_share_one_probe(monkeypatch):
+    """One SSH fan-out, not two — they share a substrate."""
+    from sparkrun.core import launcher
+
+    ex = _StubExecutor(volumes=["/opt/patches/ple.py"])
+    monkeypatch.setattr("sparkrun.orchestration.executor.resolve_executor", lambda **kw: ex)
+
+    launcher._verify_mount_sources(
+        _preflight_recipe(), ["nv-host"], {}, runtime=_StubRuntime(), cluster=None, config=_PolicyConfig(), overrides={}
+    )
+    assert ex.calls == [(["/nfs/models/qwen3", "/opt/patches/ple.py"], ["nv-host"], {})]
+
+
+def test_model_path_reported_as_model_not_volume(monkeypatch):
+    """A path in both sets must not be double-reported under the wrong banner."""
+    import pytest
+
+    from sparkrun.core import launcher
+    from sparkrun.core.recipe import RecipeError
+
+    ex = _StubExecutor(missing={"nv-host": ["/nfs/models/qwen3"]}, volumes=["/nfs/models/qwen3"])
+    monkeypatch.setattr("sparkrun.orchestration.executor.resolve_executor", lambda **kw: ex)
+
+    with pytest.raises(RecipeError, match="Pre-placed model weights"):
+        launcher._verify_mount_sources(
+            _preflight_recipe(), ["nv-host"], {}, runtime=_StubRuntime(), cluster=None, config=_PolicyConfig(), overrides={}
+        )
+    assert ex.calls == [(["/nfs/models/qwen3"], ["nv-host"], {})]

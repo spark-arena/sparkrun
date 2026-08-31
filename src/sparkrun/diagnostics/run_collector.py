@@ -178,6 +178,22 @@ class RunDiagnosticsCollector:
             self._success = False
         self._writer.emit("run_phase", data)
 
+    def emit_timeline(self, timeline) -> None:
+        """Emit ``run_timeline`` with the launch's per-stage spans.
+
+        Additive to this collector's own :meth:`phase_start` bookkeeping,
+        which is not redundant with it: those phases bracket a strictly
+        wider window (host diagnostics collection, and the planning
+        ``api.run`` does before ``launch_inference`` is reached), while the
+        timeline resolves the inside of the single ``launch`` phase.
+        """
+        if timeline is None:
+            return
+        try:
+            self._writer.emit("run_timeline", timeline.export())
+        except Exception:
+            logger.debug("Timeline emission failed", exc_info=True)
+
     def emit_launch_result(self, result) -> None:
         """Emit ``run_launch_result`` from a LaunchResult."""
         data = {

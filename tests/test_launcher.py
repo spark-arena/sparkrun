@@ -312,6 +312,9 @@ def test_launch_inference_threads_backends_to_runtime_run(monkeypatch, tmp_path)
     class _Cfg:
         hf_cache_dir = tmp_path / "hf"
         cache_dir = tmp_path / "cache"
+        missing_mount_source_policy = "fail"
+        readiness_port_timeout_s = 240.0
+        readiness_health_timeout_s = 600.0
 
         def get_registry_manager(self):
             return None
@@ -379,6 +382,210 @@ def test_launch_inference_threads_backends_to_runtime_run(monkeypatch, tmp_path)
     assert isinstance(threaded["nv-host"].collective, NcclBackend)
 
 
+def test_execution_strategy_prepares_capsules_and_skips_model_before_activation(monkeypatch, tmp_path):
+    from sparkrun.core import launcher
+    from sparkrun.core.execution import ActivationResult, LaunchAssetPolicy, PreparedExecution
+    from sparkrun.core.launcher import launch_inference
+    from sparkrun.core.recipe import DistributionConfig
+
+    events = []
+    distribution = {}
+    monkeypatch.setattr(
+        "sparkrun.orchestration.distribution.resolve_auto_transfer_mode",
+        lambda *a, **kw: type("R", (), {"mode": "local"})(),
+    )
+
+    def distribute(*args, **kwargs):
+        distribution.update(kwargs)
+        events.append("assets")
+        return None, {}, {}, {}
+
+    monkeypatch.setattr("sparkrun.orchestration.distribution.distribute_from_config", distribute)
+    monkeypatch.setattr("sparkrun.orchestration.job_metadata.derive_cluster_id", lambda *a, **kw: "sparkrun_strategy")
+    metadata_writes = []
+    monkeypatch.setattr(
+        "sparkrun.orchestration.job_metadata.save_job_metadata",
+        lambda *a, **kw: metadata_writes.append(kw),
+    )
+    monkeypatch.setattr("sparkrun.orchestration.primitives.build_ssh_kwargs", lambda *a, **kw: {})
+    monkeypatch.setattr(launcher, "resolve_effective_cache_dir", lambda *a, **kw: str(tmp_path))
+
+    class _Cfg:
+        hf_cache_dir = tmp_path / "hf"
+        cache_dir = tmp_path / "cache"
+        missing_mount_source_policy = "fail"
+
+        def get_registry_manager(self):
+            return None
+
+    class _Recipe:
+        runtime = "stub"
+        model = "stub-model"
+        env = {}
+        builder = "would-build"
+        builder_config = {}
+        mods = []
+        source_registry = None
+        defaults = {"port": 8000}
+        is_url_sourced = False
+        cluster_config = None
+        qualified_name = "stub-recipe"
+        name = "stub-recipe"
+        container = "base@sha256:" + "a" * 64
+        model_revision = "commit"
+        distribution_config = DistributionConfig.from_dict({})
+
+        def build_config_chain(self, overrides=None):
+            return {**self.defaults, **(overrides or {})}
+
+    class _Strategy:
+        name = "snapshot"
+
+        def prepare_activation(self, context):
+            assert events == ["assets"]
+            events.append("prepare-only")
+            return "receipt"
+
+        def activate(self, context, receipt):
+            assert receipt == "receipt"
+            events.append("activate")
+            return ActivationResult(0, {"provider": "native"})
+
+    images = (
+        "registry/capsule0@sha256:" + "b" * 64,
+        "registry/capsule1@sha256:" + "c" * 64,
+    )
+    _StubRuntime.last_kwargs = {}
+    result = launch_inference(
+        recipe=_Recipe(),
+        runtime=_StubRuntime(),
+        host_list=["h1", "h2"],
+        overrides={},
+        config=_Cfg(),
+        dry_run=False,
+        sync_tuning=False,
+        before_start=lambda: events.append("evict"),
+        execution_context=object(),
+        execution_strategy=_Strategy(),
+        prepared_execution=PreparedExecution(
+            "snapshot",
+            LaunchAssetPolicy(
+                images_by_node=images,
+                distribute_images=False,
+                prepare_model=False,
+                run_builder=False,
+                prepare_runtime=False,
+                probe_images=False,
+                sync_tuning=False,
+                clear_page_cache=False,
+            ),
+        ),
+    )
+
+    assert distribution["skip_model"] is True
+    assert distribution["skip_container"] is True
+    assert events == ["assets", "prepare-only", "evict", "activate"]
+    assert result.container_image == images[0]
+    assert result.runtime_info == {"provider": "native", "execution_strategy": "snapshot"}
+    assert metadata_writes[-1]["runtime_info"] == result.runtime_info
+    assert _StubRuntime.last_kwargs == {}
+    spans = {span["name"]: span for span in result.timeline.export()["spans"]}
+    assert spans["execution.prepare_activation"]["attrs"]["strategy"] == "snapshot"
+    assert spans["execution.activate"]["attrs"]["strategy"] == "snapshot"
+    assert spans["execution.prepare_activation"]["parent"] == spans["launch"]["id"]
+
+
+def test_execution_strategy_records_the_same_job_identity_as_a_normal_launch(monkeypatch, tmp_path):
+    """The strategy path writes job metadata itself, so it must write all of it.
+
+    ``save_job_metadata`` rewrites the file wholesale, so a field this call site
+    omits is a field it *erases*. Dropping ``cluster_name`` / ``ssh_user`` gives
+    a teardown that SSHes as the wrong user and reports success while the
+    workload keeps serving (#277); dropping ``recipe_fingerprint`` / ``owner``
+    leaves a job no caller can match on afterwards. Neither symptom looks
+    anything like its cause, which is why this is asserted rather than assumed.
+    """
+    from sparkrun.core import launcher
+    from sparkrun.core.cluster_manager import ClusterDefinition
+    from sparkrun.core.execution import ActivationResult, LaunchAssetPolicy, PreparedExecution
+    from sparkrun.core.launcher import launch_inference
+    from sparkrun.core.recipe import DistributionConfig
+
+    monkeypatch.setattr(
+        "sparkrun.orchestration.distribution.resolve_auto_transfer_mode",
+        lambda *a, **kw: type("R", (), {"mode": "local"})(),
+    )
+    monkeypatch.setattr(
+        "sparkrun.orchestration.distribution.distribute_from_config",
+        lambda *a, **kw: (None, {}, {}, {}),
+    )
+    monkeypatch.setattr("sparkrun.orchestration.job_metadata.derive_cluster_id", lambda *a, **kw: "sparkrun_strategy")
+    writes = []
+    monkeypatch.setattr("sparkrun.orchestration.job_metadata.save_job_metadata", lambda *a, **kw: writes.append(kw))
+    monkeypatch.setattr("sparkrun.orchestration.primitives.build_ssh_kwargs", lambda *a, **kw: {})
+    monkeypatch.setattr(launcher, "resolve_effective_cache_dir", lambda *a, **kw: str(tmp_path))
+
+    class _Cfg:
+        hf_cache_dir = tmp_path / "hf"
+        cache_dir = tmp_path / "cache"
+        missing_mount_source_policy = "fail"
+        ssh_user = "dgxuser"
+
+        def get_registry_manager(self):
+            return None
+
+    class _Recipe:
+        runtime = "stub"
+        model = "stub-model"
+        env = {}
+        builder = ""
+        builder_config = {}
+        mods = []
+        source_registry = None
+        defaults = {"port": 8000}
+        is_url_sourced = False
+        cluster_config = None
+        qualified_name = "stub-recipe"
+        name = "stub-recipe"
+        container = "base@sha256:" + "a" * 64
+        model_revision = "commit"
+        distribution_config = DistributionConfig.from_dict({})
+
+        def build_config_chain(self, overrides=None):
+            return {**self.defaults, **(overrides or {})}
+
+    class _Strategy:
+        name = "snapshot"
+
+        def prepare_activation(self, context):
+            return None
+
+        def activate(self, context, receipt):
+            return ActivationResult(0)
+
+    launch_inference(
+        recipe=_Recipe(),
+        runtime=_StubRuntime(),
+        host_list=["h1", "h2"],
+        overrides={},
+        config=_Cfg(),
+        cluster=ClusterDefinition(name="prod", hosts=["h1", "h2"]),
+        dry_run=False,
+        sync_tuning=False,
+        recipe_fingerprint="fp-1234",
+        owner="supervisor",
+        execution_context=object(),
+        execution_strategy=_Strategy(),
+        prepared_execution=PreparedExecution("snapshot", LaunchAssetPolicy()),
+    )
+
+    activation_write = writes[-1]
+    assert activation_write["recipe_fingerprint"] == "fp-1234"
+    assert activation_write["owner"] == "supervisor"
+    assert activation_write["cluster_name"] == "prod"
+    assert activation_write["ssh_user"] == "dgxuser"
+
+
 # ---------------------------------------------------------------------------
 # Platform validate_host warnings are logged but do not raise
 # ---------------------------------------------------------------------------
@@ -437,6 +644,9 @@ def test_launch_inference_logs_platform_warnings_without_raising(monkeypatch, tm
     class _Cfg:
         hf_cache_dir = tmp_path / "hf"
         cache_dir = tmp_path / "cache"
+        missing_mount_source_policy = "fail"
+        readiness_port_timeout_s = 240.0
+        readiness_health_timeout_s = 600.0
 
         def get_registry_manager(self):
             return None
@@ -521,10 +731,21 @@ class _LifecycleRecipe:
 
 
 class _LifecycleRuntime:
-    """Runtime stub recording stop() invocations."""
+    """Runtime stub recording stop() invocations.
 
-    def __init__(self):
+    ``head_suffix`` mirrors the real split between naming schemes: native
+    runtimes head a ``_node_0`` container, Ray runtimes a ``_head`` one.
+    The readiness wait asks the runtime rather than reconstructing the
+    name, because ``wait_for_port`` reads "that container isn't running"
+    as proof the workload died.
+    """
+
+    def __init__(self, head_suffix="_node_0"):
         self.stop_calls: list[dict] = []
+        self._head_suffix = head_suffix
+
+    def get_head_container_name(self, cluster_id, is_solo=False):
+        return cluster_id + ("_solo" if is_solo else self._head_suffix)
 
     def stop(self, **kwargs):
         self.stop_calls.append(dict(kwargs))
@@ -535,7 +756,10 @@ def _make_launch_result(recipe, runtime):
     from sparkrun.core.launcher import LaunchResult
 
     class _Cfg:
-        pass
+        # Mirrors SparkrunConfig's readiness budgets, which
+        # ``post_launch_lifecycle`` reads before waiting.
+        readiness_port_timeout_s = 240.0
+        readiness_health_timeout_s = 600.0
 
     return LaunchResult(
         rc=0,
@@ -741,6 +965,9 @@ def test_launch_inference_save_job_metadata_failure_is_best_effort(monkeypatch, 
     class _Cfg:
         hf_cache_dir = tmp_path / "hf"
         cache_dir = tmp_path / "cache"
+        missing_mount_source_policy = "fail"
+        readiness_port_timeout_s = 240.0
+        readiness_health_timeout_s = 600.0
 
         def get_registry_manager(self):
             return None
@@ -793,6 +1020,107 @@ def test_launch_inference_save_job_metadata_failure_is_best_effort(monkeypatch, 
 
     assert result.rc == 0
     assert save_calls, "save_job_metadata should have been attempted"
+
+
+def test_launch_inference_records_cluster_and_ssh_user(monkeypatch, tmp_path):
+    """Every metadata write carries the launch's cluster name and SSH user.
+
+    That is what lets ``stop`` / ``logs`` addressed by cluster_id connect the
+    way the launch did instead of as the control node's own login (issue #277).
+    Asserted across *all* the save calls because each one rewrites the file
+    wholesale: a site that forgot to forward them would erase them a phase
+    later, and the symptom (a teardown that can't authenticate) would look
+    nothing like the cause.
+    """
+    from sparkrun.core import launcher
+    from sparkrun.core.cluster_manager import ClusterDefinition
+    from sparkrun.core.launcher import launch_inference
+
+    monkeypatch.setattr(
+        "sparkrun.orchestration.distribution.resolve_auto_transfer_mode",
+        lambda *a, **kw: type("R", (), {"mode": "local"})(),
+    )
+    monkeypatch.setattr(
+        "sparkrun.orchestration.distribution.distribute_from_config",
+        lambda *a, **kw: (None, {}, {}, {}),
+    )
+
+    save_kwargs: list[dict] = []
+    monkeypatch.setattr(
+        "sparkrun.orchestration.job_metadata.save_job_metadata",
+        lambda *a, **kw: save_kwargs.append(kw),
+    )
+    monkeypatch.setattr(
+        "sparkrun.orchestration.job_metadata.derive_cluster_id",
+        lambda *a, **kw: "sparkrun_identitycid01",
+    )
+    monkeypatch.setattr("sparkrun.orchestration.primitives.build_ssh_kwargs", lambda *a, **kw: {})
+    monkeypatch.setattr(launcher, "resolve_effective_cache_dir", lambda *a, **kw: str(tmp_path))
+    monkeypatch.setattr("sparkrun.orchestration.primitives.try_clear_page_cache", lambda *a, **kw: None)
+    monkeypatch.setattr("sparkrun.orchestration.executor.resolve_executor", lambda **kw: type("Ex", (), {})())
+    monkeypatch.setattr("sparkrun.tuning.sync.sync_registry_tuning", lambda *a, **kw: 0)
+    monkeypatch.setattr("sparkrun.tuning.distribute.distribute_tuning_to_hosts", lambda *a, **kw: [])
+
+    class _Cfg:
+        hf_cache_dir = tmp_path / "hf"
+        cache_dir = tmp_path / "cache"
+        missing_mount_source_policy = "fail"
+        readiness_port_timeout_s = 240.0
+        readiness_health_timeout_s = 600.0
+        # What api.run leaves on the config after folding in cluster.user.
+        ssh_user = "cluster-user"
+
+        def get_registry_manager(self):
+            return None
+
+    class _Recipe:
+        runtime = "stub"
+        model = "stub-model"
+        env = {}
+        builder = None
+        mods = []
+        source_registry = None
+        source_registry_url = None
+        defaults = {"port": 8000}
+        pre_exec = []
+        post_exec = []
+        post_commands = []
+        layout = None
+        stop_after_post = False
+        executor = ""
+        executor_config = None
+        is_url_sourced = False
+        cluster_config = None
+        qualified_name = "stub-recipe"
+        name = "stub-recipe"
+        container = "stub:latest"
+        model_revision = None
+        requires_capability: frozenset = frozenset()
+
+        def build_config_chain(self, overrides=None):
+            class _CC:
+                def get(self, k, default=None):
+                    return (overrides or {}).get(k, self_outer.defaults.get(k, default))
+
+            self_outer = self
+            return _CC()
+
+    launch_inference(
+        recipe=_Recipe(),
+        runtime=_StubRuntime(),
+        host_list=["nv-host"],
+        overrides={},
+        config=_Cfg(),
+        cluster=ClusterDefinition(name="lab", hosts=["nv-host"]),
+        is_solo=True,
+        dry_run=False,
+        sync_tuning=False,
+    )
+
+    assert save_kwargs, "save_job_metadata should have been called"
+    for kwargs in save_kwargs:
+        assert kwargs.get("cluster_name") == "lab"
+        assert kwargs.get("ssh_user") == "cluster-user"
 
 
 # ---------------------------------------------------------------------------
@@ -953,6 +1281,9 @@ def _builder_phase_harness(monkeypatch, tmp_path):
     class _Cfg:
         hf_cache_dir = tmp_path / "hf"
         cache_dir = tmp_path / "cache"
+        missing_mount_source_policy = "fail"
+        readiness_port_timeout_s = 240.0
+        readiness_health_timeout_s = 600.0
 
         def get_registry_manager(self):
             return None
@@ -1056,16 +1387,17 @@ class _PastPhase2(Exception):
     """Sentinel: execution reached the step after the builder phase."""
 
 
-def test_builder_phase_still_skips_an_unknown_builder(monkeypatch, tmp_path, caplog):
-    """Back-compat: an unknown builder warns and the launch continues.
+def test_builder_phase_aborts_on_an_unknown_builder(monkeypatch, tmp_path):
+    """A named builder that does not resolve is fatal, not skippable.
 
-    Asserted with a sentinel raised from the first call *after* phase 2 rather
-    than by completing a launch — the point is only that phase 2 neither
-    raised nor aborted, and stubbing the whole runtime protocol to prove it
-    would test the stub.
+    This used to warn-and-continue, which meant the image or environment the
+    recipe asked for was never built and the workload launched against
+    whatever ``container:`` happened to pull — a clean-looking launch serving
+    something the recipe did not describe (observed on an ``@spark-arena``
+    recipe carrying ``builder: ursuciprian``).  Unlike an unknown serve flag
+    there is no engine default to fall through to, so silence has no safe
+    reading.  Peer of the gated case below.
     """
-    import logging
-
     from sparkrun.core import launcher
 
     launch = _builder_phase_harness(monkeypatch, tmp_path)
@@ -1077,8 +1409,91 @@ def test_builder_phase_still_skips_an_unknown_builder(monkeypatch, tmp_path, cap
         raise _PastPhase2()
 
     monkeypatch.setattr("sparkrun.core.bootstrap.get_builder", _unknown)
+    # Would fire if phase 2 fell through; reaching it at all is the failure.
     monkeypatch.setattr(launcher, "apply_platform_runtime_flag_defaults", _sentinel)
 
-    with caplog.at_level(logging.WARNING), pytest.raises(_PastPhase2):
+    with pytest.raises(ValueError, match="Unknown builder"):
         launch()
-    assert "not found, skipping" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Readiness: container naming and stage timing
+# ---------------------------------------------------------------------------
+
+
+def test_wait_for_serve_ready_asks_the_runtime_for_the_head_container(monkeypatch):
+    """Ray runtimes head a ``_head`` container, not ``_node_0``.
+
+    ``wait_for_port`` treats "that container isn't running" as proof the
+    workload died, so reconstructing the wrong name aborted the wait one
+    retry interval in — every Ray launch reached through ``proxy load`` or
+    a post-hook recipe reported a phantom startup failure.
+    """
+    import dataclasses
+
+    from sparkrun.core.launcher import wait_for_serve_ready
+
+    watched: list[str] = []
+
+    def _port(_host, _port, **kwargs):
+        watched.append(kwargs.get("container_name"))
+        return True
+
+    monkeypatch.setattr("sparkrun.orchestration.health.wait_for_port", _port)
+    monkeypatch.setattr("sparkrun.orchestration.health.wait_for_healthy", lambda *a, **k: True)
+    monkeypatch.setattr("sparkrun.utils.is_local_host", lambda host: True)
+
+    ray = _make_launch_result(_LifecycleRecipe(), _LifecycleRuntime(head_suffix="_head"))
+    ray = dataclasses.replace(ray, is_solo=False, host_list=["h1", "h2"])
+    assert wait_for_serve_ready(ray).container == "sparkrun_lifecyclecid_head"
+
+    native = _make_launch_result(_LifecycleRecipe(), _LifecycleRuntime())
+    native = dataclasses.replace(native, is_solo=False, host_list=["h1", "h2"])
+    assert wait_for_serve_ready(native).container == "sparkrun_lifecyclecid_node_0"
+
+    assert watched == ["sparkrun_lifecyclecid_head", "sparkrun_lifecyclecid_node_0"]
+
+
+def test_wait_for_serve_ready_times_both_stages_onto_the_launch_timeline(monkeypatch):
+    """Port-open and health-ok are separate spans on the launch's timeline.
+
+    They answer different questions — engine init versus weight load — and
+    summing them is the containers-running → serving figure.
+    """
+    import dataclasses
+
+    from sparkrun.core.launcher import wait_for_serve_ready
+    from sparkrun.core.timing import Timeline
+
+    _patch_serve_ready(monkeypatch)
+    timeline = Timeline()
+    result = _make_launch_result(_LifecycleRecipe(), _LifecycleRuntime())
+    result = dataclasses.replace(result, timeline=timeline)
+
+    readiness = wait_for_serve_ready(result)
+
+    names = {s["name"]: s for s in timeline.export()["spans"]}
+    assert names["serve.port_open"]["status"] == "ok"
+    assert names["serve.health_ok"]["status"] == "ok"
+    assert readiness.total_wait_s == pytest.approx(readiness.port_wait_s + readiness.health_wait_s)
+
+
+def test_wait_for_serve_ready_marks_the_stage_that_failed(monkeypatch):
+    import dataclasses
+
+    from sparkrun.core.launcher import wait_for_serve_ready
+    from sparkrun.core.timing import Timeline
+
+    _patch_serve_ready(monkeypatch, port_ready=False)
+    timeline = Timeline()
+    result = _make_launch_result(_LifecycleRecipe(), _LifecycleRuntime())
+    result = dataclasses.replace(result, timeline=timeline)
+
+    readiness = wait_for_serve_ready(result)
+
+    assert readiness.ready is False and readiness.reason == "port"
+    names = {s["name"]: s for s in timeline.export()["spans"]}
+    assert names["serve.port_open"]["status"] == "error"
+    # The health stage never ran, so it must not appear at all — a zero-duration
+    # span there would read as an instantaneous health check.
+    assert "serve.health_ok" not in names

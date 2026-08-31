@@ -48,6 +48,16 @@ class RunOptions:
     overrides: dict[str, Any] = field(default_factory=dict)
     """Recipe / runtime overrides (tensor_parallel, port, gpu_memory_utilization, …)."""
 
+    strategy_options: dict[str, Any] = field(default_factory=dict)
+    """Run-scoped inputs for the recipe-selected execution strategy.
+
+    These control *execution*, not workload identity, so they are deliberately
+    absent from recipe fingerprints and intent IDs — the same rule that keeps
+    serve flags out of `generate_intent_id`. A plugin CLI uses this for
+    imperative, per-invocation choices such as a restore provider or an
+    artifact path.
+    """
+
     # Mode / lifecycle knobs.
     solo: bool = False
     """Force single-host mode regardless of host count."""
@@ -72,6 +82,11 @@ class RunOptions:
     *pre-existing* deployment.  A cluster that can't be queried counts as "not
     running" — refusing to launch because a status probe failed is the worse
     outcome."""
+    owner: str | None = None
+    """Opaque tag naming the component launching this workload, persisted into
+    job metadata.  Lets an automated supervisor distinguish jobs it created
+    from identically-configured ones a human started — and so refuse to tear
+    the latter down.  ``None`` (the CLI default) records no owner."""
 
     # Scheduler selection.
     scheduler: str | None = None
@@ -217,6 +232,111 @@ class RunPlan:
     """``sparkrun_<intent_id>_<placement_token>`` — the id the launch will
     use, so a renderer can show it (and ``--ensure`` can look it up) before
     anything starts."""
+    recipe_fingerprint: str = ""
+    """Serve-configuration digest of the *declared* recipe.
+
+    Decided here for the same reason :attr:`intent_id` is: ``launch_inference``
+    folds host-dependent platform runtime-flag defaults into ``recipe.defaults``
+    before it persists job metadata, so a digest taken after that point varies
+    with the hardware the job landed on and no caller could reproduce it."""
+
+
+@dataclass(frozen=True)
+class ResolvedMount:
+    """One host-to-container mount in a materialized launch."""
+
+    source: str
+    target: str
+    read_only: bool = False
+
+
+@dataclass(frozen=True)
+class ResolvedLaunchUnit:
+    """One container/process-tree boundary in a materialized launch."""
+
+    id: str
+    index: int
+    host: str
+    devices: tuple[str, ...]
+    image: str
+    image_digest: str
+    command: tuple[str, ...]
+    environment: dict[str, str]
+    mounts: tuple[ResolvedMount, ...]
+
+
+@dataclass(frozen=True)
+class ResolvedWorker:
+    """One accelerator-owning engine worker inside a launch unit."""
+
+    id: str
+    unit: str
+    service: str
+    process_slot: int
+    device_slots: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class ResolvedProcessGroup:
+    """An ordered, runtime-owned rank namespace."""
+
+    id: str
+    kind: str
+    service: str
+    members: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ResolvedServiceDomain:
+    """An independently addressable engine or cooperating service role."""
+
+    id: str
+    role: str
+    workers: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ResolvedAdapterTopology:
+    """Opaque runtime topology identity guarded by a canonical digest."""
+
+    schema: str
+    digest: str
+    payload: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ResolvedExecutionGraph:
+    """Portable worker/group topology independent of physical placement."""
+
+    workers: tuple[ResolvedWorker, ...]
+    groups: tuple[ResolvedProcessGroup, ...]
+    services: tuple[ResolvedServiceDomain, ...]
+    adapter: ResolvedAdapterTopology
+
+
+@dataclass(frozen=True)
+class ResolvedLaunchSpec:
+    """Serializable pre-launch profile for an execution-strategy integration.
+
+    Materialization is read-only and does not launch, distribute, or mutate
+    cluster state. Container images must be digest-pinned in the recipe for
+    ``image_digest`` to be populated without a remote probe.
+    """
+
+    format: int
+    kind: str
+    recipe: str
+    cluster_id: str
+    runtime: str
+    engine: str
+    model: str
+    model_revision: str
+    world_size: int
+    tensor_parallel: int
+    node_count: int
+    cache_dir: str
+    units: tuple[ResolvedLaunchUnit, ...]
+    execution: ResolvedExecutionGraph
 
 
 @dataclass(frozen=True)
@@ -255,6 +375,16 @@ class RunResult:
     """Runtime-reported version strings (engine, framework, model server)."""
     metadata: dict[str, Any] = field(default_factory=dict)
     """Recipe-derived metadata (recipe qualified_name, model, image, …)."""
+    timeline: Any = None
+    """Live :class:`~sparkrun.core.timing.Timeline` of launch-stage spans.
+
+    Deliberately the collector rather than an exported snapshot: the
+    readiness wait runs *after* ``run`` returns (in ``post_launch_lifecycle``
+    or the caller's own wait) and records onto this same object, so a
+    snapshot taken here would always be missing the containers-running →
+    serving figure.  Call ``.export()`` once you are done waiting.
+
+    ``None`` only when the intent was already running (nothing launched)."""
     launch_result: Any = None
     """Opaque handle to the underlying :class:`LaunchResult` for callers
     that need the raw orchestration object (CLI ``post_launch_lifecycle``,
@@ -274,6 +404,13 @@ class RunResult:
     serving, so nothing was launched.  :attr:`cluster_id` / :attr:`host_list`
     then describe the **pre-existing** deployment, and
     :attr:`launch_result` is ``None`` (there was no launch)."""
+    recipe_fingerprint: str = ""
+    """Serve-configuration digest persisted into this job's metadata.
+
+    Derived from the *declared* recipe before the launcher folds in
+    host-dependent platform runtime-flag defaults, so a caller can reproduce it
+    without probing hardware — and so matching a job by fingerprint after the
+    fact actually works."""
 
 
 # --------------------------------------------------------------------------

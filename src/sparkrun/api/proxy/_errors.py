@@ -61,10 +61,21 @@ class ProxyStartFailed(SparkrunError):
 
 
 class ProxyUpdateFailed(SparkrunError):
-    """The gateway config was rewritten but the running proxy did not adopt it.
+    """The running gateway could not adopt a requested model/config change.
 
-    Wraps :class:`~sparkrun.proxy.engine.ProxyRestartError`: the change is on
-    disk and applies on the next start, but the *running* process is stale.
+    Wraps :class:`~sparkrun.proxy._supervisor.GatewayOperationError` (of which
+    ``ProxyRestartError`` is the LiteLLM member).  The requested desired state
+    may already be persisted — LiteLLM's config is rewritten before the restart
+    that failed — so callers should report the error and may safely retry.
+    """
+
+
+class ProxyUnsupported(SparkrunError):
+    """The running gateway does not offer the requested capability.
+
+    Distinct from a failure: a gateway simply having no admin console, or no
+    way to enumerate its models, is an *answer* rather than an error condition,
+    and callers routinely want to say so rather than treat it as a fault.
     """
 
 
@@ -72,5 +83,6 @@ __all__ = [
     "GatewayUnavailable",
     "ProxyAlreadyRunning",
     "ProxyStartFailed",
+    "ProxyUnsupported",
     "ProxyUpdateFailed",
 ]

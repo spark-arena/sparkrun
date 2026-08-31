@@ -124,7 +124,7 @@ def test_modular_max_validate_rejects_multinode():
     runtime = ModularMaxRuntime()
     recipe = _recipe(min_nodes=2)
     issues = runtime.validate_recipe(recipe)
-    assert any("single-node" in i for i in issues)
+    assert any("single-node" in str(i) for i in issues)
 
 
 def test_modular_max_validate_solo_ok():

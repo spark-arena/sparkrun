@@ -787,3 +787,45 @@ class TestRunningSnapshot:
 
         (tmp_path / RUNNING_SNAPSHOT_FILE).write_text("{not json")
         assert load_running_snapshot(cache_dir=str(tmp_path)) is None
+
+
+def test_save_job_metadata_persists_a_precomputed_fingerprint(tmp_path: Path, mock_recipe):
+    """A caller's own digest is stored verbatim, never re-derived.
+
+    The launcher folds host-dependent platform runtime-flag defaults into
+    ``recipe.defaults`` before saving, so deriving here would produce a value
+    that depends on where the job landed — and that the caller which later
+    matches on it cannot reproduce.
+    """
+    cluster_id = _make_cluster_id("b", "1")
+    save_job_metadata(
+        cluster_id,
+        mock_recipe,
+        ["host-a"],
+        cache_dir=str(tmp_path),
+        recipe_fingerprint="deadbeefcafe",
+    )
+
+    meta = load_job_metadata(cluster_id, cache_dir=str(tmp_path))
+    assert meta["recipe_fingerprint"] == "deadbeefcafe"
+
+
+def test_save_job_metadata_derives_a_fingerprint_when_none_is_given(tmp_path: Path, mock_recipe):
+    """The fallback keeps every pre-existing caller working unchanged."""
+    cluster_id = _make_cluster_id("c", "2")
+    save_job_metadata(cluster_id, mock_recipe, ["host-a"], cache_dir=str(tmp_path))
+
+    meta = load_job_metadata(cluster_id, cache_dir=str(tmp_path))
+    assert meta.get("recipe_fingerprint")
+
+
+def test_save_job_metadata_records_owner_only_when_given(tmp_path: Path, mock_recipe):
+    """Omitted rather than empty: the read side must tell "nobody claimed this"
+    from "written before sparkrun recorded owners"."""
+    owned = _make_cluster_id("d", "3")
+    save_job_metadata(owned, mock_recipe, ["host-a"], cache_dir=str(tmp_path), owner="supervisor")
+    assert load_job_metadata(owned, cache_dir=str(tmp_path))["owner"] == "supervisor"
+
+    unowned = _make_cluster_id("e", "4")
+    save_job_metadata(unowned, mock_recipe, ["host-a"], cache_dir=str(tmp_path))
+    assert "owner" not in load_job_metadata(unowned, cache_dir=str(tmp_path))

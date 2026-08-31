@@ -17,8 +17,6 @@ import os
 import signal
 import shutil
 import subprocess
-import sys
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -32,6 +30,16 @@ from sparkrun.proxy import (
     DEFAULT_PROXY_HOST,
     DEFAULT_PROXY_PORT,
 )
+from sparkrun.proxy._supervisor import (
+    RESTART_EXIT_TIMEOUT as _RESTART_EXIT_TIMEOUT,
+    RESTART_STARTUP_GRACE as _RESTART_STARTUP_GRACE,
+    GatewayOperationError,
+    GatewaySupervisor,
+    _is_zombie,  # noqa: F401 — re-exported; imported from here historically
+    _restrict_dir_permissions,
+    _restrict_file_permissions,
+    _wait_for_exit,  # noqa: F401 — re-exported; imported from here historically
+)
 from sparkrun.proxy.discovery import DiscoveredEndpoint
 from sparkrun.proxy.gateway import require_gateway_enabled
 from sparkrun.utils.fs import open_private_write
@@ -39,33 +47,19 @@ from sparkrun.utils.fs import open_private_write
 logger = logging.getLogger(__name__)
 
 # How long a restart waits for the old proxy to exit before escalating to
-# SIGKILL, and how long the replacement gets to survive startup.
-RESTART_EXIT_TIMEOUT = 15.0
-RESTART_STARTUP_GRACE = 2.0
+# SIGKILL, and how long the replacement gets to survive startup.  Owned by
+# _supervisor (shared with every gateway); re-exported here because callers and
+# tests have always imported them from this module.
+RESTART_EXIT_TIMEOUT = _RESTART_EXIT_TIMEOUT
+RESTART_STARTUP_GRACE = _RESTART_STARTUP_GRACE
 
 
-class ProxyRestartError(RuntimeError):
+class ProxyRestartError(GatewayOperationError):
     """Raised when a config change could not be applied to the running proxy.
 
     The config file on disk has already been updated when this is raised —
     the *running* process is what failed to pick it up.
     """
-
-
-def _restrict_file_permissions(path: Path) -> None:
-    """Best-effort chmod a secrets-bearing file to owner-only (0o600)."""
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        logger.debug("Could not restrict permissions on %s", path, exc_info=True)
-
-
-def _restrict_dir_permissions(path: Path) -> None:
-    """Best-effort chmod a secrets-bearing dir to owner-only (0o700)."""
-    try:
-        os.chmod(path, 0o700)
-    except OSError:
-        logger.debug("Could not restrict permissions on %s", path, exc_info=True)
 
 
 def build_litellm_config(
@@ -215,59 +209,6 @@ def _model_keys(config: dict[str, Any]) -> set[tuple[str, str, int | None]]:
     return keys
 
 
-def _is_zombie(pid: int) -> bool:
-    """True when *pid* has exited but has not been reaped yet (Linux).
-
-    A zombie still answers ``os.kill(pid, 0)``, so without this check a
-    dead-but-unreaped proxy reads as "still running" forever.
-    """
-    try:
-        with open("/proc/%d/stat" % pid) as f:
-            stat = f.read()
-    except OSError:
-        return False
-    # The comm field is parenthesised and may contain spaces; state is the
-    # first field after the closing paren.
-    close = stat.rfind(")")
-    if close == -1:
-        return False
-    fields = stat[close + 1 :].split()
-    return bool(fields) and fields[0] == "Z"
-
-
-def _wait_for_exit(pid: int, timeout: float) -> bool:
-    """Poll until *pid* is gone. Returns True if it exited within *timeout*.
-
-    Handles the case where the proxy is a child of this process — reaping
-    it so it does not linger as a zombie that ``os.kill(pid, 0)`` reports
-    as alive.  A proxy spawned by an earlier CLI invocation is not our
-    child, and ``waitpid`` simply reports that.
-    """
-    deadline = time.monotonic() + timeout
-    while True:
-        try:
-            if os.waitpid(pid, os.WNOHANG)[0] == pid:
-                return True
-        except ChildProcessError:
-            pass  # not our child — the normal daemonized case
-        except OSError:
-            pass
-
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return True
-        except PermissionError:
-            # Alive but not ours to signal — treat as still running.
-            pass
-
-        if _is_zombie(pid):
-            return True
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(0.2)
-
-
 def _parse_api_base(api_base: str) -> tuple[str, int] | None:
     """Split ``http://host:port/v1`` back into ``(host, port)``."""
     try:
@@ -310,13 +251,16 @@ def write_config(config_dict: dict[str, Any], config_path: Path | None = None) -
     return config_path
 
 
-class ProxyEngine:
+class ProxyEngine(GatewaySupervisor):
     """Manages the litellm proxy subprocess and its management API.
 
-    This is the LiteLLM *gateway* implementation.  :attr:`gateway_name` and
-    :attr:`required_feature_flag` are the seam a second gateway plugs into
-    (see :mod:`sparkrun.proxy.gateway`); ``start()`` is the single point that
-    enforces the flag.
+    This is the LiteLLM *gateway* implementation.  Process, state-file and
+    auto-discover machinery lives on
+    :class:`~sparkrun.proxy._supervisor.GatewaySupervisor`, shared with every
+    other gateway; what remains here is LiteLLM's own argv, environment and
+    config format.  :attr:`gateway_name` / :attr:`required_feature_flag` are
+    the selector and gate (see :mod:`sparkrun.proxy.gateway`); ``start()`` is
+    the single point that enforces the flag.
     """
 
     #: Selector this implementation answers to (``proxy.gateway`` in proxy.yaml).
@@ -324,6 +268,8 @@ class ProxyEngine:
 
     #: Feature flag gating this gateway; enabled on every channel.
     required_feature_flag = "gateway.litellm"
+
+    log_name = "litellm.log"
 
     def __init__(
         self,
@@ -333,6 +279,7 @@ class ProxyEngine:
         state_dir: Path | None = None,
         host_configured: bool = False,
     ):
+        super().__init__(state_dir)
         self.host = host
         self.port = port
         self.master_key = master_key
@@ -340,18 +287,28 @@ class ProxyEngine:
         # False and host is the legacy 0.0.0.0 default, start() warns loudly.
         self.host_configured = host_configured
 
-        if state_dir is None:
-            from sparkrun.core.config import DEFAULT_CACHE_DIR
+        self.config_path = self.state_dir / "litellm_config.yaml"
 
-            state_dir = DEFAULT_CACHE_DIR / "proxy"
-        self.state_dir = state_dir
-        self.state_file = state_dir / "state.yaml"
-        self.config_path = state_dir / "litellm_config.yaml"
-        self._autodiscover_config_path = state_dir / "autodiscover.yaml"
-        # Handle for a proxy this instance spawned, so a later restart can
-        # reap it.  None when the running proxy belongs to another process
-        # (the usual case for the CLI talking to a daemonized proxy).
-        self._proc: subprocess.Popen | None = None
+    @property
+    def data_plane_authenticated(self) -> bool:
+        """LiteLLM authenticates the inference port iff a master key is set."""
+        return bool(self.master_key)
+
+    def _state_payload(self) -> dict[str, Any]:
+        """Bind settings and credential recorded for management paths."""
+        return {"port": self.port, "host": self.host, "master_key": self.master_key}
+
+    def prepare_config(self, endpoints: list, aliases: dict[str, str], *, write: bool = True) -> tuple[Path | None, set[str], set[str]]:
+        """Render *endpoints* into a LiteLLM config; see the base method.
+
+        An alias only takes effect when a discovered endpoint answers to its
+        model group, so the applied/pending split is read back out of the
+        rendered config rather than assumed from *aliases*.
+        """
+        config_dict = build_litellm_config(endpoints, self.master_key, aliases=aliases)
+        applied = {entry["model_name"] for entry in config_dict["model_list"]} & set(aliases)
+        path = write_config(config_dict) if write else None
+        return path, applied, set(aliases) - applied
 
     def start(
         self,
@@ -441,7 +398,7 @@ class ProxyEngine:
                     self.update_autodiscover_pid(ad_pid)
 
             logger.info("Proxy started (PID %d) on %s:%d", pid, self.host, self.port)
-            logger.info("Log: %s", self.state_dir / "litellm.log")
+            logger.info("Log: %s", self.log_path)
             return 0
 
     def _build_command(self, config_path: Path | None = None) -> list[str] | None:
@@ -488,253 +445,27 @@ class ProxyEngine:
             logger.debug("Ignoring inherited DATABASE_URL; the proxy runs without a database")
         return env
 
-    def _launch_background(self, cmd: list[str], env: dict[str, str]) -> int | None:
-        """Spawn the proxy detached and confirm it survived startup.
-
-        Returns:
-            The new PID, or None if the process exited during the grace period.
-        """
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        # Redirect output to log file so startup errors are visible
-        log_path = self.state_dir / "litellm.log"
-        log_file = open(log_path, "w")
-        try:
-            proc = subprocess.Popen(
-                cmd,
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-                env=env,
-            )
-        except OSError:
-            log_file.close()
-            logger.error("Failed to spawn proxy process", exc_info=True)
-            return None
-
-        # Wait briefly and verify the process survived startup
-        time.sleep(RESTART_STARTUP_GRACE)
-        poll = proc.poll()
-        if poll is not None:
-            log_file.close()
-            # Process already exited — show error
-            try:
-                tail = log_path.read_text()[-2000:]
-            except OSError:
-                tail = ""
-            logger.error(
-                "Proxy exited immediately (code %d). Log tail:\n%s",
-                poll,
-                tail,
-            )
-            return None
-
-        self._proc = proc
-        return proc.pid
-
-    def _await_proxy_exit(self, pid: int, timeout: float) -> bool:
-        """Wait for proxy *pid* to exit, reaping it when it is our child.
-
-        A process we spawned stays a zombie until reaped, and
-        ``os.kill(pid, 0)`` *succeeds* on a zombie — so PID polling alone
-        would burn the whole timeout and then escalate to SIGKILL against a
-        process that already exited.  The auto-discover daemon spawns every
-        replacement proxy itself, so from its second restart onward this is
-        the normal path, not an edge case.
-        """
-        proc = self._proc
-        if proc is not None and proc.pid == pid:
-            try:
-                proc.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                return False
-            self._proc = None
-            return True
-        return _wait_for_exit(pid, timeout)
-
-    def _warn_insecure_bind(self) -> None:
-        """Emit a loud warning when binding 0.0.0.0 without explicit config.
-
-        Legacy compatibility: when no bind host has been explicitly configured
-        (``host_configured`` is False) the proxy keeps binding the legacy
-        ``0.0.0.0`` default so existing deployments do not break.  This exposes
-        every discovered inference backend to the whole network, so we warn
-        loudly on every start and explain how to silence it.
-        """
-        if self.host_configured:
-            return
-        if self.host not in ("0.0.0.0", "::"):
-            return
-
-        if self.master_key:
-            logger.warning(
-                "\n"
-                "============================================================\n"
-                "  sparkrun proxy: binding %s:%d (ALL network interfaces)\n"
-                "  Authentication IS enabled (master key set), but every\n"
-                "  discovered inference backend is reachable network-wide.\n"
-                "  To restrict exposure, bind to localhost instead:\n"
-                "      sparkrun proxy start --host 127.0.0.1\n"
-                "  (the chosen bind host is persisted to proxy.yaml)\n"
-                "============================================================",
-                self.host,
-                self.port,
-            )
-        else:
-            logger.warning(
-                "\n"
-                "============================================================\n"
-                "  SECURITY WARNING: sparkrun proxy is binding %s:%d\n"
-                "  (ALL network interfaces) with NO authentication.\n"
-                "  Every discovered inference backend is exposed UNAUTHENTICATED\n"
-                "  to the entire network.\n"
-                "\n"
-                "  To secure the proxy and silence this warning:\n"
-                "    * bind to localhost:   sparkrun proxy start --host 127.0.0.1\n"
-                "    * require a token:     sparkrun proxy start --master-key <secret>\n"
-                "  (both settings are persisted to proxy.yaml for future runs)\n"
-                "============================================================",
-                self.host,
-                self.port,
-            )
-
-    def start_autodiscover(
-        self,
-        proxy_pid: int,
-        interval: int = 30,
-        host_list: list[str] | None = None,
-        ssh_kwargs: dict | None = None,
-        cache_dir: str | None = None,
-    ) -> int | None:
-        """Spawn the background auto-discovery process.
-
-        Writes a config file and launches
-        ``python -m sparkrun.proxy.autodiscover`` as a detached subprocess.
-
-        Returns:
-            PID of the auto-discover process, or None on failure.
-        """
-        cfg = {
-            "proxy_pid": proxy_pid,
-            "proxy_port": self.port,
-            "master_key": self.master_key,
-            "interval": interval,
-        }
-        if host_list:
-            cfg["host_list"] = host_list
-        if ssh_kwargs is not None:
-            cfg["ssh_kwargs"] = ssh_kwargs
-        if cache_dir:
-            cfg["cache_dir"] = cache_dir
-
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        _restrict_dir_permissions(self.state_dir)
-        # The autodiscover config carries the master_key, so create it owner-only
-        # (no default-umask window) and refuse to follow a symlink at the target.
-        fd = open_private_write(self._autodiscover_config_path)
-        with os.fdopen(fd, "w") as f:
-            yaml.safe_dump(cfg, f, default_flow_style=False)
-        _restrict_file_permissions(self._autodiscover_config_path)
-
-        log_path = self.state_dir / "autodiscover.log"
-        log_file = open(log_path, "w")
-
-        try:
-            proc = subprocess.Popen(
-                [sys.executable, "-m", "sparkrun.proxy.autodiscover", str(self._autodiscover_config_path)],
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
-            logger.info(
-                "Auto-discover started (PID %d), interval=%ds, log=%s",
-                proc.pid,
-                interval,
-                log_path,
-            )
-            return proc.pid
-        except Exception:
-            log_file.close()
-            logger.warning("Failed to start auto-discover process", exc_info=True)
-            return None
-
-    def stop_autodiscover(self) -> None:
-        """Stop the background auto-discovery process if running."""
-        ad_pid = self._read_autodiscover_pid()
-        if ad_pid is None:
-            return
-        try:
-            os.kill(ad_pid, signal.SIGTERM)
-            logger.info("Sent SIGTERM to auto-discover PID %d", ad_pid)
-        except ProcessLookupError:
-            logger.debug("Auto-discover PID %d already gone", ad_pid)
-        except PermissionError:
-            logger.warning("Permission denied stopping auto-discover PID %d", ad_pid)
-        # Clean up config file
-        self._autodiscover_config_path.unlink(missing_ok=True)
-
-    def stop(self, dry_run: bool = False) -> bool:
-        """Stop the running proxy and auto-discover (SIGTERM via PID).
-
-        Returns:
-            True if a process was stopped.
-        """
-        pid = self._read_pid()
-        if pid is None:
-            logger.info("No proxy PID found in state file")
-            return False
-
-        if dry_run:
-            logger.info("[dry-run] Would send SIGTERM to PID %d", pid)
-            return True
-
-        # Stop auto-discover first (it monitors proxy PID anyway,
-        # but explicit stop is cleaner)
-        self.stop_autodiscover()
-
-        try:
-            os.kill(pid, signal.SIGTERM)
-            logger.info("Sent SIGTERM to proxy PID %d", pid)
-            # Reap it *only* if we spawned it, so it does not linger as a
-            # zombie (which still answers os.kill(pid, 0) and reads as
-            # running).  Never block on a proxy owned by another process —
-            # `sparkrun proxy stop` must stay instant.
-            if self._proc is not None and self._proc.pid == pid:
-                self._await_proxy_exit(pid, RESTART_EXIT_TIMEOUT)
-            self._clear_state()
-            return True
-        except ProcessLookupError:
-            logger.info("Proxy PID %d not running (stale state)", pid)
-            self._clear_state()
-            return False
-        except PermissionError:
-            logger.error("Permission denied sending signal to PID %d", pid)
-            return False
-
-    def is_running(self) -> bool:
-        """Check if the proxy process is alive."""
-        pid = self._read_pid()
-        if pid is None:
-            return False
-        try:
-            os.kill(pid, 0)
-            return True
-        except (ProcessLookupError, PermissionError):
-            return False
-
     # -- Management API client --
 
     def list_models_via_api(self) -> list[dict[str, Any]]:
         """Query registered models via GET /model/info.
 
+        Records the reason in :attr:`model_query_error` rather than raising, so
+        ``proxy status`` can still describe the *process* when only the
+        management query failed — and can say so instead of rendering the
+        failure as an empty (i.e. "nothing registered") model list.
+
         Returns:
-            List of model info dicts from litellm.
+            List of model info dicts from litellm; empty on failure.
         """
         try:
             data = self._api_request("GET", "/model/info")
-            return data.get("data", [])
-        except Exception:
+        except Exception as exc:
             logger.debug("Failed to list models via management API", exc_info=True)
+            self.model_query_error = "%s: %s" % (type(exc).__name__, exc)
             return []
+        self.model_query_error = ""
+        return data.get("data", [])
 
     def apply_desired_state(
         self,
@@ -812,7 +543,7 @@ class ProxyEngine:
             return added, removed
 
         if self._restart_proxy() is None:
-            raise ProxyRestartError("Proxy config was updated but the proxy failed to restart; see %s" % (self.state_dir / "litellm.log"))
+            raise ProxyRestartError("Proxy config was updated but the proxy failed to restart; see %s" % (self.log_path))
         return added, removed
 
     def sync_models(
@@ -879,7 +610,7 @@ class ProxyEngine:
                 logger.error("Permission denied signalling proxy PID %d", old_pid)
                 return None
 
-        if old_pid is not None and not self._await_proxy_exit(old_pid, RESTART_EXIT_TIMEOUT):
+        if old_pid is not None and not self._await_exit(old_pid, RESTART_EXIT_TIMEOUT):
             logger.warning(
                 "Proxy PID %d did not exit within %.0fs; escalating to SIGKILL",
                 old_pid,
@@ -889,7 +620,7 @@ class ProxyEngine:
                 os.kill(old_pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            if not self._await_proxy_exit(old_pid, 5.0):
+            if not self._await_exit(old_pid, 5.0):
                 logger.error("Proxy PID %d survived SIGKILL; not starting a replacement", old_pid)
                 return None
 
@@ -987,10 +718,6 @@ class ProxyEngine:
             )
         return endpoints
 
-    def current_pid(self) -> int | None:
-        """PID of the running proxy per the state file, or None."""
-        return self._read_pid()
-
     def _api_request(self, method: str, path: str, payload: dict | None = None) -> dict:
         """Make an HTTP request to the litellm management API."""
         url = "http://localhost:%d%s" % (self.port, path)
@@ -1005,71 +732,3 @@ class ProxyEngine:
 
         with urllib.request.urlopen(req, timeout=10) as resp:
             return json.loads(resp.read())
-
-    # -- State management --
-
-    def _save_state(self, pid: int, autodiscover_pid: int | None = None) -> None:
-        """Save proxy state to disk.
-
-        The state file contains the master_key, so it is written with
-        owner-only (0o600) permissions and its parent dir is restricted to
-        0o700 — mirroring ``arena.auth.save_refresh_token``.
-        """
-        import datetime
-
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        _restrict_dir_permissions(self.state_dir)
-        state = {
-            "pid": pid,
-            "port": self.port,
-            "host": self.host,
-            # Which gateway implementation owns this process.  Management
-            # paths (stop / status / sync) read it back so they act on what
-            # is *running* rather than on what is currently configured.
-            "gateway": self.gateway_name,
-            "master_key": self.master_key,
-            "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        }
-        if autodiscover_pid is not None:
-            state["autodiscover_pid"] = autodiscover_pid
-        with open(self.state_file, "w") as f:
-            yaml.safe_dump(state, f, default_flow_style=False)
-        _restrict_file_permissions(self.state_file)
-
-    def _read_pid(self) -> int | None:
-        """Read PID from state file."""
-        if not self.state_file.exists():
-            return None
-        try:
-            with open(self.state_file) as f:
-                state = yaml.safe_load(f)
-            return int(state["pid"]) if state and "pid" in state else None
-        except Exception:
-            return None
-
-    def _read_autodiscover_pid(self) -> int | None:
-        """Read auto-discover PID from state file."""
-        state = self.get_state()
-        if state and "autodiscover_pid" in state:
-            return int(state["autodiscover_pid"])
-        return None
-
-    def update_autodiscover_pid(self, autodiscover_pid: int) -> None:
-        """Record the auto-discover PID in state (call after start)."""
-        pid = self._read_pid()
-        if pid is not None:
-            self._save_state(pid, autodiscover_pid=autodiscover_pid)
-
-    def _clear_state(self) -> None:
-        """Remove state file."""
-        self.state_file.unlink(missing_ok=True)
-
-    def get_state(self) -> dict[str, Any] | None:
-        """Read full proxy state. Returns None if not found."""
-        if not self.state_file.exists():
-            return None
-        try:
-            with open(self.state_file) as f:
-                return yaml.safe_load(f)
-        except Exception:
-            return None

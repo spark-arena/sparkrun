@@ -51,6 +51,17 @@ class EugrVllmRayRuntime(VllmRayRuntime):
         self._v = v
         return self
 
+    def known_config_keys(self) -> frozenset[str] | None:
+        """Not declared — v1 recipes route defaults through eugr's own machinery.
+
+        The inherited vLLM answer would be wrong here: a v1 recipe's
+        ``defaults`` are also read by ``build_args`` / ``mods`` handling in
+        the eugr builder, so reporting against the vLLM flag map alone would
+        call working keys dead.  ``None`` disables the check for this
+        deprecated runtime rather than making it noisy.
+        """
+        return None
+
     def resolve_container(self, recipe: Recipe, overrides: dict[str, Any] | None = None) -> str:
         """Resolve container -- eugr images use plain names, not prefix:tag."""
         return recipe.container or "vllm-node"

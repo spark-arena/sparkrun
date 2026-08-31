@@ -6,6 +6,7 @@ Extracted from orchestration/primitives.py to reduce scope creep in that module.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 
 logger = logging.getLogger(__name__)
@@ -122,6 +123,8 @@ def wait_for_port(
     ssh_kwargs: dict | None = None,
     dry_run: bool = False,
     container_name: str | None = None,
+    cancel: "threading.Event | None" = None,
+    timeout_s: float | None = None,
 ) -> bool:
     """Poll until a TCP port is listening on a host.
 
@@ -130,17 +133,29 @@ def wait_for_port(
     Args:
         host: Hostname (local or remote).
         port: Port to check.
-        max_retries: Maximum number of retries.
+        max_retries: Maximum number of retries.  Ignored when *timeout_s*
+            is given.
         retry_interval: Seconds between retries.
         ssh_kwargs: SSH connection parameters.
         dry_run: Skip waiting in dry-run mode.
         container_name: If provided, verify the container is still
             running on each iteration.  Aborts early if the container
             has exited (e.g. crashed on startup).
+        cancel: Set to abandon the wait.  Checked before every probe and
+            slept on between them, so a caller running this off the main
+            thread can stop it within one probe rather than one interval.
+        timeout_s: Wall-clock budget, superseding *max_retries*.  Prefer
+            this: a retry count is a poor proxy for time here, because
+            every attempt also pays a probe (an SSH round trip on a remote
+            host).  At the old readiness defaults ``120 × 2s`` bought 240s
+            of sleeping but gave up after 321s of wall clock — and reported
+            the shortfall as the endpoint never coming up.  ``math.inf``
+            polls until cancelled.
 
     Returns:
-        True if port became reachable, False if timed out or the
-        container exited.
+        True if port became reachable, False if the budget ran out, the
+        container exited, or the wait was cancelled.  Callers that must
+        tell cancellation from failure check the event themselves.
     """
     if dry_run:
         return True
@@ -150,8 +165,16 @@ def wait_for_port(
     # Reads the kernel socket table rather than connecting; see
     # `listen_probe_cmd` for why a connecting probe breaks NCCL bootstrap.
     check_cmd = listen_probe_cmd(port)
-    for attempt in range(1, max_retries + 1):
-        # Check container liveness before polling the port
+    t0 = time.monotonic()
+    attempt = 0
+    while not _budget_spent(t0, attempt, max_retries, timeout_s):
+        attempt += 1
+        if cancel is not None and cancel.is_set():
+            return False
+
+        # Check container liveness before polling the port.  This — not the
+        # budget — is what detects a genuine failure, which is why the
+        # budget can afford to be generous.
         if container_name and attempt > 1:
             if not is_container_running(host, container_name, ssh_kwargs=ssh_kwargs):
                 logger.error(
@@ -163,17 +186,44 @@ def wait_for_port(
 
         result = run_command_on_host(host, check_cmd, ssh_kwargs=ssh_kwargs, timeout=5, quiet=True)
         if result.success:
-            logger.info("  Port %d ready after %ds", port, attempt * retry_interval)
+            logger.info("  Port %d ready after %ds", port, int(time.monotonic() - t0))
             return True
         if attempt % 10 == 0:
             logger.info(
                 "  Still waiting for port %d (%ds elapsed)...",
                 port,
-                attempt * retry_interval,
+                int(time.monotonic() - t0),
             )
-        time.sleep(retry_interval)
+        if _interruptible_sleep(retry_interval, cancel):
+            return False
 
     return False
+
+
+def _budget_spent(t0: float, attempt: int, max_retries: int, timeout_s: float | None) -> bool:
+    """Whether a readiness poll has used up its budget.
+
+    Two budget kinds, deliberately not combined: a wall-clock *timeout_s*
+    (which supersedes the retry count when given) or a plain attempt count.
+    ``math.inf`` never runs out.
+    """
+    if timeout_s is None:
+        return attempt >= max_retries
+    return (time.monotonic() - t0) >= timeout_s
+
+
+def _interruptible_sleep(seconds: float, cancel: "threading.Event | None") -> bool:
+    """Sleep *seconds*, returning ``True`` if *cancel* fired instead.
+
+    A plain :func:`time.sleep` between polls is what makes a cancelled wait
+    outlive its caller: at the readiness defaults the health poll sleeps 5s
+    at a time up to 120 times, so a Ctrl-C would be noticed minutes later,
+    with an SSH probe spawned on every interval in between.
+    """
+    if cancel is None:
+        time.sleep(seconds)
+        return False
+    return cancel.wait(seconds)
 
 
 def wait_for_healthy(
@@ -182,6 +232,8 @@ def wait_for_healthy(
     retry_interval: int = 5,
     dry_run: bool = False,
     max_consecutive_refused=2,
+    cancel: "threading.Event | None" = None,
+    timeout_s: float | None = None,
 ) -> bool:
     """Poll an HTTP endpoint until it returns 200.
 
@@ -196,9 +248,14 @@ def wait_for_healthy(
         retry_interval: Seconds between retries.
         dry_run: Skip waiting in dry-run mode.
         max_consecutive_refused: Maximum number of consecutive refused connections before giving up.
+            This — not the budget — is what detects a server that died.
+        cancel: Set to abandon the wait; see :func:`wait_for_port`.
+        timeout_s: Wall-clock budget, superseding *max_retries*; see
+            :func:`wait_for_port`.  ``math.inf`` polls until cancelled.
 
     Returns:
-        True if the endpoint returned 200, False if timed out.
+        True if the endpoint returned 200, False if the budget ran out, the
+        server died, or the wait was cancelled.
     """
     if dry_run:
         return True
@@ -207,14 +264,19 @@ def wait_for_healthy(
     import urllib.error
 
     consecutive_refused = 0
-    for attempt in range(1, max_retries + 1):
+    t0 = time.monotonic()
+    attempt = 0
+    while not _budget_spent(t0, attempt, max_retries, timeout_s):
+        attempt += 1
+        if cancel is not None and cancel.is_set():
+            return False
         try:
             req = urllib.request.Request(url, method="GET")
             with urllib.request.urlopen(req, timeout=5) as resp:
                 if resp.status == 200:
                     logger.info(
                         "  Health check passed after %ds",
-                        attempt * retry_interval,
+                        int(time.monotonic() - t0),
                     )
                     return True
             # Got a response but not 200 — server is alive, reset counter
@@ -235,8 +297,9 @@ def wait_for_healthy(
         if attempt % 12 == 0:
             logger.info(
                 "  Still waiting for server to be ready (%ds elapsed)...",
-                attempt * retry_interval,
+                int(time.monotonic() - t0),
             )
-        time.sleep(retry_interval)
+        if _interruptible_sleep(retry_interval, cancel):
+            return False
 
     return False

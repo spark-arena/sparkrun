@@ -14,7 +14,8 @@ from typing import TYPE_CHECKING
 
 from scitrera_app_framework import Variables, get_working_path
 
-from sparkrun.builders.base import BuilderPlugin, _flatten_dict, PULLABLE_REGISTRY_PREFIXES
+from sparkrun.builders.base import BuilderPlugin, _flatten_dict
+from sparkrun.utils.images import is_pullable_image_ref
 from sparkrun.utils.shell import quote, quote_list, args_list_to_shell_str
 
 if TYPE_CHECKING:
@@ -471,7 +472,11 @@ class EugrBuilder(BuilderPlugin):
                 )
                 image = nightly_latest
 
-        is_pullable = any(image.startswith(prefix) for prefix in PULLABLE_REGISTRY_PREFIXES)
+        # Docker's reference grammar, not a host allowlist: `vllm/vllm-openai:tag`
+        # is as pullable as `ghcr.io/org/img:tag`, and requiring the redundant
+        # `docker.io/` prefix sent every upstream image down the substitution
+        # branch below.
+        is_pullable = is_pullable_image_ref(image)
 
         if is_pullable:
             # Pull path — covers sentinel→canonical and any external pullable ref.
@@ -503,10 +508,18 @@ class EugrBuilder(BuilderPlugin):
             if _image_present(image) and not force_rebuild:
                 logger.info("image '%s' found; using it (add --use-wheels to build_args to rebuild from wheels)", image)
             else:
-                logger.info(
-                    "image '%s' not available; substituting our nightly '%s' (add --use-wheels to build_args to build from wheels)",
+                # WARNING, not INFO: this runs a different image than the recipe
+                # names, and the CLI's default level is PROGRESS (25) > INFO (20),
+                # so the INFO version was invisible to everyone who hit it.
+                logger.warning(
+                    "image '%s' is not a pullable registry reference and is not present%s; "
+                    "substituting our nightly '%s'. If '%s' is a registry image, spell it as a "
+                    "full reference (e.g. 'namespace/name:tag'); add --use-wheels to build_args "
+                    "to build it from wheels instead.",
                     image,
+                    " on head '%s'" % head if delegated else " locally",
                     nightly_latest,
+                    image,
                 )
                 image = nightly_latest
                 if force_rebuild:
@@ -572,7 +585,12 @@ class EugrBuilder(BuilderPlugin):
         return image
 
     def validate_recipe(self, recipe: Recipe) -> list[str]:
-        """Validate eugr-specific recipe fields."""
+        """Validate eugr-specific recipe fields.
+
+        Left as a bare string (→ warning): eugr builds a command from
+        ``build_args`` / ``mods`` when the template is absent, so this is
+        advice, not a blocker.
+        """
         issues = []
         if not recipe.command:
             issues.append("[eugr] command template is recommended for eugr recipes")

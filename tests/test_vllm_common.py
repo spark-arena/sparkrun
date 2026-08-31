@@ -51,6 +51,26 @@ def test_auto_from_cli_override_flows_to_command():
     assert "--max-model-len auto" in cmd
 
 
+def test_vllm_defaults_served_model_name_to_logical_model_id():
+    """Offline snapshot-path rewrites must not change the public model name."""
+    recipe = _recipe()
+    for runtime in (VllmRayRuntime(), VllmDistributedRuntime()):
+        command = runtime.generate_command(recipe, {}, is_cluster=False)
+        assert "--served-model-name meta-llama/Llama-2-7b-hf" in command
+
+
+def test_vllm_distributed_node_defaults_served_model_name():
+    """The per-node TP path carries the same stable public model name."""
+    command = VllmDistributedRuntime().generate_node_command(
+        _recipe(),
+        {},
+        head_ip="10.0.0.1",
+        num_nodes=1,
+        node_rank=0,
+    )
+    assert "--served-model-name meta-llama/Llama-2-7b-hf" in command
+
+
 def test_estimate_vram_handles_auto_max_model_len():
     """VRAM estimation must not choke on ``max_model_len: auto`` (no int('auto'))."""
     # auto_detect=False keeps this offline; the max_model_len guard still runs.

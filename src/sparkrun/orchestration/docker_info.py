@@ -150,7 +150,7 @@ def format_driver_warning(groups: dict[str, list[str]]) -> str:
             lines.append("    %s: %s" % (host, sig))
     lines.append("")
     lines.append("  Different drivers compute different local Image IDs for the")
-    lines.append("  same registry image (issue #152), which can trigger unnecessary")
+    lines.append("  same registry image, which can trigger unnecessary")
     lines.append("  container re-syncs.  Sparkrun's RepoDigest fallback keeps things")
     lines.append("  working, but to fully avoid the slow path, normalize every host")
     lines.append("  on overlay2.  On each host using a different driver:")

@@ -119,7 +119,10 @@ def test_format_driver_warning_lists_hosts_and_remediation():
     # remediation instructions present
     assert "/etc/docker/daemon.json" in text
     assert "overlay2" in text
-    assert "issue #152" in text
+    # The warning explains the *consequence*, not a tracker reference: an issue
+    # number is unactionable to the operator reading it on their own cluster.
+    assert "re-syncs" in text
+    assert "#" not in text.split("/etc/docker/daemon.json")[0]
 
 
 # ---------------------------------------------------------------------------

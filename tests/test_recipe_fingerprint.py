@@ -178,3 +178,39 @@ def test_metadata_only_recipes_share_a_fingerprint():
     a = _recipe(metadata={"description": "first"})
     b = _recipe(metadata={"description": "second", "maintainer": "someone"})
     assert derive_recipe_fingerprint(a) == derive_recipe_fingerprint(b)
+
+
+# ---------------------------------------------------------------------------
+# Host-dependence: why the digest must be derived before the launch
+# ---------------------------------------------------------------------------
+
+
+def test_platform_flag_defaults_move_the_fingerprint():
+    """The reason ``api.plan`` derives it rather than ``save_job_metadata``.
+
+    ``launch_inference`` calls ``apply_platform_runtime_flag_defaults``, which
+    ``setdefault``s platform flags into ``recipe.defaults`` keyed off the *head
+    host's* hardware — before it persists job metadata.  So a digest taken
+    inside the launcher depends on where the job landed, and no caller can
+    reproduce the value its own job was stored under without probing the same
+    hardware.  Matching a job by fingerprint after the fact then silently never
+    matches.
+    """
+    import pytest
+
+    from sparkrun.core.hardware import default_dgx_spark_hardware
+    from sparkrun.core.launcher import apply_platform_runtime_flag_defaults
+
+    # llama-cpp on GB10 is the case that exists today (``mmap: False``); the
+    # rule is about the mechanism, not this particular flag.
+    r = _recipe(runtime="llama-cpp")
+    declared = derive_recipe_fingerprint(r)
+
+    applied = apply_platform_runtime_flag_defaults(r, "llama-cpp", default_dgx_spark_hardware())
+    if not applied:
+        pytest.skip("this platform contributes no runtime-flag defaults for llama-cpp")
+
+    assert derive_recipe_fingerprint(r) != declared, (
+        "platform defaults changed recipe.defaults without moving the digest; "
+        "if this ever holds, the pre-launch derivation is no longer needed"
+    )

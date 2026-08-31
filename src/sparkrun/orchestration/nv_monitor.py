@@ -285,11 +285,11 @@ def scrape_metrics(url: str, timeout: float = 5.0) -> dict[str, float]:
         timeout: HTTP request timeout in seconds.
 
     Returns:
-        Parsed metrics dict from :func:`~sparkrun.core.prometheus.parse_prometheus_text`.
+        Parsed metrics dict from :func:`~sparkrun.utils.prometheus.parse_prometheus_text`.
     """
     import socket
 
-    from sparkrun.core.prometheus import parse_prometheus_text
+    from sparkrun.utils.prometheus import parse_prometheus_text
 
     # Parse host:port from url (expects http://host:port/path)
     try:

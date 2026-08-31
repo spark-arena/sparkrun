@@ -14,3 +14,17 @@ removable unit — an integration contributing, say, a backend implementation, a
 hidden CLI command, and the wire protocol that backend calls back through, none
 of which is "a runtime" or "an executor" on its own.
 """
+
+from sparkrun.core.cli_registry import register_cli_command
+from sparkrun.core.recipe_items import (
+    FunctionalRecipeItemHandler,
+    RecipeItemHandler,
+    register_recipe_item,
+)
+
+__all__ = [
+    "FunctionalRecipeItemHandler",
+    "RecipeItemHandler",
+    "register_cli_command",
+    "register_recipe_item",
+]

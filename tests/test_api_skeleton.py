@@ -36,6 +36,7 @@ def test_run_options_defaults():
     assert opts.hosts is None
     assert opts.cluster is None
     assert opts.overrides == {}
+    assert opts.strategy_options == {}
     assert opts.solo is False
     assert opts.dry_run is False
     assert opts.follow is True
@@ -55,6 +56,7 @@ def test_run_options_overrides_isolated_per_instance():
     a = api.RunOptions(recipe="x")
     b = api.RunOptions(recipe="y")
     assert a.overrides is not b.overrides
+    assert a.strategy_options is not b.strategy_options
 
 
 def test_run_result_fields():

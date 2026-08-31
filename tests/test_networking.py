@@ -17,6 +17,7 @@ from sparkrun.orchestration.networking import (
     CX7TopologyResult,
     _group_interfaces_by_port,
     _parse_arping_output,
+    CX7Persistence,
     build_host_detection,
     classify_topology,
     detect_cx7_for_hosts,
@@ -49,6 +50,10 @@ CX7_IFACE_0_MTU=9000
 CX7_IFACE_0_STATE=up
 CX7_IFACE_0_HCA=rocep1s0f0
 CX7_IFACE_0_MAC=aa:bb:cc:dd:ee:01
+CX7_IFACE_0_PERSIST=persistent
+CX7_IFACE_0_PERSIST_SOURCE=netplan
+CX7_IFACE_0_PERSIST_DETAIL=enp1s0f0np0
+CX7_IFACE_0_DHCP=0
 CX7_IFACE_1_NAME=enP2p1s0f0np0
 CX7_IFACE_1_IP=192.168.12.13
 CX7_IFACE_1_PREFIX=24
@@ -57,7 +62,37 @@ CX7_IFACE_1_MTU=9000
 CX7_IFACE_1_STATE=up
 CX7_IFACE_1_HCA=roceP2p1s0f0
 CX7_IFACE_1_MAC=aa:bb:cc:dd:ee:02
+CX7_IFACE_1_PERSIST=persistent
+CX7_IFACE_1_PERSIST_SOURCE=netplan
+CX7_IFACE_1_PERSIST_DETAIL=enP2p1s0f0np0
+CX7_IFACE_1_DHCP=0
 CX7_USED_SUBNETS=10.24.11.0/24,172.17.0.0/16
+"""
+
+#: A host configured by hand rather than by sparkrun: the addresses are up and
+#: persistent, but owned by a NetworkManager profile, so ``40-cx7.yaml`` is
+#: absent.  Reading that absence as "not persistent" is the bug this shape
+#: guards against.
+SAMPLE_FOREIGN_OWNER_OUTPUT = """\
+CX7_DETECTED=1
+CX7_MGMT_IP=10.24.11.15
+CX7_MGMT_IFACE=enP7s7
+CX7_NETPLAN_EXISTS=0
+CX7_SUDO_OK=1
+CX7_IFACE_COUNT=1
+CX7_IFACE_0_NAME=enp1s0f0np0
+CX7_IFACE_0_IP=192.168.11.15
+CX7_IFACE_0_PREFIX=24
+CX7_IFACE_0_SUBNET=192.168.11.0/24
+CX7_IFACE_0_MTU=9000
+CX7_IFACE_0_STATE=up
+CX7_IFACE_0_HCA=rocep1s0f0
+CX7_IFACE_0_MAC=aa:bb:cc:dd:ee:03
+CX7_IFACE_0_PERSIST=persistent
+CX7_IFACE_0_PERSIST_SOURCE=networkmanager
+CX7_IFACE_0_PERSIST_DETAIL=cx7 fabric a
+CX7_IFACE_0_DHCP=0
+CX7_USED_SUBNETS=10.24.11.0/24
 """
 
 SAMPLE_UNCONFIGURED_OUTPUT = """\
@@ -152,6 +187,34 @@ class TestBuildHostDetection:
         assert det.interfaces[0].ip == ""
         assert det.interfaces[0].mtu == 1500
         assert det.netplan_exists is False
+
+    def test_persistence_attribution(self):
+        raw = parse_cx7_detect_output(SAMPLE_CONFIGURED_OUTPUT)
+        det = build_host_detection("10.24.11.13", raw)
+        assert det.interfaces[0].persistence is CX7Persistence.PERSISTENT
+        assert det.interfaces[0].persistence_source == "netplan"
+        assert det.interfaces[0].describe_persistence() == "netplan (enp1s0f0np0)"
+        assert det.interfaces[0].dhcp is False
+        # Owned by netplan, so re-running setup cx7 would not fight anyone.
+        assert det.foreign_owners == []
+
+    def test_foreign_owner_without_sparkrun_netplan_file(self):
+        raw = parse_cx7_detect_output(SAMPLE_FOREIGN_OWNER_OUTPUT)
+        det = build_host_detection("10.24.11.15", raw)
+        assert det.netplan_exists is False  # sparkrun did not configure this host
+        iface = det.interfaces[0]
+        assert iface.persistence is CX7Persistence.PERSISTENT  # ...but something did
+        assert iface.persisted_elsewhere is True
+        assert det.foreign_owners == [iface]
+        assert iface.describe_persistence() == "networkmanager (cx7 fabric a)"
+
+    def test_missing_persistence_keys_degrade_to_unknown(self):
+        # A host still running an older detect script emits no PERSIST keys.
+        # "couldn't tell" must never be parsed as "not persistent".
+        raw = parse_cx7_detect_output(SAMPLE_UNCONFIGURED_OUTPUT)
+        det = build_host_detection("10.24.11.14", raw)
+        assert det.interfaces[0].persistence is CX7Persistence.UNKNOWN
+        assert det.interfaces[0].persisted_elsewhere is False
 
     def test_no_cx7(self):
         raw = parse_cx7_detect_output(SAMPLE_NO_CX7_OUTPUT)
@@ -1535,3 +1598,82 @@ class TestCX7ClusterPlanTopology:
         plan = CX7ClusterPlan(topology=CX7Topology.RING, subnets=subnets)
         assert plan.topology == CX7Topology.RING
         assert len(plan.subnets) == 6
+
+
+class TestCX7NetplanFileConstant:
+    """The path sparkrun writes is spelled in Python *and* in two bash scripts.
+
+    The scripts include brace-using helpers, so they cannot take it as a
+    ``.format()`` placeholder — this is the drift guard instead.
+    """
+
+    def test_constant_matches_the_scripts(self):
+        from sparkrun.orchestration.networking import CX7_NETPLAN_FILE
+        from sparkrun.scripts import read_script
+
+        for name in ("cx7_configure.sh", "cx7_unconfigure.sh", "cx7_detect.sh"):
+            assert CX7_NETPLAN_FILE in read_script(name), name
+
+    def test_generated_multi_interface_script_uses_it(self):
+        from sparkrun.orchestration.networking import CX7_NETPLAN_FILE
+
+        hp = CX7HostPlan(
+            host="h1",
+            assignments=[
+                CX7InterfaceAssignment("enp1a", "192.168.11.1", "192.168.11.0/24"),
+                CX7InterfaceAssignment("enp1b", "192.168.12.1", "192.168.12.0/24"),
+                CX7InterfaceAssignment("enp1c", "192.168.13.1", "192.168.13.0/24"),
+            ],
+        )
+        script = generate_cx7_configure_script(hp, mtu=9000, prefix_len=24)
+        assert "sudo tee %s " % CX7_NETPLAN_FILE in script
+        assert "sudo chmod 600 %s" % CX7_NETPLAN_FILE in script
+
+
+class TestForeignOwnerWarnings:
+    """Reconfiguring a device another config source persists leaves two owners."""
+
+    @staticmethod
+    def _det(persistence, source):
+        det = _make_detection(
+            "h1",
+            "10.0.0.1",
+            [("enp1", "10.9.9.1", "10.9.9.0/24", 1500), ("enp2", "10.9.9.2", "10.9.9.0/24", 1500)],
+        )
+        for iface in det.interfaces:
+            iface.persistence = persistence
+            iface.persistence_source = source
+            iface.persistence_detail = "cx7-a"
+        return det
+
+    def _plan(self, det):
+        return plan_cluster_cx7(
+            {"h1": det},
+            ipaddress.IPv4Network("192.168.11.0/24"),
+            ipaddress.IPv4Network("192.168.12.0/24"),
+        )
+
+    def test_warns_when_reconfiguring_a_networkmanager_owned_device(self):
+        plan = self._plan(self._det(CX7Persistence.PERSISTENT, "networkmanager"))
+        assert plan.host_plans[0].needs_change is True
+        assert any("two owners" in w and "networkmanager (cx7-a)" in w for w in plan.warnings)
+
+    def test_netplan_owned_device_is_not_foreign(self):
+        # sparkrun writes netplan, so re-running setup cx7 replaces its own
+        # declaration rather than competing with it.
+        plan = self._plan(self._det(CX7Persistence.PERSISTENT, "netplan"))
+        assert plan.host_plans[0].needs_change is True
+        assert not any("two owners" in w for w in plan.warnings)
+
+    def test_no_warning_when_nothing_changes(self):
+        det = _make_detection(
+            "h1",
+            "10.0.0.1",
+            [("enp1", "192.168.11.1", "192.168.11.0/24", 9000), ("enp2", "192.168.12.1", "192.168.12.0/24", 9000)],
+        )
+        for iface in det.interfaces:
+            iface.persistence = CX7Persistence.PERSISTENT
+            iface.persistence_source = "networkmanager"
+        plan = self._plan(det)
+        assert plan.host_plans[0].needs_change is False
+        assert not any("two owners" in w for w in plan.warnings)

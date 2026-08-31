@@ -382,6 +382,7 @@ def test_api_run_calls_api_level_telemetry():
             "runtime_info": {},
             "builder": None,
             "backends": {},
+            "timeline": None,
         },
     )()
 

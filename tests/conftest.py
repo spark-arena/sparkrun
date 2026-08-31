@@ -26,6 +26,14 @@ def isolate_stateful(tmp_path: Path, monkeypatch):
     """
     monkeypatch.setenv("STATEFUL_ROOT", str(tmp_path / "stateful"))
     monkeypatch.setenv("SPARKRUN_NO_TELEMETRY", "1")
+    # The HuggingFace Hub metadata budget, its breaker and its negative memo are
+    # process-global (one budget per command, by design). Without a reset a test
+    # that exhausts the budget or memoises an unavailable repo silently disables
+    # Hub lookups for every test that runs after it -- an ordering-dependent
+    # failure, which is the expensive kind.
+    from sparkrun.models.hub import reset_hub_state
+
+    reset_hub_state()
     # ...and block the send itself, because the env var above is only policy.
     # Any test can drop it (test_telemetry.py does, on purpose), and telemetry
     # fails *open*: a MagicMock config makes `telemetry_enabled` return True,
