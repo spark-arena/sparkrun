@@ -77,10 +77,10 @@ class VllmDistributedRuntime(VllmMixin, RuntimePlugin):
             # command template (e.g. -o distributed_executor_backend=mp over a
             # legacy command that hardcodes --distributed-executor-backend ray).
             rendered = self._apply_distributed_backend(rendered, config, skip_keys)
-            rendered = self._augment_served_model_name(
+            rendered = self._augment_vllm_served_model_name(
                 rendered,
+                recipe,
                 config,
-                "--served-model-name",
                 skip_keys,
             )
             if skip_keys:
@@ -157,10 +157,10 @@ class VllmDistributedRuntime(VllmMixin, RuntimePlugin):
             # command template (e.g. -o distributed_executor_backend=mp over a
             # legacy command that hardcodes --distributed-executor-backend ray).
             rendered = self._apply_distributed_backend(rendered, config, skip_keys)
-            rendered = self._augment_served_model_name(
+            rendered = self._augment_vllm_served_model_name(
                 rendered,
+                recipe,
                 config,
-                "--served-model-name",
                 skip_keys,
             )
             if skip_keys:

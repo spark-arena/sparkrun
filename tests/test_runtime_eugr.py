@@ -72,7 +72,7 @@ def test_eugr_generate_command_from_template():
     runtime = EugrVllmRayRuntime()
 
     cmd = runtime.generate_command(recipe, {}, is_cluster=False)
-    assert cmd == "vllm serve meta-llama/Llama-2-7b-hf --port 8000"
+    assert cmd == ("vllm serve meta-llama/Llama-2-7b-hf --port 8000 --served-model-name meta-llama/Llama-2-7b-hf")
 
 
 def test_eugr_generate_command_structured():

@@ -158,6 +158,39 @@ class VllmMixin:
         """
         return resolve_api_key(recipe, overrides, "VLLM_API_KEY", "--api-key")
 
+    def _augment_vllm_served_model_name(
+        self,
+        command: str,
+        recipe: "Recipe",
+        config,
+        skip_keys: set[str] | frozenset[str] = frozenset(),
+    ) -> str:
+        """Keep vLLM's public model name stable across local-path rewrites.
+
+        The base :meth:`~sparkrun.runtimes.base.RuntimePlugin._augment_served_model_name`
+        only fills the flag when the *config chain* names one, which was
+        sufficient while vLLM derived the served name from the model id it was
+        given.  Newer offline builds replace that id with the mounted snapshot
+        path first, so with no explicit flag the endpoint advertises an
+        implementation path — and everything that routes on the model name
+        (proxy discovery, benchmarks, validation) asks for a name the server
+        does not serve.
+
+        A configured alias still wins; otherwise fall back to the recipe's
+        effective public name, which is the same value
+        :func:`~sparkrun.core.recipe.resolve_served_model_name` reports for
+        display and routing.  ``generate_intent_id`` is unaffected: it hashes
+        the *declared* name, never the rendered command.
+        """
+        if "served_model_name" in skip_keys:
+            return command
+        value = config.get("served_model_name")
+        if value is None:
+            value = recipe.effective_served_model_name
+        if not value:
+            return command
+        return self.reconcile_flag_in_command(command, "--served-model-name", value, override=False)
+
     def _build_base_command(
         self,
         recipe: "Recipe",
@@ -188,7 +221,12 @@ class VllmMixin:
             )
         )
 
-        return " ".join(parts)
+        return self._augment_vllm_served_model_name(
+            " ".join(parts),
+            recipe,
+            config,
+            skip_keys,
+        )
 
     def _build_command(
         self,

@@ -82,10 +82,10 @@ class VllmRayRuntime(VllmMixin, RuntimePlugin):
             # Ensure --distributed-executor-backend ray is present for cluster mode
             if is_cluster and "--distributed-executor-backend" not in rendered:
                 rendered = rendered.rstrip() + " --distributed-executor-backend ray"
-            rendered = self._augment_served_model_name(
+            rendered = self._augment_vllm_served_model_name(
                 rendered,
+                recipe,
                 config,
-                "--served-model-name",
                 skip_keys,
             )
             if skip_keys:
