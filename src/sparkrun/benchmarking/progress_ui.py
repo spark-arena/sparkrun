@@ -45,7 +45,10 @@ def _format_row(spec: "ProgressTableSpec", row: tuple[Any, ...]) -> list[str]:
     fmt = spec.format_cell
     if fmt is None:
         return [str(v) for v in row]
-    return [fmt(v, col) for v, col in zip(row, spec.columns)]
+    # strict=False: rows come from a plugin's ``rows_from_consolidated``, so a row
+    # that does not match the declared columns is the plugin's bug — a progress
+    # table is not worth aborting a benchmark that is otherwise running fine.
+    return [fmt(v, col) for v, col in zip(row, spec.columns, strict=False)]
 
 
 def _safe_console_height(console: "Console") -> int:

@@ -254,7 +254,10 @@ def map_transfer_failures(
     Returns:
         List of management hostnames where transfer failed.
     """
-    xfer_to_host = dict(zip(transfer_hosts, management_hosts))
+    # strict=False: this maps failures back to reportable names.  An unmapped
+    # transfer host falls back to its own address below (``.get(r.host, r.host)``),
+    # so a skew degrades the *label* — it must not mask the failure being reported.
+    xfer_to_host = dict(zip(transfer_hosts, management_hosts, strict=False))
     genuinely_failed, benign = split_rsync_results(results)
     log_benign_rsync_results(benign)
     return [xfer_to_host.get(r.host, r.host) for r in genuinely_failed]
@@ -278,7 +281,10 @@ def map_transfer_failures_detailed(
     :func:`rsync_attribute_errors_only`); they are logged and dropped, so a
     transfer that actually completed never reaches a caller as an error.
     """
-    xfer_to_host = dict(zip(transfer_hosts, management_hosts))
+    # strict=False: this maps failures back to reportable names.  An unmapped
+    # transfer host falls back to its own address below (``.get(r.host, r.host)``),
+    # so a skew degrades the *label* — it must not mask the failure being reported.
+    xfer_to_host = dict(zip(transfer_hosts, management_hosts, strict=False))
     genuinely_failed, benign = split_rsync_results(results)
     log_benign_rsync_results(benign)
     failures: list[TransferFailure] = []

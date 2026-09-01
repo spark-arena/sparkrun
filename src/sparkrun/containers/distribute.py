@@ -399,7 +399,10 @@ def distribute_image_from_head(
             # Filter workers list and corresponding transfer hosts
             workers = hosts[1:]
             wt = worker_transfer_hosts or workers
-            filtered = [(w, t) for w, t in zip(workers, wt) if w in needs_transfer]
+            # strict=False: ``wt`` is the caller's worker_transfer_hosts (IB IPs) when
+            # supplied.  A short list leaves the trailing workers unsynced rather than
+            # aborting the sync for the workers that *are* addressable.
+            filtered = [(w, t) for w, t in zip(workers, wt, strict=False) if w in needs_transfer]
             if filtered:
                 hosts = [head] + [w for w, _ in filtered]
                 worker_transfer_hosts = [t for _, t in filtered]

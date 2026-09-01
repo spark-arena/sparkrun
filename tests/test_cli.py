@@ -27,7 +27,8 @@ _TEST_RECIPE_SOLO_DATA = {
     "description": "A test recipe capped at max_nodes=1",
     "model": "Qwen/Qwen3-1.7B",
     "runtime": "sglang",
-    "mode": "auto",
+    # No `mode:` — it is deprecated for v2 (see `deprecated-topology`), and
+    # `max_nodes: 1` is what it was an indirect spelling of anyway.
     "max_nodes": 1,
     "container": "scitrera/dgx-spark-sglang:latest",
     "defaults": {
@@ -44,7 +45,9 @@ _TEST_RECIPE_DATA = {
     "description": "A test recipe for CLI integration tests",
     "model": "Qwen/Qwen3-1.7B",
     "runtime": "sglang",
-    "mode": "cluster",
+    # Likewise no `mode:`. It said `cluster` beside `min_nodes: 1`, which is
+    # the shape the deprecation is about: the node range is what placement and
+    # validation actually enforce, and `mode` disagreed with it.
     "min_nodes": 1,
     "max_nodes": 8,
     "container": "scitrera/dgx-spark-sglang:latest",

@@ -541,3 +541,179 @@ def test_sglang_bool_flags_are_all_reachable():
 
     unreachable = sorted(k for k in _SGLANG_BOOL_FLAGS if k not in _SGLANG_FLAG_MAP)
     assert not unreachable, "bool keys missing from _SGLANG_FLAG_MAP: %s" % unreachable
+
+
+# ---------------------------------------------------------------------------
+# Data parallelism (issue #284)
+#
+# SGLang spells DP two incompatible ways and refuses one of them across nodes:
+#   assert (tp_size * pp_size) % nnodes == 0
+#   assert not (dp_size > 1 and nnodes != 1 and not enable_dp_attention)
+# so the launch topology, not the recipe alone, decides which flags are legal.
+# ---------------------------------------------------------------------------
+
+
+def _dp_recipe(defaults, command=None):
+    data = {
+        "name": "dp-recipe",
+        "model": "Qwen/Qwen3-8B",
+        "runtime": "sglang",
+        "defaults": defaults,
+    }
+    if command:
+        data["command"] = command
+    return Recipe.from_dict(data)
+
+
+def test_sglang_pure_dp_node_command_has_no_rendezvous():
+    """dp>1, tp*pp==1: each node is a standalone replica.
+
+    Injecting --nnodes/--node-rank here trips "tp_size must be divisible by
+    number of nodes" *before* the server binds a port, which is the whole of
+    issue #284.
+    """
+    recipe = _dp_recipe({"data_parallel": 2})
+    runtime = SglangRuntime()
+    hosts = ["10.0.0.1", "10.0.0.2"]
+
+    for rank in range(2):
+        cmd = runtime.generate_node_command(recipe, {}, head_ip="10.0.0.1", num_nodes=2, node_rank=rank, hosts=hosts)
+        assert "--nnodes" not in cmd, cmd
+        assert "--node-rank" not in cmd, cmd
+        assert "--dist-init-addr" not in cmd, cmd
+        # --dp-size describes replicas inside ONE launch; each of these
+        # launches owns exactly one.
+        assert "--dp-size" not in cmd, cmd
+
+
+def test_sglang_pure_dp_cluster_command_has_no_rendezvous():
+    """The non-node-specific cluster command follows the same rule."""
+    recipe = _dp_recipe({"data_parallel": 2})
+    cmd = SglangRuntime().generate_command(recipe, {}, is_cluster=True, num_nodes=2, head_ip="10.0.0.1")
+    assert "--nnodes" not in cmd
+    assert "--dist-init-addr" not in cmd
+    assert "--dp-size" not in cmd
+
+
+def test_sglang_hybrid_dp_tp_rendezvous_per_replica():
+    """dp=2 x tp=2: two independent 2-node worlds, each rendezvousing at its own head."""
+    recipe = _dp_recipe({"data_parallel": 2, "tensor_parallel": 2})
+    runtime = SglangRuntime()
+    hosts = ["10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4"]
+
+    expected = {0: ("10.0.0.1", 0), 1: ("10.0.0.1", 1), 2: ("10.0.0.3", 0), 3: ("10.0.0.3", 1)}
+    for rank, (master, intra_rank) in expected.items():
+        cmd = runtime.generate_node_command(recipe, {}, head_ip="10.0.0.1", num_nodes=4, node_rank=rank, hosts=hosts)
+        assert "--nnodes 2" in cmd, "rank %d -> %s" % (rank, cmd)
+        assert "--node-rank %d" % intra_rank in cmd, "rank %d -> %s" % (rank, cmd)
+        assert "--dist-init-addr %s:25000" % master in cmd, "rank %d -> %s" % (rank, cmd)
+        # Replicas are joined by a router, not by --dp-size.
+        assert "--dp-size" not in cmd, cmd
+
+
+def test_sglang_dp_attention_keeps_single_global_world():
+    """DP attention is the one multi-node DP shape upstream allows."""
+    recipe = _dp_recipe({"data_parallel": 2, "tensor_parallel": 2, "enable_dp_attention": True})
+    runtime = SglangRuntime()
+    hosts = ["10.0.0.1", "10.0.0.2"]
+
+    for rank in range(2):
+        cmd = runtime.generate_node_command(recipe, {}, head_ip="10.0.0.1", num_nodes=2, node_rank=rank, hosts=hosts)
+        assert "--nnodes 2" in cmd
+        assert "--node-rank %d" % rank in cmd
+        assert "--dist-init-addr 10.0.0.1:25000" in cmd
+        assert "--dp-size 2" in cmd
+        assert "--enable-dp-attention" in cmd
+
+
+def test_sglang_dp_attention_hardcoded_in_command_template_is_seen():
+    """A template that spells --enable-dp-attention must keep its rendezvous.
+
+    The config chain cannot see a literal in ``command:``; missing it would
+    classify a working DeepSeek/Qwen-MoE recipe as independent replicas and
+    strip the flags that make it work.
+    """
+    recipe = _dp_recipe(
+        {"data_parallel": 2, "tensor_parallel": 2},
+        command="sglang serve --model-path {model} --tp-size 2 --dp-size 2 --enable-dp-attention",
+    )
+    cmd = SglangRuntime().generate_node_command(recipe, {}, head_ip="10.0.0.1", num_nodes=2, node_rank=1, hosts=["10.0.0.1", "10.0.0.2"])
+    assert "--nnodes 2" in cmd
+    assert "--node-rank 1" in cmd
+    assert "--dist-init-addr 10.0.0.1:25000" in cmd
+    # Already present in the template — not duplicated.
+    assert cmd.count("--dp-size") == 1
+
+
+def test_sglang_solo_dp_emits_dp_size():
+    """Single launch unit: --dp-size is exactly right and was silently dropped."""
+    recipe = _dp_recipe({"data_parallel": 4})
+    cmd = SglangRuntime().generate_command(recipe, {}, is_cluster=False, num_nodes=1)
+    assert "--dp-size 4" in cmd
+    assert "--nnodes" not in cmd
+
+
+def test_sglang_dp_size_override_reaches_solo_command():
+    """`-o data_parallel=2` is honoured, not dropped (same class as #276)."""
+    recipe = _dp_recipe({})
+    cmd = SglangRuntime().generate_command(recipe, {"data_parallel": 2}, is_cluster=False, num_nodes=1)
+    assert "--dp-size 2" in cmd
+
+
+def test_sglang_dp1_cluster_command_unchanged():
+    """dp==1 keeps the pre-#284 behaviour byte for byte."""
+    recipe = _dp_recipe({"tensor_parallel": 4})
+    runtime = SglangRuntime()
+    hosts = ["10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4"]
+
+    for rank in range(4):
+        cmd = runtime.generate_node_command(recipe, {}, head_ip="10.0.0.1", num_nodes=4, node_rank=rank, hosts=hosts)
+        assert "--dist-init-addr 10.0.0.1:25000" in cmd
+        assert "--nnodes 4" in cmd
+        assert "--node-rank %d" % rank in cmd
+        assert "--dp-size" not in cmd
+
+
+def test_sglang_world_size_dp_attention_does_not_multiply():
+    """dp partitions the tp world under DP attention; the default formula over-schedules."""
+    from sparkrun.core.parallelism import ParallelismConfig
+
+    runtime = SglangRuntime()
+    p = ParallelismConfig(tensor_parallel=16, data_parallel=16)
+
+    attention = _dp_recipe({"tensor_parallel": 16, "data_parallel": 16, "enable_dp_attention": True})
+    assert runtime.world_size(p, recipe=attention, cluster=None) == 16
+
+    replicas = _dp_recipe({"tensor_parallel": 2, "data_parallel": 3})
+    assert runtime.world_size(ParallelismConfig(tensor_parallel=2, data_parallel=3), recipe=replicas, cluster=None) == 6
+
+
+def test_sglang_native_rendezvous_port():
+    """No rendezvous under pure DP; unchanged everywhere else."""
+    runtime = SglangRuntime()
+
+    assert runtime.native_rendezvous_port(_dp_recipe({"data_parallel": 2}), {}, num_nodes=2, init_port=25000) is None
+    assert runtime.native_rendezvous_port(_dp_recipe({"tensor_parallel": 2}), {}, num_nodes=2, init_port=25000) == 25000
+    hybrid = _dp_recipe({"data_parallel": 2, "tensor_parallel": 2})
+    assert runtime.native_rendezvous_port(hybrid, {}, num_nodes=4, init_port=25000) == 25000
+    attention = _dp_recipe({"data_parallel": 2, "tensor_parallel": 2, "enable_dp_attention": True})
+    assert runtime.native_rendezvous_port(attention, {}, num_nodes=2, init_port=25000) == 25000
+
+
+def test_sglang_validate_dp_attention_requires_dp_equals_tp():
+    recipe = _dp_recipe({"tensor_parallel": 4, "data_parallel": 2, "enable_dp_attention": True})
+    issues = SglangRuntime().validate_recipe(recipe)
+    assert any("enable_dp_attention" in str(i) and i.severity == "error" for i in issues), issues
+
+
+def test_sglang_validate_dp_replicas_warns_about_routing():
+    """N replicas means N endpoints — say so rather than implying one address."""
+    recipe = _dp_recipe({"data_parallel": 2})
+    issues = SglangRuntime().validate_recipe(recipe)
+    routing = [i for i in issues if "independent" in str(i)]
+    assert routing and routing[0].severity == "warning", issues
+    assert "router" in str(routing[0]) or "proxy" in str(routing[0])
+
+
+def test_sglang_validate_dp1_is_quiet():
+    assert not SglangRuntime()._validate_parallelism(_dp_recipe({"tensor_parallel": 2}))

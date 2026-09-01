@@ -120,8 +120,12 @@ image re-pushed under the same tag needs `--rebuild`.
 | `solo_only`    | bool                                | `false`  | Shorthand: `max_nodes: 1, mode: solo`                     |
 | `cluster_only` | bool                                | `false`  | Shorthand: `min_nodes: 2, mode: cluster`                  |
 
-Note: `mode`, `solo_only`, and `cluster_only` are deprecated. Developers are encouraged to use  `min_nodes` and
-`max_nodes` instead.
+> **Deprecated: `mode`, `solo_only`, `cluster_only`.** Retained for backward compatibility with v1 recipes and
+> deprecated for v2 and later. Each is applied by rewriting `min_nodes`/`max_nodes`, so each is already an indirect
+> spelling of the node range — use the range directly: it is explicit and composes with the rest of the recipe
+> surface. The one exception is `mode: cluster`, which does *not* fold into the range: it only makes `sparkrun run`
+> print a warning when the launch lands on one host, whereas `min_nodes: 2` is enforced by validation and by
+> placement. `sparkrun recipe validate` reports these (`deprecated-topology`) with the replacement for each.
 
 On DGX Spark (1 GPU per node), `tensor_parallel: N` = N hosts.
 
@@ -320,7 +324,7 @@ entry point that calls into the same shared helpers (`preflight_arena` and
 
 | Field            | Type           | Default | Description                                                     |
 |------------------|----------------|---------|-----------------------------------------------------------------|
-| `recipe_version` | `"2"` \| `"1"` | `"2"`   | v1 = legacy eugr format, auto-detected from `build_args`/`mods` |
+| `recipe_version` | `"2"` \| `"1"` | `"2"`   | v1 = legacy eugr format (deprecated). See Runtime Resolution     |
 
 ---
 
@@ -379,7 +383,8 @@ This applies to `defaults` values as well as to the command template.
 
 > **Deprecated: doubled braces.** v1 (eugr) recipes escape a literal brace by doubling it (`'{{"a":1}}'`). sparkrun
 > still honors that — a doubled brace collapses to one, so a v1 command pasted into a v2 recipe works rather than
-> shipping `{{...}}` to the runtime — but it logs a deprecation warning outside v1 and **will not be supported in v3**.
+> shipping `{{...}}` to the runtime — but `sparkrun recipe validate` reports it (`deprecated-brace-escape`) and it
+> **will not be supported in v3**.
 > Do not write new recipes this way. The convention is detected from `{{` and then applies to the whole template, so a
 > template mixing both spellings collapses the `}}` that merely closes a nested plain-JSON object.
 
@@ -397,12 +402,21 @@ When `runtime` is empty or `"vllm"`:
 
 | Condition                                                             | Resolved Runtime   |
 |-----------------------------------------------------------------------|--------------------|
-| `recipe_version: "1"` or `build_args`/`mods` present (deprecated)      | `eugr-vllm`        |
 | `distributed_executor_backend: ray` in defaults or command            | `vllm-ray`         |
 | Bare `vllm` or empty                                                  | `vllm-distributed` |
 | Command starts with `sglang serve` / `python -m sglang.launch_server` | `sglang`           |
 | Command starts with `llama-server`                                    | `llama-cpp`        |
 | Command starts with `trtllm-serve` / `mpirun...trtllm`                | `trtllm`           |
+
+Builder inference is a **separate** step and does not pick a runtime: `recipe_version: "1"`, `build_args`, or a
+`ghcr.io/spark-arena/dgx-vllm-eugr-nightly*` `container:` set `builder: eugr` when `builder:` is not declared, and the
+runtime still resolves from the table above. (The `eugr-vllm` *runtime* is reached only by naming it explicitly, and is
+itself deprecated — use `runtime: vllm-ray` with `builder: eugr`.)
+
+`mods` is **not** a builder signal. It was, while mods existed only to patch an eugr build; it is part of the v2 spec
+now and works with any builder or none. `sparkrun recipe validate` reports an inferred builder (`implicit-builder`)
+only when it was inferred from a **third-party** image — for a first-party `ghcr.io/spark-arena/` image sparkrun owns
+both the image and the rule, so keeping them in step is its job, not the recipe author's.
 
 Explicit `runtime` always wins. Command-hint detection only fires when `runtime` is omitted.
 
@@ -852,7 +866,8 @@ pull-first entirely: images are used verbatim and a missing one is built via `bu
 
 ### eugr Builder (v1 Compatibility, Legacy)
 
-v1 recipes with `build_args`/`mods` auto-route to `eugr-vllm` runtime and the eugr builder:
+A v1 recipe (or any vLLM recipe carrying `build_args`) gets `builder: eugr` inferred when `builder:` is not declared;
+the runtime resolves independently, per Runtime Resolution above:
 
 ```yaml
 recipe_version: "1"

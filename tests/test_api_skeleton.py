@@ -13,6 +13,7 @@ Covers:
 from __future__ import annotations
 
 import sys
+from dataclasses import FrozenInstanceError
 
 import pytest
 
@@ -47,7 +48,7 @@ def test_run_options_defaults():
 
 def test_run_options_immutable():
     opts = api.RunOptions(recipe="x")
-    with pytest.raises(Exception):  # FrozenInstanceError
+    with pytest.raises(FrozenInstanceError):
         opts.recipe = "y"  # type: ignore[misc]
 
 

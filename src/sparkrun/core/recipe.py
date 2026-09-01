@@ -50,6 +50,27 @@ _CMD_SGLANG_RE = re.compile(r"^(?:sglang\s+serve|python3?\s+-m\s+sglang\.launch_
 _CMD_LLAMA_CPP_RE = re.compile(r"^llama-server\b")
 _CMD_TRTLLM_RE = re.compile(r"^(?:trtllm-serve|mpirun\b.*trtllm)")
 
+#: Images sparkrun's own project publishes.  Not a build signal — plenty of
+#: first-party images have nothing to do with eugr — but it *is* the line
+#: between "sparkrun inferred something about an artifact it controls" and
+#: "sparkrun inferred something about someone else's".  Only the latter is
+#: worth advising a recipe author about; see
+#: :func:`sparkrun.core.validation.check_implicit_builder`.
+FIRST_PARTY_CONTAINER_PREFIX = "ghcr.io/spark-arena/"
+
+#: A ``container:`` starting with this is an eugr build, so a recipe naming one
+#: without declaring ``builder:`` gets eugr inferred.  Spelled here rather than
+#: imported from :mod:`sparkrun.builders.eugr` because ``core`` does not depend
+#: on ``builders``; ``tests/test_recipe.py`` guards the two against drift.
+#:
+#: Note the ``-tf5`` and ``-b12x`` image families are prefix matches of this,
+#: which is why it is a ``startswith`` rather than an equality.  It is
+#: deliberately *narrower* than :data:`FIRST_PARTY_CONTAINER_PREFIX`: being
+#: first-party does not make an image an eugr build (``dgx-spark-sglang`` is
+#: neither), so widening the inference to the whole org would change what gets
+#: built for recipes that never asked for it.
+EUGR_CONTAINER_PREFIX = "ghcr.io/spark-arena/dgx-vllm-eugr-nightly"
+
 _KNOWN_KEYS = {
     "sparkrun_version",
     "recipe_version",
@@ -551,13 +572,20 @@ def _resolve_brace_escapes(recipe: Recipe) -> None:
     ``_resolve_v1_migration``, so it reached only v1 recipes whose runtime was
     vllm — a v2 (or v1 sglang) recipe leaked ``{{...}}`` into the rendered
     command, one layer below the same bug the command template had.
+
+    The deprecation notice itself belongs to
+    :func:`sparkrun.core.validation.check_deprecated_features`, not here.  A
+    resolver runs on *load*, so warning from it fired for anything that merely
+    touched a recipe — ``recipe show``, a registry listing — while being
+    invisible to ``recipe validate``, which reports findings rather than
+    watching the log.  Note the check has to read ``recipe._raw``: the
+    collapse below is in place, so the evidence is gone from ``defaults`` a
+    line later.
     """
     escaped = sorted(k for k, v in recipe.defaults.items() if isinstance(v, str) and uses_brace_escapes(v))
     if escaped and recipe.recipe_version != "1":
-        logger.warning(
-            "Recipe '%s' declares recipe_version '%s' but these defaults use the v1 doubled-brace escape "
-            "('{{' / '}}'): %s. Write literal braces plainly instead. The escape is honored for now but will not "
-            "be supported by v3 recipes.",
+        logger.debug(
+            "Recipe '%s' (recipe_version '%s') uses the v1 doubled-brace escape in defaults: %s",
             recipe.name,
             recipe.recipe_version,
             ", ".join(escaped),
@@ -565,12 +593,29 @@ def _resolve_brace_escapes(recipe: Recipe) -> None:
     recipe.defaults = {k: (_collapse_brace_escapes(v) if isinstance(v, str) else v) for k, v in recipe.defaults.items()}
 
 
+def _has_eugr_signal(build_args: Any, container: Any) -> bool:
+    """Whether recipe content implies the eugr builder.
+
+    Two signals, and **``mods`` is deliberately not one of them**.  It was, when
+    mods existed only to inject patches into an eugr build; it is now part of
+    the v2 spec and works with any builder (or none), so reading it as "this is
+    an eugr recipe" is a inference the spec no longer supports.
+
+    Shared by the resolver and by :func:`resolve_builder`, which is the whole
+    point: the two answered this question separately and disagreed in *both*
+    directions — the display path counted ``mods`` (so a v2 recipe with mods and
+    an ordinary container was listed as ``builder: eugr`` while resolving to no
+    builder at all) and missed the container prefix (so a recipe that really
+    does get an eugr build was listed as having none).
+    """
+    return bool(build_args) or str(container or "").strip().startswith(EUGR_CONTAINER_PREFIX)
+
+
 def _resolve_eugr_signals(recipe: Recipe) -> None:
-    """build_args or mods present -> eugr builder (runtime left for vllm variant resolution)."""
+    """eugr build signals present -> eugr builder (runtime left for vllm variant resolution)."""
     if recipe.runtime not in ("vllm", ""):
         return
-    rc = recipe.runtime_config
-    if rc.get("build_args") or recipe.container.strip().startswith("ghcr.io/spark-arena/dgx-vllm-eugr-nightly"):
+    if _has_eugr_signal(recipe.runtime_config.get("build_args"), recipe.container):
         if not recipe.builder:
             recipe.builder = "eugr"
 
@@ -659,26 +704,33 @@ def resolve_runtime(data: dict[str, Any], overrides: dict[str, Any] | None = Non
 def resolve_builder(data: dict[str, Any]) -> str:
     """Lightweight builder resolution from raw data (for listing/display).
 
-    Detects eugr signals (v1 version, build_args, mods) and returns
-    ``"eugr"`` or ``""`` without constructing a full Recipe.
+    The display peer of :func:`_resolve_v1_migration` + :func:`_resolve_eugr_signals`,
+    answering the same question without constructing a full :class:`Recipe`.
+    "Same question" is the contract, and it was broken in both directions
+    before the two shared :func:`_has_eugr_signal`:
+
+    * this counted ``mods``, so a v2 recipe with ``mods:`` and an ordinary
+      container was *listed* as ``builder: eugr`` while resolving to no builder
+      at all.  ``mods`` implied eugr when mods existed only to patch an eugr
+      build; it is part of the v2 spec now and works with any builder;
+    * and it missed the ``container:`` prefix, so a recipe that really does get
+      an eugr build was listed as having no builder.
+
+    A catalog that disagrees with the launch about what will be built is worse
+    than one that says nothing, because it is read as an answer.
     """
     builder = data.get("builder", "")
     if builder:
         return builder
+    runtime = data.get("runtime", "")
+    if runtime not in ("vllm", ""):
+        return ""
     version = str(data.get("sparkrun_version", data.get("recipe_version", "2")))
     if version == "1":
-        runtime = data.get("runtime", "")
-        if runtime in ("vllm", ""):
-            return "eugr"
-    runtime_config = data.get("runtime_config") or {}
-    runtime = data.get("runtime", "")
-    if runtime in ("vllm", "") and (
-        data.get("build_args")
-        or data.get("mods")
-        or (isinstance(runtime_config, dict) and (runtime_config.get("build_args") or runtime_config.get("mods")))
-    ):
         return "eugr"
-    return ""
+    runtime_config = data.get("runtime_config")
+    build_args = data.get("build_args") or (runtime_config.get("build_args") if isinstance(runtime_config, dict) else None)
+    return "eugr" if _has_eugr_signal(build_args, data.get("container")) else ""
 
 
 def is_recipe_file(path: Path) -> bool:
@@ -845,8 +897,8 @@ def fetch_and_cache_recipe(url: str, *, allow_untrusted_host: bool = False) -> P
             )
             return cache_path
         if isinstance(e, HTTPError):
-            raise RecipeError("Failed to fetch recipe from %s: HTTP %d" % (url, e.code))
-        raise RecipeError("Failed to fetch recipe from %s: %s" % (url, e.reason if isinstance(e, URLError) else e))
+            raise RecipeError("Failed to fetch recipe from %s: HTTP %d" % (url, e.code)) from e
+        raise RecipeError("Failed to fetch recipe from %s: %s" % (url, e.reason if isinstance(e, URLError) else e)) from e
 
 
 # # Backward-compat aliases (old underscore names)
@@ -1280,16 +1332,19 @@ class Recipe:
         # ('{"a":{"b":1}}') as often as it escapes one brace, so it would
         # silently eat a closing brace from the idiomatic v2 spelling.  '{{' is
         # the disambiguator (see utils.text.uses_brace_escapes).
+        #
+        # The deprecation notice is
+        # :func:`sparkrun.core.validation.check_deprecated_features`'s, not
+        # this method's.  Warning from here reached only paths that actually
+        # *render* a command — i.e. a launch — so ``recipe validate``, the one
+        # command whose job is to report what is wrong with a recipe, could
+        # not see it at all.
         escapes = uses_brace_escapes(rendered)
         if escapes and self.recipe_version != "1":
-            logger.warning(
-                "Recipe '%s' declares recipe_version '%s' but its command template uses the doubled-brace escape "
-                "('{{' / '}}'), which is the v1 convention — usually a command pasted from a v1 recipe. Write literal "
-                "braces plainly instead ('--flag '%s''); a placeholder nested inside JSON still resolves. The escape "
-                "is honored for now but will not be supported by v3 recipes.",
+            logger.debug(
+                "Recipe '%s' (recipe_version '%s') uses the v1 doubled-brace escape in its command template",
                 self.name,
                 self.recipe_version,
-                '{"key": "value"}',
             )
 
         # Hook templates deliberately stay unescaped (see

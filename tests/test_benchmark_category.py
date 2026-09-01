@@ -28,6 +28,7 @@ from sparkrun.benchmarking.base import BenchmarkingPlugin
 from sparkrun.benchmarking.llama_benchy import LlamaBenchyFramework
 from sparkrun.benchmarking.tool_eval_bench import ToolEvalBenchFramework
 from sparkrun.core.benchmark_profiles import (
+    BenchmarkError,
     BenchmarkSpec,
     ProfileAmbiguousError,
     ProfileError,
@@ -165,7 +166,7 @@ def test_spec_load_rejects_non_string_category(tmp_path: Path):
         tmp_path / "p.yaml",
         {"benchmark": {"framework": "llama-benchy", "category": 42}},
     )
-    with pytest.raises(Exception):
+    with pytest.raises(BenchmarkError):
         BenchmarkSpec.load(profile)
 
 

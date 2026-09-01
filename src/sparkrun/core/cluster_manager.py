@@ -13,6 +13,8 @@ import yaml
 from sparkrun.core.hardware import HostHardware, default_dgx_spark_hardware
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from sparkrun.core.cluster_status import ClusterStatus
 
 logger = logging.getLogger(__name__)
@@ -349,18 +351,23 @@ class ClusterDefinition:
                 raise ClusterError("cluster '%s' env uses ${...} references but has no env_file configured" % self.name)
             file_vars = _parse_env_file(self.env_file)
 
-        resolved: dict[str, str] = {}
-        for key, raw in self.env.items():
-
+        def _substituter(env_key: str) -> "Callable[[re.Match[str]], str]":
+            # ``env_key`` is bound per call rather than closed over the loop
+            # variable: the error message names the entry that failed, and a
+            # late-bound closure would name whichever entry happened to be last.
             def _sub(m: "re.Match[str]") -> str:
                 var = m.group(1)
                 if var not in file_vars:
                     raise ClusterError(
-                        "cluster '%s' env[%s] references ${%s}, not found in env_file %s" % (self.name, key, var, self.env_file)
+                        "cluster '%s' env[%s] references ${%s}, not found in env_file %s" % (self.name, env_key, var, self.env_file)
                     )
                 return file_vars[var]
 
-            resolved[key] = _ENV_REF_RE.sub(_sub, str(raw))
+            return _sub
+
+        resolved: dict[str, str] = {}
+        for key, raw in self.env.items():
+            resolved[key] = _ENV_REF_RE.sub(_substituter(key), str(raw))
         return resolved
 
     def hardware_for(self, host: str) -> HostHardware:

@@ -1338,7 +1338,9 @@ def launch_inference(
             # per-machine images that premise is gone, so each image is probed on
             # a host that actually runs it.
             groups: dict[str, list[str]] = {}
-            for _host, _img in zip(host_list, image_plan.images_by_node):
+            # strict=False: the ENTRYPOINT probe is fail-open by contract, so a
+            # skew must cost at most an unprobed host — never a raised launch.
+            for _host, _img in zip(host_list, image_plan.images_by_node, strict=False):
                 groups.setdefault(_img, []).append(_host)
 
             if len(groups) <= 1:

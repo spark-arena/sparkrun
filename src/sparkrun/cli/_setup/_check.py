@@ -550,7 +550,7 @@ def register(setup_group) -> None:
             return run_remote_script(host, script, timeout=60, quiet=True, **ssh_kwargs)
 
         with ThreadPoolExecutor(max_workers=min(len(host_list), 16)) as pool:
-            raw_results = dict(zip(host_list, pool.map(_probe, host_list)))
+            raw_results = dict(zip(host_list, pool.map(_probe, host_list), strict=True))
 
         # CX7 readiness reuses the real detection machinery (per-interface link
         # state + IP + netplan), so it reflects effective networking rather than

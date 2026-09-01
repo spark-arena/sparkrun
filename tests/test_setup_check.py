@@ -100,7 +100,7 @@ def _cx7_detection(
             persistence_detail=detail,
             dhcp=dhcp,
         )
-        for idx, (st, ip) in enumerate(zip(states, ips))
+        for idx, (st, ip) in enumerate(zip(states, ips, strict=True))
     ]
     return CX7HostDetection(host="h", interfaces=ifaces, netplan_exists=netplan, detected=bool(ifaces))
 

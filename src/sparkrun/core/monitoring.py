@@ -219,7 +219,7 @@ def parse_monitor_line(line: str) -> MonitorSample | None:
         return None
 
     kwargs = {}
-    for col_name, value in zip(MONITOR_COLUMNS, parts):
+    for col_name, value in zip(MONITOR_COLUMNS, parts, strict=True):
         kwargs[col_name] = value.strip()
 
     return MonitorSample(**kwargs)
@@ -439,7 +439,7 @@ class ClusterMonitor:
 
     def stop(self) -> None:
         """Terminate all SSH subprocesses."""
-        for host, state in self.states.items():
+        for state in self.states.values():
             if state.process is not None:
                 try:
                     state.process.terminate()
@@ -686,7 +686,7 @@ class NvMonitorClusterMonitor:
 
     def stop(self) -> None:
         """Terminate all SSH processes."""
-        for host, state in self.states.items():
+        for state in self.states.values():
             if state.process is not None:
                 try:
                     state.process.terminate()

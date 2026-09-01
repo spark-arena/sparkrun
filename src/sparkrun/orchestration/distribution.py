@@ -1035,7 +1035,10 @@ def _subset_transfer_hosts(
     """
     if not transfer_hosts:
         return None
-    return [t for h, t in zip(host_subset_source, transfer_hosts) if h in target_set]
+    # strict=False: callers pass whatever transfer-host list they resolved, and a
+    # short list means those hosts fall back to their management address — which
+    # is slower but correct.  Raising here would abort the distribution instead.
+    return [t for h, t in zip(host_subset_source, transfer_hosts, strict=False) if h in target_set]
 
 
 def _distribute_image_plan(

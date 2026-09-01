@@ -37,7 +37,7 @@ def test_resolve_per_host_backends_no_cluster_defaults_to_dgx_nvidia():
     """When no cluster is provided, every host defaults to DGX Spark / NVIDIA."""
     backends = resolve_per_host_backends(["10.0.0.1", "10.0.0.2"], cluster=None)
     assert set(backends.keys()) == {"10.0.0.1", "10.0.0.2"}
-    for host, bundle in backends.items():
+    for bundle in backends.values():
         assert isinstance(bundle, BackendBundle)
         assert bundle.accelerator_vendor == "nvidia"
         assert isinstance(bundle.collective, NcclBackend)

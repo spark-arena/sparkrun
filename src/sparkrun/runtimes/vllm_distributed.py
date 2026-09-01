@@ -45,6 +45,13 @@ class VllmDistributedRuntime(VllmMixin, RuntimePlugin):
         """vLLM distributed uses native multi-node distribution, not Ray."""
         return "native"
 
+    # TODO: pure DP (``tp*pp == 1, dp > 1``) emits ``--data-parallel-*`` and no
+    # ``--master-port``, so nothing here looks like it binds ``init_port`` — if
+    # so the head gate in ``_cluster_ops`` waits out its budget and reports a
+    # healthy launch as dead, and the fix is a ``native_rendezvous_port``
+    # override returning ``None`` for that regime (see SglangRuntime, #284).
+    # Needs a live 2-node ``--dp 2`` run to confirm before changing anything.
+
     def prepare(
         self,
         recipe: Recipe,

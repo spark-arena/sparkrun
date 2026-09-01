@@ -501,7 +501,7 @@ def _load_recipe(config, recipe_name, resolve=True, retry_after_update=False):
             if sys.stdin.isatty():
                 recipe_path = _prompt_disambiguation(e)
                 break
-            raise click.ClickException(str(e))
+            raise click.ClickException(str(e)) from e
         except RecipeError as e:
             if retried or not retry_after_update or _recipe_name_looks_like_path(recipe_name):
                 click.echo("Error: %s" % e, err=True)

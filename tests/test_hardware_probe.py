@@ -239,7 +239,7 @@ def test_probe_hosts_parallel(monkeypatch):
 
     result = probe_hosts(hosts)
     assert set(result.keys()) == set(hosts)
-    for host, hw in result.items():
+    for hw in result.values():
         assert hw.accelerators[0].model == "gb10"
         assert hw.ib_info is not None
         assert hw.ib_info["IB_DETECTED"] == "1"

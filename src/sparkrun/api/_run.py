@@ -312,8 +312,8 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
     from sparkrun.core.execution import ExecutionContext, resolve_recipe_execution, run_preparation_steps
     from sparkrun.core.timing import Timeline, timed
 
-    if getattr(sctx, "timing", None) is None:
-        setattr(sctx, "timing", Timeline())
+    if sctx.timing is None:
+        sctx.timing = Timeline()
 
     execution_context = ExecutionContext(options=options, plan=plan, sctx=sctx)
     try:
