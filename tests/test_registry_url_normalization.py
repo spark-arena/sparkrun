@@ -181,7 +181,7 @@ def defaults_guard():
     """Fail loudly if a test mutates the shipped defaults, and restore them."""
     before = [dataclasses.replace(e) for e in FALLBACK_DEFAULT_REGISTRIES]
     yield
-    for live, orig in zip(FALLBACK_DEFAULT_REGISTRIES, before):
+    for live, orig in zip(FALLBACK_DEFAULT_REGISTRIES, before, strict=True):
         live.trusted, live.enabled, live.visible = orig.trusted, orig.enabled, orig.visible
 
 

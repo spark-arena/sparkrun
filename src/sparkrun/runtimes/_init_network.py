@@ -112,7 +112,7 @@ def init_address_map(cluster_hosts: Sequence[str], selection: InitNetworkSelecti
             len(selection.hosts),
         )
         return {host: host for host in cluster_hosts}
-    return dict(zip(cluster_hosts, selection.hosts))
+    return dict(zip(cluster_hosts, selection.hosts, strict=True))
 
 
 def remap_placement_addresses(placement, addr_map: Mapping[str, str]):

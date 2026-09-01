@@ -142,7 +142,7 @@ def _placement_from_layout(
             raise PlacementError(
                 "Layout placement for host '%s' has %d ranks but %d local_gpus" % (placement.host, len(placement.ranks), len(local_gpus))
             )
-        for rank, local_gpu in zip(placement.ranks, local_gpus):
+        for rank, local_gpu in zip(placement.ranks, local_gpus, strict=True):
             if rank in by_rank_dict:
                 raise PlacementError("Layout assigns rank %d to multiple hosts" % rank)
             by_rank_dict[rank] = RankSlot(host=placement.host, local_gpu=int(local_gpu))

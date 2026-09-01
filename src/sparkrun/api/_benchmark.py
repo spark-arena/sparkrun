@@ -1105,13 +1105,13 @@ def _execute_benchmark(
 
                         try:
                             proc.wait(timeout=effective_timeout)
-                        except subprocess.TimeoutExpired:
+                        except subprocess.TimeoutExpired as exc:
                             proc.kill()
                             proc.wait()
                             raise BenchmarkFailed(
                                 "Error: benchmark timed out after %d seconds" % effective_timeout,
                                 exit_code=1,
-                            )
+                            ) from exc
 
                         stdout_text = "".join(stdout_lines)
                         stderr_text = proc.stderr.read()
@@ -1138,13 +1138,13 @@ def _execute_benchmark(
                                 )
                         else:
                             emitter.info("Benchmark completed successfully (%.0fs elapsed)." % elapsed)
-                except FileNotFoundError:
+                except FileNotFoundError as exc:
                     if launched and not no_stop:
                         _stop_inference(runtime, host_list, cluster_id, config, dry_run, sctx=sctx, emitter=emitter)
                     raise BenchmarkFailed(
                         "Error: benchmark command not found: %s" % bench_cmd[0],
                         exit_code=1,
-                    )
+                    ) from exc
 
             result_file_for_parse = result_file
 

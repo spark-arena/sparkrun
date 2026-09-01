@@ -897,8 +897,8 @@ def fetch_and_cache_recipe(url: str, *, allow_untrusted_host: bool = False) -> P
             )
             return cache_path
         if isinstance(e, HTTPError):
-            raise RecipeError("Failed to fetch recipe from %s: HTTP %d" % (url, e.code))
-        raise RecipeError("Failed to fetch recipe from %s: %s" % (url, e.reason if isinstance(e, URLError) else e))
+            raise RecipeError("Failed to fetch recipe from %s: HTTP %d" % (url, e.code)) from e
+        raise RecipeError("Failed to fetch recipe from %s: %s" % (url, e.reason if isinstance(e, URLError) else e)) from e
 
 
 # # Backward-compat aliases (old underscore names)

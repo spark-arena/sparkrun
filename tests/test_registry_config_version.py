@@ -36,7 +36,7 @@ OFFICIAL_URL = "https://github.com/spark-arena/recipe-registry.git"
 def _restore_shipped_defaults():
     before = [dataclasses.replace(e) for e in FALLBACK_DEFAULT_REGISTRIES]
     yield
-    for live, orig in zip(FALLBACK_DEFAULT_REGISTRIES, before):
+    for live, orig in zip(FALLBACK_DEFAULT_REGISTRIES, before, strict=True):
         live.trusted, live.enabled, live.visible = orig.trusted, orig.enabled, orig.visible
 
 

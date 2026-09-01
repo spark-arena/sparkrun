@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
 from unittest.mock import MagicMock, patch
 
 from sparkrun.core.recipe import Recipe
@@ -79,8 +80,8 @@ def test_surface_exports():
 
 def test_options_dataclass_is_frozen():
     opts = BenchmarkOptions(recipe="my-recipe")
-    with pytest.raises(Exception):
-        setattr(opts, "recipe", "other")
+    with pytest.raises(FrozenInstanceError):
+        opts.recipe = "other"  # type: ignore[misc]
 
 
 def test_result_dataclass_is_frozen():
@@ -91,8 +92,8 @@ def test_result_dataclass_is_frozen():
         framework="llama-benchy",
         profile=None,
     )
-    with pytest.raises(Exception):
-        setattr(r, "success", False)
+    with pytest.raises(FrozenInstanceError):
+        r.success = False  # type: ignore[misc]
 
 
 def test_benchmark_translates_benchmarkfailed_raised_directly():

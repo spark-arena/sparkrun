@@ -196,7 +196,7 @@ def _summarize_platforms(
     if len(set(lines)) == 1:
         return lines[0], None
 
-    return "mixed", list(zip(host_list, lines))
+    return "mixed", list(zip(host_list, lines, strict=True))
 
 
 @click.command()

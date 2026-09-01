@@ -1709,7 +1709,10 @@ class RuntimePlugin(Plugin):
         logger.info("Cluster ID:     %s", cluster_id)
         if images_by_node and len(set(images_by_node)) > 1:
             logger.info("Images:")
-            for host, node_image in zip(hosts, images_by_node):
+            # strict=False: this is the launch banner.  A skew is reported by the
+            # resolution path that owns the invariant (``resolve_image_plan`` /
+            # ``resolve_image_identities``); printing must not be what raises.
+            for host, node_image in zip(hosts, images_by_node, strict=False):
                 logger.info("  %-14s%s", host + ":", node_image)
         else:
             logger.info("Image:          %s", image)

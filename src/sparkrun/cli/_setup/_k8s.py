@@ -94,7 +94,7 @@ def setup_k8s_kubectl(ctx, version, list_, show_path, no_download):
     try:
         binary = api.k8s.ensure_kubectl(sctx, version=version, download=not no_download)
     except api.k8s.KubectlUnavailable as exc:
-        raise click.ClickException(str(exc))
+        raise click.ClickException(str(exc)) from exc
 
     if show_path:
         click.echo(str(binary.path))
@@ -126,7 +126,7 @@ def setup_k8s_info(ctx, kubeconfig, kube_context, namespace, no_pin):
             pin=not no_pin,
         )
     except api.k8s.KubectlUnavailable as exc:
-        raise click.ClickException(str(exc))
+        raise click.ClickException(str(exc)) from exc
 
     click.echo("Context:        %s" % (info.current_context or "(default)"))
     click.echo("Namespace:      %s" % (info.namespace or "(default)"))
@@ -163,7 +163,7 @@ def setup_k8s_nodes(ctx, kubeconfig, kube_context, namespace, selector, gpu_only
     try:
         nodes = api.k8s.list_nodes(sctx, kubeconfig=kubeconfig, context=kube_context, selector=selector, gpu_only=gpu_only)
     except (api.k8s.ClusterUnreachable, api.k8s.KubectlUnavailable) as exc:
-        raise click.ClickException(str(exc))
+        raise click.ClickException(str(exc)) from exc
 
     if not nodes:
         click.echo("No nodes found.")
@@ -221,7 +221,7 @@ def setup_k8s_sa(ctx, name, kubeconfig, kube_context, namespace, no_create_names
             dry_run=dry_run,
         )
     except (api.k8s.ClusterUnreachable, api.k8s.ServiceAccountError, api.k8s.KubectlUnavailable) as exc:
-        raise click.ClickException(str(exc))
+        raise click.ClickException(str(exc)) from exc
 
     if dry_run:
         click.echo(result.manifests_yaml)
@@ -287,7 +287,7 @@ def setup_k8s_kueue(ctx, kubeconfig, kube_context, namespace, install, kueue_ver
             dry_run=dry_run,
         )
     except (api.k8s.KueueSetupError, api.k8s.ClusterUnreachable, api.k8s.KubectlUnavailable) as exc:
-        raise click.ClickException(str(exc))
+        raise click.ClickException(str(exc)) from exc
 
     if dry_run:
         click.echo(result.manifests_yaml)
@@ -348,7 +348,7 @@ def setup_k8s_launch(
             dry_run=dry_run,
         )
     except (api.k8s.JobSetLaunchError, api.k8s.ClusterUnreachable, api.k8s.KubectlUnavailable) as exc:
-        raise click.ClickException(str(exc))
+        raise click.ClickException(str(exc)) from exc
 
     if dry_run:
         click.echo(result.manifests_yaml)
@@ -396,7 +396,7 @@ def setup_k8s_run_job(ctx, name, image, command, script, kubeconfig, kube_contex
             dry_run=dry_run,
         )
     except api.k8s.LauncherJobError as exc:
-        raise click.ClickException(str(exc))
+        raise click.ClickException(str(exc)) from exc
 
     if dry_run:
         click.echo(result.manifests_yaml)

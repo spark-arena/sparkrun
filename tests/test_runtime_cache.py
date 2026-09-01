@@ -578,7 +578,7 @@ def test_host_executors_prepare_the_cache_over_ssh(monkeypatch):
         seen = {}
         monkeypatch.setattr(
             "sparkrun.orchestration.runtime_cache.run_remote_scripts_parallel",
-            lambda hosts, script, **kw: seen.update(hosts=hosts, script=script, kw=kw) or [],
+            lambda hosts, script, _seen=seen, **kw: _seen.update(hosts=hosts, script=script, kw=kw) or [],
         )
         m = _mounts()
         executor_cls().ensure_runtime_cache(m, ["h1", "h2"])
