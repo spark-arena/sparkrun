@@ -81,8 +81,8 @@ lists. Falsy values fall through to the dataclass defaults.
 | `privileged`          | bool        | Docker              | `True`        | Off in rootless mode.                                                                          |
 | `gpus`                | str         | Docker, Local, K8s  | `"all"`       | The GPU spec. Docker spells it per `gpu_access_mode`. Local translates `device=0,2` → `CUDA_VISIBLE_DEVICES`. K8s extracts a count for `nvidia.com/gpu`. |
 | `gpu_access_mode`     | str         | Docker              | `"cdi"`       | `cdi` → `--device nvidia.com/gpu=<id>`; `gpus` → `--gpus <gpus>`. Platform-defaulted (DGX Spark pins `gpus`). |
-| `ipc`                 | str         | Docker              | `"host"`      | `--ipc=host`. K8s drops.                                                                       |
-| `shm_size`            | str         | Docker              | `"25gb"`      | `--shm-size`. K8s drops.                                                                       |
+| `ipc`                 | str         | Docker              | `"shareable"` | `--ipc`. Own IPC namespace + own `/dev/shm`, joinable via `--ipc=container:<name>`. **Not `host`**: see below. K8s drops. |
+| `shm_size`            | str         | Docker              | `"32gb"`      | `--shm-size`. Only applies when `ipc` is not `host` (Docker ignores it otherwise). K8s drops.  |
 | `network`             | str         | Docker              | `"host"`      | `--network`. K8s drops.                                                                        |
 | `user`                | str?        | Docker              | `None`        | `--user`. Sentinel `"$SHELL_USER"` expands to `$(id -u):$(id -g)` + bind-mounts passwd/group.  |
 | `security_opt`        | list[str]?  | Docker              | `None`        | Repeated `--security-opt`. Defaults to `["no-new-privileges"]` in rootless mode.               |
@@ -181,6 +181,47 @@ launch's own accelerator flags. Everything is fail-open: unreachable host,
 timeout, unresolvable executor, or `SPARKRUN_NO_IMAGE_PROBE=1` all read as
 "proceed". The base implementation returns `None`, so container-less (`local`)
 and provider executors never block a launch.
+
+### IPC namespace (`ipc`) and `shm_size`
+
+The default is `shareable`, **not** `host`. The two settings are coupled: Docker
+ignores `--shm-size` whenever `--ipc=host`, because the container then simply
+gets the host's `/dev/shm` (typically 50% of RAM). Change one and you change
+what the other means.
+
+`ipc: host` is unsafe in sparkrun's default configuration. The container runs as
+the SSH user (`--user $(id -u):$(id -g)`), so under a host IPC namespace every
+POSIX semaphore and shared-memory segment the workload creates is a host file
+owned by a regular UID. systemd-logind with `RemoveIPC=yes` — the Ubuntu 24.04 /
+DGX OS default — deletes exactly those objects `UserStopDelaySec` (10s) after
+that user's last login session ends. sparkrun launches detached (`docker exec -d`)
+and then closes its SSH session, so a workload still in Python's multiprocessing
+bootstrap when the reaper runs dies with:
+
+```text
+File "/usr/lib/python3.12/multiprocessing/synchronize.py", line 115, in __setstate__
+    self._semlock = _multiprocessing.SemLock._rebuild(*state)
+FileNotFoundError: [Errno 2] No such file or directory
+```
+
+A workload that gets past that point first survives indefinitely — unlinking a
+name does not invalidate an already-open handle — which is why the failure is
+intermittent, why longer startups (large models, graph capture) fail more often
+than short ones, and why holding an unrelated SSH session open makes it vanish.
+Running as root also masks it, since logind never reaps system UIDs.
+
+A container-owned namespace is immune: logind walks `/dev/shm` itself, not
+arbitrary mounts. `shareable` is preferred over `private` because it costs
+nothing and still lets a second container on the same host join with
+`--ipc=container:<name>`.
+
+Keep `ipc: host` only for cross-*container* shared memory on one host (e.g.
+intra-node NCCL between separate containers). When you do, either enable
+lingering for the SSH user (`sudo loginctl enable-linger <user>`) or set
+`RemoveIPC=no` in `/etc/systemd/logind.conf` on every host; `sparkrun setup
+check` reports this combination, and the executor warns at launch. Note the
+`local` executor has the same exposure by construction — it runs natively, with
+no namespace to hide in.
 
 ### NVIDIA GPU access mode
 

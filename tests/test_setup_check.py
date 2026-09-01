@@ -367,3 +367,86 @@ def test_check_json_output(runner, v, patched_cluster_mgr):
     assert payload["cluster"] == "mylab"
     assert payload["results"]["10.0.0.1"]["reachable"] is True
     assert payload["critical_gaps"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Host IPC vs systemd RemoveIPC (issue #285)
+# ---------------------------------------------------------------------------
+
+# A host whose logind will reap a regular user's IPC once their session ends.
+_FACTS_REAPER = dict(
+    _FACTS_ALL_GOOD,
+    CHECK_UID="1000",
+    CHECK_LOGIND_REMOVE_IPC="yes",
+    CHECK_LOGIND_LINGER="0",
+)
+
+_HOST = "10.0.0.1"
+
+
+def _ipc_ctx(exposure: str | None = "host") -> CheckContext:
+    return CheckContext(
+        cluster_name="mylab",
+        multi_host=False,
+        ipc_exposure={_HOST: exposure} if exposure is not None else {},
+    )
+
+
+def _keys(items):
+    return [i.key for i in items]
+
+
+def test_host_ipc_omitted_when_launch_does_not_use_host_namespace():
+    # The default (`shareable`) is immune, so there is no gap to report --
+    # reporting one on every host is how a check teaches people to skim.
+    items = evaluate_host(_state(_FACTS_REAPER), _ipc_ctx("shareable"))
+    assert "host_ipc" not in _keys(items)
+
+
+def test_host_ipc_omitted_when_executor_could_not_be_resolved():
+    items = evaluate_host(_state(_FACTS_REAPER), _ipc_ctx(None))
+    assert "host_ipc" not in _keys(items)
+
+
+def test_host_ipc_warns_on_reaping_host():
+    items = evaluate_host(_state(_FACTS_REAPER), _ipc_ctx())
+    item = next(i for i in items if i.key == "host_ipc")
+    assert item.status == WARN
+    assert "RemoveIPC=yes" in item.detail
+    assert "enable-linger" in item.guidance
+
+
+def test_host_ipc_ok_when_lingering_enabled():
+    facts = dict(_FACTS_REAPER, CHECK_LOGIND_LINGER="1")
+    items = evaluate_host(_state(facts), _ipc_ctx())
+    assert next(i for i in items if i.key == "host_ipc").status == OK
+
+
+def test_host_ipc_ok_when_remove_ipc_disabled():
+    facts = dict(_FACTS_REAPER, CHECK_LOGIND_REMOVE_IPC="no")
+    items = evaluate_host(_state(facts), _ipc_ctx())
+    assert next(i for i in items if i.key == "host_ipc").status == OK
+
+
+def test_host_ipc_omitted_for_system_uid():
+    # logind never reaps IPC for root / system users, which is why running the
+    # container as root masks the failure.
+    facts = dict(_FACTS_REAPER, CHECK_UID="0")
+    assert "host_ipc" not in _keys(evaluate_host(_state(facts), _ipc_ctx()))
+
+
+def test_host_ipc_unknown_remove_ipc_is_skip_not_warn():
+    facts = dict(_FACTS_REAPER, CHECK_LOGIND_REMOVE_IPC="unknown")
+    assert next(i for i in evaluate_host(_state(facts), _ipc_ctx()) if i.key == "host_ipc").status == SKIP
+
+
+def test_host_ipc_unknown_uid_is_skip_not_warn():
+    facts = dict(_FACTS_REAPER, CHECK_UID="unknown")
+    assert next(i for i in evaluate_host(_state(facts), _ipc_ctx()) if i.key == "host_ipc").status == SKIP
+
+
+def test_host_ipc_warns_when_lingering_cannot_be_confirmed():
+    facts = dict(_FACTS_REAPER, CHECK_LOGIND_LINGER="unknown")
+    item = next(i for i in evaluate_host(_state(facts), _ipc_ctx()) if i.key == "host_ipc")
+    assert item.status == WARN
+    assert "could not be confirmed" in item.detail

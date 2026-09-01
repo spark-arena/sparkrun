@@ -28,7 +28,7 @@ from typing import Callable, TYPE_CHECKING
 
 import click
 
-from sparkrun.orchestration.executors.docker import GPU_ACCESS_CDI
+from sparkrun.orchestration.executors.docker import DOCKER_IPC_DEFAULT, DOCKER_IPC_HOST, GPU_ACCESS_CDI
 
 from .._common import host_options, json_option
 
@@ -73,6 +73,16 @@ class CheckContext:
     Empty (or missing a host) when resolution failed; see :meth:`cdi_required`.
     """
 
+    ipc_exposure: dict[str, str] = field(default_factory=dict)
+    """host -> the IPC namespace a launch on that host would put the workload in.
+
+    ``"host"`` means the workload's POSIX semaphores and shared memory land in
+    the *host's* ``/dev/shm`` — either a Docker ``ipc: host`` override or the
+    ``local`` executor, which runs natively and has no namespace at all.  Any
+    other value (or a missing host) means it does not; see
+    :meth:`shares_host_ipc`.
+    """
+
     @property
     def cluster_flag(self) -> str:
         """`` --cluster <name>`` suffix for guidance commands (empty if unknown)."""
@@ -89,6 +99,18 @@ class CheckContext:
         is the historical behavior (a missing spec is a hard failure).
         """
         return self.gpu_access_modes.get(host, GPU_ACCESS_CDI) == GPU_ACCESS_CDI
+
+    def shares_host_ipc(self, host: str) -> bool:
+        """Would a launch on *host* put the workload on the host IPC namespace?
+
+        Fails **quiet**, the opposite of :meth:`cdi_required`: an unresolvable
+        executor reads as "no". The two differ because a false positive costs
+        different things — a spurious CDI finding points at a real file, while
+        a spurious IPC finding tells the operator to change logind on a host
+        where nothing is at risk. A finding that fires on correct setups is how
+        a report teaches people to skim it.
+        """
+        return self.ipc_exposure.get(host, "") == DOCKER_IPC_HOST
 
 
 @dataclass
@@ -241,6 +263,65 @@ def _check_cdi_spec(state: HostState, ctx: CheckContext) -> CheckItem:
             _CDI_REGENERATE % ctx.cluster_flag,
         )
     return CheckItem("cdi_spec", "NVIDIA CDI spec (/etc/cdi/nvidia.yaml)", SKIP, "not needed — %s" % _CDI_UNUSED)
+
+
+#: systemd never reaps IPC for UIDs at or below this — ``SYSTEM_UID_MAX``, whose
+#: compiled-in default is 999. A root or system-user workload is not at risk,
+#: which is exactly why ``-o user=root`` "fixes" the failure (at the cost of the
+#: rootless hardening and a cache full of root-owned files).
+_LOGIND_SYSTEM_UID_MAX = 999
+
+_IPC_LABEL = "Host IPC vs systemd RemoveIPC"
+
+
+def _check_host_ipc(state: HostState, ctx: CheckContext) -> CheckItem | None:
+    """Would systemd-logind reap this host's workload IPC after launch?
+
+    Only applies when a launch here shares the *host's* IPC namespace — an
+    explicit Docker ``ipc: host`` (sparkrun defaults to ``shareable``, which is
+    immune) or the ``local`` executor, which runs natively and so has no
+    namespace to hide in. Everything else is omitted rather than reported OK:
+    there is no gap to describe.
+
+    The hazard needs all three of host IPC, a regular UID, and a user manager
+    that stops — so the check reports only when it can see all three, and any
+    one of them being absent or unknowable is a reason to stay quiet or say
+    "couldn't tell" rather than to warn.
+    """
+    facts = state.facts
+    if not ctx.shares_host_ipc(state.host):
+        return None
+
+    raw_uid = facts.get("CHECK_UID", "").strip()
+    try:
+        uid = int(raw_uid)
+    except (TypeError, ValueError):
+        return CheckItem("host_ipc", _IPC_LABEL, SKIP, "could not read the ssh user's UID")
+    if uid <= _LOGIND_SYSTEM_UID_MAX:
+        return None  # logind does not reap system users; nothing at risk
+
+    remove_ipc = facts.get("CHECK_LOGIND_REMOVE_IPC", "unknown").strip()
+    linger = facts.get("CHECK_LOGIND_LINGER", "unknown").strip()
+    user = facts.get("CHECK_USER", "the ssh user")
+
+    if linger == "1":
+        return CheckItem("host_ipc", _IPC_LABEL, OK, "lingering enabled for '%s', so its user manager never stops" % user)
+    if remove_ipc == "no":
+        return CheckItem("host_ipc", _IPC_LABEL, OK, "logind RemoveIPC=no")
+    if remove_ipc != "yes":
+        return CheckItem("host_ipc", _IPC_LABEL, SKIP, "could not read logind's RemoveIPC setting")
+
+    detail = "RemoveIPC=yes and no lingering for '%s' (uid %d)" % (user, uid)
+    if linger != "0":
+        detail += "; lingering could not be confirmed"
+    detail += " — logind deletes this workload's /dev/shm semaphores shortly after the launching SSH session closes"
+    return CheckItem(
+        "host_ipc",
+        _IPC_LABEL,
+        WARN,
+        detail,
+        "sudo loginctl enable-linger %s — or drop the 'ipc: host' override (sparkrun defaults to '%s')" % (user, DOCKER_IPC_DEFAULT),
+    )
 
 
 def _check_earlyoom(state: HostState, ctx: CheckContext) -> CheckItem:
@@ -411,6 +492,7 @@ SETUP_CHECKS: tuple[SetupCheck, ...] = (
     SetupCheck("docker_usable", _check_docker_usable),
     SetupCheck("nvidia_ctk", _check_nvidia_ctk),
     SetupCheck("cdi_spec", _check_cdi_spec),
+    SetupCheck("host_ipc", _check_host_ipc),
     SetupCheck("earlyoom", _check_earlyoom),
     SetupCheck("sudoers", _check_sudoers),
     SetupCheck("ssh_mesh", _check_ssh_mesh),
@@ -450,17 +532,22 @@ def register(setup_group) -> None:
     group is defined there).
     """
 
-    def _resolve_gpu_access_modes(host_list, *, cluster_name, hosts, hosts_file, config) -> dict[str, str]:
-        """Map each host to the ``gpu_access_mode`` a launch on it would resolve to.
+    def _resolve_executor_facts(host_list, *, cluster_name, hosts, hosts_file, config) -> tuple[dict[str, str], dict[str, str]]:
+        """Map each host to the ``gpu_access_mode`` and IPC namespace a launch would use.
 
         Runs the *real* executor resolution chain per host (the platform tier is
-        keyed off that host's hardware), so the check reports on the same value
-        the launch would use rather than re-deriving the rule. Mirrors the
+        keyed off that host's hardware), so the checks report on the same values
+        the launch would use rather than re-deriving the rules. Mirrors the
         launcher's fallback: with no cluster definition, hardware defaults to
         DGX Spark.
 
-        Best-effort — any failure yields an empty/partial map and
-        :meth:`CheckContext.cdi_required` falls back to "CDI is required".
+        Sees cluster- and config-level settings but not recipe-level ones — a
+        recipe pinning ``executor_config: {ipc: host}`` is invisible here, which
+        is why the executor also warns at command-generation time.
+
+        Best-effort — any failure yields empty/partial maps;
+        :meth:`CheckContext.cdi_required` then falls back to "CDI is required"
+        and :meth:`CheckContext.shares_host_ipc` to "not exposed".
         """
         from sparkrun.core.hardware import default_dgx_spark_hardware
         from sparkrun.orchestration.executor import resolve_executor
@@ -468,6 +555,7 @@ def register(setup_group) -> None:
         from .._common import _get_cluster_manager
 
         modes: dict[str, str] = {}
+        ipc_exposure: dict[str, str] = {}
         cluster_def = None
         try:
             cluster_mgr = _get_cluster_manager()
@@ -484,9 +572,18 @@ def register(setup_group) -> None:
                 hw = cluster_def.hardware_for(host) if cluster_def is not None else default_dgx_spark_hardware()
                 executor = resolve_executor(cluster=cluster_def, config=config, host_hardware=hw, rootless=False, auto_user=False)
                 modes[host] = executor.config.gpu_access_mode
+                # A native (`local`) job has no IPC namespace at all, so it is
+                # on the host's by construction — the same exposure an
+                # `ipc: host` container has, reached a different way. Provider
+                # executors (k8s, modal) don't run on this host; omit them.
+                name = getattr(executor, "executor_name", "")
+                if name == "docker":
+                    ipc_exposure[host] = (executor.config.ipc or "").strip().lower()
+                elif name == "local":
+                    ipc_exposure[host] = DOCKER_IPC_HOST
             except Exception:
-                logger.debug("Could not resolve gpu_access_mode for %s", host, exc_info=True)
-        return modes
+                logger.debug("Could not resolve executor facts for %s", host, exc_info=True)
+        return modes, ipc_exposure
 
     @setup_group.command("check")
     @host_options
@@ -496,8 +593,8 @@ def register(setup_group) -> None:
         """Check cluster hosts against the setup steps, without changing anything.
 
         Probes each host for the things ``sparkrun setup wizard`` configures
-        (Docker access, NVIDIA CDI, earlyoom, sudoers, SSH mesh, CX7) and
-        reports gaps with the command that fixes each. Uses the default
+        (Docker access, NVIDIA CDI, host IPC reaping, earlyoom, sudoers, SSH
+        mesh, CX7) and reports gaps with the command that fixes each. Uses the default
         cluster unless ``--cluster``/``--hosts`` is given. Read-only.
 
         Examples:
@@ -521,16 +618,18 @@ def register(setup_group) -> None:
         host_list, user, ssh_kwargs = _resolve_setup_context(hosts, hosts_file, cluster_name, config, user=None)
 
         multi_host = len(host_list) > 1
+        gpu_access_modes, ipc_exposure = _resolve_executor_facts(
+            host_list,
+            cluster_name=cluster_name,
+            hosts=hosts,
+            hosts_file=hosts_file,
+            config=config,
+        )
         check_ctx = CheckContext(
             cluster_name=cluster_name,
             multi_host=multi_host,
-            gpu_access_modes=_resolve_gpu_access_modes(
-                host_list,
-                cluster_name=cluster_name,
-                hosts=hosts,
-                hosts_file=hosts_file,
-                config=config,
-            ),
+            gpu_access_modes=gpu_access_modes,
+            ipc_exposure=ipc_exposure,
         )
 
         target = "cluster '%s'" % cluster_name if cluster_name else "%d host(s)" % len(host_list)
