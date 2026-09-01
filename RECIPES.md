@@ -589,7 +589,7 @@ executor_config:
 | `privileged`     | bool   | `true`      | `--privileged` | Privileged mode                                                                                                     |
 | `gpus`           | string | `"all"`     | (see below)    | GPU device spec (`all`, `device=0,1`)                                                                               |
 | `gpu_access_mode`| string | platform    | `--device` / `--gpus` | How the GPU request is spelled: `cdi` → `--device nvidia.com/gpu=<id>`, `gpus` → `--gpus <gpus>`. Defaults per hardware platform (DGX Spark/GB10 → `gpus`, everything else → `cdi`) |
-| `ipc`            | string | `"shareable"` | `--ipc`      | IPC namespace. `host` exposes the workload's `/dev/shm` semaphores to systemd-logind's `RemoveIPC` reaper — see [EXECUTORS.md](docs/EXECUTORS.md#ipc-namespace-ipc-and-shm_size) |
+| `ipc`            | string | `"shareable"` | `--ipc`      | IPC namespace. `host` exposes the workload's `/dev/shm` semaphores to systemd-logind's `RemoveIPC` reaper, and needs `--trust` for an untrusted recipe — see [EXECUTORS.md](docs/EXECUTORS.md#ipc-namespace-ipc-and-shm_size) |
 | `shm_size`       | string | `"32gb"`    | `--shm-size`   | Shared memory size. Ignored by Docker when `ipc: host`                                                               |
 | `network`        | string | `"host"`    | `--network`    | Network mode                                                                                                        |
 | `entrypoint`     | string | `null`      | `--entrypoint` | Override the image `ENTRYPOINT`. `null` leaves it untouched; `""` clears it so sparkrun's serve command runs directly |

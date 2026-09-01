@@ -108,8 +108,24 @@ choke point:
 - The undocumented `cluster_config` launch overrides
   (`resolved_model_path` / `remote_cache_dir` / `local_cache_dir`), which
   identity-mount a host directory and repoint the serve argument at it.
+- **`executor_config.ipc`** (`_UNTRUSTED_IPC_MODES`), gated on its *value*
+  rather than its presence: an untrusted recipe may pick any mode that gives
+  the container a fresh IPC namespace (`private`, `shareable`, `none`, or an
+  empty value), but not one that reaches outside it. `host` shares the host's
+  IPC namespace and `/dev/shm` — read/write access to every other tenant's
+  POSIX shared memory and semaphores on that machine, including the ability to
+  delete them — and `container:<name>` joins one specific other workload's
+  namespace, which is a *targeted* lateral read since sparkrun container names
+  are derivable from a cluster_id. The allowlist shape means an unrecognised
+  or non-string value fails closed too.
 
-Innocuous resource knobs are deliberately **not** gated: `shm_size`, `ipc`,
+  This knob was ungated while `host` was the default, when setting it changed
+  nothing. It became an escalation when the default moved to a container-owned
+  namespace (see [EXECUTORS.md](EXECUTORS.md#ipc-namespace-ipc-and-shm_size)):
+  an untrusted recipe asking for `host` is asking to leave the sandbox that
+  justifies running its serve `command` without a prompt.
+
+Innocuous resource knobs are deliberately **not** gated: `shm_size`,
 `network`, `memory_limit`, `ulimit`, `restart_policy`, `auto_remove`,
 `labels`.
 

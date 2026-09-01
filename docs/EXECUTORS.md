@@ -223,6 +223,13 @@ check` reports this combination, and the executor warns at launch. Note the
 `local` executor has the same exposure by construction — it runs natively, with
 no namespace to hide in.
 
+**`ipc` is trust-gated on its value.** A recipe may narrow the namespace freely
+(`private`, `shareable`, `none`), but an untrusted recipe — one from a
+non-default registry or a URL — cannot select `host` or `container:<name>`
+without `--trust`. Both reach *outside* the container: the host's `/dev/shm`
+holds every other tenant's POSIX shared memory and semaphores, and a container
+name is derivable from a cluster_id. See [SECURITY.md](SECURITY.md).
+
 ### NVIDIA GPU access mode
 
 There are two ways to ask Docker for NVIDIA GPUs and neither works everywhere,

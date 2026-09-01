@@ -76,8 +76,42 @@ def test_untrusted_recipe_with_privileged_executor_keys_is_rejected(exec_cfg):
 
 def test_untrusted_recipe_with_benign_executor_keys_is_allowed():
     """Innocuous resource knobs are not gated — they can't break isolation."""
-    recipe = _recipe(executor_config={"shm_size": "16gb", "ipc": "host", "memory_limit": "64g"})
+    recipe = _recipe(executor_config={"shm_size": "16gb", "network": "host", "memory_limit": "64g"})
     _enforce_recipe_mount_trust(recipe, trusted=False)  # must not raise
+
+
+@pytest.mark.parametrize("mode", ["private", "shareable", "none", "", "SHAREABLE"])
+def test_untrusted_recipe_may_narrow_its_ipc_namespace(mode):
+    """Any mode giving the container its *own* IPC namespace is free."""
+    _enforce_recipe_mount_trust(_recipe(executor_config={"ipc": mode}), trusted=False)
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "host",  # the host's /dev/shm: every other tenant's shm + semaphores
+        "HOST",  # normalization must not be a bypass
+        " host ",
+        "container:sparkrun_abc123_def456_node_0",  # another workload's namespace
+        True,  # a YAML bool, coerced by from_chain — must fail closed
+        "shareable-ish",  # unrecognised: allowlist, not a denylist of "host"
+    ],
+)
+def test_untrusted_recipe_cannot_leave_its_ipc_namespace(mode):
+    """``ipc`` is gated on value: reaching outside the container is an escalation.
+
+    Container names are derivable from a cluster_id, so ``container:<name>`` is
+    a targeted lateral read of another tenant's shared memory, not a lucky one.
+    """
+    recipe = _recipe(executor_config={"ipc": mode})
+    with pytest.raises(RecipeError, match="ipc"):
+        _enforce_recipe_mount_trust(recipe, trusted=False)
+
+
+def test_trusted_recipe_may_request_host_ipc():
+    # The legitimate use (cross-container shared memory on one host) is still
+    # reachable — with --trust, like every other isolation escape hatch.
+    _enforce_recipe_mount_trust(_recipe(executor_config={"ipc": "host"}), trusted=True)
 
 
 def test_untrusted_recipe_with_entrypoint_is_allowed():
