@@ -3,17 +3,27 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, TYPE_CHECKING
+from typing import Any, NamedTuple, TYPE_CHECKING
+
+from scitrera_app_framework import ext_parse_bool
 
 from sparkrun.runtimes._util import default_env_hf_offline, ptrace_executor_config, resolve_api_key
 from sparkrun.runtimes.base import RuntimePlugin
 
 if TYPE_CHECKING:
+    from sparkrun.core.cluster_manager import ClusterDefinition
     from sparkrun.core.config import SparkrunConfig
+    from sparkrun.core.parallelism import ParallelismConfig
     from sparkrun.core.recipe import Recipe
     from sparkrun.orchestration.comm_env import ClusterCommEnv
 
 logger = logging.getLogger(__name__)
+
+#: Config key for SGLang's DP-attention mode, and the flag it renders to.
+#: Read outside the flag map as well — see :meth:`SglangRuntime._dp_attention_enabled`.
+_DP_ATTENTION_KEY = "enable_dp_attention"
+_DP_ATTENTION_FLAG = "--enable-dp-attention"
+_DP_SIZE_FLAG = "--dp-size"
 
 # SGLang CLI flag mapping
 _SGLANG_FLAG_MAP = {
@@ -21,6 +31,13 @@ _SGLANG_FLAG_MAP = {
     "host": "--host",
     "tensor_parallel": "--tp-size",
     "pipeline_parallel": "--pp-size",
+    # NOTE: emitted by the caller, never by ``build_flags_from_map`` — see
+    # ``_append_dp_size``.  ``--dp-size`` describes replicas inside ONE launch,
+    # so whether it is legal depends on the launch topology, not on the recipe
+    # alone.  Listed here so ``known_config_keys`` / ``strip_flags_from_command``
+    # / the hardcoded-flag check all see it.
+    "data_parallel": _DP_SIZE_FLAG,
+    _DP_ATTENTION_KEY: _DP_ATTENTION_FLAG,
     "gpu_memory_utilization": "--mem-fraction-static",
     "max_model_len": "--context-length",
     "max_num_seqs": "--max-running-requests",
@@ -72,6 +89,7 @@ _SGLANG_FLAG_MAP = {
 # Boolean flags (present = True, absent = False).
 # Every entry here MUST also have an entry in _SGLANG_FLAG_MAP — see note above.
 _SGLANG_BOOL_FLAGS = {
+    _DP_ATTENTION_KEY,
     "trust_remote_code",
     "enable_torch_compile",
     "disable_radix_cache",
@@ -79,12 +97,48 @@ _SGLANG_BOOL_FLAGS = {
 }
 
 
+class _SglangTopology(NamedTuple):
+    """How a launch's ranks group into SGLang distributed worlds.
+
+    SGLang spells data parallelism two incompatible ways, and which one a
+    launch is using decides both the flags and the orchestration:
+
+    * ``--dp-size N`` alone — ``N`` replicas *inside one launch*, ``tp * pp *
+      N`` GPUs total (sparkrun's ``world_size`` formula).  Upstream refuses
+      it across nodes: ``assert not (dp_size > 1 and nnodes != 1 and not
+      enable_dp_attention)``.
+    * ``--dp-size N --enable-dp-attention`` — ``N`` is a *partition of the tp
+      world* (``dp == tp``), so the job still costs ``tp * pp`` GPUs, not
+      ``tp * pp * N``.  This is the only multi-node spelling upstream allows,
+      and it is why :meth:`SglangRuntime.world_size` stops multiplying by dp.
+
+    Anything else with ``dp > 1`` is the separate-launch/router shape: each
+    replica is an independent server, joined by a router rather than by a
+    rendezvous.  Injecting ``--nnodes``/``--node-rank`` there trips
+    ``assert (tp_size * pp_size) % nnodes == 0`` before the server binds a
+    port (issue #284).
+    """
+
+    replica_size: int
+    """``tp * pp`` — ranks in one distributed world."""
+
+    dp: int
+    dp_attention: bool
+
+    @property
+    def independent_replicas(self) -> bool:
+        """True when this launch is N standalone servers, not one world."""
+        return self.dp > 1 and not self.dp_attention
+
+
 class SglangRuntime(RuntimePlugin):
     """Native SGLang runtime using prebuilt container images.
 
     SGLang uses its own distributed init mechanism for multi-node inference,
     not Ray.  Each node runs the full ``sglang serve`` command with
-    ``--dist-init-addr``, ``--nnodes``, and ``--node-rank`` arguments.
+    ``--dist-init-addr``, ``--nnodes``, and ``--node-rank`` arguments — except
+    under pure data parallelism, where there is no shared world to join at
+    all.  See :class:`_SglangTopology`.
     """
 
     runtime_name = "sglang"
@@ -105,6 +159,101 @@ class SglangRuntime(RuntimePlugin):
     def cluster_strategy(self) -> str:
         """SGLang uses native multi-node distribution, not Ray."""
         return "native"
+
+    # --- Parallelism topology ---
+
+    @staticmethod
+    def _dp_attention_enabled(recipe: "Recipe | None", config=None) -> bool:
+        """Whether this workload runs SGLang's DP-attention mode.
+
+        Checked in three places, and the third is load-bearing rather than a
+        nicety: a recipe is free to hardcode ``--enable-dp-attention`` in its
+        ``command:`` template, where the config chain cannot see it.  Missing
+        it there would classify a working DeepSeek/Qwen-MoE recipe as
+        "independent replicas", strip its rendezvous flags, and break a launch
+        that works today.
+        """
+        value = None
+        if config is not None:
+            value = config.get(_DP_ATTENTION_KEY)
+        if value is None and recipe is not None:
+            # noinspection PyProtectedMember
+            value = recipe._effective_default(_DP_ATTENTION_KEY)
+        if value is not None:
+            return ext_parse_bool(value)
+        return _DP_ATTENTION_FLAG in ((recipe.command or "") if recipe is not None else "")
+
+    @classmethod
+    def _resolve_topology(cls, recipe: "Recipe | None", config) -> _SglangTopology:
+        """Resolve the launch's :class:`_SglangTopology` from the config chain."""
+        from sparkrun.core.parallelism import extract_parallelism
+
+        p = extract_parallelism(config)
+        return _SglangTopology(
+            replica_size=max(1, p.tensor_parallel * p.pipeline_parallel),
+            dp=max(1, p.data_parallel),
+            dp_attention=cls._dp_attention_enabled(recipe, config),
+        )
+
+    def _append_dp_size(
+        self,
+        command: str,
+        topo: _SglangTopology,
+        num_nodes: int,
+        skip_keys: set[str] | frozenset[str],
+    ) -> str:
+        """Append ``--dp-size`` when this launch unit actually owns the replicas.
+
+        Emitted from here rather than from the flag map because legality is a
+        property of the *launch*, not of the recipe: upstream refuses
+        ``dp_size > 1`` with ``nnodes > 1`` unless DP attention is on, and on a
+        1-GPU-per-host cluster a multi-node ``--dp-size 2`` would ask each host
+        to run two replicas on its single GPU.
+        """
+        if topo.dp <= 1 or "data_parallel" in skip_keys:
+            return command
+        if num_nodes > 1 and not topo.dp_attention:
+            return command
+        return self.reconcile_flag_in_command(command, _DP_SIZE_FLAG, topo.dp)
+
+    def world_size(
+        self,
+        parallelism: "ParallelismConfig",
+        *,
+        recipe: "Recipe",
+        cluster: "ClusterDefinition",
+    ) -> int:
+        """``tp * pp * dp``, except under DP attention where dp is not a multiplier.
+
+        With ``--enable-dp-attention`` the dp dimension partitions the tensor
+        world rather than replicating it (upstream: "the dp size should be
+        equal to the tp size"), so the default formula would size a 2-node,
+        ``tp 16 / dp 16`` DeepSeek layout at 256 ranks.
+        """
+        if self._dp_attention_enabled(recipe):
+            return max(1, parallelism.model_shard_factor)
+        return super().world_size(parallelism, recipe=recipe, cluster=cluster)
+
+    def native_rendezvous_port(
+        self,
+        recipe: "Recipe | None",
+        overrides: dict[str, Any] | None = None,
+        *,
+        num_nodes: int = 1,
+        init_port: int = 25000,
+    ) -> int | None:
+        """``None`` under pure data parallelism — there is no rendezvous to gate on.
+
+        Each replica is a standalone server that binds only its serve port, so
+        nothing ever listens on *init_port* and the shared launch path would
+        wait out its whole budget before declaring the head dead.
+        """
+        if recipe is None:
+            return init_port
+        topo = self._resolve_topology(recipe, recipe.build_config_chain(overrides or {}))
+        if topo.independent_replicas and topo.replica_size <= 1:
+            return None
+        return init_port
 
     def known_config_keys(self) -> frozenset[str]:
         """Flag-map keys plus the SGLang keys read outside it.
@@ -193,6 +342,7 @@ class SglangRuntime(RuntimePlugin):
         """
         config = recipe.build_config_chain(overrides)
         self._normalize_config(config)
+        topo = self._resolve_topology(recipe, config)
 
         # If recipe has an explicit command template, render it
         rendered = recipe.render_command(config)
@@ -210,9 +360,9 @@ class SglangRuntime(RuntimePlugin):
                     _SGLANG_FLAG_MAP,
                     _SGLANG_BOOL_FLAGS,
                 )
-            return rendered
+            return self._append_dp_size(rendered, topo, num_nodes, skip_keys)
 
-        return self._build_command(recipe, config, is_cluster, num_nodes, head_ip, skip_keys=skip_keys)
+        return self._build_command(recipe, config, is_cluster, num_nodes, head_ip, topo, skip_keys=skip_keys)
 
     def generate_node_command(
         self,
@@ -228,12 +378,21 @@ class SglangRuntime(RuntimePlugin):
     ) -> str:
         """Generate the sglang command for a specific node.
 
-        Produces the full ``sglang serve`` invocation with the
-        node-specific ``--dist-init-addr``, ``--nnodes``, and
-        ``--node-rank`` flags appended.
+        Produces the full ``sglang serve`` invocation with the node-specific
+        ``--dist-init-addr``, ``--nnodes`` and ``--node-rank`` flags appended —
+        scoped to the distributed world *this* node belongs to, which is not
+        always the whole cluster.  See :class:`_SglangTopology`:
+
+        * ``dp == 1`` (or DP attention): one world spanning every node.
+        * ``dp > 1, tp * pp > 1``: one world *per replica*; ``--nnodes`` is the
+          replica's size, ``--node-rank`` is the rank within it, and the
+          rendezvous address is that replica's own head.
+        * ``dp > 1, tp * pp == 1``: no world at all — a standalone replica,
+          joined to its peers by a router rather than by torch.distributed.
         """
         config = recipe.build_config_chain(overrides)
         self._normalize_config(config)
+        topo = self._resolve_topology(recipe, config)
 
         # If recipe has an explicit command template, render it
         rendered = recipe.render_command(config)
@@ -255,19 +414,43 @@ class SglangRuntime(RuntimePlugin):
         else:
             base = self._build_base_command(recipe, config, skip_keys=skip_keys)
 
-        # SGLang forms a SINGLE global torch.distributed world rendezvoused at
-        # the head node: one --dist-init-addr for the whole job, with TP/PP/DP
-        # grouping handled internally by sglang.  The rendezvous host is therefore
-        # ALWAYS the head node.  We deliberately do NOT forward hosts/placement
-        # here: with the default replica_size=1, _resolve_master_addr maps
-        # node_rank -> hosts[node_rank] (each node's own IP), so every worker would
-        # point --dist-init-addr at itself and only rank 0 would bind the store —
-        # manifesting as "1/N clients joined" rendezvous timeouts.
+        base = self._append_dp_size(base, topo, num_nodes, skip_keys)
+
+        # Ranks in one world, and this node's rank within it.  For a single
+        # global world (dp == 1, or DP attention) that is the whole cluster;
+        # for independent replicas it is the replica.
+        if topo.independent_replicas:
+            world_nodes = topo.replica_size
+            rank_in_world = node_rank % world_nodes
+        else:
+            world_nodes = num_nodes
+            rank_in_world = node_rank
+
+        # A one-node world has nothing to rendezvous with, and saying otherwise
+        # is fatal: sglang asserts ``(tp_size * pp_size) % nnodes == 0`` before
+        # it binds a port, so --nnodes 2 on a tp=pp=1 replica aborts the server
+        # rather than degrading (issue #284).
+        if world_nodes <= 1:
+            return base
+
+        # The *global* node_rank goes in (paired with replica_size=world_nodes)
+        # because that is what selects the world: _resolve_master_addr
+        # floor-divides the two, so a single global world resolves to hosts[0]
+        # for every rank while a per-replica world resolves to the first host of
+        # *that* replica.  Passing rank_in_world here would collapse every
+        # replica onto hosts[0]; passing the default replica_size=1 would map
+        # node_rank -> hosts[node_rank] (each node's own IP), leaving only rank 0
+        # bound to the store — the "1/N clients joined" rendezvous timeout.
+        # The emitted --node-rank is the intra-world one, as vLLM-distributed
+        # does with intra_replica_rank.
         node_args = self._make_node_command_args(
             head_ip=head_ip,
-            num_nodes=num_nodes,
+            num_nodes=world_nodes,
             node_rank=node_rank,
             init_port=init_port,
+            hosts=hosts,
+            placement=placement,
+            replica_size=world_nodes,
         )
 
         # Append sglang multi-node arguments.  SGLang combines master_addr
@@ -276,7 +459,7 @@ class SglangRuntime(RuntimePlugin):
             base,
             "--dist-init-addr %s:%s" % (node_args["master_addr"], node_args["master_port"]),
             "--nnodes %s" % node_args["num_nodes"],
-            "--node-rank %s" % node_args["node_rank"],
+            "--node-rank %d" % rank_in_world,
         ]
         return " ".join(parts)
 
@@ -321,7 +504,9 @@ class SglangRuntime(RuntimePlugin):
         if tp:
             parts.extend(["--tp-size", str(tp)])
 
-        skip = {"tensor_parallel"}
+        # ``data_parallel`` is emitted by _append_dp_size, not from the map:
+        # whether --dp-size is legal depends on the launch topology.
+        skip = {"tensor_parallel", "data_parallel"}
         skip.update(skip_keys)
         parts.extend(
             self.build_flags_from_map(
@@ -341,18 +526,25 @@ class SglangRuntime(RuntimePlugin):
         is_cluster: bool,
         num_nodes: int,
         head_ip: str | None = None,
+        topo: _SglangTopology | None = None,
         skip_keys: set[str] | frozenset[str] = frozenset(),
     ) -> str:
         """Build the sglang serve command from structured config.
 
         For cluster mode, includes ``--dist-init-addr`` and ``--nnodes`` but
         NOT ``--node-rank`` (that is added per-node by the orchestrator or
-        by :meth:`generate_node_command`).
+        by :meth:`generate_node_command`).  ``--nnodes`` counts the nodes in
+        *one* distributed world, which under pure data parallelism is one node
+        and therefore no rendezvous at all — see :meth:`generate_node_command`.
         """
         base = self._build_base_command(recipe, config, skip_keys=skip_keys)
+        if topo is None:
+            topo = self._resolve_topology(recipe, config)
+        base = self._append_dp_size(base, topo, num_nodes, skip_keys)
 
-        if is_cluster and head_ip:
-            base += " --dist-init-addr %s:25000 --nnodes %d" % (head_ip, num_nodes)
+        world_nodes = topo.replica_size if topo.independent_replicas else num_nodes
+        if is_cluster and head_ip and world_nodes > 1:
+            base += " --dist-init-addr %s:25000 --nnodes %d" % (head_ip, world_nodes)
 
         return base
 
@@ -377,6 +569,7 @@ class SglangRuntime(RuntimePlugin):
         from sparkrun.models.download import is_gguf_model
 
         issues = super().validate_recipe(recipe)
+        issues.extend(self._validate_parallelism(recipe))
 
         if recipe.model and is_gguf_model(recipe.model):
             tokenizer = (recipe.defaults or {}).get("tokenizer_path")
@@ -405,6 +598,48 @@ class SglangRuntime(RuntimePlugin):
                     )
                 )
 
+        return issues
+
+    def _validate_parallelism(self, recipe: Recipe) -> list:
+        """Check the two SGLang parallelism constraints sparkrun can see up front.
+
+        Both are upstream assertions that fire *after* the image and weights
+        have been distributed, which is an expensive place to learn about a
+        typo in ``defaults:``.
+        """
+        from sparkrun.core.parallelism import extract_parallelism
+
+        issues = []
+        config = recipe.build_config_chain()
+        p = extract_parallelism(config)
+        replica_size = max(1, p.tensor_parallel * p.pipeline_parallel)
+
+        if self._dp_attention_enabled(recipe):
+            if p.data_parallel != p.tensor_parallel:
+                issues.append(
+                    self.recipe_error(
+                        "enable_dp_attention requires data_parallel == tensor_parallel "
+                        "(got data_parallel=%d, tensor_parallel=%d). SGLang's DP attention "
+                        "partitions the tensor world rather than replicating it, so the two "
+                        "sizes must match." % (p.data_parallel, p.tensor_parallel)
+                    )
+                )
+        elif p.data_parallel > 1:
+            issues.append(
+                self.recipe_warning(
+                    "data_parallel=%d without enable_dp_attention: SGLang cannot span replicas "
+                    "across nodes (--dp-size is refused with --nnodes > 1). Placed on one host "
+                    "the %d replicas share a single endpoint; placed across hosts (%d node(s) "
+                    "each) they are independent servers, each with its own endpoint on port %s — "
+                    "front those with sglang_router or `sparkrun proxy` to get one address."
+                    % (
+                        p.data_parallel,
+                        p.data_parallel,
+                        replica_size,
+                        config.get("port") or 30000,
+                    )
+                )
+            )
         return issues
 
     def default_executor_config(self) -> dict[str, Any]:

@@ -489,6 +489,31 @@ class RuntimePlugin(Plugin):
             "master_port": str(init_port),
         }
 
+    # noinspection PyUnusedLocal
+    def native_rendezvous_port(
+        self,
+        recipe: Recipe | None,
+        overrides: dict[str, Any] | None = None,
+        *,
+        num_nodes: int = 1,
+        init_port: int = 25000,
+    ) -> int | None:
+        """Head port the workers' rendezvous depends on, or ``None`` if there is none.
+
+        The native cluster path starts the head, waits for this port, and only
+        then starts the workers — the gate exists so a worker cannot race the
+        head's distributed store.  ``None`` says this launch has no such store
+        (independent replicas), so the workers start immediately.
+
+        ``None`` deliberately does **not** mean "wait on the serve port
+        instead": a serve port only opens once weights are loaded and graphs
+        captured, which is minutes on a real model, and nothing downstream is
+        waiting on it — endpoint readiness has its own budgeted watcher
+        (:func:`sparkrun.core.launcher.wait_for_endpoint_ready`).  Reusing this
+        gate for it would time out a healthy launch.
+        """
+        return init_port
+
     def generate_node_command(
         self,
         recipe: Recipe,

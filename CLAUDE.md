@@ -282,6 +282,62 @@ argv via this template rather than ad-hoc per-runtime construction. Subclasses
 override the hook methods (`_node_rank_args`, `_master_args`, etc.) and inherit
 the assembly.
 
+**Data parallelism is not one thing** (`runtimes/sglang.py:_SglangTopology`).
+sparkrun's `world_size = tp*pp*dp` says dp *replicates*, but each engine
+spells that differently and some refuse it in the shape sparkrun asks for.
+SGLang asserts both of these **before binding a port**, so getting it wrong
+is an abort, not a degradation:
+
+```python
+assert (tp_size * pp_size) % nnodes == 0
+assert not (dp_size > 1 and nnodes != 1 and not enable_dp_attention)
+```
+
+Which means `--nnodes`/`--node-rank` cannot be injected unconditionally, and
+whether `--dp-size` is legal is a property of the **launch**, not of the
+recipe — so it is emitted by the caller (`_append_dp_size`), never from the
+flag map. Four regimes, and the boundary between them is `dp > 1 and not
+dp_attention` (`_SglangTopology.independent_replicas`):
+
+| Regime | World | Flags |
+|---|---|---|
+| `dp == 1` | one, spanning the cluster | `--nnodes N --node-rank r --dist-init-addr head` |
+| DP attention | one, spanning the cluster | the above **plus** `--dp-size` |
+| `dp > 1`, `tp*pp > 1` | one **per replica** | `--nnodes tp*pp`, intra-replica rank, rendezvous at *that replica's* head |
+| `dp > 1`, `tp*pp == 1` | none | nothing — a standalone server |
+| solo (`num_nodes == 1`), `dp > 1` | one | `--dp-size dp` (replicas share the launch) |
+
+Three consequences that are each silently wrong if missed:
+
+- **DP attention is not a multiplier.** There `dp` partitions the tensor world
+  (`dp == tp`), so the job costs `tp*pp` GPUs, not `tp*pp*dp` — hence
+  `SglangRuntime.world_size`. Without it a 2-node `tp 16 / dp 16` DeepSeek
+  layout is scheduled at 256 ranks.
+- **`_dp_attention_enabled` reads the `command:` template too.** A literal
+  `--enable-dp-attention` is invisible to the config chain, and misreading a
+  working MoE recipe as "independent replicas" would strip the rendezvous
+  flags that make it work.
+- **The global `node_rank` goes into `_make_node_command_args` paired with
+  `replica_size=world_nodes`** — that pairing is what selects the world
+  (`_resolve_master_addr` floor-divides them). Passing the intra-world rank
+  collapses every replica onto `hosts[0]`; passing `replica_size=1` points
+  each node at itself ("1/N clients joined").
+
+**Independent replicas are N endpoints, not one.** `validate_recipe` warns
+and points at `sglang_router` / `sparkrun proxy`; proxy discovery still
+registers only the head (`proxy/discovery.py`), so the other replicas are
+live but unrouted. See issue #284.
+
+**Rendezvous gate** (`RuntimePlugin.native_rendezvous_port`): the native
+cluster path starts the head, waits for its port, then starts the workers —
+the wait exists so a worker cannot race the head's distributed store, and
+`None` says this launch has no store. `None` deliberately does **not** mean
+"wait on the serve port instead": a serve port opens only after weight load
+and graph capture, which this gate's budget (60×2s) does not cover, and
+endpoint readiness already has its own budgeted watcher
+(`launcher.wait_for_endpoint_ready`). Reusing it here would time out a
+healthy launch.
+
 **Executor resolution** (`RuntimePlugin._resolve_executor`): runtimes do not
 construct executors directly. The base helper delegates to
 `orchestration.executor:resolve_executor()` — a single layered chain (CLI →

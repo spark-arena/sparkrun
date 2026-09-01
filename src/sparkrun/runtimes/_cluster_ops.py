@@ -948,8 +948,21 @@ def run_native_cluster(
     if resolved_hosts != ctx.hosts:
         logger.info("  Resolved init hosts: %s", resolved_hosts)
 
+    # Does this launch have a rendezvous the workers must not race?  A pure
+    # data-parallel launch is N standalone servers: nothing binds the init port,
+    # so probing for one and gating on it below would burn the whole readiness
+    # budget and then report a healthy head as dead (issue #284).
+    gate_port = runtime.native_rendezvous_port(
+        recipe,
+        overrides,
+        num_nodes=ctx.num_nodes,
+        init_port=init_port,
+    )
+
     # Auto-detect available init port
-    init_port = find_port(ctx, ctx.head_host, init_port)
+    if gate_port is not None:
+        init_port = find_port(ctx, ctx.head_host, init_port)
+        gate_port = init_port
 
     # Print banner after finalizing ports
     runtime._print_cluster_banner(
@@ -957,7 +970,7 @@ def run_native_cluster(
         ctx.hosts,
         ctx.image,
         ctx.cluster_id,
-        {port_label: init_port},
+        {port_label: init_port} if gate_port is not None else {},
         ctx.dry_run,
         images_by_node=ctx.images_by_node,
     )
@@ -1055,14 +1068,20 @@ def run_native_cluster(
         return 1
 
     # Wait for head init port
-    if not ctx.dry_run:
-        logger.info("  Waiting for head node %s %s:%d...", port_label.lower(), ctx.head_host, init_port)
+    if gate_port is None:
+        logger.info(
+            "Step 6/7: Head %s started; no rendezvous to wait for (independent replicas) (%.1fs)",
+            node_label,
+            time.monotonic() - t0,
+        )
+    elif not ctx.dry_run:
+        logger.info("  Waiting for head node %s %s:%d...", port_label.lower(), ctx.head_host, gate_port)
 
         log_proc = start_log_capture(ctx.head_host, head_container, ctx.ssh_kwargs)
         try:
             ready = wait_for_port(
                 ctx.head_host,
-                init_port,
+                gate_port,
                 max_retries=60,
                 retry_interval=2,
                 ssh_kwargs=ctx.ssh_kwargs,
