@@ -25,7 +25,23 @@ from sparkrun.orchestration.executors.k8s import K8sExecutor
 from sparkrun.orchestration.executors.local import LocalExecutor
 from sparkrun.orchestration.ssh import RemoteResult
 from sparkrun.core.log_source import MODE_FILE, MODE_STDOUT, SERVE_LOG_PATH, LogSource
-from tests.test_log_diagnostics import ISSUE_280_LOG
+
+#: The smallest log that clears both of ``detect_in_place_write_failure``'s
+#: gates: a directory-creation frame plus an ENOENT whose path is under a
+#: Python installation tree (issue #280's shape). These tests are about the
+#: *hints* the detection produces, so this only has to trip the detector —
+#: ``test_log_diagnostics`` owns what the parser accepts.
+#:
+#: Deliberately local, not shared with that module. A sample that stopped
+#: tripping the detector would fail these assertions loudly (the hints would
+#: fall back to the generic pair), so there is nothing to keep in sync — and
+#: importing one test module from another made collection order and the pytest
+#: invocation load-bearing.
+_IN_PLACE_WRITE_CRASH = (
+    '  File "/usr/lib/python3.12/pathlib.py", line 1313, in mkdir\n'
+    "FileNotFoundError: [Errno 2] No such file or directory: "
+    "'/usr/local/lib/python3.12/dist-packages/flashinfer/data/csrc/gen'\n"
+)
 
 
 def _source(host: str, container: str) -> LogSource:
@@ -216,7 +232,9 @@ class TestPostMortemAttribution:
 
     def test_recognised_failure_names_the_fix(self):
         ex = DockerExecutor(ExecutorConfig(auto_remove=False))
-        results = [RemoteResult(host="h1", returncode=0, stdout=self._probe_output("c1", "Exited (1) ago", ISSUE_280_LOG), stderr="")]
+        results = [
+            RemoteResult(host="h1", returncode=0, stdout=self._probe_output("c1", "Exited (1) ago", _IN_PLACE_WRITE_CRASH), stderr="")
+        ]
         with patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel", return_value=results):
             info = ex.describe_terminated([_source("h1", "c1")])[("h1", "c1")]
 
@@ -229,7 +247,9 @@ class TestPostMortemAttribution:
     def test_attribution_precedes_the_generic_hints(self):
         """It names a *likely* cause — the operator still wants the raw log."""
         ex = DockerExecutor(ExecutorConfig(auto_remove=False))
-        results = [RemoteResult(host="h1", returncode=0, stdout=self._probe_output("c1", "Exited (1) ago", ISSUE_280_LOG), stderr="")]
+        results = [
+            RemoteResult(host="h1", returncode=0, stdout=self._probe_output("c1", "Exited (1) ago", _IN_PLACE_WRITE_CRASH), stderr="")
+        ]
         with patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel", return_value=results):
             hints = ex.describe_terminated([_source("h1", "c1")])[("h1", "c1")].investigate_hints
 
@@ -261,7 +281,9 @@ class TestPostMortemAttribution:
 
     def test_a_broken_detector_never_breaks_the_post_mortem(self):
         ex = DockerExecutor(ExecutorConfig(auto_remove=False))
-        results = [RemoteResult(host="h1", returncode=0, stdout=self._probe_output("c1", "Exited (1) ago", ISSUE_280_LOG), stderr="")]
+        results = [
+            RemoteResult(host="h1", returncode=0, stdout=self._probe_output("c1", "Exited (1) ago", _IN_PLACE_WRITE_CRASH), stderr="")
+        ]
         with (
             patch("sparkrun.utils.log_diagnostics.detect_in_place_write_failure", side_effect=RuntimeError("boom")),
             patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel", return_value=results),

@@ -16,25 +16,32 @@ from sparkrun.utils.log_diagnostics import (
     detect_in_place_write_failure,
 )
 
-#: The traceback from issue #280, verbatim.  The eugr ``vllm-node-mxfp4`` image
-#: pins a flashinfer fork whose ``gen_cutlass_fused_moe_module`` generates
-#: cutlass instantiations into ``FLASHINFER_CSRC_DIR`` — i.e. inside its own
-#: ``dist-packages`` — which works as root (legacy ``run-recipe.sh``) and
-#: cannot work under sparkrun's rootless ``--user $(id -u):$(id -g)``.
-ISSUE_280_LOG = """\
-(EngineCore_DP0 pid=481) Process EngineCore_DP0:
-(EngineCore_DP0 pid=481) Traceback (most recent call last):
-(EngineCore_DP0 pid=481)   File "/usr/lib/python3.12/pathlib.py", line 1313, in mkdir
-(EngineCore_DP0 pid=481)     os.mkdir(self, mode)
-(EngineCore_DP0 pid=481) FileNotFoundError: [Errno 2] No such file or directory: \
-'/usr/local/lib/python3.12/dist-packages/flashinfer/data/csrc/nv_internal/tensorrt_llm/cutlass_instantiations/120_mxfp4min'
-"""
+#: The two lines the detector actually reads, in the shape real output has
+#: them: a directory-creation frame (the ENOENT gate) and an errno line whose
+#: path is under a Python installation tree. Synthesized rather than a captured
+#: crash log — the surrounding frames are decoration, and a verbatim dump would
+#: be a fixture nobody can safely trim later.
+#:
+#: The ``(EngineCore_DP0 pid=NNN)`` prefix is deliberate: vLLM prefixes every
+#: worker line, so a future anchored regex would silently stop matching real
+#: logs while a bare traceback fixture kept passing.
+ENOENT_MKDIR_LOG = (
+    '(EngineCore_DP0 pid=481)   File "/usr/lib/python3.12/pathlib.py", line 1313, in mkdir\n'
+    "(EngineCore_DP0 pid=481)     os.mkdir(self, mode)\n"
+    "(EngineCore_DP0 pid=481) FileNotFoundError: [Errno 2] No such file or directory: "
+    "'/usr/local/lib/python3.12/dist-packages/flashinfer/data/csrc/cutlass_instantiations/120_mxfp4min'\n"
+)
 
 
 class TestDetectsRealSignatures:
     def test_issue_280_traceback(self):
-        """The failure this whole path exists to attribute."""
-        failure = detect_in_place_write_failure(ISSUE_280_LOG)
+        """The failure this whole path exists to attribute (issue #280).
+
+        The eugr ``vllm-node-mxfp4`` image pins a flashinfer fork that generates
+        cutlass instantiations into its own ``dist-packages`` — fine as root,
+        impossible under sparkrun's rootless ``--user $(id -u):$(id -g)``.
+        """
+        failure = detect_in_place_write_failure(ENOENT_MKDIR_LOG)
 
         assert failure is not None
         assert failure.errno == ENOENT
