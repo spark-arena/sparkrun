@@ -52,6 +52,25 @@ class VllmDistributedRuntime(VllmMixin, RuntimePlugin):
     # override returning ``None`` for that regime (see SglangRuntime, #284).
     # Needs a live 2-node ``--dp 2`` run to confirm before changing anything.
 
+    def managed_rendezvous_flags(self) -> tuple[str, ...]:
+        """Torch-distributed (intra-replica) plus vLLM data-parallel (inter-replica).
+
+        ``--data-parallel-size`` is deliberately absent: it is the one flag in
+        this block :meth:`generate_node_command` injects *only when the template
+        did not already supply it*, so writing it is a supported choice rather
+        than a collision.
+        """
+        return (
+            "--nnodes",
+            "--node-rank",
+            "--master-addr",
+            "--master-port",
+            "--headless",
+            "--data-parallel-rank",
+            "--data-parallel-address",
+            "--data-parallel-rpc-port",
+        )
+
     def prepare(
         self,
         recipe: Recipe,

@@ -1791,6 +1791,76 @@ Catalogue notes worth knowing before adding a check:
   (`XDG_CACHE_HOME`) is merged **first** so a recipe setting it *wins* and the
   compile caches land off the mount (`managed-cache-env`). Same-looking
   mistake, opposite outcome, opposite advice.
+- **`hardcoded-serve-flag` and `restated-model-arg` are mirror images.** The
+  first is about values sparkrun *reads* from the config chain, the second
+  about values it *writes* into the command. Both are suggestions for the same
+  reason — the rendered command serves exactly what it says, identically
+  everywhere — but the mechanisms defeated differ, so the advice does too.
+  `recipe.model` is rewritten mid-launch by three mechanisms that all reach the
+  command only through `{model}`: `resolved_model_path` (which also sets
+  `_skip_model_distribution`), an absolute `model:`, and a pre-synced GGUF
+  (whose raw value still carries the `:quant` suffix no runtime parses). None
+  is the author's to control. Measured: 39 of the 118 cached registry recipes
+  with a `command:` restate the id, and the id appears **nowhere else** in any
+  of them — which is why matching is whole-token and never substring.
+- **`restated-managed-path` reads `command:`, the hook lists and `defaults:`
+  values, but deliberately not `env:`.** `env` already has two dedicated checks
+  whose subject is a recipe touching sparkrun's cache wiring; a third message
+  about the same assignment is the noise this catalogue exists to avoid.
+  `_`-prefixed defaults are excluded for the same reason —
+  `internal-config-key` owns that line and says strictly more.
+- **`internal-config-key` fills a hole `_is_internal_config_key` left.** That
+  helper excludes `_`-prefixed keys from the unmapped-key report — correctly,
+  since they *are* consumed — which left a recipe **declaring** one
+  (`_gguf_model_path`, `_mmproj_path`) with no diagnostic at all. The injected
+  value outranks `defaults`, so the literal is normally dead; it wins under
+  `--dry-run` (the command you review is not the one that runs), for pre-placed
+  weights, and when the GGUF was not pre-synced here. Warning, not error: a
+  requirement sparkrun's resolution cannot express is a reason to keep the key.
+- **`inline-script` names tools, never shape.** A recipe carrying a program —
+  a heredoc'd patch script, `sed -i` over the installed package, a launch-time
+  `pip install` — is doing what `mods:` exists for, and the argument is
+  sparkrun-specific rather than stylistic: the three homes render differently
+  and only one leaves the script alone. `command:` goes through
+  `render_command`, whose escape mode is inferred *from the template*
+  (`uses_brace_escapes`), so an embedded program must double every literal
+  brace and drags the whole template into v1 escape mode — one missed brace
+  mis-renders it silently. A `pre_exec` string goes through
+  `render_hook_command`, which does not collapse `{{` but still substitutes
+  `{name}`, so a program is exposed to a collision with any config key it
+  spells. A mod's `run.sh` is `docker cp`'d verbatim and never rendered. Shape
+  is deliberately *not* a signal: the corpus clusters at 10–19 command lines
+  with nothing over 40, so a line-count threshold would report the recipes with
+  the most flags rather than the ones carrying code. Every signal measures zero
+  across the corpus except `pip install` (2 recipes), which is why the check
+  can afford to be broad. Suggestion, because an inline patch runs identically
+  everywhere — what is lost is reviewability, not portability. It reads
+  `defaults:` values too (a default reaches the command through its
+  placeholder, so a program can be written one remove away), but with
+  `site-packages` withheld there: every other signal names a *verb*, which is
+  unambiguous wherever it appears, while that one names a *location* — the
+  target of a write in a command, but as likely a plain path in
+  `defaults.chat_template`.
+- **`hardcoded-rendezvous-flag`'s flag list is the runtime's own**
+  (`RuntimePlugin.managed_rendezvous_flags`), with **no shared core** even
+  where two runtimes spell a flag identically. Which flags coordinate a launch
+  is a property of the engine — Atlas says `--rank`/`--world-size` where vLLM
+  says `--node-rank`/`--nnodes`, llama.cpp dials workers with `--rpc`, and
+  `vllm-ray` (Ray) and `trtllm` (`mpirun -H`) rendezvous outside the serve
+  command and so declare nothing. Declaring nothing is the base default and
+  disables the check, which is what an out-of-tree runtime built against an
+  older base class gets. It is a **warning** because the *single-node*
+  direction breaks: these flags are appended unconditionally by
+  `generate_node_command` (none of the `reconcile_flag_in_command` guarding
+  that `--served-model-name` and `--distributed-executor-backend` get), so
+  multi-node merely emits them twice and argparse drops the recipe's — but
+  under `world_nodes <= 1` sparkrun appends *nothing*, and the recipe's
+  `--nnodes 2` plus the author's head IP survive verbatim into a launch that
+  rendezvouses with a host that is not there, or trips sglang's
+  `(tp*pp) % nnodes == 0` assert before binding a port (issue #284).
+  `--data-parallel-size` and sglang's `--dp-size` are excluded: they are
+  injected only when the template did not supply them, so writing them is a
+  supported choice rather than a collision.
 - Every check runs through `_safe`, so a check that trips over an unexpected
   recipe shape costs its own finding and nothing else — it must not be able to
   block a launch it was only meant to describe.

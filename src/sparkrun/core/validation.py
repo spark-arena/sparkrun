@@ -48,6 +48,7 @@ teaches people to ignore the ones they can.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
@@ -345,6 +346,439 @@ def check_hardcoded_serve_flags(recipe: Recipe, runtime: RuntimePlugin | None) -
             break
 
     return found
+
+
+# --------------------------------------------------------------------------
+# Restated substitutions — values sparkrun would have supplied anyway
+# --------------------------------------------------------------------------
+
+#: Flags whose value *is* the model argument.  The positional forms
+#: (``vllm serve <id>``) are handled separately by :data:`_SERVE_VERBS`.
+_MODEL_ARG_FLAGS: tuple[str, ...] = (
+    "--model",
+    "--model-path",
+    "--model_path",
+    "--hf-model",
+    "--model-name-or-path",
+)
+
+#: Serve entry points that take the model as their first positional argument.
+#: Measured across the cached registries, this is where the restatement
+#: actually happens: every instance was ``vllm serve <literal id>``.
+_SERVE_VERBS: tuple[str, ...] = (
+    "vllm serve",
+    "sglang serve",
+    "sglang.launch_server",
+    "trtllm-serve",
+    "llama-server",
+    "spark serve",
+)
+
+#: Container-side paths sparkrun owns, and the reason each is wrong to write.
+#: ``/cache/huggingface`` is the mount point (``primitives.build_volumes``);
+#: ``HF_HOME``/``HF_HUB_CACHE`` point there (``RuntimePlugin.get_extra_env``),
+#: so the two ``$HOME``-relative spellings name a directory nothing populates.
+_MANAGED_CONTAINER_PATHS: Mapping[str, str] = {
+    "/cache/huggingface": "sparkrun's HuggingFace cache mount",
+    "/cache/runtime": "sparkrun's persistent runtime-cache mount",
+    "/root/.cache/huggingface": "the container's default HF cache, which sparkrun does not populate (it sets HF_HOME to its own mount)",
+    "~/.cache/huggingface": "the container's default HF cache, which sparkrun does not populate (it sets HF_HOME to its own mount)",
+}
+
+#: The ``models--<org>--<name>`` directory mangling inside an HF hub cache.
+#: An internal layout detail of ``huggingface_hub``, not an interface sparkrun
+#: promises; a path through it also pins the snapshot hash of one download.
+_HF_LAYOUT_RE = re.compile(r"models--[A-Za-z0-9_.-]+--[A-Za-z0-9_.-]+")
+
+
+def _model_arg_literal(command: str, model: str) -> str | None:
+    """Return the spelling by which *command* passes *model* as a literal.
+
+    Whole-token equality throughout, never a substring: measured across the
+    cached registries, the model id appears in a ``command:`` **only** as the
+    model argument — so exact matching costs nothing, while substring matching
+    would claim a ``--served-model-name`` or a chat-template path that merely
+    embeds the id.
+    """
+    tokens = [t for t in command.split() if t != "\\"]
+    for idx, token in enumerate(tokens):
+        for flag in _MODEL_ARG_FLAGS:
+            if token == flag and idx + 1 < len(tokens) and tokens[idx + 1] == model:
+                return flag
+            if token.startswith(flag + "=") and token[len(flag) + 1 :] == model:
+                return flag
+    for verb in _SERVE_VERBS:
+        # The verb's own tokens, then the first thing after them.
+        parts = verb.split()
+        for idx in range(len(tokens) - len(parts)):
+            if tokens[idx : idx + len(parts)] == parts and tokens[idx + len(parts)] == model:
+                return verb
+    return None
+
+
+def _script_texts(recipe: Recipe) -> list[tuple[str, str]]:
+    """``(where, text)`` for every shell snippet a recipe carries.
+
+    ``command:`` plus the three hook lists — the places a recipe supplies code
+    rather than configuration.  ``pre_exec`` entries may be a plain string or a
+    ``{host: cmd}`` mapping; both are flattened, since every consumer here is
+    asking about the text.
+
+    Read *before* ``mods.resolve_and_inject_mods`` runs (that happens inside
+    ``launch_inference``, well after validation), so these are the author's own
+    entries and never sparkrun's injected mod-runner.
+    """
+    out: list[tuple[str, str]] = []
+    if recipe.command:
+        out.append(("command", recipe.command))
+    for where in ("pre_exec", "post_exec", "post_commands"):
+        for entry in getattr(recipe, where, None) or ():
+            if isinstance(entry, Mapping):
+                out.extend((where, str(val)) for val in entry.values())
+            elif entry:
+                out.append((where, str(entry)))
+    return out
+
+
+def _defaults_texts(recipe: Recipe, *, skip_internal: bool) -> list[tuple[str, str]]:
+    """``(where, text)`` for each string ``defaults:`` value.
+
+    ``defaults`` is read as well as ``command:`` because a value reaches the
+    rendered command through its placeholder, so anything the command could
+    have said directly it can also say at one remove.  ``render_template``
+    iterates, so a default may even exist only to feed another.
+
+    *skip_internal* drops ``_``-prefixed keys.  The managed-path scan sets it,
+    because :func:`check_internal_config_keys` already reports that line as a
+    warning and says strictly more; the inline-script scan does not, because
+    "you declared a key sparkrun owns" and "you put a program in it" are two
+    different problems and the former's message covers neither the latter's
+    diagnosis nor its fix.
+
+    ``env:`` is read by neither.  It belongs to :func:`check_managed_cache_env`
+    and :func:`check_managed_comm_env`, whose whole subject is a recipe
+    touching sparkrun's wiring; a third message about the same assignment is
+    the noise this module's docstring warns against.
+    """
+    out: list[tuple[str, str]] = []
+    for key, val in (recipe.defaults or {}).items():
+        if not isinstance(key, str) or not isinstance(val, str):
+            continue
+        if skip_internal and key.startswith("_"):
+            continue
+        out.append(("defaults.%s" % key, val))
+    return out
+
+
+def _managed_path_texts(recipe: Recipe) -> list[tuple[str, str]]:
+    """``(where, text)`` for everything the managed-path scan reads.
+
+    :func:`_script_texts` plus ``defaults:`` values — a serve flag is just as
+    capable of naming a path sparkrun owns as the command is, and
+    ``defaults.chat_template`` pointing into the hub cache is the same mistake
+    at one remove.
+    """
+    return _script_texts(recipe) + _defaults_texts(recipe, skip_internal=True)
+
+
+def check_restated_substitutions(recipe: Recipe) -> list[RecipeIssue]:
+    """Report values sparkrun would have substituted, written out as literals.
+
+    The mirror image of :func:`check_hardcoded_serve_flags`: that one is about
+    values sparkrun *reads* from the config chain, this one about values it
+    *writes* into the command.  Both are suggestions and for the same reason —
+    the rendered command serves exactly what it says, identically everywhere —
+    but the mechanisms defeated are different, so the advice is different too.
+
+    ``recipe.model`` is rewritten mid-launch by three separate mechanisms, and
+    every one of them reaches the serve command only through ``{model}``:
+
+    * ``cluster_config.resolved_model_path`` repoints it at pre-placed on-disk
+      weights **and** sets ``_skip_model_distribution``
+      (``launcher.launch_inference``), so a literal asks the engine for a repo
+      id with the download deliberately skipped;
+    * an absolute path in ``model:`` is the same thing via user-facing sugar;
+    * a pre-synced GGUF replaces it with the resolved container path — which is
+      the entire point of ``SglangRuntime._inject_gguf_model``, since the raw
+      value still carries the sparkrun-specific ``:quant`` suffix that no
+      runtime can parse.
+
+    None of the three is under the recipe author's control; each is a fact
+    about the cluster it lands on.  Nothing *reads* the model back out of the
+    command, though, which is what keeps this a suggestion rather than a
+    warning: absent all three, the literal renders identically to ``{model}``.
+    """
+    found: list[RecipeIssue] = []
+    command = recipe.command or ""
+
+    # An absolute ``model:`` is already the on-disk path, so ``{model}`` would
+    # render the same string and none of the three mechanisms applies.  There
+    # is nothing to fix, and saying so anyway is how a report gets skimmed.
+    from sparkrun.core.recipe import is_local_model_path
+
+    if command and recipe.model and not is_local_model_path(recipe.model):
+        spelling = _model_arg_literal(command, recipe.model)
+        if spelling:
+            found.append(
+                RecipeIssue(
+                    SUGGESTION,
+                    "restated-model-arg",
+                    "command: passes the literal model id '%s' via '%s', which is exactly what `model:` already "
+                    "says. sparkrun rewrites the model argument at launch — for pre-placed on-disk weights "
+                    "(`resolved_model_path`, or an absolute `model:`) and for a pre-synced GGUF, where the "
+                    "resolved container path replaces the `repo:quant` spec the engine cannot parse — and it "
+                    "reaches the command only through the {model} placeholder. A literal is invisible to all of "
+                    "it." % (recipe.model, spelling),
+                    "Replace the literal with {model}. It renders identically today.",
+                )
+            )
+
+    for where, text in _managed_path_texts(recipe):
+        hits: list[str] = sorted({p for p in _MANAGED_CONTAINER_PATHS if p in text})
+        layout = sorted({m.group(0) for m in _HF_LAYOUT_RE.finditer(text)})
+        if not hits and not layout:
+            continue
+        detail = "; ".join("'%s' is %s" % (p, _MANAGED_CONTAINER_PATHS[p]) for p in hits)
+        if layout:
+            detail += ("; " if detail else "") + (
+                "'%s' is huggingface_hub's internal on-disk layout, not an interface sparkrun promises, and pins "
+                "the snapshot of one download" % layout[0]
+            )
+        found.append(
+            RecipeIssue(
+                SUGGESTION,
+                "restated-managed-path",
+                "%s: spells out a container path sparkrun manages (%s). Paths under sparkrun's mounts are "
+                "supplied by the launch — through {model}, HF_HOME/HF_HUB_CACHE and the runtime-cache env — so "
+                "restating one pins the recipe to a layout it does not control and skips the rewrites the "
+                "launch would have applied." % (where, detail),
+                "Reference the value sparkrun provides ({model}, or $HF_HOME / $HF_HUB_CACHE / $XDG_CACHE_HOME "
+                "inside the container) rather than the path it currently resolves to. If the path is genuinely "
+                "not reachable that way, keep it — this is advice, not a rule.",
+            )
+        )
+
+    return found
+
+
+# --------------------------------------------------------------------------
+# Inline scripting and patching
+# --------------------------------------------------------------------------
+
+#: Signals that a recipe is carrying a *program* rather than a command, keyed
+#: by the phrase used to name the evidence.  Every one of these is measured at
+#: **zero** across the 160 cached registry recipes, which is what lets the
+#: check be this broad: there is no idiom in the published corpus it collides
+#: with, and each names a specific tool rather than guessing from shape.
+#:
+#: Shape alone is deliberately *not* a signal.  A long ``command:`` is often
+#: just a serve invocation with many flags (the corpus clusters at 10-19 lines
+#: and no recipe exceeds 40), so a line-count threshold would report the
+#: recipes with the most flags rather than the ones carrying code.
+_INLINE_SCRIPT_SIGNALS: Mapping[str, Any] = {
+    "a heredoc delivering an inline program": re.compile(r"<<-?\s*['\"]?[A-Za-z_][A-Za-z0-9_]*['\"]?"),
+    "an inline interpreter program (`-c`)": re.compile(r"(?<![\w-])(python3?|perl|ruby|node)\s+-c(?![\w-])"),
+    "an interpreter reading its program from stdin": re.compile(r"(?<![\w-])(python3?|perl|ruby|node)\s+-\s"),
+    "in-place file editing (`sed -i`)": re.compile(r"(?<![\w-])sed\s+(?:-[a-zA-Z]+\s+)*-[a-zA-Z]*i(?![\w-])"),
+    "a source patch (`patch`/`git apply`)": re.compile(r"(?<![\w-])(patch\s+[^\n]*-p\d|git\s+apply(?![\w-]))"),
+    "a write into the installed package tree": re.compile(r"site-packages|dist-packages"),
+    "a package install at launch": re.compile(r"(?<![\w-])(uv\s+pip|pip3?|python3?\s+-m\s+pip)\s+install(?![\w-])"),
+    "a download at launch (`curl`/`wget`)": re.compile(r"(?<![\w-])(curl|wget)\s+[^\n]*https?://"),
+}
+
+#: Signals withheld from ``defaults:`` values, because there they are ambiguous
+#: in a way they are not in a command.  Every other signal names a *verb* —
+#: something being run — which is unambiguous wherever it appears; this one
+#: names a *location*, and in a command it is nearly always the target of a
+#: write while in a serve-flag value it is as likely to be a plain path
+#: (``chat_template: /usr/lib/python3.12/site-packages/vllm/.../tpl.jinja``).
+#: Reporting that as "an inline script" would be simply wrong.
+_SIGNALS_NOT_IN_DEFAULTS = frozenset({"a write into the installed package tree"})
+
+
+def check_inline_scripting(recipe: Recipe) -> list[RecipeIssue]:
+    """Suggest ``mods:`` when a recipe carries a program instead of a command.
+
+    A recipe that patches its own container — a heredoc'd Python program that
+    rewrites vLLM's source, a ``sed -i`` over the installed package, a
+    ``pip install`` before the serve line — is doing what ``mods:`` exists for,
+    and the difference is not stylistic.  A mod is a directory with a
+    ``run.sh``; sparkrun ``docker cp``s it into the container and runs it
+    before the serve command, so the script is a **file** that travels with the
+    recipe through its registry, can be reviewed and diffed on its own, and is
+    copied **verbatim**.
+
+    That last property is the sparkrun-specific argument, because the three
+    places a script can live are rendered differently and only one of them
+    leaves it alone:
+
+    * ``command:`` goes through ``Recipe.render_command``, whose brace-escape
+      mode is inferred *from the template itself*
+      (``utils.text.uses_brace_escapes``).  An embedded program with dict
+      literals, f-strings or shell brace expansion therefore has to double
+      every literal brace, and forces the whole template into the escape mode —
+      which is why the canonical instance of this shape is also a v1-format
+      recipe.  Get one brace wrong and the program is silently mis-rendered.
+    * a ``pre_exec`` string goes through ``hooks.render_hook_command``, which
+      does *not* collapse ``{{`` but does still substitute ``{name}`` — so a
+      program is safe from the escaping rule and still exposed to a collision
+      with any config-chain key it happens to spell.
+    * a mod's ``run.sh`` is never rendered at all.
+
+    A suggestion, not a warning: an inline patch runs identically on every
+    cluster, so nothing here breaks somewhere else — what is given up is
+    reviewability and the escaping hazard above.  It is also why the check is
+    free to be broad: it costs nothing at launch (``run`` does not print
+    suggestions) and the shapes are genuinely ambiguous enough that a
+    legitimate use is plausible.
+
+    Scanned in ``command:``, the hook lists, and ``defaults:`` values — a
+    default reaches the command through its placeholder, so a program can be
+    written there just as well, one remove further from where it runs.  That
+    last one is an edge case nobody has produced, which is why the *signal set*
+    narrows there rather than the scan being skipped: see
+    :data:`_SIGNALS_NOT_IN_DEFAULTS`.
+    """
+    found: list[RecipeIssue] = []
+    texts = [(w, t, _INLINE_SCRIPT_SIGNALS) for w, t in _script_texts(recipe)]
+    narrowed = {k: v for k, v in _INLINE_SCRIPT_SIGNALS.items() if k not in _SIGNALS_NOT_IN_DEFAULTS}
+    texts += [(w, t, narrowed) for w, t in _defaults_texts(recipe, skip_internal=False)]
+
+    for where, text, signals in texts:
+        evidence = sorted(name for name, pat in signals.items() if pat.search(text))
+        if not evidence:
+            continue
+        found.append(
+            RecipeIssue(
+                SUGGESTION,
+                "inline-script",
+                "%s: contains %s. A recipe that patches or installs into its own container is doing what `mods:` "
+                "exists for. Inline, the program is re-run on every node on every launch, cannot be reviewed or "
+                "diffed apart from the recipe, and — in `command:` — is passed through the placeholder renderer, "
+                "so every literal brace in it has to be escaped and one missed brace mis-renders the program "
+                "silently." % (where, ", ".join(evidence)),
+                "Move it to a `mods:` entry — a directory with a `run.sh`, copied into the container verbatim "
+                "and run before the serve command, which travels with the recipe through its registry and is "
+                "never passed through the renderer. For a package install, prefer baking it into the container "
+                "image so it is not repeated on every launch.",
+            )
+        )
+    return found
+
+
+# --------------------------------------------------------------------------
+# Sparkrun-owned config keys
+# --------------------------------------------------------------------------
+
+
+def check_internal_config_keys(recipe: Recipe) -> list[RecipeIssue]:
+    """Warn when ``defaults:`` declares a key sparkrun injects mid-launch.
+
+    A leading underscore marks the config-chain namespace sparkrun owns
+    (``_gguf_model_path``, ``_mmproj_path``).  Nothing reports these today:
+    ``launcher._is_internal_config_key`` excludes them from the unmapped-key
+    report — correctly, since they *are* consumed, so "unmapped" is the wrong
+    complaint — which leaves a recipe *declaring* one with no diagnostic at
+    all.
+
+    The injected value wins when it is produced (``overrides`` outranks
+    ``defaults`` in the config chain), so the recipe's literal is dead in the
+    ordinary case and reads as though it works.  It wins instead in exactly the
+    situations the author did not choose: under ``--dry-run`` (so the command
+    you review is not the command that runs), when the weights are pre-placed,
+    and when the GGUF was not pre-synced on this host — where it names a path
+    that need not exist.
+
+    A warning rather than an error because it is a real escape hatch: a
+    requirement that sparkrun's normal resolution cannot express is a reason to
+    keep the key, and being told is the point.  Scoped to *declaring* a key —
+    referencing ``{_gguf_model_path}`` in a template is reading, not writing,
+    and is left alone.
+    """
+    declared = sorted(k for k in (recipe.defaults or {}) if isinstance(k, str) and k.startswith("_"))
+    if not declared:
+        return []
+    return [
+        RecipeIssue(
+            WARNING,
+            "internal-config-key",
+            "defaults: declares %s. A leading underscore marks a value sparkrun injects into the config chain "
+            "mid-launch after resolving it against the cluster (the pre-synced GGUF's container path, the "
+            "multimodal projector's). The injected value outranks `defaults:`, so the recipe's is normally dead "
+            "— but the injection is skipped under --dry-run, for pre-placed weights, and when the model was not "
+            "pre-synced here, and then the recipe's literal wins and names a path that need not exist on this "
+            "host." % ", ".join("'%s'" % k for k in declared),
+            "Remove them and let sparkrun resolve the value; reference {model} (GGUF-resolved) or the public "
+            "`mmproj` key if the command needs it. Keep them only if the requirement is genuinely not reachable "
+            "through sparkrun's own resolution.",
+        )
+    ]
+
+
+# --------------------------------------------------------------------------
+# Per-launch coordination flags
+# --------------------------------------------------------------------------
+
+
+def check_hardcoded_rendezvous_flags(recipe: Recipe, runtime: RuntimePlugin | None) -> list[RecipeIssue]:
+    """Warn when ``command:`` pins a flag the runtime computes per launch.
+
+    The flag list is the runtime's own
+    (:meth:`~sparkrun.runtimes.base.RuntimePlugin.managed_rendezvous_flags`),
+    never a shared core: which flags coordinate a launch is a property of the
+    engine.  Atlas spells the world ``--rank``/``--world-size`` where vLLM
+    spells it ``--node-rank``/``--nnodes``, llama.cpp dials workers with
+    ``--rpc``, and ``vllm-ray`` and ``trtllm`` rendezvous outside the serve
+    command entirely and so declare nothing.  A runtime that declares nothing
+    disables the check, which is also what an out-of-tree runtime built against
+    an older base class gets.
+
+    A warning, not a suggestion, because it breaks on a cluster that is not the
+    author's — and the *single-node* direction is the damaging one.  These
+    flags are appended unconditionally by ``generate_node_command``, with none
+    of the ``reconcile_flag_in_command`` guarding that ``--served-model-name``
+    and ``--distributed-executor-backend`` get.  So:
+
+    * multi-node — the flag appears twice; argparse takes the last, sparkrun's
+      value wins, and the recipe's is merely dead;
+    * single-node — sparkrun appends *nothing* (``SglangRuntime`` returns the
+      base command when ``world_nodes <= 1``; vLLM's block is under
+      ``replica_size > 1``), so the recipe's ``--nnodes 2 --node-rank 0`` and
+      the author's head IP survive verbatim.  The launch then rendezvouses with
+      a host that is not there, or trips sglang's ``(tp*pp) % nnodes == 0``
+      assertion before it binds a port (issue #284) — a failure that names
+      neither sparkrun nor the recipe.
+    """
+    command = recipe.command or ""
+    if not command or runtime is None:
+        return []
+
+    try:
+        managed = tuple(runtime.managed_rendezvous_flags() or ())
+    except Exception:  # pragma: no cover - defensive, mirrors known_config_keys
+        logger.debug("Runtime %r managed_rendezvous_flags raised", getattr(runtime, "runtime_name", "?"), exc_info=True)
+        return []
+    if not managed:
+        return []
+
+    tokens = {t for t in command.split() if t != "\\"}
+    found = sorted(f for f in managed if f in tokens or any(t.startswith(f + "=") for t in tokens))
+    if not found:
+        return []
+    return [
+        RecipeIssue(
+            WARNING,
+            "hardcoded-rendezvous-flag",
+            "command: hardcodes %s, which the '%s' runtime computes per launch from the cluster and the "
+            "placement and appends itself. On a multi-node launch the flag is emitted twice and the recipe's "
+            "value is silently dropped; on a single node sparkrun appends nothing at all, so the recipe's value "
+            "survives and the workload tries to coordinate with a topology — or a head address — that does not "
+            "exist there." % (", ".join("'%s'" % f for f in found), getattr(runtime, "runtime_name", recipe.runtime)),
+            "Remove them and let sparkrun size the world. Node count comes from `min_nodes`/`max_nodes` and the "
+            "parallelism keys (`tensor_parallel`, `pipeline_parallel`, `data_parallel`); the head address and "
+            "coordination port are resolved from the hosts the launch actually lands on.",
+        )
+    ]
 
 
 # --------------------------------------------------------------------------
@@ -1079,7 +1513,11 @@ def validate_recipe(
     issues.extend(_safe("managed-cache-env", lambda: check_managed_cache_env(recipe, runtime)))
     issues.extend(_safe("unknown-top-level-key", lambda: check_unknown_top_level_keys(recipe, runtime)))
     issues.extend(_safe("non-portable-mount", lambda: check_mount_portability(recipe)))
+    issues.extend(_safe("internal-config-key", lambda: check_internal_config_keys(recipe)))
+    issues.extend(_safe("inline-script", lambda: check_inline_scripting(recipe)))
+    issues.extend(_safe("hardcoded-rendezvous-flag", lambda: check_hardcoded_rendezvous_flags(recipe, runtime)))
     issues.extend(_safe("hardcoded-serve-flag", lambda: check_hardcoded_serve_flags(recipe, runtime)))
+    issues.extend(_safe("restated-substitution", lambda: check_restated_substitutions(recipe)))
 
     if runtime is not None and include_unmapped_keys:
         from sparkrun.core.launcher import report_unmapped_config_keys

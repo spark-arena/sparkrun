@@ -119,6 +119,15 @@ class LlamaCppRuntime(RuntimePlugin):
         """llama.cpp uses native RPC-based distribution, not Ray."""
         return "native"
 
+    def managed_rendezvous_flags(self) -> tuple[str, ...]:
+        """``--rpc`` carries the worker address list, built from the placement.
+
+        The whole set is one flag, and it shares no spelling with any other
+        runtime — llama.cpp's workers are ``rpc-server`` processes the head
+        dials out to, not ranks in a process group.
+        """
+        return ("--rpc",)
+
     def resolve_api_key(
         self,
         recipe: "Recipe",

@@ -234,6 +234,16 @@ class SglangRuntime(RuntimePlugin):
             return max(1, parallelism.model_shard_factor)
         return super().world_size(parallelism, recipe=recipe, cluster=cluster)
 
+    def managed_rendezvous_flags(self) -> tuple[str, ...]:
+        """The three flags :meth:`generate_node_command` appends for the world.
+
+        ``--dp-size`` is deliberately absent: whether it is legal is a property
+        of the *launch* rather than of the recipe (see ``_append_dp_size``), and
+        a recipe writing it in ``command:`` is the documented DP-attention
+        spelling that ``_dp_attention_enabled`` reads back.
+        """
+        return ("--dist-init-addr", "--nnodes", "--node-rank")
+
     def native_rendezvous_port(
         self,
         recipe: "Recipe | None",

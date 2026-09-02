@@ -514,6 +514,32 @@ class RuntimePlugin(Plugin):
         """
         return init_port
 
+    def managed_rendezvous_flags(self) -> tuple[str, ...]:
+        """Serve flags this runtime computes per launch and appends itself.
+
+        Declared for :func:`sparkrun.core.validation.check_hardcoded_rendezvous_flags`,
+        which warns when a recipe ``command:`` pins one.  Unlike the flags in
+        ``serve_flag_map``, these are **appended unconditionally** by
+        :meth:`generate_node_command` — no ``reconcile_flag_in_command``, no
+        "only if absent" guard — because their values are properties of the
+        cluster and the placement, not of the recipe.
+
+        The list is deliberately per-runtime with no shared core, even where
+        two runtimes spell a flag identically: which flags coordinate a launch
+        is a property of the engine, and a new runtime is far more likely to
+        need its own set than to inherit a neighbour's.  A family-neutral
+        default would quietly apply vLLM's vocabulary to an engine that never
+        had it.
+
+        The base default is ``()`` — "declares nothing", which disables the
+        check.  That is the right answer for the runtimes whose rendezvous
+        happens outside the serve command entirely (``vllm-ray`` delegates to
+        Ray, ``trtllm`` to ``mpirun -H``) and the safe answer for an
+        out-of-tree runtime built against an older base class, which is why
+        the check is opt-in rather than opt-out.
+        """
+        return ()
+
     def generate_node_command(
         self,
         recipe: Recipe,

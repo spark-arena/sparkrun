@@ -1139,3 +1139,282 @@ def test_mods_alone_does_not_infer_a_builder(v):
     recipe = _recipe(runtime="vllm", mods=["mods/some-patch"]).resolve()
     assert recipe.builder == ""
     assert "implicit-builder" not in _codes(validate_recipe(recipe, v=v))
+
+
+# --------------------------------------------------------------------------
+# Restated substitutions — values sparkrun would have supplied anyway
+# --------------------------------------------------------------------------
+
+
+def test_literal_model_id_as_positional_serve_arg_is_reported(v):
+    """The dominant shape: 39 of the 118 cached registry recipes with a
+    `command:` write `vllm serve <literal id>` where `{model}` belongs."""
+    recipe = _recipe(command="vllm serve Qwen/Qwen3-1.7B --port 8000").resolve()
+    found = next(i for i in validate_recipe(recipe, v=v) if i.code == "restated-model-arg")
+    assert found.severity == SUGGESTION
+    assert "Qwen/Qwen3-1.7B" in found.summary
+    assert "{model}" in found.fix
+
+
+def test_literal_model_id_as_flag_value_is_reported(v):
+    recipe = _recipe(runtime="sglang", command="sglang serve --model-path Qwen/Qwen3-1.7B").resolve()
+    assert "restated-model-arg" in _codes(validate_recipe(recipe, v=v))
+
+
+def test_model_placeholder_is_not_reported(v):
+    """The working spelling. A finding that fires here would fire on the
+    two-thirds of the corpus that is doing the right thing."""
+    recipe = _recipe(command="vllm serve {model} --port {port}", defaults={"port": 8000}).resolve()
+    assert "restated-model-arg" not in _codes(validate_recipe(recipe, v=v))
+
+
+def test_model_id_embedded_in_another_argument_is_not_reported(v):
+    """Whole-token equality, never substring: measured across the cached
+    registries the id appears *only* as the model argument, so substring
+    matching would buy nothing and claim this."""
+    recipe = _recipe(command="vllm serve {model} --served-model-name Qwen/Qwen3-1.7B-chat").resolve()
+    assert "restated-model-arg" not in _codes(validate_recipe(recipe, v=v))
+
+
+def test_absolute_model_path_is_not_reported(v):
+    """`model:` is already the on-disk path, so `{model}` renders the same
+    string and none of the three rewrite mechanisms applies."""
+    recipe = _recipe(model="/mnt/weights/qwen3", command="vllm serve /mnt/weights/qwen3").resolve()
+    assert "restated-model-arg" not in _codes(validate_recipe(recipe, v=v))
+
+
+def test_managed_container_path_in_command_is_reported(v):
+    recipe = _recipe(command="vllm serve /cache/huggingface/hub/models--Qwen--Qwen3-1.7B/snapshots/abc").resolve()
+    found = next(i for i in validate_recipe(recipe, v=v) if i.code == "restated-managed-path")
+    assert found.severity == SUGGESTION
+    assert "/cache/huggingface" in found.summary
+    assert "models--Qwen--Qwen3-1.7B" in found.summary
+
+
+def test_managed_container_path_in_hook_is_reported(v):
+    """The one instance in the cached corpus is a `pre_exec`, not a `command:`
+    — and it searches a cache root sparkrun never populates."""
+    recipe = _recipe(
+        command="vllm serve {model}",
+        pre_exec=['cp "$(find /root/.cache/huggingface/ -name parser.py | head -1)" /tmp/p.py'],
+    ).resolve()
+    found = next(i for i in validate_recipe(recipe, v=v) if i.code == "restated-managed-path")
+    assert found.summary.startswith("pre_exec:")
+
+
+def test_ordinary_paths_are_not_managed_paths(v):
+    recipe = _recipe(command="vllm serve {model} --chat-template /opt/templates/chat.jinja").resolve()
+    assert "restated-managed-path" not in _codes(validate_recipe(recipe, v=v))
+
+
+# --------------------------------------------------------------------------
+# Sparkrun-owned config keys
+# --------------------------------------------------------------------------
+
+
+def test_internal_config_key_in_defaults_is_reported(v):
+    """Nothing reported this before: `launcher._is_internal_config_key`
+    excludes `_`-prefixed keys from the unmapped-key report, which left a
+    recipe *declaring* one with no diagnostic at all."""
+    recipe = _recipe(
+        model="unsloth/Qwen3-1.7B-GGUF:Q4_K_M",
+        runtime="llama-cpp",
+        defaults={"_gguf_model_path": "/cache/huggingface/hub/x.gguf"},
+    ).resolve()
+    found = next(i for i in validate_recipe(recipe, v=v) if i.code == "internal-config-key")
+    assert found.severity == WARNING
+    assert "_gguf_model_path" in found.summary
+
+
+def test_ordinary_defaults_keys_are_not_internal(v):
+    recipe = _recipe(defaults={"port": 8000, "max_model_len": 4096}).resolve()
+    assert "internal-config-key" not in _codes(validate_recipe(recipe, v=v))
+
+
+# --------------------------------------------------------------------------
+# Per-launch coordination flags
+# --------------------------------------------------------------------------
+
+
+def test_hardcoded_rendezvous_flags_are_reported(v):
+    recipe = _recipe(command="vllm serve {model} --nnodes 2 --node-rank 0 --master-addr 10.0.0.5").resolve()
+    found = next(i for i in validate_recipe(recipe, v=v) if i.code == "hardcoded-rendezvous-flag")
+    assert found.severity == WARNING
+    assert "'--nnodes'" in found.summary and "'--master-addr'" in found.summary
+
+
+def test_rendezvous_flag_list_is_per_runtime(v):
+    """Atlas spells the world `--rank`/`--world-size`; vLLM's `--nnodes` is not
+    its vocabulary and must not be reported against it. The lists are declared
+    per runtime precisely so they can drift apart."""
+    from sparkrun.core.bootstrap import get_runtime
+    from sparkrun.core.validation import check_hardcoded_rendezvous_flags
+
+    atlas = get_runtime("atlas", v)
+    vllm = get_runtime("vllm-distributed", v)
+
+    nnodes = _recipe(command="spark serve {model} --nnodes 2")
+    assert check_hardcoded_rendezvous_flags(nnodes, atlas) == []
+    assert check_hardcoded_rendezvous_flags(nnodes, vllm) != []
+
+    world = _recipe(command="spark serve {model} --world-size 2")
+    assert check_hardcoded_rendezvous_flags(world, atlas) != []
+    assert check_hardcoded_rendezvous_flags(world, vllm) == []
+
+
+def test_runtime_declaring_no_rendezvous_flags_disables_the_check(v):
+    """`vllm-ray` rendezvouses through Ray and `trtllm` through `mpirun -H`, so
+    neither has a serve flag to protect. The empty base default is also what an
+    out-of-tree runtime built against an older base class gets."""
+    from sparkrun.core.bootstrap import get_runtime
+    from sparkrun.core.validation import check_hardcoded_rendezvous_flags
+
+    for name in ("vllm-ray", "trtllm"):
+        runtime = get_runtime(name, v)
+        assert runtime.managed_rendezvous_flags() == ()
+        recipe = _recipe(runtime=name, command="vllm serve {model} --nnodes 2")
+        assert check_hardcoded_rendezvous_flags(recipe, runtime) == []
+
+
+def test_data_parallel_size_is_not_a_rendezvous_flag(v):
+    """The one flag in vLLM's block injected only when the template did not
+    supply it — writing it is a supported choice, not a collision."""
+    recipe = _recipe(command="vllm serve {model} --data-parallel-size 2").resolve()
+    assert "hardcoded-rendezvous-flag" not in _codes(validate_recipe(recipe, v=v))
+
+
+def test_clean_recipe_produces_none_of_the_new_findings(v):
+    """The corpus posture: all 160 cached registry recipes produce zero of the
+    two new warnings, and a recipe using placeholders throughout produces none
+    of the four."""
+    recipe = _recipe(
+        command="vllm serve {model} --port {port} --tensor-parallel-size {tensor_parallel}",
+        defaults={"port": 8000, "tensor_parallel": 2},
+    ).resolve()
+    codes = _codes(validate_recipe(recipe, v=v))
+    assert not codes & {
+        "restated-model-arg",
+        "restated-managed-path",
+        "internal-config-key",
+        "hardcoded-rendezvous-flag",
+    }
+
+
+def test_managed_container_path_in_a_defaults_value_is_reported(v):
+    """A serve flag can name a path sparkrun owns just as a command can."""
+    recipe = _recipe(
+        command="vllm serve {model} --chat-template {chat_template}",
+        defaults={"chat_template": "/cache/huggingface/hub/models--Qwen--Qwen3-1.7B/snapshots/a/chat.jinja"},
+    ).resolve()
+    found = next(i for i in validate_recipe(recipe, v=v) if i.code == "restated-managed-path")
+    assert found.summary.startswith("defaults.chat_template:")
+
+
+def test_internal_key_holding_a_managed_path_is_reported_once(v):
+    """`internal-config-key` already owns that line and says strictly more;
+    a second finding on the same assignment is the noise this module avoids."""
+    recipe = _recipe(defaults={"_gguf_model_path": "/cache/huggingface/hub/x.gguf"}).resolve()
+    codes = [i.code for i in validate_recipe(recipe, v=v)]
+    assert codes.count("internal-config-key") == 1
+    assert "restated-managed-path" not in codes
+
+
+# --------------------------------------------------------------------------
+# Inline scripting and patching
+# --------------------------------------------------------------------------
+
+
+def test_heredoc_program_in_command_is_reported(v):
+    """The canonical shape: an `@spark-arena` recipe whose `command:` carries a
+    ~280-line Python program that rewrites vLLM's source before the serve
+    line."""
+    recipe = _recipe(
+        command="set -euo pipefail\npython3 - <<'PY'\nprint('patching')\nPY\nexec vllm serve {model}",
+    ).resolve()
+    found = next(i for i in validate_recipe(recipe, v=v) if i.code == "inline-script")
+    assert found.severity == SUGGESTION
+    assert found.summary.startswith("command:")
+    assert "heredoc" in found.summary
+    assert "`mods:`" in found.fix
+
+
+def test_in_place_patching_in_pre_exec_is_reported(v):
+    recipe = _recipe(
+        command="vllm serve {model}",
+        pre_exec=["sed -i 's/foo/bar/' /usr/lib/python3/site-packages/vllm/config.py"],
+    ).resolve()
+    found = next(i for i in validate_recipe(recipe, v=v) if i.code == "inline-script")
+    assert found.summary.startswith("pre_exec:")
+
+
+def test_launch_time_package_install_is_reported(v):
+    """The only instance in the cached corpus (two recipes), and the one case
+    where the image is the better fix than a mod — so the advice names both."""
+    recipe = _recipe(command="vllm serve {model}", pre_exec=["python3 -m pip install cohere_melody"]).resolve()
+    found = next(i for i in validate_recipe(recipe, v=v) if i.code == "inline-script")
+    assert "package install" in found.summary
+    assert "container image" in found.fix
+
+
+def test_ordinary_shell_in_a_command_is_not_an_inline_script(v):
+    """Shape is deliberately not a signal. A serve command wrapped in a couple
+    of shell lines is the common idiom and must stay silent — a line-count
+    threshold would have reported the recipes with the most flags."""
+    recipe = _recipe(
+        command="set -euo pipefail\nexport VLLM_USE_V1=1\nexec vllm serve {model} --port {port}",
+        defaults={"port": 8000},
+    ).resolve()
+    assert "inline-script" not in _codes(validate_recipe(recipe, v=v))
+
+
+def test_a_recipe_using_mods_properly_is_not_reported(v):
+    """The shape the finding recommends. `mods:` resolution happens inside
+    `launch_inference`, long after validation, so the entries seen here are the
+    author's own and never sparkrun's injected mod-runner."""
+    recipe = _recipe(command="vllm serve {model}", mods=["mods/glm53-sm121-patch"]).resolve()
+    assert "inline-script" not in _codes(validate_recipe(recipe, v=v))
+
+
+def test_sed_without_in_place_is_not_reported(v):
+    """`sed -n`/`sed -e` filtering a stream edits nothing; only `-i` does."""
+    recipe = _recipe(command="vllm serve {model} --port $(sed -n 1p /etc/portfile)").resolve()
+    assert "inline-script" not in _codes(validate_recipe(recipe, v=v))
+
+
+def test_inline_script_in_a_defaults_value_is_reported(v):
+    """A default reaches the command through its placeholder, so a program can
+    be written there too — one remove further from where it runs."""
+    recipe = _recipe(
+        command="vllm serve {model} && {setup}",
+        defaults={"setup": "python3 - <<'PY'\nimport vllm\nPY"},
+    ).resolve()
+    found = next(i for i in validate_recipe(recipe, v=v) if i.code == "inline-script")
+    assert found.summary.startswith("defaults.setup:")
+
+
+def test_site_packages_path_in_a_defaults_value_is_not_a_script(v):
+    """The one signal that names a *location* rather than a verb. In a command
+    it is nearly always the target of a write; in a serve-flag value it is as
+    likely to be a plain path, and calling that an inline script is wrong."""
+    recipe = _recipe(
+        command="vllm serve {model} --chat-template {chat_template}",
+        defaults={"chat_template": "/usr/lib/python3.12/site-packages/vllm/templates/tool.jinja"},
+    ).resolve()
+    assert "inline-script" not in _codes(validate_recipe(recipe, v=v))
+
+
+def test_site_packages_write_in_a_command_is_still_a_script(v):
+    """Narrowed for `defaults:` only — the command scan keeps the full set."""
+    recipe = _recipe(command="cp /tmp/fix.py /usr/lib/python3/site-packages/vllm/x.py && vllm serve {model}").resolve()
+    assert "inline-script" in _codes(validate_recipe(recipe, v=v))
+
+
+def test_internal_key_holding_a_script_is_reported_by_both_checks(v):
+    """Unlike the managed-path scan, the script scan does *not* skip
+    `_`-prefixed defaults: "you declared a key sparkrun owns" and "you put a
+    program in it" are different problems, and the first message covers neither
+    the second's diagnosis nor its fix."""
+    recipe = _recipe(defaults={"_gguf_model_path": "$(python3 -c 'print(1)')"}).resolve()
+    codes = _codes(validate_recipe(recipe, v=v))
+    assert "internal-config-key" in codes
+    assert "inline-script" in codes
