@@ -170,10 +170,10 @@ def tmp_recipe_dir(tmp_path: Path) -> Path:
     recipe_dir = tmp_path / "recipes"
     recipe_dir.mkdir()
 
-    # v2 vllm recipe
+    # v2 vllm recipe. No ``name:`` — it is the v1 spelling, ignored on load
+    # (the name comes from the filename), and reported as a deprecation for v2.
     v2_vllm = {
         "sparkrun_version": "2",
-        "name": "Test vLLM Recipe",
         "description": "A test recipe for vLLM",
         "model": "meta-llama/Llama-2-7b-hf",
         "runtime": "vllm",
@@ -196,7 +196,6 @@ def tmp_recipe_dir(tmp_path: Path) -> Path:
     # v2 sglang recipe
     v2_sglang = {
         "sparkrun_version": "2",
-        "name": "Test SGLang Recipe",
         "description": "A test recipe for SGLang",
         "model": "meta-llama/Llama-2-7b-hf",
         "runtime": "sglang",
@@ -272,7 +271,6 @@ def sample_v2_recipe_data() -> dict[str, Any]:
     """
     return {
         "sparkrun_version": "2",
-        "name": "Sample vLLM Recipe",
         "description": "A sample vLLM recipe for testing",
         "model": "meta-llama/Llama-2-7b-hf",
         "runtime": "vllm",
@@ -338,7 +336,6 @@ def sample_sglang_recipe_data() -> dict[str, Any]:
     """
     return {
         "sparkrun_version": "2",
-        "name": "Sample SGLang Recipe",
         "description": "A sample SGLang recipe for testing",
         "model": "meta-llama/Llama-2-7b-hf",
         "runtime": "sglang",

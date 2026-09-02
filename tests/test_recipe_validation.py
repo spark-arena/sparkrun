@@ -31,8 +31,10 @@ def v():
 
 
 def _recipe(**overrides) -> Recipe:
+    # No ``name:``. It is the v1 spelling and is ignored on load (the recipe's
+    # name comes from the filename), so carrying one here would put a
+    # `deprecated-recipe-name` finding on every recipe every other test builds.
     data = {
-        "name": "test-recipe",
         "model": "Qwen/Qwen3-1.7B",
         "runtime": "vllm-distributed",
         "container": "vllm/vllm-openai:latest",
@@ -1418,3 +1420,62 @@ def test_internal_key_holding_a_script_is_reported_by_both_checks(v):
     codes = _codes(validate_recipe(recipe, v=v))
     assert "internal-config-key" in codes
     assert "inline-script" in codes
+
+
+# --------------------------------------------------------------------------
+# Deprecated top-level `name:`
+# --------------------------------------------------------------------------
+
+
+def test_declared_name_is_reported_as_a_deprecation(v):
+    """`name:` is the v1 spelling and is already ignored — `Recipe.__init__`
+    assigns the filename stem unconditionally (the `data.get("name", ...)`
+    beside it is commented out)."""
+    recipe = _recipe(name="Gemma 4-26B").resolve()
+    found = next(i for i in validate_recipe(recipe, v=v) if i.code == "deprecated-recipe-name")
+    assert found.severity == WARNING
+    assert found.deprecation is True
+    assert "'Gemma 4-26B'" in found.summary
+
+
+def test_declared_name_finding_reads_raw_not_the_parsed_attribute(v):
+    """The parsed `name` is *never* the declared value, so a check testing it
+    would report every recipe or none. The same trap as `mode:`."""
+    recipe = _recipe(name="Gemma 4-26B")
+    assert recipe.name != "Gemma 4-26B"  # derived, not declared
+    assert "deprecated-recipe-name" in _codes(validate_recipe(recipe, v=v))
+
+
+def test_no_declared_name_is_not_reported(v):
+    assert "deprecated-recipe-name" not in _codes(validate_recipe(_recipe().resolve(), v=v))
+
+
+def test_declared_name_is_not_reported_for_v1_recipes(v):
+    """Every v1 recipe in the cached corpus declares one, and they already
+    carry `deprecated-recipe-format`, whose migration subsumes this — the same
+    gating the v1 brace escape uses."""
+    recipe = _recipe(recipe_version="1", name="Diffusion-Gemma-BF16", command="vllm serve {model}").resolve()
+    codes = _codes(validate_recipe(recipe, v=v))
+    assert "deprecated-recipe-format" in codes
+    assert "deprecated-recipe-name" not in codes
+
+
+def test_declared_name_survives_a_recipe_without_raw(v):
+    """`__setstate__` does not restore `_raw`, so a recipe revived from the
+    registry cache has no attribute at all."""
+    recipe = _recipe(name="X").resolve()
+    del recipe._raw
+    assert "deprecated-recipe-name" not in _codes(validate_recipe(recipe, v=v))
+
+
+def test_declared_name_is_collapsed_at_launch(v):
+    """A deprecation, so `summarize_deprecations` replaces it with one pointer
+    line rather than a paragraph between the runner and their logs."""
+    from sparkrun.core.validation import summarize_deprecations
+
+    issues = validate_recipe(_recipe(name="X").resolve(), v=v)
+    collapsed = summarize_deprecations(issues, "my-recipe")
+    assert "deprecated-recipe-name" not in {i.code for i in collapsed}
+    summary = next(i for i in collapsed if i.code == "deprecated-feature")
+    assert "deprecated-recipe-name" in summary.summary
+    assert "recipe validate my-recipe" in summary.fix

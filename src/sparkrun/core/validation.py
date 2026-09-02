@@ -1241,6 +1241,35 @@ def check_deprecated_features(recipe: Recipe) -> list[RecipeIssue]:
                 )
             )
 
+        # Read off ``_raw``, and it has to be: ``Recipe.__init__`` assigns
+        # ``self.name`` from the source filename stem unconditionally — the
+        # ``data.get("name", ...)`` beside it is commented out — so the parsed
+        # attribute is *never* the declared value, and testing it would report
+        # every recipe or none.  The same trap as ``mode:``.  ``getattr``
+        # because ``__setstate__`` does not restore ``_raw``, so a recipe
+        # revived from the registry cache has no attribute at all.
+        #
+        # Gated on not-v1 for the reason the brace escape is: ``name:`` is the
+        # v1 spelling — every v1 recipe in the cached corpus declares one — and
+        # those already carry ``deprecated-recipe-format``, whose migration
+        # (convert to v2) subsumes this.  Three v2 recipes declare one, which
+        # is the population this is for.
+        raw_recipe = getattr(recipe, "_raw", None)
+        if isinstance(raw_recipe, Mapping) and "name" in raw_recipe:
+            declared = str(raw_recipe.get("name") or "")
+            found.append(
+                RecipeIssue(
+                    WARNING,
+                    "deprecated-recipe-name",
+                    "name: is the v1 spelling and is already ignored — sparkrun derives the recipe name from the "
+                    "filename on disk (or its path within a registry), so the declared value%s is discarded on "
+                    "load rather than being deprecated in the usual sense. A recipe that names itself one thing "
+                    "and resolves as another is only visible by listing it." % (" ('%s')" % declared if declared else ""),
+                    "Delete the key. The name is `%s`, taken from the file; rename the file to change it." % recipe.name,
+                    deprecation=True,
+                )
+            )
+
     migration = _DEPRECATED_RUNTIMES.get(recipe.runtime)
     if migration:
         found.append(

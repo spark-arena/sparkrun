@@ -1817,6 +1817,21 @@ Catalogue notes worth knowing before adding a check:
   `--dry-run` (the command you review is not the one that runs), for pre-placed
   weights, and when the GGUF was not pre-synced here. Warning, not error: a
   requirement sparkrun's resolution cannot express is a reason to keep the key.
+- **`deprecated-recipe-name` is a deprecation for something already inert.**
+  `name:` is the v1 spelling; `Recipe.__init__` assigns the filename stem
+  unconditionally (the `data.get("name", …)` beside it is commented out), so a
+  declared name is *discarded on load* rather than merely scheduled to stop
+  working — which is worth saying plainly, since a recipe that names itself one
+  thing and resolves as another is only visible by listing it. It must read
+  `_raw` (the parsed attribute is never the declared value — the `mode:` trap)
+  via `getattr`, since `__setstate__` does not restore `_raw` and a recipe
+  revived from the registry cache has no attribute at all. Gated on **not** v1,
+  the same way the brace escape is: every v1 recipe in the cached corpus
+  declares one and already carries `deprecated-recipe-format`, whose migration
+  subsumes it; three v2 recipes declare one, which is the population this is
+  for. Note the test fixtures had to drop `name:` too — `conftest`'s v2
+  samples and `test_cli`'s carried it, which is how widely the v1 idiom had
+  spread.
 - **`inline-script` names tools, never shape.** A recipe carrying a program —
   a heredoc'd patch script, `sed -i` over the installed package, a launch-time
   `pip install` — is doing what `mods:` exists for, and the argument is
