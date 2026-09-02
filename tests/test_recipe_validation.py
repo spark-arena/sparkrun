@@ -1350,12 +1350,22 @@ def test_in_place_patching_in_pre_exec_is_reported(v):
 
 
 def test_launch_time_package_install_is_reported(v):
-    """The only instance in the cached corpus (two recipes), and the one case
-    where the image is the better fix than a mod — so the advice names both."""
+    """The only instance in the cached corpus (two recipes)."""
     recipe = _recipe(command="vllm serve {model}", pre_exec=["python3 -m pip install cohere_melody"]).resolve()
     found = next(i for i in validate_recipe(recipe, v=v) if i.code == "inline-script")
     assert "package install" in found.summary
-    assert "container image" in found.fix
+
+
+def test_inline_script_offers_image_and_mod_as_peers(v):
+    """Both remedies are real and the choice is the author's — publishing an
+    image is not always practical, and a mod is not always the right home for
+    an expensive or reusable change. The advice must not steer to one."""
+    recipe = _recipe(command="python3 - <<'PY'\npass\nPY\nvllm serve {model}").resolve()
+    fix = next(i for i in validate_recipe(recipe, v=v) if i.code == "inline-script").fix
+    assert "container image" in fix and "`mods:`" in fix
+    # Named in that order, each with the condition that selects it.
+    assert fix.index("container image") < fix.index("`mods:`")
+    assert "stable or expensive" in fix and "impractical" in fix
 
 
 def test_ordinary_shell_in_a_command_is_not_an_inline_script(v):

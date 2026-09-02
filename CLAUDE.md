@@ -1834,16 +1834,26 @@ Catalogue notes worth knowing before adding a check:
   spread.
 - **`inline-script` names tools, never shape.** A recipe carrying a program —
   a heredoc'd patch script, `sed -i` over the installed package, a launch-time
-  `pip install` — is doing what `mods:` exists for, and the argument is
-  sparkrun-specific rather than stylistic: the three homes render differently
-  and only one leaves the script alone. `command:` goes through
-  `render_command`, whose escape mode is inferred *from the template*
+  `pip install` — is building an image at launch, out of a string. It offers
+  **two peer remedies** rather than steering to one: publish a custom
+  container image (once, at build time, by the tooling built for it — right
+  when the change is stable or expensive, and costs a registry to publish to)
+  or add a `mods:` entry (travels with the recipe, needs no build
+  infrastructure — right when publishing is impractical or the change is small
+  and recipe-specific). A mod still runs per node per launch; that cost is
+  inherent to patching at runtime and is deliberately *not* the finding's
+  argument. What both buy is that the script becomes a **file**: reviewable on
+  its own, and never passed through the placeholder renderer. That second half
+  is sparkrun-specific rather than stylistic, because the homes render
+  differently and only the file forms leave the script alone. `command:` goes
+  through `render_command`, whose escape mode is inferred *from the template*
   (`uses_brace_escapes`), so an embedded program must double every literal
   brace and drags the whole template into v1 escape mode — one missed brace
   mis-renders it silently. A `pre_exec` string goes through
   `render_hook_command`, which does not collapse `{{` but still substitutes
   `{name}`, so a program is exposed to a collision with any config key it
-  spells. A mod's `run.sh` is `docker cp`'d verbatim and never rendered. Shape
+  spells. A mod's `run.sh`, and anything baked into the image, is never
+  rendered at all. Shape
   is deliberately *not* a signal: the corpus clusters at 10–19 command lines
   with nothing over 40, so a line-count threshold would report the recipes with
   the most flags rather than the ones carrying code. Every signal measures zero

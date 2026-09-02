@@ -597,20 +597,33 @@ _SIGNALS_NOT_IN_DEFAULTS = frozenset({"a write into the installed package tree"}
 
 
 def check_inline_scripting(recipe: Recipe) -> list[RecipeIssue]:
-    """Suggest ``mods:`` when a recipe carries a program instead of a command.
+    """Report a recipe that carries a program rather than a command.
 
     A recipe that patches its own container — a heredoc'd Python program that
     rewrites vLLM's source, a ``sed -i`` over the installed package, a
-    ``pip install`` before the serve line — is doing what ``mods:`` exists for,
-    and the difference is not stylistic.  A mod is a directory with a
-    ``run.sh``; sparkrun ``docker cp``s it into the container and runs it
-    before the serve command, so the script is a **file** that travels with the
-    recipe through its registry, can be reviewed and diffed on its own, and is
-    copied **verbatim**.
+    ``pip install`` before the serve line — is building an image at launch
+    time, one node at a time, out of a string.  There are **two** supported
+    ways to express the same thing, and the finding names both as peers rather
+    than steering to one:
 
-    That last property is the sparkrun-specific argument, because the three
-    places a script can live are rendered differently and only one of them
-    leaves it alone:
+    * **A custom container image.**  The change is applied once, at build time,
+      by the tooling built for it; the result is content-addressed, pullable,
+      and shared by every node.  This is the better answer whenever the change
+      is stable or expensive — a package install, a compiled extension, a patch
+      that will outlive one recipe.  It costs a registry to publish to.
+    * **A ``mods:`` entry.**  A directory with a ``run.sh`` that sparkrun
+      ``docker cp``s into the container and runs before the serve command.  The
+      better answer when publishing an image is not practical or the change is
+      small and recipe-specific: it travels with the recipe through its
+      registry and needs no build infrastructure.  It still runs per node per
+      launch — that cost is inherent to patching at runtime and is *not* what
+      this finding is about.
+
+    What both buy over inlining is that the script becomes a **file**: it can
+    be reviewed and diffed on its own, and it is never passed through the
+    placeholder renderer.  That second property is the sparkrun-specific
+    argument, because the places a script can live are rendered differently and
+    only the file forms leave it alone:
 
     * ``command:`` goes through ``Recipe.render_command``, whose brace-escape
       mode is inferred *from the template itself*
@@ -623,7 +636,8 @@ def check_inline_scripting(recipe: Recipe) -> list[RecipeIssue]:
       does *not* collapse ``{{`` but does still substitute ``{name}`` — so a
       program is safe from the escaping rule and still exposed to a collision
       with any config-chain key it happens to spell.
-    * a mod's ``run.sh`` is never rendered at all.
+    * a mod's ``run.sh`` — and anything baked into the image — is never
+      rendered at all.
 
     A suggestion, not a warning: an inline patch runs identically on every
     cluster, so nothing here breaks somewhere else — what is given up is
@@ -652,15 +666,18 @@ def check_inline_scripting(recipe: Recipe) -> list[RecipeIssue]:
             RecipeIssue(
                 SUGGESTION,
                 "inline-script",
-                "%s: contains %s. A recipe that patches or installs into its own container is doing what `mods:` "
-                "exists for. Inline, the program is re-run on every node on every launch, cannot be reviewed or "
-                "diffed apart from the recipe, and — in `command:` — is passed through the placeholder renderer, "
-                "so every literal brace in it has to be escaped and one missed brace mis-renders the program "
-                "silently." % (where, ", ".join(evidence)),
-                "Move it to a `mods:` entry — a directory with a `run.sh`, copied into the container verbatim "
-                "and run before the serve command, which travels with the recipe through its registry and is "
-                "never passed through the renderer. For a package install, prefer baking it into the container "
-                "image so it is not repeated on every launch.",
+                "%s: contains %s — the recipe is patching or installing into its own container from a string. "
+                "Inline, the change cannot be reviewed or diffed apart from the recipe, and — in `command:` — it "
+                "is passed through the placeholder renderer, so every literal brace in it has to be escaped and "
+                "one missed brace mis-renders the program silently." % (where, ", ".join(evidence)),
+                "Two supported ways to express this, both of which make the change a file rather than a string, "
+                "and neither of which goes through the renderer. (1) Publish a custom container image with the "
+                "change built in and name it in `container:` — best when the change is stable or expensive to "
+                "apply, since it happens once at build time and every node pulls the result. (2) Add a `mods:` "
+                "entry — a directory with a `run.sh` that sparkrun copies into the container and runs before the "
+                "serve command — best when publishing an image is impractical or the change is small and "
+                "specific to this recipe, since it travels with the recipe through its registry and needs no "
+                "build infrastructure.",
             )
         )
     return found
