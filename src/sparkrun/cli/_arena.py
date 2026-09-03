@@ -211,7 +211,12 @@ def arena_benchmark_run(
     click.echo("sparkrun v%s — Spark Arena benchmark" % display_version(SparkrunConfig()))
     click.echo()
 
-    submission_id, profile_override = preflight_arena(local_test=local_test, ctx=ctx)
+    submission_id, profile_override = preflight_arena(
+        local_test=local_test,
+        ctx=ctx,
+        recipe_name=recipe_name,
+        dry_run=dry_run,
+    )
     profile = profile_override  # None in local-test mode, arena profile otherwise
 
     framework = output_file = None

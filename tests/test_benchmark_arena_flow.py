@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import click
+import pytest
+import yaml
 from click.testing import CliRunner
 
 from sparkrun.cli._benchmark import benchmark as benchmark_group
@@ -48,7 +52,7 @@ def test_arena_flag_triggers_preflight_and_finalize():
         captured["kwargs"].update(kwargs)
         return _fake_bench_result()
 
-    def _fake_preflight(*, local_test, ctx):
+    def _fake_preflight(*, local_test, ctx, recipe_name=None, dry_run=False):
         captured["order"].append("preflight")
         return ("sub-test-123", "@official/spark-arena-v2")
 
@@ -145,7 +149,7 @@ def test_arena_benchmark_run_uses_same_arena_flow_helpers():
         order.append("run_benchmark")
         return _fake_bench_result()
 
-    def _fake_preflight(*, local_test, ctx):
+    def _fake_preflight(*, local_test, ctx, recipe_name=None, dry_run=False):
         order.append("preflight")
         return ("s", "@official/spark-arena-v2")
 
@@ -315,3 +319,148 @@ def test_arena_flow_exports():
     assert hasattr(m, "finalize_arena")
     assert hasattr(m, "persist_arena_extras")
     assert hasattr(m, "ARENA_BENCHMARK_PROFILE")
+
+
+# --------------------------------------------------------------------------
+# Pre-submission validation gate
+# --------------------------------------------------------------------------
+#
+# The arena paths publish the recipe, so they show the *full* `recipe validate`
+# report — suggestions included — and ask before proceeding. Ordinary
+# `sparkrun benchmark` publishes nothing and keeps the launch-path contract
+# (`validate_for_launch`: suggestions withheld, deprecations collapsed).
+
+_CLEAN_RECIPE = {
+    "model": "Qwen/Qwen3-1.7B",
+    "runtime": "vllm-distributed",
+    "container": "vllm/vllm-openai:latest",
+    "defaults": {"port": 8000},
+    "command": "vllm serve {model} --port {port}",
+}
+
+# `name:` -> deprecated-recipe-name (warning);
+# literal model id -> restated-model-arg (suggestion).
+_MESSY_RECIPE = {
+    **_CLEAN_RECIPE,
+    "name": "Arena Demo",
+    "command": "vllm serve Qwen/Qwen3-1.7B --port {port}",
+}
+
+_ERROR_RECIPE = {"runtime": "vllm-distributed", "container": "x:latest"}  # no model:
+
+
+def _write(tmp_path: Path, data: dict) -> str:
+    path = tmp_path / "arena-demo.yaml"
+    path.write_text(yaml.safe_dump(data))
+    return str(path)
+
+
+def _gate(recipe_path: str, *, tty: bool, answer: str | None = None, dry_run: bool = False):
+    """Run the gate under a Click context, returning (exit_code, output)."""
+    from sparkrun.cli._arena_flow import validate_recipe_for_submission
+
+    runner = CliRunner()
+
+    @click.command()
+    def _cmd():
+        validate_recipe_for_submission(recipe_path, ctx=click.get_current_context(), dry_run=dry_run)
+        click.echo("PROCEEDED")
+
+    with patch("sparkrun.cli._arena_flow._is_interactive", lambda: tty):
+        result = runner.invoke(_cmd, [], input=answer)
+    return result
+
+
+def test_clean_recipe_says_nothing_and_does_not_prompt(tmp_path):
+    """A report with no findings is noise between the user and their benchmark."""
+    result = _gate(_write(tmp_path, _CLEAN_RECIPE), tty=True)
+    assert result.exit_code == 0
+    assert "PROCEEDED" in result.output
+    assert "We suggest" not in result.output
+
+
+def test_findings_are_shown_in_full_including_suggestions(tmp_path):
+    """The whole point of the gate: `validate_for_launch` withholds suggestions,
+    and a recipe about to be published is exactly when its author needs them."""
+    result = _gate(_write(tmp_path, _MESSY_RECIPE), tty=True, answer="y\n")
+    assert "warning  deprecated-recipe-name" in result.output
+    assert "suggestion  restated-model-arg" in result.output
+    assert "The recipe contains 1 warning and 1 suggestion." in result.output
+    assert "may not be published to Spark Arena" in result.output
+    assert "PROCEEDED" in result.output
+
+
+def test_declining_the_prompt_aborts(tmp_path):
+    result = _gate(_write(tmp_path, _MESSY_RECIPE), tty=True, answer="n\n")
+    assert result.exit_code == 1
+    assert "PROCEEDED" not in result.output
+
+
+def test_prompt_defaults_to_no(tmp_path):
+    """Bare Enter must not submit a recipe the user was just warned about."""
+    result = _gate(_write(tmp_path, _MESSY_RECIPE), tty=True, answer="\n")
+    assert result.exit_code == 1
+    assert "PROCEEDED" not in result.output
+
+
+def test_non_interactive_proceeds_with_a_notice(tmp_path):
+    """Quality advice, not a security gate — the hook trust prompt is the one
+    that refuses without a TTY. Aborting here would break a scripted
+    submission that worked yesterday."""
+    result = _gate(_write(tmp_path, _MESSY_RECIPE), tty=False)
+    assert result.exit_code == 0
+    assert "Not running interactively" in result.output
+    assert "PROCEEDED" in result.output
+
+
+def test_errors_abort_without_prompting(tmp_path):
+    """The launch would refuse anyway; "continue?" is not a real question when
+    the answer cannot be yes."""
+    result = _gate(_write(tmp_path, _ERROR_RECIPE), tty=True)
+    assert result.exit_code == 1
+    assert "cannot be submitted" in result.output
+    assert "Continue with the benchmark" not in result.output
+
+
+def test_dry_run_reports_but_does_not_prompt(tmp_path):
+    result = _gate(_write(tmp_path, _MESSY_RECIPE), tty=True, dry_run=True)
+    assert result.exit_code == 0
+    assert "The recipe contains" in result.output
+    assert "[dry-run] Not prompting" in result.output
+    assert "PROCEEDED" in result.output
+
+
+@pytest.mark.parametrize(
+    "counts,expected",
+    [
+        ({"warning": 3, "suggestion": 4}, "3 warnings and 4 suggestions"),
+        ({"warning": 1, "suggestion": 0}, "1 warning"),
+        ({"warning": 0, "suggestion": 1}, "1 suggestion"),
+        ({"warning": 0, "suggestion": 2}, "2 suggestions"),
+    ],
+)
+def test_count_phrase_omits_absent_levels(counts, expected):
+    from sparkrun.cli._arena_flow import _count_phrase
+
+    assert _count_phrase({"error": 0, **counts}) == expected
+
+
+def test_local_test_still_validates(tmp_path):
+    """`--local-test` rehearses a submission; rehearsing without the checks
+    would defeat the rehearsal."""
+    from sparkrun.cli._arena_flow import preflight_arena
+
+    seen = {}
+
+    def _fake(recipe_name, *, ctx, dry_run=False):
+        seen["recipe"] = recipe_name
+
+    runner = CliRunner()
+
+    @click.command()
+    def _cmd():
+        preflight_arena(local_test=True, ctx=click.get_current_context(), recipe_name="r", dry_run=False)
+
+    with patch("sparkrun.cli._arena_flow.validate_recipe_for_submission", _fake):
+        runner.invoke(_cmd, [])
+    assert seen["recipe"] == "r"

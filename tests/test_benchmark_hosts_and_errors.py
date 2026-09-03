@@ -67,7 +67,12 @@ def _capture_hosts(argv, *, arena: bool):
     patches = [patch("sparkrun.api._benchmark._execute_benchmark", _fake_execute)]
     if arena:
         # Skip the arena auth/preflight round-trip; irrelevant to host parsing.
-        patches.append(patch("sparkrun.cli._arena_flow.preflight_arena", lambda local_test=False, ctx=None: ("sub-1", None)))
+        patches.append(
+            patch(
+                "sparkrun.cli._arena_flow.preflight_arena",
+                lambda local_test=False, ctx=None, recipe_name=None, dry_run=False: ("sub-1", None),
+            )
+        )
 
     with patches[0]:
         if arena:
@@ -162,7 +167,10 @@ def _capture_trust(argv, *, arena: bool):
 
     with patch("sparkrun.api._benchmark._execute_benchmark", _fake_execute):
         if arena:
-            with patch("sparkrun.cli._arena_flow.preflight_arena", lambda local_test=False, ctx=None: ("sub-1", None)):
+            with patch(
+                "sparkrun.cli._arena_flow.preflight_arena",
+                lambda local_test=False, ctx=None, recipe_name=None, dry_run=False: ("sub-1", None),
+            ):
                 CliRunner().invoke(main, argv)
         else:
             CliRunner().invoke(main, argv)

@@ -278,7 +278,12 @@ def _invoke_benchmark(ctx, *, category, **kwargs):
     if arena_flag:
         from sparkrun.cli._arena_flow import preflight_arena
 
-        arena_submission_id, arena_profile = preflight_arena(local_test=local_test, ctx=ctx)
+        arena_submission_id, arena_profile = preflight_arena(
+            local_test=local_test,
+            ctx=ctx,
+            recipe_name=kwargs.get("recipe_name"),
+            dry_run=kwargs.get("dry_run", False),
+        )
         # Only override profile when user did not supply one explicitly
         if not kwargs.get("profile") and arena_profile:
             kwargs["profile"] = arena_profile
