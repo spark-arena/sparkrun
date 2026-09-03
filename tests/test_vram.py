@@ -142,6 +142,38 @@ class TestBytesPerElement:
     def test_strip_whitespace(self):
         assert bytes_per_element("  float16  ") == 2.0
 
+    def test_bits_per_weight_families(self):
+        """exl2/exl3 widths are per-checkpoint and fractional, so they ride in
+        the dtype string rather than in the table."""
+        assert bytes_per_element("exl3:2.05") == 2.05 / 8
+        assert bytes_per_element("exl3:4.05") == 4.05 / 8
+        assert bytes_per_element("exl2:4.25") == 4.25 / 8
+        assert bytes_per_element("EXL3:2.05") == 2.05 / 8
+
+    def test_bare_family_is_not_sizable(self):
+        """The bpw *is* the width — a family name alone carries none, and the
+        metadata validator is `bytes_per_element(...) is None`, so this is also
+        what makes a bare `exl3` in a recipe get reported."""
+        assert bytes_per_element("exl3") is None
+
+    def test_malformed_bits_per_weight_is_rejected(self):
+        assert bytes_per_element("exl3:") is None
+        assert bytes_per_element("exl3:abc") is None
+        assert bytes_per_element("foo:2.05") is None  # undeclared family
+
+    def test_bits_per_weight_is_bounded(self):
+        """A typo'd `exl3:205` must not silently size the model 100x too large."""
+        assert bytes_per_element("exl3:205") is None
+        assert bytes_per_element("exl3:0.5") is None
+
+    def test_bits_per_weight_is_weight_only(self):
+        """These are never KV-cache layouts, so the parse is deliberately absent
+        from the KV path."""
+        from sparkrun.models.kv import is_valid_kv_dtype
+
+        assert kv_bytes_per_element("exl3:2.05") is None
+        assert is_valid_kv_dtype("exl3:2.05") is False
+
 
 class TestEstimateVram:
     """Test VRAM estimation calculations."""
