@@ -244,6 +244,14 @@ class SglangRuntime(RuntimePlugin):
         """
         return ("--dist-init-addr", "--nnodes", "--node-rank")
 
+    def model_revision_flags(self) -> tuple[str, ...]:
+        """SGLang spells the model repo pin ``--revision``, as vLLM does.
+
+        Same spelling, separate declaration: the overlap is a coincidence of
+        two engines borrowing HuggingFace's vocabulary, not a shared base.
+        """
+        return ("--revision",)
+
     def native_rendezvous_port(
         self,
         recipe: "Recipe | None",

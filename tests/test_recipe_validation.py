@@ -1264,6 +1264,67 @@ def test_rendezvous_flag_list_is_per_runtime(v):
     assert check_hardcoded_rendezvous_flags(world, vllm) == []
 
 
+# --------------------------------------------------------------------------
+# Pinned model_revision never passed to the engine
+# --------------------------------------------------------------------------
+
+
+_REV = "51058cd551c7e570d87bd32a4adee720edce2349"
+
+
+def test_pinned_model_revision_not_passed_to_engine_is_reported(v):
+    """The pin reaches distribution and stops there. sparkrun downloads by raw
+    SHA (no ``refs/`` written) and the container runs HF_HUB_OFFLINE=1, so the
+    engine resolves ``main``, finds no ref, and dies *after* the whole model has
+    synced."""
+    recipe = _recipe(model_revision=_REV, command="vllm serve {model} --port 8000").resolve()
+    found = next(i for i in validate_recipe(recipe, v=v) if i.code == "unpinned-model-revision")
+    assert found.severity == WARNING
+    assert _REV in found.summary
+    assert "--revision" in found.summary
+    assert "--revision {model_revision}" in found.fix
+
+
+def test_model_revision_passed_in_command_is_not_reported(v):
+    recipe = _recipe(model_revision=_REV, command="vllm serve {model} --revision {model_revision}").resolve()
+    assert "unpinned-model-revision" not in _codes(validate_recipe(recipe, v=v))
+    equals = _recipe(model_revision=_REV, command="vllm serve {model} --revision=%s" % _REV).resolve()
+    assert "unpinned-model-revision" not in _codes(validate_recipe(equals, v=v))
+
+
+def test_unpinned_recipe_is_not_reported(v):
+    recipe = _recipe(command="vllm serve {model}").resolve()
+    assert "unpinned-model-revision" not in _codes(validate_recipe(recipe, v=v))
+
+
+def test_model_revision_check_is_per_runtime(v):
+    """A runtime that never hands a repo id to an engine that resolves it
+    declares nothing, which disables the check — the same fail-open default an
+    out-of-tree runtime built against an older base class gets."""
+    from sparkrun.core.bootstrap import get_runtime
+    from sparkrun.core.validation import check_unpinned_model_revision
+
+    vllm = get_runtime("vllm-distributed", v)
+    llama = get_runtime("llama-cpp", v)
+
+    assert llama.model_revision_flags() == ()
+    bare = _recipe(model_revision=_REV, command="serve {model}")
+    assert check_unpinned_model_revision(bare, llama) == []
+    assert check_unpinned_model_revision(bare, vllm) != []
+    assert get_runtime("sglang", v).model_revision_flags() == ("--revision",)
+
+
+def test_pre_placed_weights_skip_the_model_revision_check(v):
+    """An absolute ``model:`` path is served from a directory — there is no repo
+    id for the engine to resolve, so there is nothing to pin."""
+    from sparkrun.core.bootstrap import get_runtime
+    from sparkrun.core.validation import check_unpinned_model_revision
+
+    vllm = get_runtime("vllm-distributed", v)
+    local = _recipe(model="/mnt/shared/weights", model_revision=_REV, command="vllm serve {model}")
+    assert check_unpinned_model_revision(local, vllm) == []
+
+
 def test_runtime_declaring_no_rendezvous_flags_disables_the_check(v):
     """`vllm-ray` rendezvouses through Ray and `trtllm` through `mpirun -H`, so
     neither has a serve flag to protect. The empty base default is also what an

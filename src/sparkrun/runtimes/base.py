@@ -540,6 +540,32 @@ class RuntimePlugin(Plugin):
         """
         return ()
 
+    def model_revision_flags(self) -> tuple[str, ...]:
+        """Serve flags that pin the model repo revision for this engine.
+
+        Declared for :func:`sparkrun.core.validation.check_unpinned_model_revision`.
+        Unlike :meth:`managed_rendezvous_flags`, sparkrun does **not** append
+        these — no flag map exposes them — so a recipe that pins
+        ``model_revision`` must spell one itself in ``command:`` or the engine
+        never learns the pin.
+
+        That matters because sparkrun downloads by raw commit SHA.  HuggingFace
+        writes ``refs/<branch>`` only when a repo is fetched by branch *name*,
+        so a SHA-pinned download leaves ``snapshots/<sha>/`` and no ``refs/`` at
+        all; the container then runs ``HF_HUB_OFFLINE=1``, the engine resolves
+        its default revision (``main``), finds no ref, and dies with
+        ``LocalEntryNotFoundError`` after the weights have already synced.
+
+        Per-runtime with no shared core, for the same reason as
+        :meth:`managed_rendezvous_flags`: how an engine spells this is a
+        property of the engine.  The base default ``()`` disables the check,
+        which is the right answer for runtimes that never hand a repo id to an
+        engine that resolves it (``llama-cpp`` serves a local GGUF file) and the
+        safe answer for an out-of-tree runtime built against an older base
+        class.
+        """
+        return ()
+
     def generate_node_command(
         self,
         recipe: Recipe,

@@ -799,6 +799,76 @@ def check_hardcoded_rendezvous_flags(recipe: Recipe, runtime: RuntimePlugin | No
 
 
 # --------------------------------------------------------------------------
+# Pinned model_revision never passed to the engine
+# --------------------------------------------------------------------------
+
+
+def check_unpinned_model_revision(recipe: Recipe, runtime: RuntimePlugin | None) -> list[RecipeIssue]:
+    """Warn when ``model_revision`` is pinned but the serve command drops it.
+
+    The pin reaches *distribution* — the weights downloaded are the right ones
+    — and then stops.  No flag map exposes a revision key, so unless the recipe
+    spells one of the runtime's ``model_revision_flags`` in ``command:``, the
+    engine is handed a bare repo id and resolves its own default revision.
+
+    That is fatal rather than merely unpinned, and the reason is the cache
+    layout.  HuggingFace writes ``refs/<branch>`` only when a repo is fetched
+    by branch *name*; a SHA-pinned download leaves ``snapshots/<sha>/`` and no
+    ``refs/`` directory at all.  The container runs with ``HF_HUB_OFFLINE=1``
+    (weights are pre-staged, so this is correct), so the engine cannot fall
+    back to the network: it looks for ``refs/main``, finds nothing, and raises
+    ``LocalEntryNotFoundError`` — after the whole model has already downloaded
+    and synced to every host.
+
+    A warning rather than an error because sparkrun *can* honor the recipe as
+    written, and because the failure is invisible on a machine whose cache
+    happens to carry a ``refs/`` entry from an earlier unpinned download of the
+    same repo — the classic works-here shape this severity exists for.
+
+    Skipped when the model is not a repo id the engine will resolve: an
+    absolute ``model:`` path or a ``cluster_config.resolved_model_path`` both
+    mean pre-placed weights served from a directory, where there is no
+    revision to look up.
+    """
+    if not getattr(recipe, "model_revision", None) or runtime is None:
+        return []
+
+    from sparkrun.core.recipe import is_local_model_path
+
+    if is_local_model_path(recipe.model):
+        return []
+    if getattr(getattr(recipe, "cluster_config", None), "resolved_model_path", None):
+        return []
+
+    try:
+        flags = tuple(runtime.model_revision_flags() or ())
+    except Exception:  # pragma: no cover - defensive, mirrors managed_rendezvous_flags
+        logger.debug("Runtime %r model_revision_flags raised", getattr(runtime, "runtime_name", "?"), exc_info=True)
+        return []
+    if not flags:
+        return []
+
+    command = recipe.command or ""
+    tokens = {t for t in command.split() if t != "\\"}
+    if any(f in tokens or any(t.startswith(f + "=") for t in tokens) for f in flags):
+        return []
+
+    primary = flags[0]
+    return [
+        RecipeIssue(
+            WARNING,
+            "unpinned-model-revision",
+            "model_revision is pinned to '%s', but command: never passes it to the engine — the '%s' runtime "
+            "takes the pin as %s and no defaults key maps to it. sparkrun downloads by commit SHA, which writes "
+            "no refs/ entry in the HuggingFace cache, and the container runs HF_HUB_OFFLINE=1 — so the engine "
+            "resolves its default revision, finds no ref, and dies with LocalEntryNotFoundError after the model "
+            "has already downloaded." % (recipe.model_revision, getattr(runtime, "runtime_name", recipe.runtime), primary),
+            "Add `%s {model_revision}` to the command: template, or drop the model_revision pin." % primary,
+        )
+    ]
+
+
+# --------------------------------------------------------------------------
 # Sparkrun-managed communication env
 # --------------------------------------------------------------------------
 
@@ -1562,6 +1632,7 @@ def validate_recipe(
     issues.extend(_safe("internal-config-key", lambda: check_internal_config_keys(recipe)))
     issues.extend(_safe("inline-script", lambda: check_inline_scripting(recipe)))
     issues.extend(_safe("hardcoded-rendezvous-flag", lambda: check_hardcoded_rendezvous_flags(recipe, runtime)))
+    issues.extend(_safe("unpinned-model-revision", lambda: check_unpinned_model_revision(recipe, runtime)))
     issues.extend(_safe("hardcoded-serve-flag", lambda: check_hardcoded_serve_flags(recipe, runtime)))
     issues.extend(_safe("restated-substitution", lambda: check_restated_substitutions(recipe)))
 
