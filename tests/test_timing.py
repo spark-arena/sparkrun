@@ -328,3 +328,30 @@ def test_formatter_accepts_operation_specific_title():
 
     rendered = format_launch_timings(tl.export(), title="Capture timings")
     assert rendered.startswith("Capture timings")
+
+
+def test_formatter_limits_displayed_tree_depth():
+    from sparkrun.utils.cli_formatters import format_launch_timings
+
+    tl = Timeline()
+    with tl.span("level-1"):
+        with tl.span("level-2"):
+            with tl.span("level-3"):
+                with tl.span("level-4"):
+                    pass
+
+    rendered = format_launch_timings(tl.export(), max_depth=2)
+    assert "level-1" in rendered
+    assert "level-2" in rendered
+    assert "level-3" not in rendered
+    assert "level-4" not in rendered
+
+    unbounded = format_launch_timings(tl.export())
+    assert "level-4" in unbounded
+
+
+def test_formatter_rejects_invalid_tree_depth():
+    from sparkrun.utils.cli_formatters import format_launch_timings
+
+    with pytest.raises(ValueError, match="max_depth"):
+        format_launch_timings({"spans": [{}]}, max_depth=0)

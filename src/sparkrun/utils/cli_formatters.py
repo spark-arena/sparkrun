@@ -575,13 +575,24 @@ def _wrap(text: str, width: int, indent: str) -> list[str]:
     )
 
 
-def format_launch_timings(export: dict, *, width: int = 62, title: str = "Launch timings") -> str:
+def format_launch_timings(
+    export: dict,
+    *,
+    width: int = 62,
+    title: str = "Launch timings",
+    max_depth: int | None = None,
+) -> str:
     """Render a :meth:`~sparkrun.core.timing.Timeline.export` as a tree.
 
     Spans nest by parent id rather than by name, because fan-out spans
     repeat their name (one per host / per distribution entry) and a
     name-keyed tree would collapse them into one row.
+
+    ``max_depth`` counts displayed levels starting at one for root spans.
+    Deeper descendants are omitted. ``None`` leaves the tree unbounded.
     """
+    if max_depth is not None and max_depth < 1:
+        raise ValueError("max_depth must be at least 1")
     spans = export.get("spans") or []
     if not spans:
         return ""
@@ -619,9 +630,14 @@ def format_launch_timings(export: dict, *, width: int = 62, title: str = "Launch
             clock = span.get("clock")
             if clock:
                 timing += "  [%s]" % clock
+            if attrs.get("composition") == "non_additive":
+                semantics = str(attrs.get("timing_semantics") or "aggregate").replace("_", " ")
+                timing += "  [%s; non-additive]" % semantics
             pad = max(1, width - len(indent) - len(label))
             lines.append("%s%s%s%s" % (indent, label, " " * pad, timing))
-            walk(span.get("id"), depth + 1)
+            displayed_depth = depth + 1
+            if max_depth is None or displayed_depth < max_depth:
+                walk(span.get("id"), depth + 1)
 
     walk(None, 0)
     return "\n".join(lines)
