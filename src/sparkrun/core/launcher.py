@@ -22,6 +22,7 @@ from sparkrun.core.timing import ROOT as TIMELINE_ROOT, STATUS_ERROR, Timeline, 
 
 if TYPE_CHECKING:
     from sparkrun.core.backend_select import BackendBundle
+    from sparkrun.core.cluster_manager import ClusterDefinition
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.core.context import SparkrunContext
     from sparkrun.core.progress import LaunchProgress
@@ -480,6 +481,7 @@ def resolve_effective_runtime_cache_dir(
     ssh_kwargs: dict,
     config: SparkrunConfig,
     dry_run: bool = False,
+    cluster: ClusterDefinition | None = None,
 ) -> str:
     """Resolve the target hosts' sparkrun cache dir for the runtime cache.
 
@@ -490,6 +492,10 @@ def resolve_effective_runtime_cache_dir(
     cache is an optimization, and a wrong guess costs a recompile (the
     directory simply won't pre-exist) while an exception would cost the launch.
     """
+    configured = getattr(cluster, "sparkrun_cache_dir", None)
+    if configured:
+        return str(configured)
+
     from sparkrun.utils import is_local_host
     from sparkrun.orchestration.primitives import probe_remote_sparkrun_cache
 
@@ -1754,7 +1760,13 @@ def launch_inference(
         if _rc_settings.enabled:
             _rc_root = resolve_runtime_cache_root(
                 _rc_settings,
-                resolve_effective_runtime_cache_dir(host_list, ssh_kwargs, config, dry_run=dry_run),
+                resolve_effective_runtime_cache_dir(
+                    host_list,
+                    ssh_kwargs,
+                    config,
+                    dry_run=dry_run,
+                    cluster=cluster,
+                ),
             )
             # Derived *after* apply_platform_runtime_flag_defaults, deliberately.
             # The fingerprint then reflects the platform flags this hardware
