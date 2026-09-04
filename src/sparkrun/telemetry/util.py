@@ -175,8 +175,22 @@ def system_info() -> TelemetryEvent:
     }
 
 
+def registry_is_plugin_declared(entry) -> bool:
+    """Return whether a registry came from a plugin declaration, not the user."""
+    return bool(attr_string(entry, "declared_by"))
+
+
 def registry_is_default(entry) -> bool:
-    """Return whether a configured registry matches a built-in/default registry."""
+    """Return whether a configured registry matches a built-in/default registry.
+
+    A plugin-declared registry counts as default.  ``non_default_*`` means "the
+    user added a third-party registry", and a first-party plugin contributing
+    its own is not that — without this, enabling a shipped plugin would flip
+    ``has_non_default_registries`` and silently change the meaning of a metric
+    already in published series.  They are counted separately below instead.
+    """
+    if registry_is_plugin_declared(entry):
+        return True
     name = attr_string(entry, "name")
     url = attr_string(entry, "url")
     if name in _DEFAULT_REGISTRY_NAMES:
@@ -190,12 +204,14 @@ def registry_summary(registries: Sequence) -> TelemetryEvent:
     enabled = [entry for entry in registries if bool(getattr(entry, "enabled", True))]
     non_default = [entry for entry in registries if not registry_is_default(entry)]
     enabled_non_default = [entry for entry in enabled if not registry_is_default(entry)]
+    plugin_declared = [entry for entry in registries if registry_is_plugin_declared(entry)]
     return {
         "registry_count": total,
         "enabled_registry_count": len(enabled),
         "non_default_registry_count": len(non_default),
         "enabled_non_default_registry_count": len(enabled_non_default),
         "has_non_default_registries": bool(non_default),
+        "plugin_registry_count": len(plugin_declared),
     }
 
 

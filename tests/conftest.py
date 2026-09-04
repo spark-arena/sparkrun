@@ -34,6 +34,12 @@ def isolate_stateful(tmp_path: Path, monkeypatch):
     from sparkrun.models.hub import reset_hub_state
 
     reset_hub_state()
+    # Plugin-declared registries are a process-global overlay, so a test that
+    # declares one would otherwise add it to every later test's registry list --
+    # the same ordering-dependent failure class as the Hub state above.
+    from sparkrun.core.registry_defaults import reset_declared_registries
+
+    reset_declared_registries()
     # ...and block the send itself, because the env var above is only policy.
     # Any test can drop it (test_telemetry.py does, on purpose), and telemetry
     # fails *open*: a MagicMock config makes `telemetry_enabled` return True,

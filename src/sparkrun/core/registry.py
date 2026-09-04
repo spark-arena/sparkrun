@@ -135,6 +135,15 @@ class RegistryEntry:
             confirmation prompt.  Defaults to False so user-added third-party
             registries are untrusted until explicitly opted-in via
             ``sparkrun registry trust <name>`` or ``registry add --trust``.
+        declared_by: Name of the plugin that declared this registry, or ``""``
+            for an ordinary user-owned entry read from ``registries.yaml``.
+            **Runtime-only and never serialized** — see
+            :mod:`sparkrun.core.registry_defaults`.  A declared entry is an
+            overlay: it exists while its plugin is loaded and is not written to
+            the config file, which is what makes uninstalling a plugin remove
+            its registries cleanly.  Mutating one (``registry disable`` /
+            ``trust`` / ``untrust``) *materializes* it by clearing this field,
+            after which it is an ordinary file entry the user owns.
     """
 
     name: str
@@ -147,6 +156,7 @@ class RegistryEntry:
     benchmark_subpath: str = ""
     mods_subpath: str = ""
     trusted: bool = False
+    declared_by: str = ""
 
 
 #: Asset subpaths a registry may omit.  Shared with
@@ -466,6 +476,15 @@ def _normalize_registry_url(url: str) -> str:
 #: migrating".
 CONFIG_VERSION = 1
 
+#: Top-level ``registries.yaml`` key holding names the user removed that a
+#: plugin still declares (see :meth:`RegistryManager._load_suppressed`).
+#:
+#: Additive: an older sparkrun ignores an unknown top-level key, and the overlay
+#: is not a file rewrite, so this needs no :data:`CONFIG_VERSION` bump.  Per the
+#: :data:`_MIGRATIONS` docstring, only migrations that cannot detect their own
+#: applicability from file content belong there.
+SUPPRESSED_REGISTRIES_KEY = "suppressed_plugin_registries"
+
 #: Version implied by a file that carries no ``config_version`` key but does
 #: carry an explicit per-entry ``trusted`` field — i.e. one written after the
 #: trust model landed but before the marker did.
@@ -598,6 +617,15 @@ RESERVED_PREFIX_ALLOWED_ORGS = (
 # which lowercases the URL path component before returning.
 EXTERNAL_RESERVED_NAMES = {
     "atlas": ("atlas-inf",),
+    # ColdSnap's recipe registries, declared by the in-tree ColdSnap plugin (see
+    # sparkrun.core.registry_defaults).  Exact-match rather than a
+    # RESERVED_NAME_PREFIXES entry on purpose: RESERVED_PREFIX_ALLOWED_ORGS is a
+    # *global* allowlist, so covering "coldsnap-*" that way would also grant
+    # sparksq every other reserved prefix (official-*, sparkrun-*, arena-*).
+    # That may be a reasonable thing to decide later; it is not a side effect
+    # this reservation should smuggle in.
+    "coldsnap": ("sparksq",),
+    "coldsnap-vanilla": ("sparksq",),
 }
 
 
@@ -1049,6 +1077,93 @@ class RegistryManager:
         """Get the recipe directory within a cached registry."""
         return self.asset_dir(entry, RECIPE_ASSET)
 
+    def _load_suppressed(self) -> list[str]:
+        """Names the user removed that a plugin still declares (tombstones).
+
+        ``registry remove`` on a declared registry cannot simply drop it — the
+        declaration would put it straight back on the next launch, which is
+        indistinguishable from a bug.  So the removal is recorded here instead.
+        Kept as a plain list under :data:`SUPPRESSED_REGISTRIES_KEY` in
+        ``registries.yaml``; an older sparkrun ignores the key.
+        """
+        if not self._registries_path.exists():
+            return []
+        try:
+            data = read_yaml(self._registries_path)
+        except Exception:
+            return []
+        if not isinstance(data, dict):
+            return []
+        raw = data.get(SUPPRESSED_REGISTRIES_KEY) or []
+        if not isinstance(raw, list):
+            return []
+        return [str(name) for name in raw if isinstance(name, str) and name]
+
+    def _apply_plugin_overlay(self, entries: list[RegistryEntry]) -> list[RegistryEntry]:
+        """Merge plugin-declared registries onto the user's own entries.
+
+        Applied *after* every convergent rewrite and after any save, so declared
+        entries never enter the migration or persistence path — the overlay is
+        computed fresh on each load and only the user's file is durable.
+
+        Resolution, in order:
+
+        1. **A collision with a shipped default is refused and warned.**  The
+           declaration loses.  Refusing rather than ranking is deliberate: the
+           legitimate use of this seam is contributing a *new* name, and letting
+           a declaration silently shadow a curated one would be a namespace
+           redirect that ``validate_registry_name`` cannot catch (it only guards
+           *reserved* names).  Pathological, so make it loud.
+
+           Checked **first**, before the file-entry rule below, precisely so it
+           is loud in the common case too: a shipped default is normally present
+           in the user's file, so an ordering that let rule 2 match first would
+           silently ignore a plugin trying to redefine ``official`` — the one
+           case most worth reporting.
+        2. **A file entry of the same name wins outright, silently.**  That is
+           the supported override (materialize-on-mutation puts entries there,
+           and it is how a user repoints a declared registry at an internal
+           mirror), so it is a normal outcome, not a conflict.
+        3. **A tombstone suppresses**, likewise silently — the user said no.
+        """
+        from sparkrun.core.registry_defaults import iter_declared_registries
+
+        declarations = iter_declared_registries()
+        if not declarations:
+            return entries
+
+        existing = {e.name for e in entries}
+        suppressed = set(self._load_suppressed())
+        shipped = {e.name for e in FALLBACK_DEFAULT_REGISTRIES}
+
+        merged = list(entries)
+        for declaration in declarations:
+            name = declaration.entry.name
+            if name in shipped:
+                logger.warning(
+                    "Plugin %r declares registry %r, which is a shipped default; ignoring the declaration",
+                    declaration.owner,
+                    name,
+                )
+                continue
+            if name in existing:
+                logger.debug(
+                    "Registry %r is configured locally; ignoring the declaration from plugin %r",
+                    name,
+                    declaration.owner,
+                )
+                continue
+            if name in suppressed:
+                logger.debug(
+                    "Registry %r declared by plugin %r was removed by the user; not re-adding",
+                    name,
+                    declaration.owner,
+                )
+                continue
+            merged.append(declaration.effective_entry())
+            existing.add(name)
+        return merged
+
     def _default_registries(self) -> list[RegistryEntry]:
         """Return the default registry list.
 
@@ -1087,11 +1202,13 @@ class RegistryManager:
                 combined.append(_dataclass_replace(fallback))
                 seen_names.add(fallback.name)
 
-        # Persist so subsequent _load_registries() reads from file
+        # Persist so subsequent _load_registries() reads from file.  The overlay
+        # is applied *after* this, so a declared registry is never written into
+        # a fresh registries.yaml either.
         if discovered:
             self._save_registries(combined)
 
-        return combined
+        return self._apply_plugin_overlay(combined)
 
     def _init_defaults_from_manifests(self) -> list[RegistryEntry]:
         """Try to discover default registries from git manifest files.
@@ -1415,19 +1532,38 @@ class RegistryManager:
 
             if migrated or urls_migrated or subpaths_backfilled:
                 self._save_registries(filtered)
-            return filtered
+            # Overlay last: declared entries must not reach the rewrite or save
+            # path above, or a plugin's registry would be persisted into the
+            # user's file and outlive the plugin.
+            return self._apply_plugin_overlay(filtered)
         except Exception as e:
             logger.warning("Failed to load registries.yaml: %s", e)
             return self._default_registries()
 
-    def _save_registries(self, entries: list[RegistryEntry]) -> None:
+    def _save_registries(self, entries: list[RegistryEntry], *, suppressed: list[str] | None = None) -> None:
         """Save registries to YAML configuration.
 
+        Plugin-declared entries (``declared_by`` set) are **skipped**.  Every
+        mutating command reads through :meth:`_load_registries`, which now
+        includes the overlay, and each of them rewrites the whole document — so
+        without this filter the first ``registry disable`` of anything would
+        quietly persist every declared registry, and they would then outlive
+        their plugin.  Materializing one is done by *clearing* ``declared_by``
+        (see :meth:`_materialize_declared`), which is what lets it through here.
+
         Args:
-            entries: List of registry entries to save
+            entries: Registry entries to save; declared entries are ignored.
+            suppressed: Tombstone list to write.  ``None`` preserves whatever is
+                already on disk — this method rebuilds the document from
+                scratch, so anything not re-emitted is dropped.
         """
+        if suppressed is None:
+            suppressed = self._load_suppressed()
+
         data_list = []
         for e in entries:
+            if e.declared_by:
+                continue
             d: dict[str, Any] = {"name": e.name, "url": e.url, "subpath": e.subpath}
             if e.description:
                 d["description"] = e.description
@@ -1456,7 +1592,9 @@ class RegistryManager:
         # Stamped on every write, not just by the migration runner: this method
         # rebuilds the document from scratch, so anything it didn't re-emit
         # would be silently dropped.
-        data = {"config_version": CONFIG_VERSION, "registries": data_list}
+        data: dict[str, Any] = {"config_version": CONFIG_VERSION, "registries": data_list}
+        if suppressed:
+            data[SUPPRESSED_REGISTRIES_KEY] = sorted(set(suppressed))
         with open(self._registries_path, "w") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
         logger.debug("Saved registries to %s", self._registries_path)
@@ -1834,7 +1972,12 @@ class RegistryManager:
         if any(r.name == entry.name for r in registries):
             raise RegistryError(f"Registry {entry.name!r} already exists")
         registries.append(entry)
-        self._save_registries(registries)
+        # Adding a name back is an explicit reversal of a prior removal, so it
+        # clears any tombstone.  Otherwise a user who removed a plugin-declared
+        # registry and later re-added it under their own URL would keep a
+        # suppression entry that silences the declaration forever, invisibly.
+        suppressed = [name for name in self._load_suppressed() if name != entry.name]
+        self._save_registries(registries, suppressed=suppressed)
         logger.info("Added registry %s", entry.name)
 
     def _discover_manifest_entries(self, url: str) -> list[RegistryEntry]:
@@ -1970,8 +2113,32 @@ class RegistryManager:
                 entry.trusted = True
         return added
 
+    @staticmethod
+    def _materialize_declared(entry: RegistryEntry) -> None:
+        """Turn a plugin-declared entry into a user-owned one, in place.
+
+        Clearing ``declared_by`` is what lets :meth:`_save_registries` write it.
+        After this the file entry wins over the declaration
+        (:meth:`_apply_plugin_overlay` rule 1), so the user's change is durable
+        and survives the plugin being upgraded, disabled or removed — which is
+        the point: they took ownership of it.
+        """
+        if entry.declared_by:
+            logger.info(
+                "Registry %r was declared by plugin %r; saving it to your configuration so this change persists",
+                entry.name,
+                entry.declared_by,
+            )
+            entry.declared_by = ""
+
     def remove_registry(self, name: str) -> None:
         """Remove a registry by name.
+
+        A plugin-declared registry is **tombstoned** rather than deleted: it is
+        not in ``registries.yaml`` to remove, and dropping it from the in-memory
+        list would let the declaration put it straight back on the next launch —
+        a removal that silently fails to remove. The tombstone is cleared by
+        adding the registry back (:meth:`add_registry`).
 
         Args:
             name: Registry name to remove
@@ -1980,9 +2147,23 @@ class RegistryManager:
             RegistryError: If the registry is not found
         """
         registries = self._load_registries()
-        filtered = [r for r in registries if r.name != name]
-        if len(filtered) == len(registries):
+        target = next((r for r in registries if r.name == name), None)
+        if target is None:
             raise RegistryError(f"Registry {name!r} not found")
+
+        filtered = [r for r in registries if r.name != name]
+        if target.declared_by:
+            suppressed = self._load_suppressed()
+            if name not in suppressed:
+                suppressed.append(name)
+            self._save_registries(filtered, suppressed=suppressed)
+            logger.info(
+                "Removed registry %s (declared by plugin %r; suppressed so it is not re-added)",
+                name,
+                target.declared_by,
+            )
+            return
+
         self._save_registries(filtered)
         logger.info("Removed registry %s", name)
 
@@ -2140,6 +2321,7 @@ class RegistryManager:
         for e in entries:
             if e.name == name:
                 e.enabled = enabled
+                self._materialize_declared(e)
                 self._save_registries(entries)
                 logger.info("%s registry %s", "Enabled" if enabled else "Disabled", name)
                 return
@@ -2175,6 +2357,7 @@ class RegistryManager:
         for e in entries:
             if e.name == name:
                 e.trusted = trusted
+                self._materialize_declared(e)
                 self._save_registries(entries)
                 logger.info("%s registry %s", "Trusted" if trusted else "Untrusted", name)
                 return

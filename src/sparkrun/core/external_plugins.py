@@ -54,6 +54,8 @@ from sparkrun.core.features import FEATURE_CORE_EXTERNAL_PLUGINS, feature_gate_e
 if TYPE_CHECKING:
     from scitrera_app_framework import Variables
 
+    from sparkrun.core.registry_defaults import DeclarationTier
+
 logger = logging.getLogger(__name__)
 
 # Hard test/CI kill-switch for the config-driven auto-load path — set truthy to
@@ -122,33 +124,48 @@ def _scan_module_for_plugins(module, base: type) -> list[type]:
     return list(found.values())
 
 
-def load_plugin_module(module, v: "Variables") -> None:
+def load_plugin_module(module, v: "Variables", *, tier: "DeclarationTier | None" = None) -> None:
     """Register everything *module* contributes: SAF subclasses, then ``register(v)``.
 
     Shared with :mod:`sparkrun.core.in_tree_plugins` — in-tree and out-of-tree
     plugins differ only in where their modules come from, so they must not
     differ in what counts as a registration.
-    """
-    # 1) Register SAF-scanned plugin subclasses (runtimes/executors/transports/…).
-    for base in _plugin_base_types():
-        for cls in _scan_module_for_plugins(module, base):
-            if not _is_registerable(cls):
-                continue
-            try:
-                register_plugin(cls, v=v)
-                logger.debug("Registered external plugin %s from %s", cls.__name__, module.__name__)
-            except (ValueError, TypeError) as e:
-                logger.debug("Skipping external plugin %s: %s", cls.__name__, e)
 
-    # 2) Optional explicit hook — the home for in-process registrations
-    #    (register_platform, collective backends) and any bespoke wiring.
-    hook = getattr(module, "register", None)
-    if callable(hook):
-        try:
-            hook(v)
-            logger.debug("Ran register(v) hook for external plugin module %s", module.__name__)
-        except Exception:  # noqa: BLE001 - a bad third-party hook must not crash startup
-            logger.exception("register(v) hook failed for external plugin module %s", module.__name__)
+    Args:
+        module: The imported plugin module or package.
+        v: The initialized SAF :class:`~scitrera_app_framework.Variables`.
+        tier: Provenance to attribute this module's registry declarations to
+            (see :mod:`sparkrun.core.registry_defaults`).  Supplied by the
+            *loader* because a plugin must not be able to claim its own tier —
+            an in-tree tier is what lets a declaration ship trusted.  Ambient
+            for the duration of the load rather than an argument, since the
+            plugin makes the registration call, not us.  Defaults to
+            ``OUT_OF_TREE``: least privilege.
+    """
+    from sparkrun.core.registry_defaults import DeclarationTier, declaring_tier
+
+    with declaring_tier(tier or DeclarationTier.OUT_OF_TREE):
+        # 1) Register SAF-scanned plugin subclasses (runtimes/executors/transports/…).
+        for base in _plugin_base_types():
+            for cls in _scan_module_for_plugins(module, base):
+                if not _is_registerable(cls):
+                    continue
+                try:
+                    register_plugin(cls, v=v)
+                    logger.debug("Registered external plugin %s from %s", cls.__name__, module.__name__)
+                except (ValueError, TypeError) as e:
+                    logger.debug("Skipping external plugin %s: %s", cls.__name__, e)
+
+        # 2) Optional explicit hook — the home for in-process registrations
+        #    (register_platform, collective backends, register_default_registry)
+        #    and any bespoke wiring.
+        hook = getattr(module, "register", None)
+        if callable(hook):
+            try:
+                hook(v)
+                logger.debug("Ran register(v) hook for external plugin module %s", module.__name__)
+            except Exception:  # noqa: BLE001 - a bad third-party hook must not crash startup
+                logger.exception("register(v) hook failed for external plugin module %s", module.__name__)
 
 
 def _configured_paths(v: "Variables") -> list[Path]:
