@@ -347,6 +347,16 @@ def derive_recipe_fingerprint(recipe: "Recipe", overrides: dict | None = None) -
 
     config_chain = recipe.build_config_chain(overrides)
     for key in sorted(config_chain.keys()):
+        # ``Recipe.build_config_chain`` injects the top-level model revision as
+        # a command-template variable.  The fingerprint already records
+        # ``recipe.model_revision`` below, and the injected helper was added
+        # after published ColdSnap artifact tags began using this digest.
+        # Elide only that implicit duplicate so adding template support does
+        # not invalidate existing artifact references.  A revision explicitly
+        # declared in defaults or supplied as an override remains part of the
+        # config-chain surface because it can change the rendered command.
+        if key == "model_revision" and key not in recipe.defaults and key not in (overrides or {}):
+            continue
         parts.append("%s=%s" % (key, _val(config_chain.get(key))))
 
     for attr in (
