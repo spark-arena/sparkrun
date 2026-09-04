@@ -267,20 +267,24 @@ class TestRebuildDerivedFromRecipe:
     """``--rebuild`` reaches distribution as ``builder_config.rebuild``."""
 
     @pytest.mark.parametrize(
-        "builder_config,expected",
+        "builder,builder_config,expected",
         [
-            ({"rebuild": True}, True),
-            ({"rebuild": False}, False),
-            ({}, False),
-            (None, False),
+            ("", {"rebuild": True}, True),
+            ("docker-pull", {"rebuild": True}, True),
+            ("coldsnap", {"rebuild": True}, False),
+            ("eugr", {"rebuild": True}, False),
+            ("", {"rebuild": False}, False),
+            ("", {}, False),
+            ("", None, False),
         ],
     )
-    def test_derivation(self, builder_config, expected):
-        # Mirrors the expression in distribute_from_config; kept as a unit so a
-        # change to the truthiness rule (e.g. a None-vs-absent distinction) is
-        # caught without standing up the whole distribution path.
-        force_pull = bool(builder_config.get("rebuild")) if builder_config else False
-        assert force_pull is expected
+    def test_derivation(self, builder, builder_config, expected):
+        from types import SimpleNamespace
+
+        from sparkrun.orchestration.distribution import _force_registry_pull_for_recipe
+
+        recipe = SimpleNamespace(builder=builder, builder_config=builder_config)
+        assert _force_registry_pull_for_recipe(recipe) is expected
 
     def test_cli_rebuild_flag_lands_on_builder_config(self):
         """The CLI writes the flag the distribution layer reads."""

@@ -70,6 +70,14 @@ _EXECUTOR_OVERRIDE_KEYS = frozenset(
 )
 
 
+def _timing_tree_depth(ctx: click.Context) -> int | None:
+    """Choose the ordinary ``run`` timing detail from global verbosity."""
+    verbose_count = (ctx.find_root().obj or {}).get("verbose", 0)
+    if isinstance(verbose_count, bool):
+        verbose_count = 1 if verbose_count else 0
+    return None if verbose_count >= 3 else max(2, 2 + verbose_count)
+
+
 def _echo_hub_notice() -> None:
     """Report skipped HuggingFace Hub lookups, at most once per command.
 
@@ -940,7 +948,7 @@ def run(
     if show_timings and sctx.timing is not None:
         from sparkrun.utils.cli_formatters import format_launch_timings
 
-        _timings = format_launch_timings(sctx.timing.export())
+        _timings = format_launch_timings(sctx.timing.export(), max_depth=_timing_tree_depth(ctx))
         if _timings:
             click.echo()
             click.echo(_timings)

@@ -30,9 +30,10 @@ import logging
 import re
 import threading
 import time
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from enum import IntEnum
-from typing import TYPE_CHECKING, Iterator
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from sparkrun.core.timing import Timeline
@@ -52,7 +53,11 @@ DEFAULT_HEARTBEAT_SECONDS = 30.0
 
 
 @contextmanager
-def progress_heartbeat(logger: logging.Logger, label: str, interval: float = DEFAULT_HEARTBEAT_SECONDS) -> Iterator[None]:
+def progress_heartbeat(
+    logger: logging.Logger,
+    label: str | Callable[[], str],
+    interval: float = DEFAULT_HEARTBEAT_SECONDS,
+) -> Iterator[None]:
     """Keep a long operation visibly alive at the standard progress level.
 
     For work that emits nothing while it runs — a multi-minute image build, a
@@ -65,7 +70,8 @@ def progress_heartbeat(logger: logging.Logger, label: str, interval: float = DEF
 
     def report() -> None:
         while not stopped.wait(interval):
-            logger.log(PROGRESS, "%s — still running (%.0fs)", label, time.monotonic() - started)
+            current_label = label() if callable(label) else label
+            logger.log(PROGRESS, "%s — still running (%.0fs)", current_label, time.monotonic() - started)
 
     thread = threading.Thread(target=report, name="sparkrun-progress-heartbeat", daemon=True)
     thread.start()

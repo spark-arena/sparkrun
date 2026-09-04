@@ -1963,6 +1963,53 @@ user has. `SUBPATH_FIELDS` is the list any new path-forming field must join, or 
 lists registries, `@registry/` lists recipes from that registry. Falls back to showing registry names when recipe cache
 isn't populated.
 
+### Plugin-Declared Registries (`core/registry_defaults.py`)
+
+`BOOTSTRAP_REGISTRY_URLS` / `FALLBACK_DEFAULT_REGISTRIES` are closed constants. `register_default_registry(entry,
+owner=…)` is the extension point beside them, for a plugin whose recipes are **inert without it** — its registry
+resolves (`@coldsnap/<recipe>`) for anyone with the plugin enabled, with nothing to `registry add`. In-process (the
+`platforms` / `register_kv_strategy` precedent), re-exported from `sparkrun.plugins`, called from `register(v)`.
+Author-facing docs: `docs/PLUGINS.md`; full rationale: `.slop/plugin-declared-registries-design.md`.
+
+Six properties are load-bearing:
+
+- **Registration does no I/O.** `init_sparkrun` runs on *every* shell completion (Click resolves the command tree
+  through `PluggableGroup.get_command`; measured ~30 ms stock against a 92 ms unavoidable `import sparkrun.cli`), so
+  anything expensive lands on the interactive path. This is also why a plugin cannot source its *names* from a remote
+  `.sparkrun/registry.yaml` — the overlay must be computable offline. Declare in code; the repo manifest stays for
+  users adding the registry by URL.
+- **An overlay, never persisted.** `_apply_plugin_overlay` runs **last** in `_load_registries` / `_default_registries`,
+  after every convergent rewrite and any save, so declared entries never reach the migration or persistence path.
+  `_save_registries` additionally skips anything with `declared_by` set — every mutating command reads through
+  `_load_registries` and rewrites the whole document, so without that filter the first `registry disable` of anything
+  would quietly persist every declared registry and they would outlive their plugin. Uninstalling is therefore free:
+  declaration gone, entry gone, nothing to reap.
+- **Materialize on mutation.** `enable`/`disable`/`trust`/`untrust` call `_materialize_declared`, which *clears*
+  `declared_by` — that is what lets the entry through `_save_registries`, and from then on the file wins. `remove`
+  writes a **tombstone** (`suppressed_plugin_registries`) instead of deleting, because there is nothing in
+  `registries.yaml` to delete and dropping it in memory would let the declaration restore it next launch — a removal
+  that silently fails to remove. `add_registry` clears the tombstone.
+- **Trust is tiered by provenance, and the tier comes from the loader.** In-tree may ship `trusted=True` (same review
+  and release gate as the shipped defaults; for a vendored plugin, a pinned commit with per-file digests); out-of-tree
+  is forced `False` — installing a plugin says "I want this capability", not "I grant its recipe repo standing
+  hook-execution rights over whatever it contains next month". `load_plugin_module(…, tier=…)` sets a **contextvar**
+  around the load rather than taking an argument, because the *plugin* makes the registration call; the default is
+  `OUT_OF_TREE` (least privilege), so a declaration made outside any loader cannot acquire in-tree trust.
+- **Collisions are refused and warned, not ranked.** A declaration colliding with a shipped default is rejected with a
+  warning naming the owner — checked **before** the file-entry rule, since a shipped default is normally present in the
+  file and the reverse order would silently ignore a plugin trying to redefine `official`. Ranking would permit a
+  namespace redirect that `validate_registry_name` cannot catch (it only guards *reserved* names). The user's own file
+  entry is the one true override.
+- **Validation raises at the declaration's call site** (`validate_registry_name` + `assert_safe_registry_entry`) rather
+  than dropping the entry where the overlay is applied: a plugin is local code we can fix, unlike a hostile remote
+  manifest that must be survived. Note `validate_registry_name` checks the **registry URL's** org, not the plugin
+  repo's — `EXTERNAL_RESERVED_NAMES` reserves `coldsnap` / `coldsnap-vanilla` to `sparksq`. Reservation stays in core
+  so a plugin cannot reserve its own namespace.
+
+Telemetry counts declared registries as `plugin_registry_count` and excludes them from `non_default_*` — a first-party
+plugin contributing its own registry is not "the user added a third party", and counting it as such would silently
+change a metric already in published series.
+
 ### Recipe Catalog ("what recipes exist?")
 
 All recipe *enumeration* flows through one function, **`api.search_recipes(query, …) -> list[RecipeSummary]`**

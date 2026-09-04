@@ -66,6 +66,10 @@ def registry_list(ctx, show_disabled, only_show_visible, output_json, config_pat
     # Determine which content columns to show
     has_tuning = any(r.tuning_subpath for r in display_registries)
     has_benchmarks = any(r.benchmark_subpath for r in display_registries)
+    # Only shown when something is plugin-declared: a user who did not add a
+    # registry should be able to see who did, but the column is noise on the
+    # overwhelmingly common all-local list.
+    has_declared = any(r.declared_by for r in display_registries)
 
     # Table header
     # "Stemless" is `visible`: whether a bare recipe stem resolves against this
@@ -78,6 +82,9 @@ def registry_list(ctx, show_disabled, only_show_visible, output_json, config_pat
     if has_benchmarks:
         header += f" {'Bench':<7}"
         sep_width += 8
+    if has_declared:
+        header += f" {'Source':<16}"
+        sep_width += 17
     click.echo(header)
     click.echo("-" * sep_width)
 
@@ -93,6 +100,9 @@ def registry_list(ctx, show_disabled, only_show_visible, output_json, config_pat
         if has_benchmarks:
             bench = "yes" if reg.benchmark_subpath else "no"
             row += f" {bench:<7}"
+        if has_declared:
+            source = ("plugin:%s" % reg.declared_by) if reg.declared_by else "config"
+            row += f" {source[:16]:<16}"
         click.echo(row)
 
 
@@ -202,9 +212,24 @@ def registry_remove(ctx, name, config_path=None):
 
     config, registry_mgr = _get_config_and_registry(config_path)
 
+    # Read the provenance before removing, so the message can be honest about
+    # what actually happened: a plugin-declared registry is suppressed rather
+    # than deleted (there is nothing in registries.yaml to delete), and saying
+    # "removed successfully" without that would leave the user unable to explain
+    # why re-enabling the plugin does not bring it back.
+    declared_by = ""
+    try:
+        declared_by = registry_mgr.get_registry(name).declared_by
+    except RegistryError:
+        pass
+
     try:
         registry_mgr.remove_registry(name)
-        click.echo(f"Registry '{name}' removed successfully.")
+        if declared_by:
+            click.echo(f"Registry '{name}' (declared by plugin '{declared_by}') removed and suppressed.")
+            click.echo(f"  It will not return while '{declared_by}' is installed. Undo with: sparkrun registry add <url>")
+        else:
+            click.echo(f"Registry '{name}' removed successfully.")
     except RegistryError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -301,6 +326,8 @@ def registry_show(ctx, name, config_path=None):
     click.echo("Enabled:     %s" % ("yes" if entry.enabled else "no"))
     click.echo("Stemless:    %s" % ("yes" if entry.visible else "no"))
     click.echo("Trusted:     %s" % ("yes" if entry.trusted else "no"))
+    if entry.declared_by:
+        click.echo("Source:      declared by plugin '%s' (not in your configuration)" % entry.declared_by)
     if entry.tuning_subpath:
         click.echo("Tuning:      %s" % entry.tuning_subpath)
     if entry.benchmark_subpath:
