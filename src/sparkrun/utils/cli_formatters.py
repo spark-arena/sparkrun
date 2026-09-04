@@ -575,6 +575,18 @@ def _wrap(text: str, width: int, indent: str) -> list[str]:
     )
 
 
+def timing_tree_depth_for_verbosity(verbosity: int | bool = 0) -> int | None:
+    """Map global CLI verbosity to the standard timing-tree depth.
+
+    Default output shows two levels, ``-v`` shows three, ``-vv`` shows four,
+    and ``-vvv`` (or greater) removes the limit. Quiet mode uses the compact
+    default depth if a caller explicitly requests a timing table.
+    """
+    if isinstance(verbosity, bool):
+        verbosity = 1 if verbosity else 0
+    return None if verbosity >= 3 else max(2, 2 + verbosity)
+
+
 def format_launch_timings(
     export: dict,
     *,

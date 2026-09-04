@@ -355,3 +355,13 @@ def test_formatter_rejects_invalid_tree_depth():
 
     with pytest.raises(ValueError, match="max_depth"):
         format_launch_timings({"spans": [{}]}, max_depth=0)
+
+
+@pytest.mark.parametrize(
+    ("verbosity", "expected"),
+    [(0, 2), (1, 3), (2, 4), (3, None), (4, None), (-1, 2), (False, 2), (True, 3)],
+)
+def test_standard_timing_tree_depth_tracks_verbosity(verbosity, expected):
+    from sparkrun.utils.cli_formatters import timing_tree_depth_for_verbosity
+
+    assert timing_tree_depth_for_verbosity(verbosity) == expected

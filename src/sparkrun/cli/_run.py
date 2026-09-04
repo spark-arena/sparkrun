@@ -72,10 +72,10 @@ _EXECUTOR_OVERRIDE_KEYS = frozenset(
 
 def _timing_tree_depth(ctx: click.Context) -> int | None:
     """Choose the ordinary ``run`` timing detail from global verbosity."""
+    from sparkrun.utils.cli_formatters import timing_tree_depth_for_verbosity
+
     verbose_count = (ctx.find_root().obj or {}).get("verbose", 0)
-    if isinstance(verbose_count, bool):
-        verbose_count = 1 if verbose_count else 0
-    return None if verbose_count >= 3 else max(2, 2 + verbose_count)
+    return timing_tree_depth_for_verbosity(verbose_count)
 
 
 def _echo_hub_notice() -> None:
