@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+from typing import Any
 
 from sparkrun.orchestration import ssh as _ssh
 from sparkrun.orchestration.ssh import RemoteResult
@@ -413,6 +414,7 @@ def ensure_remote_dir_ownership(
     ssh_options: list[str] | None = None,
     dry_run: bool = False,
     resource_label: str = "cache",
+    session: Any | None = None,
 ) -> list[str]:
     """Best-effort ``chown`` of *dir_path* to the SSH user on each host.
 
@@ -435,17 +437,30 @@ def ensure_remote_dir_ownership(
     # and tilde expansion does not happen inside the double quotes this script
     # interpolates into, so it has to become "$HOME/...".
     script = _FIX_OWNERSHIP_SCRIPT.format(path=safe_remote_path(dir_path))
-    results = _ssh.run_remote_scripts_parallel(
-        hosts,
-        script,
-        ssh_user=ssh_user,
-        ssh_key=ssh_key,
-        ssh_options=ssh_options,
-        timeout=60,
-        dry_run=dry_run,
-    )
-
-    failed = [r.host for r in results if not r.success]
+    if session is None:
+        results = _ssh.run_remote_scripts_parallel(
+            hosts,
+            script,
+            ssh_user=ssh_user,
+            ssh_key=ssh_key,
+            ssh_options=ssh_options,
+            timeout=60,
+            dry_run=dry_run,
+        )
+        failed = [result.host for result in results if not result.success]
+    elif dry_run:
+        failed = []
+    else:
+        failed = []
+        for host in hosts:
+            try:
+                result = session.execute(host, ["bash", "-c", script], timeout=60)
+            except Exception:
+                logger.debug("Could not repair %s ownership on %s", resource_label, host, exc_info=True)
+                failed.append(host)
+            else:
+                if result.returncode != 0:
+                    failed.append(host)
     if failed:
         logger.warning(
             "Could not fix %s ownership on %d host(s) (%s) — a root-owned "
