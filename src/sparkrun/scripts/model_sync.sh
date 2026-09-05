@@ -54,13 +54,22 @@ if command -v huggingface-cli &>/dev/null; then
 elif command -v uvx &>/dev/null; then
     uvx hf download "{model_id}" "$@" --cache-dir "{cache}/hub"
 else
-    echo "Installing uv for model download access..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="$HOME/.local/bin:$PATH"
+    # No HuggingFace client. The installer URL is version-pinned in
+    # sparkrun.core.tooling — never the unversioned one, which is whatever
+    # Astral published this morning.
+    echo "No HuggingFace client on this host; installing pinned uv {uv_version}..."
+    if curl -LsSf "{uv_install_url}" | sh; then
+        export PATH="{uv_bin_dir}:$PATH"
+    fi
     if command -v uvx &>/dev/null; then
         uvx hf download "{model_id}" "$@" --cache-dir "{cache}/hub"
     else
-        echo "ERROR: failed to install uv; cannot download model on this host" >&2
+        echo "ERROR: no HuggingFace client on $(hostname), and uv {uv_version} could not be installed." >&2
+        echo "       This host may have no outbound network access." >&2
+        echo "  Fix by any of:" >&2
+        echo "    - install 'huggingface-cli' or 'uv' on this host" >&2
+        echo "    - download on the control machine instead: transfer_mode 'local' or 'push'" >&2
+        echo "    - pre-place the weights in {cache}/hub (they are detected and reused)" >&2
         exit 1
     fi
 fi

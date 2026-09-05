@@ -52,6 +52,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from sparkrun.builders.base import BuilderPlugin
+from sparkrun.core.tooling import UV_INSTALL_BIN_DIR, UV_INSTALL_URL, UV_VERSION, uv_pip_spec
 from sparkrun.orchestration.ssh import run_remote_scripts_parallel
 from sparkrun.utils.shell import quote
 
@@ -272,12 +273,24 @@ def _provision_script(spec: _Spec) -> str:
         "#!/bin/bash\n"
         "set -euo pipefail\n"
         'VENV="%(venv)s"; ENV_FILE="%(env_file)s"; MARKER="$VENV/.sparkrun-uv-venv.hash"; WANT="%(want)s"\n'
-        'export PATH="/usr/local/bin:$HOME/.local/bin:$PATH"\n'
+        'export PATH="/usr/local/bin:%(uv_bin)s:$PATH"\n'
         'if [ -x "$VENV/bin/python" ] && [ "$(cat "$MARKER" 2>/dev/null || true)" = "$WANT" ]; then\n'
         '  echo "uv-venv: up-to-date ($VENV)"\n'
         "else\n"
+        # Both acquisition routes are version-pinned in sparkrun.core.tooling.
+        # The unversioned installer URL is whatever Astral published this
+        # morning, which is not a thing to fan out across a cluster.
         "  if ! command -v uv >/dev/null 2>&1; then\n"
-        '    python3 -m pip install -q uv || { curl -LsSf https://astral.sh/uv/install.sh | sh; export PATH="$HOME/.local/bin:$PATH"; }\n'
+        "    python3 -m pip install -q %(uv_spec)s || curl -LsSf %(uv_url)s | sh || true\n"
+        "  fi\n"
+        # Fail with guidance rather than letting `uv venv` report "command not
+        # found": on an air-gapped host neither route can work, and that is a
+        # fact about the host, not a defect in the recipe.
+        "  if ! command -v uv >/dev/null 2>&1; then\n"
+        '    echo "uv-venv: ERROR: uv %(uv_version)s is absent and could not be installed on $(hostname)." >&2\n'
+        '    echo "  This host may have no outbound network access. Either install uv on it," >&2\n'
+        '    echo "  or use a container image instead of the uv-venv builder." >&2\n'
+        "    exit 1\n"
         "  fi\n"
         '  echo "uv-venv: creating venv at $VENV (python %(python)s)"\n'
         '  uv venv "$VENV" --python %(python)s\n'
@@ -303,6 +316,10 @@ def _provision_script(spec: _Spec) -> str:
         "install": install_args,
         "path_line": path_line,
         "cuda_line": cuda_line,
+        "uv_bin": UV_INSTALL_BIN_DIR,
+        "uv_spec": quote(uv_pip_spec()),
+        "uv_url": quote(UV_INSTALL_URL),
+        "uv_version": UV_VERSION,
     }
 
 

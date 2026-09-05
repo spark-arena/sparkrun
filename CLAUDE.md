@@ -96,6 +96,18 @@ Core domain logic extracted from the top-level package. All imports use `sparkru
 | `execution.py`          | `RecipeExecutionStrategy`, `PreparationStep` DAG, `LaunchAssetPolicy`                |
 | `launcher.py`           | `launch_inference()`, `resolve_per_host_backends()`, `resolve_recipe_trust()`        |
 | `validation.py`         | `RecipeIssue`, `validate_recipe()`, `validate_for_launch()` (see Recipe Validation)  |
+| `tooling.py`            | Pinned third-party tooling installed onto hosts (`UV_VERSION` / `UV_INSTALL_URL`)    |
+
+**Third-party tooling is version-pinned centrally** (`core/tooling.py`). sparkrun fetches `uv` from the internet and
+runs it on *cluster hosts* from two places — the model ensure scripts (when a host has no HuggingFace client) and the
+`uv-venv` builder — and both used the **unversioned** `https://astral.sh/uv/install.sh`, i.e. whatever Astral published
+that morning, fanned out across every node with no record of what landed. It is a *pin, not a floor* (a host that
+already has any `uv` keeps it; this governs only what sparkrun **installs**) and deliberately **not user-configurable**
+— a supply-chain pin is not a preference. Version-only for now; `UV_INSTALL_SHA256` is the marked slot for a digest.
+When neither acquisition route works the scripts **fail with guidance** naming a way out (install a client, switch to a
+control-machine `transfer_mode`, or pre-place the weights) rather than the old bare "failed to install uv" — on an
+air-gapped host that is a fact about the host, not a defect in the recipe. `tests/test_tooling_pin.py` asserts the
+unversioned URL appears in no rendered script, which is where the whole value of centralizing it lives.
 
 ### CLI Architecture (`cli/`)
 

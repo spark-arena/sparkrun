@@ -298,11 +298,17 @@ def _build_model_ensure_script(
     a host holding a different revision reported a hit and the pin was silently
     ignored.
     """
+    from sparkrun.core.tooling import UV_INSTALL_BIN_DIR, UV_INSTALL_URL, UV_VERSION
     from sparkrun.models.download import is_gguf_model, parse_gguf_model_spec
     from sparkrun.utils.shell import quote
 
     revision_arg = quote(revision or "")
     cache_path = model_cache_path(model_id, cache)
+    uv = {
+        "uv_version": UV_VERSION,
+        "uv_install_url": UV_INSTALL_URL,
+        "uv_bin_dir": UV_INSTALL_BIN_DIR,
+    }
     if is_gguf_model(model_id):
         repo_id, quant = parse_gguf_model_spec(model_id)
         script = read_script("model_sync_gguf.sh").format(
@@ -311,6 +317,7 @@ def _build_model_ensure_script(
             cache=cache,
             cache_path=cache_path,
             revision=revision_arg,
+            **uv,
         )
     else:
         script = read_script("model_sync.sh").format(
@@ -318,6 +325,7 @@ def _build_model_ensure_script(
             cache=cache,
             cache_path=cache_path,
             revision=revision_arg,
+            **uv,
         )
 
     # Inject HF token for gated models
