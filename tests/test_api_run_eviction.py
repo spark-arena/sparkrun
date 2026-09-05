@@ -209,6 +209,24 @@ def test_status_query_failure_is_swallowed(cluster):
         )
 
 
+def test_strict_status_query_failure_aborts(cluster):
+    with patch(
+        "sparkrun.orchestration.executor.query_status_for_cluster",
+        side_effect=RuntimeError("hosts unreachable"),
+    ):
+        with pytest.raises(RuntimeError, match="could not query cluster status"):
+            _evict_superseded_deployments(
+                intent_id=INTENT,
+                cluster_id_for_launch=NEW,
+                candidate_hosts=list(cluster.hosts),
+                target_hosts=list(cluster.hosts),
+                cluster_def=cluster,
+                config=None,
+                sctx=None,
+                strict=True,
+            )
+
+
 def test_stop_failure_is_swallowed(cluster):
     status = _status(("h1", [_workload(PRIOR, INTENT)]))
 
@@ -216,6 +234,26 @@ def test_stop_failure_is_swallowed(cluster):
 
     assert evicted == []
     assert len(calls) == 1  # attempted, then gave up on that deployment
+
+
+def test_strict_stop_failure_aborts(cluster):
+    status = _status(("h1", [_workload(PRIOR, INTENT)]))
+
+    with (
+        patch("sparkrun.orchestration.executor.query_status_for_cluster", return_value=status),
+        patch.object(api, "stop", side_effect=RuntimeError("ssh down")),
+    ):
+        with pytest.raises(RuntimeError, match="could not stop earlier deployment"):
+            _evict_superseded_deployments(
+                intent_id=INTENT,
+                cluster_id_for_launch=NEW,
+                candidate_hosts=list(cluster.hosts),
+                target_hosts=["h1"],
+                cluster_def=cluster,
+                config=None,
+                sctx=None,
+                strict=True,
+            )
 
 
 def test_unconfirmed_teardown_still_counts_as_attempted(cluster, caplog):
@@ -233,6 +271,26 @@ def test_unconfirmed_teardown_still_counts_as_attempted(cluster, caplog):
 
     assert evicted == [PRIOR]
     assert "did not confirm" in caplog.text
+
+
+def test_strict_unconfirmed_teardown_aborts(cluster):
+    status = _status(("h1", [_workload(PRIOR, INTENT)]))
+
+    with (
+        patch("sparkrun.orchestration.executor.query_status_for_cluster", return_value=status),
+        patch.object(api, "stop", return_value=_StopPartial(PRIOR, ["h1"])),
+    ):
+        with pytest.raises(RuntimeError, match="was not confirmed on h1"):
+            _evict_superseded_deployments(
+                intent_id=INTENT,
+                cluster_id_for_launch=NEW,
+                candidate_hosts=list(cluster.hosts),
+                target_hosts=["h1"],
+                cluster_def=cluster,
+                config=None,
+                sctx=None,
+                strict=True,
+            )
 
 
 # --------------------------------------------------------------------------

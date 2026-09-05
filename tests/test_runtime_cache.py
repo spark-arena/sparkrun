@@ -10,6 +10,8 @@ See ``.slop/runtime-cache-design.md``.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from sparkrun.core.recipe import Recipe
@@ -365,6 +367,23 @@ def test_explicit_dir_setting_wins_over_the_probed_root():
 
 def test_root_defaults_under_the_sparkrun_cache_dir():
     assert resolve_runtime_cache_root(RuntimeCacheSettings(), "/home/u/.cache/sparkrun") == "/home/u/.cache/sparkrun/runtime-cache"
+
+
+def test_effective_runtime_cache_dir_prefers_cluster_sparkrun_root():
+    from sparkrun.core.launcher import resolve_effective_runtime_cache_dir
+
+    cluster = SimpleNamespace(sparkrun_cache_dir="/mnt/local/sparkrun")
+    config = SimpleNamespace(cache_dir="/control/cache")
+    assert (
+        resolve_effective_runtime_cache_dir(
+            ["host1"],
+            {},
+            config,
+            dry_run=True,
+            cluster=cluster,
+        )
+        == "/mnt/local/sparkrun"
+    )
 
 
 # ---------------------------------------------------------------------------

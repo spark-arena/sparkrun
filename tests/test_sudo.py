@@ -5,8 +5,9 @@ from __future__ import annotations
 import pytest
 from unittest.mock import patch
 
-from sparkrun.orchestration.sudo import run_indirect_sudo_script, run_sudo_script_on_host
+from sparkrun.orchestration.sudo import ensure_remote_dir_ownership, run_indirect_sudo_script, run_sudo_script_on_host
 from sparkrun.orchestration.ssh import RemoteResult
+from sparkrun.transports.session import HostCommandResult
 
 
 @patch("sparkrun.orchestration.ssh._run_subprocess")
@@ -125,3 +126,25 @@ def test_local_host_accepts_none_password(mock_run):
     assert res.host == "localhost"
     assert mock_run.call_args[0][0] == ["sudo", "-n", "bash", "-s"]
     assert mock_run.call_args[1]["input"] == "apt update"
+
+
+def test_ownership_repair_can_use_manager_host_session():
+    class Session:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, host, arguments, **kwargs):
+            self.calls.append((host, arguments, kwargs))
+            return HostCommandResult(host, 0 if host == "h1" else 1)
+
+    session = Session()
+    failed = ensure_remote_dir_ownership(
+        "/home/u/.cache/sparkrun",
+        ["h1", "h2"],
+        resource_label="ColdSnap cache",
+        session=session,
+    )
+
+    assert failed == ["h2"]
+    assert [call[0] for call in session.calls] == ["h1", "h2"]
+    assert all(call[1][:2] == ["bash", "-c"] for call in session.calls)

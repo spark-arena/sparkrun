@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Any, Mapping
 
 from sparkrun.diagnostics.ndjson_writer import NDJSONWriter
 from sparkrun.orchestration.ssh import run_remote_scripts_parallel
@@ -152,6 +153,86 @@ def _extract_firmware_history(kv: dict[str, str]) -> list[dict[str, str]]:
             }
         )
     return history
+
+
+def _diag_str(kv: Mapping[str, str], key: str) -> str:
+    """Return a trimmed value, or ``""`` when absent/blank."""
+    return str(kv.get(key, "")).strip()
+
+
+def _diag_int(kv: Mapping[str, str], key: str) -> int | None:
+    """Return an int value, or ``None`` when absent/blank/non-numeric."""
+    raw = _diag_str(kv, key)
+    try:
+        return int(float(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def summarize_host_diagnostics(kv: Mapping[str, str]) -> dict[str, Any]:
+    """Condense raw ``spark_diagnose.sh`` output into a display summary.
+
+    The collector's own consumers (:func:`collect_spark_diagnostics`'s NDJSON
+    records) keep every probed key; this is the *reporting* peer for callers
+    that show a person a handful of identity/version lines — platform, OS,
+    CPU/RAM, GPU + driver, CUDA, Docker.
+
+    Empty values are **omitted** rather than rendered blank: the probe emits a
+    key for everything it looks for, so ``DIAG_CUDA_VERSION=`` means "no nvcc
+    on this host", which is not the same as "CUDA 0" and should not occupy a
+    line.  Sizes are converted to GB here so every renderer reports them the
+    same way.
+
+    Note the GPU fields describe the **first** GPU only — that is what
+    ``spark_diagnose.sh`` reports, and it is sufficient on a one-GPU-per-host
+    DGX Spark.  Serial and UUID are deliberately excluded: they identify a
+    specific unit and this summary is meant to be pasteable into a bug report.
+
+    Args:
+        kv: Parsed key=value output for one host (a value of the mapping
+            returned by :func:`collect_spark_diagnostics`).
+
+    Returns:
+        Ordered mapping of summary field → value, empty when *kv* carries
+        nothing recognisable (e.g. the probe failed on that host).
+    """
+    out: dict[str, Any] = {}
+
+    def put(key: str, value: Any) -> None:
+        if value not in ("", None):
+            out[key] = value
+
+    put("hostname", _diag_str(kv, "DIAG_HOSTNAME"))
+    put("product", _diag_str(kv, "DIAG_PRODUCT_NAME"))
+    put("board", _diag_str(kv, "DIAG_BOARD_NAME"))
+    put("bios_version", _diag_str(kv, "DIAG_BIOS_VERSION"))
+
+    put("os", _diag_str(kv, "DIAG_OS_PRETTY") or _diag_str(kv, "DIAG_OS_NAME"))
+    put("kernel", _diag_str(kv, "DIAG_KERNEL"))
+    put("arch", _diag_str(kv, "DIAG_ARCH"))
+
+    put("cpu_model", _diag_str(kv, "DIAG_CPU_MODEL"))
+    put("cpu_cores", _diag_int(kv, "DIAG_CPU_CORES"))
+    put("cpu_threads", _diag_int(kv, "DIAG_CPU_THREADS"))
+    ram_kb = _diag_int(kv, "DIAG_RAM_TOTAL_KB")
+    if ram_kb:
+        put("ram_total_gb", round(ram_kb / 1024 / 1024, 1))
+
+    put("gpu_name", _diag_str(kv, "DIAG_GPU_NAME"))
+    gpu_mb = _diag_int(kv, "DIAG_GPU_MEMORY_MB")
+    if gpu_mb:
+        put("gpu_memory_gb", round(gpu_mb / 1024, 1))
+    put("gpu_driver", _diag_str(kv, "DIAG_GPU_DRIVER"))
+    put("cuda_version", _diag_str(kv, "DIAG_CUDA_VERSION"))
+    put("jetpack_version", _diag_str(kv, "DIAG_JETPACK_VERSION"))
+
+    put("docker_version", _diag_str(kv, "DIAG_DOCKER_VERSION"))
+    put("docker_storage_driver", _diag_str(kv, "DIAG_DOCKER_STORAGE"))
+    docker_nvidia = _diag_str(kv, "DIAG_DOCKER_NVIDIA_RUNTIME")
+    if docker_nvidia:
+        out["docker_nvidia_runtime"] = docker_nvidia == "true"
+
+    return out
 
 
 def collect_sudo_diagnostics(

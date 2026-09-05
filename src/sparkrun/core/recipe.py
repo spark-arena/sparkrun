@@ -1294,15 +1294,29 @@ class Recipe:
     def build_config_chain(self, cli_overrides: dict[str, Any] | None = None, user_config: dict[str, Any] | None = None) -> Variables:
         """Build cascading config: CLI overrides -> user config -> recipe defaults.
 
-        Also injects ``model`` and ``resolved_model_path`` into the chain for
-        ``{...}`` template substitution.  ``resolved_model_path`` resolves to the
-        recipe's ``cluster_config.resolved_model_path`` when set (pre-placed
-        on-disk weights), otherwise falls back to ``model`` so the same template
+        Also injects ``model``, ``model_revision`` and ``resolved_model_path``
+        into the chain for ``{...}`` template substitution.
+        ``resolved_model_path`` resolves to the recipe's
+        ``cluster_config.resolved_model_path`` when set (pre-placed on-disk
+        weights), otherwise falls back to ``model`` so the same template
         — e.g. ``--chat-template {resolved_model_path}/chat_template.jinja`` —
         works for both the override and normal cases.
+
+        ``model_revision`` is injected **only when the recipe pins one**, so a
+        template that references it and a recipe that forgot the pin still emit
+        a literal ``{model_revision}``.  That is deliberate: an unguarded
+        injection would render ``--revision None``, which looks like a valid
+        argument and fails inside the engine on a revision that does not exist,
+        rather than failing visibly as an unsubstituted placeholder.  Engines
+        need the pin passed through explicitly — sparkrun downloads by raw
+        commit SHA, which writes no ``refs/`` entry in the HuggingFace cache,
+        and the container runs ``HF_HUB_OFFLINE=1`` (see
+        :func:`sparkrun.core.validation.check_unpinned_model_revision`).
         """
         base = dict(self.defaults)
         base.setdefault("model", self.model)
+        if self.model_revision:
+            base.setdefault("model_revision", self.model_revision)
         _rmp = getattr(getattr(self, "cluster_config", None), "resolved_model_path", None)
         base.setdefault("resolved_model_path", _rmp or self.model)
         return Variables(sources=(cli_overrides or {}, user_config or {}, base), env_placement=EnvPlacement.IGNORED)

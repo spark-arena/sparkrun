@@ -286,6 +286,15 @@ class AtlasRuntime(RuntimePlugin):
         """Atlas handles its own multi-rank distribution via NCCL, not Ray."""
         return "native"
 
+    def managed_rendezvous_flags(self) -> tuple[str, ...]:
+        """Atlas spells the world ``--rank``/``--world-size``, not vLLM's ``--node-rank``/``--nnodes``.
+
+        The overlap with vLLM-distributed is only ``--master-addr`` /
+        ``--master-port``; the other two are a different vocabulary for the same
+        idea, which is why this list is declared rather than shared.
+        """
+        return ("--rank", "--world-size", "--master-addr", "--master-port")
+
     def resolve_api_key(
         self,
         recipe: "Recipe",

@@ -198,6 +198,15 @@ class ClusterDefinition:
     description: str = ""
     user: str | None = None
     cache_dir: str | None = None
+    sparkrun_cache_dir: str | None = None
+    """Remote cluster-specific sparkrun state/cache root.
+
+    This is independent of :attr:`cache_dir`, which remains the remote Hugging
+    Face/model cache.  Consumers derive their own subdirectories unless a
+    narrower plugin setting overrides them.
+    """
+    plugins: dict[str, dict[str, Any]] = field(default_factory=dict)
+    """Cluster-local plugin settings, layered above user plugin defaults."""
     transfer_mode: str | None = None
     transfer_interface: str | None = None
     topology: str | None = None
@@ -382,6 +391,16 @@ class ClusterDefinition:
             return default_dgx_spark_hardware()
         return hw
 
+    def plugin_settings(self, name: str) -> dict[str, Any]:
+        """Return an isolated, validated cluster-local plugin mapping."""
+
+        raw = self.plugins.get(name, {})
+        if not isinstance(raw, dict):
+            raise ClusterError("cluster '%s' plugins.%s must be a mapping" % (self.name, name))
+        if "paths" in raw:
+            raise ClusterError("cluster '%s' plugins.%s cannot declare plugin discovery paths" % (self.name, name))
+        return dict(raw)
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to a JSON-serializable dictionary (omits None optional fields)."""
         d: dict[str, Any] = {"name": self.name, "hosts": self.hosts, "description": self.description}
@@ -389,6 +408,10 @@ class ClusterDefinition:
             d["user"] = self.user
         if self.cache_dir:
             d["cache_dir"] = self.cache_dir
+        if self.sparkrun_cache_dir:
+            d["sparkrun_cache_dir"] = self.sparkrun_cache_dir
+        if self.plugins:
+            d["plugins"] = {name: dict(settings) for name, settings in self.plugins.items()}
         if self.transfer_mode:
             d["transfer_mode"] = self.transfer_mode
         if self.transfer_interface:
@@ -586,6 +609,8 @@ class ClusterManager:
         scheduler: str | None = None,
         max_gpu_memory_utilization: float | None = None,
         distribution: ClusterDistributionConfig | None = None,
+        sparkrun_cache_dir: str | None = None,
+        plugins: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         """Create a new named cluster.
 
@@ -595,6 +620,8 @@ class ClusterManager:
             description: Optional cluster description
             user: Optional SSH username for this cluster
             cache_dir: Optional HuggingFace cache directory for this cluster
+            sparkrun_cache_dir: Optional remote sparkrun state/cache root
+            plugins: Optional cluster-local plugin settings
             transfer_mode: Optional transfer mode (local, push, delegated)
             transfer_interface: Optional transfer interface (cx7, mgmt)
             topology: Optional CX7 topology (direct, switch, ring)
@@ -633,6 +660,8 @@ class ClusterManager:
             description=description,
             user=user,
             cache_dir=cache_dir,
+            sparkrun_cache_dir=sparkrun_cache_dir,
+            plugins={name: dict(settings) for name, settings in (plugins or {}).items()},
             transfer_mode=transfer_mode,
             transfer_interface=transfer_interface,
             topology=topology,
@@ -650,6 +679,8 @@ class ClusterManager:
             max_gpu_memory_utilization=max_gpu_memory_utilization,
             distribution=distribution if distribution is not None else ClusterDistributionConfig(),
         )
+        for plugin in cluster_def.plugins:
+            cluster_def.plugin_settings(plugin)
         self._write_cluster(cluster_def)
         logger.info("Created cluster '%s' with %d hosts", name, len(hosts))
 
@@ -692,6 +723,8 @@ class ClusterManager:
         scheduler: str | None = _UNSET,
         max_gpu_memory_utilization: float | None = _UNSET,
         distribution: ClusterDistributionConfig | None = _UNSET,
+        sparkrun_cache_dir: str | None = _UNSET,
+        plugins: dict[str, dict[str, Any]] | None = _UNSET,
     ) -> None:
         """Update existing cluster definition.
 
@@ -701,6 +734,10 @@ class ClusterManager:
             description: New description (if provided)
             user: SSH username (if provided; pass ``None`` explicitly to clear)
             cache_dir: HuggingFace cache directory (if provided; pass ``None`` explicitly to clear)
+            sparkrun_cache_dir: Remote sparkrun state/cache root (if provided;
+                pass ``None`` explicitly to clear)
+            plugins: Cluster-local plugin settings (if provided; pass an empty
+                mapping to clear)
             transfer_mode: Transfer mode (if provided; pass ``None`` explicitly to clear)
             transfer_interface: Transfer interface (if provided; pass ``None`` explicitly to clear)
             topology: CX7 topology (if provided; pass ``None`` explicitly to clear)
@@ -733,6 +770,16 @@ class ClusterManager:
         if cache_dir is not _UNSET:
             cluster_def.cache_dir = cache_dir
             logger.debug("Updated cache_dir for cluster '%s'", name)
+
+        if sparkrun_cache_dir is not _UNSET:
+            cluster_def.sparkrun_cache_dir = sparkrun_cache_dir
+            logger.debug("Updated sparkrun_cache_dir for cluster '%s'", name)
+
+        if plugins is not _UNSET:
+            cluster_def.plugins = {plugin: dict(settings) for plugin, settings in (plugins or {}).items()}
+            for plugin in cluster_def.plugins:
+                cluster_def.plugin_settings(plugin)
+            logger.debug("Updated plugin settings for cluster '%s'", name)
 
         if transfer_mode is not _UNSET:
             if transfer_mode is not None and transfer_mode not in VALID_TRANSFER_MODES:
@@ -904,6 +951,10 @@ class ClusterManager:
             data["user"] = cluster_def.user
         if cluster_def.cache_dir is not None:
             data["cache_dir"] = cluster_def.cache_dir
+        if cluster_def.sparkrun_cache_dir is not None:
+            data["sparkrun_cache_dir"] = cluster_def.sparkrun_cache_dir
+        if cluster_def.plugins:
+            data["plugins"] = {name: dict(settings) for name, settings in cluster_def.plugins.items()}
         if cluster_def.transfer_mode is not None:
             data["transfer_mode"] = cluster_def.transfer_mode
         if cluster_def.transfer_interface is not None:
@@ -982,6 +1033,17 @@ class ClusterManager:
         raw_env = data.get("env") or {}
         cluster_env: dict[str, str] = {str(k): str(v) for k, v in raw_env.items()} if isinstance(raw_env, dict) else {}
 
+        raw_plugins = data.get("plugins") or {}
+        plugins: dict[str, dict[str, Any]] = {}
+        if not isinstance(raw_plugins, dict):
+            raise ClusterError("cluster plugins must be a mapping")
+        for name, settings in raw_plugins.items():
+            if not isinstance(name, str) or not name or not isinstance(settings, dict):
+                raise ClusterError("cluster plugin settings are invalid")
+            if "paths" in settings:
+                raise ClusterError("cluster plugins.%s cannot declare plugin discovery paths" % name)
+            plugins[name] = dict(settings)
+
         accelerator_memory_limits: dict[str, float] = {}
         raw_accel_limits = data.get("accelerator_memory_limits")
         if isinstance(raw_accel_limits, dict):
@@ -997,6 +1059,8 @@ class ClusterManager:
             description=data.get("description", ""),
             user=data.get("user"),
             cache_dir=data.get("cache_dir"),
+            sparkrun_cache_dir=data.get("sparkrun_cache_dir"),
+            plugins=plugins,
             transfer_mode=data.get("transfer_mode"),
             transfer_interface=data.get("transfer_interface"),
             topology=data.get("topology"),

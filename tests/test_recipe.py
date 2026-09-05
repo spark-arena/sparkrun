@@ -485,6 +485,35 @@ def test_recipe_build_config_chain(sample_v2_recipe_data: dict[str, Any]):
     assert config.get("model") == "meta-llama/Llama-2-7b-hf"
 
 
+def test_model_revision_is_injected_only_when_pinned(sample_v2_recipe_data: dict[str, Any]):
+    """`{model_revision}` must resolve so a command: can pass the pin to the
+    engine — but only when there *is* a pin. Injecting `None` would render
+    `--revision None`, which looks like a valid argument and fails inside the
+    engine, instead of failing visibly as an unsubstituted placeholder."""
+    unpinned = Recipe.from_dict(sample_v2_recipe_data)
+    assert unpinned.model_revision is None
+    assert unpinned.build_config_chain().get("model_revision") is None
+
+    sha = "51058cd551c7e570d87bd32a4adee720edce2349"
+    pinned = Recipe.from_dict({**sample_v2_recipe_data, "model_revision": sha})
+    assert pinned.build_config_chain().get("model_revision") == sha
+
+    # Reachable from a command: template, and from another default's value.
+    pinned.command = "vllm serve {model} --revision {model_revision}"
+    assert pinned.render_command(pinned.build_config_chain()).endswith("--revision " + sha)
+
+    indirect = Recipe.from_dict({**sample_v2_recipe_data, "model_revision": sha, "defaults": {"rev": "{model_revision}"}})
+    indirect.command = "vllm serve {model} --revision {rev}"
+    assert indirect.render_command(indirect.build_config_chain()).endswith("--revision " + sha)
+
+
+def test_recipe_declared_model_revision_default_wins(sample_v2_recipe_data: dict[str, Any]):
+    """`setdefault`, matching `model` — a recipe that declares the key itself
+    keeps its own value."""
+    recipe = Recipe.from_dict({**sample_v2_recipe_data, "model_revision": "aaa", "defaults": {"model_revision": "bbb"}})
+    assert recipe.build_config_chain().get("model_revision") == "bbb"
+
+
 def test_recipe_render_command(sample_v2_recipe_data: dict[str, Any]):
     """Render a recipe command template and verify placeholders are substituted.
 

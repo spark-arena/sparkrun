@@ -2,7 +2,7 @@
 
 ``DockerExecutor`` generates Docker CLI command strings from
 ``ExecutorConfig`` settings.  The Docker-flavoured global defaults
-(``privileged``, ``ipc=host``, ``shm_size``, ...) and the
+(``privileged``, ``ipc=shareable``, ``shm_size``, ...) and the
 ``rootless``/``auto_user`` adjustment layer live here — they are not
 shared concerns of other executors.
 """
@@ -13,6 +13,7 @@ import json
 import logging
 import re
 import time
+from functools import lru_cache
 from typing import Mapping, TYPE_CHECKING
 
 from sparkrun.orchestration.executors._base import (
@@ -50,6 +51,39 @@ GPU_ACCESS_MODES = frozenset({GPU_ACCESS_CDI, GPU_ACCESS_GPUS})
 #: choice and the only one some daemons accept (see :func:`_nvidia_gpu_args`);
 #: hardware that prefers ``--gpus`` says so at the platform tier.
 GPU_ACCESS_DEFAULT = GPU_ACCESS_CDI
+
+#: The ``--ipc`` value that puts the workload on the *host's* IPC namespace
+#: and ``/dev/shm``.  Named because several call sites test for it.
+DOCKER_IPC_HOST = "host"
+
+#: ``ipc`` — the default IPC namespace mode.  ``shareable`` gives the container
+#: its *own* IPC namespace and its own ``/dev/shm`` (so :data:`DOCKER_DEFAULTS`'s
+#: ``shm_size`` applies) while still allowing a second container on the same host
+#: to join it with ``--ipc=container:<name>`` — the DP/PD service-domain shape.
+#: ``private`` would buy the same isolation and forbid that, at no saving.
+#:
+#: It is deliberately not :data:`DOCKER_IPC_HOST`.  Under ``--ipc=host`` the
+#: container's ``/dev/shm`` *is* the host's, so every POSIX semaphore and
+#: shared-memory segment the workload creates is a host file owned by the
+#: container user — which for sparkrun is the SSH user (``--user
+#: $(id -u):$(id -g)``, see :meth:`DockerExecutor.apply_runtime_adjustments`).
+#: systemd-logind with ``RemoveIPC=yes`` (the Ubuntu 24.04 / DGX OS default)
+#: deletes exactly those objects ``UserStopDelaySec`` after that user's last
+#: session ends — and sparkrun launches detached (``docker exec -d``) and then
+#: *closes* the SSH session.  A workload reaching Python's multiprocessing
+#: bootstrap after the reaper runs dies on ``SemLock._rebuild`` →
+#: ``FileNotFoundError``; one that gets there first survives indefinitely,
+#: because unlinking a name does not invalidate an already-open handle.  Hence
+#: the reported symptom: intermittent, and cured by holding an unrelated SSH
+#: session open.  See issue #285.
+#:
+#: A container-owned namespace is invisible to that reaper (logind walks
+#: ``/dev/shm`` itself, not arbitrary mounts), which is why this is a fix and
+#: not a mitigation.  ``host`` remains available as an explicit override for
+#: the case that needs it — cross-*container* NCCL/shm on a single host — with
+#: :func:`_warn_host_ipc_reaper` flagging the hazard when it is combined with a
+#: non-root container user.
+DOCKER_IPC_DEFAULT = "shareable"
 
 
 def _nvidia_gpu_args(gpus: str | None, mode: str | None = None) -> list[str]:
@@ -102,6 +136,45 @@ def _nvidia_gpu_args(gpus: str | None, mode: str | None = None) -> list[str]:
 # ``docker run`` doesn't fail with "no such file or directory" when the node
 # isn't present; hosts that have it (IB-equipped DGX Spark clusters) still get it.
 _OPTIONAL_DEVICES = frozenset({"/dev/infiniband"})
+
+
+def _is_root_container_user(user: str | None) -> bool:
+    """Would *user* run the container as UID 0?
+
+    ``None`` (no ``--user``) means the image's own user, which is root for
+    every inference image sparkrun ships against — so it counts as root here.
+    The ``$SHELL_USER`` sentinel resolves on the host to ``$(id -u):$(id -g)``
+    and is unknowable at generation time; it is treated as **non**-root, which
+    is the fail-loud direction for an advisory (a cluster whose SSH user really
+    is root gets one spurious line; the reverse would silence the real case).
+    """
+    if user is None:
+        return True
+    spelled = user.strip().split(":", 1)[0].strip()
+    return spelled in ("0", "root")
+
+
+@lru_cache(maxsize=None)
+def _warn_host_ipc_reaper(user: str) -> None:
+    """Warn that ``--ipc=host`` + a non-root container user is reapable.
+
+    Cached for its side effect: the condition is a property of the resolved
+    config, not of a node, so an N-node launch would otherwise emit N identical
+    lines.  Keyed by *user* so a cluster mixing users still reports each.
+
+    See :data:`DOCKER_IPC_DEFAULT` for the mechanism.
+    """
+    logger.warning(
+        "Docker executor: ipc=host with a non-root container user (%s) puts this workload's "
+        "POSIX semaphores and shared memory in the host's /dev/shm, where systemd-logind "
+        "(RemoveIPC=yes) deletes them shortly after the launching SSH session closes. A "
+        "detached launch can then fail during startup with FileNotFoundError in "
+        "multiprocessing's SemLock._rebuild. Drop the ipc override to use sparkrun's default "
+        "(%r), or run 'sudo loginctl enable-linger %s' on each host. See issue #285.",
+        user,
+        DOCKER_IPC_DEFAULT,
+        user if user != "$SHELL_USER" else "<ssh-user>",
+    )
 
 
 def _optional_device_arg(dev: str) -> str:
@@ -172,14 +245,23 @@ def _mask_sensitive_env_in_command(command: str, env: dict[str, str] | None) -> 
 # the :class:`ExecutorConfig` dataclass field defaults and below
 # everything else.  Lives with :class:`DockerExecutor` because every
 # value here is Docker-specific (``--privileged``, ``--shm-size``,
-# ``--ipc=host`` etc.).
+# ``--ipc=shareable`` etc.).
+#
+# NOTE ``ipc`` and ``shm_size`` are coupled and must move together: Docker
+# ignores ``--shm-size`` whenever ``--ipc=host`` (the container just gets the
+# host's ``/dev/shm``, typically 50% of RAM).  This value was therefore inert
+# until the ``ipc`` default changed, and is load-bearing now — 32 GB is well
+# above what a Spark can actually commit to tmpfs once ~85% of its 128 GB
+# unified memory is held by model weights and KV cache, and 500x Docker's
+# 64 MB default.  Raise it per-recipe (``executor_config: {shm_size: 64gb}``)
+# on a large-RAM non-Spark host if a workload needs more.
 DOCKER_DEFAULTS = {
     "auto_remove": True,
     "restart_policy": None,
     "privileged": True,
     "gpus": "all",
     "gpu_access_mode": GPU_ACCESS_DEFAULT,
-    "ipc": "host",
+    "ipc": DOCKER_IPC_DEFAULT,
     "shm_size": "32gb",
     "network": "host",
     "user": None,
@@ -206,7 +288,7 @@ class DockerExecutor(Executor):
 
     @classmethod
     def default_config(cls) -> dict:
-        """Docker-flavoured defaults — shm_size, ipc=host, network=host, ...."""
+        """Docker-flavoured defaults — shm_size, ipc=shareable, network=host, ...."""
         return dict(DOCKER_DEFAULTS)
 
     @classmethod
@@ -297,6 +379,8 @@ class DockerExecutor(Executor):
             opts.append("--privileged")
         opts.extend(self._accelerator_opts())
         if cfg.ipc:
+            if cfg.ipc.strip().lower() == DOCKER_IPC_HOST and not _is_root_container_user(cfg.user):
+                _warn_host_ipc_reaper(cfg.user)
             opts.append("--ipc=%s" % quote(cfg.ipc))
         if cfg.shm_size:
             opts.append("--shm-size=%s" % quote(cfg.shm_size))
