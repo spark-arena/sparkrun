@@ -1,6 +1,9 @@
 #!/bin/bash
 set -uo pipefail
-echo "Checking model cache for {model_id}..."
+# Recipe-sourced, so pre-quoted control-side rather than interpolated as text:
+# a model id is registry content and reaches a script run on every host.
+MODEL_ID={model_id}
+echo "Checking model cache for $MODEL_ID..."
 # Rendered control-side by models.download.model_cache_path — the one place
 # that knows the HF models--org--name mangling.  Deriving it here again in bash
 # is how the two drifted (issue #291): the old tr-based slash replacement
@@ -36,7 +39,7 @@ while IFS= read -r SNAPSHOT_DIR; do
 done <<<"$SNAPSHOT_DIRS"
 
 if [ "$FOUND_WEIGHTS" = true ]; then
-    echo "Model already cached: {model_id}"
+    echo "Model already cached: $MODEL_ID"
     exit 0
 fi
 
@@ -48,11 +51,11 @@ else
     set --
 fi
 
-echo "Downloading model: {model_id}..."
+echo "Downloading model: $MODEL_ID..."
 if command -v huggingface-cli &>/dev/null; then
-    huggingface-cli download "{model_id}" "$@" --cache-dir "{cache}/hub"
+    huggingface-cli download "$MODEL_ID" "$@" --cache-dir "{cache}/hub"
 elif command -v uvx &>/dev/null; then
-    uvx hf download "{model_id}" "$@" --cache-dir "{cache}/hub"
+    uvx hf download "$MODEL_ID" "$@" --cache-dir "{cache}/hub"
 else
     # No HuggingFace client. The installer URL is version-pinned in
     # sparkrun.core.tooling — never the unversioned one, which is whatever
@@ -62,7 +65,7 @@ else
         export PATH="{uv_bin_dir}:$PATH"
     fi
     if command -v uvx &>/dev/null; then
-        uvx hf download "{model_id}" "$@" --cache-dir "{cache}/hub"
+        uvx hf download "$MODEL_ID" "$@" --cache-dir "{cache}/hub"
     else
         echo "ERROR: no HuggingFace client on $(hostname), and uv {uv_version} could not be installed." >&2
         echo "       This host may have no outbound network access." >&2

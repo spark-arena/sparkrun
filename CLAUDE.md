@@ -2228,6 +2228,18 @@ normalization.
 
 Shared helpers used across multiple modules to avoid circular imports:
 
+- `shell.quote()` / `shell.validate_interpolated_path()` — the **two** tools for getting a value into a generated
+  shell script, and picking the wrong one is silently wrong in opposite directions. `quote()` is for values with no
+  expansion to preserve (a model id, a GGUF quant, a revision). `validate_interpolated_path()` is for paths emitted
+  **inside double quotes precisely so `~/` or `$HOME/` expands on the target** (`disk_info.py` rewrites `~/`→`$HOME/`
+  for exactly this; `mods.py` ships such a default) — quoting those points the cache at a literal `$HOME` and
+  re-downloads the weights every launch. It is deliberately *not* a path allowlist like `uv_venv._validate_host_path`:
+  these have always been double-quoted, so a directory with a space works today and refusing it would be a regression
+  for no gain — only what survives double quotes is rejected (`"`, backtick, `\`, newline, and `$` other than
+  `$HOME`). Recipe content reaches all of these (`model:`, its `:quant` suffix, `model_revision`,
+  `cluster_config.remote_cache_dir`), and every one of them was confirmed to *execute* before hardening. Note a value
+  can need both treatments at once: a model id is quoted where used as a value **and** folded into the cache path by
+  `model_cache_path`, where it can only be refused — so a hostile id raises rather than rendering.
 - `coerce_value()` — type coercion for CLI string inputs (to int, float, bool)
 - `suppress_noisy_loggers()` — silences verbose HTTP/transport loggers
 - `resolve_ssh_user()` — SSH user resolution (cluster → config → env → fallback)

@@ -1,6 +1,11 @@
 #!/bin/bash
 set -uo pipefail
-echo "Checking GGUF model cache for {repo_id} (quant: {quant})..."
+# Recipe-sourced, so pre-quoted control-side rather than interpolated as text.
+# GGUF_QUANT is a *fragment* of a glob, so it becomes a variable rather than a
+# quoted literal: "*'Q4_K_M'*.gguf" would match nothing.
+REPO_ID={repo_id}
+GGUF_QUANT={quant}
+echo "Checking GGUF model cache for $REPO_ID (quant: $GGUF_QUANT)..."
 # Rendered control-side by models.download.model_cache_path — see the note in
 # model_sync.sh; the bash-side derivation was wrong for every ``org/model`` id.
 CACHE_PATH="{cache_path}"
@@ -16,7 +21,7 @@ SNAPSHOT_DIRS=$(sparkrun_hf_snapshot_dirs "$CACHE_PATH" "$MODEL_REVISION")
 GGUF_MATCH=""
 while IFS= read -r SNAPSHOT_DIR; do
     [ -n "$SNAPSHOT_DIR" ] || continue
-    GGUF_MATCH=$(find "$SNAPSHOT_DIR" -name "*{quant}*.gguf" -print -quit 2>/dev/null)
+    GGUF_MATCH=$(find "$SNAPSHOT_DIR" -name "*$GGUF_QUANT*.gguf" -print -quit 2>/dev/null)
     if [ -n "$GGUF_MATCH" ]; then
         break
     fi
@@ -35,11 +40,11 @@ else
     set --
 fi
 
-echo "Downloading GGUF model: {repo_id} (quant: {quant})..."
+echo "Downloading GGUF model: $REPO_ID (quant: $GGUF_QUANT)..."
 if command -v huggingface-cli &>/dev/null; then
-    huggingface-cli download "{repo_id}" --include "*{quant}*" "*mmproj*" "$@" --cache-dir "{cache}/hub"
+    huggingface-cli download "$REPO_ID" --include "*$GGUF_QUANT*" "*mmproj*" "$@" --cache-dir "{cache}/hub"
 elif command -v uvx &>/dev/null; then
-    uvx hf download "{repo_id}" --include "*{quant}*" "*mmproj*" "$@" --cache-dir "{cache}/hub"
+    uvx hf download "$REPO_ID" --include "*$GGUF_QUANT*" "*mmproj*" "$@" --cache-dir "{cache}/hub"
 else
     # No HuggingFace client. The installer URL is version-pinned in
     # sparkrun.core.tooling — never the unversioned one, which is whatever
@@ -49,7 +54,7 @@ else
         export PATH="{uv_bin_dir}:$PATH"
     fi
     if command -v uvx &>/dev/null; then
-        uvx hf download "{repo_id}" --include "*{quant}*" "*mmproj*" "$@" --cache-dir "{cache}/hub"
+        uvx hf download "$REPO_ID" --include "*$GGUF_QUANT*" "*mmproj*" "$@" --cache-dir "{cache}/hub"
     else
         echo "ERROR: no HuggingFace client on $(hostname), and uv {uv_version} could not be installed." >&2
         echo "       This host may have no outbound network access." >&2

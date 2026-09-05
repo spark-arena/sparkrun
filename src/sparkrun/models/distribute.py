@@ -24,6 +24,7 @@ from sparkrun.orchestration.ssh import (
 )
 from sparkrun.orchestration.sudo import ensure_remote_dir_ownership
 from sparkrun.scripts import read_script
+from sparkrun.utils.shell import args_list_to_shell_str, validate_interpolated_path
 
 from sparkrun.core.progress import PROGRESS
 
@@ -303,7 +304,11 @@ def _build_model_ensure_script(
     from sparkrun.utils.shell import quote
 
     revision_arg = quote(revision or "")
-    cache_path = model_cache_path(model_id, cache)
+    # Cache paths are validated, not quoted: they are emitted double-quoted so a
+    # leading ~/ or $HOME/ expands on the *target*, which shlex.quote would
+    # suppress.  See validate_interpolated_path.
+    cache = validate_interpolated_path(cache, field_name="cache_dir")
+    cache_path = validate_interpolated_path(model_cache_path(model_id, cache), field_name="model cache path")
     uv = {
         "uv_version": UV_VERSION,
         "uv_install_url": UV_INSTALL_URL,
@@ -312,8 +317,8 @@ def _build_model_ensure_script(
     if is_gguf_model(model_id):
         repo_id, quant = parse_gguf_model_spec(model_id)
         script = read_script("model_sync_gguf.sh").format(
-            repo_id=repo_id,
-            quant=quant or "",
+            repo_id=quote(repo_id),
+            quant=quote(quant or ""),
             cache=cache,
             cache_path=cache_path,
             revision=revision_arg,
@@ -321,7 +326,7 @@ def _build_model_ensure_script(
         )
     else:
         script = read_script("model_sync.sh").format(
-            model_id=model_id,
+            model_id=quote(model_id),
             cache=cache,
             cache_path=cache_path,
             revision=revision_arg,
@@ -457,8 +462,11 @@ def distribute_model_from_head(
     )
     rsync_attr_flags = " ".join(["-a", *NFS_SAFE_ATTR_OPTS]) if preserve_perms else "-r --links"
     dist_script = read_script("model_distribute.sh").format(
-        model_path=model_path,
-        targets=" ".join(targets),
+        # Validated rather than quoted (double-quoted on use, must still expand
+        # $HOME on the head); targets get the same treatment as the image
+        # sibling, which already used args_list_to_shell_str.
+        model_path=validate_interpolated_path(model_path, field_name="model cache path"),
+        targets=args_list_to_shell_str(targets),
         ssh_opts=ssh_opts,
         ssh_user=ssh_user or "",
         max_parallel=HEAD_DISTRIBUTE_MAX_PARALLEL,

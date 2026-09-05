@@ -55,6 +55,53 @@ def quote(value: str) -> Quoted:
     return Quoted(shlex.quote(value))
 
 
+class ShellSafetyError(ValueError):
+    """A value cannot be safely interpolated into a generated shell script."""
+
+
+#: Characters that keep their meaning inside a double-quoted bash string.
+#: Everything else there — including spaces, ``;``, ``&``, ``|`` and globs — is
+#: literal, which is why this is far narrower than a path allowlist.
+_DQ_UNSAFE = ('"', "`", "\\", "\n", "\r")
+
+#: The one ``$`` expansion that is routinely *intended* in these paths.
+_DQ_ALLOWED_EXPANSIONS = ("$HOME", "${HOME}")
+
+
+def validate_interpolated_path(value: str, *, field_name: str) -> str:
+    """Validate a path interpolated **inside a double-quoted** shell string.
+
+    The peer of :func:`quote`, for the case where quoting is not available:
+    remote cache paths are written ``CACHE_PATH="{cache}"`` precisely so that a
+    leading ``~/`` or ``$HOME/`` expands *on the target host*
+    (``orchestration/disk_info.py`` rewrites ``~/`` to ``$HOME/`` for exactly
+    this reason, and ``core/mods.py`` ships such a default).  ``shlex.quote``
+    would suppress that expansion and point the cache somewhere that does not
+    exist, so these values are checked instead.
+
+    The check is deliberately **not** a path allowlist like the ``uv-venv``
+    builder's: this value has always been double-quoted, so a directory
+    containing a space works today and rejecting it would be a regression for
+    no security gain.  Only what survives double quotes is refused —
+    ``"``/backtick/backslash/newline, and ``$`` other than ``$HOME``.
+
+    Recipes may set ``cluster_config.remote_cache_dir`` (``core/recipe.py``),
+    so this is recipe-reachable content, not merely operator config.
+
+    Raises:
+        ShellSafetyError: If *value* could break out of the quoting.
+    """
+    for char in _DQ_UNSAFE:
+        if char in value:
+            raise ShellSafetyError("unsafe character %r in %s %r — it is interpolated into a host shell script" % (char, field_name, value))
+    probe = value
+    for allowed in _DQ_ALLOWED_EXPANSIONS:
+        probe = probe.replace(allowed, "")
+    if "$" in probe:
+        raise ShellSafetyError("unsupported shell expansion in %s %r — only $HOME is expanded on the target host" % (field_name, value))
+    return value
+
+
 def b64_encode_cmd(cmd: str) -> str:
     """Base64 encode a command string to avoid shell escaping issues.
 
