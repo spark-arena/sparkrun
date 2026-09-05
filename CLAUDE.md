@@ -2052,8 +2052,10 @@ terms as a registry one.
 Before launching, sparkrun can pre-sync models and container images from the control machine to target hosts:
 
 - **Models** (`models/`): Downloads from HuggingFace Hub locally via `snapshot_download` (`models/download.py`), then
-  rsyncs to targets (`models/distribute.py`, `models/sync.py`). GGUF models use colon syntax (`repo:quant`) for
-  selective quant-file download.
+  rsyncs to targets (`models/distribute.py`). GGUF models use colon syntax (`repo:quant`) for
+  selective quant-file download. `models/download.py:model_cache_path()` is the **only** implementation of the HF
+  `models--org--name` cache mangling — the remote ensure scripts take the resolved path as a rendered `{cache_path}`
+  rather than re-deriving it in bash, which is how the check and the rsync destination once disagreed (issue #291).
 - **Containers** (`containers/`): Pulls image locally (`containers/registry.py`), then streams via
   `docker save | ssh docker load` (`containers/distribute.py`, `containers/sync.py`). Checks image IDs to skip hosts
   that already have the correct image.

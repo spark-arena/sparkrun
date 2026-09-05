@@ -1,8 +1,12 @@
 #!/bin/bash
 set -uo pipefail
 echo "Checking model cache for {model_id}..."
-SAFE_NAME=$(echo "{model_id}" | tr '/' '--')
-CACHE_PATH="{cache}/hub/models--$SAFE_NAME"
+# Rendered control-side by models.download.model_cache_path — the one place
+# that knows the HF models--org--name mangling.  Deriving it here again in bash
+# is how the two drifted (issue #291): the old tr-based slash replacement
+# emitted a single hyphen, so every org/model id missed its own cache and fell
+# through to the download path.
+CACHE_PATH="{cache_path}"
 
 # Check for actual weight files (not just config.json from VRAM auto-detect)
 FOUND_WEIGHTS=false

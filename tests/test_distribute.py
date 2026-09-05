@@ -1147,6 +1147,10 @@ class TestDistributeModelFromHead:
         failed = distribute_model_from_head("org/model", ["head", "w1", "w2"])
         assert failed == []
         assert mock_run.call_count == 2
+        # The head's cache check must name the same directory the fan-out
+        # rsyncs, or it misses every hit and downloads anyway (issue #291).
+        ensure_script = mock_run.call_args_list[0][0][1]
+        assert "models--org--model" in ensure_script
         # Second call should contain the distribution script with targets
         dist_script = mock_run.call_args_list[1][0][1]
         assert "w1" in dist_script

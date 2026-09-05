@@ -283,23 +283,33 @@ def _build_model_ensure_script(
     fetch identically — a second copy of this would be free to drift on GGUF
     handling or token injection, and the drift would only show on gated or
     quant-selected models.
+
+    The cache directory to probe is rendered in from :func:`model_cache_path`
+    rather than re-derived in bash.  The scripts used to mangle the id
+    themselves and got it wrong for every ``org/model`` repo (issue #291), so
+    the ``models--org--name`` rule now has exactly one implementation and the
+    check cannot disagree with the rsync destination built from the same
+    function.
     """
     from sparkrun.models.download import is_gguf_model, parse_gguf_model_spec
     from sparkrun.utils.shell import quote
 
     revision_flag = "--revision %s " % revision if revision else ""
+    cache_path = model_cache_path(model_id, cache)
     if is_gguf_model(model_id):
         repo_id, quant = parse_gguf_model_spec(model_id)
         script = read_script("model_sync_gguf.sh").format(
             repo_id=repo_id,
             quant=quant or "",
             cache=cache,
+            cache_path=cache_path,
             revision_flag=revision_flag,
         )
     else:
         script = read_script("model_sync.sh").format(
             model_id=model_id,
             cache=cache,
+            cache_path=cache_path,
             revision_flag=revision_flag,
         )
 

@@ -1,8 +1,9 @@
 #!/bin/bash
 set -uo pipefail
 echo "Checking GGUF model cache for {repo_id} (quant: {quant})..."
-SAFE_NAME=$(echo "{repo_id}" | tr '/' '--')
-CACHE_PATH="{cache}/hub/models--$SAFE_NAME"
+# Rendered control-side by models.download.model_cache_path — see the note in
+# model_sync.sh; the bash-side derivation was wrong for every ``org/model`` id.
+CACHE_PATH="{cache_path}"
 
 # Check if GGUF file matching quant already exists
 if [ -d "$CACHE_PATH/snapshots" ]; then
