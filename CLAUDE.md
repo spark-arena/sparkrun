@@ -2056,6 +2056,18 @@ Before launching, sparkrun can pre-sync models and container images from the con
   selective quant-file download. `models/download.py:model_cache_path()` is the **only** implementation of the HF
   `models--org--name` cache mangling — the remote ensure scripts take the resolved path as a rendered `{cache_path}`
   rather than re-deriving it in bash, which is how the check and the rsync destination once disagreed (issue #291).
+
+  **The remote cache check must honor `revision`.** It once reached only the *downloader*, so a host holding a
+  different revision reported a hit and the pin was silently ignored — the workload served weights the recipe had
+  explicitly pinned against. Snapshot resolution reads the *target's* filesystem, so unlike the mangling it cannot be
+  rendered control-side; it lives in one included helper (`scripts/_hf_snapshots.sh`) whose contract mirrors
+  `is_model_cached` — an explicit revision checks that ref or commit **only, with no fallback**, while an unpinned
+  lookup prefers `refs/main` and falls back to any snapshot. Two things there are load-bearing: the helper is
+  **brace-free including its comments** (both callers go through `str.format()`, so one brace is a `KeyError` inside a
+  launch — the `_mgmt_iface.sh` rule), and the shell scan stays **recursive** where `is_model_cached` globs the
+  snapshot's top level only, because narrowing it would re-download every repo that shards weights into a
+  subdirectory. `revision` is recipe content, so it is `shlex.quote`d and reaches the downloader through the script's
+  positional parameters — interpolating it as command text was a live injection running on every host.
 - **Containers** (`containers/`): Pulls image locally (`containers/registry.py`), then streams via
   `docker save | ssh docker load` (`containers/distribute.py`, `containers/sync.py`). Checks image IDs to skip hosts
   that already have the correct image.

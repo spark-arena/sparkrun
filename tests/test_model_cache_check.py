@@ -13,9 +13,19 @@ and a hard launch failure on a host with no ``huggingface-cli``/``uvx``, no
 egress, or no token for a gated repo, despite the weights being present.
 
 The mangling now has one implementation (``model_cache_path``) and is rendered
-into the script as ``{cache_path}``.  The shell half is exercised for real
-against a fixture cache tree: the defect lived entirely in shell string
-semantics, which no amount of Python mocking would have caught.
+into the script as ``{cache_path}``.
+
+The same check was also **revision-blind**: ``{revision_flag}`` reached only the
+downloader below it, while the check scanned every snapshot.  A host holding a
+different revision therefore reported a hit, the pinned revision was never
+fetched, and the workload served weights the recipe had explicitly pinned
+against — silently.  Snapshot resolution reads the *target's* filesystem, so
+unlike the mangling it cannot move control-side; it lives in one shared helper,
+``_hf_snapshots.sh``, whose contract mirrors ``is_model_cached``.
+
+The shell half is exercised for real against a fixture cache tree: both defects
+lived entirely in shell semantics, which no amount of Python mocking would have
+caught.
 """
 
 from __future__ import annotations
@@ -42,8 +52,8 @@ _MODEL = "RadixArk/Qwen3.8-Flash-Next-NVFP4"
 _EXPECTED_DIR = "models--RadixArk--Qwen3.8-Flash-Next-NVFP4"
 
 
-def _render(model_id: str, cache: str = "/mnt/huggingface") -> str:
-    return _build_model_ensure_script(model_id, cache)
+def _render(model_id: str, cache: str = "/mnt/huggingface", revision: str | None = None) -> str:
+    return _build_model_ensure_script(model_id, cache, revision=revision)
 
 
 def _stub_bin(tmp_path):
@@ -125,12 +135,21 @@ class TestEnsureScriptCachePath:
 # ---------------------------------------------------------------------------
 
 
-def _make_cache(tmp_path, dirname: str, *filenames: str):
-    """Materialize ``<tmp>/hub/<dirname>/snapshots/abc123/<files>``."""
-    snapshot = tmp_path / "hub" / dirname / "snapshots" / "abc123"
-    snapshot.mkdir(parents=True)
+def _make_cache(tmp_path, dirname: str, *filenames: str, commit: str = "abc123", ref: str | None = None):
+    """Materialize ``<tmp>/hub/<dirname>/snapshots/<commit>/<files>``.
+
+    *ref* additionally writes ``refs/<ref>`` pointing at *commit*, which is how
+    a real HF cache records a branch or tag.
+    """
+    model_cache = tmp_path / "hub" / dirname
+    snapshot = model_cache / "snapshots" / commit
+    snapshot.mkdir(parents=True, exist_ok=True)
     for filename in filenames:
         (snapshot / filename).write_text("weights")
+    if ref is not None:
+        refs = model_cache / "refs"
+        refs.mkdir(parents=True, exist_ok=True)
+        (refs / ref).write_text(commit + "\n")
     return snapshot
 
 
@@ -192,3 +211,163 @@ class TestEnsureScriptUnderBash:
 
         assert "already cached" not in proc.stdout
         assert "STUB-DOWNLOAD" in proc.stdout
+
+
+# ---------------------------------------------------------------------------
+# Revision pinning
+# ---------------------------------------------------------------------------
+
+
+@needs_bash
+class TestRevisionPinning:
+    """A pinned revision must gate the cache check, not just the download.
+
+    ``{revision_flag}`` used to reach only the downloader while the check
+    scanned every snapshot, so a host holding a *different* revision reported
+    a hit and the pin was silently ignored — the workload then served weights
+    the recipe had explicitly pinned against.
+    """
+
+    def test_other_revision_cached_is_not_a_hit(self, tmp_path):
+        _make_cache(tmp_path, _EXPECTED_DIR, "model.safetensors", commit="oldsha", ref="main")
+
+        proc = _run(_render(_MODEL, cache=str(tmp_path), revision="newsha"), _stub_bin(tmp_path))
+
+        assert "already cached" not in proc.stdout
+        assert "STUB-DOWNLOAD" in proc.stdout
+        assert "--revision newsha" in proc.stdout
+
+    def test_matching_ref_is_a_hit(self, tmp_path):
+        _make_cache(tmp_path, _EXPECTED_DIR, "model.safetensors", commit="deadbeef", ref="v2.0")
+
+        proc = _run(_render(_MODEL, cache=str(tmp_path), revision="v2.0"), _stub_bin(tmp_path))
+
+        assert proc.returncode == 0
+        assert "already cached" in proc.stdout
+        assert "STUB-DOWNLOAD" not in proc.stdout
+
+    def test_revision_as_commit_hash_is_a_hit(self, tmp_path):
+        """A revision may name the snapshot directory directly, with no ref."""
+        _make_cache(tmp_path, _EXPECTED_DIR, "model.safetensors", commit="deadbeef")
+
+        proc = _run(_render(_MODEL, cache=str(tmp_path), revision="deadbeef"), _stub_bin(tmp_path))
+
+        assert "already cached" in proc.stdout
+
+    def test_pinned_ref_without_weights_is_not_a_hit(self, tmp_path):
+        """No fallback: another snapshot's weights are not the pinned ones."""
+        _make_cache(tmp_path, _EXPECTED_DIR, "config.json", commit="wanted", ref="v2.0")
+        _make_cache(tmp_path, _EXPECTED_DIR, "model.safetensors", commit="other")
+
+        proc = _run(_render(_MODEL, cache=str(tmp_path), revision="v2.0"), _stub_bin(tmp_path))
+
+        assert "already cached" not in proc.stdout
+        assert "STUB-DOWNLOAD" in proc.stdout
+
+    def test_unpinned_prefers_refs_main(self, tmp_path):
+        _make_cache(tmp_path, _EXPECTED_DIR, "model.safetensors", commit="mainsha", ref="main")
+
+        proc = _run(_render(_MODEL, cache=str(tmp_path)), _stub_bin(tmp_path))
+
+        assert "already cached" in proc.stdout
+        assert "--revision" not in proc.stdout
+
+    def test_unpinned_falls_back_to_any_snapshot(self, tmp_path):
+        """A hand-placed cache has no refs/ at all and must still count."""
+        _make_cache(tmp_path, _EXPECTED_DIR, "model.safetensors", commit="whatever")
+
+        proc = _run(_render(_MODEL, cache=str(tmp_path)), _stub_bin(tmp_path))
+
+        assert "already cached" in proc.stdout
+
+    def test_gguf_honors_revision(self, tmp_path):
+        _make_cache(
+            tmp_path,
+            "models--Qwen--Qwen3-1.7B-GGUF",
+            "Qwen3-1.7B-Q4_K_M.gguf",
+            commit="oldsha",
+            ref="main",
+        )
+
+        proc = _run(
+            _render("Qwen/Qwen3-1.7B-GGUF:Q4_K_M", cache=str(tmp_path), revision="newsha"),
+            _stub_bin(tmp_path),
+        )
+
+        assert "already cached" not in proc.stdout
+        assert "--revision newsha" in proc.stdout
+
+    def test_revision_is_not_shell_injected(self, tmp_path):
+        """`revision` is recipe content and reaches a script run on every host.
+
+        Exercised on a cache **miss** deliberately: the value used to be
+        interpolated into the download command as bare text, which a hit would
+        short-circuit past.  It now travels in positional parameters.
+        """
+        evil = "$(touch " + str(tmp_path / "pwned") + ")"
+
+        proc = _run(_render(_MODEL, cache=str(tmp_path), revision=evil), _stub_bin(tmp_path))
+
+        assert not (tmp_path / "pwned").exists()
+        # Reached the downloader, and handed it the value verbatim.
+        assert "STUB-DOWNLOAD" in proc.stdout
+        assert f"--revision {evil}" in proc.stdout
+
+
+# ---------------------------------------------------------------------------
+# Parity with the control-side peer
+# ---------------------------------------------------------------------------
+
+
+@needs_bash
+class TestParityWithIsModelCached:
+    """The remote check must agree with ``is_model_cached``.
+
+    They are two implementations of one question — the drift between them is
+    the whole subject of this file — so the agreement is asserted directly
+    rather than left to matching prose in two docstrings.
+    """
+
+    # (label, files, commit, ref, queried revision)
+    CASES = [
+        ("unpinned hit via refs/main", ("model.safetensors",), "sha1", "main", None),
+        ("unpinned hit, no refs at all", ("model.safetensors",), "sha1", None, None),
+        ("unpinned miss, config only", ("config.json",), "sha1", "main", None),
+        ("pinned hit via ref", ("model.safetensors",), "sha1", "v2", "v2"),
+        ("pinned hit via commit hash", ("model.safetensors",), "sha1", None, "sha1"),
+        ("pinned miss, other revision", ("model.safetensors",), "sha1", "main", "v9"),
+        ("pinned miss, ref has no weights", ("config.json",), "sha1", "v2", "v2"),
+        ("hit on .bin weights", ("pytorch_model.bin",), "sha1", "main", None),
+    ]
+
+    @pytest.mark.parametrize("label,files,commit,ref,revision", CASES, ids=[c[0] for c in CASES])
+    def test_agrees(self, tmp_path, label, files, commit, ref, revision):
+        from sparkrun.models.download import is_model_cached
+
+        _make_cache(tmp_path, _EXPECTED_DIR, *files, commit=commit, ref=ref)
+
+        proc = _run(_render(_MODEL, cache=str(tmp_path), revision=revision), _stub_bin(tmp_path))
+        shell_hit = "already cached" in proc.stdout
+        python_hit = is_model_cached(_MODEL, cache_dir=str(tmp_path), revision=revision)
+
+        assert shell_hit == python_hit, f"{label}: shell={shell_hit} python={python_hit}"
+
+    def test_known_divergence_is_deliberate(self, tmp_path):
+        """Sharded-into-a-subdirectory repos: the shell scan stays recursive.
+
+        ``is_model_cached`` globs the snapshot's top level only.  Narrowing the
+        remote check to match would re-download those repos on every launch,
+        which is the failure this file exists to prevent — so the shell is
+        deliberately the more permissive of the two.
+        """
+        from sparkrun.models.download import is_model_cached
+
+        snapshot = _make_cache(tmp_path, _EXPECTED_DIR, commit="sha1", ref="main")
+        nested = snapshot / "shards"
+        nested.mkdir()
+        (nested / "model-00001.safetensors").write_text("weights")
+
+        proc = _run(_render(_MODEL, cache=str(tmp_path)), _stub_bin(tmp_path))
+
+        assert "already cached" in proc.stdout
+        assert is_model_cached(_MODEL, cache_dir=str(tmp_path)) is False

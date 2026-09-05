@@ -4,27 +4,48 @@ echo "Checking GGUF model cache for {repo_id} (quant: {quant})..."
 # Rendered control-side by models.download.model_cache_path — see the note in
 # model_sync.sh; the bash-side derivation was wrong for every ``org/model`` id.
 CACHE_PATH="{cache_path}"
+# Pre-quoted control-side; empty string when the entry is unpinned.
+MODEL_REVISION={revision}
 
-# Check if GGUF file matching quant already exists
-if [ -d "$CACHE_PATH/snapshots" ]; then
-    MATCH=$(find "$CACHE_PATH/snapshots" -name "*{quant}*.gguf" -print -quit 2>/dev/null)
-    if [ -n "$MATCH" ]; then
-        echo "GGUF model already cached: $MATCH"
-        exit 0
+# sparkrun:include _hf_snapshots.sh
+
+# With a pinned revision, only that snapshot counts — see model_sync.sh.
+SNAPSHOT_DIRS=$(sparkrun_hf_snapshot_dirs "$CACHE_PATH" "$MODEL_REVISION")
+
+# The directory is keyed by repo, so the quant still has to match a file.
+GGUF_MATCH=""
+while IFS= read -r SNAPSHOT_DIR; do
+    [ -n "$SNAPSHOT_DIR" ] || continue
+    GGUF_MATCH=$(find "$SNAPSHOT_DIR" -name "*{quant}*.gguf" -print -quit 2>/dev/null)
+    if [ -n "$GGUF_MATCH" ]; then
+        break
     fi
+done <<<"$SNAPSHOT_DIRS"
+
+if [ -n "$GGUF_MATCH" ]; then
+    echo "GGUF model already cached: $GGUF_MATCH"
+    exit 0
+fi
+
+# Positional params carry the optional --revision so the value is never
+# interpolated into the command line as text.
+if [ -n "$MODEL_REVISION" ]; then
+    set -- --revision "$MODEL_REVISION"
+else
+    set --
 fi
 
 echo "Downloading GGUF model: {repo_id} (quant: {quant})..."
 if command -v huggingface-cli &>/dev/null; then
-    huggingface-cli download "{repo_id}" --include "*{quant}*" "*mmproj*" {revision_flag}--cache-dir "{cache}/hub"
+    huggingface-cli download "{repo_id}" --include "*{quant}*" "*mmproj*" "$@" --cache-dir "{cache}/hub"
 elif command -v uvx &>/dev/null; then
-    uvx hf download "{repo_id}" --include "*{quant}*" "*mmproj*" {revision_flag}--cache-dir "{cache}/hub"
+    uvx hf download "{repo_id}" --include "*{quant}*" "*mmproj*" "$@" --cache-dir "{cache}/hub"
 else
     echo "Installing uv for model download access..."
     curl -LsSf https://astral.sh/uv/install.sh | sh
     export PATH="$HOME/.local/bin:$PATH"
     if command -v uvx &>/dev/null; then
-        uvx hf download "{repo_id}" --include "*{quant}*" "*mmproj*" {revision_flag}--cache-dir "{cache}/hub"
+        uvx hf download "{repo_id}" --include "*{quant}*" "*mmproj*" "$@" --cache-dir "{cache}/hub"
     else
         echo "ERROR: failed to install uv; cannot download model on this host" >&2
         exit 1

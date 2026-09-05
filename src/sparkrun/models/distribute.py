@@ -290,11 +290,18 @@ def _build_model_ensure_script(
     the ``models--org--name`` rule now has exactly one implementation and the
     check cannot disagree with the rsync destination built from the same
     function.
+
+    *revision* is rendered pre-quoted (empty string when unpinned) and reaches
+    the downloader through the script's positional parameters rather than as
+    interpolated command text.  The scripts' cache check honors it via
+    ``_hf_snapshots.sh``: it previously reached only the *download* command, so
+    a host holding a different revision reported a hit and the pin was silently
+    ignored.
     """
     from sparkrun.models.download import is_gguf_model, parse_gguf_model_spec
     from sparkrun.utils.shell import quote
 
-    revision_flag = "--revision %s " % revision if revision else ""
+    revision_arg = quote(revision or "")
     cache_path = model_cache_path(model_id, cache)
     if is_gguf_model(model_id):
         repo_id, quant = parse_gguf_model_spec(model_id)
@@ -303,14 +310,14 @@ def _build_model_ensure_script(
             quant=quant or "",
             cache=cache,
             cache_path=cache_path,
-            revision_flag=revision_flag,
+            revision=revision_arg,
         )
     else:
         script = read_script("model_sync.sh").format(
             model_id=model_id,
             cache=cache,
             cache_path=cache_path,
-            revision_flag=revision_flag,
+            revision=revision_arg,
         )
 
     # Inject HF token for gated models
