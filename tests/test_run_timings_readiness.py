@@ -41,6 +41,23 @@ from sparkrun.core.launcher import ReadinessWatcher, ServeReadiness, wait_for_en
 from sparkrun.core.timing import Timeline
 from sparkrun.orchestration.health import wait_for_healthy, wait_for_port
 
+
+@pytest.mark.parametrize(
+    ("verbosity", "expected"),
+    [(0, 2), (1, 3), (2, 4), (3, None), (4, None), (-1, 2)],
+)
+def test_run_timing_tree_depth_tracks_global_verbosity(verbosity, expected):
+    from sparkrun.cli._run import _timing_tree_depth
+
+    class Context:
+        obj = {"verbose": verbosity}
+
+        def find_root(self):
+            return self
+
+    assert _timing_tree_depth(Context()) == expected
+
+
 # ---------------------------------------------------------------------------
 # Cancellation in the underlying waiters
 # ---------------------------------------------------------------------------

@@ -23,11 +23,13 @@ _TEST_RECIPE_SOLO_NAME = "test-solo-only"
 
 _TEST_RECIPE_SOLO_DATA = {
     "recipe_version": "2",
-    "name": "Test Solo Only Recipe",
+    # No `name:` either — it is the v1 spelling, ignored on load (the name is
+    # the filename), and reported as `deprecated-recipe-name` for v2.
     "description": "A test recipe capped at max_nodes=1",
     "model": "Qwen/Qwen3-1.7B",
     "runtime": "sglang",
-    "mode": "auto",
+    # No `mode:` — it is deprecated for v2 (see `deprecated-topology`), and
+    # `max_nodes: 1` is what it was an indirect spelling of anyway.
     "max_nodes": 1,
     "container": "scitrera/dgx-spark-sglang:latest",
     "defaults": {
@@ -40,11 +42,13 @@ _TEST_RECIPE_NAME = "test-sglang-cluster"
 
 _TEST_RECIPE_DATA = {
     "sparkrun_version": "2",
-    "name": "Test SGLang Cluster Recipe",
+    # Likewise no `name:` — see above.
     "description": "A test recipe for CLI integration tests",
     "model": "Qwen/Qwen3-1.7B",
     "runtime": "sglang",
-    "mode": "cluster",
+    # Likewise no `mode:`. It said `cluster` beside `min_nodes: 1`, which is
+    # the shape the deprecation is about: the node range is what placement and
+    # validation actually enforce, and `mode` disagreed with it.
     "min_nodes": 1,
     "max_nodes": 8,
     "container": "scitrera/dgx-spark-sglang:latest",
@@ -225,7 +229,6 @@ class TestSearchCommand:
         (tmp_path / "cwd-llama-cpp.yaml").write_text(
             yaml.safe_dump(
                 {
-                    "name": "cwd-llama-cpp",
                     "model": "unsloth/Qwen3-1.7B-GGUF:Q4_K_M",
                     "runtime": "llama-cpp",
                     # discover_cwd_recipes -> is_recipe_file requires container

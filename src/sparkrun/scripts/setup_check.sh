@@ -8,6 +8,59 @@ set -uo pipefail
 
 WHO=$(id -un 2>/dev/null || echo unknown)
 echo "CHECK_USER=$WHO"
+echo "CHECK_UID=$(id -u 2>/dev/null || echo unknown)"
+
+# --- systemd-logind IPC reaping ---
+# `RemoveIPC=yes` (the Ubuntu 24.04 / DGX OS default) makes logind delete every
+# POSIX semaphore, shared-memory segment and message queue owned by a regular
+# UID once that user's last session ends. That reaps a detached workload's own
+# IPC whenever it shares the host's namespace -- an `ipc: host` container run
+# as the SSH user, or the `local` executor, which has no namespace at all.
+# Enabled lingering keeps the user manager alive and suppresses the reap.
+#
+# Read the *effective* value from logind over D-Bus first (config lives across
+# logind.conf + logind.conf.d and defaults to yes when unset, so parsing one
+# file answers a different question); fall back to the config, then to
+# "unknown". Every probe here is read-only and works unprivileged.
+_REMOVE_IPC=unknown
+if command -v busctl >/dev/null 2>&1; then
+    # NOTE no awk/sed braces anywhere in this script -- it is delivered through
+    # str.format() (for {peers}), so a literal brace raises KeyError at render.
+    _RI=$(busctl get-property org.freedesktop.login1 /org/freedesktop/login1 \
+              org.freedesktop.login1.Manager RemoveIPC 2>/dev/null | cut -d' ' -f2 | tr -d '[:space:]')
+    case "$_RI" in
+        true) _REMOVE_IPC=yes ;;
+        false) _REMOVE_IPC=no ;;
+    esac
+fi
+if [ "$_REMOVE_IPC" = unknown ] && [ -d /run/systemd/system ]; then
+    # Last uncommented RemoveIPC= across the drop-in set wins for our purposes;
+    # absent means the built-in default, which is yes.
+    _RI=$(grep -hiE '^[[:space:]]*RemoveIPC[[:space:]]*=' \
+              /etc/systemd/logind.conf /etc/systemd/logind.conf.d/*.conf \
+              /run/systemd/logind.conf.d/*.conf /usr/lib/systemd/logind.conf.d/*.conf 2>/dev/null \
+              | tail -n 1 | cut -d= -f2 | tr -d '[:space:]' | tr 'A-Z' 'a-z')
+    case "$_RI" in
+        no|false|0|off) _REMOVE_IPC=no ;;
+        yes|true|1|on) _REMOVE_IPC=yes ;;
+        *) _REMOVE_IPC=yes ;;
+    esac
+fi
+echo "CHECK_LOGIND_REMOVE_IPC=$_REMOVE_IPC"
+
+_LINGER=unknown
+if command -v loginctl >/dev/null 2>&1; then
+    _LG=$(loginctl show-user "$WHO" --property=Linger --value 2>/dev/null)
+    case "$_LG" in
+        yes) _LINGER=1 ;;
+        no) _LINGER=0 ;;
+    esac
+fi
+if [ "$_LINGER" = unknown ] && [ -d /var/lib/systemd/linger ]; then
+    # The marker directory is world-readable, so this works without a session.
+    if [ -e "/var/lib/systemd/linger/$WHO" ]; then _LINGER=1; else _LINGER=0; fi
+fi
+echo "CHECK_LOGIND_LINGER=$_LINGER"
 
 # --- Docker ---
 if command -v docker >/dev/null 2>&1; then

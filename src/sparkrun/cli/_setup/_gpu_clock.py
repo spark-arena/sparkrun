@@ -111,7 +111,7 @@ def _report_status(host_list, ssh_kwargs, dry_run) -> int:
     if len(table) > 1:
         widths = [max(len(row[i]) for row in table) for i in range(len(header))]
         for row in table:
-            click.echo("  ".join(cell.ljust(w) for cell, w in zip(row, widths)).rstrip())
+            click.echo("  ".join(cell.ljust(w) for cell, w in zip(row, widths, strict=True)).rstrip())
         click.echo()
         click.echo("* driver stays loaded while idle — holds the lock, but not across reboots")
         click.echo()

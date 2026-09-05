@@ -84,6 +84,15 @@ asyncio_mode = "auto"
 line-length = 140
 target-version = "py312"
 
+[tool.ruff.lint]
+# ruff's default set (E4/E7/E9/F) plus flake8-bugbear.  B is enforced rather
+# than merely available because its three recurring findings here are each a
+# silent failure: an unchained `raise` inside `except` loses the traceback that
+# names the real cause, and a `zip()` without `strict=` truncates to the shorter
+# input rather than reporting the skew.  Keeping it green means every new
+# `zip()` states which it wants.
+select = ["E4", "E7", "E9", "F", "B"]
+
 [dependency-groups]
 dev = [
     "pre-commit>=4.5.1",

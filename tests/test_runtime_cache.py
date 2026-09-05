@@ -10,6 +10,8 @@ See ``.slop/runtime-cache-design.md``.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from sparkrun.core.recipe import Recipe
@@ -367,6 +369,23 @@ def test_root_defaults_under_the_sparkrun_cache_dir():
     assert resolve_runtime_cache_root(RuntimeCacheSettings(), "/home/u/.cache/sparkrun") == "/home/u/.cache/sparkrun/runtime-cache"
 
 
+def test_effective_runtime_cache_dir_prefers_cluster_sparkrun_root():
+    from sparkrun.core.launcher import resolve_effective_runtime_cache_dir
+
+    cluster = SimpleNamespace(sparkrun_cache_dir="/mnt/local/sparkrun")
+    config = SimpleNamespace(cache_dir="/control/cache")
+    assert (
+        resolve_effective_runtime_cache_dir(
+            ["host1"],
+            {},
+            config,
+            dry_run=True,
+            cluster=cluster,
+        )
+        == "/mnt/local/sparkrun"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Generated script: create + stamp + prune
 # ---------------------------------------------------------------------------
@@ -578,7 +597,7 @@ def test_host_executors_prepare_the_cache_over_ssh(monkeypatch):
         seen = {}
         monkeypatch.setattr(
             "sparkrun.orchestration.runtime_cache.run_remote_scripts_parallel",
-            lambda hosts, script, **kw: seen.update(hosts=hosts, script=script, kw=kw) or [],
+            lambda hosts, script, _seen=seen, **kw: _seen.update(hosts=hosts, script=script, kw=kw) or [],
         )
         m = _mounts()
         executor_cls().ensure_runtime_cache(m, ["h1", "h2"])

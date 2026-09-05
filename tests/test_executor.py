@@ -19,7 +19,7 @@ from sparkrun.orchestration.executor import (
     Executor,
     ExecutorConfig,
 )
-from sparkrun.orchestration.executors.docker import DockerExecutor
+from sparkrun.orchestration.executors.docker import DockerExecutor, _warn_host_ipc_reaper
 from sparkrun.utils.shell import b64_encode_cmd
 
 
@@ -37,7 +37,7 @@ class TestExecutorConfig:
         assert cfg.restart_policy is None
         assert cfg.privileged is True
         assert cfg.gpus == "all"
-        assert cfg.ipc == "host"
+        assert cfg.ipc == "shareable"
         assert cfg.shm_size == "25gb"
         assert cfg.network == "host"
 
@@ -222,6 +222,18 @@ class TestDockerExecutorConfig:
         cmd = executor.run_cmd("img:latest")
         assert "--restart on-failure:3" in cmd
         assert "--rm" not in cmd
+
+    def test_default_ipc_is_shareable(self):
+        cmd = DockerExecutor().run_cmd("img:latest")
+        assert "--ipc=shareable" in cmd
+        assert "--ipc=host" not in cmd
+
+    def test_default_shm_size_is_emitted_and_effective(self):
+        # Docker ignores --shm-size under --ipc=host, so this flag only means
+        # anything because the ipc default is a container-owned namespace.
+        cmd = DockerExecutor(ExecutorConfig.from_chain(DockerExecutor.default_config())).run_cmd("img:latest")
+        assert "--ipc=shareable" in cmd
+        assert "--shm-size=32gb" in cmd
 
     def test_custom_shm_size(self):
         cfg = ExecutorConfig(shm_size="20gb")
@@ -542,3 +554,53 @@ class TestEnvDebugMasking:
 
         dump_lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("  ")]
         assert "  VLLM_LOGGING_LEVEL=INFO" in "\n".join(dump_lines)
+
+
+# ---------------------------------------------------------------------------
+# Host-IPC advisory (issue #285)
+# ---------------------------------------------------------------------------
+
+
+class TestHostIpcAdvisory:
+    """``ipc: host`` + a non-root container user is reapable by systemd-logind.
+
+    The combination is legal and sometimes wanted (cross-container shared
+    memory on one host), so it warns rather than refusing — but silence would
+    leave the operator to rediscover an intermittent, timing-dependent startup
+    failure from first principles.
+    """
+
+    @staticmethod
+    def _run(cfg, caplog):
+        _warn_host_ipc_reaper.cache_clear()
+        with caplog.at_level(logging.WARNING, logger="sparkrun.orchestration.executors.docker"):
+            DockerExecutor(cfg).run_cmd("img:latest")
+        return caplog.text
+
+    def test_warns_for_auto_user(self, caplog):
+        text = self._run(ExecutorConfig(ipc="host", user="$SHELL_USER"), caplog)
+        assert "RemoveIPC" in text
+        assert "enable-linger" in text
+
+    def test_warns_for_explicit_non_root_uid(self, caplog):
+        assert "RemoveIPC" in self._run(ExecutorConfig(ipc="host", user="1000:1000"), caplog)
+
+    def test_silent_for_root_user(self, caplog):
+        assert "RemoveIPC" not in self._run(ExecutorConfig(ipc="host", user="root"), caplog)
+        assert "RemoveIPC" not in self._run(ExecutorConfig(ipc="host", user="0:0"), caplog)
+
+    def test_silent_when_no_user_is_requested(self, caplog):
+        # No --user means the image's own user, which is root for the images
+        # sparkrun runs against — logind never reaps system UIDs.
+        assert "RemoveIPC" not in self._run(ExecutorConfig(ipc="host"), caplog)
+
+    def test_silent_on_the_default_namespace(self, caplog):
+        assert "RemoveIPC" not in self._run(ExecutorConfig(user="$SHELL_USER"), caplog)
+
+    def test_warns_once_per_user(self, caplog):
+        _warn_host_ipc_reaper.cache_clear()
+        cfg = ExecutorConfig(ipc="host", user="$SHELL_USER")
+        with caplog.at_level(logging.WARNING, logger="sparkrun.orchestration.executors.docker"):
+            for _ in range(4):  # one per node of a 4-node launch
+                DockerExecutor(cfg).run_cmd("img:latest")
+        assert sum(1 for r in caplog.records if "RemoveIPC" in r.getMessage()) == 1

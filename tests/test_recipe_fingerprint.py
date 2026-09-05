@@ -180,6 +180,47 @@ def test_metadata_only_recipes_share_a_fingerprint():
     assert derive_recipe_fingerprint(a) == derive_recipe_fingerprint(b)
 
 
+def test_registry_provenance_does_not_change_fingerprint():
+    """A registry reference and its local YAML identify the same workload."""
+    recipe = _recipe()
+    local = derive_recipe_fingerprint(recipe)
+
+    recipe.source_registry = "example"
+    recipe.source_registry_url = "https://github.com/example/recipes.git"
+    recipe._qualified_name_override = "@example/qwen"
+
+    assert derive_recipe_fingerprint(recipe) == local
+
+
+def test_implicit_model_revision_template_variable_preserves_fingerprint():
+    """Template-variable injection must not invalidate published identities.
+
+    ``model_revision`` was historically hashed as a top-level attribute.  It
+    later became an implicit config-chain entry so command templates could use
+    ``{model_revision}``; that second representation must not move the digest.
+    """
+    recipe = _recipe(model_revision="abc123")
+    assert recipe.build_config_chain().get("model_revision") == "abc123"
+
+    class LegacyRecipe(Recipe):
+        def build_config_chain(self, overrides=None, user_config=None):
+            chain = super().build_config_chain(overrides, user_config)
+            return {key: chain.get(key) for key in chain.keys() if key != "model_revision"}
+
+    legacy = LegacyRecipe(_recipe(model_revision="abc123")._raw)
+
+    assert derive_recipe_fingerprint(recipe) == derive_recipe_fingerprint(legacy)
+
+
+def test_explicit_model_revision_override_still_changes_fingerprint():
+    recipe = _recipe(model_revision="abc123")
+
+    assert derive_recipe_fingerprint(recipe) != derive_recipe_fingerprint(
+        recipe,
+        {"model_revision": "def456"},
+    )
+
+
 # ---------------------------------------------------------------------------
 # Host-dependence: why the digest must be derived before the launch
 # ---------------------------------------------------------------------------

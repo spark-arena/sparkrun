@@ -21,10 +21,14 @@ from sparkrun.core.recipe_items import (
     RecipeItemHandler,
     register_recipe_item,
 )
+from sparkrun.core.registry import RegistryEntry
+from sparkrun.core.registry_defaults import register_default_registry
 
 __all__ = [
     "FunctionalRecipeItemHandler",
     "RecipeItemHandler",
+    "RegistryEntry",
     "register_cli_command",
+    "register_default_registry",
     "register_recipe_item",
 ]

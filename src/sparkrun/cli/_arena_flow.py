@@ -19,21 +19,133 @@ from sparkrun.core.benchmark_profiles import ARENA_BENCHMARK_PROFILE  # noqa: F4
 logger = logging.getLogger(__name__)
 
 
+def _is_interactive() -> bool:
+    """``sys.stdin.isatty()``, behind a seam so both branches are testable.
+
+    ``CliRunner`` replaces ``sys.stdin`` with a non-TTY stream for the duration
+    of an invocation, so the interactive path is otherwise unreachable from a
+    test — which would leave the branch that actually prompts unexercised.
+    """
+    return sys.stdin.isatty()
+
+
+def _count_phrase(counts: "dict[str, int]") -> str:
+    """ "3 warnings and 4 suggestions", omitting whichever level is absent."""
+    from sparkrun.core.validation import SUGGESTION, WARNING
+
+    parts = [
+        "%d %s%s" % (counts[level], label, "" if counts[level] == 1 else "s")
+        for level, label in ((WARNING, "warning"), (SUGGESTION, "suggestion"))
+        if counts[level]
+    ]
+    return " and ".join(parts)
+
+
+def validate_recipe_for_submission(recipe_name: str, *, ctx: click.Context, dry_run: bool = False) -> None:
+    """Show the *full* validation report and confirm before an arena submission.
+
+    The benchmark path already validates (``api._benchmark`` calls
+    ``validate_for_launch``), so this is not the launch's safety check — it
+    asks a different question.  ``validate_for_launch`` deliberately withholds
+    suggestions and collapses deprecations, because at launch you are usually
+    running someone else's recipe and the migration is not your work.  A
+    submission inverts both premises: the recipe is *yours*, it is about to be
+    published, and reproducibility for whoever reads it later is the whole
+    point.  So this is the ``recipe validate`` report — every severity, nothing
+    collapsed — shown at the one moment the author can still act on it.
+
+    Gated to the arena paths for that reason and no other.  An ordinary
+    ``sparkrun benchmark`` publishes nothing, and printing suggestions there
+    would undo the rule the launch paths share.
+
+    Errors abort without prompting: the launch would refuse anyway, and
+    "continue?" is not a real question when the answer cannot be yes.  Warnings
+    and suggestions prompt, because both are things a submitter can reasonably
+    decide to accept.  A clean recipe says nothing at all — a report with no
+    findings is noise between the user and their benchmark.
+    """
+    from sparkrun.core.validation import ERROR, SUGGESTION, WARNING, validate_recipe
+    from sparkrun.utils.cli_formatters import format_validation_report
+    from ._common import _get_config_and_registry, _get_context, _load_recipe
+
+    sctx = _get_context(ctx)
+    config, _ = _get_config_and_registry()
+    recipe, _path, _mgr = _load_recipe(config, recipe_name)
+
+    issues = validate_recipe(recipe, config=config, v=sctx.variables)
+    if not issues:
+        return
+
+    counts = {level: sum(1 for i in issues if i.severity == level) for level in (ERROR, WARNING, SUGGESTION)}
+    click.echo(
+        format_validation_report(
+            recipe.qualified_name,
+            issues,
+            title="Validating recipe before submission",
+        )
+    )
+    click.echo()
+
+    if counts[ERROR]:
+        click.echo(
+            "The recipe has %d error%s and cannot be launched, so it cannot be submitted."
+            % (counts[ERROR], "" if counts[ERROR] == 1 else "s"),
+            err=True,
+        )
+        sys.exit(1)
+
+    click.echo(
+        "The recipe contains %s. We suggest that you address all of these issues before submitting a "
+        "benchmark; problematic recipes may not be published to Spark Arena." % _count_phrase(counts)
+    )
+
+    if dry_run:
+        click.echo("[dry-run] Not prompting; nothing will be submitted.")
+        click.echo()
+        return
+
+    # Not a security gate (that is the hook trust prompt, which refuses without
+    # a TTY). This is quality advice on a path that people script, so a
+    # non-interactive run proceeds and says so rather than aborting a
+    # submission that worked yesterday.
+    if not _is_interactive():
+        click.echo("Not running interactively — continuing without confirmation.")
+        click.echo()
+        return
+
+    if not click.confirm("Continue with the benchmark and submission?", default=False):
+        click.echo("Aborted.")
+        sys.exit(1)
+    click.echo()
+
+
 def preflight_arena(
     *,
     local_test: bool,
     ctx: click.Context,
+    recipe_name: str,
+    dry_run: bool = False,
 ) -> tuple[str, str | None]:
-    """Authenticate (unless ``local_test``) and generate a stable submission id.
+    """Authenticate (unless ``local_test``), validate the recipe, mint a submission id.
 
     Returns ``(submission_id, profile)`` — profile is ``None`` in local-test
     mode (caller chooses what to use) or the arena's pinned profile name.
+
+    Validation runs *after* auth so a user who is not logged in is told the
+    thing that blocks them outright before being asked to review advice, and
+    so the report — and its prompt — sit directly above the launch they gate.
+    It runs in local-test mode too: that path simulates the upload, and
+    rehearsing a submission without its checks would defeat the rehearsal.
+
+    *recipe_name* is required rather than optional so a future arena entry
+    point cannot bypass the gate by forgetting to pass it.
     """
     from sparkrun.arena.upload import generate_submission_id
 
     if local_test:
         click.echo("[local-test] Skipping authentication — upload will be simulated.")
         click.echo()
+        validate_recipe_for_submission(recipe_name, ctx=ctx, dry_run=dry_run)
         submission_id = generate_submission_id()
         return submission_id, None
 
@@ -53,6 +165,8 @@ def preflight_arena(
 
     click.echo("Authentication verified.")
     click.echo()
+
+    validate_recipe_for_submission(recipe_name, ctx=ctx, dry_run=dry_run)
 
     submission_id = generate_submission_id()
     return submission_id, ARENA_BENCHMARK_PROFILE

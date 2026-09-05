@@ -70,6 +70,14 @@ _EXECUTOR_OVERRIDE_KEYS = frozenset(
 )
 
 
+def _timing_tree_depth(ctx: click.Context) -> int | None:
+    """Choose the ordinary ``run`` timing detail from global verbosity."""
+    from sparkrun.utils.cli_formatters import timing_tree_depth_for_verbosity
+
+    verbose_count = (ctx.find_root().obj or {}).get("verbose", 0)
+    return timing_tree_depth_for_verbosity(verbose_count)
+
+
 def _echo_hub_notice() -> None:
     """Report skipped HuggingFace Hub lookups, at most once per command.
 
@@ -196,7 +204,7 @@ def _summarize_platforms(
     if len(set(lines)) == 1:
         return lines[0], None
 
-    return "mixed", list(zip(host_list, lines))
+    return "mixed", list(zip(host_list, lines, strict=True))
 
 
 @click.command()
@@ -487,9 +495,12 @@ def run(
         config=config,
         v=v,
         include_unmapped_keys=False,
+        # Echo back the reference the user typed: it is what the `recipe
+        # validate` hint has to be re-typable as, and for a URL recipe it beats
+        # the raw URL. Threaded into validation as well as into the report,
+        # because the collapsed deprecation line names the same command.
+        recipe_ref=recipe_name,
     )
-    # Echo back the reference the user typed: it is what the `recipe validate`
-    # hint has to be re-typable as, and for a URL recipe it beats the raw URL.
     report_launch_validation(recipe_name, issues, validation_failed)
     if validation_failed:
         sys.exit(1)
@@ -937,7 +948,7 @@ def run(
     if show_timings and sctx.timing is not None:
         from sparkrun.utils.cli_formatters import format_launch_timings
 
-        _timings = format_launch_timings(sctx.timing.export())
+        _timings = format_launch_timings(sctx.timing.export(), max_depth=_timing_tree_depth(ctx))
         if _timings:
             click.echo()
             click.echo(_timings)

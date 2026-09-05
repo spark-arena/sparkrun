@@ -78,6 +78,30 @@ class TestResolveFromQuantizationConfig:
         assert info.bits == 4
         assert info.weight_dtype == "mxfp4"
 
+    def test_exl3_carries_fractional_bpw_in_the_dtype(self):
+        """Width is per-checkpoint (2.05/3.05/4.05 ship as separate branches of
+        one repo), so it cannot be a table entry and rides in the dtype string.
+        Detecting it here is what lets a recipe omit metadata.model_dtype."""
+        from sparkrun.models.dtypes import bytes_per_element
+
+        info = _resolve_from_quantization_config({"quant_method": "exl3", "bits": 2.05, "head_bits": 5})
+        assert info is not None
+        assert info.method == "exl3"
+        assert info.bits == 2.05
+        assert info.weight_dtype == "exl3:2.05"
+        assert bytes_per_element(info.weight_dtype) == 2.05 / 8
+
+    def test_exl2_uses_the_same_shape(self):
+        info = _resolve_from_quantization_config({"quant_method": "exl2", "bits": 4.25})
+        assert info is not None
+        assert info.weight_dtype == "exl2:4.25"
+
+    def test_exl3_without_bits_is_unresolved(self):
+        """No nominal default: any guess would be wrong for two of the three
+        published builds, and an unknown dtype degrades to 'no weight estimate'
+        rather than to a confidently wrong one."""
+        assert _resolve_from_quantization_config({"quant_method": "exl3"}) is None
+
     def test_nvfp4(self):
         info = _resolve_from_quantization_config({"quant_method": "nvfp4"})
         assert info is not None

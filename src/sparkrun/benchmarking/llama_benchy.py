@@ -91,6 +91,20 @@ def _fmt_float(value: float | None, decimals: int = 1, missing: str = "…") -> 
     return f"{value:.{decimals}f}"
 
 
+def _mean_val(benchmark: dict[str, Any], field_name: str) -> float | None:
+    """Read a llama-benchy metric field, unwrapping the ``{"mean": …}`` shape.
+
+    llama-benchy reports a repeated measurement as a dict of summary statistics
+    and a single measurement as a bare number, so both spellings reach here.
+    """
+    raw = benchmark.get(field_name)
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return raw.get("mean")
+    return float(raw)
+
+
 def _build_table_rows(consolidated: dict[str, Any]) -> list[tuple[int, int, float | None, float | None, float | None, int]]:
     """Aggregate consolidated llama-benchy JSON into ``(depth, conc, pp_ts, tg_ts, ttfr_ms, runs)`` rows.
 
@@ -118,17 +132,9 @@ def _build_table_rows(consolidated: dict[str, Any]) -> list[tuple[int, int, floa
         if bool(b.get("is_context_prefill_phase")):
             continue
 
-        def _mean_val(field_name: str) -> float | None:
-            raw = b.get(field_name)
-            if raw is None:
-                return None
-            if isinstance(raw, dict):
-                return raw.get("mean")
-            return float(raw)
-
-        pp_vals[key].append(_mean_val("pp_throughput"))
-        tg_vals[key].append(_mean_val("tg_throughput"))
-        ttfr_vals[key].append(_mean_val("ttfr"))
+        pp_vals[key].append(_mean_val(b, "pp_throughput"))
+        tg_vals[key].append(_mean_val(b, "tg_throughput"))
+        ttfr_vals[key].append(_mean_val(b, "ttfr"))
 
         # Number of measurement repetitions == len(values) on whichever
         # throughput dict carries it; prefer tg_throughput, then pp_throughput.

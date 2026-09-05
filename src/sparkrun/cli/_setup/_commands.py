@@ -1706,7 +1706,7 @@ def setup_fix_permissions(ctx, hosts, hosts_file, cluster_name, user, cache_dir,
             try:
                 validate_sudoers_path(safe_cache_dir)
             except ValueError as exc:
-                raise click.UsageError(str(exc))
+                raise click.UsageError(str(exc)) from exc
         sudoers_script = read_script("fix_permissions_sudoers.sh").format(
             user=user,
             cache_dir=safe_cache_dir,

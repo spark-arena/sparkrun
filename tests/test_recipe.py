@@ -485,6 +485,35 @@ def test_recipe_build_config_chain(sample_v2_recipe_data: dict[str, Any]):
     assert config.get("model") == "meta-llama/Llama-2-7b-hf"
 
 
+def test_model_revision_is_injected_only_when_pinned(sample_v2_recipe_data: dict[str, Any]):
+    """`{model_revision}` must resolve so a command: can pass the pin to the
+    engine — but only when there *is* a pin. Injecting `None` would render
+    `--revision None`, which looks like a valid argument and fails inside the
+    engine, instead of failing visibly as an unsubstituted placeholder."""
+    unpinned = Recipe.from_dict(sample_v2_recipe_data)
+    assert unpinned.model_revision is None
+    assert unpinned.build_config_chain().get("model_revision") is None
+
+    sha = "51058cd551c7e570d87bd32a4adee720edce2349"
+    pinned = Recipe.from_dict({**sample_v2_recipe_data, "model_revision": sha})
+    assert pinned.build_config_chain().get("model_revision") == sha
+
+    # Reachable from a command: template, and from another default's value.
+    pinned.command = "vllm serve {model} --revision {model_revision}"
+    assert pinned.render_command(pinned.build_config_chain()).endswith("--revision " + sha)
+
+    indirect = Recipe.from_dict({**sample_v2_recipe_data, "model_revision": sha, "defaults": {"rev": "{model_revision}"}})
+    indirect.command = "vllm serve {model} --revision {rev}"
+    assert indirect.render_command(indirect.build_config_chain()).endswith("--revision " + sha)
+
+
+def test_recipe_declared_model_revision_default_wins(sample_v2_recipe_data: dict[str, Any]):
+    """`setdefault`, matching `model` — a recipe that declares the key itself
+    keeps its own value."""
+    recipe = Recipe.from_dict({**sample_v2_recipe_data, "model_revision": "aaa", "defaults": {"model_revision": "bbb"}})
+    assert recipe.build_config_chain().get("model_revision") == "bbb"
+
+
 def test_recipe_render_command(sample_v2_recipe_data: dict[str, Any]):
     """Render a recipe command template and verify placeholders are substituted.
 
@@ -780,8 +809,16 @@ def test_render_command_collapses_braces_for_v2():
     assert "{{" not in rendered
 
 
-def test_render_command_v2_escapes_log_deprecation_warning(caplog):
-    """Using the v1 doubled-brace escape outside v1 warns that v3 will drop it."""
+def test_render_command_v2_escapes_still_render(caplog):
+    """The escape is honored outside v1; the deprecation notice is not this layer's.
+
+    ``render_command`` used to own the warning, which meant it fired only
+    where a command was actually *rendered* — a launch — and never from
+    ``recipe validate``.  The notice now belongs to
+    :func:`sparkrun.core.validation.check_deprecated_features`; this layer
+    keeps only a debug line.  See ``test_recipe_validation.py`` for the
+    finding itself.
+    """
     import logging
 
     recipe = Recipe.from_dict(
@@ -796,11 +833,10 @@ def test_render_command_v2_escapes_log_deprecation_warning(caplog):
         rendered = recipe.render_command(recipe.build_config_chain({}))
 
     assert "--x '{\"a\":1}'" in rendered
-    assert "doubled-brace escape" in caplog.text
-    assert "v3" in caplog.text
+    assert caplog.text == ""
 
 
-def test_render_command_v1_escapes_do_not_warn(caplog):
+def test_render_command_v1_escapes_render_clean(caplog):
     """v1 is the convention's home — using it there is not deprecated."""
     import logging
 
@@ -814,12 +850,13 @@ def test_render_command_v1_escapes_do_not_warn(caplog):
         }
     )
     with caplog.at_level(logging.WARNING, logger="sparkrun.core.recipe"):
-        recipe.render_command(recipe.build_config_chain({}))
+        rendered = recipe.render_command(recipe.build_config_chain({}))
 
-    assert "doubled-brace escape" not in caplog.text
+    assert "--x '{\"a\":1}'" in rendered
+    assert caplog.text == ""
 
 
-def test_render_command_plain_json_does_not_warn(caplog):
+def test_render_command_plain_json_renders_clean(caplog):
     """The idiomatic plain-brace spelling is not the escape convention."""
     import logging
 
@@ -832,9 +869,10 @@ def test_render_command_plain_json_does_not_warn(caplog):
         }
     )
     with caplog.at_level(logging.WARNING, logger="sparkrun.core.recipe"):
-        recipe.render_command(recipe.build_config_chain({}))
+        rendered = recipe.render_command(recipe.build_config_chain({}))
 
-    assert "doubled-brace escape" not in caplog.text
+    assert '--x \'{"a":{"b":1}}\'' in rendered
+    assert caplog.text == ""
 
 
 def test_render_command_v2_pasted_v1_json_flags_parse():
@@ -3205,13 +3243,51 @@ class TestResolveBuilder:
         """build_args returns eugr."""
         assert resolve_builder({"runtime": "vllm", "build_args": ["a"]}) == "eugr"
 
-    def test_mods(self):
-        """mods returns eugr."""
-        assert resolve_builder({"runtime": "vllm", "mods": ["m"]}) == "eugr"
+    def test_mods_alone_is_not_an_eugr_signal(self):
+        """`mods` implied eugr only while mods existed to patch an eugr build.
+
+        It is part of the v2 spec now and works with any builder, so reading it
+        as "this is an eugr recipe" is an inference the spec no longer
+        supports — and it disagreed with the real resolver, which never counted
+        it, so the catalog listed `builder: eugr` for a recipe that resolves to
+        no builder at all.
+        """
+        assert resolve_builder({"runtime": "vllm", "mods": ["m"], "container": "vllm/vllm-openai:latest"}) == ""
+
+    def test_eugr_container_is_a_signal(self):
+        """The other half of the same divergence: the display path missed the
+        container prefix, so a recipe that really does get an eugr build was
+        listed as having no builder."""
+        from sparkrun.core.recipe import EUGR_CONTAINER_PREFIX
+
+        assert resolve_builder({"runtime": "vllm", "container": EUGR_CONTAINER_PREFIX + "-b12x:latest"}) == "eugr"
+
+    def test_agrees_with_the_resolver(self):
+        """`resolve_builder` is the display peer of the resolver chain; a catalog
+        that disagrees with the launch about what will be built is read as an
+        answer, so assert they agree rather than trusting the shared helper."""
+        from sparkrun.core.recipe import EUGR_CONTAINER_PREFIX, Recipe
+
+        for data in (
+            {"runtime": "vllm", "mods": ["m"], "container": "vllm/vllm-openai:latest"},
+            {"runtime": "vllm", "container": EUGR_CONTAINER_PREFIX + "-b12x:latest"},
+            {"runtime": "vllm", "build_args": ["a"], "container": "vllm/vllm-openai:latest"},
+            {"runtime": "vllm", "container": "vllm/vllm-openai:latest"},
+            {"recipe_version": "1", "runtime": "vllm", "container": "c"},
+        ):
+            payload = {"name": "r", "model": "m", **data}
+            assert resolve_builder(payload) == Recipe(dict(payload)).resolve().builder, payload
 
     def test_runtime_config_build_args(self):
         """build_args in runtime_config returns eugr."""
         assert resolve_builder({"runtime": "vllm", "runtime_config": {"build_args": ["a"]}}) == "eugr"
+
+    def test_eugr_container_prefix_does_not_drift(self):
+        """`core` cannot import `builders`, so the prefix is spelled twice."""
+        from sparkrun.builders.eugr import GHCR_EUGR_NIGHTLY
+        from sparkrun.core.recipe import EUGR_CONTAINER_PREFIX
+
+        assert EUGR_CONTAINER_PREFIX == GHCR_EUGR_NIGHTLY
 
     def test_plain_vllm(self):
         """Plain vllm recipe returns empty."""

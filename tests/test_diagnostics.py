@@ -15,6 +15,7 @@ from sparkrun.diagnostics.spark_collector import (
     collect_config_diagnostics,
     collect_spark_diagnostics,
     collect_sudo_diagnostics,
+    summarize_host_diagnostics,
 )
 from sparkrun.diagnostics.run_collector import RunDiagnosticsCollector
 from sparkrun.orchestration.ssh import RemoteResult
@@ -176,6 +177,85 @@ class TestSparkCollectorHelpers:
 
     def test_extract_firmware_history_empty(self):
         assert _extract_firmware_history({}) == []
+
+
+# ---------------------------------------------------------------------------
+# summarize_host_diagnostics
+# ---------------------------------------------------------------------------
+
+
+class TestSummarizeHostDiagnostics:
+    def test_summary_fields(self):
+        kv = {
+            "DIAG_HOSTNAME": "spark-01",
+            "DIAG_PRODUCT_NAME": "NVIDIA DGX Spark",
+            "DIAG_BOARD_NAME": "DGX Spark",
+            "DIAG_BIOS_VERSION": "1.0",
+            "DIAG_OS_PRETTY": "Ubuntu 24.04 LTS",
+            "DIAG_OS_NAME": "Ubuntu",
+            "DIAG_KERNEL": "6.11.0-1008-nvidia",
+            "DIAG_ARCH": "aarch64",
+            "DIAG_CPU_MODEL": "ARM Neoverse",
+            "DIAG_CPU_CORES": "20",
+            "DIAG_CPU_THREADS": "20",
+            "DIAG_RAM_TOTAL_KB": "131072000",
+            "DIAG_GPU_NAME": "NVIDIA GB10",
+            "DIAG_GPU_MEMORY_MB": "122880",
+            "DIAG_GPU_DRIVER": "580.95.05",
+            "DIAG_CUDA_VERSION": "13.0",
+            "DIAG_JETPACK_VERSION": "6.2",
+            "DIAG_DOCKER_VERSION": "28.1.1",
+            "DIAG_DOCKER_STORAGE": "overlay2",
+            "DIAG_DOCKER_NVIDIA_RUNTIME": "true",
+        }
+        summary = summarize_host_diagnostics(kv)
+
+        assert summary["hostname"] == "spark-01"
+        assert summary["product"] == "NVIDIA DGX Spark"
+        assert summary["os"] == "Ubuntu 24.04 LTS"
+        assert summary["kernel"] == "6.11.0-1008-nvidia"
+        assert summary["cpu_cores"] == 20
+        assert summary["ram_total_gb"] == 125.0
+        assert summary["gpu_name"] == "NVIDIA GB10"
+        assert summary["gpu_memory_gb"] == 120.0
+        assert summary["gpu_driver"] == "580.95.05"
+        assert summary["cuda_version"] == "13.0"
+        assert summary["docker_nvidia_runtime"] is True
+
+    def test_empty_values_omitted(self):
+        # The probe emits a key for everything it looks for; "no nvcc here"
+        # must not render as a blank CUDA line.
+        summary = summarize_host_diagnostics(
+            {
+                "DIAG_GPU_NAME": "NVIDIA GB10",
+                "DIAG_CUDA_VERSION": "",
+                "DIAG_JETPACK_VERSION": "",
+                "DIAG_RAM_TOTAL_KB": "0",
+                "DIAG_DOCKER_VERSION": "",
+            }
+        )
+        assert "cuda_version" not in summary
+        assert "jetpack_version" not in summary
+        assert "ram_total_gb" not in summary
+        assert "docker_version" not in summary
+        assert summary["gpu_name"] == "NVIDIA GB10"
+
+    def test_failed_probe_yields_empty_summary(self):
+        assert summarize_host_diagnostics({}) == {}
+
+    def test_os_falls_back_to_name(self):
+        summary = summarize_host_diagnostics({"DIAG_OS_NAME": "Ubuntu", "DIAG_OS_PRETTY": ""})
+        assert summary["os"] == "Ubuntu"
+
+    def test_non_numeric_counts_ignored(self):
+        summary = summarize_host_diagnostics({"DIAG_CPU_CORES": "unknown", "DIAG_GPU_MEMORY_MB": ""})
+        assert "cpu_cores" not in summary
+        assert "gpu_memory_gb" not in summary
+
+    def test_identifiers_excluded(self):
+        # Serial / UUID identify a specific unit — deliberately not summarised.
+        summary = summarize_host_diagnostics({"DIAG_GPU_SERIAL": "1234", "DIAG_GPU_UUID": "GPU-abc"})
+        assert summary == {}
 
 
 # ---------------------------------------------------------------------------

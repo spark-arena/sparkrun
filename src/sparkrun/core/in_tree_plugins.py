@@ -53,6 +53,7 @@ from typing import TYPE_CHECKING
 
 from sparkrun.core.external_plugins import load_plugin_module
 from sparkrun.core.features import feature_gate_enabled, get_feature
+from sparkrun.core.registry_defaults import DeclarationTier
 
 if TYPE_CHECKING:
     from scitrera_app_framework import Variables
@@ -123,7 +124,11 @@ def load_in_tree_plugins(v: "Variables", package: str = IN_TREE_PLUGIN_PACKAGE) 
             # say so loudly.
             logger.exception("Failed to import in-tree plugin %r", dotted)
             continue
-        load_plugin_module(module, v)
+        # IN_TREE is what lets this plugin's registry declarations ship trusted
+        # (sparkrun.core.registry_defaults). Asserted by the loader, never by
+        # the plugin — including for a vendored plugin, where the claim rests on
+        # the pinned commit in vendor/*.lock and the review of the import PR.
+        load_plugin_module(module, v, tier=DeclarationTier.IN_TREE)
         loaded.append(name)
 
     if loaded:

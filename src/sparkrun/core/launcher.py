@@ -22,6 +22,7 @@ from sparkrun.core.timing import ROOT as TIMELINE_ROOT, STATUS_ERROR, Timeline, 
 
 if TYPE_CHECKING:
     from sparkrun.core.backend_select import BackendBundle
+    from sparkrun.core.cluster_manager import ClusterDefinition
     from sparkrun.core.config import SparkrunConfig
     from sparkrun.core.context import SparkrunContext
     from sparkrun.core.progress import LaunchProgress
@@ -142,9 +143,30 @@ def resolve_recipe_trust(recipe: Recipe, trust_cli: bool) -> bool:
 #: can run the container as root; ``volumes`` bind-mounts host paths.  Honouring
 #: any of these for a "run this link" recipe is a host-takeover primitive, so we
 #: fail closed unless the recipe is trusted.  Innocuous resource knobs
-#: (``shm_size``, ``ipc``, ``network``, ``memory_limit``, ``ulimit``,
-#: ``restart_policy``, ``auto_remove``, ``labels`` …) are intentionally absent.
+#: (``shm_size``, ``network``, ``memory_limit``, ``ulimit``, ``restart_policy``,
+#: ``auto_remove``, ``labels`` …) are intentionally absent.  ``ipc`` is gated on
+#: its *value* instead — see :data:`_UNTRUSTED_IPC_MODES`.
 _TRUST_GATED_EXECUTOR_KEYS = frozenset({"privileged", "cap_add", "security_opt", "devices", "user", "volumes"})
+
+#: ``ipc`` modes an untrusted recipe may select: the ones that put the container
+#: in a **fresh** IPC namespace of its own.  ``""`` is included because an empty
+#: value emits no ``--ipc`` flag at all, leaving Docker's own ``private``.
+#:
+#: This is an allowlist, not a denylist of ``host``, because more than one value
+#: reaches out of the container and the set is open-ended: ``host`` shares the
+#: host's IPC namespace and ``/dev/shm`` (read/write access to every other
+#: tenant's POSIX shared memory and semaphores on that machine, and the ability
+#: to delete them), while ``container:<name>`` joins one specific other
+#: workload's namespace — and sparkrun container names are derivable from a
+#: cluster_id, so that is a targeted lateral read rather than a lucky one.
+#: An unrecognised or non-string value therefore fails closed too.
+#:
+#: This was an ungated resource knob while ``host`` was the default, when
+#: setting it changed nothing.  It is an escalation now that the default is a
+#: container-owned namespace (see ``docker.DOCKER_IPC_DEFAULT``): an untrusted
+#: recipe asking for ``host`` is asking to leave the sandbox it was granted.
+#: Narrowing it (``shareable`` → ``private``) stays free, as it should.
+_UNTRUSTED_IPC_MODES = frozenset({"", "none", "private", "shareable"})
 
 #: Executors an untrusted recipe is allowed to select.  Only the Docker executor
 #: runs the workload inside a rootless, namespaced container — the sandbox that
@@ -168,7 +190,10 @@ def _enforce_recipe_mount_trust(recipe: Recipe, trusted: bool) -> None:
       ``privileged``/``cap_add``/``security_opt``/``devices``/``user``/``volumes``.
       These sit *above* the executor's rootless ``apply_runtime_adjustments``
       layer in :func:`resolve_executor`'s chain, so a recipe that sets them wins
-      over the hardening (e.g. ``privileged: true`` → ``docker run --privileged``).
+      over the hardening (e.g. ``privileged: true`` → ``docker run --privileged``);
+    * ``executor_config.ipc``, gated on its **value** rather than its presence
+      (:data:`_UNTRUSTED_IPC_MODES`) — narrowing the namespace is free, leaving
+      it for the host's or another container's is not.
 
     All are infra-level escape hatches.  Honouring them for an untrusted
     (registry- or URL-sourced) recipe would let "run this link" mount ``/``,
@@ -220,6 +245,20 @@ def _enforce_recipe_mount_trust(recipe: Recipe, trusted: bool) -> None:
                 "raw --device access, or running as root). They are only honoured "
                 "for trusted recipes; re-run with --trust after auditing this "
                 "recipe." % gated
+            )
+
+        # ``ipc`` is gated on its value, not its presence: a recipe may narrow
+        # the namespace freely, but reaching *out* of the container's own is an
+        # escalation. See _UNTRUSTED_IPC_MODES.
+        raw_ipc = exec_cfg.get("ipc")
+        if raw_ipc is not None and str(raw_ipc).strip().lower() not in _UNTRUSTED_IPC_MODES:
+            raise RecipeError(
+                "This recipe sets executor_config ipc=%r, which places the workload "
+                "outside its own IPC namespace — sharing the host's /dev/shm (every "
+                "other tenant's POSIX shared memory and semaphores on that machine), "
+                "or joining another container's. Only %s are honoured for untrusted "
+                "recipes; re-run with --trust after auditing this recipe."
+                % (raw_ipc, ", ".join(sorted(m for m in _UNTRUSTED_IPC_MODES if m)))
             )
 
     # The executor *selector* is itself an isolation control: only ``docker``
@@ -442,6 +481,7 @@ def resolve_effective_runtime_cache_dir(
     ssh_kwargs: dict,
     config: SparkrunConfig,
     dry_run: bool = False,
+    cluster: ClusterDefinition | None = None,
 ) -> str:
     """Resolve the target hosts' sparkrun cache dir for the runtime cache.
 
@@ -452,6 +492,10 @@ def resolve_effective_runtime_cache_dir(
     cache is an optimization, and a wrong guess costs a recompile (the
     directory simply won't pre-exist) while an exception would cost the launch.
     """
+    configured = getattr(cluster, "sparkrun_cache_dir", None)
+    if configured:
+        return str(configured)
+
     from sparkrun.utils import is_local_host
     from sparkrun.orchestration.primitives import probe_remote_sparkrun_cache
 
@@ -1338,7 +1382,9 @@ def launch_inference(
             # per-machine images that premise is gone, so each image is probed on
             # a host that actually runs it.
             groups: dict[str, list[str]] = {}
-            for _host, _img in zip(host_list, image_plan.images_by_node):
+            # strict=False: the ENTRYPOINT probe is fail-open by contract, so a
+            # skew must cost at most an unprobed host — never a raised launch.
+            for _host, _img in zip(host_list, image_plan.images_by_node, strict=False):
                 groups.setdefault(_img, []).append(_host)
 
             if len(groups) <= 1:
@@ -1714,7 +1760,13 @@ def launch_inference(
         if _rc_settings.enabled:
             _rc_root = resolve_runtime_cache_root(
                 _rc_settings,
-                resolve_effective_runtime_cache_dir(host_list, ssh_kwargs, config, dry_run=dry_run),
+                resolve_effective_runtime_cache_dir(
+                    host_list,
+                    ssh_kwargs,
+                    config,
+                    dry_run=dry_run,
+                    cluster=cluster,
+                ),
             )
             # Derived *after* apply_platform_runtime_flag_defaults, deliberately.
             # The fingerprint then reflects the platform flags this hardware

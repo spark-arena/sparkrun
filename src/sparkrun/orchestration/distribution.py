@@ -35,6 +35,20 @@ class DistributionError(TransferError):
     """Raised when resource distribution (image or model sync) fails."""
 
 
+def _force_registry_pull_for_recipe(recipe: "Recipe") -> bool:
+    """Return whether ``rebuild`` means re-pull the resolved registry image.
+
+    Recipes without a builder, and recipes using the explicit ``docker-pull``
+    builder, delegate freshness to distribution.  Builders such as ColdSnap
+    and EUGR produce a new local image themselves; forcing a registry pull of
+    that derived name would discard the successful build and usually fail
+    because the image has not been published.
+    """
+    rebuild = bool(recipe.builder_config.get("rebuild")) if recipe.builder_config else False
+    builder = str(getattr(recipe, "builder", "") or "").strip()
+    return rebuild and builder in {"", "docker-pull"}
+
+
 @dataclass
 class TransferModeResult:
     """Result of :func:`resolve_auto_transfer_mode`.
@@ -804,7 +818,7 @@ def distribute_from_config(
     # which declares no builder at all and so never reaches the builder phase —
     # the equivalent is an unconditional `docker pull`.  Reading it here rather
     # than in the builder is what makes the flag reach those recipes.
-    _force_pull = bool(recipe.builder_config.get("rebuild")) if recipe.builder_config else False
+    _force_pull = _force_registry_pull_for_recipe(recipe)
     if _force_pull:
         logger.info("rebuild requested; forcing a fresh pull of image '%s'", image)
 
@@ -1035,7 +1049,10 @@ def _subset_transfer_hosts(
     """
     if not transfer_hosts:
         return None
-    return [t for h, t in zip(host_subset_source, transfer_hosts) if h in target_set]
+    # strict=False: callers pass whatever transfer-host list they resolved, and a
+    # short list means those hosts fall back to their management address — which
+    # is slower but correct.  Raising here would abort the distribution instead.
+    return [t for h, t in zip(host_subset_source, transfer_hosts, strict=False) if h in target_set]
 
 
 def _distribute_image_plan(

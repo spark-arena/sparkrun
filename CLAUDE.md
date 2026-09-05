@@ -95,6 +95,7 @@ Core domain logic extracted from the top-level package. All imports use `sparkru
 | `recipe_items.py`       | `register_recipe_item()` — plugin-owned top-level recipe keys                        |
 | `execution.py`          | `RecipeExecutionStrategy`, `PreparationStep` DAG, `LaunchAssetPolicy`                |
 | `launcher.py`           | `launch_inference()`, `resolve_per_host_backends()`, `resolve_recipe_trust()`        |
+| `validation.py`         | `RecipeIssue`, `validate_recipe()`, `validate_for_launch()` (see Recipe Validation)  |
 
 ### CLI Architecture (`cli/`)
 
@@ -280,6 +281,62 @@ multi-node runtimes (`vllm-distributed`, `sglang`, `trtllm`) emit rank-specific
 argv via this template rather than ad-hoc per-runtime construction. Subclasses
 override the hook methods (`_node_rank_args`, `_master_args`, etc.) and inherit
 the assembly.
+
+**Data parallelism is not one thing** (`runtimes/sglang.py:_SglangTopology`).
+sparkrun's `world_size = tp*pp*dp` says dp *replicates*, but each engine
+spells that differently and some refuse it in the shape sparkrun asks for.
+SGLang asserts both of these **before binding a port**, so getting it wrong
+is an abort, not a degradation:
+
+```python
+assert (tp_size * pp_size) % nnodes == 0
+assert not (dp_size > 1 and nnodes != 1 and not enable_dp_attention)
+```
+
+Which means `--nnodes`/`--node-rank` cannot be injected unconditionally, and
+whether `--dp-size` is legal is a property of the **launch**, not of the
+recipe — so it is emitted by the caller (`_append_dp_size`), never from the
+flag map. Four regimes, and the boundary between them is `dp > 1 and not
+dp_attention` (`_SglangTopology.independent_replicas`):
+
+| Regime | World | Flags |
+|---|---|---|
+| `dp == 1` | one, spanning the cluster | `--nnodes N --node-rank r --dist-init-addr head` |
+| DP attention | one, spanning the cluster | the above **plus** `--dp-size` |
+| `dp > 1`, `tp*pp > 1` | one **per replica** | `--nnodes tp*pp`, intra-replica rank, rendezvous at *that replica's* head |
+| `dp > 1`, `tp*pp == 1` | none | nothing — a standalone server |
+| solo (`num_nodes == 1`), `dp > 1` | one | `--dp-size dp` (replicas share the launch) |
+
+Three consequences that are each silently wrong if missed:
+
+- **DP attention is not a multiplier.** There `dp` partitions the tensor world
+  (`dp == tp`), so the job costs `tp*pp` GPUs, not `tp*pp*dp` — hence
+  `SglangRuntime.world_size`. Without it a 2-node `tp 16 / dp 16` DeepSeek
+  layout is scheduled at 256 ranks.
+- **`_dp_attention_enabled` reads the `command:` template too.** A literal
+  `--enable-dp-attention` is invisible to the config chain, and misreading a
+  working MoE recipe as "independent replicas" would strip the rendezvous
+  flags that make it work.
+- **The global `node_rank` goes into `_make_node_command_args` paired with
+  `replica_size=world_nodes`** — that pairing is what selects the world
+  (`_resolve_master_addr` floor-divides them). Passing the intra-world rank
+  collapses every replica onto `hosts[0]`; passing `replica_size=1` points
+  each node at itself ("1/N clients joined").
+
+**Independent replicas are N endpoints, not one.** `validate_recipe` warns
+and points at `sglang_router` / `sparkrun proxy`; proxy discovery still
+registers only the head (`proxy/discovery.py`), so the other replicas are
+live but unrouted. See issue #284.
+
+**Rendezvous gate** (`RuntimePlugin.native_rendezvous_port`): the native
+cluster path starts the head, waits for its port, then starts the workers —
+the wait exists so a worker cannot race the head's distributed store, and
+`None` says this launch has no store. `None` deliberately does **not** mean
+"wait on the serve port instead": a serve port opens only after weight load
+and graph capture, which this gate's budget (60×2s) does not cover, and
+endpoint readiness already has its own budgeted watcher
+(`launcher.wait_for_endpoint_ready`). Reusing it here would time out a
+healthy launch.
 
 **Executor resolution** (`RuntimePlugin._resolve_executor`): runtimes do not
 construct executors directly. The base helper delegates to
@@ -1641,6 +1698,198 @@ Two recipe format versions exist: v1 (eugr-style, auto-detected by `recipe_versi
 `mods`) and v2 (sparkrun native). vLLM recipes are resolved to either `vllm-ray` (if Ray hints are present) or
 `vllm-distributed` (default). See `RECIPES.md` for the full specification.
 
+### Recipe Validation (`core/validation.py`)
+
+The single aggregator behind `sparkrun recipe validate`, and — through
+`validate_for_launch` — behind what `run` / `benchmark` / `proxy launch` print
+and refuse, so the four cannot drift.
+
+Three severities, separated by one question: *if this recipe runs on a cluster
+that isn't the author's — or on a later sparkrun — does it break or behave
+differently?* **Errors** are things sparkrun cannot honor (always fatal).
+**Warnings** are yes. **Suggestions** are no: it works as written and merely
+gives something up, so they are for authors and registry CI and `run` does not
+print them at all. Only errors are fatal by default; `--strict` is
+`--fail-on warning`.
+
+The **"or on a later sparkrun"** clause is the deprecation axis, added
+deliberately rather than filed under suggestions. Read with place alone, a
+deprecation answers "no" — it behaves identically everywhere *today* — which
+would make `sparkrun run` silent about it. It does **not** add a fourth
+severity: `--fail-on` still ranks three.
+
+**Deprecations are collapsed at launch, not downgraded.** `RecipeIssue.deprecation`
+is a *display* flag; `summarize_deprecations` replaces every deprecation finding
+with one line naming the count and `sparkrun recipe validate <ref>`. The
+migration is the author's work and at launch you are usually running someone
+else's recipe — three deprecations printed in full is three paragraphs between
+you and your logs. It runs **after** `should_fail`, on the display list only, so
+`--strict` still fails on a deprecation it described in one line. `run` threads
+the reference the user typed (`recipe_ref`) so the suggested command is pasteable.
+
+**Two checks must read `recipe._raw`, and both would be silently wrong without
+it** — the parsed recipe is lossy exactly where they look:
+
+- `_resolve_brace_escapes` collapses `{{`→`{` in `defaults` **in place** at
+  load, so by validation time the evidence is gone from `recipe.defaults`.
+  (`command:` is untouched — masking happens inside `render_command`.)
+- `Recipe.__init__` **derives** `mode` from the node range (`auto` → `cluster`
+  when `min_nodes > 1`). Reporting the deprecated `mode:` key off the parsed
+  value would fire on every recipe that correctly uses `min_nodes`/`max_nodes`
+  and never wrote `mode` at all — i.e. on exactly what the finding advises.
+
+**Deprecation notices belong here, not at their point of use.** Two of them
+previously lived only as a `logger.warning` on a path `recipe validate` never
+takes: one inside `render_command` (reached only by an actual launch) and one
+inside `EugrVllmRayRuntime.prepare` (reached only *after* image distribution).
+So the command whose entire job is to report what is wrong with a recipe was
+silent while `sparkrun run` was not. Both are now findings; the original sites
+keep a `debug` line.
+
+Catalogue notes worth knowing before adding a check:
+
+- **A finding that fires on correct recipes is how a report teaches people to
+  skim it.** `_CONSUMED_RUNTIME_CONFIG_KEYS` exists solely for this:
+  `build_args` at the top level is the *v1 spelling* and is read by name, so
+  without the allowlist `unknown-top-level-key` would fire on every v1 recipe
+  ever published. New `runtime_config.get()` call sites must join that list.
+  `implicit-builder` is the same lesson measured: it reported all 47 registry
+  recipes with an inferred builder until it stopped reporting the 40 inferred
+  from a **first-party** `ghcr.io/spark-arena/` image. The concern is "sparkrun
+  guessed about an artifact it does not control"; for its own images sparkrun
+  owns both the image and the rule, so keeping them in step is its job.
+- **`mods` is not a builder signal**, and `resolve_builder` (the catalog peer of
+  the resolver chain, feeding `sparkrun list` / `api.search_recipes`) thought it
+  was. The two disagreed in *both* directions — the display path counted `mods`
+  (so a v2 recipe with `mods:` and an ordinary container was listed as
+  `builder: eugr` while resolving to no builder at all) and missed the
+  `container:` prefix (so a recipe that really does get an eugr build was listed
+  as having none). They now share `_has_eugr_signal`, with a test asserting they
+  agree rather than trusting the helper. A catalog that disagrees with the
+  launch about what will be built is worse than one that says nothing, because
+  it is read as an answer.
+- **`EUGR_CONTAINER_PREFIX` is narrower than `FIRST_PARTY_CONTAINER_PREFIX` on
+  purpose.** Being first-party does not make an image an eugr build
+  (`dgx-spark-sglang` is neither), so the *inference* stays pinned to the
+  `dgx-vllm-eugr-nightly*` families while the *advice* is suppressed for the
+  whole org. Widening the inference would change what gets built for recipes
+  that never asked for it. `core` cannot import `builders`, so the eugr prefix
+  is spelled twice and drift-guarded by a test.
+- **A finding names the signal it actually found**, not the catalogue of
+  signals it might have. A list reads as a guess and sends the reader to the
+  wrong entry — which is exactly how a recipe flagged for its `container:` was
+  diagnosed as having been flagged for its `mods:`.
+- **`misplaced-config-key` vs `unmapped-config-key`.** The latter
+  (`launcher.report_unmapped_config_keys`) reads `defaults` and `-o` overrides —
+  precisely the set an absorbed *top-level* key is not in. Nothing reported that
+  shape before: `max_model_len: 8192` at the top level lands in `runtime_config`,
+  which nothing consumes generically, and the rendered command shows nothing
+  missing.
+- **The two cache-env findings are opposite on purpose.** `get_extra_env()`
+  (`HF_HOME`/`HF_HUB_CACHE`) is merged **last** so a recipe setting them is
+  *discarded* (`overridden-cache-env`); the runtime-cache tier
+  (`XDG_CACHE_HOME`) is merged **first** so a recipe setting it *wins* and the
+  compile caches land off the mount (`managed-cache-env`). Same-looking
+  mistake, opposite outcome, opposite advice.
+- **`hardcoded-serve-flag` and `restated-model-arg` are mirror images.** The
+  first is about values sparkrun *reads* from the config chain, the second
+  about values it *writes* into the command. Both are suggestions for the same
+  reason — the rendered command serves exactly what it says, identically
+  everywhere — but the mechanisms defeated differ, so the advice does too.
+  `recipe.model` is rewritten mid-launch by three mechanisms that all reach the
+  command only through `{model}`: `resolved_model_path` (which also sets
+  `_skip_model_distribution`), an absolute `model:`, and a pre-synced GGUF
+  (whose raw value still carries the `:quant` suffix no runtime parses). None
+  is the author's to control. Measured: 39 of the 118 cached registry recipes
+  with a `command:` restate the id, and the id appears **nowhere else** in any
+  of them — which is why matching is whole-token and never substring.
+- **`restated-managed-path` reads `command:`, the hook lists and `defaults:`
+  values, but deliberately not `env:`.** `env` already has two dedicated checks
+  whose subject is a recipe touching sparkrun's cache wiring; a third message
+  about the same assignment is the noise this catalogue exists to avoid.
+  `_`-prefixed defaults are excluded for the same reason —
+  `internal-config-key` owns that line and says strictly more.
+- **`internal-config-key` fills a hole `_is_internal_config_key` left.** That
+  helper excludes `_`-prefixed keys from the unmapped-key report — correctly,
+  since they *are* consumed — which left a recipe **declaring** one
+  (`_gguf_model_path`, `_mmproj_path`) with no diagnostic at all. The injected
+  value outranks `defaults`, so the literal is normally dead; it wins under
+  `--dry-run` (the command you review is not the one that runs), for pre-placed
+  weights, and when the GGUF was not pre-synced here. Warning, not error: a
+  requirement sparkrun's resolution cannot express is a reason to keep the key.
+- **`deprecated-recipe-name` is a deprecation for something already inert.**
+  `name:` is the v1 spelling; `Recipe.__init__` assigns the filename stem
+  unconditionally (the `data.get("name", …)` beside it is commented out), so a
+  declared name is *discarded on load* rather than merely scheduled to stop
+  working — which is worth saying plainly, since a recipe that names itself one
+  thing and resolves as another is only visible by listing it. It must read
+  `_raw` (the parsed attribute is never the declared value — the `mode:` trap)
+  via `getattr`, since `__setstate__` does not restore `_raw` and a recipe
+  revived from the registry cache has no attribute at all. Gated on **not** v1,
+  the same way the brace escape is: every v1 recipe in the cached corpus
+  declares one and already carries `deprecated-recipe-format`, whose migration
+  subsumes it; three v2 recipes declare one, which is the population this is
+  for. Note the test fixtures had to drop `name:` too — `conftest`'s v2
+  samples and `test_cli`'s carried it, which is how widely the v1 idiom had
+  spread.
+- **`inline-script` names tools, never shape.** A recipe carrying a program —
+  a heredoc'd patch script, `sed -i` over the installed package, a launch-time
+  `pip install` — is building an image at launch, out of a string. It offers
+  **two peer remedies** rather than steering to one: publish a custom
+  container image (once, at build time, by the tooling built for it — right
+  when the change is stable or expensive, and costs a registry to publish to)
+  or add a `mods:` entry (travels with the recipe, needs no build
+  infrastructure — right when publishing is impractical or the change is small
+  and recipe-specific). A mod still runs per node per launch; that cost is
+  inherent to patching at runtime and is deliberately *not* the finding's
+  argument. What both buy is that the script becomes a **file**: reviewable on
+  its own, and never passed through the placeholder renderer. That second half
+  is sparkrun-specific rather than stylistic, because the homes render
+  differently and only the file forms leave the script alone. `command:` goes
+  through `render_command`, whose escape mode is inferred *from the template*
+  (`uses_brace_escapes`), so an embedded program must double every literal
+  brace and drags the whole template into v1 escape mode — one missed brace
+  mis-renders it silently. A `pre_exec` string goes through
+  `render_hook_command`, which does not collapse `{{` but still substitutes
+  `{name}`, so a program is exposed to a collision with any config key it
+  spells. A mod's `run.sh`, and anything baked into the image, is never
+  rendered at all. Shape
+  is deliberately *not* a signal: the corpus clusters at 10–19 command lines
+  with nothing over 40, so a line-count threshold would report the recipes with
+  the most flags rather than the ones carrying code. Every signal measures zero
+  across the corpus except `pip install` (2 recipes), which is why the check
+  can afford to be broad. Suggestion, because an inline patch runs identically
+  everywhere — what is lost is reviewability, not portability. It reads
+  `defaults:` values too (a default reaches the command through its
+  placeholder, so a program can be written one remove away), but with
+  `site-packages` withheld there: every other signal names a *verb*, which is
+  unambiguous wherever it appears, while that one names a *location* — the
+  target of a write in a command, but as likely a plain path in
+  `defaults.chat_template`.
+- **`hardcoded-rendezvous-flag`'s flag list is the runtime's own**
+  (`RuntimePlugin.managed_rendezvous_flags`), with **no shared core** even
+  where two runtimes spell a flag identically. Which flags coordinate a launch
+  is a property of the engine — Atlas says `--rank`/`--world-size` where vLLM
+  says `--node-rank`/`--nnodes`, llama.cpp dials workers with `--rpc`, and
+  `vllm-ray` (Ray) and `trtllm` (`mpirun -H`) rendezvous outside the serve
+  command and so declare nothing. Declaring nothing is the base default and
+  disables the check, which is what an out-of-tree runtime built against an
+  older base class gets. It is a **warning** because the *single-node*
+  direction breaks: these flags are appended unconditionally by
+  `generate_node_command` (none of the `reconcile_flag_in_command` guarding
+  that `--served-model-name` and `--distributed-executor-backend` get), so
+  multi-node merely emits them twice and argparse drops the recipe's — but
+  under `world_nodes <= 1` sparkrun appends *nothing*, and the recipe's
+  `--nnodes 2` plus the author's head IP survive verbatim into a launch that
+  rendezvouses with a host that is not there, or trips sglang's
+  `(tp*pp) % nnodes == 0` assert before binding a port (issue #284).
+  `--data-parallel-size` and sglang's `--dp-size` are excluded: they are
+  injected only when the template did not supply them, so writing them is a
+  supported choice rather than a collision.
+- Every check runs through `_safe`, so a check that trips over an unexpected
+  recipe shape costs its own finding and nothing else — it must not be able to
+  block a launch it was only meant to describe.
+
 ### Registry System
 
 The `RegistryManager` (`core/registry.py`) tracks recipe collections from remote git repos using sparse checkouts.
@@ -1713,6 +1962,53 @@ user has. `SUBPATH_FIELDS` is the list any new path-forming field must join, or 
 **Tab completion**: `RecipeNameType.shell_complete()` in `_common.py` supports `@registry/recipe` syntax — `@` prefix
 lists registries, `@registry/` lists recipes from that registry. Falls back to showing registry names when recipe cache
 isn't populated.
+
+### Plugin-Declared Registries (`core/registry_defaults.py`)
+
+`BOOTSTRAP_REGISTRY_URLS` / `FALLBACK_DEFAULT_REGISTRIES` are closed constants. `register_default_registry(entry,
+owner=…)` is the extension point beside them, for a plugin whose recipes are **inert without it** — its registry
+resolves (`@coldsnap/<recipe>`) for anyone with the plugin enabled, with nothing to `registry add`. In-process (the
+`platforms` / `register_kv_strategy` precedent), re-exported from `sparkrun.plugins`, called from `register(v)`.
+Author-facing docs: `docs/PLUGINS.md`; full rationale: `.slop/plugin-declared-registries-design.md`.
+
+Six properties are load-bearing:
+
+- **Registration does no I/O.** `init_sparkrun` runs on *every* shell completion (Click resolves the command tree
+  through `PluggableGroup.get_command`; measured ~30 ms stock against a 92 ms unavoidable `import sparkrun.cli`), so
+  anything expensive lands on the interactive path. This is also why a plugin cannot source its *names* from a remote
+  `.sparkrun/registry.yaml` — the overlay must be computable offline. Declare in code; the repo manifest stays for
+  users adding the registry by URL.
+- **An overlay, never persisted.** `_apply_plugin_overlay` runs **last** in `_load_registries` / `_default_registries`,
+  after every convergent rewrite and any save, so declared entries never reach the migration or persistence path.
+  `_save_registries` additionally skips anything with `declared_by` set — every mutating command reads through
+  `_load_registries` and rewrites the whole document, so without that filter the first `registry disable` of anything
+  would quietly persist every declared registry and they would outlive their plugin. Uninstalling is therefore free:
+  declaration gone, entry gone, nothing to reap.
+- **Materialize on mutation.** `enable`/`disable`/`trust`/`untrust` call `_materialize_declared`, which *clears*
+  `declared_by` — that is what lets the entry through `_save_registries`, and from then on the file wins. `remove`
+  writes a **tombstone** (`suppressed_plugin_registries`) instead of deleting, because there is nothing in
+  `registries.yaml` to delete and dropping it in memory would let the declaration restore it next launch — a removal
+  that silently fails to remove. `add_registry` clears the tombstone.
+- **Trust is tiered by provenance, and the tier comes from the loader.** In-tree may ship `trusted=True` (same review
+  and release gate as the shipped defaults; for a vendored plugin, a pinned commit with per-file digests); out-of-tree
+  is forced `False` — installing a plugin says "I want this capability", not "I grant its recipe repo standing
+  hook-execution rights over whatever it contains next month". `load_plugin_module(…, tier=…)` sets a **contextvar**
+  around the load rather than taking an argument, because the *plugin* makes the registration call; the default is
+  `OUT_OF_TREE` (least privilege), so a declaration made outside any loader cannot acquire in-tree trust.
+- **Collisions are refused and warned, not ranked.** A declaration colliding with a shipped default is rejected with a
+  warning naming the owner — checked **before** the file-entry rule, since a shipped default is normally present in the
+  file and the reverse order would silently ignore a plugin trying to redefine `official`. Ranking would permit a
+  namespace redirect that `validate_registry_name` cannot catch (it only guards *reserved* names). The user's own file
+  entry is the one true override.
+- **Validation raises at the declaration's call site** (`validate_registry_name` + `assert_safe_registry_entry`) rather
+  than dropping the entry where the overlay is applied: a plugin is local code we can fix, unlike a hostile remote
+  manifest that must be survived. Note `validate_registry_name` checks the **registry URL's** org, not the plugin
+  repo's — `EXTERNAL_RESERVED_NAMES` reserves `coldsnap` / `coldsnap-vanilla` to `sparksq`. Reservation stays in core
+  so a plugin cannot reserve its own namespace.
+
+Telemetry counts declared registries as `plugin_registry_count` and excludes them from `non_default_*` — a first-party
+plugin contributing its own registry is not "the user added a third party", and counting it as such would silently
+change a metric already in published series.
 
 ### Recipe Catalog ("what recipes exist?")
 

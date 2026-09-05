@@ -312,8 +312,8 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
     from sparkrun.core.execution import ExecutionContext, resolve_recipe_execution, run_preparation_steps
     from sparkrun.core.timing import Timeline, timed
 
-    if getattr(sctx, "timing", None) is None:
-        setattr(sctx, "timing", Timeline())
+    if sctx.timing is None:
+        sctx.timing = Timeline()
 
     execution_context = ExecutionContext(options=options, plan=plan, sctx=sctx)
     try:
@@ -652,6 +652,7 @@ def _evict_superseded_deployments(
     cluster_def,
     config,
     sctx: "SparkrunContext | None",
+    strict: bool = False,
 ) -> "tuple[list[str], set[str] | None]":
     """Stop this intent's earlier deployments that sit on the hosts we're about to use.
 
@@ -682,8 +683,11 @@ def _evict_superseded_deployments(
       within *candidate_hosts*, not just the overlapping ones — half a
       distributed job is dead weight either way.
 
-    Best-effort: discovery or teardown failures are logged and swallowed so
-    they can't block a launch that may well succeed anyway.
+    Discovery and teardown are best-effort by default so they cannot block a
+    normal launch that may still succeed.  Callers that must bind the same
+    host resources before their own launcher starts can set ``strict=True``;
+    then an unverified replacement aborts instead of predictably colliding
+    with the earlier workload.
 
     Returns:
         ``(evicted, observed_running)`` — the cluster_ids torn down (empty when
@@ -707,6 +711,8 @@ def _evict_superseded_deployments(
             v=sctx.variables if sctx is not None else None,
         )
     except Exception as e:
+        if strict:
+            raise RuntimeError("could not query cluster status before workload replacement: %s" % e) from e
         logger.debug("Could not query cluster status for eviction; skipping: %s", e)
         return [], None
 
@@ -740,9 +746,13 @@ def _evict_superseded_deployments(
         try:
             result = api.stop(cluster_id=cid, hosts=occupied[cid], cluster=cluster_def, sctx=sctx)
         except Exception as e:
+            if strict:
+                raise RuntimeError("could not stop earlier deployment %s: %s" % (cid, e)) from e
             logger.warning("Could not stop earlier deployment %s: %s — it may still hold GPU memory", cid, e)
             continue
         if result.hosts_failed:
+            if strict:
+                raise RuntimeError("teardown of earlier deployment %s was not confirmed on %s" % (cid, ", ".join(result.hosts_failed)))
             logger.warning(
                 "Teardown of earlier deployment %s did not confirm on %s — it may still hold GPU memory",
                 cid,

@@ -1214,6 +1214,70 @@ def cluster_check_job(ctx, target, hosts, hosts_file, cluster_name, tp_override,
         sys.exit(1)
 
 
+def _format_head_hardware(summary: dict) -> list[tuple[str, str]]:
+    """Render a :func:`~sparkrun.diagnostics.summarize_host_diagnostics` result.
+
+    Returns ``(label, value)`` rows in display order, collapsing the fields
+    that are only meaningful together (kernel/arch qualify the OS, core counts
+    qualify the CPU, the storage driver and nvidia runtime qualify Docker).  A
+    row is emitted only when the summary carries its primary field, so a host
+    without ``nvcc`` or without Docker simply has fewer lines.
+    """
+    rows: list[tuple[str, str]] = []
+
+    def add(label: str, value: str) -> None:
+        if value:
+            rows.append((label, value))
+
+    product = summary.get("product", "")
+    board = summary.get("board", "")
+    if product and board and board != product:
+        add("platform", "%s (board: %s)" % (product, board))
+    else:
+        add("platform", product or board)
+
+    os_name = summary.get("os", "")
+    os_detail = []
+    if summary.get("kernel"):
+        os_detail.append("kernel %s" % summary["kernel"])
+    if summary.get("arch"):
+        os_detail.append(summary["arch"])
+    add("os", "%s (%s)" % (os_name, ", ".join(os_detail)) if os_name and os_detail else os_name)
+
+    cpu = summary.get("cpu_model", "")
+    cores, threads = summary.get("cpu_cores"), summary.get("cpu_threads")
+    if cpu and cores:
+        counts = "%d cores" % cores + (" / %d threads" % threads if threads and threads != cores else "")
+        add("cpu", "%s (%s)" % (cpu, counts))
+    else:
+        add("cpu", cpu)
+
+    if summary.get("ram_total_gb"):
+        add("memory", "%.1f GB" % summary["ram_total_gb"])
+
+    gpu = summary.get("gpu_name", "")
+    if gpu and summary.get("gpu_memory_gb"):
+        add("gpu", "%s (%.1f GB)" % (gpu, summary["gpu_memory_gb"]))
+    else:
+        add("gpu", gpu)
+
+    add("gpu driver", summary.get("gpu_driver", ""))
+    add("cuda (nvcc)", summary.get("cuda_version", ""))
+    add("jetpack", summary.get("jetpack_version", ""))
+    add("bios", summary.get("bios_version", ""))
+
+    docker = summary.get("docker_version", "")
+    if docker:
+        detail = []
+        if summary.get("docker_storage_driver"):
+            detail.append("storage: %s" % summary["docker_storage_driver"])
+        if "docker_nvidia_runtime" in summary:
+            detail.append("nvidia runtime: %s" % ("yes" if summary["docker_nvidia_runtime"] else "no"))
+        add("docker", "%s (%s)" % (docker, ", ".join(detail)) if detail else docker)
+
+    return rows
+
+
 @cluster.command("inspect", hidden=HIDE_ADVANCED_OPTIONS)
 @click.argument("name", type=CLUSTER_NAME, required=False, default=None)
 @host_options
@@ -1227,6 +1291,10 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
     SSH user, cache dirs) and checks whether cache directories exist on
     each remote host.  Useful for diagnosing configuration, transfer, or
     permission issues without running a job.
+
+    Also reports the head node's hardware and driver/software versions
+    (platform, OS/kernel, CPU/RAM, GPU + driver, CUDA, Docker).  Run
+    `sparkrun setup diagnose` for the full per-host inventory.
 
     NAME is an optional cluster name (equivalent to --cluster NAME).
 
@@ -1300,6 +1368,7 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
 
     if dry_run:
         click.echo("[dry-run] Would inspect cluster config and cache dirs on %d host(s)" % len(host_list))
+        click.echo("[dry-run] Would probe head node hardware on %s" % host_list[0])
         return
 
     # TODO: remote sparkrun cache path should go through same effective route as remote hf cache resolution
@@ -1323,6 +1392,16 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
         hf_cache_dir=local_hf,
         sparkrun_cache_dir=local_sparkrun,
     )
+
+    # Head-node hardware / driver versions.  Scoped to the head for the same
+    # reason the NCCL env block is: one representative host answers "what am I
+    # actually launching on", and a per-host sweep is what `setup diagnose`
+    # already exists for.
+    from sparkrun.diagnostics import collect_spark_diagnostics, summarize_host_diagnostics
+
+    head_host = host_list[0]
+    head_diag = collect_spark_diagnostics([head_host], ssh_kwargs=ssh_kwargs).get(head_host, {})
+    head_hardware = summarize_host_diagnostics(head_diag)
 
     # Scheduler the cluster would launch with.  ``inspect`` reports *effective*
     # configuration, and an unset cluster scheduler still resolves to one — so
@@ -1358,6 +1437,7 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
         data = {
             "config": effective_config,
             "hosts": list(host_list),
+            "head_node": {"host": head_host, "hardware": head_hardware},
             "local": {
                 "sparkrun_cache": {
                     "path": local_status.sparkrun_dir,
@@ -1412,6 +1492,15 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
     if cluster_cfg.executor:
         click.echo("  executor:           %s" % cluster_cfg.executor)
     click.echo("  hosts:              %s" % ", ".join(host_list))
+    click.echo()
+
+    # Head-node hardware section
+    click.echo("Head Node Hardware (%s):" % head_host)
+    if head_hardware:
+        for label, value in _format_head_hardware(head_hardware):
+            click.echo("  %-19s %s" % (label + ":", value))
+    else:
+        click.echo("  (hardware probe failed — see `sparkrun setup diagnose` for details)")
     click.echo()
 
     # NCCL env section

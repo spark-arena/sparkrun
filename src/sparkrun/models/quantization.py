@@ -19,8 +19,8 @@ logger = logging.getLogger(__name__)
 class QuantizationInfo:
     """Detected quantization metadata for a model."""
 
-    method: str  # "awq", "gptq", "fp8", "nvfp4", "mxfp4", "bitsandbytes", "compressed-tensors", "none"
-    bits: int | None  # 4, 8, None (for fp8/mxfp4 where bits is implicit)
+    method: str  # "awq", "gptq", "fp8", "nvfp4", "mxfp4", "bitsandbytes", "compressed-tensors", "exl3", "none"
+    bits: float | None  # 4, 8, None (implicit for fp8/mxfp4); fractional for exl2/exl3
     weight_dtype: str  # Effective dtype for VRAM: "awq4", "gptq", "fp8", "nvfp4", "mxfp4", "int4", "int8"
     kv_cache_quant: str | None = None  # From hf_quant_config.json (e.g. "fp8")
     group_size: int | None = None  # Quantization group size
@@ -221,6 +221,20 @@ def _resolve_from_quantization_config(qc: dict[str, Any]) -> QuantizationInfo | 
         if qc.get("load_in_8bit"):
             return QuantizationInfo(method="bitsandbytes", bits=8, weight_dtype="int8")
         return None
+
+    if method in ("exl2", "exl3"):
+        # Fractional, per-checkpoint bits-per-weight (2.05, 3.05, 4.05 ship as
+        # separate branches of one repo), so the width cannot be a table entry
+        # and travels in the dtype string instead — see dtypes._BPW_FAMILIES.
+        # Reading it here is what lets a recipe omit ``metadata.model_dtype``
+        # entirely: estimate_vram writes the detected value back.
+        if bits is None:
+            return None
+        try:
+            bpw = float(bits)
+        except (TypeError, ValueError):
+            return None
+        return QuantizationInfo(method=method, bits=bpw, weight_dtype="%s:%g" % (method, bpw))
 
     if method == "mxfp4":
         return QuantizationInfo(method="mxfp4", bits=4, weight_dtype="mxfp4")

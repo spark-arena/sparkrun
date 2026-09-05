@@ -22,6 +22,70 @@ def test_create_cluster(tmp_path: Path):
     assert cluster.description == "Test description"
 
 
+def test_cluster_sparkrun_cache_and_plugin_policy_round_trip_independently(tmp_path: Path):
+    from sparkrun.core.cluster_manager import ClusterDefinition
+
+    manager = ClusterManager(tmp_path)
+    manager._write_cluster(
+        ClusterDefinition(
+            name="storage-policy",
+            hosts=["host1", "host2"],
+            cache_dir="/mnt/shared/huggingface",
+            sparkrun_cache_dir="/mnt/local/sparkrun",
+            plugins={
+                "coldsnap": {
+                    "state_root": "/mnt/local/coldsnap",
+                    "io": {"recovery_read": "buffered"},
+                }
+            },
+        )
+    )
+
+    cluster = manager.get("storage-policy")
+    assert cluster.cache_dir == "/mnt/shared/huggingface"
+    assert cluster.sparkrun_cache_dir == "/mnt/local/sparkrun"
+    assert cluster.plugin_settings("coldsnap") == {
+        "state_root": "/mnt/local/coldsnap",
+        "io": {"recovery_read": "buffered"},
+    }
+    exported = cluster.to_dict()
+    assert exported["sparkrun_cache_dir"] == "/mnt/local/sparkrun"
+    assert exported["plugins"]["coldsnap"]["state_root"] == "/mnt/local/coldsnap"
+
+
+def test_cluster_create_and_update_preserve_sparkrun_cache_and_plugin_policy(tmp_path: Path):
+    manager = ClusterManager(tmp_path)
+    manager.create(
+        "managed-policy",
+        ["host1"],
+        sparkrun_cache_dir="/mnt/sparkrun-a",
+        plugins={"coldsnap": {"io": {"recovery_read": "buffered"}}},
+    )
+    created = manager.get("managed-policy")
+    assert created.sparkrun_cache_dir == "/mnt/sparkrun-a"
+    assert created.plugin_settings("coldsnap")["io"]["recovery_read"] == "buffered"
+
+    manager.update(
+        "managed-policy",
+        sparkrun_cache_dir="/mnt/sparkrun-b",
+        plugins={"coldsnap": {"state_root": "/mnt/coldsnap"}},
+    )
+    updated = manager.get("managed-policy")
+    assert updated.sparkrun_cache_dir == "/mnt/sparkrun-b"
+    assert updated.plugin_settings("coldsnap") == {"state_root": "/mnt/coldsnap"}
+
+
+def test_cluster_plugin_policy_rejects_plugin_discovery_paths(tmp_path: Path):
+    root = tmp_path / "clusters"
+    root.mkdir()
+    (root / "invalid.yaml").write_text(
+        "name: invalid\nhosts: [host1]\nplugins:\n  coldsnap:\n    paths: [/tmp/plugin]\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ClusterError, match="cannot declare plugin discovery paths"):
+        ClusterManager(tmp_path).get("invalid")
+
+
 def test_create_cluster_already_exists(tmp_path: Path):
     """Creating a cluster with an existing name raises ClusterError."""
     manager = ClusterManager(tmp_path)

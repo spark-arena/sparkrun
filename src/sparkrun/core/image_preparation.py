@@ -284,7 +284,7 @@ def resolve_content_images(
     resolved: list[str | None] = [None] * len(host_list)
     pending: dict[Any, int] = {}
     with ThreadPoolExecutor(max_workers=min(max(len(host_list), 1), 16)) as pool:
-        for index, (host, image) in enumerate(zip(host_list, images_by_node)):
+        for index, (host, image) in enumerate(zip(host_list, images_by_node, strict=True)):
             preserve = bool(_PINNED_IMAGE.fullmatch(image) or _IMAGE_ID.fullmatch(image))
             pending[pool.submit(_resolve_host_image_id, host, image, ssh_kwargs or {}, preserve)] = index
         for future in as_completed(pending):

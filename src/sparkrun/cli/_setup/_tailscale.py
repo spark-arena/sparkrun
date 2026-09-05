@@ -105,7 +105,7 @@ def setup_tailscale_join(ctx, hosts, hosts_file, cluster_name, user, tag, epheme
             dry_run=dry_run,
         )
     except (api.tailscale.TailscaleNotConfigured, api.tailscale.TailscaleAuthFailed, api.tailscale.TailscaleSetupError) as exc:
-        raise click.ClickException(str(exc))
+        raise click.ClickException(str(exc)) from exc
 
     if result.dry_run:
         click.secho(
@@ -203,7 +203,7 @@ def setup_tailscale_expose(ctx, proxy, head_host, cluster, port, set_proxy_host,
             sudo_password=sudo_password,
         )
     except api.tailscale.TailscaleExposeError as exc:
-        raise click.ClickException(str(exc))
+        raise click.ClickException(str(exc)) from exc
 
     click.secho("Endpoint: %s" % result.url, fg="green", bold=True)
     click.echo("  target:   %s" % result.target)
@@ -246,7 +246,7 @@ def setup_tailscale_down(ctx, hosts, hosts_file, cluster_name, user, remove, dry
             dry_run=dry_run,
         )
     except (api.tailscale.TailscaleNotConfigured, api.tailscale.TailscaleAuthFailed, api.tailscale.TailscaleSetupError) as exc:
-        raise click.ClickException(str(exc))
+        raise click.ClickException(str(exc)) from exc
 
     if result.dry_run:
         click.secho(

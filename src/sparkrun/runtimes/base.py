@@ -489,6 +489,83 @@ class RuntimePlugin(Plugin):
             "master_port": str(init_port),
         }
 
+    # noinspection PyUnusedLocal
+    def native_rendezvous_port(
+        self,
+        recipe: Recipe | None,
+        overrides: dict[str, Any] | None = None,
+        *,
+        num_nodes: int = 1,
+        init_port: int = 25000,
+    ) -> int | None:
+        """Head port the workers' rendezvous depends on, or ``None`` if there is none.
+
+        The native cluster path starts the head, waits for this port, and only
+        then starts the workers — the gate exists so a worker cannot race the
+        head's distributed store.  ``None`` says this launch has no such store
+        (independent replicas), so the workers start immediately.
+
+        ``None`` deliberately does **not** mean "wait on the serve port
+        instead": a serve port only opens once weights are loaded and graphs
+        captured, which is minutes on a real model, and nothing downstream is
+        waiting on it — endpoint readiness has its own budgeted watcher
+        (:func:`sparkrun.core.launcher.wait_for_endpoint_ready`).  Reusing this
+        gate for it would time out a healthy launch.
+        """
+        return init_port
+
+    def managed_rendezvous_flags(self) -> tuple[str, ...]:
+        """Serve flags this runtime computes per launch and appends itself.
+
+        Declared for :func:`sparkrun.core.validation.check_hardcoded_rendezvous_flags`,
+        which warns when a recipe ``command:`` pins one.  Unlike the flags in
+        ``serve_flag_map``, these are **appended unconditionally** by
+        :meth:`generate_node_command` — no ``reconcile_flag_in_command``, no
+        "only if absent" guard — because their values are properties of the
+        cluster and the placement, not of the recipe.
+
+        The list is deliberately per-runtime with no shared core, even where
+        two runtimes spell a flag identically: which flags coordinate a launch
+        is a property of the engine, and a new runtime is far more likely to
+        need its own set than to inherit a neighbour's.  A family-neutral
+        default would quietly apply vLLM's vocabulary to an engine that never
+        had it.
+
+        The base default is ``()`` — "declares nothing", which disables the
+        check.  That is the right answer for the runtimes whose rendezvous
+        happens outside the serve command entirely (``vllm-ray`` delegates to
+        Ray, ``trtllm`` to ``mpirun -H``) and the safe answer for an
+        out-of-tree runtime built against an older base class, which is why
+        the check is opt-in rather than opt-out.
+        """
+        return ()
+
+    def model_revision_flags(self) -> tuple[str, ...]:
+        """Serve flags that pin the model repo revision for this engine.
+
+        Declared for :func:`sparkrun.core.validation.check_unpinned_model_revision`.
+        Unlike :meth:`managed_rendezvous_flags`, sparkrun does **not** append
+        these — no flag map exposes them — so a recipe that pins
+        ``model_revision`` must spell one itself in ``command:`` or the engine
+        never learns the pin.
+
+        That matters because sparkrun downloads by raw commit SHA.  HuggingFace
+        writes ``refs/<branch>`` only when a repo is fetched by branch *name*,
+        so a SHA-pinned download leaves ``snapshots/<sha>/`` and no ``refs/`` at
+        all; the container then runs ``HF_HUB_OFFLINE=1``, the engine resolves
+        its default revision (``main``), finds no ref, and dies with
+        ``LocalEntryNotFoundError`` after the weights have already synced.
+
+        Per-runtime with no shared core, for the same reason as
+        :meth:`managed_rendezvous_flags`: how an engine spells this is a
+        property of the engine.  The base default ``()`` disables the check,
+        which is the right answer for runtimes that never hand a repo id to an
+        engine that resolves it (``llama-cpp`` serves a local GGUF file) and the
+        safe answer for an out-of-tree runtime built against an older base
+        class.
+        """
+        return ()
+
     def generate_node_command(
         self,
         recipe: Recipe,
@@ -1684,7 +1761,10 @@ class RuntimePlugin(Plugin):
         logger.info("Cluster ID:     %s", cluster_id)
         if images_by_node and len(set(images_by_node)) > 1:
             logger.info("Images:")
-            for host, node_image in zip(hosts, images_by_node):
+            # strict=False: this is the launch banner.  A skew is reported by the
+            # resolution path that owns the invariant (``resolve_image_plan`` /
+            # ``resolve_image_identities``); printing must not be what raises.
+            for host, node_image in zip(hosts, images_by_node, strict=False):
                 logger.info("  %-14s%s", host + ":", node_image)
         else:
             logger.info("Image:          %s", image)

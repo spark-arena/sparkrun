@@ -348,8 +348,21 @@ class TestDockerAdjustmentsApplyOnlyToDocker:
         # only when DockerExecutor is selected.
         ex = resolve_executor(rootless=False, auto_user=False)
         assert ex.config.shm_size == "32gb"
-        assert ex.config.ipc == "host"
+        assert ex.config.ipc == "shareable"
         assert ex.config.network == "host"
+
+    def test_default_ipc_survives_both_privilege_modes(self):
+        # `ipc` is orthogonal to privilege: it is not part of the rootless
+        # adjustment layer, so --rootful does not restore the host namespace.
+        # Keeping them coupled would make `shm_size` inert in one mode only
+        # (Docker ignores --shm-size under --ipc=host).
+        assert resolve_executor(rootless=True, auto_user=True).config.ipc == "shareable"
+        assert resolve_executor(rootless=False, auto_user=False).config.ipc == "shareable"
+
+    def test_recipe_can_still_pin_host_ipc(self):
+        ex = resolve_executor(recipe=_FakeRecipe(executor_config={"ipc": "host"}), rootless=True, auto_user=True)
+        assert ex.config.ipc == "host"
+        assert "--ipc=host" in ex.run_cmd("img:latest")
 
     def test_local_path_does_not_pick_up_docker_adjustments(self):
         ex = resolve_executor(
@@ -836,7 +849,7 @@ class TestFromChainDefaultPreservation:
         assert cfg.gpus == "0"
         # Untouched fields keep dataclass defaults.
         assert cfg.privileged is True
-        assert cfg.ipc == "host"
+        assert cfg.ipc == "shareable"
 
 
 # ---------------------------------------------------------------------------
@@ -887,6 +900,12 @@ class TestGoldenEquivalence:
     K8s cases in the snapshot used the pre-refactor (broken) behaviour
     of leaking Docker adjustments into non-Docker configs and are not
     re-asserted here.
+
+    One field has deliberately diverged from that snapshot since: ``ipc``
+    moved from ``host`` to ``shareable`` (issue #285 — a host IPC namespace
+    lets systemd-logind's ``RemoveIPC`` reap the workload's semaphores once
+    the launching SSH session closes).  ``shm_size`` is unchanged but only
+    takes effect now, since Docker ignores ``--shm-size`` under ``ipc=host``.
     """
 
     def test_default_docker_byte_identical(self):
@@ -898,7 +917,7 @@ class TestGoldenEquivalence:
             "auto_remove": True,
             "privileged": False,  # rootless adjustment
             "gpus": "all",
-            "ipc": "host",
+            "ipc": "shareable",
             "shm_size": "32gb",
             "network": "host",
             "user": "$SHELL_USER",

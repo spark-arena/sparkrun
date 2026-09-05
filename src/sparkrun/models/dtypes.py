@@ -93,6 +93,41 @@ _DTYPE_CANONICAL: dict[str, str] = {
     "bf16": "bfloat16",
 }
 
+# Weight formats whose width is a per-checkpoint bits-per-weight figure rather
+# than a fixed packing, so no table entry can cover them: exllamav3 publishes
+# 2.05 / 3.05 / 4.05 bpw builds of the same model as separate branches of one
+# repo.  The width therefore travels *in* the dtype string — ``exl3:2.05`` — and
+# is read back by :func:`bytes_per_element`.
+#
+# Scoped to a declared set so an arbitrary ``foo:1.5`` stays unknown, and
+# weight-only by design: these are never KV-cache layouts, which is why the
+# parse is absent from :func:`kv_bytes_per_element`.
+#
+# The figure is nominal, matching every other entry here.  Real checkpoints run
+# a few percent above it (a separately-quantized ``head_bits`` plus trellis
+# scale overhead), which is within what a VRAM *estimate* is for.
+_BPW_FAMILIES = frozenset({"exl2", "exl3"})
+
+# Below 1 nothing ships; above 16 the caller means a float dtype and is reading
+# the wrong table.  Bounds exist so a typo'd ``exl3:205`` is rejected rather
+# than silently sizing the model 100x too large.
+_BPW_MIN = 1.0
+_BPW_MAX = 16.0
+
+
+def _bits_per_weight_bytes(key: str) -> float | None:
+    """Bytes per weight for a ``<family>:<bits>`` dtype key, or None."""
+    family, sep, bits = key.partition(":")
+    if not sep or family not in _BPW_FAMILIES:
+        return None
+    try:
+        parsed = float(bits)
+    except ValueError:
+        return None
+    if not (_BPW_MIN <= parsed <= _BPW_MAX):
+        return None
+    return parsed / 8.0
+
 
 def dtype_key(dtype: str) -> str:
     """Fold a dtype spelling to its lookup key.
@@ -117,8 +152,15 @@ def normalize_dtype(dtype: str) -> str:
 
 
 def bytes_per_element(dtype: str) -> float | None:
-    """Return bytes per element for a dtype string, or None if unknown."""
-    return _DTYPE_BYTES.get(dtype_key(dtype))
+    """Return bytes per element for a dtype string, or None if unknown.
+
+    Covers the fixed table plus the bits-parameterized ``<family>:<bits>``
+    spelling (``exl3:2.05``) — see :data:`_BPW_FAMILIES`.  A bare family name
+    stays unknown, because it is not sizable: the bpw *is* the width.
+    """
+    key = dtype_key(dtype)
+    known = _DTYPE_BYTES.get(key)
+    return known if known is not None else _bits_per_weight_bytes(key)
 
 
 def kv_bytes_per_element(dtype: str) -> float | None:

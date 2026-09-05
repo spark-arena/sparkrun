@@ -90,7 +90,13 @@ class ExecutorConfig:
     restart_policy: str | None = None
     privileged: bool = True
     gpus: str = "all"
-    ipc: str = "host"
+    # ``shareable`` rather than ``host``: a host IPC namespace puts the
+    # workload's POSIX semaphores in the host's /dev/shm owned by the
+    # container user, where systemd-logind's RemoveIPC reaps them once the
+    # launching SSH session closes.  See ``docker.DOCKER_IPC_DEFAULT`` for the
+    # full rationale — the Docker layer overrides this with the same value;
+    # this is the bottom-of-chain fallback for a config built without it.
+    ipc: str = "shareable"
     shm_size: str = "25gb"
     network: str = "host"
     user: str | None = None
@@ -379,7 +385,7 @@ class Executor(Plugin):
         """Per-executor default settings — lowest-priority chain layer.
 
         Override to ship sensible defaults (e.g. DockerExecutor's
-        ``shm_size``/``ipc=host``).  Bare base class contributes
+        ``shm_size``/``ipc=shareable``).  Bare base class contributes
         nothing — the dataclass field defaults already provide the
         bottom layer.
         """

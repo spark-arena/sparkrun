@@ -329,6 +329,25 @@ def test_progress_heartbeat_stops_at_exit(caplog):
     assert len(caplog.records) == emitted
 
 
+def test_progress_heartbeat_uses_dynamic_label(caplog):
+    """Callers can make heartbeat detail follow live operation state."""
+    import logging
+    import time
+
+    from sparkrun.core.progress import PROGRESS, progress_heartbeat
+
+    detail = {"value": "Preparing capsules"}
+    logger = logging.getLogger("sparkrun.test.heartbeat.dynamic")
+    with (
+        caplog.at_level(PROGRESS, logger="sparkrun.test.heartbeat.dynamic"),
+        progress_heartbeat(logger, lambda: detail["value"], interval=0.02),
+    ):
+        detail["value"] = "Pulling capsules on 2 nodes"
+        time.sleep(0.05)
+
+    assert "Pulling capsules on 2 nodes — still running" in caplog.text
+
+
 def test_progress_heartbeat_propagates_the_failure_it_was_watching():
     """The heartbeat is observational: it never swallows the work's error."""
     import logging

@@ -20,6 +20,19 @@ class VllmMixin:
     def get_common_env(self):
         return default_env_hf_offline()
 
+    def model_revision_flags(self) -> tuple[str, ...]:
+        """vLLM spells the model repo pin ``--revision``.
+
+        Declared on the mixin rather than per runtime because every vLLM
+        variant shares the argument parser — unlike ``managed_rendezvous_flags``,
+        where ``vllm-ray`` rendezvouses through Ray and so declares nothing.
+
+        Note ``get_common_env`` is what makes this load-bearing: it sets
+        ``HF_HUB_OFFLINE``, so an unpassed pin cannot be papered over by the
+        engine reaching the Hub at startup.
+        """
+        return ("--revision",)
+
     def known_config_keys(self) -> frozenset[str]:
         """Flag-map keys plus the vLLM keys read outside it.
 
