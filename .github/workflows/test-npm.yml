@@ -6,9 +6,9 @@ name: Test (npm)
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, develop, develop-next ]
   pull_request:
-    branches: [ main, develop ]
+    branches: [ main, develop, develop-next ]
   workflow_call:
 
 concurrency:

@@ -28,4 +28,4 @@ jobs:
         uses: astral-sh/setup-uv@v9.0.0
 
       - name: Verify versions are in sync
-        run: uvx --from 'scitrera-repo-tools==0.1.22' sync-versions --check --verbose
+        run: uvx --from 'git+https://github.com/scitrera/repo-tools.git@4a2ae8b966a875f6dc21ec8c142220a0471e06e8' sync-versions --check --verbose

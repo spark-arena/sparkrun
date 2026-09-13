@@ -35,6 +35,9 @@ from ._errors import (
 )
 from ._ops import (
     ProxyAliasResult,
+    ProxyUiResult,
+    ui,
+    admin_token,
     ProxyEndpoint,
     ProxyModel,
     ProxyStartOptions,
@@ -59,6 +62,9 @@ from ._ops import (
 __all__ = [
     # Functions
     "start",
+    "ui",
+    "admin_token",
+    "ProxyUiResult",
     "stop",
     "status",
     "models",

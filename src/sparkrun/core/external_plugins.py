@@ -44,6 +44,7 @@ import os
 import pkgutil
 import sys
 from pathlib import Path
+from types import ModuleType
 from typing import TYPE_CHECKING
 
 from scitrera_app_framework import ext_parse_bool, register_plugin
@@ -100,6 +101,38 @@ def _is_registerable(cls: type) -> bool:
     return True
 
 
+# Modules this process actually loaded as plugins, keyed by dotted module name.
+# Recorded here — the one point both loaders pass through — so the inventory
+# (``core.plugin_inventory``) reports a version only for a module *we* imported
+# as a plugin. ``sys.modules`` is not a substitute: an external plugin's
+# top-level name may also be importable for unrelated reasons, and reporting
+# that module's ``__version__`` would attribute a stranger's version to a
+# plugin sparkrun never loaded.
+_LOADED_PLUGIN_MODULES: dict[str, ModuleType] = {}
+
+
+def loaded_plugin_module(dotted: str) -> "ModuleType | None":
+    """Return the module loaded as plugin *dotted*, or ``None`` if not loaded."""
+    return _LOADED_PLUGIN_MODULES.get(dotted)
+
+
+def clear_loaded_plugin_modules() -> None:
+    """Forget every recorded plugin module (test isolation)."""
+    _LOADED_PLUGIN_MODULES.clear()
+
+
+def iter_plugin_module_names(path: Path) -> list[str]:
+    """Return the importable top-level plugin module names inside *path*.
+
+    The single definition of "what counts as a plugin module in a directory",
+    shared by :func:`load_external_plugins` and the inventory, so a listing can
+    never offer a name the loader would skip (or omit one it would load).
+    """
+    if not path.is_dir():
+        return []
+    return [info.name for info in pkgutil.iter_modules([str(path)]) if not info.name.startswith("_")]
+
+
 def _scan_module_for_plugins(module, base: type) -> list[type]:
     """Return concrete *base* subclasses reachable from *module*.
 
@@ -143,6 +176,8 @@ def load_plugin_module(module, v: "Variables", *, tier: "DeclarationTier | None"
             ``OUT_OF_TREE``: least privilege.
     """
     from sparkrun.core.registry_defaults import DeclarationTier, declaring_tier
+
+    _LOADED_PLUGIN_MODULES[module.__name__] = module
 
     with declaring_tier(tier or DeclarationTier.OUT_OF_TREE):
         # 1) Register SAF-scanned plugin subclasses (runtimes/executors/transports/…).
@@ -217,10 +252,7 @@ def load_external_plugins(v: "Variables", paths: "list[Path] | None" = None) -> 
         path_str = str(path)
         if path_str not in sys.path:
             sys.path.insert(0, path_str)
-        for mod_info in pkgutil.iter_modules([path_str]):
-            name = mod_info.name
-            if name.startswith("_"):
-                continue
+        for name in iter_plugin_module_names(path):
             try:
                 module = importlib.import_module(name)
             except Exception:  # noqa: BLE001 - one broken plugin shouldn't kill the CLI

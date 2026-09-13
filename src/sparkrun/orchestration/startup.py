@@ -9,7 +9,7 @@ import signal
 import subprocess
 import time
 from importlib.resources import files
-from sparkrun.core.readiness import DOCKER_HOST_OBSERVER, OPENAI_CHAT_STREAM, ObservationUnavailable
+from sparkrun.core.readiness import DOCKER_HOST_OBSERVER, OPENAI_CHAT_STREAM, INFERENCE_STYLES, ObservationUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -48,15 +48,29 @@ def validate_observation(value, *, require_inference=False, expected_style=None,
             raise ValueError("invalid startup timestamps")
         if value.get("first_token_field") not in ("content", "reasoning", "reasoning_content"):
             raise ValueError("startup observation has no text token")
-    # Format-1 profiles have a fixed Docker/OpenAI contract. Normalize older
-    # ColdSnap receipts without requiring a plugin/controller upgrade. These
-    # are profile-defined values, not guesses from the current launch config.
+    # ColdSnap rank0-acceptance-v1 receipts have a fixed Docker/Chat contract.
+    # Native host observations record the actual protocol; older receipts that
+    # predate multiple handlers remain Chat. Never relabel a strategy receipt.
+    native_style = value.get("inference_style", OPENAI_CHAT_STREAM)
+    if (
+        value["measurement"] == "sparkrun-rank0-v1"
+        and value.get("inference_requested") is not False
+        and (not isinstance(native_style, str) or native_style not in INFERENCE_STYLES)
+    ):
+        raise ValueError("startup observation has incompatible inference_style")
     normalized = dict(value)
     for key, expected in (
         ("executor", "docker"),
         ("observer_location", "rank0-container" if value["measurement"] == "rank0-acceptance-v1" else DOCKER_HOST_OBSERVER.location),
         ("start_boundary", DOCKER_HOST_OBSERVER.start_boundary),
-        ("inference_style", None if value.get("inference_requested") is False else OPENAI_CHAT_STREAM),
+        (
+            "inference_style",
+            None
+            if value.get("inference_requested") is False
+            else native_style
+            if value["measurement"] == "sparkrun-rank0-v1"
+            else OPENAI_CHAT_STREAM,
+        ),
     ):
         if key in normalized and normalized[key] != expected:
             raise ValueError("startup observation has incompatible " + key)
@@ -143,10 +157,12 @@ def observe_launch(result, *, settings, style=None, observer=None, ssh_kwargs=No
     observation = getattr(result, "startup_observation", None)
     try:
         if observation:
-            observation = validate_observation(
-                dict(observation), require_inference=settings.inference, expected_style=style, normalize=True
-            )
-        else:
+            observation = validate_observation(dict(observation), normalize=True)
+            if settings.inference and (not observation.get("inference_ready") or observation["inference_style"] != style):
+                # A valid receipt for one API cannot satisfy another API's
+                # requested readiness check. Measure again without relabeling it.
+                observation = None
+        if not observation:
             if observer != DOCKER_HOST_OBSERVER:
                 raise ObservationUnavailable("executor observer adapter is not implemented")
             if not is_local_host(host):
@@ -169,6 +185,8 @@ def observe_launch(result, *, settings, style=None, observer=None, ssh_kwargs=No
                     "health_path": result.runtime.readiness_health_path,
                     "inference_timeout_s": settings.inference_timeout_s,
                     "prompt": settings.inference_prompt,
+                    "model": (result.overrides or {}).get("served_model_name")
+                    or getattr(result.recipe, "effective_served_model_name", None),
                     "api_key": api_key,
                 },
                 ssh_kwargs=ssh_kwargs,

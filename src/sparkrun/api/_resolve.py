@@ -419,7 +419,7 @@ def discover_cluster_id_by_intent(
         JobNotFound: no running workload matches the intent.
         AmbiguousWorkload: more than one does (carries ``cluster_ids``).
     """
-    from sparkrun.api._errors import AmbiguousWorkload, JobNotFound
+    from sparkrun.api._errors import AmbiguousWorkload, JobNotFound, SparkrunError
     from sparkrun.orchestration.executor import query_status_for_cluster
     from sparkrun.orchestration.primitives import build_ssh_kwargs
 
@@ -433,6 +433,13 @@ def discover_cluster_id_by_intent(
         config=config,
         v=sctx.variables if sctx is not None else None,
     )
+
+    # Missing/unreachable hosts cannot establish absence or uniqueness. In
+    # particular, proxy unload may retire a saved binding on JobNotFound.
+    missing = set(target_hosts) - {host.host for host in status.hosts}
+    unavailable = sorted(missing | set(status.errors))
+    if unavailable:
+        raise SparkrunError("Cannot determine running workloads: status unavailable for %s" % ", ".join(unavailable))
 
     prefix = "sparkrun_%s_" % intent_id
     matches = sorted({cid for cid in status.running_cluster_ids() if cid.startswith(prefix)})

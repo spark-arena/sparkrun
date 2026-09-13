@@ -9,6 +9,7 @@ Covers:
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -182,6 +183,7 @@ def patch_engine():
         patch("sparkrun.proxy.engine.ProxyEngine._read_pid", fake_read_pid),
         patch("sparkrun.proxy.engine.ProxyEngine.start", fake_start),
         patch("sparkrun.proxy.engine.ProxyEngine.stop", fake_stop),
+        patch("sparkrun.proxy.engine.ProxyEngine._await_exit", return_value=True),
         patch("sparkrun.proxy.engine.write_config", return_value=Path("/tmp/cfg.yaml")),
     ):
         yield state
@@ -331,20 +333,11 @@ class TestStartCli:
             state["start_called"] = True
             return 0
 
-        # Make time.sleep instantaneous so the polling loop exits the 10s budget fast.
-        import sparkrun.cli._proxy as proxy_mod  # noqa: F401  (anchor for time import scope)
-
-        sleep_calls = []
-
-        def fake_sleep(secs):
-            sleep_calls.append(secs)
-
-        monkeypatch.setattr("time.sleep", fake_sleep)
-
         with (
             patch("sparkrun.proxy.engine.ProxyEngine.is_running", fake_is_running),
             patch("sparkrun.proxy.engine.ProxyEngine._read_pid", fake_read_pid),
             patch("sparkrun.proxy.engine.ProxyEngine.stop", fake_stop),
+            patch("sparkrun.proxy.engine.ProxyEngine._await_exit", return_value=False) as wait_exit,
             patch("sparkrun.proxy.engine.ProxyEngine.start", fake_start),
             patch("sparkrun.proxy.engine.write_config", return_value=Path("/tmp/cfg.yaml")),
         ):
@@ -354,5 +347,73 @@ class TestStartCli:
         assert "did not stop cleanly" in result.output
         assert state["stop_called"] is True
         assert state["start_called"] is False
-        # Polling actually ran (>= 1 sleep call).
-        assert len(sleep_calls) >= 1
+        wait_exit.assert_called_once_with(999, 10.0)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="fixture uses a delayed POSIX SIGTERM handler")
+@pytest.mark.parametrize("clear_on_signal", [False, True])
+def test_restart_waits_for_database_lock_release(tmp_path, clear_on_signal):
+    """A different CLI invocation must wait for exit, even if state disappears."""
+    import sqlite3
+    import subprocess
+    import time
+
+    from sparkrun.api.proxy._ops import _stop_and_wait
+    from sparkrun.proxy._supervisor import GatewaySupervisor
+
+    database = tmp_path / "credential-store.lock"
+    ready = tmp_path / "ready"
+    code = """
+import signal, sqlite3, sys, time
+from pathlib import Path
+connection = sqlite3.connect(sys.argv[1])
+connection.execute('BEGIN EXCLUSIVE')
+def stop(*_):
+    time.sleep(0.4)
+    connection.close()
+    sys.exit(0)
+signal.signal(signal.SIGTERM, stop)
+Path(sys.argv[2]).touch()
+while True: time.sleep(0.02)
+"""
+    process = subprocess.Popen([sys.executable, "-c", code, str(database), str(ready)])
+    try:
+        deadline = time.monotonic() + 5
+        while not ready.exists():
+            assert process.poll() is None, "fixture stopped before acquiring the lock"
+            assert time.monotonic() < deadline, "fixture did not acquire the lock"
+            time.sleep(0.01)
+
+        class Engine(GatewaySupervisor):
+            gateway_name = "fixture"
+
+            def stop(self, dry_run=False):
+                result = super().stop(dry_run=dry_run)
+                if clear_on_signal:
+                    self._clear_state()  # also cover asynchronous third-party engines
+                return result
+
+        engine = Engine(state_dir=tmp_path / "proxy")
+        engine._save_state(process.pid)
+        assert engine._proc is None  # daemon belongs to a previous CLI invocation
+        assert _stop_and_wait(engine)
+        assert not engine.state_file.exists()
+        with sqlite3.connect(database, timeout=0) as replacement:
+            replacement.execute("BEGIN EXCLUSIVE")
+            replacement.rollback()
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+
+
+def test_restart_timeout_keeps_original_pid_for_retry(tmp_path):
+    from sparkrun.api.proxy._ops import _stop_and_wait
+    from sparkrun.proxy._supervisor import GatewaySupervisor
+
+    engine = GatewaySupervisor(state_dir=tmp_path)
+    engine._save_state(98765)
+    with patch("os.kill"), patch.object(engine, "_await_exit", return_value=False) as wait_exit:
+        assert _stop_and_wait(engine) is False
+    assert engine.current_pid() == 98765
+    assert [call.args for call in wait_exit.call_args_list] == [(98765, 0.0), (98765, 10.0)]

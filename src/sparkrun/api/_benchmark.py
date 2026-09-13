@@ -547,6 +547,7 @@ def _execute_benchmark(
         run_options = api.RunOptions(
             recipe=recipe,
             hosts=tuple(host_list),
+            cluster=cluster_cfg.name,
             overrides=dict(overrides),
             solo=solo,
             dry_run=dry_run,
@@ -558,9 +559,8 @@ def _execute_benchmark(
             transfer_interface=effective_transfer_interface,
             cache_dir=remote_cache_dir,
             local_cache_dir=local_cache_dir,
-            # Pass the cluster's shared-cache prefs explicitly: this launch
-            # uses explicit hosts and so loses the named-cluster identity
-            # that launch_inference would otherwise read them from.
+            # Retain the resolved transfer preferences when explicit hosts
+            # override the cluster's host list.
             preserve_model_perms=cluster_cfg.preserve_model_perms,
             skip_model_fan_out=cluster_cfg.skip_model_fan_out,
             rootful=rootful,
@@ -595,7 +595,7 @@ def _execute_benchmark(
             overrides,
             host_list,
             solo=solo,
-            cluster=cluster_name,
+            cluster=cluster_cfg.name,
             sctx=sctx,
             emitter=emitter,
         )

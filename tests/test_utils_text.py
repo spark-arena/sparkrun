@@ -11,7 +11,13 @@ import logging
 
 import pytest
 
-from sparkrun.utils.text import mask_non_placeholder_braces, render_template, unmask_braces, uses_brace_escapes
+from sparkrun.utils.text import (
+    mask_non_placeholder_braces,
+    render_template,
+    sanitize_line_continuations,
+    unmask_braces,
+    uses_brace_escapes,
+)
 
 
 class TestUsesBraceEscapes:
@@ -177,3 +183,72 @@ class TestRenderTemplate:
             render_template("--port {port}", {"port": 8000})
 
         assert caplog.text == ""
+
+
+# ---------------------------------------------------------------------------
+# sanitize_line_continuations
+# ---------------------------------------------------------------------------
+
+
+class TestSanitizeLineContinuations:
+    """Backslash continuations broken by an invisible trailing blank.
+
+    The failure these repair is silent at authoring time and unattributable at
+    runtime: bash ends the command at the escaped blank and reports the *next*
+    line's first token as a missing command.
+    """
+
+    @pytest.mark.parametrize(
+        "blanks",
+        [" ", "   ", "\t", "\t\t", " \t", "\t ", " \t "],
+        ids=["space", "spaces", "tab", "tabs", "space-tab", "tab-space", "mixed"],
+    )
+    def test_repairs_every_blank_run(self, blanks: str):
+        """Tabs repair exactly as spaces do — both are invisible in an editor."""
+        assert sanitize_line_continuations(f"a \\{blanks}\nb") == "a \\\nb"
+
+    def test_clean_continuation_untouched(self):
+        assert sanitize_line_continuations("a \\\nb") == "a \\\nb"
+
+    def test_preserves_escaped_blank_mid_line(self):
+        """``hello\\ world`` is an escaped space, not a broken continuation."""
+        assert sanitize_line_continuations("echo hello\\ world") == "echo hello\\ world"
+
+    def test_preserves_escaped_blank_before_more_text(self):
+        """Only a blank run *terminated by a newline* is a broken continuation."""
+        assert sanitize_line_continuations("echo a\\\tb\tc") == "echo a\\\tb\tc"
+
+    def test_repairs_every_occurrence(self):
+        assert sanitize_line_continuations("a \\ \nb \\\t\nc") == "a \\\nb \\\nc"
+
+    def test_no_continuations_is_identity(self):
+        assert sanitize_line_continuations("plain command --flag 1") == "plain command --flag 1"
+
+    def test_repaired_command_survives_bash(self):
+        """The repair is verified against the shell, not just the string.
+
+        Asserting on the rendered text alone would pass for a regex that
+        produced something bash still splits.
+        """
+        import subprocess
+
+        broken = "echo ONE \\\t\n  TWO \\ \n  THREE"
+        proc = subprocess.run(
+            ["bash", "-c", sanitize_line_continuations(broken)],
+            capture_output=True,
+            text=True,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout.split() == ["ONE", "TWO", "THREE"]
+        assert "command not found" not in proc.stderr
+
+    def test_unrepaired_command_breaks_in_bash(self):
+        """The control: without the repair, bash really does break this way."""
+        import subprocess
+
+        proc = subprocess.run(
+            ["bash", "-c", "echo ONE \\\t\n  --port 8000"],
+            capture_output=True,
+            text=True,
+        )
+        assert "command not found" in proc.stderr

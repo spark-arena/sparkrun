@@ -17,6 +17,7 @@ from .._common import (
     dry_run_option,
     host_options,
     json_option,
+    print_json,
     HIDE_ADVANCED_OPTIONS,
 )
 from . import setup
@@ -387,14 +388,36 @@ def _feature_state(config, flag):
 
 
 @setup_features.command("list")
+@json_option()
 @click.pass_context
-def setup_features_list(ctx):
+def setup_features_list(ctx, output_json):
     """List all feature flags and their effective state."""
     from sparkrun.core.features import all_features
 
     config = _get_context(ctx).config
     channel = config.feature_channel
     flags = all_features()
+
+    if output_json:
+        # `channel` rides on every row rather than heading an envelope: list
+        # commands emit a bare array here, and it is genuinely per-flag — the
+        # channel each one resolved under — so nothing in the human output is
+        # lost and `jq` still sees a list.
+        print_json(
+            [
+                {
+                    "name": flag.name,
+                    "description": flag.description,
+                    "enabled": enabled,
+                    "source": source,
+                    "override": override,
+                    "channel": channel,
+                }
+                for flag, (enabled, source, override) in ((f, _feature_state(config, f)) for f in flags)
+            ]
+        )
+        return
+
     if not flags:
         click.echo("No feature flags registered.")
         return

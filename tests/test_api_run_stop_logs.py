@@ -953,3 +953,27 @@ def test_run_occupancy_cluster_id_is_random():
     second_intent, second_token = parse_cluster_id(second)
     assert first_intent == second_intent  # same recipe → same intent
     assert first_token != second_token  # random placement token per launch
+
+
+@pytest.mark.parametrize("error_hosts,reported_hosts", [({"h2": "unreachable"}, ["h1", "h2"]), ({}, ["h1"])])
+def test_intent_discovery_does_not_treat_incomplete_status_as_absence(monkeypatch, error_hosts, reported_hosts):
+    from sparkrun.api._resolve import discover_cluster_id_by_intent
+    from sparkrun.core.cluster_manager import ClusterDefinition
+    from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy
+
+    status = ClusterStatus(hosts=tuple(HostOccupancy(host=h) for h in reported_hosts), errors=error_hosts)
+    monkeypatch.setattr("sparkrun.orchestration.executor.query_status_for_cluster", lambda *a, **kw: status)
+    with pytest.raises(api.SparkrunError, match="status unavailable for h2") as caught:
+        discover_cluster_id_by_intent("intent", ["h1", "h2"], cluster_def=ClusterDefinition(name="c", hosts=["h1", "h2"]))
+    assert not isinstance(caught.value, api.JobNotFound)
+
+
+def test_intent_discovery_confirms_absence_on_complete_empty_status(monkeypatch):
+    from sparkrun.api._resolve import discover_cluster_id_by_intent
+    from sparkrun.core.cluster_manager import ClusterDefinition
+    from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy
+
+    status = ClusterStatus(hosts=(HostOccupancy(host="h1"),))
+    monkeypatch.setattr("sparkrun.orchestration.executor.query_status_for_cluster", lambda *a, **kw: status)
+    with pytest.raises(api.JobNotFound):
+        discover_cluster_id_by_intent("intent", ["h1"], cluster_def=ClusterDefinition(name="c", hosts=["h1"]))

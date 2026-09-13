@@ -87,7 +87,7 @@ def test_native_protocols_are_fail_closed_by_default():
     them; under-claiming only costs a translation."""
     from sparkrun.runtimes.base import RuntimePlugin
 
-    assert RuntimePlugin.native_protocols(object(), _recipe()) == ["openai"]
+    assert RuntimePlugin().native_protocols(_recipe()) == ["openai"]
 
 
 def test_every_shipped_runtime_claims_only_dialects_it_serves():

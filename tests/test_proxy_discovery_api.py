@@ -215,3 +215,38 @@ class TestDiscoveryApiIntegration:
             )
 
         assert endpoints == []
+
+
+def test_named_cluster_and_launch_revision_survive_discovery_and_api_projection():
+    from sparkrun.proxy.discovery import _endpoint_from_job
+    from sparkrun.api.proxy._ops import _to_endpoint
+
+    job = _make_job("opaque-job", extra_meta={"cluster": "spark-a", "recipe_fingerprint": "abc123abc123"})
+    endpoint = _endpoint_from_job(job, ib_to_mgmt={})
+    public = _to_endpoint(endpoint)
+    assert endpoint.cluster_id == public.cluster_id == "opaque-job"
+    assert endpoint.cluster_name == public.cluster_name == "spark-a"
+    assert endpoint.recipe_revision == public.recipe_revision == "abc123abc123"
+    legacy = _to_endpoint(_endpoint_from_job(_make_job("old-job"), ib_to_mgmt={}))
+    assert legacy.cluster_name is None
+    assert legacy.recipe_revision == ""
+
+
+def test_saved_recipe_projects_native_apis_on_discovered_workloads(passive_recipe_item):
+    from sparkrun.core.recipe import Recipe
+    from sparkrun.proxy.discovery import _endpoint_from_job
+
+    recipe = Recipe.from_dict({"model": "test/model", "runtime": "vllm", "container": "vllm/vllm-openai:v0.12.0"})
+    recipe = Recipe.from_dict({**recipe.to_dict(), passive_recipe_item: {"labels": ["vision"]}})
+    job = _make_job("job", extra_meta={"recipe_state": recipe.__getstate__()})
+    endpoint = _endpoint_from_job(job, ib_to_mgmt={})
+    assert endpoint.native_protocols == ["openai", "anthropic"]
+    assert "responses" in endpoint.capabilities
+    from sparkrun.api.proxy._ops import _to_endpoint
+
+    public = _to_endpoint(endpoint)
+    assert public.native_protocols == ("openai", "anthropic")
+    assert "responses" in public.capabilities
+    assert public.plugin_items == endpoint.plugin_items == recipe.export_plugin_items()
+    public.plugin_items[passive_recipe_item]["labels"].clear()
+    assert endpoint.plugin_items[passive_recipe_item]["labels"] == ["vision"]

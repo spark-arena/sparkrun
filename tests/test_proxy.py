@@ -1063,7 +1063,7 @@ class TestEngineLifecycle:
         engine = ProxyEngine(state_dir=state_dir)
         engine._save_state(99999)
 
-        with patch("os.kill") as mock_kill:
+        with patch("os.kill") as mock_kill, patch.object(engine, "_await_exit", return_value=True):
             result = engine.stop()
 
         assert result is True
@@ -1932,7 +1932,7 @@ class TestAutodiscover:
 
         engine._save_state(pid=100, autodiscover_pid=200)
 
-        with patch("os.kill") as mock_kill:
+        with patch("os.kill") as mock_kill, patch.object(engine, "_await_exit", return_value=True):
             result = engine.stop()
 
         assert result is True

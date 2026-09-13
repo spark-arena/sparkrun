@@ -19,8 +19,9 @@ Docker inspection, and the local inference endpoint. It records:
 | Startup TTFT | First non-empty `content`, `reasoning`, or `reasoning_content` streaming delta |
 
 The first two are distinct from inference readiness. Empty role, usage, and
-keepalive events do not count as generated text. The observer selects the served
-model ID from `/v1/models`, sends a single temperature-zero, max-64-token chat
+keepalive events do not count as generated text. The observer uses the launched
+recipe's served model name (falling back to `/v1/models` when unavailable),
+sends a single temperature-zero, max-64-token streaming inference
 request, and closes it after receiving first text. Ordinary readiness does not
 require an exact final reply. A timed-out, empty, or failed stream does not
 signal ready. Recipe/override API keys use the runtime's existing key resolver;
@@ -86,9 +87,9 @@ readiness:
   inference: false
 ```
 
-This disables the chat request only for this recipe. Docker-start port/HTTP TTR
+This disables the inference request only for this recipe. Docker-start port/HTTP TTR
 measurements remain enabled, the log reports endpoint readiness, and TTFT is
-`not applicable (inference disabled)`, not zero. No model-list or chat request
+`not applicable (inference disabled)`, not zero. No model-list or inference request
 is needed by the endpoint-only probe. Other recipes retain the global defaults.
 
 A chat recipe can override the prompt and budget independently:
@@ -110,28 +111,47 @@ silently falling back to `auto`.
 
 ### Runtime styles and executor observation support
 
-`inference_style: auto` chooses the runtime's preferred supported style. An
-explicit selection can be made in global config or a recipe:
+`inference_style: auto` chooses the runtime's preferred style from the recipe's
+declared native APIs. An explicit selection can be made in global config or a
+recipe. For example, to check Responses on a vLLM recipe:
 
 ```yaml
+metadata:
+  native_apis: [chat_completions, responses, messages]
 readiness:
-  inference_style: openai-chat-stream-v1
+  inference_style: openai-responses-stream-v1
 ```
 
-Currently, `openai-chat-stream-v1` is the implemented inference style: discover
-the served model through `/v1/models`, POST `/v1/chat/completions` with streaming
-enabled, and accept the first non-empty content/reasoning delta. Future styles
-can have separate protocol handlers. Style identifies the protocol/check;
+| Inference style | Native API declaration | Streaming endpoint |
+| --- | --- | --- |
+| `openai-chat-stream-v1` | `chat_completions` | `/v1/chat/completions` |
+| `openai-responses-stream-v1` | `responses` | `/v1/responses` |
+| `anthropic-messages-stream-v1` | `messages` | `/v1/messages` |
+
+Each handler accepts the first non-empty text or reasoning delta. Readiness
+checks one selected API; it does not establish that every advertised API works.
+Style identifies the protocol/check;
 `measurement` identifies the timing/acceptance profile, not the protocol.
 
 Runtime authors declare `readiness_styles` as a preference-ordered tuple and
 `readiness_health_path` as the HTTP readiness endpoint. The base declarations
-are empty/`None`; vLLM's shared mixin and SGLang opt in with
-`("openai-chat-stream-v1",)` and `/health`. A runtime subclass can explicitly
+are empty/`None`. vLLM supports all three styles in the order above; SGLang
+currently supports Chat only. Both use `/health`. A runtime subclass can explicitly
 opt out with an empty tuple. With inference enabled, explicitly selecting a
-style the runtime does not support fails before launch. `auto` on an opted-out
+style the runtime or recipe does not declare fails before launch. `auto` on an opted-out
 runtime retains legacy endpoint checks. `inference: false` overrides the probe
 request, while supported endpoint-only TTR collection remains available.
+
+The runtime's `native_apis(recipe)` declaration feeds the recipe catalog,
+SparkRoute deployment projection, and readiness selection. vLLM defaults to
+Chat Completions, Responses, and Anthropic Messages, including custom/nightly
+images. Recognized version tags older than 0.12.0 retain the Chat default.
+Recipe `metadata.native_apis` explicitly narrows or overrides that family default;
+use `[chat_completions]` for a custom build that only serves Chat. Values must be
+non-empty and supported by the runtime family. `responses` also requires
+`chat_completions` because they share the OpenAI wire-family declaration.
+With `[messages]`, `auto` selects the Anthropic probe instead of Chat. Invalid
+API declarations are rejected before launch even when inference is disabled.
 
 Executor authors implement `readiness_observer()` for their resolved
 configuration, returning a `ReadinessObserver` descriptor or `None`. The
@@ -168,7 +188,10 @@ bounded timeouts; cancelling observation does not stop the serving container.
 
 An execution strategy can return `ActivationResult.startup_observation` with
 its successful inference observation. `LaunchResult` passes it to readiness,
-which reuses it without sending a second inference. The optional mapping is
+which reuses it without sending a second inference when it covers the selected
+protocol. A valid receipt for a different protocol triggers a fresh probe when
+the executor supports it. ColdSnap's `rank0-acceptance-v1` receipts always attest
+to Chat; they cannot be relabeled as Responses or Anthropic. The optional mapping is
 empty for existing strategies. Its format-1 contract includes measurement
 profile, rank-0 observer, container identity/start, first-token timestamp/field,
 and `inference_ready: true`; port/HTTP timestamps and full-response validation

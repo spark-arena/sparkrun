@@ -18,7 +18,6 @@ from ._common import (
     recipe_override_options,
     report_launch_validation,
     resolve_cluster_config,
-    resolve_effective_hosts_for_recipe,
     with_host_context,
 )
 
@@ -592,8 +591,8 @@ def load_cmd(
 
       sparkrun proxy load qwen3-1.7b-vllm --solo --gpu-mem 0.8
     """
+    from sparkrun import api
     from sparkrun.core.bootstrap import get_runtime
-    from sparkrun.core.launcher import launch_inference
 
     from ._common import _get_context
 
@@ -602,7 +601,7 @@ def load_cmd(
     config = sctx.config
 
     # Load recipe (defer resolution until overrides are built)
-    recipe, _recipe_path, registry_mgr = _load_recipe(config, recipe_name, resolve=False)
+    recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name, resolve=False, retry_after_update=True)
 
     # Build overrides and resolve runtime (overrides may influence resolution)
     recipe, overrides = _apply_recipe_overrides(
@@ -635,41 +634,39 @@ def load_cmd(
     if validation_failed:
         sys.exit(1)
 
-    # Node count validation, max_nodes enforcement, and solo mode determination
-    host_list, is_solo = resolve_effective_hosts_for_recipe(
-        host_list,
-        recipe,
-        overrides,
-        cluster_def=None,
-        sctx=sctx,
-        solo=solo,
-    )
-
     # Resolve cache dir, transfer mode, and transfer interface from cluster config
     cluster_cfg = resolve_cluster_config(cluster_name, hosts, hosts_file, cluster_mgr)
     local_cache_dir, remote_cache_dir, effective_transfer_mode, effective_transfer_interface = cluster_cfg.resolve_transfer_config(config)
 
-    # Launch via shared pipeline (auto_port=True for conflict avoidance)
+    # Preserve the resolved cluster alongside the full candidate host set.
+    # The normal run API owns placement, execution strategies, job metadata,
+    # and fingerprints; the proxy only changes the port/follow defaults.
     click.echo("Loading model: %s" % recipe_name)
-    result = launch_inference(
+    run_options = api.RunOptions(
         recipe=recipe,
-        runtime=runtime,
-        host_list=host_list,
-        overrides=overrides,
-        sctx=sctx,
-        is_solo=is_solo,
+        hosts=tuple(host_list),
+        cluster=cluster_cfg.name,
+        overrides=dict(overrides),
+        solo=solo,
         cache_dir=remote_cache_dir,
         local_cache_dir=local_cache_dir,
         transfer_mode=effective_transfer_mode,
         transfer_interface=effective_transfer_interface,
-        registry_mgr=registry_mgr,
+        topology=cluster_cfg.topology,
         auto_port=True,
         dry_run=dry_run,
         detached=True,
-        # non-root user and non-privileged
-        rootless=True,
-        auto_user=True,
+        follow=False,
     )
+    try:
+        run_plan = api.plan(run_options, sctx=sctx)
+        for note in run_plan.notes:
+            click.echo(note)
+        run_result = api.run(run_options, sctx=sctx, plan=run_plan)
+    except api.SparkrunError as exc:
+        click.echo("Error: %s" % exc, err=True)
+        sys.exit(1)
+    result = run_result.launch_result
 
     if result.rc != 0:
         click.echo("Error: failed to load model (exit code %d)." % result.rc, err=True)
@@ -677,10 +674,13 @@ def load_cmd(
 
     click.echo("Model loaded: %s (port %d)" % (recipe_name, result.serve_port))
 
+    if recipe.post_exec or recipe.post_commands:
+        from sparkrun.core.launcher import post_launch_lifecycle
+
+        post_launch_lifecycle(result, remote_cache_dir=result.effective_cache_dir, dry_run=dry_run, progress=sctx.progress)
+
     if not dry_run:
         # Try to register with a running proxy.
-        from sparkrun import api
-
         proxy_status = api.proxy.status(sctx=sctx)
         if proxy_status.running:
             # Discovery's liveness test is an HTTP probe of /v1/models, so
@@ -704,7 +704,12 @@ def load_cmd(
                     # Not a plain sync: a catalog-driven gateway persists an
                     # activatable route here.  A discovery-driven one (LiteLLM)
                     # falls through to exactly the sync this used to call.
-                    synced = api.proxy.register_loaded_model(recipe_name, sctx=sctx)
+                    synced = api.proxy.register_loaded_model(
+                        recipe_name,
+                        overrides=run_options.overrides,
+                        cluster=run_plan.cluster.name or None,
+                        sctx=sctx,
+                    )
                 except api.proxy.ProxyUpdateFailed as exc:
                     click.echo("Error: %s" % exc, err=True)
                     sys.exit(1)
@@ -730,6 +735,10 @@ def _warn_not_registered(readiness, proxy_status) -> None:
         click.echo("  Check the logs: sparkrun logs <cluster-id>", err=True)
         return
 
+    if readiness.reason in {"inference", "cancelled"}:
+        click.echo("Warning: startup readiness did not complete (%s); model was not registered." % readiness.reason, err=True)
+        return
+
     click.echo(
         "Warning: server at %s is still not answering — it may need longer to load." % readiness.health_url,
         err=True,
@@ -741,7 +750,7 @@ def _warn_not_registered(readiness, proxy_status) -> None:
 
 
 @proxy.command("unload")
-@click.argument("recipe_name")
+@click.argument("recipe_name", type=RECIPE_NAME)
 @host_options
 @dry_run_option
 @click.pass_context
@@ -752,25 +761,56 @@ def unload_cmd(ctx, recipe_name, hosts, hosts_file, cluster_name, dry_run):
 
       sparkrun proxy unload qwen3-1.7b-vllm --cluster mylab
     """
-    from sparkrun.cli._stop_logs import _stop_recipe
-    from ._common import _get_context
+    from sparkrun import api
+    from ._common import _get_context, _load_recipe, resolve_host_context
 
     sctx = _get_context(ctx)
-    _stop_recipe(recipe_name, hosts, hosts_file, cluster_name, sctx.config, tp_override=None, dry_run=dry_run)
+    recipe, _path, _reg = _load_recipe(sctx.config, recipe_name)
+    hctx = resolve_host_context(hosts, hosts_file, cluster_name, sctx.config, sctx=sctx)
+    if dry_run:
+        click.echo("Would stop %s on %s and remove its proxy registration." % (recipe_name, ", ".join(hctx.host_list)))
+        return
 
-    if not dry_run:
-        # Sync proxy to remove the now-stale model entry.
-        from sparkrun import api
+    try:
+        result = api.stop(
+            recipe=recipe,
+            hosts=tuple(hctx.host_list),
+            cluster=hctx.cluster_name,
+            cache_dir=str(sctx.config.cache_dir),
+            sctx=sctx,
+        )
+    except api.JobNotFound:
+        # A saved activation binding can outlive its workload. Unloading it
+        # must still retire the registration when discovery confirms absence.
+        click.echo("No running workload found for this recipe; removing its proxy registration.")
+    except api.AmbiguousWorkload as exc:
+        click.echo("Error: Multiple workloads match this recipe: %s" % ", ".join(exc.cluster_ids), err=True)
+        click.echo("Stop the intended workloads by job ID, then retry proxy unload. Proxy registration was kept.", err=True)
+        sys.exit(1)
+    except api.SparkrunError as exc:
+        click.echo("Error: %s. Proxy registration was kept." % exc, err=True)
+        sys.exit(1)
+    else:
+        for error in result.errors:
+            click.echo("Error: %s" % error, err=True)
+        if not result.success:
+            click.echo("Workload NOT fully stopped. Proxy registration was kept; check sparkrun status before retrying.", err=True)
+            sys.exit(1)
+        click.echo("Workload stopped on %d host(s)." % len(result.hosts_targeted))
 
-        if api.proxy.status(sctx=sctx).running:
-            click.echo("Syncing proxy models...")
-            try:
-                synced = api.proxy.unregister_loaded_model(recipe_name, sctx=sctx)
-            except api.proxy.ProxyUpdateFailed as exc:
-                click.echo("Error: %s" % exc, err=True)
-                sys.exit(1)
-            if synced.removed:
-                click.echo("Removed %d stale model(s) from proxy." % synced.removed)
+    if api.proxy.status(sctx=sctx).running:
+        click.echo("Removing proxy registration and syncing models...")
+        try:
+            synced = api.proxy.unregister_loaded_model(recipe_name, sctx=sctx)
+        except api.proxy.ProxyUpdateFailed as exc:
+            click.echo("Error: %s" % exc, err=True)
+            sys.exit(1)
+        if synced.removed:
+            click.echo("Removed %d stale model(s) from proxy." % synced.removed)
+        else:
+            click.echo("Proxy registration removed; model list already in sync.")
+    else:
+        click.echo("Proxy is not running; saved proxy registration was not changed.")
 
 
 # ---------------------------------------------------------------------------
@@ -813,3 +853,113 @@ def _resolve_host_filter(
             return None
 
     return None
+
+
+@proxy.command("ui")
+@click.option("--issue-token", is_flag=True, help="Show the stored admin token (compatibility alias)")
+@click.option("--json", "output_json", is_flag=True, help="Output as JSON")
+def ui_cmd(issue_token, output_json):
+    """Show the gateway's admin console URL."""
+    import json as _json
+
+    from sparkrun import api
+
+    try:
+        result = api.proxy.ui(issue_token=issue_token)
+    except api.SparkrunError as e:
+        raise click.ClickException(str(e)) from e
+
+    if output_json:
+        click.echo(
+            _json.dumps(
+                {
+                    "url": result.url,
+                    "running": result.running,
+                    "token": result.token,
+                    "bind_host": result.bind_host,
+                    "exposed": result.exposed,
+                    "auth_required": result.auth_required,
+                },
+                indent=2,
+            )
+        )
+        return
+
+    click.echo("Admin console: %s" % result.url)
+    if result.exposed and result.auth_required:
+        click.echo("Reachable off this host (bound to %s) — sign-in requires a gateway credential." % result.bind_host)
+    elif result.exposed:
+        click.echo(
+            "DANGER: reachable off this host (bound to %s) with NO sign-in — anyone who can reach it can "
+            "rewrite the served model set. Close it with 'sparkrun proxy admin-token set' "
+            "or '--host 127.0.0.1'." % result.bind_host
+        )
+    if not result.running:
+        click.echo("Note: the gateway is not running — start it with 'sparkrun proxy start'.")
+    if result.token:
+        click.echo("")
+        click.echo("Sparkrun-managed admin token:")
+        click.echo("  %s" % result.token)
+        click.echo("")
+        click.echo("Paste it into the console's token field to sign in.")
+    elif not result.auth_required:
+        click.echo("Admin authentication is disabled; no sign-in token is required.")
+    elif result.running:
+        click.echo("Get the sign-in token with: sparkrun proxy admin-token get")
+
+
+@proxy.group("admin-token")
+def admin_token_group():
+    """Get or replace the single SparkRoute admin token."""
+
+
+@admin_token_group.command("get")
+@json_option()
+def admin_token_get(output_json):
+    """Show the current token, or report that admin authentication is open."""
+    from sparkrun import api
+
+    try:
+        token = api.proxy.admin_token()
+    except api.SparkrunError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if output_json:
+        print_json({"enabled": token is not None, "token": token})
+    elif token is None:
+        click.echo("Admin authentication is disabled (the default); no token is required.")
+        click.echo("Require one immediately with: sparkrun proxy admin-token set")
+    else:
+        click.echo(token)
+
+
+@admin_token_group.command("set")
+@json_option()
+def admin_token_set(output_json):
+    """Replace the current token with a newly generated high-entropy token."""
+    from sparkrun import api
+
+    try:
+        token = api.proxy.admin_token(rotate=True)
+    except api.SparkrunError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if output_json:
+        print_json({"enabled": True, "token": token, "rotated": True})
+    else:
+        click.echo(token)
+        click.echo("Previous admin token invalidated.", err=True)
+
+
+@admin_token_group.command("clear")
+@json_option()
+def admin_token_clear(output_json):
+    """Stop requiring an admin token immediately, without restarting."""
+    from sparkrun import api
+
+    try:
+        api.proxy.admin_token(clear=True)
+    except api.SparkrunError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if output_json:
+        print_json({"enabled": False, "token": None, "cleared": True})
+    else:
+        click.echo("Admin authentication disabled; no token is required.")

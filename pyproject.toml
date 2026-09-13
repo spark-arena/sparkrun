@@ -1,13 +1,16 @@
 [build-system]
-requires = ["setuptools>=68.0", "setuptools-scm>=8.0"]
+requires = ["setuptools>=77.0.3", "setuptools-scm>=8.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "sparkrun"
-version = "0.3.8"
+version = "0.3.9"
 description = "Launch and manage Docker-based inference workloads on NVIDIA DGX Spark systems"
 readme = "README.md"
-license = "Apache-2.0"
+# Distribution metadata covers host and plugin; their individual terms remain
+# in the retained license files, including the sparkrun combination permission.
+license = "Apache-2.0 AND AGPL-3.0-only"
+license-files = ["LICENSE", "src/sparkrun/plugins/sparkroute/LICENSE", "src/sparkrun/plugins/sparkroute/LICENSE_EXCEPTION"]
 requires-python = ">=3.12"
 authors = [
     { name = "scitrera.ai", email = "open-source-team@scitrera.com" },
@@ -74,6 +77,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "sparkrun.scripts" = ["*.sh"]
+"sparkrun.plugins.sparkroute" = ["LICENSE", "LICENSE_EXCEPTION", "README.md", "VENDORED.toml"]
 "sparkrun.bin" = ["nv-monitor-*", "prom2json-*"]
 
 [tool.pytest.ini_options]

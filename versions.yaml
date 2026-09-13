@@ -2,7 +2,7 @@
 # Run: python scripts/update-versions.py             to sync all files
 # Run: python scripts/update-versions.py --check     to verify (CI-friendly)
 
-sparkrun: 0.3.8
+sparkrun: 0.3.9
 sparkrun-cc-plugin: 0.0.4
 sparkrun-openclaw-plugin: 0.0.1
 
@@ -22,8 +22,8 @@ ci:
   # Pinned, not floating: a bare `scitrera-repo-tools` picks up the newest
   # release, so an unrelated generator change would surface as CI drift on
   # whatever PR happened to run next. Bump deliberately.
-  repo_tools_source: "scitrera-repo-tools==0.1.22"
-  test_branches: [ main, develop ]
+  repo_tools_source: "git+https://github.com/scitrera/repo-tools.git@4a2ae8b966a875f6dc21ec8c142220a0471e06e8"
+  test_branches: [ main, develop, develop-next ]
   # Cut a GitHub release on every version tag, with the built sdist + wheel
   # attached and notes generated from the commits since the previous tag.
   # Without this a tag lands on PyPI while the repo's Releases page shows
@@ -45,6 +45,9 @@ ci:
     # preferred_versions.python. Turning it on before then makes every PR red.
     lint: none
     setup_steps:
+      - name: Verify SparkRoute vendor snapshot
+        run: python scripts/vendor-sparkroute.py verify
+        working_directory: .
       # The runner image ships ~20GB of toolchains this repo never uses, and
       # the ML dependencies pulled in by the test extras do not fit alongside
       # them. Carried over from publish.yml, where it was load-bearing.

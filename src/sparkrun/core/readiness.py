@@ -15,7 +15,14 @@ from scitrera_app_framework.api import EnvPlacement, Variables
 DEFAULT_PORT_READY_TIMEOUT_S = 1800.0
 DEFAULT_HEALTH_READY_TIMEOUT_S = 900.0
 OPENAI_CHAT_STREAM = "openai-chat-stream-v1"
-INFERENCE_STYLES = frozenset({OPENAI_CHAT_STREAM})
+OPENAI_RESPONSES_STREAM = "openai-responses-stream-v1"
+ANTHROPIC_MESSAGES_STREAM = "anthropic-messages-stream-v1"
+INFERENCE_STYLE_APIS = {
+    OPENAI_CHAT_STREAM: "chat_completions",
+    OPENAI_RESPONSES_STREAM: "responses",
+    ANTHROPIC_MESSAGES_STREAM: "messages",
+}
+INFERENCE_STYLES = frozenset(INFERENCE_STYLE_APIS)
 
 
 @dataclass(frozen=True)
@@ -119,16 +126,22 @@ def resolve_readiness_settings(*, config=None, recipe=None) -> ReadinessSettings
     return ReadinessSettings(**resolved)
 
 
-def resolve_inference_style(settings: ReadinessSettings, runtime) -> str | None:
+def resolve_inference_style(settings: ReadinessSettings, runtime, *, recipe=None) -> str | None:
     """Constrain effective policy to runtime capabilities; no fourth config layer.
 
     Runtime styles are preference ordered. No declaration opts out. An explicit
     incompatible style is an error, while auto preserves legacy endpoint checks.
     """
+    # The same recipe/runtime declarations feed catalog, discovery and probes.
+    # Validate explicit API declarations even when inference probing is disabled.
+    native_apis = getattr(runtime, "native_apis", None)
+    apis = native_apis(recipe) if recipe is not None and callable(native_apis) else None
     if not settings.inference:
         return None
     styles = getattr(runtime, "readiness_styles", ())
     styles = tuple(s for s in styles if isinstance(s, str) and s in INFERENCE_STYLES) if isinstance(styles, (tuple, list)) else ()
+    if apis is not None:
+        styles = tuple(style for style in styles if INFERENCE_STYLE_APIS[style] in apis)
     if settings.inference_style == "auto":
         return styles[0] if styles else None
     if settings.inference_style not in styles:
@@ -141,4 +154,4 @@ def resolve_inference_style(settings: ReadinessSettings, runtime) -> str | None:
 
 def validate_readiness_policy(*, config=None, recipe=None, runtime=None) -> None:
     """Validate before launch side effects, including supplied/precomputed plans."""
-    resolve_inference_style(resolve_readiness_settings(config=config, recipe=recipe), runtime)
+    resolve_inference_style(resolve_readiness_settings(config=config, recipe=recipe), runtime, recipe=recipe)

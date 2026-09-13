@@ -271,32 +271,48 @@ FEATURE_CLI_SETUP_TAILSCALE = register_feature(
     )
 )
 
-# Gated on stable for the same reason as ``builder.uv_venv``: it mutates the
-# hosts (pulls a multi-GB test image, starts containers) rather than merely
-# reading them.  It is a *diagnostic*, so the gate is friction exactly when a
-# user's networking is already broken — the intent is to drop the flag once
-# the test image has field mileage.
+# These two gate *maturity*, not blast radius — which is why they are split at
+# the suite boundary rather than at "does it need the container".
+#
+# The perftest suite has field mileage: it is the common "did my cable work?"
+# check, and gating it was friction exactly when a user's networking is already
+# broken. So it ships on every channel, and the flag remains only as a kill
+# switch (the ``executor.docker`` shape: ``default=True``, no channel
+# overrides).
 FEATURE_CLI_SETUP_RDMA_TEST = register_feature(
     FeatureFlag(
         name="cli.setup.rdma_test",
-        description="Experimental 'sparkrun setup rdma-test' command (RDMA bandwidth/latency + NCCL collective)",
-        channel_defaults={CHANNEL_BETA: True, CHANNEL_ALPHA: True},
+        description="'sparkrun setup rdma-test' command (per-link RDMA bandwidth and latency)",
+        default=True,
+    )
+)
+
+# The collective does not have that mileage yet: mpirun across containers, the
+# purpose-built nccl-tests image, and a verdict derived from bus bandwidth are
+# all young. It rides alpha until they are proven. Note this *narrows* beta,
+# which had the collective under the single flag.
+#
+# Deliberately not gated on "pulls the image": the perftest suite falls back to
+# the container when a host lacks perftest, and refusing that would break the
+# proven check on non-DGX-OS hosts for no gain. Maturity is the axis; the
+# image is incidental to it.
+FEATURE_CLI_SETUP_RDMA_TEST_NCCL = register_feature(
+    FeatureFlag(
+        name="cli.setup.rdma_test.nccl",
+        description="Experimental NCCL collective suite for 'setup rdma-test' (--suite nccl/all)",
+        channel_defaults={CHANNEL_ALPHA: True},
         default=False,
     )
 )
 
-# The LiteLLM gateway is the only inference-gateway implementation today and
-# ships ENABLED on every channel (``default=True``, no channel overrides), like
-# ``executor.docker``.  It carries a flag so an alternate gateway can be added
-# as a peer rather than a special case, and so a deployment that doesn't want
-# the LiteLLM dependency can drop it.  Exactly one gateway is used at a time:
-# that is arbitrated at *resolution* time (see
-# :func:`sparkrun.proxy.gateway.resolve_gateway`), not by the flag registry,
-# which has no notion of mutually-exclusive flags.
+# Stable and beta use LiteLLM; alpha exercises the bundled SparkRoute plugin.
+# These remain ordinary feature defaults, so explicit config/env overrides win.
+# Gateway selection uses the existing resolver after applying these gates.
 FEATURE_GATEWAY_LITELLM = register_feature(
     FeatureFlag(
         name="gateway.litellm",
-        description="LiteLLM gateway behind 'sparkrun proxy' (enabled on all channels; one gateway is used at a time)",
+        description="LiteLLM gateway behind 'sparkrun proxy' (enabled by default on stable and beta)",
+        channel_defaults={CHANNEL_ALPHA: False},
         default=True,
     )
 )
@@ -321,6 +337,16 @@ FEATURE_CLI_SETUP_FEATURES = register_feature(
         name="cli.setup.features",
         description="Show the 'sparkrun setup features' group in --help (always functional; on by default for beta/alpha)",
         channel_defaults={CHANNEL_BETA: True, CHANNEL_ALPHA: True},
+        default=False,
+    )
+)
+
+
+FEATURE_GATEWAY_SPARKROUTE = register_feature(
+    FeatureFlag(
+        name="gateway.sparkroute",
+        description="SparkRoute gateway and workload bridge (enabled by default on alpha)",
+        channel_defaults={CHANNEL_ALPHA: True},
         default=False,
     )
 )

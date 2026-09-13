@@ -25,6 +25,30 @@ _PLACEHOLDER_SPAN_RE = re.compile(r"\{[^{}]*\}")
 # (``base_url`` -> ``port``); anything deeper than this is a cycle.
 _MAX_SUBSTITUTION_PASSES = 10
 
+# A backslash followed by trailing blanks before a newline.  Tabs are in the
+# class as well as spaces: the character is invisible either way, and an
+# editor that emits one (or a paste that carries one) produced a break the
+# spaces-only form did not repair.
+_TRAILING_BLANK_CONTINUATION_RE = re.compile(r"\\[ \t]+\n")
+
+
+def sanitize_line_continuations(value: str) -> str:
+    """Repair backslash line-continuations broken by trailing whitespace.
+
+    In bash ``\\<newline>`` continues a line, but ``\\<space><newline>`` is an
+    *escaped space* followed by a real newline — so the command ends there and
+    every subsequent line is executed as its own command.  The failure is
+    invisible in the recipe (the offending character has no glyph) and the
+    error names neither sparkrun nor the recipe: the next line's first token is
+    reported as a missing command (``--port: command not found``).
+
+    Nothing legitimately ends a line with an escaped blank, so this is a repair
+    rather than a guess.  Note ``\\r`` needs no handling here: YAML normalizes
+    CRLF to LF inside block scalars at parse time, so a recipe edited on
+    Windows has already lost its carriage returns before rendering.
+    """
+    return _TRAILING_BLANK_CONTINUATION_RE.sub("\\\n", value)
+
 
 def uses_brace_escapes(value: str) -> bool:
     """Whether *value* is written in the doubled-brace escape convention.

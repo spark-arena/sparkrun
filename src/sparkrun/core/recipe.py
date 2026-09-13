@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import logging
 import os
 import re
@@ -19,19 +20,19 @@ from sparkrun.core.images import parse_container_entries
 from sparkrun.core.layout import RecipeLayout
 from sparkrun.core.readiness import parse_recipe_readiness
 from sparkrun.core.recipe_items import get_recipe_item, registered_recipe_items
-from sparkrun.utils.text import mask_non_placeholder_braces, render_template, unmask_braces, uses_brace_escapes
+from sparkrun.utils.text import (
+    mask_non_placeholder_braces,
+    render_template,
+    sanitize_line_continuations,
+    unmask_braces,
+    uses_brace_escapes,
+)
 
 if TYPE_CHECKING:
     from sparkrun.core.registry import RegistryManager
     from sparkrun.models.vram import VRAMEstimate
 
 logger = logging.getLogger(__name__)
-
-# Matches a backslash followed by trailing whitespace before a newline.
-# In bash, ``\<newline>`` is a line continuation but ``\ <newline>`` is
-# an escaped space — a common YAML editing mistake that silently breaks
-# multi-line commands.
-_TRAILING_SPACE_CONTINUATION_RE = re.compile(r"\\ +\n")
 
 _RAY_BACKEND_RE = re.compile(r"--distributed-executor-backend\s+ray\b")
 # --kv-cache-dtype (vllm/sglang/atlas: --kv-cache-dtype) or tokenary (--kvcache-dtype),
@@ -1113,11 +1114,13 @@ class Recipe:
         # runtime, or revision without reaching into raw YAML itself.
         self.plugin_items: dict[str, Any] = {}
         self._plugin_item_raw: dict[str, Any] = {}
+        self._plugin_item_fingerprints: dict[str, bool] = {}
         for registration in registered_recipe_items():
             if registration.key not in data:
                 continue
-            raw_item = data[registration.key]
-            self._plugin_item_raw[registration.key] = raw_item
+            raw_item = deepcopy(data[registration.key])
+            self._plugin_item_raw[registration.key] = deepcopy(raw_item)
+            self._plugin_item_fingerprints[registration.key] = registration.affects_fingerprint
             try:
                 self.plugin_items[registration.key] = registration.handler.parse(raw_item, self)
             except Exception as error:
@@ -1371,9 +1374,9 @@ class Recipe:
         # sparkrun.orchestration.hooks.render_hook_command).
         rendered = render_template(rendered, config_chain, escapes=escapes)
 
-        # Fix trailing spaces after backslash line-continuations.
-        # ``\<space><newline>`` → ``\<newline>``
-        rendered = _TRAILING_SPACE_CONTINUATION_RE.sub("\\\n", rendered)
+        # Repair backslash line-continuations broken by a trailing blank.
+        # ``\<blank><newline>`` → ``\<newline>``
+        rendered = sanitize_line_continuations(rendered)
 
         return rendered
 
@@ -1494,6 +1497,24 @@ class Recipe:
         """Return a parsed plugin-owned top-level item."""
 
         return self.plugin_items.get(key, default)
+
+    def export_plugin_items(self, *, fingerprint_only: bool = False) -> dict[str, Any]:
+        """Export canonical plugin data for recipe transport or identity.
+
+        Saved raw values and their identity policy survive an unavailable
+        plugin. Copies keep API consumers from mutating the recipe's state.
+        """
+        result = {}
+        for key in sorted(set(self._plugin_item_raw) | set(self.plugin_items)):
+            if fingerprint_only and not self._plugin_item_fingerprints.get(key, True):
+                continue
+            registration = get_recipe_item(key)
+            if registration is not None and key in self.plugin_items:
+                value = registration.handler.export(self.plugin_items[key], self)
+            else:
+                value = self._plugin_item_raw[key]
+            result[key] = deepcopy(value)
+        return result
 
     @classmethod
     def load(cls, path: str | Path, resolve: bool = True) -> Recipe:
@@ -1861,14 +1882,8 @@ class Recipe:
             "env": dict(self.env),
             "command": self.command,
             "metadata": dict(self.metadata),
-            "plugin_items": {
-                key: (
-                    get_recipe_item(key).handler.export(self.plugin_items[key], self)
-                    if get_recipe_item(key) is not None and key in self.plugin_items
-                    else self._plugin_item_raw[key]
-                )
-                for key in sorted(set(self._plugin_item_raw) | set(self.plugin_items))
-            },
+            "plugin_items": self.export_plugin_items(),
+            "plugin_item_fingerprints": dict(self._plugin_item_fingerprints),
             "maintainer": self.maintainer,
             "runtime_config": dict(self.runtime_config),
             "capabilities": list(self.capabilities),
@@ -1917,9 +1932,21 @@ class Recipe:
         self.command = state.get("command")
         self.metadata = dict(state.get("metadata") or {})
         self.plugin_items = {}
-        self._plugin_item_raw = dict(state.get("plugin_items") or {})
+        self._plugin_item_raw = deepcopy(state.get("plugin_items") or {})
+        self._plugin_item_fingerprints = dict(state.get("plugin_item_fingerprints") or {})
+        # A plugin can be installed after this state was saved. Recover only
+        # keys it now owns; no integration-specific state migration is needed.
+        for registration in registered_recipe_items():
+            key = registration.key
+            if key not in self._plugin_item_raw and key in self._raw:
+                self._plugin_item_raw[key] = deepcopy(self._raw[key])
+        for key in self._plugin_item_raw:
+            registration = get_recipe_item(key)
+            self._plugin_item_fingerprints.setdefault(key, registration.affects_fingerprint if registration else True)
         self.maintainer = state.get("maintainer", "")
         self.runtime_config = dict(state.get("runtime_config") or {})
+        for key in self._plugin_item_raw:
+            self.runtime_config.pop(key, None)
         self.capabilities = list(state.get("capabilities") or [])
         self.unsupported_capabilities = list(state.get("unsupported_capabilities") or [])
         self.pre_exec = list(state.get("pre_exec") or [])
@@ -1943,7 +1970,7 @@ class Recipe:
         for key, raw_item in self._plugin_item_raw.items():
             registration = get_recipe_item(key)
             if registration is not None:
-                self.plugin_items[key] = registration.handler.parse(raw_item, self)
+                self.plugin_items[key] = registration.handler.parse(deepcopy(raw_item), self)
 
     @classmethod
     def _deserialize(cls, data: dict[str, Any]) -> Recipe:
@@ -2122,12 +2149,7 @@ class Recipe:
 
         # Plugin items stay at the top level they claimed. Unknown state from
         # a serialized recipe is preserved verbatim if its plugin is disabled.
-        for key in sorted(set(self._plugin_item_raw) | set(self.plugin_items)):
-            registration = get_recipe_item(key)
-            if registration is not None and key in self.plugin_items:
-                d[key] = registration.handler.export(self.plugin_items[key], self)
-            else:
-                d[key] = self._plugin_item_raw[key]
+        d.update(self.export_plugin_items())
 
         # add distribution_config iff it was provided in the input recipe
         dist_cfg = self.distribution_config

@@ -441,10 +441,10 @@ def run(
 
     # Resolve the named cluster definition when one is in play.  Carries
     # per-host hardware metadata so downstream code can compute placement,
-    # fit, and per-host backend selection.  Falls back to None for
-    # explicit --hosts / --hosts-file (host-list-only path).
+    # fit, and per-host backend selection. Explicit hosts can restrict a
+    # named cluster without discarding its identity or settings.
     cluster_def = None
-    if cluster_mgr is not None and not hosts and not hosts_file:
+    if cluster_mgr is not None and (cluster_name or (not hosts and not hosts_file)):
         _name = cluster_name or cluster_mgr.get_default()
         if _name:
             try:

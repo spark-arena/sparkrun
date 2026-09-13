@@ -11,9 +11,7 @@ Resolution order:
 
   2. `uvx` (or `uv`) on PATH  ->  run via uvx with no persistent install.
      Set `REPO_TOOLS_SOURCE` to override the package source. Default:
-     `git+https://github.com/scitrera/repo-tools.git`. Pin to a tag or
-     PyPI version, e.g.:
-         REPO_TOOLS_SOURCE='scitrera-repo-tools==0.1.0'
+     the tested commit declared in DEFAULT_SOURCE below.
 
   3. Otherwise  ->  print install instructions and exit 1.
 
@@ -32,7 +30,7 @@ import shutil
 import sys
 from typing import List
 
-DEFAULT_SOURCE = "git+https://github.com/scitrera/repo-tools.git"
+DEFAULT_SOURCE = "git+https://github.com/scitrera/repo-tools.git@4a2ae8b966a875f6dc21ec8c142220a0471e06e8"
 
 
 def _try_uvx(args: List[str]) -> None:

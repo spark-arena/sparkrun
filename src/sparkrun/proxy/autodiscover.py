@@ -21,7 +21,6 @@ instead of being mistaken for a shutdown.
 from __future__ import annotations
 
 import logging
-import os
 import signal
 import sys
 import time
@@ -110,14 +109,9 @@ def _handle_signal(signum, _frame):
 
 def _proxy_alive(pid: int) -> bool:
     """Check if the proxy process is still running."""
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        # Alive, just not ours to signal.
-        return True
+    from sparkrun.utils.process import process_exists
+
+    return process_exists(pid, inaccessible=True)
 
 
 def run_autodiscover(config_path: str) -> None:

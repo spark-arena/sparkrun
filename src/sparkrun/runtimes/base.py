@@ -308,34 +308,34 @@ class RuntimePlugin(Plugin):
         """
         return "ray"
 
-    def native_protocols(self, recipe) -> list[str]:
-        """Inference API dialects this runtime serves *natively*, preferred first.
+    def native_api_options(self) -> list[str]:
+        """Inference APIs configurable for this runtime family, not a probe result."""
+        return ["chat_completions"]
 
-        Consumed by an inference gateway to decide whether it can route matching
-        ingress straight through instead of translating.  A protocol selects the
-        upstream URL, headers, parser, streaming framing, error vocabulary and
-        retry classification, so it is a **routing dimension** rather than an
-        optional model feature.
+    def native_apis(self, recipe) -> list[str]:
+        """Known native APIs, with an explicit recipe metadata override.
 
-        It is therefore **fail-closed**: never report a dialect unless this
-        runtime, at this recipe's version, is known to serve it.  Under-claiming
-        costs a translation; over-claiming sends wrong-shaped bytes to a server
-        that cannot parse them.  That is why the base returns only ``openai``,
-        and why a runtime that gained (say) Anthropic Messages at a particular
-        version must gate on the recipe's resolved container tag rather than on
-        the runtime name.
-
-        Deliberately *not* part of
-        :func:`~sparkrun.orchestration.job_metadata.derive_recipe_fingerprint`:
-        learning that a deployment also speaks another dialect describes the
-        same workload more precisely, so it must not change the workload's
-        identity or force a running deployment to be re-admitted.
-
-        Returns:
-            Lowercase protocol names (``openai``, ``anthropic``, ``gemini``,
-            ``bedrock``), most-preferred first.
+        Metadata describes the serving API and does not change workload identity.
+        The generic floor is Chat Completions. Runtime families provide their
+        own defaults without claiming every optional model feature.
         """
-        return ["openai"]
+        declared = (getattr(recipe, "metadata", None) or {}).get("native_apis")
+        if declared is None:
+            return ["chat_completions"]
+        if not isinstance(declared, list) or not declared or any(api not in self.native_api_options() for api in declared):
+            raise ValueError("metadata.native_apis must be a nonempty list of APIs supported by the runtime family")
+        if "responses" in declared and "chat_completions" not in declared:
+            raise ValueError("responses requires chat_completions for this runtime")
+        return list(dict.fromkeys(declared))
+
+    def native_protocols(self, recipe) -> list[str]:
+        """Native wire families, preferred first; Chat and Responses share OpenAI."""
+        families = {"chat_completions": "openai", "responses": "openai", "messages": "anthropic"}
+        return list(dict.fromkeys(families[api] for api in self.native_apis(recipe)))
+
+    def native_capabilities(self, recipe) -> list[str]:
+        """Operations needing an explicit native declaration within a family."""
+        return ["responses"] if "responses" in self.native_apis(recipe) else []
 
     def default_executor(self) -> str | None:
         """Return the runtime's preferred executor when nothing else is set.

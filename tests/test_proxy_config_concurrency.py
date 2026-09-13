@@ -198,3 +198,26 @@ def test_removal_grace_defaults_and_clamps(config_path: Path):
     # 0 would mean "remove before you have looked".
     cfg.set_proxy(discover_removal_grace_sweeps=0)
     assert cfg.discover_removal_grace_sweeps == 1
+
+
+def test_catalog_discovery_and_alias_writers_preserve_each_others_sections(config_path: Path):
+    bindings = ProxyConfig(config_path)
+    discovery = ProxyConfig(config_path)
+    aliases = ProxyConfig(config_path)
+    bindings.set_bindings([{"recipe": "@local/model", "cluster": "spark-a"}])
+    bindings.save()
+    discovery.set_discovered_models(["warm-model"])
+    discovery.save()
+    aliases.add_alias("assistant", "warm-model")
+    aliases.save()
+    current = ProxyConfig(config_path)
+    assert current.bindings == [{"recipe": "@local/model", "cluster": "spark-a"}]
+    assert current.discovered_models == ["warm-model"]
+    assert current.aliases == {"assistant": "warm-model"}
+    # Explicitly clearing one catalog must not erase the other sections.
+    bindings.set_bindings([])
+    bindings.save()
+    current = ProxyConfig(config_path)
+    assert current.bindings == []
+    assert current.discovered_models == ["warm-model"]
+    assert current.aliases == {"assistant": "warm-model"}

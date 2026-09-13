@@ -19,7 +19,13 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from sparkrun.core.timing import ROOT as TIMELINE_ROOT, STATUS_ERROR, Timeline, timed
 from sparkrun.core.readiness import DEFAULT_PORT_READY_TIMEOUT_S, DEFAULT_HEALTH_READY_TIMEOUT_S, resolve_readiness_settings
-from sparkrun.core.readiness import ReadinessObserver, ObservationUnavailable, resolve_inference_style, validate_readiness_policy
+from sparkrun.core.readiness import (
+    OPENAI_CHAT_STREAM,
+    ReadinessObserver,
+    ObservationUnavailable,
+    resolve_inference_style,
+    validate_readiness_policy,
+)
 
 if TYPE_CHECKING:
     from sparkrun.core.backend_select import BackendBundle
@@ -2008,14 +2014,14 @@ def wait_for_serve_ready(
     if health_timeout_s is not None:
         settings = replace(settings, health_timeout_s=health_timeout_s)
     observation = getattr(result, "startup_observation", None)
-    style = resolve_inference_style(settings, result.runtime)
+    style = resolve_inference_style(settings, result.runtime, recipe=getattr(result, "recipe", None))
     executor = getattr(result.runtime, "executor", None)
     get_observer = getattr(executor, "readiness_observer", None)
     observer = get_observer() if callable(get_observer) else None
     if not isinstance(observer, ReadinessObserver):
         observer = None
     health_path = getattr(result.runtime, "readiness_health_path", None)
-    accepted = (getattr(result, "runtime_info", {}) or {}).get("inference_readiness") == "accepted"
+    accepted = (getattr(result, "runtime_info", {}) or {}).get("inference_readiness") == "accepted" and style in (None, OPENAI_CHAT_STREAM)
     if not dry_run and (
         observation or (not accepted and observer is not None and isinstance(health_path, str) and (style or not settings.inference))
     ):

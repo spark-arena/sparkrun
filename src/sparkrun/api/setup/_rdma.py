@@ -69,6 +69,9 @@ __all__ = [
     "SUITE_PERFTEST",
     "SUITE_NCCL",
     "SUITE_ALL",
+    "ALL_SUITES",
+    "SUITE_DESCRIPTIONS",
+    "available_suites",
     "STATUS_OK",
     "STATUS_WARN",
     "STATUS_FAIL",
@@ -84,6 +87,64 @@ __all__ = [
 SUITE_PERFTEST = "perftest"
 SUITE_NCCL = "nccl"
 SUITE_ALL = "all"
+
+#: Every suite this module can run, in display order.
+ALL_SUITES = (SUITE_PERFTEST, SUITE_NCCL, SUITE_ALL)
+
+#: Suites whose maturity is still gated, and the flag gating each.
+#:
+#: perftest is proven and ungated. The collective is not: mpirun across
+#: containers, the purpose-built nccl-tests image and a bus-bandwidth verdict
+#: are all young, so they ride alpha (see
+#: :data:`sparkrun.core.features.FEATURE_CLI_SETUP_RDMA_TEST_NCCL`). Note the
+#: gate is *maturity*, not "needs the container" — the perftest suite falls
+#: back to the image on a host without perftest and is deliberately unaffected.
+_GATED_SUITES = {SUITE_NCCL: "cli.setup.rdma_test.nccl", SUITE_ALL: "cli.setup.rdma_test.nccl"}
+
+#: One-line description per suite, shared by the CLI help and this module.
+SUITE_DESCRIPTIONS = {
+    SUITE_PERFTEST: "ib_write_lat + ib_write_bw per link (default; no container on DGX OS, finishes in seconds)",
+    SUITE_NCCL: "an nccl-tests collective through mpirun (pulls the test image onto every host; takes minutes)",
+    SUITE_ALL: "both",
+}
+
+
+def suite_feature_flag(suite: str) -> str | None:
+    """Return the flag gating *suite*, or ``None`` when it is ungated."""
+    return _GATED_SUITES.get(suite)
+
+
+def gated_suite_message(suite: str) -> str:
+    """The refusal wording for a gated *suite*.
+
+    One definition because two callers refuse: the CLI fails fast (before its
+    "Testing RDMA fabric..." banner can claim work that will not happen) and
+    this module enforces for every caller. Two spellings of the same refusal
+    would drift, and the enable instruction is the part that must not.
+    """
+    return "the %r suite is experimental and disabled on this channel. Enable it with: sparkrun setup features enable %s" % (
+        suite,
+        suite_feature_flag(suite),
+    )
+
+
+def available_suites(config=None) -> tuple[str, ...]:
+    """Return the suites this install may run, in display order.
+
+    The single source of truth for suite availability: the CLI renders its
+    help and metavar from this, and :func:`rdma_test` refuses from it. A help
+    text that advertised a suite the launch would reject — or hid one it would
+    accept — is read as an answer and is worse than none.
+
+    Args:
+        config: Config to resolve the gates against. ``None`` resolves against
+            environment overrides and the stable channel only, which is the
+            conservative reading for a caller that has no config yet.
+    """
+    from sparkrun.core.features import is_feature_enabled
+
+    return tuple(s for s in ALL_SUITES if suite_feature_flag(s) is None or is_feature_enabled(suite_feature_flag(s), config=config))
+
 
 STATUS_OK = "ok"
 STATUS_WARN = "warn"
@@ -932,10 +993,18 @@ def rdma_test(
     """
     from sparkrun.orchestration.networking import detect_cx7_for_hosts
 
-    if suite not in (SUITE_PERFTEST, SUITE_NCCL, SUITE_ALL):
-        raise RdmaTestError("unknown suite %r (expected perftest, nccl or all)" % suite)
+    if suite not in ALL_SUITES:
+        raise RdmaTestError("unknown suite %r (expected %s)" % (suite, ", ".join(ALL_SUITES)))
 
     config = getattr(sctx, "config", None)
+
+    # Enforced here rather than in the CLI so every caller passes the same
+    # gate (the sidecar reaches this function directly), and *before* the
+    # dry-run branches below — a dry run must not plan a suite the real run
+    # would refuse.
+    if suite not in available_suites(config):
+        raise RdmaTestError(gated_suite_message(suite))
+
     settings = {}
     if config is not None and hasattr(config, "rdma_test_settings"):
         settings = config.rdma_test_settings() or {}

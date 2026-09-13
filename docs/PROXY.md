@@ -218,9 +218,11 @@ silently discard the other writer's alias or listener change.
 ## Gateway Selection
 
 The *gateway* is the pluggable family; `proxy` is the user-facing command.
-Core ships LiteLLM, enabled on every channel via the `gateway.litellm` feature
-flag (`default=True`, like `executor.docker`). A plugin may contribute another,
-including one living outside the `sparkrun.proxy` tree.
+The distribution includes LiteLLM and the vendored SparkRoute integration.
+LiteLLM is enabled by default on stable/beta; SparkRoute is enabled by default
+on alpha. The active self-update channel supplies these defaults unless
+`features.channel` overrides it. Explicit feature config or environment values
+take precedence. See [SparkRoute integration and updates](SPARKROUTE.md).
 
 Three mechanisms, deliberately separate (`proxy/gateway.py`):
 

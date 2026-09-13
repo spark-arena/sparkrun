@@ -472,3 +472,24 @@ def deepseek_v32_config() -> dict[str, Any]:
         "index_n_heads": 64,
         "index_topk": 2048,
     }
+
+
+@pytest.fixture
+def passive_recipe_item(monkeypatch):
+    """A third-party annotation used to exercise generic recipe transport."""
+    from copy import deepcopy
+    from sparkrun.core import recipe_items
+
+    def parse(value, _recipe):
+        if not isinstance(value, dict):
+            raise ValueError("must be a mapping")
+        return deepcopy(value)
+
+    monkeypatch.setattr(recipe_items, "_RECIPE_ITEMS", dict(recipe_items._RECIPE_ITEMS))
+    recipe_items.register_recipe_item(
+        "demo_annotations",
+        recipe_items.FunctionalRecipeItemHandler(parse),
+        owner="tests.annotations",
+        affects_fingerprint=False,
+    )
+    return "demo_annotations"

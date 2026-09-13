@@ -92,7 +92,32 @@ from sparkrun.api._stop_all import stop_all
 from sparkrun.api._telemetry import LiveMonitorSession, live_monitor, open_live_monitor, open_telemetry
 from sparkrun.core.validation import RecipeIssue, validate_recipe
 
+from sparkrun.api._catalog import (
+    cleanup_catalog_imports,
+    retain_catalog_recipe,
+    catalog_recipes,
+    configure_registry,
+    catalog_cluster_capacity,
+    get_recipe_details,
+    import_recipe,
+    list_clusters,
+    list_registries,
+    refresh_registries,
+    resolve_catalog_recipe,
+)
+
 __all__ = [
+    "catalog_recipes",
+    "configure_registry",
+    "catalog_cluster_capacity",
+    "cleanup_catalog_imports",
+    "retain_catalog_recipe",
+    "get_recipe_details",
+    "import_recipe",
+    "list_clusters",
+    "list_registries",
+    "refresh_registries",
+    "resolve_catalog_recipe",
     # Subpackages
     "k8s",
     "proxy",

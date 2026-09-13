@@ -1,0 +1,38 @@
+SparkRoute Plugin Additional Permission for sparkrun
+Version 1, 7 September 2026
+
+Copyright (C) 2026 Scitrera LLC
+Copyright (C) 2026 Fox Engine Ltd
+
+This exception is an additional permission under section 7 of the GNU
+Affero General Public License, version 3 ("AGPLv3").
+
+"SparkRoute Plugin" means the material that bears a notice stating that this
+additional permission applies. "sparkrun" means the Apache-2.0-licensed
+portions of the sparkrun project, excluding the SparkRoute Plugin, and modified
+versions of those portions.
+
+If you modify the SparkRoute Plugin, or any covered work, by linking, importing,
+combining, or packaging it with sparkrun (or a modified version of sparkrun),
+the licensors of the SparkRoute Plugin grant you additional permission to
+propagate and convey the resulting work and to make it available for remote
+interaction. You may license the sparkrun portions of the resulting work under
+the Apache License 2.0, or under any other terms allowed by the copyright
+holders of those portions. The AGPLv3 does not apply to the sparkrun portions
+solely because they are linked, imported, combined, or packaged with the
+SparkRoute Plugin. The AGPLv3 Corresponding Source obligations, including those
+arising under section 13, continue to apply to the SparkRoute Plugin and
+modifications to it, but do not extend to the sparkrun portions solely because
+of that combination.
+
+This additional permission applies only to combinations with sparkrun. It
+does not grant permission to relicense the SparkRoute Plugin itself, does not
+excuse compliance with the AGPLv3 for the SparkRoute Plugin or modifications to
+it, and does not extend to a different program merely because that program
+uses or incorporates the SparkRoute Plugin.
+
+When conveying a combination in reliance on this additional permission, you
+must include a copy of this notice. All other terms of the AGPLv3 remain in
+effect. As provided by section 7 of the AGPLv3, a conveyor may remove this
+additional permission; a version from which it has been removed may not rely
+on it.

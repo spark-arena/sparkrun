@@ -303,3 +303,24 @@ def test_without_skip_run_placement_is_unchanged(runner, bench_env, cluster_stat
     assert result.exit_code == 0, result.output
     assert "Mode:                  solo" in result.output
     assert "no running workload matched" not in result.output
+
+
+@pytest.mark.parametrize(
+    ("flags", "expected_cluster"),
+    [
+        ([], "wopr"),
+        (["--cluster", "wopr"], "wopr"),
+        (["--cluster", "wopr", "--hosts", _HOSTS[-1]], "wopr"),
+        (["--hosts", _HOSTS[-1]], ""),
+    ],
+)
+def test_benchmark_launch_keeps_effective_cluster(runner, bench_env, cluster_status, flags, expected_cluster):
+    from sparkrun import api
+    from sparkrun.core.cluster_manager import ClusterManager
+
+    ClusterManager(bench_env).set_default("wopr")
+    with mock.patch.object(api, "run", wraps=api.run) as run:
+        result = runner.invoke(main, ["benchmark", _RECIPE_NAME, *flags, "--dry-run", "--fresh"])
+    assert result.exit_code == 0, result.output
+    assert run.call_count == 1
+    assert run.call_args.kwargs["plan"].cluster.name == expected_cluster

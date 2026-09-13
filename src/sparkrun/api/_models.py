@@ -112,6 +112,11 @@ class RunOptions:
     # Networking / runtime ports.
     port: int | None = None
     """Override the inference serve port."""
+    auto_port: bool = False
+    """Select the next available serve port when the requested port is busy.
+
+    Enabled by ``proxy load``. The assigned port is returned in ``RunResult``;
+    it does not change the requested recipe's identity or fingerprint."""
     ray_port: int = 46379
     """Ray GCS port (vllm-ray runtime)."""
     dashboard_port: int = 8265
@@ -154,8 +159,7 @@ class RunOptions:
     preserve_model_perms: bool | None = None
     """Model-rsync permission preservation override.  ``None`` → derive from
     the resolved cluster's ``distribution.model.preserve_perms``; an explicit
-    bool wins (used by the benchmark flow, which launches with explicit hosts
-    and loses the named-cluster identity)."""
+    bool wins, including when the caller restricts a named cluster's hosts."""
     skip_model_fan_out: bool | None = None
     """Skip the per-host model rsync fan-out (shared cache).  ``None`` → derive
     from the cluster's ``distribution.model.skip_fan_out``; explicit bool wins."""

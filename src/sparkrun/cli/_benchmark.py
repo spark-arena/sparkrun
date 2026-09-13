@@ -607,6 +607,10 @@ def _run_benchmark(
     if submission_id_for_extras:
         state_extras["submission_id"] = submission_id_for_extras
 
+    from ._common import resolve_cluster_config
+
+    cluster_cfg = resolve_cluster_config(cluster_name, hosts, hosts_file, cluster_mgr)
+
     opts = BenchmarkOptions(
         recipe=recipe_name,
         category=category,
@@ -618,7 +622,7 @@ def _run_benchmark(
         # Both go through ``parse_host_list`` so neither form can reach
         # ``BenchmarkOptions.hosts`` (a ``tuple[str, ...]``) as a character split.
         hosts=tuple(parse_host_list(host_list or hosts)),
-        cluster=cluster_name,
+        cluster=cluster_cfg.name,
         overrides=_overrides_from_flags,
         resume=resume_mode,
         skip_run=skip_run,

@@ -10,7 +10,11 @@ import time
 import urllib.error
 import urllib.request
 
+# Kept local because this standalone script is sent over SSH to the serving host.
+# tests/test_readiness_capabilities.py checks these against core.readiness.
 OPENAI_CHAT_STREAM = "openai-chat-stream-v1"
+OPENAI_RESPONSES_STREAM = "openai-responses-stream-v1"
+ANTHROPIC_MESSAGES_STREAM = "anthropic-messages-stream-v1"
 
 
 class ObservationUnavailable(RuntimeError):
@@ -128,12 +132,8 @@ def observe(config):
 
 def observe_openai_chat_stream(config, http, base, result):
     """OpenAI chat/SSE v1: first non-empty content or reasoning delta."""
-    with http.open(base + "/v1/models", timeout=10) as response:
-        models = json.load(response)["data"]
-    if not models or not isinstance(models[0].get("id"), str):
-        raise RuntimeError("server did not advertise a model")
     payload = {
-        "model": models[0]["id"],
+        "model": probe_model(config, http, base),
         "messages": [{"role": "user", "content": config["prompt"]}],
         "stream": True,
         "temperature": 0,
@@ -222,4 +222,143 @@ def observe_openai_chat_stream(config, http, base, result):
                             return accepted()
 
 
-INFERENCE_PROBES = {OPENAI_CHAT_STREAM: observe_openai_chat_stream}
+def probe_model(config, http, base):
+    """Prefer the launched model; standalone callers may use model discovery."""
+    if isinstance(config.get("model"), str) and config["model"]:
+        return config["model"]
+    with http.open(base + "/v1/models", timeout=10) as response:
+        models = json.load(response)["data"]
+    if not models or not isinstance(models[0].get("id"), str) or not models[0]["id"]:
+        raise RuntimeError("server did not advertise a model")
+    return models[0]["id"]
+
+
+def stream_events(response, request_start, timeout):
+    """Read bounded SSE data frames while enforcing the inference deadline."""
+    total = 0
+    event = bytearray()
+    while True:
+        line = response.readline(65537)
+        total += len(line)
+        if len(line) > 65536 or total > 1024 * 1024:
+            raise RuntimeError("inference response exceeds its size limit")
+        if time.monotonic() - request_start > timeout:
+            raise TimeoutError("inference")
+        if not line:
+            raise RuntimeError("inference stream ended before acceptance")
+        if line.strip():
+            if line.startswith(b"data:"):
+                event.extend(line[5:].strip() + b"\n")
+            if len(event) > 65536:
+                raise RuntimeError("inference event exceeds its size limit")
+            continue
+        if event:
+            value = bytes(event).strip()
+            event.clear()
+            chunk = json.loads(value)
+            if not isinstance(chunk, dict) or "error" in chunk or chunk.get("type") == "error":
+                raise RuntimeError("server reported an inference error")
+            yield chunk
+
+
+def observe_native_event_stream(config, http, base, result, *, style):
+    """Responses/Anthropic SSE: first text or thinking, optional exact acceptance."""
+    model = probe_model(config, http, base)
+    payload = {"model": model, "stream": True, "temperature": 0}
+    headers = {"Content-Type": "application/json", "Accept": "text/event-stream"}
+    if style == OPENAI_RESPONSES_STREAM:
+        path = "/v1/responses"
+        payload.update(input=config["prompt"], max_output_tokens=64, store=False)
+    else:
+        path = "/v1/messages"
+        payload.update(messages=[{"role": "user", "content": config["prompt"]}], max_tokens=64)
+        headers["anthropic-version"] = "2023-06-01"
+        if config.get("api_key"):
+            headers["x-api-key"] = config["api_key"]
+    request = urllib.request.Request(base + path, data=json.dumps(payload).encode(), headers=headers)
+    request_start = time.monotonic()
+    result["request_started_unix_ns"] = time.time_ns()
+    content = []
+    finished = False
+
+    def accepted():
+        if inspect_container(config["container"]) != (result["container_id"], result["container_started_unix_ns"]):
+            raise RuntimeError("head container changed during readiness observation")
+        wall_request = (result["first_token_unix_ns"] - result["request_started_unix_ns"]) / 1e9
+        if abs(wall_request - result["request_ttft_seconds"]) > 0.25:
+            raise RuntimeError("host clock changed during inference observation")
+        result["response_seconds"] = time.monotonic() - request_start
+        return result
+
+    with http.open(request, timeout=config["inference_timeout_s"]) as response:
+        for chunk in stream_events(response, request_start, config["inference_timeout_s"]):
+            kind = chunk.get("type")
+            field, text, terminal = None, None, False
+            if style == OPENAI_RESPONSES_STREAM:
+                if kind in ("response.failed", "response.incomplete"):
+                    raise RuntimeError("server reported an unsuccessful response")
+                if kind == "response.output_text.delta":
+                    field, text = "content", chunk.get("delta")
+                elif kind in ("response.reasoning_summary_text.delta", "response.reasoning_text.delta"):
+                    field, text = "reasoning", chunk.get("delta")
+                elif kind == "response.completed":
+                    completed = chunk.get("response")
+                    if not isinstance(completed, dict):
+                        raise RuntimeError("inference stream returned an invalid response")
+                    finished = completed.get("status") == "completed"
+                    terminal = True
+            else:
+                if kind in ("content_block_delta", "content_block_start"):
+                    delta = chunk.get("delta" if kind == "content_block_delta" else "content_block", {})
+                    if not isinstance(delta, dict):
+                        raise RuntimeError("inference stream returned an invalid content block")
+                    if delta.get("type") in ("text_delta", "text"):
+                        field, text = "content", delta.get("text")
+                    elif delta.get("type") in ("thinking_delta", "thinking"):
+                        field, text = "reasoning", delta.get("thinking")
+                elif kind == "message_delta":
+                    delta = chunk.get("delta", {})
+                    finished = isinstance(delta, dict) and delta.get("stop_reason") in ("end_turn", "stop_sequence", "max_tokens")
+                elif kind == "message_stop":
+                    terminal = True
+            if terminal:
+                if not result["inference_ready"]:
+                    raise RuntimeError("inference stream contained no text")
+                if not finished or "".join(content).strip() != config.get("expected"):
+                    raise RuntimeError("inference response failed exact validation")
+                result.update(response_validated=True, content="".join(content))
+                return accepted()
+            if field and text is not None and not isinstance(text, str):
+                raise RuntimeError("inference stream returned invalid text")
+            if not text:
+                continue
+            if field == "content":
+                content.append(text)
+            if not result["inference_ready"]:
+                result.update(
+                    first_token_unix_ns=time.time_ns(),
+                    first_token_field=field,
+                    request_ttft_seconds=time.monotonic() - request_start,
+                    inference_ready=True,
+                    prompt_sha256=hashlib.sha256(config["prompt"].encode()).hexdigest(),
+                    max_tokens=64,
+                    temperature=0,
+                    model=model,
+                )
+            if "expected" not in config:
+                return accepted()
+
+
+def observe_openai_responses_stream(config, http, base, result):
+    return observe_native_event_stream(config, http, base, result, style=OPENAI_RESPONSES_STREAM)
+
+
+def observe_anthropic_messages_stream(config, http, base, result):
+    return observe_native_event_stream(config, http, base, result, style=ANTHROPIC_MESSAGES_STREAM)
+
+
+INFERENCE_PROBES = {
+    OPENAI_CHAT_STREAM: observe_openai_chat_stream,
+    OPENAI_RESPONSES_STREAM: observe_openai_responses_stream,
+    ANTHROPIC_MESSAGES_STREAM: observe_anthropic_messages_stream,
+}

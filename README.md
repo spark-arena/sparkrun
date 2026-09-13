@@ -105,6 +105,14 @@ sparkrun update --yolo     # alias for --alpha
 
 Apache License 2.0 — see [LICENSE](LICENSE) for details.
 
+The bundled [SparkRoute integration](src/sparkrun/plugins/sparkroute/README.md)
+is AGPL-3.0-only with an [additional permission](src/sparkrun/plugins/sparkroute/LICENSE_EXCEPTION)
+for combining and distributing it with SparkRun. Its notices and immutable
+source provenance ship in the installed plugin package. The independently
+acquired SparkRoute executable is AGPL-3.0-only.
+SparkRoute defaults on for alpha; LiteLLM defaults on for stable and beta.
+See [channel defaults and managed plugin updates](docs/SPARKROUTE.md).
+
 ## Anonymous Telemetry
 
 sparkrun sends basic anonymous usage telemetry to `https://telemetry.sparkrun.dev` by default. Events include a random installation id stored in `~/.config/sparkrun/config.yaml`, sparkrun version, OS/version, system architecture, and command-specific metadata such as run runtime/model/parallelism/source/hardware counts, benchmark category/framework/profile/result keys, update version and registry counts, and setup-wizard step choices.

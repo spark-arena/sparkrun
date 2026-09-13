@@ -157,6 +157,34 @@ class TestRenderHookCommand:
 
         assert render_hook_command(cmd, {"model": "llama-7b"}) == cmd
 
+    @pytest.mark.parametrize("blank", [" ", "\t", " \t"], ids=["space", "tab", "mixed"])
+    def test_render_repairs_broken_line_continuations(self, blank: str):
+        """A multi-line hook breaks on a trailing blank just like a command.
+
+        Hook bodies are arbitrary shell, which is why ``{{`` is left alone
+        here — but an escaped blank at end of line has no legitimate meaning
+        in any shell, so it is repaired rather than preserved.
+        """
+        result = render_hook_command(f"curl {{base_url}}/models \\{blank}\n  -H 'x: 1'", {"base_url": "http://h/v1"})
+
+        assert result == "curl http://h/v1/models \\\n  -H 'x: 1'"
+
+    def test_render_preserves_escaped_blank_mid_line(self):
+        """Mid-line ``\\ `` is an escaped space in a path and must survive."""
+        cmd = "ls /opt/my\\ dir"
+
+        assert render_hook_command(cmd, {}) == cmd
+
+    def test_rendered_multiline_hook_survives_bash(self):
+        """The repaired hook runs as one command in a real shell."""
+        import subprocess
+
+        rendered = render_hook_command("echo {model} \\\t\n  --warmup \\ \n  --done", {"model": "llama-7b"})
+        proc = subprocess.run(["bash", "-c", rendered], capture_output=True, text=True)
+
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout.split() == ["llama-7b", "--warmup", "--done"]
+
     def test_render_doubled_braces_preserved(self):
         """Hooks keep ``{{`` as two braces even though recipe commands collapse it.
 

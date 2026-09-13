@@ -42,7 +42,11 @@ owned by another plugin — a second owner must not be able to silently
 reinterpret an existing recipe surface. Parsing failures name both the owner
 and the key; validation issues are namespaced as `snapshot.<issue>`.
 
-Parsed items are read with `recipe.plugin_item("snapshot")`.
+Parsed items are read with `recipe.plugin_item("snapshot")`. Use
+`recipe.export_plugin_items()` for detached canonical values keyed by their
+registered recipe keys. Catalog previews and discovered endpoints carry these
+values in their generic `plugin_items` mapping; integrations interpret their own
+entries and adapt them to their own wire protocol.
 
 Four properties are load-bearing:
 
@@ -56,16 +60,31 @@ Four properties are load-bearing:
 - **A raw item survives its plugin being unavailable.** Reading a serialized
   recipe with the plugin disabled preserves the item verbatim rather than
   discarding it, so disabling a plugin never silently rewrites recipes.
-- **Items participate in `derive_recipe_fingerprint`**, using the handler's
-  canonical export. They are declared configuration; omitting them would make
-  two recipes with different extension policy share every cache and provenance
-  record keyed off that digest. The fingerprint part is appended only when an
-  item is present, so recipes predating the seam hash byte-identically.
+- **Items participate in `derive_recipe_fingerprint` by default**, using the
+  handler's canonical export. Existing execution plugins retain their identity
+  behavior. A part is appended only when an item is present, so recipes predating
+  the seam hash byte-identically.
 
-Note the contrast with `capabilities:` / `unsupported_capabilities:`, which are
-core keys parsed as real attributes *specifically* to stay out of the
-fingerprint: describing what a deployment can do must not change what it is.
-A plugin item is the opposite — it changes how the workload is produced.
+A plugin supplying passive annotations can opt out of workload identity:
+
+```python
+register_recipe_item(
+    "annotations", AnnotationHandler(), owner=__name__, affects_fingerprint=False
+)
+```
+
+This keeps annotation edits from changing the workload fingerprint while retaining
+normal parsing, validation and transport. Items contributing an execution strategy
+or preparation steps cannot opt out. The per-item identity policy is saved with
+the recipe so it remains stable when the plugin is unavailable. Older saved plugin
+items default to participating unless their registered owner declares otherwise.
+
+The owning plugin must be enabled to recognize its key when loading fresh recipe
+YAML. With no registration, unknown top-level keys retain the existing runtime
+configuration behavior and validation diagnostics. Already serialized plugin
+items remain preserved even without their owner. A registered owner may also
+recover its key from raw recipe data in older saved state; core does not maintain
+integration-specific migrations or schemas.
 
 ## Owning how a recipe is executed
 
@@ -208,3 +227,45 @@ Four rules worth knowing before you rely on this:
 Nothing is fetched until something clones it, so suggest `sparkrun registry
 update` after your plugin is first enabled rather than paying a clone inside
 the next `sparkrun run`.
+
+## Declaring a version
+
+Set `__version__` on your plugin's top-level module or package:
+
+```python
+# sparkrun_thunder/__init__.py
+__version__ = "0.2.0"
+```
+
+`sparkrun setup plugins list` reports it beside the plugin's source and gate
+state:
+
+```
+NAME              VERSION  SOURCE    STATE  FLAG
+sparkroute        0.1.0    in-tree   on     gateway.sparkroute
+sparkrun_thunder  0.2.0    external  off    core.external_plugins
+```
+
+It is optional, and a plugin that declares nothing is reported `unknown` rather
+than being given a version it did not claim. Two consequences of that rule:
+
+- **The installed-distribution fallback is out-of-tree only.** If your plugin
+  is pip-installed and declares no `__version__`, sparkrun falls back to the
+  version of the distribution providing that top-level module. An in-tree
+  plugin gets no such fallback: its package resolves to the `sparkrun`
+  distribution, so the fallback would report sparkrun's version as the
+  plugin's — wrong precisely where it matters, since a vendored plugin carries
+  its own release line.
+- **A version is only read off a module sparkrun loaded as a plugin.** A
+  disabled plugin is never imported just to read its version, so it lists as
+  `unknown`; and a same-named module importable for unrelated reasons is not
+  consulted.
+
+The `STATE` column separates the gate from the outcome. `on (load failed)`
+means the flag resolves on but the import raised — run with `-v` for the
+traceback. `off` means the plugin was never imported at all, which is the
+point of the gate.
+
+`--json` emits the same rows as an array, where an unknown version is `null`
+rather than the string `"unknown"` — the latter is a display rendering, and
+would be indistinguishable from a plugin that declared it.

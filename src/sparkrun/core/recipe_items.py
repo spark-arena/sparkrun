@@ -54,6 +54,7 @@ class RecipeItemRegistration:
     handler: RecipeItemHandler
     execution_strategy: "RecipeExecutionStrategy | None" = None
     preparation_steps: "Callable[[ExecutionContext], tuple[PreparationStep, ...]] | None" = None
+    affects_fingerprint: bool = True
 
 
 _RECIPE_ITEMS: dict[str, RecipeItemRegistration] = {}
@@ -66,11 +67,16 @@ def register_recipe_item(
     owner: str,
     execution_strategy: "RecipeExecutionStrategy | None" = None,
     preparation_steps: "Callable[[ExecutionContext], tuple[PreparationStep, ...]] | None" = None,
+    affects_fingerprint: bool = True,
 ) -> None:
     """Claim a top-level recipe *key* for *owner*.
 
     Registration is idempotent for the same owner and handler object.  A
     second owner cannot silently reinterpret an existing recipe surface.
+
+    Passive annotations may set ``affects_fingerprint=False``. Items owning
+    execution or preparation must retain the default, because they change the
+    workload being produced. This policy travels with serialized recipe state.
     """
 
     if not _KEY_PATTERN.fullmatch(key):
@@ -95,9 +101,19 @@ def register_recipe_item(
                 raise TypeError("recipe execution strategy must implement %s()" % method)
     if preparation_steps is not None and not callable(preparation_steps):
         raise TypeError("recipe preparation_steps must be callable")
+    if not isinstance(affects_fingerprint, bool):
+        raise TypeError("recipe affects_fingerprint must be a bool")
+    if not affects_fingerprint and (execution_strategy is not None or preparation_steps is not None):
+        raise ValueError("recipe items contributing execution or preparation must affect the fingerprint")
     existing = _RECIPE_ITEMS.get(key)
     if existing is not None:
-        if existing.owner == owner and existing.handler is handler:
+        if (
+            existing.owner == owner
+            and existing.handler is handler
+            and existing.execution_strategy is execution_strategy
+            and existing.preparation_steps is preparation_steps
+            and existing.affects_fingerprint == affects_fingerprint
+        ):
             return
         raise ValueError("recipe item %r is already owned by %s" % (key, existing.owner))
     _RECIPE_ITEMS[key] = RecipeItemRegistration(
@@ -106,6 +122,7 @@ def register_recipe_item(
         handler=handler,
         execution_strategy=execution_strategy,
         preparation_steps=preparation_steps,
+        affects_fingerprint=affects_fingerprint,
     )
 
 

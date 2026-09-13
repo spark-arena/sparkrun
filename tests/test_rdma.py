@@ -382,8 +382,26 @@ class _Sctx:
 
 
 class _Config:
+    """Minimal config stub.
+
+    Implements the feature-resolution surface because ``rdma_test`` gates the
+    collective on ``cli.setup.rdma_test.nccl``. Defaults to *enabled*: the
+    subject of these tests is what each suite does, not whether it is
+    permitted — the gate has its own tests below.
+    """
+
+    def __init__(self, nccl: bool = True):
+        self._nccl = nccl
+
     def rdma_test_settings(self):
         return {}
+
+    def feature_override(self, name):
+        return self._nccl if name == "cli.setup.rdma_test.nccl" else None
+
+    @property
+    def feature_channel(self):
+        return "stable"
 
 
 def _facts_kv(perftest="1", docker="1"):
@@ -928,3 +946,149 @@ def test_cli_json_output_carries_the_numbers(runner, v, patched_cluster_mgr, mon
     assert entry["links"][0]["bandwidth_gbps_avg"] == pytest.approx(111.71)
     assert entry["links"][0]["latency_us_typical"] == pytest.approx(1.47)
     assert entry["links"][0]["hca_a"] == "rocep1s0f1"
+
+
+# ---------------------------------------------------------------------------
+# Suite maturity gating
+# ---------------------------------------------------------------------------
+#
+# The two flags gate *maturity*, not blast radius. perftest is proven and
+# ships everywhere; the collective rides alpha. Deliberately NOT split on
+# "needs the container" — the perftest suite falls back to the image on a host
+# without perftest, and that path stays open (asserted below).
+
+
+def test_channel_defaults_ship_perftest_everywhere_and_nccl_on_alpha_only():
+    from sparkrun.core.features import FEATURE_CLI_SETUP_RDMA_TEST, FEATURE_CLI_SETUP_RDMA_TEST_NCCL
+
+    for channel in ("stable", "beta", "alpha"):
+        assert FEATURE_CLI_SETUP_RDMA_TEST.default_for_channel(channel) is True, channel
+
+    assert FEATURE_CLI_SETUP_RDMA_TEST_NCCL.default_for_channel("stable") is False
+    assert FEATURE_CLI_SETUP_RDMA_TEST_NCCL.default_for_channel("beta") is False
+    assert FEATURE_CLI_SETUP_RDMA_TEST_NCCL.default_for_channel("alpha") is True
+
+
+def test_available_suites_tracks_the_nccl_gate():
+    from sparkrun.api.setup._rdma import ALL_SUITES, SUITE_PERFTEST, available_suites
+
+    assert available_suites(_Config(nccl=False)) == (SUITE_PERFTEST,)
+    assert available_suites(_Config(nccl=True)) == ALL_SUITES
+
+
+@pytest.mark.parametrize("suite", ["nccl", "all"])
+def test_a_gated_suite_is_refused_before_anything_is_probed(suite):
+    """The refusal must precede the probe, not follow a fan-out of SSH."""
+    with mock.patch("sparkrun.orchestration.networking.detect_cx7_for_hosts") as detect:
+        with pytest.raises(RdmaTestError) as exc:
+            rdma_test(_Sctx(_Config(nccl=False)), ["h1", "h2"], {}, suite=suite)
+
+    assert "cli.setup.rdma_test.nccl" in str(exc.value)
+    detect.assert_not_called()
+
+
+@pytest.mark.parametrize("suite", ["nccl", "all"])
+def test_a_dry_run_cannot_plan_a_suite_the_real_run_would_refuse(suite):
+    with pytest.raises(RdmaTestError, match="cli.setup.rdma_test.nccl"):
+        rdma_test(_Sctx(_Config(nccl=False)), ["h1", "h2"], {}, suite=suite, dry_run=True)
+
+
+def test_perftest_is_ungated_and_runs_with_the_nccl_flag_off():
+    report = rdma_test(_Sctx(_Config(nccl=False)), ["h1", "h2"], {}, suite="perftest", dry_run=True)
+    assert report.suite == "perftest"
+
+
+def test_the_perftest_container_fallback_survives_the_gate():
+    """The gate is maturity, not the image.
+
+    Refusing this fallback would break the *proven* suite on any host without
+    perftest installed, which is the opposite of what the split is for.
+    """
+    with (
+        _patch_probe(perftest="0"),
+        mock.patch("sparkrun.orchestration.networking.detect_cx7_for_hosts", return_value=_two_spark_direct()),
+        mock.patch("sparkrun.api.setup._rdma._prepare_container") as prep,
+        mock.patch("sparkrun.api.setup._rdma._stop_containers"),
+        mock.patch("sparkrun.api.setup._rdma._run_pair", return_value=mock.Mock(status=STATUS_OK, links=(), detail="")),
+    ):
+        report = rdma_test(_Sctx(_Config(nccl=False)), ["h1", "h2"], {}, suite="perftest")
+
+    prep.assert_called_once()
+    assert report.used_container is True
+    assert any("perftest not found" in w for w in report.warnings)
+
+
+# ---------------------------------------------------------------------------
+# Channel-aware help
+# ---------------------------------------------------------------------------
+
+
+def test_help_omits_a_gated_suite_entirely():
+    """Omitted, not annotated: help describes what this install does."""
+    from sparkrun.api.setup._rdma import SUITE_PERFTEST
+    from sparkrun.cli._setup._rdma import _rdma_help
+
+    text = _rdma_help((SUITE_PERFTEST,))
+
+    assert "perftest" in text
+    assert "nccl" not in text
+    assert "--suite all" not in text
+    # The one-line summary is what `setup --help` shows, so it must not
+    # advertise the suite either.
+    assert text.splitlines()[0] == "Measure RDMA bandwidth and latency across the fabric."
+
+
+def test_help_lists_every_suite_once_enabled():
+    from sparkrun.api.setup._rdma import ALL_SUITES
+    from sparkrun.cli._setup._rdma import _rdma_help
+
+    text = _rdma_help(ALL_SUITES)
+
+    for suite in ALL_SUITES:
+        assert suite in text
+    assert "--suite all" in text
+    assert "NCCL throughput" in text.splitlines()[0]
+
+
+def test_help_advertises_exactly_what_the_api_would_accept():
+    """Help and refusal read one function, so they cannot name different sets."""
+    from sparkrun.api.setup._rdma import ALL_SUITES, available_suites
+    from sparkrun.cli._setup._rdma import _rdma_help
+
+    for nccl in (True, False):
+        config = _Config(nccl=nccl)
+        allowed = available_suites(config)
+        text = _rdma_help(allowed)
+        for suite in ALL_SUITES:
+            listed = ("\n  %-9s " % suite) in text
+            assert listed is (suite in allowed), (suite, nccl)
+
+
+def test_completion_offers_only_the_available_suites():
+    from sparkrun.api.setup._rdma import ALL_SUITES, SUITE_PERFTEST
+    from sparkrun.cli._setup._rdma import _SuiteChoice
+
+    narrowed = _SuiteChoice((SUITE_PERFTEST,))
+    assert [i.value for i in narrowed.shell_complete(None, None, "")] == [SUITE_PERFTEST]
+
+    wide = _SuiteChoice(ALL_SUITES)
+    assert [i.value for i in wide.shell_complete(None, None, "")] == list(ALL_SUITES)
+
+
+def test_a_gated_suite_still_parses_so_the_error_can_name_the_flag(runner, monkeypatch):
+    """Click's "'nccl' is not one of 'perftest'" names no way forward.
+
+    Keeping the full choice list is what lets the actionable message through,
+    and the CLI fails before its "Testing RDMA fabric..." banner can claim
+    work that will not happen.
+    """
+    monkeypatch.setenv("SPARKRUN_FEATURE_CLI_SETUP_RDMA_TEST_NCCL", "0")
+
+    with mock.patch("sparkrun.api.setup.rdma_test") as api_call:
+        result = runner.invoke(main, ["setup", "rdma-test", "--hosts", "h1,h2", "--suite", "nccl", "--dry-run"])
+
+    assert result.exit_code != 0
+    assert "sparkrun setup features enable cli.setup.rdma_test.nccl" in result.output
+    assert "is not one of" not in result.output
+    assert "Testing RDMA fabric" not in result.output
+    api_call.assert_not_called()

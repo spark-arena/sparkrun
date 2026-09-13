@@ -35,14 +35,15 @@ def gateway_off(monkeypatch):
 
 
 class TestFlagRegistration:
-    def test_flag_is_registered_and_on_every_channel(self):
+    def test_flag_is_registered_and_defaults_to_stable_and_beta(self):
         from sparkrun.core.channels import CHANNEL_ALPHA, CHANNEL_BETA, CHANNEL_STABLE
         from sparkrun.core.features import get_feature
 
         flag = get_feature("gateway.litellm")
         assert flag is not None
-        for channel in (CHANNEL_STABLE, CHANNEL_BETA, CHANNEL_ALPHA):
+        for channel in (CHANNEL_STABLE, CHANNEL_BETA):
             assert flag.default_for_channel(channel) is True
+        assert flag.default_for_channel(CHANNEL_ALPHA) is False
 
     def test_flag_name_matches_the_engine_declaration(self):
         """The engine's ``required_feature_flag`` is the registry key verbatim."""

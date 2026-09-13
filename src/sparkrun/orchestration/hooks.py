@@ -12,7 +12,7 @@ import logging
 import subprocess
 from pathlib import Path
 
-from sparkrun.utils.text import render_template
+from sparkrun.utils.text import render_template, sanitize_line_continuations
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +93,12 @@ def render_hook_command(cmd: str, context: dict[str, str]) -> str:
     nothing here needs the escape — a JSON payload can be written with plain
     braces because the mask already keeps it away from vpd's regex.
 
+    Broken line-continuations *are* repaired the same way as in a recipe
+    command, though.  The "arbitrary shell" argument that spares ``{{`` does
+    not extend to ``\\<blank><newline>``: a doubled brace has legitimate
+    meanings, an escaped blank at end of line has none, and a multi-line
+    ``pre_exec`` breaks on one exactly as a ``command:`` template does.
+
     Args:
         cmd: Command string with ``{key}`` placeholders.
         context: Variable dict for substitution.
@@ -100,7 +106,7 @@ def render_hook_command(cmd: str, context: dict[str, str]) -> str:
     Returns:
         Rendered command string.
     """
-    return render_template(cmd, context)
+    return sanitize_line_continuations(render_template(cmd, context))
 
 
 def render_hook_commands(

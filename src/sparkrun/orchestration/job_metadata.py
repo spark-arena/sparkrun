@@ -390,23 +390,12 @@ def derive_recipe_fingerprint(recipe: "Recipe", overrides: dict | None = None) -
     for hook in ("pre_exec", "post_exec", "post_commands"):
         parts.append("%s=%s" % (hook, _val(raw.get(hook) or [])))
 
-    # Plugin-owned top-level items are declared configuration too.  Omitting
-    # them makes two recipes with different extension policy share caches and
-    # other provenance keyed by this fingerprint.  Use the handler's canonical
-    # export when available; serialized recipes whose plugin is unavailable
-    # retain and hash their raw item instead.  Appended only when present, so
-    # every recipe predating the seam hashes byte-identically.
-    plugin_items = getattr(recipe, "plugin_items", None) or {}
-    raw_plugin_items = getattr(recipe, "_plugin_item_raw", None) or {}
-    if plugin_items or raw_plugin_items:
-        from sparkrun.core.recipe_items import get_recipe_item
-
-        for name in sorted(set(plugin_items) | set(raw_plugin_items)):
-            registration = get_recipe_item(name)
-            if registration is not None and name in plugin_items:
-                value = registration.handler.export(plugin_items[name], recipe)
-            else:
-                value = raw_plugin_items[name]
+    # Registered items contribute canonical configuration by default. Plugins
+    # may mark passive annotations as identity-neutral; saved state preserves
+    # that policy even when the plugin is no longer available.
+    export_items = getattr(recipe, "export_plugin_items", None)
+    if export_items is not None:
+        for name, value in sorted(export_items(fingerprint_only=True).items()):
             parts.append("plugin:%s=%s" % (name, _val(value)))
 
     key = "\0".join(parts)

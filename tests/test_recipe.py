@@ -945,6 +945,62 @@ def test_render_command_fixes_trailing_space_continuations():
     assert "--trust-remote-code" in rendered
 
 
+def test_render_command_fixes_trailing_tab_continuations():
+    """A *tab* after the backslash breaks the line exactly as a space does.
+
+    This is the shape the spaces-only repair missed: the tab survived into the
+    rendered serve command, and bash reported the next line's first token as a
+    missing command (``--port: command not found``) with nothing naming the
+    recipe.
+    """
+    recipe = Recipe.from_dict(
+        {
+            "model": "test-model",
+            "runtime": "vllm",
+            "defaults": {"port": 8000, "host": "0.0.0.0"},
+            "command": (
+                "vllm serve {model} \\\t\n"  # trailing tab
+                "    --host {host} \\ \t\n"  # space then tab
+                "    --port {port} \\\t \n"  # tab then space
+                "    --trust-remote-code"
+            ),
+        }
+    )
+    rendered = recipe.render_command(recipe.build_config_chain())
+
+    assert rendered is not None
+    assert "\\\t" not in rendered
+    assert "\\ " not in rendered
+    assert "--host 0.0.0.0" in rendered
+    assert "--port 8000" in rendered
+    assert "--trust-remote-code" in rendered
+
+
+def test_render_command_continuations_survive_bash():
+    """End-to-end: the repaired command runs as one command in a real shell.
+
+    The string assertions above would also pass for a repair that still left
+    something bash splits, so the verdict is taken from bash itself.
+    """
+    import subprocess
+
+    recipe = Recipe.from_dict(
+        {
+            "model": "test-model",
+            "runtime": "vllm",
+            "defaults": {"port": 8000},
+            "command": "echo serve \\\t\n    --port {port} \\ \n    --done",
+        }
+    )
+    rendered = recipe.render_command(recipe.build_config_chain())
+
+    proc = subprocess.run(["bash", "-c", rendered], capture_output=True, text=True)
+
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.split() == ["serve", "--port", "8000", "--done"]
+    assert "command not found" not in proc.stderr
+
+
 def test_render_command_preserves_escaped_spaces_mid_line():
     """Backslash-space in the middle of a line is NOT a continuation — preserve it."""
     recipe = Recipe.from_dict(

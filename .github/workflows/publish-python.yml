@@ -32,14 +32,14 @@ jobs:
         uses: astral-sh/setup-uv@v9.0.0
 
       - name: Verify versions are in sync
-        run: uvx --from 'scitrera-repo-tools==0.1.22' sync-versions --check --verbose
+        run: uvx --from 'git+https://github.com/scitrera/repo-tools.git@4a2ae8b966a875f6dc21ec8c142220a0471e06e8' sync-versions --check --verbose
 
       - name: Compare tag against versions.yaml
         if: github.ref_type == 'tag'
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME#v}"
-          declared="$(uvx --from 'scitrera-repo-tools==0.1.22' sync-versions --print-version sparkrun)"
+          declared="$(uvx --from 'git+https://github.com/scitrera/repo-tools.git@4a2ae8b966a875f6dc21ec8c142220a0471e06e8' sync-versions --print-version sparkrun)"
           if [ "$tag" != "$declared" ]; then
             echo "::error::Tag ${GITHUB_REF_NAME} does not match the sparkrun version declared in versions.yaml ($declared)"
             exit 1
@@ -66,7 +66,7 @@ jobs:
           python-version: '3.12'
 
       - name: Rewrite local refs to version pins
-        run: uvx --from 'scitrera-repo-tools==0.1.22' sync-versions --release
+        run: uvx --from 'git+https://github.com/scitrera/repo-tools.git@4a2ae8b966a875f6dc21ec8c142220a0471e06e8' sync-versions --release
 
       - name: Build sdist + wheel
         run: |

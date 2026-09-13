@@ -9,6 +9,8 @@ import pytest
 from sparkrun.core.readiness import (
     DOCKER_HOST_OBSERVER,
     OPENAI_CHAT_STREAM,
+    OPENAI_RESPONSES_STREAM,
+    ANTHROPIC_MESSAGES_STREAM,
     ObservationUnavailable,
     ReadinessSettings,
     resolve_inference_style,
@@ -79,6 +81,40 @@ def test_explicit_style_resolves_through_three_layers_and_is_not_a_runtime_flag(
     assert resolve_inference_style(settings, runtime()) == OPENAI_CHAT_STREAM
     assert recipe.to_dict()["readiness"] == {"inference_style": "auto"}
     assert "inference_style" not in recipe.runtime_config
+
+
+@pytest.mark.parametrize("style", [OPENAI_RESPONSES_STREAM, ANTHROPIC_MESSAGES_STREAM])
+@pytest.mark.parametrize("previous", ["receipt", "accepted", "none"])
+def test_vllm_launch_probes_selected_api_and_served_name(style, previous):
+    from sparkrun.runtimes.vllm_distributed import VllmDistributedRuntime
+    from sparkrun.core.timing import Timeline
+
+    rt = VllmDistributedRuntime()
+    rt.executor = DockerExecutor()
+    result = launch(rt=rt, inference_style=style)
+    result.overrides = {"served_model_name": "launch-alias"}
+    result.timeline = Timeline()
+    if previous == "receipt":
+        result.startup_observation = receipt()
+    elif previous == "accepted":
+        result.runtime_info = {"inference_readiness": "accepted"}
+    response = receipt(measurement="sparkrun-rank0-v1", inference_style=style)
+    with patch("sparkrun.orchestration.startup.run_probe", return_value=response) as probe:
+        assert wait_for_serve_ready(result).ready
+    assert probe.call_count == 1
+    assert probe.call_args.args[1]["inference_style"] == style
+    assert probe.call_args.args[1]["model"] == "launch-alias"
+    assert result.startup_observation["inference_style"] == style
+    assert result.timeline.find("serve.startup_ttft") is not None
+    # A fixed ColdSnap Chat receipt must never be relabeled as another API.
+    with pytest.raises(ValueError, match="incompatible"):
+        validate_observation(receipt(inference_style=style))
+
+
+@pytest.mark.parametrize("style", ["unknown", [], None])
+def test_native_receipt_rejects_invalid_protocol(style):
+    with pytest.raises(ValueError, match="incompatible inference_style"):
+        validate_observation(receipt(measurement="sparkrun-rank0-v1", inference_style=style))
 
 
 @pytest.mark.parametrize("style", [None, False, [], "", "typo"])

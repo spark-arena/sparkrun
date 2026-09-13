@@ -31,6 +31,7 @@ from . import _commands as _commands  # noqa: E402, F401  — registers @setup.c
 from . import _fe_update as _fe_update  # noqa: E402, F401  — registers @setup.command("fe-system-update")
 from . import _gpu_clock as _gpu_clock  # noqa: E402, F401  — registers @setup.command("throttle-gpu-clock")
 from . import _k8s as _k8s  # noqa: E402, F401  — registers @setup.group("k8s")
+from . import _plugins as _plugins  # noqa: E402, F401  — registers @setup.group("plugins")
 from . import _rdma as _rdma  # noqa: E402, F401  — registers @setup.command("rdma-test")
 from . import _tailscale as _tailscale  # noqa: E402, F401  — registers @setup.group("tailscale")
 from ._wizard import setup_wizard  # noqa: E402

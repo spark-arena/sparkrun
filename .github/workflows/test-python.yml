@@ -6,9 +6,9 @@ name: Test (Python)
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, develop, develop-next ]
   pull_request:
-    branches: [ main, develop ]
+    branches: [ main, develop, develop-next ]
   workflow_call:
 
 concurrency:
@@ -41,6 +41,11 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v9.0.0
+
+      - name: Verify SparkRoute vendor snapshot
+        run: |
+          python scripts/vendor-sparkroute.py verify
+        working-directory: .
 
       - name: Free disk space
         run: |

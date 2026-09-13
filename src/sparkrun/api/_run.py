@@ -464,6 +464,7 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
         "dry_run": options.dry_run,
         "detached": options.detached,
         "follow": options.follow,
+        "auto_port": options.auto_port,
         "ray_port": options.ray_port,
         "dashboard_port": options.dashboard_port,
         "dashboard": options.dashboard,

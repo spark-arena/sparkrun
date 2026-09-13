@@ -69,7 +69,7 @@ IN_TREE_PLUGIN_PACKAGE = "sparkrun.plugins"
 #: off the plugin because the flag must resolve *before* the import — a plugin
 #: that declared its own gate could only be consulted by importing it, which is
 #: exactly what the gate is meant to avoid.
-IN_TREE_PLUGIN_FEATURES: dict[str, str] = {}
+IN_TREE_PLUGIN_FEATURES: dict[str, str] = {"sparkroute": "gateway.sparkroute"}
 
 
 def plugin_feature_flag(name: str) -> str | None:
@@ -77,27 +77,41 @@ def plugin_feature_flag(name: str) -> str | None:
     return IN_TREE_PLUGIN_FEATURES.get(name)
 
 
-def load_in_tree_plugins(v: "Variables", package: str = IN_TREE_PLUGIN_PACKAGE) -> list[str]:
-    """Import and register every plugin under *package*.
+def iter_in_tree_plugin_names(package: str | None = None) -> list[str]:
+    """Return the plugin subpackage names shipped under *package*.
 
-    Args:
-        v: The initialized SAF :class:`~scitrera_app_framework.Variables`.
-        package: Dotted package to scan.  Overridable for tests.
+    Discovery only — nothing is imported, so this answers "what ships here?"
+    even for plugins whose feature flag is off. Shared with
+    :func:`load_in_tree_plugins` so a listing can never name a plugin the
+    loader would skip.
 
-    Returns:
-        The plugin module names that loaded, in discovery order.
+    *package* defaults to :data:`IN_TREE_PLUGIN_PACKAGE` resolved at call time,
+    not at definition time, so a test that redirects the package redirects both
+    this and the loader together.
     """
+    package = package or IN_TREE_PLUGIN_PACKAGE
     try:
         root = importlib.import_module(package)
     except Exception:
         logger.exception("Could not import the in-tree plugin package %r", package)
         return []
+    return [info.name for info in pkgutil.iter_modules(getattr(root, "__path__", [])) if not info.name.startswith("_")]
 
+
+def load_in_tree_plugins(v: "Variables", package: str | None = None) -> list[str]:
+    """Import and register every plugin under *package*.
+
+    Args:
+        v: The initialized SAF :class:`~scitrera_app_framework.Variables`.
+        package: Dotted package to scan.  Overridable for tests; ``None``
+            resolves :data:`IN_TREE_PLUGIN_PACKAGE` at call time.
+
+    Returns:
+        The plugin module names that loaded, in discovery order.
+    """
+    package = package or IN_TREE_PLUGIN_PACKAGE
     loaded: list[str] = []
-    for mod_info in pkgutil.iter_modules(getattr(root, "__path__", [])):
-        name = mod_info.name
-        if name.startswith("_"):
-            continue
+    for name in iter_in_tree_plugin_names(package):
         flag = plugin_feature_flag(name)
         if flag is None or get_feature(flag) is None:
             # Skipping either way (an unregistered flag resolves off), but
@@ -136,4 +150,10 @@ def load_in_tree_plugins(v: "Variables", package: str = IN_TREE_PLUGIN_PACKAGE) 
     return loaded
 
 
-__all__ = ["IN_TREE_PLUGIN_FEATURES", "IN_TREE_PLUGIN_PACKAGE", "load_in_tree_plugins", "plugin_feature_flag"]
+__all__ = [
+    "IN_TREE_PLUGIN_FEATURES",
+    "IN_TREE_PLUGIN_PACKAGE",
+    "iter_in_tree_plugin_names",
+    "load_in_tree_plugins",
+    "plugin_feature_flag",
+]

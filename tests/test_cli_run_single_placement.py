@@ -245,3 +245,21 @@ def test_api_run_sees_full_candidate_set(runner, cluster_env, busy_cluster_statu
     assert seen["options_hosts"] == _HOSTS
     assert seen["candidates"] == _HOSTS
     assert seen["targets"] == _FREE
+
+
+@pytest.mark.parametrize("host_option", ["--hosts", "--hosts-file"])
+def test_named_cluster_survives_explicit_host_subset(runner, cluster_env, busy_cluster_status, tmp_path, host_option):
+    from sparkrun import api
+
+    host_file = tmp_path / "selected-hosts"
+    host_file.write_text("\n".join(_FREE))
+    value = str(host_file) if host_option == "--hosts-file" else ",".join(_FREE)
+    with mock.patch.object(api, "run", wraps=api.run) as run:
+        with mock.patch.object(SglangRuntime, "run", return_value=0):
+            result = runner.invoke(main, ["run", _RECIPE_NAME, "--cluster", "wopr", host_option, value, "--dry-run"])
+    assert result.exit_code == 0, result.output
+    plan = run.call_args.kwargs["plan"]
+    assert plan.cluster.name == "wopr"
+    assert plan.scheduler == "occupancy-sparse"
+    assert list(plan.host_list) == _FREE
+    assert run.call_args.args[0].auto_port is False

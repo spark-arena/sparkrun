@@ -234,6 +234,54 @@ let an integration participate in a launch without forking it. See
 Items / Recipe Execution Strategies / Launch Materialization sections below for
 the rationale.
 
+### Plugin Inventory (`core/plugin_inventory.py`)
+
+`list_plugins()` is the console-free source behind `sparkrun setup plugins list`
+— the inventory peer of the two loaders: they decide what to *load*, it reports
+what exists. Scope is **plugin modules**, exactly the set
+`in_tree_plugins` / `external_plugins` govern; a runtime or executor shipped in
+core has no version distinct from sparkrun's and is already enumerated by
+`list-runtimes` / `list-executors`.
+
+Both halves enumerate through the loaders' own helpers
+(`iter_in_tree_plugin_names`, `iter_plugin_module_names`) rather than a second
+`iter_modules` call, for the reason `resolve_builder` and `_has_eugr_signal`
+learned the hard way: a catalog that disagrees with the thing it describes is
+read as an answer, and is worse than no catalog.
+
+**Nothing here imports a plugin.** Enumeration is directory-level; a version is
+read only off a module some loader already imported. So a gated-off plugin is
+listed (you cannot decide whether to enable a gate without seeing what it
+governs) while staying unimported — reported `unknown`, not resolved by
+importing something the user switched off. Note this also means external
+plugins are enumerated even when `core.external_plugins` is off; that flag
+exists to avoid *importing* untrusted code, and reading directory entries for a
+command the user explicitly typed costs nothing it protects.
+
+Version resolution is `module.__version__` → (out-of-tree only) the installed
+distribution providing that top-level module → `None`, meaning **unknown** and
+rendered as such. Three rules are load-bearing:
+
+- **The distribution fallback is out-of-tree only.** Every in-tree plugin's
+  package maps to the `sparkrun` distribution, so applying it there reports
+  sparkrun's version as the plugin's — wrong exactly where it matters, since
+  `sparkroute` is vendored from its own repo at its own version. The honest
+  answer is "the plugin did not say", the same `exists=None` / `CX7Persistence.UNKNOWN`
+  rule.
+- **`sys.modules` is not the record.** `load_plugin_module` — the one point
+  both loaders pass through — records what it loaded, because an external
+  plugin's top-level name may be importable for unrelated reasons and
+  attributing a stranger's `__version__` to it is a wrong answer, not a missing
+  one.
+- **`enabled` and `loaded` stay separate**, and the difference is the whole
+  diagnostic value: gate on but not loaded means the import raised. Collapsing
+  them to on/off hides the case someone runs the command to find.
+
+Visibility is `HIDE_ADVANCED_OPTIONS` (`SPARKRUN_ADVANCED`), the
+`throttle-gpu-clock` / `uninstall` precedent — visibility only, since someone
+debugging a plugin that will not load needs the command either way. Author-facing
+contract: `docs/PLUGINS.md`.
+
 **Layering trap.** `init_sparkrun` runs on the console-free `sparkrun.api` path,
 and plugin scanning imports *every* submodule of a plugin package. So the CLI
 registry lives in `core/cli_registry.py` (Click-free; `cli/ext.py` re-exports it
@@ -1647,12 +1695,42 @@ a run on the cluster. `--ulimit memlock=-1:-1` is not optional (RDMA pins
 memory; `ibv_reg_mr` fails without it), and `--device` entries are enumerated
 from `/dev/infiniband/*` at runtime rather than passing the directory.
 
-Gated behind `cli.setup.rdma_test` (off `stable`, on `beta`/`alpha` via
-`channel_defaults`) for the `builder.uv_venv` reason — it mutates hosts. The
-gate is friction exactly when a user's networking is already broken, so it
-should be dropped once the image has field mileage. `setup check`'s `rdma` check
-is the cheap peer: it reports devices present/ACTIVE from the *same* probe and
-never sends a byte, pointing at this command for the rest.
+**Two gates, split at the suite boundary, and the axis is *maturity* — not
+blast radius.** perftest is the proven "did my cable work?" check, and gating
+it was friction exactly when a user's networking is already broken; it ships on
+every channel under `cli.setup.rdma_test`, now a kill switch (`default=True`,
+no channel overrides — the `executor.docker` shape). The collective is young —
+mpirun across containers, the purpose-built nccl-tests image, a bus-bandwidth
+verdict — so `--suite nccl` / `all` ride alpha under `cli.setup.rdma_test.nccl`.
+This *narrows* beta, which had the collective under the single flag.
+
+Deliberately **not** split on "needs the container": the perftest suite falls
+back to the image on a host without perftest, and refusing that would break the
+proven check on non-DGX-OS hosts for no gain. The image is incidental to the
+axis.
+
+`api/setup/_rdma.py:available_suites(config)` is the single source of truth and
+has two consumers, which is what keeps the help honest:
+
+- **The refusal** (`rdma_test`), checked before the CX7 probe *and* before the
+  dry-run branches — a dry run must not plan a suite the real run would refuse,
+  and the refusal must not follow a fan-out of SSH. The CLI re-checks first
+  purely to fail before its `Testing RDMA fabric across N host(s)` banner can
+  claim work that will not happen; both raise `gated_suite_message(suite)`, one
+  wording so the enable instruction cannot drift.
+- **The help**, which **omits** a gated suite rather than listing it as
+  unavailable — from the one-line summary (what `setup --help` shows), the
+  `Suites:` block, the examples, the `--suite` metavar, shell completion, and
+  the NCCL-only `--size`. Built at import and passed as `help=` (Click prefers
+  it over `__doc__`), so it is display-only: an import-time read cannot see a
+  `--config` override, which is why enforcement re-resolves at runtime. The
+  `_SuiteChoice` still *accepts* every suite, so a gated value reaches the
+  actionable error instead of Click's `'nccl' is not one of 'perftest'`, which
+  names no way forward.
+
+`setup check`'s `rdma` check is the cheap peer: it reports devices
+present/ACTIVE from the *same* probe and never sends a byte, pointing at this
+command for the rest.
 
 ### Inference Gateway (`proxy/` + `api/proxy/`)
 
@@ -1675,9 +1753,11 @@ Three mechanisms, deliberately separate:
   is what lets an out-of-tree plugin substitute an in-tree implementation.
   litellm registers in core, not from a plugin: `proxy` must resolve to
   *something* with every plugin absent.
-- **Availability** — `gateway.<name>` feature flag. `gateway.litellm` ships
-  **enabled on every channel** (`default=True`, like `executor.docker`); a
-  plugin-contributed gateway would ship off.
+- **Availability** — `gateway.<name>` feature flag. `gateway.litellm` defaults
+  on for stable/beta and off for alpha; the bundled `gateway.sparkroute` plugin
+  defaults on only for alpha. Explicit config/env overrides take precedence.
+  Update its immutable source through `scripts/vendor-sparkroute.py update
+  --latest`, then `verify`; see `docs/SPARKROUTE.md`.
 - **Selection** — exactly one gateway is used at a time, arbitrated in
   `resolve_gateway()`: an explicit name (`proxy.gateway:` in `proxy.yaml`, or
   `--gateway`) must be known *and* enabled; with no name, the default wins when
@@ -2467,10 +2547,10 @@ hard-codes `"docker"` when no layer names an executor — `_default_executor_nam
 returns docker when enabled, else the sole enabled executor, else raises "name
 one / set `default_executor`" (never silently runs on a disabled backend).
 
-**Gateway gate (`gateway.litellm`)**: same shape as the docker gate — ships
-enabled on every channel, exists so an alternate inference gateway can be added
-as a peer. Exclusivity ("one gateway at a time") is arbitrated at *resolution*,
-not by the flag registry. See Inference Gateway above.
+**Gateway gates**: `gateway.litellm` defaults on for stable/beta;
+`gateway.sparkroute` defaults on for alpha. Both remain overridable. Exclusivity
+("one gateway at a time") is arbitrated at *resolution*, not by the flag
+registry. See Inference Gateway above and `docs/SPARKROUTE.md`.
 
 **Visibility-only gate**: `cli.setup.features` (via `channel_defaults`, **on for
 `beta`/`alpha`, off for `stable`**) is different — it does NOT gate execution.
