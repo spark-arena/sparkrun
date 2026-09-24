@@ -246,3 +246,54 @@ def test_generic_nvidia_no_cute_dsl_arch_below_sm90_or_for_other_runtimes():
     assert GenericNvidiaPlatform().default_env("vllm-distributed", a100, runtime_family="vllm") == {}
     h100 = AcceleratorSpec(vendor="nvidia", model="h100")
     assert GenericNvidiaPlatform().default_env("llama-cpp", h100, runtime_family="llama-cpp") == {}
+
+
+# --- restated platform env (validation) --------------------------------------------------
+
+
+def _vllm_recipe(env=None, overrides=None):
+    from sparkrun.core.recipe import Recipe
+
+    data = {"model": "org/model", "runtime": "vllm-distributed", "env": env or {}}
+    if overrides:
+        data["overrides"] = overrides
+    return Recipe.from_dict(data)
+
+
+def _restated(recipe):
+    from sparkrun.core.validation import check_restated_platform_env
+    from sparkrun.runtimes.vllm_distributed import VllmDistributedRuntime
+
+    return check_restated_platform_env(recipe, VllmDistributedRuntime())
+
+
+def test_restating_a_platform_env_value_is_a_suggestion():
+    from sparkrun.core.validation import SUGGESTION
+
+    [issue] = _restated(_vllm_recipe(env={"CUTE_DSL_ARCH": "sm_121a"}))
+    assert (issue.severity, issue.code) == (SUGGESTION, "restated-platform-env")
+    assert "DGX Spark (gb10)" in issue.summary
+
+
+def test_generic_platform_values_are_recognized_too():
+    [issue] = _restated(_vllm_recipe(env={"CUTE_DSL_ARCH": "sm_120a"}))
+    assert "rtx-pro-6000" in issue.summary
+
+
+def test_a_deliberately_different_value_is_never_flagged():
+    assert _restated(_vllm_recipe(env={"CUTE_DSL_ARCH": "sm_100f", "PYTORCH_CUDA_ALLOC_CONF": "max_split_size_mb:512"})) == []
+
+
+def test_override_env_layers_are_checked():
+    [issue] = _restated(_vllm_recipe(overrides=[{"when": {"arch": "sm_120"}, "env": {"CUTE_DSL_ARCH": "sm_120a"}}]))
+    assert issue.summary.startswith("overrides[0].env:") and "conditional layer" in issue.summary
+
+
+def test_platform_env_for_other_runtimes_is_not_matched():
+    """GB10 publishes nothing for llama.cpp, so the same key there is not a restatement."""
+    from sparkrun.core.recipe import Recipe
+    from sparkrun.core.validation import check_restated_platform_env
+    from sparkrun.runtimes.llama_cpp import LlamaCppRuntime
+
+    recipe = Recipe.from_dict({"model": "org/m-GGUF:Q4_K_M", "runtime": "llama-cpp", "env": {"CUTE_DSL_ARCH": "sm_121a"}})
+    assert check_restated_platform_env(recipe, LlamaCppRuntime()) == []

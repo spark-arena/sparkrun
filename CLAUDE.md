@@ -464,6 +464,20 @@ shapes: presence-only (`_ATLAS_BOOL_FLAGS`, bare flag) versus `Option<bool>`
 defers to MODEL.toml but `false` overrides it — so dropping the flag for a
 falsy value hands the decision back to the engine).
 
+**Flag values are rendered, not `str()`-ed** (`runtimes/base.py:render_flag_value`).
+Flag parts are joined into a `bash -c` command, so a mapping default
+(`speculative_config: {...}`) used to arrive as a Python repr split into
+several words, and a JSON *string* lost its double quotes to bash. Mappings,
+lists and JSON-shaped strings now become one shell-quoted compact JSON
+argument. Everything else keeps plain `str()`, unquoted, because values
+relying on host-side expansion (`$HOME/...`) exist. Measured against the 47
+command-less registry recipes, exactly one rendering changed (an Atlas
+`default_chat_template_kwargs` JSON string, previously mangled). `negatable_keys`
+renders `false` as `--no-<flag>`, but **only** for flags the engine defaults on
+(`VLLM_NEGATABLE_BOOL_FLAGS`). Omitting them silently served with the feature
+enabled. Default-off flags stay omitted, so an image predating the `--no-` spelling
+never sees one.
+
 **Trust gating** (`launcher.py:resolve_recipe_trust`): each launch resolves a
 single trust verdict shared by `pre_exec` (inside `runtime.run()`) and
 `post_exec` / `post_commands` (inside `post_launch_lifecycle`). Local recipes

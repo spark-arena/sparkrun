@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import shlex
 from abc import ABC, abstractmethod
 from logging import Logger
 from typing import Any, Mapping, TYPE_CHECKING
@@ -80,6 +82,23 @@ BASE_CONSUMED_CONFIG_KEYS = frozenset(
         "benchmark_output_dir",
     }
 )
+
+
+def render_flag_value(value: Any) -> str:
+    """Render one structured-flag value for a generated shell command.
+
+    Mappings and lists become shell-quoted compact JSON, which is what engines'
+    JSON-typed flags (``--speculative-config``, ``--compilation-config``, …)
+    parse. A string that already holds a JSON object or array is quoted as
+    well: unquoted, bash strips its double quotes. Anything else keeps its
+    plain ``str()`` form, unquoted as before, so a value that relies on shell
+    expansion (``$HOME/...``) still expands on the host.
+    """
+    if isinstance(value, (dict, list, tuple)):
+        return shlex.quote(json.dumps(value, separators=(",", ":"), sort_keys=False, default=str))
+    if isinstance(value, str) and value.strip()[:1] in ("{", "["):
+        return shlex.quote(value.strip())
+    return str(value)
 
 
 class RuntimePlugin(Plugin, ABC):
@@ -964,6 +983,7 @@ class RuntimePlugin(Plugin, ABC):
         flag_map: dict[str, str],
         bool_keys: set[str] | frozenset[str] = frozenset(),
         skip_keys: set[str] | frozenset[str] = frozenset(),
+        negatable_keys: set[str] | frozenset[str] = frozenset(),
     ) -> list[str]:
         """Build CLI flag list from a config-key to CLI-flag mapping.
 
@@ -972,11 +992,24 @@ class RuntimePlugin(Plugin, ABC):
         truthy, omitted otherwise).  All other keys emit ``[flag, value]``
         pairs.  Keys listed in *skip_keys* are skipped entirely.
 
+        *negatable_keys* (a subset of *bool_keys*) render ``False`` as
+        ``--no-<flag>``. That is for flags the engine turns **on** by default,
+        where omitting the flag silently ignores the recipe's ``false``. Keep
+        default-off flags out of it: an image predating the ``--no-`` spelling
+        would reject a flag that changes nothing.
+
+        Mapping and list values, and strings that already hold a JSON object
+        or array, are emitted as one shell-quoted compact JSON argument
+        (:func:`render_flag_value`). The parts are joined into a ``bash -c``
+        command, so ``str()`` of a dict (a Python repr, and several words) was
+        wrong twice over.
+
         Args:
             config: Config chain object (must support ``.get(key)``).
             flag_map: Mapping of recipe config key to CLI flag string.
             bool_keys: Set of keys that should be treated as boolean flags.
             skip_keys: Keys to skip (already handled by the caller).
+            negatable_keys: Boolean keys whose ``False`` emits ``--no-<flag>``.
 
         Returns:
             Flat list of CLI argument strings.
@@ -991,8 +1024,10 @@ class RuntimePlugin(Plugin, ABC):
             if key in bool_keys:
                 if ext_parse_bool(value):
                     parts.append(flag)
+                elif key in negatable_keys and flag.startswith("--"):
+                    parts.append("--no-" + flag[2:])
             else:
-                parts.extend([flag, str(value)])
+                parts.extend([flag, render_flag_value(value)])
         return parts
 
     @staticmethod

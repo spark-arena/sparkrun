@@ -254,6 +254,7 @@ class VllmRuntimeBase(RuntimePlugin):
                 VLLM_FLAG_MAP,
                 bool_keys=VLLM_BOOL_FLAGS,
                 skip_keys=skip,
+                negatable_keys=VLLM_NEGATABLE_BOOL_FLAGS,
             )
         )
 
@@ -379,6 +380,46 @@ VLLM_FLAG_MAP = {
     "enable_auto_tool_choice": "--enable-auto-tool-choice",
     "enable_chunked_prefill": "--enable-chunked-prefill",
     "async_scheduling": "--async-scheduling",
+    # Upstream serving flags the lil catalog and B12X recipes rely on. Emitted
+    # only when set, so a recipe that never names them renders as before.
+    "generation_config": "--generation-config",
+    "hf_overrides": "--hf-overrides",
+    "compilation_config": "--compilation-config",
+    "attention_config": "--attention-config",
+    "model_loader_extra_config": "--model-loader-extra-config",
+    "default_chat_template_kwargs": "--default-chat-template-kwargs",
+    "limit_mm_per_prompt": "--limit-mm-per-prompt",
+    "mm_processor_cache_gb": "--mm-processor-cache-gb",
+    "kv_cache_memory_bytes": "--kv-cache-memory-bytes",
+    "max_cudagraph_capture_size": "--max-cudagraph-capture-size",
+    "long_prefill_token_threshold": "--long-prefill-token-threshold",
+    "mamba_cache_mode": "--mamba-cache-mode",
+    "safetensors_load_strategy": "--safetensors-load-strategy",
+    "moe_backend": "--moe-backend",
+    "enable_prompt_tokens_details": "--enable-prompt-tokens-details",
+    "enable_force_include_usage": "--enable-force-include-usage",
+    "enable_request_id_headers": "--enable-request-id-headers",
+    "enable_flashinfer_autotune": "--enable-flashinfer-autotune",
+    # B12X-fork flags (the vLLM branch the lil launcher targets; present in
+    # ghcr.io/spark-arena/dgx-vllm-eugr-nightly-b12x). A stock image rejects
+    # them, which is the right outcome for a recipe that asks for them.
+    "linear_backend": "--linear-backend",
+    "gdn_prefill_backend": "--gdn-prefill-backend",
+    "gdn_decode_kernel": "--gdn-decode-kernel",
+    "kda_prefill_backend": "--kda-prefill-backend",
+    "mamba_backend": "--mamba-backend",
+    "recurrent_checkpoint_policy": "--recurrent-checkpoint-policy",
+    "prefix_cache_retention_interval": "--prefix-cache-retention-interval",
+    "engram_config": "--engram-config",
+    "dcp_comm_backend": "--dcp-comm-backend",
+    "prefill_policy": "--prefill-policy",
+    "prefill_compute_share": "--prefill-compute-share",
+    "prefill_compute_half_life": "--prefill-compute-half-life",
+    "prefill_schedule_interval": "--prefill-schedule-interval",
+    "max_parallel_prefills": "--max-parallel-prefills",
+    "decode_refill_target": "--decode-refill-target",
+    "scheduler_reserve_full_isl": "--scheduler-reserve-full-isl",
+    "jit_monitor_mode": "--jit-monitor-mode",
 }
 
 # Boolean flags (present = True, absent = False).
@@ -390,4 +431,23 @@ VLLM_BOOL_FLAGS = {
     "enable_auto_tool_choice",
     "enable_chunked_prefill",
     "async_scheduling",
+    "enable_prompt_tokens_details",
+    "enable_force_include_usage",
+    "enable_request_id_headers",
+    "enable_flashinfer_autotune",
+    "scheduler_reserve_full_isl",
 }
+
+# Boolean flags the engine turns on by default (or decides itself), so
+# ``false`` must render as ``--no-<flag>``. Omitting it would silently serve
+# with the feature on. Default-off flags are deliberately absent: see
+# RuntimePlugin.build_flags_from_map.
+VLLM_NEGATABLE_BOOL_FLAGS = frozenset(
+    {
+        "enable_prefix_caching",
+        "enable_chunked_prefill",
+        "async_scheduling",
+        "enable_flashinfer_autotune",
+        "scheduler_reserve_full_isl",
+    }
+)

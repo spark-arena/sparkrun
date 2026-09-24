@@ -567,6 +567,38 @@ Explicit `runtime` always wins. Command-hint detection only fires when `runtime`
 Any key can appear in `defaults` — there is no fixed schema. Runtime-specific keys (e.g. `tool_call_parser`, `ctx_size`,
 `n_gpu_layers`, `reasoning_parser`) are passed through to command template substitution.
 
+#### Structured values and booleans
+
+Without a `command:` template, values are rendered like this:
+
+- **Mappings and lists**, and strings that already hold a JSON object or array, are passed as one shell-quoted
+  compact JSON argument, so this renders `--speculative-config '{"method":"mtp","num_speculative_tokens":3}'`:
+  ```yaml
+  defaults:
+    speculative_config: {method: mtp, num_speculative_tokens: 3}
+  ```
+  Other JSON-valued flags work the same way: `compilation_config`, `attention_config`, `hf_overrides`,
+  `limit_mm_per_prompt`, `default_chat_template_kwargs`, `model_loader_extra_config`, `engram_config`.
+- **Plain values** are passed as written. A `$HOME/...` path still expands on the host.
+- **Booleans** emit the bare flag when true. For vLLM flags that are on by default (`enable_prefix_caching`,
+  `enable_chunked_prefill`, `async_scheduling`, `enable_flashinfer_autotune`, `scheduler_reserve_full_isl`), `false`
+  emits `--no-<flag>`. Other booleans are simply omitted when false.
+
+#### B12X vLLM flags
+
+The vLLM flag map also covers the B12X fork's serving surface (as shipped in
+`ghcr.io/spark-arena/dgx-vllm-eugr-nightly-b12x`), each emitted only when set:
+
+- **Kernel backends:** `linear_backend`, `moe_backend`, `gdn_prefill_backend`, `gdn_decode_kernel`,
+  `kda_prefill_backend`, `mamba_backend`
+- **Prefill scheduling:** `prefill_policy`, `prefill_compute_share`, `prefill_compute_half_life`,
+  `prefill_schedule_interval`, `max_parallel_prefills`, `decode_refill_target`, `scheduler_reserve_full_isl`
+- **Cache and memory:** `recurrent_checkpoint_policy`, `prefix_cache_retention_interval`, `engram_config`,
+  `mamba_cache_mode`, `kv_cache_memory_bytes`
+- **Other:** `dcp_comm_backend`, `jit_monitor_mode`
+
+A stock vLLM image rejects the fork-only ones, so name them only on a B12X image.
+
 #### Keys the runtime doesn't recognise
 
 A recipe with no `command:` template has its serve command built by iterating the runtime's flag map, so a `defaults`

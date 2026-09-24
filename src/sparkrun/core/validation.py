@@ -929,6 +929,58 @@ def check_nested_include(recipe: Recipe) -> list[RecipeIssue]:
     ]
 
 
+def check_restated_platform_env(recipe: Recipe, runtime: RuntimePlugin | None) -> list[RecipeIssue]:
+    """Suggest dropping env a hardware platform already publishes, with the same value.
+
+    Facts about the hardware (``CUTE_DSL_ARCH``, allocator settings) are the
+    platform tier's job. A recipe that restates one is correct on the machine
+    it was written for and only noise there, but it keeps sending that value
+    to hardware where the platform would have sent a different, right one.
+    Fires only on an **exact** restatement of a published value, so a
+    deliberate different value is never flagged. That covers ``env:`` and
+    every ``overrides[].env`` layer.
+    """
+    if runtime is None:
+        return []
+    from sparkrun.platforms import iter_platforms
+
+    family = runtime.get_family()
+    published: dict[tuple[str, str], list[str]] = {}
+    for platform in iter_platforms():
+        for accel in platform.declared_accelerators():
+            for key, value in platform.default_env(runtime.runtime_name, accel, runtime_family=family).items():
+                owners = published.setdefault((key, str(value)), [])
+                label = "%s (%s)" % (platform.display_name or platform.platform_name, accel.model)
+                if label not in owners:
+                    owners.append(label)
+
+    sources = [("env", getattr(recipe, "declared_env", recipe.env))]
+    sources += [("overrides[%d].env" % o.index, o.env) for o in getattr(recipe, "overrides", None) or ()]
+    issues: list[RecipeIssue] = []
+    for where, env in sources:
+        for key, value in (env or {}).items():
+            owners = published.get((key, str(value)))
+            if not owners:
+                continue
+            consequence = (
+                "restated in a conditional layer it only repeats the platform, and makes every recipe that needs it carry its own copy"
+                if where != "env"
+                else "restated here it is only noise on that hardware, and it still sends this value to hardware "
+                "where the platform would send a different, correct one"
+            )
+            issues.append(
+                RecipeIssue(
+                    SUGGESTION,
+                    "restated-platform-env",
+                    "%s: sets %s=%s, which the platform tier already publishes for %s on %s. It is a fact about the "
+                    "hardware, not the model: %s." % (where, key, value, family or runtime.runtime_name, ", ".join(owners), consequence),
+                    "Remove it and let the platform supply it. A recipe that needs a different value should set that "
+                    "value, which this check never flags.",
+                )
+            )
+    return issues
+
+
 def check_override_selectors(recipe: Recipe) -> list[RecipeIssue]:
     """Warn about ``when:`` selectors or operators this sparkrun cannot evaluate.
 
@@ -1715,6 +1767,7 @@ def validate_recipe(
     issues.extend(_safe("restated-substitution", lambda: check_restated_substitutions(recipe)))
     issues.extend(_safe("nested-include", lambda: check_nested_include(recipe)))
     issues.extend(_safe("override-unknown-selector", lambda: check_override_selectors(recipe)))
+    issues.extend(_safe("restated-platform-env", lambda: check_restated_platform_env(recipe, runtime)))
 
     if runtime is not None and include_unmapped_keys:
         from sparkrun.core.launcher import report_unmapped_config_keys

@@ -111,6 +111,10 @@ class GenericNvidiaPlatform(HardwarePlatformPlugin):
     def default_image(self, runtime_name: str) -> str | None:
         return _NVIDIA_GENERIC_DEFAULTS.get(runtime_name)
 
+    def declared_accelerators(self) -> list[AcceleratorSpec]:
+        """One representative per model the compute-capability table declares."""
+        return [AcceleratorSpec(vendor="nvidia", model=model) for model in sorted(_NVIDIA_COMPUTE_CAPABILITY)]
+
     def default_compute_capability(self, accelerator: AcceleratorSpec) -> str | None:
         if accelerator.vendor != "nvidia":
             return None

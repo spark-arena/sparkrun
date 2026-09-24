@@ -210,6 +210,16 @@ class HardwarePlatformPlugin(Plugin):
         """
         return None
 
+    def declared_accelerators(self) -> list[AcceleratorSpec]:
+        """Accelerators this platform declares facts for, without any host to look at.
+
+        Lets hardware-free callers ask "what would this platform publish?"
+        (``recipe validate`` uses it to notice a recipe restating a platform
+        fact). Base: whatever :meth:`assumed_hardware` describes.
+        """
+        assumed = self.assumed_hardware()
+        return list(assumed.accelerators) if assumed is not None else []
+
     def default_compute_capability(self, accelerator: AcceleratorSpec) -> str | None:
         """Declared ``"<major>.<minor>"`` compute capability for *accelerator*.
 
