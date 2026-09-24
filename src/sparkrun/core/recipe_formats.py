@@ -117,6 +117,30 @@ def is_foreign_format(name: str | None) -> bool:
     return bool(name) and name != DEFAULT_RECIPE_FORMAT
 
 
+def entry_recipe_format(entry: Any) -> tuple[RecipeFormat | None, str | None]:
+    """``(handler, why_unavailable)`` for a registry entry's ``format``.
+
+    ``(None, None)`` is sparkrun's own format. A foreign format is honored only
+    when the registry is **trusted** or was **declared by a plugin**. A
+    registry's manifest chooses its own ``format:``, and without this gate any
+    third-party repo could pick which installed plugin parses its files. A
+    plugin-declared registry's format came from local code, not a remote
+    manifest. Unhonored means *inert*: not parsed as sparkrun YAML either,
+    just unavailable, and ``why_unavailable`` says so.
+    """
+    name = getattr(entry, "format", DEFAULT_RECIPE_FORMAT) or DEFAULT_RECIPE_FORMAT
+    if not is_foreign_format(name):
+        return None, None
+    if not (getattr(entry, "trusted", False) or getattr(entry, "declared_by", "")):
+        return None, (
+            "its %r recipe format is only honored for trusted registries (sparkrun registry trust %s)" % (name, getattr(entry, "name", "?"))
+        )
+    handler = get_recipe_format(name)
+    if handler is None:
+        return None, "no loaded plugin provides its %r recipe format" % name
+    return handler, None
+
+
 def find_in_format(recipe_format: RecipeFormat, root: Path, name: str) -> list[Path]:
     """Manifests under *root* whose ``name_of`` is *name*, built from ``iter_files``."""
     return [path for path in recipe_format.iter_files(root) if recipe_format.name_of(path, root) == name]
@@ -144,7 +168,8 @@ class PathOwnership:
     """Who owns a manifest path, for format dispatch.
 
     ``kind`` is ``"foreign"`` (a foreign-format registry: ``format_name`` is
-    set, and ``recipe_format`` is ``None`` when no plugin provides it),
+    set, and ``recipe_format`` is ``None`` when it is unavailable, with
+    ``unavailable`` saying why),
     ``"native"`` (a sparkrun-format registry), ``"outside"`` (no registry), or
     ``"unknown"`` (no registry manager to ask).
     """
@@ -153,6 +178,7 @@ class PathOwnership:
     recipe_format: RecipeFormat | None = None
     root: Path | None = None
     format_name: str | None = None
+    unavailable: str | None = None
 
 
 def format_for_path(path: Path, registry_manager: RegistryManager | None) -> PathOwnership:
@@ -171,7 +197,8 @@ def format_for_path(path: Path, registry_manager: RegistryManager | None) -> Pat
     name = getattr(entry, "format", DEFAULT_RECIPE_FORMAT) or DEFAULT_RECIPE_FORMAT
     if not is_foreign_format(name):
         return PathOwnership("native")
-    return PathOwnership("foreign", get_recipe_format(name), registry_manager._recipe_dir(entry), name)
+    handler, unavailable = entry_recipe_format(entry)
+    return PathOwnership("foreign", handler, registry_manager._recipe_dir(entry), name, unavailable)
 
 
 __all__ = [
@@ -179,6 +206,7 @@ __all__ = [
     "PathOwnership",
     "RecipeFormat",
     "claiming_format",
+    "entry_recipe_format",
     "find_in_format",
     "format_for_path",
     "get_recipe_format",

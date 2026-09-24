@@ -10,6 +10,7 @@ from sparkrun.core.application_profile import remote_cache_path
 from sparkrun.core.config import resolve_sparkrun_cache_dir
 
 import logging
+from copy import deepcopy
 import os
 import re
 import subprocess
@@ -22,7 +23,7 @@ import yaml
 
 from vpd.next.util import read_yaml
 
-from sparkrun.core.recipe_formats import DEFAULT_RECIPE_FORMAT, find_in_format, get_recipe_format, is_foreign_format
+from sparkrun.core.recipe_formats import DEFAULT_RECIPE_FORMAT, entry_recipe_format, find_in_format, is_foreign_format
 
 from sparkrun.utils.shell import validate_git_url
 from sparkrun.core.application_profile import get_application_profile, thaw
@@ -1022,6 +1023,47 @@ def link_directory(link: Path, target: Path) -> None:
     logger.debug("Created junction %s -> %s", link, target)
 
 
+#: Parsed ``registries.yaml`` documents, keyed by path and validated by a stat
+#: on every use. The file is read through here by every lookup
+#: (``_load_registries`` alone used to parse it four times per call, and
+#: nearly every registry operation calls that), yet it changes only when
+#: someone writes it. Reading it once at manager construction would be wrong:
+#: the file is shared mutable state, and long-lived processes (the desktop
+#: sidecar, the proxy daemon) must see a ``registry add`` made from another
+#: terminal. Keying on ``(mtime_ns, ctime_ns, size, inode)`` gives read-once
+#: behaviour and stays correct across writers. Module-level, because
+#: ``SparkrunConfig.get_registry_manager()`` builds a new manager per call.
+_DOCUMENT_CACHE: dict[str, tuple[tuple[int, int, int, int], Any]] = {}
+
+
+def _document_key(path: Path) -> tuple[int, int, int, int]:
+    st = path.stat()
+    return (st.st_mtime_ns, st.st_ctime_ns, st.st_size, st.st_ino)
+
+
+def _read_registries_document(path: Path) -> Any:
+    """``read_yaml(path)``, parsed once per version of the file. Callers get a private copy."""
+    key = _document_key(path)
+    cached = _DOCUMENT_CACHE.get(str(path))
+    if cached is not None and cached[0] == key:
+        return deepcopy(cached[1])
+    data = read_yaml(str(path))
+    _DOCUMENT_CACHE[str(path)] = (key, deepcopy(data))
+    return data
+
+
+def _remember_registries_document(path: Path, data: Any) -> None:
+    """Record what we just wrote, so our own save never costs a re-read.
+
+    This also avoids trusting mtime alone on a filesystem with coarse
+    timestamps, where two writes in one tick would share a key.
+    """
+    try:
+        _DOCUMENT_CACHE[str(path)] = (_document_key(path), deepcopy(data))
+    except OSError:
+        _DOCUMENT_CACHE.pop(str(path), None)
+
+
 class RegistryManager:
     """Manages recipe registries with git-based syncing.
 
@@ -1137,9 +1179,10 @@ class RegistryManager:
                 continue
             if asset is RECIPE_ASSET and is_foreign_format(entry.format):
                 # A foreign-format registry resolves through its format's own
-                # enumerator, and through nothing when no plugin provides it:
-                # its files are not sparkrun recipes.
-                recipe_format = get_recipe_format(entry.format)
+                # enumerator, and through nothing when the format is unavailable
+                # (no plugin, or an untrusted registry): its files are not
+                # sparkrun recipes.
+                recipe_format, _why = entry_recipe_format(entry)
                 if recipe_format is not None:
                     matches.extend((entry.name, path) for path in find_in_format(recipe_format, base, name))
                 continue
@@ -1171,7 +1214,7 @@ class RegistryManager:
             if entry.name != registry_name:
                 continue
             base = self.asset_dir(entry, asset)
-            recipe_format = get_recipe_format(entry.format) if asset is RECIPE_ASSET else None
+            recipe_format = entry_recipe_format(entry)[0] if asset is RECIPE_ASSET else None
             if base and recipe_format is not None and path.is_relative_to(base):
                 return "@%s/%s" % (registry_name, recipe_format.name_of(path, base))
             if base and path.is_relative_to(base):
@@ -1196,7 +1239,7 @@ class RegistryManager:
         if not self._registries_path.exists():
             return []
         try:
-            data = read_yaml(self._registries_path)
+            data = _read_registries_document(self._registries_path)
         except Exception:
             return []
         if not isinstance(data, dict):
@@ -1283,7 +1326,7 @@ class RegistryManager:
         if not self._registries_path.exists():
             return sources
         try:
-            data = read_yaml(self._registries_path)
+            data = _read_registries_document(self._registries_path)
         except (OSError, ValueError, yaml.YAMLError):
             return sources
         if not isinstance(data, dict):
@@ -1423,7 +1466,7 @@ class RegistryManager:
         Raises:
             Exception: If the file cannot be read or parsed.
         """
-        data = read_yaml(self._registries_path)
+        data = _read_registries_document(self._registries_path)
         if not isinstance(data, dict):
             raise RegistryError("Registry configuration must be a mapping")
         registries = data.get("registries", [])
@@ -1472,7 +1515,7 @@ class RegistryManager:
         Returns 0 for a file that predates both.
         """
         try:
-            data = read_yaml(self._registries_path)
+            data = _read_registries_document(self._registries_path)
         except Exception:
             return CONFIG_VERSION  # unreadable: never "migrate" what we can't see
         if not isinstance(data, dict):
@@ -1759,6 +1802,7 @@ class RegistryManager:
             data[PENDING_BOOTSTRAP_KEY] = list(pending_bootstrap_urls)
         with open(self._registries_path, "w") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+        _remember_registries_document(self._registries_path, data)
         logger.debug("Saved registries to %s", self._registries_path)
 
     @staticmethod
@@ -2440,6 +2484,7 @@ class RegistryManager:
         """
         if self._registries_path.exists():
             self._registries_path.unlink()
+            _DOCUMENT_CACHE.pop(str(self._registries_path), None)
             logger.info("Removed existing registries.yaml")
 
         # Clear all cached clones so the subsequent update does fresh clones
@@ -2662,14 +2707,15 @@ class RegistryManager:
 
         return paths
 
-    def _list_dir_recipes(self, recipe_dir: Path, registry_name: str, recipe_format: str = DEFAULT_RECIPE_FORMAT) -> list[dict[str, Any]]:
+    def _list_dir_recipes(self, recipe_dir: Path, registry_name: str, entry: RegistryEntry | None = None) -> list[dict[str, Any]]:
         """List all recipes in a directory with metadata.
 
         Args:
             recipe_dir: Directory to scan for ``.yaml`` / ``.yml`` recipe files.
             registry_name: Name of the registry this directory belongs to.
-            recipe_format: The registry's ``format``. A foreign one lists
-                through its plugin (offline) and lists nothing without it.
+            entry: The registry. A foreign ``format`` lists through its plugin
+                (offline), and lists nothing when unavailable (see
+                :func:`~sparkrun.core.recipe_formats.entry_recipe_format`).
 
         Returns:
             List of recipe metadata dicts.
@@ -2679,10 +2725,11 @@ class RegistryManager:
 
         from sparkrun.core.recipe import recipe_summary, recipe_summary_from_data
 
+        recipe_format = entry.format if entry is not None else DEFAULT_RECIPE_FORMAT
         if is_foreign_format(recipe_format):
-            handler = get_recipe_format(recipe_format)
+            handler, why = entry_recipe_format(entry)
             if handler is None:
-                logger.debug("Registry %s uses recipe format %r, which no loaded plugin provides", registry_name, recipe_format)
+                logger.debug("Registry %s lists nothing: %s", registry_name, why)
                 return []
             recipes = []
             for f in handler.iter_files(recipe_dir):
@@ -2711,7 +2758,7 @@ class RegistryManager:
                 continue
             recipe_dir = self._recipe_dir(entry)
             if recipe_dir is not None:
-                recipes.extend(self._list_dir_recipes(recipe_dir, entry.name, entry.format))
+                recipes.extend(self._list_dir_recipes(recipe_dir, entry.name, entry))
         return recipes
 
     def search_recipes(
@@ -2738,7 +2785,7 @@ class RegistryManager:
             recipe_dir = self._recipe_dir(entry)
             if recipe_dir is None:
                 continue
-            for recipe in self._list_dir_recipes(recipe_dir, entry.name, entry.format):
+            for recipe in self._list_dir_recipes(recipe_dir, entry.name, entry):
                 if recipe_matches_query(recipe, query):
                     results.append(recipe)
 

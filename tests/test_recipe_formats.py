@@ -69,7 +69,8 @@ def toy_registry(tmp_path: Path):
     mgr = RegistryManager(config, cache)
     mgr._manifest_discovery_attempted = True
     native = RegistryEntry(name="native", url="https://example.invalid/native.git", subpath="recipes")
-    toy = RegistryEntry(name="toyreg", url="https://example.invalid/toy.git", subpath="catalog", format="toy")
+    # Trusted: a foreign format from a registry's own manifest is honored only then.
+    toy = RegistryEntry(name="toyreg", url="https://example.invalid/toy.git", subpath="catalog", format="toy", trusted=True)
     mgr._save_registries([native, toy])
 
     native_dir = cache / "native" / "recipes"
@@ -273,4 +274,39 @@ def test_registry_show_explains_an_inert_format(toy_registry, monkeypatch):
     mgr, _ = toy_registry
     monkeypatch.setattr("sparkrun.core.config.SparkrunConfig.get_registry_manager", lambda self: mgr)
     result = CliRunner().invoke(main, ["registry", "show", "toyreg"])
-    assert "Format:      toy (no loaded plugin provides it" in result.output, result.output
+    assert "Format:      toy (recipes unavailable: no loaded plugin provides its 'toy' recipe format" in result.output, result.output
+
+
+# --- trust gate --------------------------------------------------------------------------------------
+
+
+def _untrust(mgr):
+    entries = mgr._load_registries()
+    for entry in entries:
+        if entry.name == "toyreg":
+            entry.trusted = False
+    mgr._save_registries(entries)
+
+
+def test_an_untrusted_registry_cannot_choose_a_foreign_format(toy_registry, toy_format):
+    """Its manifest picks `format:`; without trust that must not select which plugin parses its files."""
+    mgr, toy_dir = toy_registry
+    _untrust(mgr)
+    assert [r["name"] for r in mgr.search_recipes("")] == ["@native/plain"]
+    with pytest.raises(RecipeError):
+        find_recipe("@toyreg/Alpha", registry_manager=mgr)
+    with pytest.raises(RecipeError, match="only honored for trusted registries"):
+        Recipe.load(toy_dir / "Alpha" / "toy.yaml", registry_manager=mgr)
+    with pytest.raises(RecipeError, match="only honored for trusted registries"):
+        Recipe.load(toy_dir / "Alpha" / "toy.yaml", registry_manager=mgr, recipe_format="toy")
+    assert CALLS == []  # the plugin never saw the files
+
+
+def test_a_plugin_declared_registry_needs_no_trust_for_its_format(toy_format):
+    from sparkrun.core.recipe_formats import entry_recipe_format
+
+    declared = RegistryEntry(name="p", url="https://example.invalid/p.git", subpath="/", format="toy", declared_by="lil")
+    assert entry_recipe_format(declared) == (TOY, None)
+    manifest_sourced = RegistryEntry(name="m", url="https://example.invalid/m.git", subpath="/", format="toy")
+    handler, why = entry_recipe_format(manifest_sourced)
+    assert handler is None and "sparkrun registry trust m" in why

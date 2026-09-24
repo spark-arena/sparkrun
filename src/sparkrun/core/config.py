@@ -742,7 +742,9 @@ class SparkrunConfig:
         callers that don't have a ``sctx`` (scripts, tests, internal
         helpers) can reach the same instance via this factory.  The
         instance is constructed lazily on first call and reused on
-        subsequent calls — mirroring :meth:`get_registry_manager`.
+        subsequent calls. (:meth:`get_registry_manager`, by contrast, builds a
+        new manager per call; the registries file it reads is cached at module
+        level instead, see ``core/registry.py:_read_registries_document``.)
         """
         if self._proxy_config is None:
             from sparkrun.proxy.config import ProxyConfig

@@ -335,10 +335,10 @@ def registry_show(ctx, name, config_path=None):
     click.echo("URL:         %s" % entry.url)
     click.echo("Subpath:     %s" % entry.subpath)
     if entry.format != "sparkrun":
-        from sparkrun.core.recipe_formats import get_recipe_format
+        from sparkrun.core.recipe_formats import entry_recipe_format
 
-        provided = "" if get_recipe_format(entry.format) is not None else " (no loaded plugin provides it; recipes unavailable)"
-        click.echo("Format:      %s%s" % (entry.format, provided))
+        _handler, why = entry_recipe_format(entry)
+        click.echo("Format:      %s%s" % (entry.format, " (recipes unavailable: %s)" % why if why else ""))
     if entry.description:
         click.echo("Description: %s" % entry.description)
     click.echo("Enabled:     %s" % ("yes" if entry.enabled else "no"))
@@ -562,7 +562,7 @@ def export_metadata(ctx, output, include_hidden):
     from vpd.next.util import read_yaml
     from sparkrun.core.recipe import Recipe
     from sparkrun.core.registry import RECIPE_ASSET, iter_asset_files
-    from sparkrun.core.recipe_formats import get_recipe_format, is_foreign_format
+    from sparkrun.core.recipe_formats import entry_recipe_format, is_foreign_format
     from sparkrun.core.parallelism import extract_parallelism_meta
     from sparkrun.models.download import parse_gguf_model_spec
 
@@ -589,7 +589,7 @@ def export_metadata(ctx, output, include_hidden):
         if is_foreign_format(entry.format):
             # Enumerate through the registry's format (drafts and fragments
             # excluded); nothing at all when no plugin provides it.
-            handler = get_recipe_format(entry.format)
+            handler, _why = entry_recipe_format(entry)
             recipe_files = handler.iter_files(recipe_dir) if handler is not None else []
         else:
             recipe_files = iter_asset_files(recipe_dir, RECIPE_ASSET)

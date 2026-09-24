@@ -2303,6 +2303,15 @@ consequences: sparse checkout is **disabled** for such a registry (`_apply_spars
 "everything" pattern, and recursive scans skip dot-directories (`_in_hidden_dir`), or a root-level registry would
 list its own `.sparkrun/registry.yaml` as a recipe.
 
+**`registries.yaml` is parsed once per version of the file** (`_read_registries_document`, a module-level cache keyed
+by path and `(mtime_ns, ctime_ns, size, inode)`, validated with one `stat` per use). Every lookup reads through
+`_load_registries`, which parsed the file four times per call. It is *not* read once at construction, because the
+file is shared mutable state and long-lived processes (sidecar, proxy daemon) must see another terminal's `registry
+add`. Module-level because `SparkrunConfig.get_registry_manager()` builds a fresh manager per call. `_save_registries`
+records what it wrote (so a coarse-mtime filesystem cannot serve a stale copy after our own write), callers get deep
+copies (entries are mutated in place), and `reset_to_defaults` drops the entry. A test that injects registry content
+must write the file, not patch `read_yaml`.
+
 **Manifest format** (`.sparkrun/registry.yaml` in a git repo): supports both canonical keys (`subpath`,
 `tuning_subpath`, `benchmark_subpath`) and short keys (`recipes`, `tuning`, `benchmarks`). Canonical keys take
 precedence when both are present.
@@ -2366,6 +2375,12 @@ Three rules, each silently wrong if broken:
   native registry's file, never a URL-fetched or imported recipe
   (`allow_local_includes=False`). The format's `load()` receives the same
   `allow_local` flag, so it can refuse to read neighbouring files.
+- **A foreign format needs trust** (`entry_recipe_format`). A registry's own
+  manifest chooses its `format:`, so an untrusted third-party repo could
+  otherwise pick which installed plugin parses its files. It is honored only for
+  a **trusted** registry or a **plugin-declared** one (whose format came from
+  local code). Otherwise the registry is inert, the same as an unregistered
+  format, and `registry show` says why.
 - **Listing is offline.** `_list_dir_recipes` calls `load(offline=True)`. A
   format needing remote facts (checkpoint config) must degrade locally, the same
   budget rule as the Hub metadata work.

@@ -916,7 +916,7 @@ def _registry_recipe_summaries(registry_mgr, entry) -> list[dict]:
         return []
     seen: set[str] = set()
     unique = []
-    for summary in registry_mgr._list_dir_recipes(recipe_dir, entry.name, entry.format):
+    for summary in registry_mgr._list_dir_recipes(recipe_dir, entry.name, entry):
         if summary["file"] not in seen:  # one completion per typeable name
             seen.add(summary["file"])
             unique.append(summary)

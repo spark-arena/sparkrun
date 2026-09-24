@@ -780,11 +780,18 @@ def _load_foreign_format(
     if known_format is not None and not is_foreign_format(known_format):
         return None
     ownership = format_for_path(path, registry_manager)
-    if known_format is not None:
-        recipe_format, format_name = get_recipe_format(known_format), known_format
-        root = ownership.root if ownership.kind == "foreign" else None
-    elif ownership.kind == "foreign":
-        recipe_format, format_name, root = ownership.recipe_format, ownership.format_name, ownership.root
+    unavailable = None
+    if ownership.kind == "foreign":
+        # The owning registry decides, trust gate included, even when the caller
+        # also named the format.
+        recipe_format, format_name, root, unavailable = (
+            ownership.recipe_format,
+            ownership.format_name,
+            ownership.root,
+            ownership.unavailable,
+        )
+    elif known_format is not None:
+        recipe_format, format_name, root = get_recipe_format(known_format), known_format, None
     elif ownership.kind == "native":
         return None
     else:
@@ -794,7 +801,10 @@ def _load_foreign_format(
         recipe_format = claiming_format(path, data) if allow_local else None
         format_name, root = (recipe_format.name if recipe_format else None), None
     if format_name is not None and recipe_format is None:
-        raise RecipeError("%s belongs to a registry in the %r recipe format, which no loaded plugin provides" % (path, format_name))
+        raise RecipeError(
+            "%s belongs to a registry in the %r recipe format, which is unavailable: %s"
+            % (path, format_name, unavailable or "no loaded plugin provides it")
+        )
     if recipe_format is None:
         return None
     try:
