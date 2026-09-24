@@ -33,6 +33,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -371,3 +372,59 @@ class TestParityWithIsModelCached:
 
         assert "already cached" in proc.stdout
         assert is_model_cached(_MODEL, cache_dir=str(tmp_path)) is False
+
+
+# ---------------------------------------------------------------------------
+# Shared blob store: a snapshot entry is a symlink — does it RESOLVE? (#299)
+# ---------------------------------------------------------------------------
+
+
+@needs_bash
+@pytest.mark.parametrize("shared", [False, True], ids=["classic", "shared"])
+@pytest.mark.parametrize(
+    "model_id,filename",
+    [(_MODEL, "model.safetensors"), ("org/model-GGUF:Q4_K_M", "model-Q4_K_M.gguf")],
+    ids=["standard", "gguf"],
+)
+class TestSharedBlobSkeleton:
+    """Presence probes follow both classic and shared-blob links (#299)."""
+
+    def _cache(self, tmp_path, model_id, filename, shared, *, resolves: bool):
+        model_cache = Path(model_cache_path(model_id, str(tmp_path)))
+        snapshot = model_cache / "snapshots" / "sha1"
+        snapshot.mkdir(parents=True)
+        refs = model_cache / "refs"
+        refs.mkdir()
+        (refs / "main").write_text("sha1\n")
+        blobs = model_cache / "blobs"
+        blobs.mkdir()
+        payload = blobs / "blobsha"
+        if shared:
+            payload = tmp_path / "hub/blobs/ab/blobsha"
+            payload.parent.mkdir(parents=True)
+            (blobs / "blobsha").symlink_to("../../blobs/ab/blobsha")
+        if resolves:
+            payload.write_text("weights")
+        (snapshot / filename).symlink_to("../../blobs/blobsha")
+
+    def test_dangling_skeleton_is_a_miss_in_both_implementations(self, tmp_path, model_id, filename, shared):
+        from sparkrun.models.download import is_model_cached
+
+        self._cache(tmp_path, model_id, filename, shared, resolves=False)
+        proc = _run(_render(model_id, cache=str(tmp_path)), _stub_bin(tmp_path))
+
+        assert proc.returncode == 0, proc.stderr
+        assert "already cached" not in proc.stdout
+        assert "STUB-DOWNLOAD" in proc.stdout
+        assert is_model_cached(model_id, cache_dir=str(tmp_path)) is False
+
+    def test_resolving_symlink_is_a_hit_in_both_implementations(self, tmp_path, model_id, filename, shared):
+        from sparkrun.models.download import is_model_cached
+
+        self._cache(tmp_path, model_id, filename, shared, resolves=True)
+        proc = _run(_render(model_id, cache=str(tmp_path)), _stub_bin(tmp_path))
+
+        assert proc.returncode == 0, proc.stderr
+        assert "already cached" in proc.stdout
+        assert "STUB-DOWNLOAD" not in proc.stdout
+        assert is_model_cached(model_id, cache_dir=str(tmp_path)) is True

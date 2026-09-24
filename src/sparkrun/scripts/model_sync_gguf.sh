@@ -21,7 +21,9 @@ SNAPSHOT_DIRS=$(sparkrun_hf_snapshot_dirs "$CACHE_PATH" "$MODEL_REVISION")
 GGUF_MATCH=""
 while IFS= read -r SNAPSHOT_DIR; do
     [ -n "$SNAPSHOT_DIR" ] || continue
-    GGUF_MATCH=$(find "$SNAPSHOT_DIR" -name "*$GGUF_QUANT*.gguf" -print -quit 2>/dev/null)
+    # -L plus -type f so a dangling symlink is not taken for a cached file;
+    # -type f alone would reject the symlinks a real HF cache uses (#299).
+    GGUF_MATCH=$(find -L "$SNAPSHOT_DIR" -name "*$GGUF_QUANT*.gguf" -type f -print -quit 2>/dev/null)
     if [ -n "$GGUF_MATCH" ]; then
         break
     fi

@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 
 from sparkrun.models.download import (
     CONTAINER_HF_CACHE,
@@ -126,6 +128,26 @@ class TestResolveGgufPath:
         result = resolve_gguf_path("Qwen/Qwen3-1.7B-GGUF:q4_k_m", str(tmp_path))
         assert result == str(gguf)
 
+    @pytest.mark.parametrize("invalid_kind", ["dangling", "directory", "projector"])
+    def test_invalid_exact_match_does_not_hide_case_insensitive_weights(self, tmp_path, invalid_kind):
+        valid = self._create_cached_gguf(tmp_path, "org/model-GGUF", "model-q4_k_m.gguf")
+        if invalid_kind == "projector":
+            (valid.parent / "mmproj-Q4_K_M.gguf").write_text("projector")
+        elif invalid_kind == "directory":
+            (valid.parent / "model-Q4_K_M.gguf").mkdir()
+        else:
+            (valid.parent / "model-Q4_K_M.gguf").symlink_to("../../blobs/missing")
+
+        assert resolve_gguf_path("org/model-GGUF:Q4_K_M", str(tmp_path)) == str(valid)
+
+    @pytest.mark.parametrize("quant", ["Q4_K_M", "q4_k_m"])
+    def test_dangling_weights_are_not_resolved(self, tmp_path, quant):
+        snapshot = tmp_path / "hub/models--org--model-GGUF/snapshots/rev"
+        snapshot.mkdir(parents=True)
+        (snapshot / "model-Q4_K_M.gguf").symlink_to("../../blobs/missing")
+
+        assert resolve_gguf_path("org/model-GGUF:" + quant, str(tmp_path)) is None
+
 
 # ---------------------------------------------------------------------------
 # resolve_mmproj_path / resolve_mmproj_container_path (vision GGUF, issue #204)
@@ -196,6 +218,33 @@ class TestResolveMmprojPath:
         for sentinel in ("auto", "true", None):
             result = resolve_mmproj_path("org/Vision-GGUF:Q4_K_M", str(tmp_path), selector=sentinel)
             assert result == str(snap / "mmproj-F16.gguf")
+
+    @pytest.mark.parametrize("selector", [None, "auto", "F16", "mmproj-F16.gguf", "F32"])
+    def test_dangling_preferred_projector_does_not_hide_valid_precision(self, tmp_path, selector):
+        snapshot = self._make_files(tmp_path, "org/Vision-GGUF", ["mmproj-F32.gguf"])
+        (snapshot / "mmproj-F16.gguf").symlink_to("../../blobs/missing")
+
+        assert resolve_mmproj_path("org/Vision-GGUF:Q4_K_M", str(tmp_path), selector=selector) == str(snapshot / "mmproj-F32.gguf")
+
+    def test_only_dangling_projector_returns_none(self, tmp_path):
+        snapshot = self._make_files(tmp_path, "org/Vision-GGUF", [])
+        (snapshot / "mmproj-F16.gguf").symlink_to("../../blobs/missing")
+
+        assert resolve_mmproj_path("org/Vision-GGUF:Q4_K_M", str(tmp_path)) is None
+        assert resolve_mmproj_container_path("org/Vision-GGUF:Q4_K_M", str(tmp_path)) is None
+
+    def test_shared_blob_projector_is_resolved(self, tmp_path):
+        snapshot = self._make_files(tmp_path, "org/Vision-GGUF", [])
+        shared = tmp_path / "hub/blobs/ab/projector"
+        shared.parent.mkdir(parents=True)
+        shared.write_text("projector")
+        blobs = snapshot.parent.parent / "blobs"
+        blobs.mkdir()
+        (blobs / "projector").symlink_to("../../blobs/ab/projector")
+        projector = snapshot / "mmproj-F16.gguf"
+        projector.symlink_to("../../blobs/projector")
+
+        assert resolve_mmproj_path("org/Vision-GGUF:Q4_K_M", str(tmp_path)) == str(projector)
 
     def test_container_path_translation(self, tmp_path):
         self._make_files(

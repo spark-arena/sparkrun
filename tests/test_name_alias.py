@@ -57,12 +57,18 @@ def test_run_with_name_override(monkeypatch):
     monkeypatch.setattr("sparkrun.core.bootstrap.get_runtime", lambda *args, **kwargs: mock_runtime)
     # Solo planning uses the scheduler; provide idle status for the fake host.
     from sparkrun.core.cluster_status import empty_status
+    from sparkrun.core.hardware import default_dgx_spark_hardware
 
+    # Planning now probes before placement. This CLI test needs one fake GPU,
+    # independent of whether the runner actually has accelerator hardware.
+    hardware = default_dgx_spark_hardware()
+    hardware.source = "detected"
+    monkeypatch.setattr("sparkrun.core.hardware_probe.probe_hosts", lambda hosts, **kwargs: {host: hardware for host in hosts})
     monkeypatch.setattr("sparkrun.api.status", lambda hosts, **kwargs: empty_status(hosts))
     monkeypatch.setattr("sparkrun.cli._run._display_vram_estimate", lambda *args, **kwargs: None)
 
     result = runner.invoke(main, ["run", "test-recipe", "--container-name", "custom-cluster-id", "--solo", "--no-ready-wait"])
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.output
     args, kwargs = mock_launch.call_args
     assert kwargs.get("cluster_id_override") == "custom-cluster-id"

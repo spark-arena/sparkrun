@@ -28,7 +28,12 @@ FOUND_WEIGHTS=false
 while IFS= read -r SNAPSHOT_DIR; do
     [ -n "$SNAPSHOT_DIR" ] || continue
     for pattern in "*.safetensors" "*.bin" "*.pt" "*.gguf"; do
-        if find "$SNAPSHOT_DIR" -name "$pattern" -print -quit 2>/dev/null | grep -q .; then
+        # -L so -type f follows the link: true for a link to a real blob,
+        # false for a dangling one.  The HF cache stores snapshot entries AS
+        # symlinks, so a bare -type f without -L would match nothing and every
+        # host would re-download.  Without the pair, a worker holding only
+        # dangling links reported a cache hit on every launch -- see #299.
+        if find -L "$SNAPSHOT_DIR" -name "$pattern" -type f -print -quit 2>/dev/null | grep -q .; then
             FOUND_WEIGHTS=true
             break
         fi
