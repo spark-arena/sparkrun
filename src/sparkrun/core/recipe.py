@@ -759,6 +759,50 @@ def resolve_builder(data: dict[str, Any]) -> str:
     return "eugr" if _has_eugr_signal(build_args, data.get("container")) else ""
 
 
+def _load_foreign_format(
+    path: Path, data: dict[str, Any], registry_manager: RegistryManager | None, known_format: str | None = None
+) -> tuple[dict[str, Any], str] | None:
+    """``(v2 data, recipe name)`` when *path* is a foreign-format manifest, else ``None``.
+
+    The format comes from the registry that owns the path, or, for a direct
+    path outside any registry, from a format that claims the file by content.
+    A registry whose format no plugin provides is refused rather than parsed
+    as sparkrun YAML. Its files are not recipes, and misreading them would
+    launch something nobody wrote.
+    """
+    from sparkrun.core.recipe_formats import claiming_format, format_for_path, get_recipe_format, is_foreign_format
+
+    if known_format is not None:
+        if not is_foreign_format(known_format):
+            return None
+        recipe_format, format_name = get_recipe_format(known_format), known_format
+        root = None
+        if recipe_format is not None and registry_manager is not None:
+            root = format_for_path(path, registry_manager)[1]
+    else:
+        recipe_format, root, format_name = format_for_path(path, registry_manager)
+    if format_name is not None and recipe_format is None:
+        raise RecipeError("%s belongs to a registry in the %r recipe format, which no loaded plugin provides" % (path, format_name))
+    if recipe_format is None:
+        # Outside any registry: the format names it with root=None.
+        recipe_format = claiming_format(path, data)
+    if recipe_format is None:
+        return None
+    try:
+        translated = recipe_format.load(path, registry_manager=registry_manager, offline=False)
+    except RecipeError:
+        raise
+    except Exception as error:
+        raise RecipeError("Could not translate %s manifest %s: %s" % (recipe_format.name, path, error)) from error
+    if not isinstance(translated, dict):
+        raise RecipeError(
+            "Recipe format %s returned %s for %s, not a recipe mapping" % (recipe_format.name, type(translated).__name__, path)
+        )
+    if "include" in translated:
+        raise RecipeError("Recipe format %s returned a recipe using include:, which formats must resolve themselves" % recipe_format.name)
+    return translated, recipe_format.name_of(path, root)
+
+
 def is_recipe_file(path: Path) -> bool:
     """Check if a YAML file is a valid sparkrun recipe.
 
@@ -1622,6 +1666,7 @@ class Recipe:
         *,
         registry_manager: RegistryManager | None = None,
         allow_local_includes: bool = True,
+        recipe_format: str | None = None,
     ) -> Recipe:
         """Load a recipe from a YAML file path.
 
@@ -1635,6 +1680,9 @@ class Recipe:
             allow_local_includes: ``False`` for sources without a trustworthy
                 directory (URL-fetched, catalog-imported), where a sibling
                 include would read whatever else is cached next to them.
+            recipe_format: The owning registry's ``format`` when the caller
+                already knows it. Otherwise it is looked up through
+                *registry_manager*, or claimed by content for a direct path.
         """
         from sparkrun.core.recipe_include import resolve_recipe_includes
 
@@ -1644,6 +1692,14 @@ class Recipe:
         data = read_yaml(str(path))
         if not isinstance(data, dict):
             raise RecipeError("Recipe file must contain a YAML mapping: %s" % path)
+        foreign = _load_foreign_format(path, data, registry_manager, recipe_format)
+        if foreign is not None:
+            data, foreign_name = foreign
+            recipe = cls(data, source_path=str(path))
+            recipe.name = foreign_name
+            if resolve:
+                recipe.resolve()
+            return recipe
         declared = deepcopy(data) if "include" in data else None
         data, chain = resolve_recipe_includes(data, path, registry_manager=registry_manager, allow_local=allow_local_includes)
         recipe = cls(data, source_path=str(path))
@@ -2559,7 +2615,17 @@ def recipe_summary(path: Path, registry_name: str | None = None) -> dict[str, An
         from sparkrun.core.recipe_include import listing_view
 
         data = listing_view(data, path)
-    stem = path.stem
+    return recipe_summary_from_data(data, path, name=path.stem, registry_name=registry_name)
+
+
+def recipe_summary_from_data(data: dict[str, Any], path: Path, *, name: str, registry_name: str | None = None) -> dict[str, Any] | None:
+    """The summary :func:`recipe_summary` builds, from already-parsed recipe data.
+
+    Shared with foreign recipe formats (:mod:`sparkrun.core.recipe_formats`),
+    whose manifests translate to recipe data before they can be summarized, so
+    a foreign recipe is listed in the same shape as a native one.
+    """
+    stem = name
     defaults = data.get("defaults", {})
     qualified = ("@%s/%s" % (registry_name, stem)) if registry_name else stem
     try:
@@ -2633,6 +2699,14 @@ def list_recipes(
                 entry = recipe_summary(f, registry_name=registry_name)
                 if entry is not None:
                     recipes.append(entry)
+
+    # Foreign-format registries are not in get_recipe_paths (their files are
+    # not sparkrun YAML); list them through their format.
+    if registry_manager:
+        for entry in registry_manager.list_foreign_format_recipes(include_hidden=include_hidden):
+            if entry["file"] not in seen_names:
+                seen_names.add(entry["file"])
+                recipes.append(entry)
 
     return recipes
 

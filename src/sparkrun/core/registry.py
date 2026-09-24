@@ -22,6 +22,8 @@ import yaml
 
 from vpd.next.util import read_yaml
 
+from sparkrun.core.recipe_formats import DEFAULT_RECIPE_FORMAT, find_in_format, get_recipe_format, is_foreign_format
+
 from sparkrun.utils.shell import validate_git_url
 from sparkrun.core.application_profile import get_application_profile, thaw
 
@@ -146,6 +148,10 @@ class RegistryEntry:
             confirmation prompt.  Defaults to False so user-added third-party
             registries are untrusted until explicitly opted-in via
             ``sparkrun registry trust <name>`` or ``registry add --trust``.
+        format: Manifest format of the registry's recipes. ``"sparkrun"`` (the
+            default) is sparkrun's own YAML; anything else is served by a
+            :class:`~sparkrun.core.recipe_formats.RecipeFormat` a plugin
+            registers, and is inert (lists and resolves nothing) without it.
         declared_by: Name of the plugin that declared this registry, or ``""``
             for an ordinary user-owned entry read from ``registries.yaml``.
             **Runtime-only and never serialized** — see
@@ -167,6 +173,7 @@ class RegistryEntry:
     benchmark_subpath: str = ""
     mods_subpath: str = ""
     trusted: bool = False
+    format: str = "sparkrun"
     declared_by: str = ""
 
 
@@ -712,6 +719,7 @@ _MAX_REGISTRY_NAME_LEN = 100
 #: for the same reason — each segment becomes a real directory component.
 #: Excluding ``:`` is load-bearing on Windows, where ``C:/x`` is *absolute*.
 _SAFE_SUBPATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_SAFE_FORMAT_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 
 
 def assert_safe_registry_name(name: str) -> None:
@@ -810,6 +818,10 @@ def assert_safe_registry_entry(entry: RegistryEntry) -> None:
     assert_safe_registry_name(entry.name)
     for field in SUBPATH_FIELDS:
         assert_safe_registry_subpath(getattr(entry, field), field=field)
+    # The format selects which code parses the registry's files; it comes from
+    # remote manifests too, so it is held to an identifier charset.
+    if not _SAFE_FORMAT_RE.match(entry.format or ""):
+        raise RegistryError("Registry format %r must be a short lowercase identifier (e.g. 'sparkrun')" % entry.format)
 
 
 def validate_registry_name(name: str, url: str) -> None:
@@ -1095,6 +1107,14 @@ class RegistryManager:
             base = self.asset_dir(entry, asset)
             if base is None:
                 continue
+            if asset is RECIPE_ASSET and is_foreign_format(entry.format):
+                # A foreign-format registry resolves through its format's own
+                # enumerator, and through nothing when no plugin provides it:
+                # its files are not sparkrun recipes.
+                recipe_format = get_recipe_format(entry.format)
+                if recipe_format is not None:
+                    matches.extend((entry.name, path) for path in find_in_format(recipe_format, base, name))
+                continue
             matches.extend((entry.name, path) for path in _scan_asset_dir(base, name, asset, accept))
         return matches
 
@@ -1123,6 +1143,9 @@ class RegistryManager:
             if entry.name != registry_name:
                 continue
             base = self.asset_dir(entry, asset)
+            recipe_format = get_recipe_format(entry.format) if asset is RECIPE_ASSET else None
+            if base and recipe_format is not None and path.is_relative_to(base):
+                return "@%s/%s" % (registry_name, recipe_format.name_of(path, base))
             if base and path.is_relative_to(base):
                 return "@%s/%s" % (registry_name, path.relative_to(base).with_suffix("").as_posix())
             break
@@ -1389,6 +1412,7 @@ class RegistryManager:
                 benchmark_subpath=r.get("benchmark_subpath", ""),
                 mods_subpath=r.get("mods_subpath", ""),
                 trusted=r.get("trusted", False),
+                format=str(r.get("format") or DEFAULT_RECIPE_FORMAT),
             )
             try:
                 assert_safe_registry_entry(entry)
@@ -1683,6 +1707,8 @@ class RegistryManager:
                 d["benchmark_subpath"] = e.benchmark_subpath
             if e.mods_subpath:
                 d["mods_subpath"] = e.mods_subpath
+            if e.format and e.format != DEFAULT_RECIPE_FORMAT:
+                d["format"] = e.format
             # ``trusted`` is written in BOTH directions, unlike the other flags.
             # The convention here is "omit the field default" — ``enabled`` /
             # ``visible`` default True so only False is written, and ``trusted``
@@ -2171,6 +2197,7 @@ class RegistryManager:
                     tuning_subpath=reg_data.get("tuning_subpath", reg_data.get("tuning", "")),
                     benchmark_subpath=reg_data.get("benchmark_subpath", reg_data.get("benchmarks", "")),
                     mods_subpath=reg_data.get("mods_subpath", reg_data.get("mods", "")),
+                    format=str(reg_data.get("format") or DEFAULT_RECIPE_FORMAT),
                 )
                 try:
                     assert_safe_registry_entry(entry)
@@ -2614,6 +2641,10 @@ class RegistryManager:
         """
         paths = []
         for entry in self._iter_registries(include_hidden=include_hidden):
+            if is_foreign_format(entry.format):
+                # Callers scan these as sparkrun YAML. A foreign-format
+                # registry is listed through search_recipes instead.
+                continue
             recipe_dir = self._recipe_dir(entry)
             if recipe_dir:
                 paths.append(recipe_dir)
@@ -2622,12 +2653,14 @@ class RegistryManager:
 
         return paths
 
-    def _list_dir_recipes(self, recipe_dir: Path, registry_name: str) -> list[dict[str, Any]]:
+    def _list_dir_recipes(self, recipe_dir: Path, registry_name: str, recipe_format: str = DEFAULT_RECIPE_FORMAT) -> list[dict[str, Any]]:
         """List all recipes in a directory with metadata.
 
         Args:
             recipe_dir: Directory to scan for ``.yaml`` / ``.yml`` recipe files.
             registry_name: Name of the registry this directory belongs to.
+            recipe_format: The registry's ``format``. A foreign one lists
+                through its plugin (offline) and lists nothing without it.
 
         Returns:
             List of recipe metadata dicts.
@@ -2635,13 +2668,41 @@ class RegistryManager:
         if not recipe_dir.is_dir():
             return []
 
-        from sparkrun.core.recipe import recipe_summary
+        from sparkrun.core.recipe import recipe_summary, recipe_summary_from_data
+
+        if is_foreign_format(recipe_format):
+            handler = get_recipe_format(recipe_format)
+            if handler is None:
+                logger.debug("Registry %s uses recipe format %r, which no loaded plugin provides", registry_name, recipe_format)
+                return []
+            recipes = []
+            for f in handler.iter_files(recipe_dir):
+                try:
+                    data = handler.load(f, registry_manager=self, offline=True)
+                except Exception as error:
+                    logger.debug("Skipping %s manifest %s: %s", recipe_format, f, error)
+                    continue
+                entry = recipe_summary_from_data(data, f, name=handler.name_of(f, recipe_dir), registry_name=registry_name)
+                if entry is not None:
+                    recipes.append(entry)
+            return recipes
 
         recipes = []
         for f in iter_asset_files(recipe_dir, RECIPE_ASSET):
             entry = recipe_summary(f, registry_name=registry_name)
             if entry is not None:
                 recipes.append(entry)
+        return recipes
+
+    def list_foreign_format_recipes(self, include_hidden: bool = False) -> list[dict[str, Any]]:
+        """Summaries from every foreign-format registry (the ones :meth:`get_recipe_paths` leaves out)."""
+        recipes: list[dict[str, Any]] = []
+        for entry in self._iter_registries(include_hidden=include_hidden):
+            if not is_foreign_format(entry.format):
+                continue
+            recipe_dir = self._recipe_dir(entry)
+            if recipe_dir is not None:
+                recipes.extend(self._list_dir_recipes(recipe_dir, entry.name, entry.format))
         return recipes
 
     def search_recipes(
@@ -2668,7 +2729,7 @@ class RegistryManager:
             recipe_dir = self._recipe_dir(entry)
             if recipe_dir is None:
                 continue
-            for recipe in self._list_dir_recipes(recipe_dir, entry.name):
+            for recipe in self._list_dir_recipes(recipe_dir, entry.name, entry.format):
                 if recipe_matches_query(recipe, query):
                     results.append(recipe)
 

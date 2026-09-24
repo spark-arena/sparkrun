@@ -2326,6 +2326,37 @@ user has. `SUBPATH_FIELDS` is the list any new path-forming field must join, or 
 lists registries, `@registry/` lists recipes from that registry. Falls back to showing registry names when recipe cache
 isn't populated.
 
+### Foreign Recipe Formats (`core/recipe_formats.py`)
+
+A registry entry carries a `format` (default `"sparkrun"`, written to
+`registries.yaml` only when non-default, accepted from manifests, and held to an
+identifier charset by `assert_safe_registry_entry`). A plugin that understands
+another launcher's manifests registers a `RecipeFormat`: `iter_files(root)`,
+`name_of(path, root)`, `load(path, *, registry_manager, offline) -> v2 dict`, and
+an optional `claims(path, data)` for direct paths. What comes out is an ordinary
+recipe, so nothing downstream knows the format existed. In-process like
+`register_kv_strategy`, and enlisted with `enlist_registry_state` so a failed plugin
+load rolls it back. A second owner raises `PluginConflictError`.
+
+Three rules, each silently wrong if broken:
+
+- **Lookup is built from listing's enumerator** (`find_in_format` = `iter_files`
+  + `name_of`). Everything that enumerates recipes dispatches on the format:
+  `find_asset_in_registries`, `_list_dir_recipes`, `qualified_asset_name`,
+  `list_recipes` (via `list_foreign_format_recipes`) and the metadata exporter.
+  `get_recipe_paths()` **excludes** foreign registries, because its callers scan
+  what it returns as sparkrun YAML.
+- **An unregistered format is inert, never misread.** Without its plugin a
+  foreign registry lists and resolves nothing, and `Recipe.load` of one of its
+  files **raises**. A lil manifest has a top-level `model:`, so reading it as v2
+  would build a launchable recipe nobody wrote. `Recipe.load` finds the format
+  through the owning registry (`format_for_path`), or from `recipe_format=` when
+  the caller already holds the entry (`api/_catalog.py`). Only a path outside
+  every registry falls back to `claims()`.
+- **Listing is offline.** `_list_dir_recipes` calls `load(offline=True)`. A
+  format needing remote facts (checkpoint config) must degrade locally, the same
+  budget rule as the Hub metadata work.
+
 ### Plugin-Declared Registries (`core/registry_defaults.py`)
 
 `BOOTSTRAP_REGISTRY_URLS` / `FALLBACK_DEFAULT_REGISTRIES` are closed constants. `register_default_registry(entry,

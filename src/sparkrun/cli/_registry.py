@@ -554,6 +554,7 @@ def export_metadata(ctx, output, include_hidden):
     from vpd.next.util import read_yaml
     from sparkrun.core.recipe import Recipe
     from sparkrun.core.registry import RECIPE_ASSET, iter_asset_files
+    from sparkrun.core.recipe_formats import get_recipe_format, is_foreign_format
     from sparkrun.core.parallelism import extract_parallelism_meta
     from sparkrun.models.download import parse_gguf_model_spec
 
@@ -577,7 +578,13 @@ def export_metadata(ctx, output, include_hidden):
             continue
 
         recipe_count = 0
-        recipe_files = iter_asset_files(recipe_dir, RECIPE_ASSET)
+        if is_foreign_format(entry.format):
+            # Enumerate through the registry's format (drafts and fragments
+            # excluded); nothing at all when no plugin provides it.
+            handler = get_recipe_format(entry.format)
+            recipe_files = handler.iter_files(recipe_dir) if handler is not None else []
+        else:
+            recipe_files = iter_asset_files(recipe_dir, RECIPE_ASSET)
         for f in sorted(recipe_files, key=lambda p, root=recipe_dir: (len(p.relative_to(root).parts), p.name)):
             try:
                 data = read_yaml(str(f))
