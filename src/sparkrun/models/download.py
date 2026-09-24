@@ -123,21 +123,16 @@ def resolve_gguf_path(
     else:
         pattern = "**/*.gguf"
 
-    matched = sorted(model_cache.glob(pattern))
+    # Filter before deciding whether to fall back: a dangling exact-case match
+    # or a projector must not hide usable weights with a different quant case.
+    matched = sorted(f for f in model_cache.glob(pattern) if f.is_file() and "mmproj" not in f.name.lower())
     if not matched:
         # Retry case-insensitive: glob is case-sensitive on Linux,
         # so fall back to a manual filter when the quant case differs.
         if quant:
             all_gguf = sorted(model_cache.glob("**/*.gguf"))
             q_lower = quant.lower()
-            matched = [f for f in all_gguf if q_lower in f.name.lower()]
-
-    # Never resolve the multimodal projector as the main weights file.  A
-    # projector named e.g. ``mmproj-F16.gguf`` can match a quant pattern like
-    # ``*F16*``; exclude it so the main model resolution stays correct.
-    # ``is_file()`` also drops dangling symlinks, so a .gguf whose blob never
-    # arrived is never resolved as a usable local path (#299).
-    matched = [f for f in matched if "mmproj" not in f.name.lower() and f.is_file()]
+            matched = [f for f in all_gguf if q_lower in f.name.lower() and "mmproj" not in f.name.lower() and f.is_file()]
 
     if not matched:
         return None
@@ -187,7 +182,9 @@ def resolve_mmproj_path(
     if not model_cache.exists():
         return None
 
-    candidates = sorted(model_cache.glob("**/*mmproj*.gguf"))
+    # Validate before applying selector/precision preferences so a dangling
+    # preferred projector cannot hide another available precision (#299).
+    candidates = sorted(f for f in model_cache.glob("**/*mmproj*.gguf") if f.is_file())
     if not candidates:
         return None
 
@@ -380,12 +377,10 @@ def is_model_cached(
 
     for snapshot_dir in snapshot_dirs:
         for pattern in weight_patterns:
-            # ``is_file()`` follows the link, so an entry whose blob never
-            # arrived is a MISS.  A bare glob matches the NAME alone, which
-            # reported a skeleton of dangling symlinks as fully cached and
-            # skipped both the download and the redistribution -- forever,
-            # since nothing ever repaired the skeleton (#299).
-            if any(p for p in snapshot_dir.glob(pattern) if p.is_file()):
+            # Follow symlinks so missing blobs cannot produce a cache hit
+            # (#299). This is a presence heuristic, not a completeness or
+            # read-permission check for every file the model requires.
+            if any(p.is_file() for p in snapshot_dir.glob(pattern)):
                 return True
     return False
 

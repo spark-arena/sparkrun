@@ -33,6 +33,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -379,57 +380,51 @@ class TestParityWithIsModelCached:
 
 
 @needs_bash
+@pytest.mark.parametrize("shared", [False, True], ids=["classic", "shared"])
+@pytest.mark.parametrize(
+    "model_id,filename",
+    [(_MODEL, "model.safetensors"), ("org/model-GGUF:Q4_K_M", "model-Q4_K_M.gguf")],
+    ids=["standard", "gguf"],
+)
 class TestSharedBlobSkeleton:
-    """Presence of a *name* is not presence of the weights.
+    """Presence probes follow both classic and shared-blob links (#299)."""
 
-    huggingface_hub >= 1.32 keeps blobs in a cache-wide store outside the model
-    directory, so distributing that directory alone left the target with a full
-    set of snapshot symlinks and no bytes.  Both checks matched the name and
-    reported a hit, which skipped the download and the redistribution on every
-    later launch -- nothing ever repaired the skeleton.
-
-    Every HF cache reaches weights through symlinks, so the two cases below must
-    come apart: a link that resolves is a hit, a link that dangles is a miss.
-    """
-
-    def _cache(self, tmp_path, *, resolves: bool):
-        model_cache = tmp_path / "hub" / _EXPECTED_DIR
+    def _cache(self, tmp_path, model_id, filename, shared, *, resolves: bool):
+        model_cache = Path(model_cache_path(model_id, str(tmp_path)))
         snapshot = model_cache / "snapshots" / "sha1"
         snapshot.mkdir(parents=True)
         refs = model_cache / "refs"
-        refs.mkdir(parents=True, exist_ok=True)
+        refs.mkdir()
         (refs / "main").write_text("sha1\n")
         blobs = model_cache / "blobs"
         blobs.mkdir()
+        payload = blobs / "blobsha"
+        if shared:
+            payload = tmp_path / "hub/blobs/ab/blobsha"
+            payload.parent.mkdir(parents=True)
+            (blobs / "blobsha").symlink_to("../../blobs/ab/blobsha")
         if resolves:
-            (blobs / "blobsha").write_text("weights")
-        (snapshot / "model-00001-of-00002.safetensors").symlink_to("../../blobs/blobsha")
-        return snapshot
+            payload.write_text("weights")
+        (snapshot / filename).symlink_to("../../blobs/blobsha")
 
-    def test_dangling_skeleton_is_a_miss_in_both_implementations(self, tmp_path):
+    def test_dangling_skeleton_is_a_miss_in_both_implementations(self, tmp_path, model_id, filename, shared):
         from sparkrun.models.download import is_model_cached
 
-        self._cache(tmp_path, resolves=False)
+        self._cache(tmp_path, model_id, filename, shared, resolves=False)
+        proc = _run(_render(model_id, cache=str(tmp_path)), _stub_bin(tmp_path))
 
-        proc = _run(_render(_MODEL, cache=str(tmp_path)), _stub_bin(tmp_path))
-
+        assert proc.returncode == 0, proc.stderr
         assert "already cached" not in proc.stdout
-        assert "STUB-DOWNLOAD" in proc.stdout, "a bytes-less cache must reach the downloader"
-        assert is_model_cached(_MODEL, cache_dir=str(tmp_path)) is False
+        assert "STUB-DOWNLOAD" in proc.stdout
+        assert is_model_cached(model_id, cache_dir=str(tmp_path)) is False
 
-    def test_resolving_symlink_is_a_hit_in_both_implementations(self, tmp_path):
-        """Guards the fix itself.
-
-        ``-type f`` without ``-L`` -- and any check that rejected symlinks
-        outright -- would report every real HF cache as empty and re-download
-        the model on every launch.
-        """
+    def test_resolving_symlink_is_a_hit_in_both_implementations(self, tmp_path, model_id, filename, shared):
         from sparkrun.models.download import is_model_cached
 
-        self._cache(tmp_path, resolves=True)
+        self._cache(tmp_path, model_id, filename, shared, resolves=True)
+        proc = _run(_render(model_id, cache=str(tmp_path)), _stub_bin(tmp_path))
 
-        proc = _run(_render(_MODEL, cache=str(tmp_path)), _stub_bin(tmp_path))
-
+        assert proc.returncode == 0, proc.stderr
         assert "already cached" in proc.stdout
         assert "STUB-DOWNLOAD" not in proc.stdout
-        assert is_model_cached(_MODEL, cache_dir=str(tmp_path)) is True
+        assert is_model_cached(model_id, cache_dir=str(tmp_path)) is True

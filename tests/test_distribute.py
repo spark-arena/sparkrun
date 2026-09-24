@@ -2288,11 +2288,25 @@ def _make_shared_blob_cache(root):
     return model
 
 
-def _model_options(preserve_perms: bool):
+def _model_options(preserve_perms: bool, transfer_path: str):
     """Lazily fetch the real flag list, matching this file's import style."""
     from sparkrun.models.distribute import _model_rsync_options
 
-    return _model_rsync_options(preserve_perms)
+    if transfer_path == "control":
+        return _model_rsync_options(preserve_perms)
+
+    # Exercise the options actually rendered for the head-to-worker hop too.
+    from sparkrun.models.distribute import distribute_model_from_head
+
+    with mock.patch("sparkrun.orchestration.distribution._distribute_from_head", return_value=[]) as distribute:
+        distribute_model_from_head("org/model", ["head", "worker"], preserve_perms=preserve_perms)
+    script = distribute.call_args.kwargs["distribute_script"]
+    attributes = next(line for line in script.splitlines() if line.startswith("RSYNC_ATTR_FLAGS="))
+    options = attributes.split("=", 1)[1].strip('"').split()
+    command = next(line.strip() for line in script.splitlines() if line.strip().startswith("if rsync "))
+    # Everything between the attribute variable and -e is a plain option.
+    options.extend(command.split("$RSYNC_ATTR_FLAGS ", 1)[1].split(" -e ", 1)[0].split())
+    return options
 
 
 def _rsync(src, dst, options):
@@ -2310,6 +2324,8 @@ def _weights(model_dir):
 
 
 @needs_rsync
+@pytest.mark.parametrize("preserve_perms", [True, False], ids=["archive", "recursive"])
+@pytest.mark.parametrize("transfer_path", ["control", "head"])
 class TestSharedBlobStoreTransfer:
     """The flags must move the bytes, not just the symlinks that name them.
 
@@ -2318,18 +2334,18 @@ class TestSharedBlobStoreTransfer:
     exercised against a real fixture tree by a real rsync.
     """
 
-    def test_payload_reaches_the_target(self, tmp_path):
+    def test_payload_reaches_the_target(self, tmp_path, preserve_perms, transfer_path):
         model = _make_shared_blob_cache(tmp_path / "src")
         dst = tmp_path / "dst"
 
-        proc = _rsync(model, dst, _model_options(True))
+        proc = _rsync(model, dst, _model_options(preserve_perms, transfer_path))
 
         assert proc.returncode == 0, proc.stderr
         dangling = [p for p in (dst / "snapshots" / "rev1").iterdir() if not p.exists()]
         assert dangling == []
         assert _weights(dst).read_text() == _PAYLOAD
 
-    def test_in_tree_links_survive_and_the_blob_is_stored_once(self, tmp_path):
+    def test_in_tree_links_survive_and_the_blob_is_stored_once(self, tmp_path, preserve_perms, transfer_path):
         """Only the hop that leaves the tree is materialised.
 
         Plain ``-L`` would dereference the snapshot entry too, storing the
@@ -2338,7 +2354,8 @@ class TestSharedBlobStoreTransfer:
         model = _make_shared_blob_cache(tmp_path / "src")
         dst = tmp_path / "dst"
 
-        _rsync(model, dst, _model_options(True))
+        proc = _rsync(model, dst, _model_options(preserve_perms, transfer_path))
+        assert proc.returncode == 0, proc.stderr
 
         assert _weights(dst).is_symlink(), "in-tree snapshot link should stay a link"
         blob = dst / "blobs" / _SHA
@@ -2346,7 +2363,7 @@ class TestSharedBlobStoreTransfer:
         copies = [p for p in dst.rglob("*") if not p.is_symlink() and p.is_file() and p.read_text() == _PAYLOAD]
         assert len(copies) == 1, f"payload stored {len(copies)} times, expected once"
 
-    def test_without_copy_unsafe_links_the_target_holds_no_bytes(self, tmp_path):
+    def test_without_copy_unsafe_links_the_target_holds_no_bytes(self, tmp_path, preserve_perms, transfer_path):
         """The pre-fix behaviour, pinned so the flag cannot be dropped again.
 
         Note rsync still exits 0 -- which is why the broken distribution was
@@ -2354,26 +2371,45 @@ class TestSharedBlobStoreTransfer:
         """
         model = _make_shared_blob_cache(tmp_path / "src")
         dst = tmp_path / "dst"
-        options = [o for o in _model_options(True) if o != "--copy-unsafe-links"]
+        options = [o for o in _model_options(preserve_perms, transfer_path) if o != "--copy-unsafe-links"]
 
         proc = _rsync(model, dst, options)
 
         assert proc.returncode == 0
         assert not _weights(dst).exists(), "expected the historical dangling-skeleton result"
 
-    def test_resync_repairs_a_target_left_dangling(self, tmp_path):
+    def test_resync_repairs_a_target_left_dangling(self, tmp_path, preserve_perms, transfer_path):
         """A host already broken by an earlier release must self-heal.
 
-        The cache check reports the skeleton as a miss once #299 is fixed, so
-        this re-sync is what actually runs on the next launch.
+        Head fan-out still runs on a cache hit; corrected flags must repair
+        the destination without requiring users to delete the broken cache.
         """
         model = _make_shared_blob_cache(tmp_path / "src")
         dst = tmp_path / "dst"
-        broken = [o for o in _model_options(True) if o != "--copy-unsafe-links"]
+        broken = [o for o in _model_options(preserve_perms, transfer_path) if o != "--copy-unsafe-links"]
         _rsync(model, dst, broken)
         assert not _weights(dst).exists()
 
-        proc = _rsync(model, dst, _model_options(True))
+        proc = _rsync(model, dst, _model_options(preserve_perms, transfer_path))
 
         assert proc.returncode == 0, proc.stderr
         assert _weights(dst).read_text() == _PAYLOAD
+
+    @pytest.mark.parametrize("shared", [False, True], ids=["classic", "shared"])
+    def test_repeated_sync_is_unchanged(self, tmp_path, preserve_perms, transfer_path, shared):
+        model = _make_shared_blob_cache(tmp_path / "src")
+        if not shared:
+            blob = model / "blobs" / _SHA
+            blob.unlink()
+            blob.write_text(_PAYLOAD)
+        dst = tmp_path / "dst"
+        options = _model_options(preserve_perms, transfer_path)
+        first = _rsync(model, dst, options)
+        assert first.returncode == 0, first.stderr
+
+        second = _rsync(model, dst, [*options, "--itemize-changes"])
+
+        assert second.returncode == 0, second.stderr
+        assert second.stdout == ""
+        assert _weights(dst).read_text() == _PAYLOAD
+        assert _weights(dst).is_symlink()

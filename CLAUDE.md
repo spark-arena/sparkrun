@@ -2329,12 +2329,15 @@ Before launching, sparkrun can pre-sync models and container images from the con
   layers and transferred no payload — rsync still exited 0, and the launch failed much later inside the engine, on
   the worker, as a rendezvous timeout. Both transfer paths therefore carry **`--copy-unsafe-links`**, which
   materialises only the links that leave the tree; plain `-L` would dereference the in-tree `snapshots/ -> blobs/`
-  hop as well and roughly double the bytes on disk. Correspondingly, every weight-existence probe asks whether a
-  **readable file** is there, not whether a name is: `is_model_cached` and `resolve_gguf_path` filter on
-  `Path.is_file()`, and the two ensure scripts use `find -L … -type f`. The `-L` is load-bearing in the opposite
+  hop as well and roughly double the bytes on disk. Destination deduplication is per repo blob; cross-repo
+  deduplication remains source-side. The presence probes require a **resolved regular file**:
+  `is_model_cached`, `resolve_gguf_path`, and `resolve_mmproj_path` filter on `Path.is_file()`, and the two ensure
+  scripts use `find -L … -type f`. GGUF filtering precedes fallback/precision selection so an unusable candidate
+  cannot hide usable weights or a projector. The `-L` is load-bearing in the opposite
   direction — a bare `-type f` rejects the symlinks every real HF cache uses, and would re-download on every launch.
-  Getting this wrong is self-perpetuating: a bytes-less skeleton that reports "already cached" skips the download
-  *and* the redistribution that would have repaired it (issue #299).
+  These are presence heuristics, not read-permission or snapshot-completeness checks. A false hit skips the remote
+  download, but head fan-out still runs; with the old flags retries repeated the broken transfer. Corrected rsync
+  flags repair existing destinations without cache deletion (issue #299).
 - **Containers** (`containers/`): Pulls image locally (`containers/registry.py`), then streams via
   `docker save | ssh docker load` (`containers/distribute.py`, `containers/sync.py`). Checks image IDs to skip hosts
   that already have the correct image.

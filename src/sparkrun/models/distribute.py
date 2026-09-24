@@ -56,8 +56,9 @@ def _model_rsync_options(preserve_perms: bool) -> list[str]:
 
     ``--copy-unsafe-links`` materialises only the links that leave the tree, so
     the in-tree ``snapshots/ -> blobs/`` ones stay links and the target lands as
-    a self-contained cache with each blob stored **exactly once**.  Plain ``-L``
-    would dereference both layers and roughly double the bytes on disk.
+    a self-contained cache with one copy per repo blob. Cross-repo deduplication
+    remains on the source; destination repos each store their own copy. Plain
+    ``-L`` would dereference both layers and roughly double the bytes on disk.
     ``--size-only`` skips already-synced shards instantly.
 
     When *preserve_perms* is ``True`` we keep ``-a`` (archive, historical default) minus :data:`~sparkrun.orchestration.ssh.NFS_SAFE_ATTR_OPTS`,
