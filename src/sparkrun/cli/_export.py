@@ -9,7 +9,9 @@ from sparkrun.core.application_profile import get_application_profile, resource_
 import logging
 import os
 import sys
+import json
 import textwrap
+from pathlib import Path
 
 import click
 import yaml
@@ -68,11 +70,36 @@ def export(ctx):
 @click.argument("recipe_name", type=RECIPE_NAME)
 @json_option()
 @click.option("--save", "save_path", type=click.Path(), help="Save a copy of the recipe to a file")
+@click.option(
+    "--keep-include",
+    is_flag=True,
+    help="Emit a recipe that uses include: as written, instead of the flattened, self-contained recipe",
+)
 @click.pass_context
-def export_recipe(ctx, recipe_name, output_json=False, save_path=None):
-    """Export normalized recipe to stdout or file."""
+def export_recipe(ctx, recipe_name, output_json=False, save_path=None, keep_include=False):
+    """Export normalized recipe to stdout or file.
+
+    A recipe built with include: is flattened into one self-contained recipe
+    (its bases merged in) unless --keep-include is given.
+    """
     config, _ = _get_config_and_registry()
     recipe, recipe_path, registry_mgr = _load_recipe(config, recipe_name)
+
+    declared = getattr(recipe, "_include_declared", None)
+    if keep_include and declared is not None:
+        from sparkrun.utils.yaml_helpers import LiteralBlockDumper
+
+        text = (
+            json.dumps(declared, indent=2)
+            if output_json
+            else yaml.dump(declared, Dumper=LiteralBlockDumper, indent=2, sort_keys=False, default_flow_style=False)
+        )
+        if save_path is None:
+            click.echo(text)
+        else:
+            Path(save_path).write_text(text, encoding="utf-8")
+            click.echo("Recipe saved to %s" % save_path)
+        return
 
     # Auto-populate spark_arena_benchmarks from @spark-arena/UUID references
     _apply_spark_arena_benchmarks(recipe, recipe_name)

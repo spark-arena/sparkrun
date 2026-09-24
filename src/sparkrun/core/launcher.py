@@ -129,6 +129,11 @@ def resolve_recipe_trust(
     """
     if trust_cli:
         return True
+    # An included base contributes hooks, mounts and executor_config just as
+    # the including recipe does, so the chain is only as trusted as its least
+    # trusted member: a local wrapper must not launder a third-party base.
+    if not _include_chain_trusted(recipe, sctx=sctx):
+        return False
     # URL-sourced recipes carry no source_registry but must not be
     # auto-trusted — they are the least-trustworthy source.  Direct
     # attribute access (not getattr-with-default) so a future rename
@@ -157,6 +162,30 @@ def resolve_recipe_trust(
         return False
     except Exception:
         logger.debug("resolve_recipe_trust: failed to consult registries.yaml", exc_info=True)
+        return False
+
+
+def _include_chain_trusted(recipe: Recipe, *, sctx: SparkrunContext | None = None) -> bool:
+    """True when every registry-sourced base in ``recipe.include_chain`` is trusted.
+
+    Sibling includes (no registry recorded) share the source of the recipe
+    that included them, so the outer recipe's own check covers them.
+    """
+    chain = getattr(recipe, "include_chain", None) or ()
+    registry_sources = [source for source in chain if getattr(source, "registry", None)]
+    if not registry_sources:
+        return True
+    try:
+        from sparkrun.core.config import SparkrunConfig
+
+        mgr = sctx.registry_manager if sctx is not None else SparkrunConfig().get_registry_manager()
+        for source in registry_sources:
+            entry = mgr.get_registry(source.registry, allow_discovery=False)
+            if not (entry.url == source.registry_url and entry.enabled and entry.trusted):
+                return False
+        return True
+    except Exception:
+        logger.debug("resolve_recipe_trust: could not verify include chain", exc_info=True)
         return False
 
 
@@ -703,7 +732,11 @@ def report_unmapped_config_keys(
     if known is None:
         return []
 
-    consumed = set(known) | BASE_CONSUMED_CONFIG_KEYS | _referenced_placeholders(recipe)
+    # Keys read only by an `overrides[].when.config` predicate are consumed:
+    # a selector-only knob (e.g. `speculator`) never reaches the command.
+    override_keys_of = getattr(recipe, "override_config_keys", None)
+    override_keys = set(override_keys_of()) if callable(override_keys_of) else set()
+    consumed = set(known) | BASE_CONSUMED_CONFIG_KEYS | _referenced_placeholders(recipe) | override_keys
 
     def _unmapped(keys) -> list[str]:
         return sorted(k for k in keys if not _is_internal_config_key(k) and k not in consumed)

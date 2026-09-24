@@ -901,6 +901,73 @@ def check_managed_comm_env(recipe: Recipe) -> list[RecipeIssue]:
 
 
 # --------------------------------------------------------------------------
+# include: / overrides:
+# --------------------------------------------------------------------------
+
+
+def check_nested_include(recipe: Recipe) -> list[RecipeIssue]:
+    """Suggest flattening an ``include:`` chain more than one level deep.
+
+    Nesting works, and identically everywhere, so this is only a suggestion.
+    But each level is another file a reader must open to know what the recipe
+    serves, and a change to a base several levels down changes every recipe
+    above it without any of them showing a diff.
+    """
+    chain = getattr(recipe, "include_chain", None) or ()
+    if len(chain) <= 1:
+        return []
+    refs = " → ".join(source.ref for source in reversed(chain))
+    return [
+        RecipeIssue(
+            SUGGESTION,
+            "nested-include",
+            "include: chain is %d levels deep (%s). Every level is another file to read to know what this recipe "
+            "serves, and a change several levels down silently changes every recipe above it." % (len(chain), refs),
+            "Include the recipe that holds the settings you actually build on, and keep chains to one level where "
+            "you can. `sparkrun export recipe` shows the flattened result.",
+        )
+    ]
+
+
+def check_override_selectors(recipe: Recipe) -> list[RecipeIssue]:
+    """Warn about ``when:`` selectors or operators this sparkrun cannot evaluate.
+
+    An entry that uses one never matches here (see
+    :mod:`sparkrun.core.recipe_overrides`), so the recipe behaves differently
+    on this sparkrun than on the one it was written for, which is what a
+    warning means.
+    """
+    from sparkrun.core.recipe_overrides import CONFIG_SELECTOR, OPERATORS, SELECTORS
+
+    def _bad_operators(value: Any) -> list[str]:
+        return sorted(str(op) for op in value if str(op) not in OPERATORS) if isinstance(value, dict) else []
+
+    issues: list[RecipeIssue] = []
+    for override in getattr(recipe, "overrides", None) or ():
+        problems: list[str] = []
+        for selector, value in override.when.items():
+            if selector not in SELECTORS:
+                problems.append("unknown selector %r" % selector)
+            elif selector == CONFIG_SELECTOR:
+                for key, predicate in value.items():
+                    problems.extend("config.%s: unknown operator %r" % (key, op) for op in _bad_operators(predicate))
+            else:
+                problems.extend("%s: unknown operator %r" % (selector, op) for op in _bad_operators(value))
+        if problems:
+            issues.append(
+                RecipeIssue(
+                    WARNING,
+                    "override-unknown-selector",
+                    "overrides[%d] uses %s, which this sparkrun cannot evaluate, so the entry never matches here."
+                    % (override.index, "; ".join(problems)),
+                    "Known selectors: %s. Operators: %s. Upgrade sparkrun if the recipe targets a newer version."
+                    % (", ".join(sorted(SELECTORS)), ", ".join(sorted(OPERATORS))),
+                )
+            )
+    return issues
+
+
+# --------------------------------------------------------------------------
 # Sparkrun-managed cache env
 # --------------------------------------------------------------------------
 
@@ -1646,6 +1713,8 @@ def validate_recipe(
     issues.extend(_safe("unpinned-model-revision", lambda: check_unpinned_model_revision(recipe, runtime)))
     issues.extend(_safe("hardcoded-serve-flag", lambda: check_hardcoded_serve_flags(recipe, runtime)))
     issues.extend(_safe("restated-substitution", lambda: check_restated_substitutions(recipe)))
+    issues.extend(_safe("nested-include", lambda: check_nested_include(recipe)))
+    issues.extend(_safe("override-unknown-selector", lambda: check_override_selectors(recipe)))
 
     if runtime is not None and include_unmapped_keys:
         from sparkrun.core.launcher import report_unmapped_config_keys

@@ -112,6 +112,8 @@ _KNOWN_KEYS = {
     "readiness",
     "capabilities",
     "unsupported_capabilities",
+    "include",
+    "overrides",
 }
 
 
@@ -768,6 +770,15 @@ def is_recipe_file(path: Path) -> bool:
         return False
     if not isinstance(data, dict):
         return False
+    if isinstance(data.get("include"), str):
+        from sparkrun.core.recipe_include import listing_view
+
+        data = listing_view(data, path)
+        if "include" in data:
+            # A registry base cannot be checked without the registry manager;
+            # a string include is a strong enough signal that this is a recipe.
+            # (A list-valued include is docker-compose, not a recipe.)
+            return True
     if not data.get("model") or not data.get("container"):
         return False
     try:
@@ -1056,6 +1067,11 @@ class Recipe:
 
     def __init__(self, data: dict[str, Any], source_path: str | None = None):
         _validate_resolution_shapes(data)
+        if "include" in data:
+            # Includes are resolved by :meth:`load`, which knows where the file
+            # lives and which registries exist; a Recipe built straight from a
+            # dict would otherwise silently drop its base.
+            raise RecipeError("Recipe uses include: %r — load it with Recipe.load() so the base is resolved" % data["include"])
         self._raw = data
         self.source_path = source_path
         self.source_registry: str | None = None  # set by _load_recipe after resolution
@@ -1236,6 +1252,60 @@ class Recipe:
         # Applied overrides (populated by resolve())
         self._applied_overrides: dict[str, Any] = {}
 
+        # Conditional layers (see core/recipe_overrides.py). Parsed here so a
+        # structurally broken block fails at load, not mid-launch.
+        from sparkrun.core.recipe_overrides import parse_overrides
+
+        self.overrides = parse_overrides(data.get("overrides"))
+        self.override_resolution = None
+        self._declared: dict[str, Any] | None = None
+
+        # What the CLI set directly on this recipe object (-e / -o env.* /
+        # --image). Those write straight into ``env`` / ``container``, so a
+        # matched override must know not to clobber them.
+        self._cli_env_keys: set[str] = set()
+        self._cli_image = False
+
+        # ``include:`` provenance (see core/recipe_include.py); set by load().
+        self.include_chain: tuple = ()
+        self._include_declared: dict[str, Any] | None = None
+
+    # ------------------------------------------------------------------
+    # Declared vs effective values (conditional overrides)
+    # ------------------------------------------------------------------
+
+    def snapshot_declared_values(self) -> None:
+        """Record declared ``defaults`` / ``env`` / ``container`` once, before overrides mutate them."""
+        if self._declared is None:
+            self._declared = {"defaults": deepcopy(self.defaults), "env": dict(self.env), "container": self.container}
+
+    def restore_declared_values(self) -> None:
+        """Undo applied overrides, back to the declared values."""
+        if self._declared is not None:
+            self.defaults = deepcopy(self._declared["defaults"])
+            self.env = dict(self._declared["env"])
+            self.container = self._declared["container"]
+
+    @property
+    def declared_defaults(self) -> dict[str, Any]:
+        """``defaults`` as written (plus CLI writes), without matched overrides."""
+        return self._declared["defaults"] if self._declared is not None else self.defaults
+
+    @property
+    def declared_env(self) -> dict[str, str]:
+        return self._declared["env"] if self._declared is not None else self.env
+
+    @property
+    def declared_container(self) -> str:
+        return self._declared["container"] if self._declared is not None else self.container
+
+    def override_config_keys(self) -> set[str]:
+        """Config keys read only by ``overrides[].when.config`` (consumed, not dropped)."""
+        keys: set[str] = set()
+        for override in self.overrides:
+            keys |= override.config_keys()
+        return keys
+
     # ------------------------------------------------------------------
     # Runtime resolution (separated from __init__ for override support)
     # ------------------------------------------------------------------
@@ -1318,7 +1388,13 @@ class Recipe:
         """
         return resolve_served_model_name(self, self._effective_default("served_model_name"))
 
-    def build_config_chain(self, cli_overrides: dict[str, Any] | None = None, user_config: dict[str, Any] | None = None) -> Variables:
+    def build_config_chain(
+        self,
+        cli_overrides: dict[str, Any] | None = None,
+        user_config: dict[str, Any] | None = None,
+        *,
+        declared: bool = False,
+    ) -> Variables:
         """Build cascading config: CLI overrides -> user config -> recipe defaults.
 
         Also injects ``model``, ``model_revision`` and ``resolved_model_path``
@@ -1339,8 +1415,12 @@ class Recipe:
         commit SHA, which writes no ``refs/`` entry in the HuggingFace cache,
         and the container runs ``HF_HUB_OFFLINE=1`` (see
         :func:`sparkrun.core.validation.check_unpinned_model_revision`).
+
+        ``declared=True`` builds from the declared defaults, without matched
+        ``overrides:`` layers: what ``when.config`` predicates read, and what
+        the workload identity hashes.
         """
-        base = dict(self.defaults)
+        base = dict(self.declared_defaults if declared else self.defaults)
         base.setdefault("model", self.model)
         if self.model_revision:
             base.setdefault("model_revision", self.model_revision)
@@ -1535,7 +1615,14 @@ class Recipe:
         return result
 
     @classmethod
-    def load(cls, path: str | Path, resolve: bool = True) -> Recipe:
+    def load(
+        cls,
+        path: str | Path,
+        resolve: bool = True,
+        *,
+        registry_manager: RegistryManager | None = None,
+        allow_local_includes: bool = True,
+    ) -> Recipe:
         """Load a recipe from a YAML file path.
 
         Args:
@@ -1543,14 +1630,25 @@ class Recipe:
             resolve: Run the resolver chain immediately (default True).
                 Pass ``False`` when CLI overrides need to influence
                 resolution — call ``recipe.resolve(overrides)`` later.
+            registry_manager: Used to resolve ``include: "@registry/name"``.
+                Built from the default config when needed and not given.
+            allow_local_includes: ``False`` for sources without a trustworthy
+                directory (URL-fetched, catalog-imported), where a sibling
+                include would read whatever else is cached next to them.
         """
+        from sparkrun.core.recipe_include import resolve_recipe_includes
+
         path = Path(path)
         if not path.exists():
             raise RecipeError("Recipe file not found: %s" % path)
         data = read_yaml(str(path))
         if not isinstance(data, dict):
             raise RecipeError("Recipe file must contain a YAML mapping: %s" % path)
+        declared = deepcopy(data) if "include" in data else None
+        data, chain = resolve_recipe_includes(data, path, registry_manager=registry_manager, allow_local=allow_local_includes)
         recipe = cls(data, source_path=str(path))
+        recipe.include_chain = chain
+        recipe._include_declared = declared
         if resolve:
             recipe.resolve()
         return recipe
@@ -1949,6 +2047,12 @@ class Recipe:
             "runtime_cache": dict(self.runtime_cache),
             "readiness": dict(self.readiness),
             "_applied_overrides": dict(self._applied_overrides),
+            "_declared": deepcopy(self._declared) if self._declared is not None else None,
+            # Per-launch CLI facts that identity and override application read.
+            "_cli_env_keys": sorted(self._cli_env_keys),
+            "_cli_image": self._cli_image,
+            "include_chain": [source.to_dict() for source in self.include_chain],
+            "_include_declared": deepcopy(self._include_declared) if self._include_declared is not None else None,
             "_raw": dict(self._raw),
         }
 
@@ -2005,6 +2109,18 @@ class Recipe:
         self.executor_config = dict(state.get("executor_config") or {})
         self.scheduler = str(state.get("scheduler", "") or "")
         self._applied_overrides = dict(state.get("_applied_overrides") or {})
+        from sparkrun.core.recipe_include import IncludeSource
+        from sparkrun.core.recipe_overrides import parse_overrides
+
+        self.overrides = parse_overrides(self._raw.get("overrides"))
+        self.override_resolution = None
+        declared = state.get("_declared")
+        self._declared = deepcopy(declared) if isinstance(declared, dict) else None
+        self._cli_env_keys = set(state.get("_cli_env_keys") or ())
+        self._cli_image = bool(state.get("_cli_image", False))
+        self.include_chain = tuple(IncludeSource.from_dict(e) for e in state.get("include_chain") or () if isinstance(e, dict))
+        include_declared = state.get("_include_declared")
+        self._include_declared = deepcopy(include_declared) if isinstance(include_declared, dict) else None
         dist_cfg: dict | None = state.get("distribution_config", None)
         self.distribution_config = _parse_distribution_config(self._raw) if dist_cfg is None else DistributionConfig.from_dict(dist_cfg)
         layout_state = state.get("layout")
@@ -2068,6 +2184,7 @@ class Recipe:
         "mods",
         "defaults",
         "env",
+        "overrides",
         "readiness",
         "pre_exec",
         "command",
@@ -2079,7 +2196,7 @@ class Recipe:
     # Top-level keys that are folded into metadata on export.
     _METADATA_PROMOTED_KEYS = {"description", "maintainer"}
 
-    def _build_export_dict(self) -> dict[str, Any]:
+    def _build_export_dict(self, *, effective: bool = False) -> dict[str, Any]:
         """Build a canonical recipe dict from resolved instance attributes.
 
         Applies normalizations performed by the constructor and resolvers:
@@ -2104,9 +2221,10 @@ class Recipe:
         if self.max_nodes is not None:
             d["max_nodes"] = self.max_nodes
 
-        # -- Container --
-        if self.container:
-            d["container"] = self.container
+        # -- Container -- (declared: a matched override is not what the recipe says)
+        container = self.container if effective else self.declared_container
+        if container:
+            d["container"] = container
         if self.containers:
             d["containers"] = [dict(e) for e in self.containers]
 
@@ -2163,11 +2281,16 @@ class Recipe:
         if self.scheduler:
             d["scheduler"] = self.scheduler
 
-        # -- Configuration --
-        if self.defaults:
-            d["defaults"] = dict(self.defaults)
-        if self.env:
-            d["env"] = dict(self.env)
+        # -- Configuration -- (declared values; overrides stay conditional,
+        # unless the caller asked for what this launch actually ran)
+        defaults = self.defaults if effective else self.declared_defaults
+        env = self.env if effective else self.declared_env
+        if defaults:
+            d["defaults"] = dict(defaults)
+        if env:
+            d["env"] = dict(env)
+        if self.overrides and not effective:
+            d["overrides"] = [o.to_dict() for o in self.overrides]
 
         # -- Mods (resolved to pre_exec at run time; preserve source list on export) --
         if self.mods:
@@ -2207,13 +2330,18 @@ class Recipe:
         self,
         overrides: Optional[dict] = None,
         container_image: Optional[str] = None,
+        *,
+        effective: bool = False,
     ) -> dict[str, Any]:
         """Convert the recipe to a canonical dictionary.
 
         Builds a clean dict from resolved attributes (not raw input),
         applies overrides, filters ephemeral fields, and sorts keys.
+
+        ``effective=True`` bakes matched ``overrides:`` layers in (and drops
+        the block): what this launch ran, rather than what the recipe declares.
         """
-        export_dict = self._build_export_dict()
+        export_dict = self._build_export_dict(effective=effective)
 
         # Bake overrides into defaults so the export is self-contained
         if overrides:
@@ -2427,6 +2555,10 @@ def recipe_summary(path: Path, registry_name: str | None = None) -> dict[str, An
         return None
     if not isinstance(data, dict):
         return None
+    if "include" in data:
+        from sparkrun.core.recipe_include import listing_view
+
+        data = listing_view(data, path)
     stem = path.stem
     defaults = data.get("defaults", {})
     qualified = ("@%s/%s" % (registry_name, stem)) if registry_name else stem

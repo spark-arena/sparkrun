@@ -140,7 +140,7 @@ def resolve_recipe(
         if not recipe_path:
             raise RecipeNotFound("Recipe %r not found in any configured registry" % recipe_input)
         with _recipe_errors():
-            recipe = Recipe.load(recipe_path, resolve=False)
+            recipe = Recipe.load(recipe_path, resolve=False, registry_manager=registry_mgr)
         try:
             scope, _ = parse_scoped_name(recipe_input)
             registry = recipe_registry_entry(recipe_path, registry_mgr, registry_name=scope)

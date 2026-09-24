@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Mapping
 
 if TYPE_CHECKING:
+    from sparkrun.core.recipe_overrides import OverrideResolution
     from sparkrun.orchestration.executor import ExecutorTarget
     from sparkrun.core.cluster_manager import ClusterDefinition, ClusterStatusResult
     from sparkrun.core._executor_destination import ExecutorDestination
@@ -265,6 +266,12 @@ class RunPlan:
     is never placed here. The cluster contains the successful observations
     overlaid with configured budgets; this mapping keeps the raw facts.
     """
+    override_resolution: "OverrideResolution | None" = field(default=None, kw_only=True)
+    """Which ``overrides:`` entries matched this launch and what they applied.
+
+    ``None`` when the recipe declares none. Already applied to
+    :attr:`recipe`; carried so a renderer can show *why* a value differs from
+    the recipe's ``defaults`` without re-evaluating anything."""
     recipe_fingerprint: str = ""
     """Serve-configuration digest of the *declared* recipe.
 

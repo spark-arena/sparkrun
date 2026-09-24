@@ -180,6 +180,15 @@ def plan(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunPl
     sctx = sctx.for_cluster(cluster_def)
     config = sctx.config
 
+    # Conditional `overrides:` layers, resolved before anything reads the
+    # config: they can change max_model_len / gpu_memory_utilization, which
+    # feed the memory estimate placement uses. Evaluated over the candidate
+    # hosts; a hardware predicate those hosts disagree on is refused rather
+    # than decided by whichever host happens to be the head.
+    override_resolution = _apply_recipe_overrides_for_plan(
+        recipe, options, runtime=runtime, cluster=cluster_def, hosts=hosts, host_hardware=host_hardware
+    )
+
     # Scheduler selection chain: caller > recipe > cluster > greedy default.
     from sparkrun.core.scheduler import FALLBACK_DEFAULT_SCHEDULER, get_scheduler, resolve_scheduler_selector
 
@@ -292,8 +301,47 @@ def plan(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunPl
         cluster_id=cluster_id_for_launch,
         recipe_fingerprint=recipe_fingerprint,
         executor_target=executor_target,
+        override_resolution=override_resolution,
         _destination=destination,
     )
+
+
+def _apply_recipe_overrides_for_plan(recipe, options: RunOptions, *, runtime, cluster, hosts, host_hardware):
+    """Evaluate and apply the recipe's ``overrides:`` for this launch (no-op without any)."""
+    from sparkrun.core.recipe_overrides import OverrideConflictError, apply_recipe_override_layers, build_override_context
+
+    if not getattr(recipe, "overrides", None):
+        return None
+    original_runtime = recipe.runtime
+    context_args = dict(runtime=runtime, cluster=cluster, hosts=list(hosts), host_hardware=host_hardware, solo=bool(options.solo))
+    try:
+        ctx = build_override_context(recipe, options.overrides, **context_args)
+        resolution = apply_recipe_override_layers(recipe, ctx)
+    except OverrideConflictError as error:
+        raise SparkrunError(str(error)) from error
+    if not resolution.matched:
+        return resolution
+    # What the `when:` clauses matched on must still hold once the layers are
+    # in: a default can steer the resolver chain (distributed_executor_backend
+    # picks vllm-ray) or the world size (sglang's enable_dp_attention), and the
+    # runtime plugin and shape used here were resolved before. Re-derive both
+    # rather than enumerating every key that could move them.
+    recipe.resolve(recipe._applied_overrides)
+    if recipe.runtime != original_runtime:
+        raise SparkrunError(
+            "overrides %s change the resolved runtime (%s → %s); set runtime: explicitly or move that setting out of overrides"
+            % (list(resolution.matched), original_runtime, recipe.runtime)
+        )
+    after = build_override_context(recipe, options.overrides, declared=False, **context_args)
+    if after.shape != ctx.shape:
+        changed = sorted(k for k in ctx.shape if ctx.shape[k] != after.shape.get(k))
+        raise SparkrunError(
+            "overrides %s change the launch shape (%s) that their own `when:` was evaluated against; "
+            "set parallelism in defaults or on the CLI instead" % (list(resolution.matched), ", ".join(changed))
+        )
+    for line in resolution.describe():
+        logger.debug("%s", line)
+    return resolution
 
 
 def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: RunPlan | None = None) -> RunResult:

@@ -359,7 +359,7 @@ callers use `BenchmarkOptions(integrations={"arena": {}})`. See
 Resolution order (highest priority first):
 
 ```
-CLI overrides  →  recipe defaults  →  runtime defaults
+CLI overrides  →  matched overrides:  →  recipe defaults  →  platform defaults  →  runtime defaults
 ```
 
 ```bash
@@ -372,6 +372,94 @@ sparkrun run my-recipe -o max_model_len=8192 --port 9000
 
 `{model}` is always injected from the top-level `model` field. Substitution is iterative (handles nested references like
 `base_url: "http://localhost:{port}"`).
+
+---
+
+## Including Another Recipe (`include:`)
+
+A recipe can be a small change to another one. It names one base and states only what differs:
+
+```yaml
+# qwen3.8-27b-dflash.yaml
+include: qwen3.8-27b-mtp              # a recipe file in the same directory
+defaults:
+  speculative_config: {method: dflash, model: some-org/draft, num_speculative_tokens: 7}
+```
+
+`include:` takes one reference: either a sibling file (`base` or `base.yaml`, with no path separators) or a fully
+qualified registry recipe (`"@official/qwen3.8-27b"`). A base may itself use `include:`. Chains are capped at 8 levels
+and cycles are an error. `recipe validate` suggests flattening chains more than one level deep.
+
+Merge rules, outer over base:
+
+| Kind                         | Rule                                                                            |
+|------------------------------|---------------------------------------------------------------------------------|
+| mappings (`metadata`, …)     | merged key by key                                                               |
+| values inside `defaults`/`env` | **replaced whole**: `speculative_config: {…}` replaces the base's mapping     |
+| scalars and lists            | replaced (`mods`, `pre_exec`, `command`, …)                                     |
+| `overrides:`                 | appended (base entries first, then the outer recipe's)                          |
+| explicit `null`              | deletes the inherited key                                                       |
+
+- **Trust** is the least-trusted recipe in the chain. A local recipe including a third-party registry recipe gets that
+  registry's trust, so its hooks still prompt.
+- **Mods inherited from a registry base** resolve in that registry (they are rewritten to `@registry/<mod>`).
+- **Changing `model:`** drops the base's `metadata`. It describes the base's model (parameter count, architecture) and
+  would size the wrong one.
+- **Names are strict.** Sibling and registry names start alphanumeric and contain no `..` or absolute parts, and the
+  resolved file (after symlinks) must stay in its directory or registry.
+- **URL-fetched recipes** may only include `@registry/…` recipes.
+- `sparkrun export recipe` emits the **flattened** recipe. `--keep-include` emits the file as written.
+- v1 recipes cannot take part.
+
+---
+
+## Conditional Overrides (`overrides:`)
+
+One recipe can carry tuning for several layouts or hardware combinations:
+
+```yaml
+defaults:
+  max_num_seqs: 8
+  gpu_memory_utilization: 0.90
+overrides:
+  - when: {nodes: 1}
+    defaults: {max_num_seqs: 1, max_model_len: 65536}
+  - when: {arch: sm_120}                       # RTX PRO 6000 / 5090
+    defaults: {gpu_memory_utilization: 0.95}
+  - when: {nodes: {gt: 1}, capability: "rdma:roce-v2"}
+    defaults: {max_num_batched_tokens: 2048}
+  - when: {config: {speculator: none}}
+    defaults: {max_num_seqs: 32}
+```
+
+**Use overrides for what is specific to this model on a given combination.** Facts about the hardware itself, such as
+`CUTE_DSL_ARCH`, allocator settings or fabric env, come from the platform tier and should not be restated per recipe.
+
+**`when:`**. Keys AND together. A value is a scalar (equality), a list (any of), or a mapping of operators
+(`eq`, `ne`, `in`, `not_in`, `gt`, `gte`, `lt`, `lte`).
+
+| Selector                                       | Reads                                                              |
+|------------------------------------------------|--------------------------------------------------------------------|
+| `tp`, `pp`, `dp`, `ep`, `cp`                   | resolved parallelism (recipe + CLI)                                |
+| `nodes`, `gpus_per_node`                       | hosts the launch spans; GPUs per host                              |
+| `runtime`, `runtime_family`                    | e.g. `vllm-distributed`, `vllm`                                    |
+| `config: {key: …}`                             | the config **before** any override applies (recipe + CLI `-o`)    |
+| `platform`, `vendor`, `accelerator`            | e.g. `dgx-spark`, `nvidia`, `gb10`                                 |
+| `arch`                                         | `sm_121` (GB10), `sm_120` (RTX PRO 6000). `sm_120a` also accepted  |
+| `capability`                                   | accelerator tags (`unified-memory`, `rdma:roce-v2`, …)             |
+| `memory_gb`                                    | per-accelerator memory                                             |
+
+Hardware selectors are evaluated per accelerator: `accelerator` and `arch` must hold for the same device. They must
+also agree across every host the launch may use. If a cluster's hosts disagree, the launch is refused; narrow it with
+`--hosts`. A selector or operator this sparkrun does not know makes the entry **not match**, and
+`recipe validate` warns about it.
+
+**Layers**: `defaults`, `env`, `container`. Matching entries apply in list order and later wins. CLI `-o`, `-e` and
+`--image` always win. An override cannot set `port`, `served_model_name` or parallelism keys, because those identify
+the workload or are read by `when:`.
+
+`sparkrun run` (including `--dry-run`) prints which entries matched and why the others did not. Workload identity is
+unaffected by what matched: `stop` / `logs` / `--ensure` find the deployment without re-evaluating anything.
 
 ---
 

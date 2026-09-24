@@ -1992,6 +1992,54 @@ Two recipe format versions exist: v1 (eugr-style, auto-detected by `recipe_versi
 `mods`) and v2 (sparkrun native). vLLM recipes are resolved to either `vllm-ray` (if Ray hints are present) or
 `vllm-distributed` (default). See `RECIPES.md` for the full specification.
 
+### Recipe `include:` and `overrides:` (`core/recipe_include.py`, `core/recipe_overrides.py`)
+
+**`include:` is resolved at load, into one merged recipe.** `Recipe.load` merges
+the chain before constructing, so fingerprint, intent, validation and a
+flattened `export` all see an ordinary recipe. `Recipe(data)` with an unresolved
+`include` **raises**: silently dropping the base is the failure mode. What
+survives separately is provenance (`recipe.include_chain`), for two consumers:
+
+- **Trust** (`launcher._include_chain_trusted`): the chain is as trusted as its
+  least trusted registry base, so a local wrapper cannot launder a third-party
+  recipe's hooks. Sibling includes share the includer's source.
+- **Mods**: an unscoped mod inherited from an `@registry` base is rewritten to
+  `@registry/<mod>`, because mods resolve next to the recipe being *launched*.
+
+Sibling references take no path separators. They are refused outright
+(`allow_local_includes=False`) for URL-fetched and catalog-imported recipes, whose
+"directory" is a cache of other people's files. Listing (`recipe_summary`,
+`is_recipe_file`) resolves **sibling includes only** through `listing_view`: a
+catalog scan must never reach the registry manager, which can clone.
+
+**`overrides:` mutate effective values; identity reads declared ones.**
+`apply_recipe_override_layers` (called once, from `api.plan`, before the intent,
+fingerprint and placement) writes matched layers into `recipe.defaults` / `env` /
+`container`, so every consumer sees them unchanged. First it snapshots the
+declared values (`declared_defaults` / `declared_env` / `declared_container`,
+also serialized). `generate_intent_id` and `derive_recipe_fingerprint` read the
+snapshot (`build_config_chain(declared=True)`), because `stop` / `logs` /
+`--ensure` recompute them from a freshly loaded recipe that never had overrides
+applied. For the same reason layers may not set `port` / `served_model_name` /
+parallelism, and `when.config` predicates read the *declared* chain: overrides
+cannot feed each other.
+
+Three more rules that fail silently if broken:
+
+- **CLI writes are recorded, not re-derived.** `-e`, `-o env.*` and `--image`
+  write straight into `recipe.env` / `recipe.container` *before* planning, so
+  `apply_recipe_overrides` / `apply_env_overrides` record them
+  (`_cli_env_keys`, `_cli_image`) and matched layers skip them. `-o` serve keys
+  need nothing: they are a higher config-chain layer.
+- **A hardware split is an error**, not a head-host decision
+  (`OverrideConflictError` → `SparkrunError`). Launch-wide layers have one value.
+- **Unknown selector or operator → no match + warning**
+  (`override-unknown-selector`). Registries version independently, and "matched
+  because we couldn't tell" applies tuning to the wrong launch.
+
+Hardware facts (`CUTE_DSL_ARCH`, allocator env) belong to the platform tier,
+not to overrides. See Platform default tiers above.
+
 ### Recipe Validation (`core/validation.py`)
 
 The single aggregator behind `sparkrun recipe validate`, and — through

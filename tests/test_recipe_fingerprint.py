@@ -203,8 +203,8 @@ def test_implicit_model_revision_template_variable_preserves_fingerprint():
     assert recipe.build_config_chain().get("model_revision") == "abc123"
 
     class LegacyRecipe(Recipe):
-        def build_config_chain(self, overrides=None, user_config=None):
-            chain = super().build_config_chain(overrides, user_config)
+        def build_config_chain(self, overrides=None, user_config=None, **kwargs):
+            chain = super().build_config_chain(overrides, user_config, **kwargs)
             return {key: chain.get(key) for key in chain.keys() if key != "model_revision"}
 
     legacy = LegacyRecipe(_recipe(model_revision="abc123")._raw)

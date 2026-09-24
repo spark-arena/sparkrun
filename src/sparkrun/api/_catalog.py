@@ -277,7 +277,7 @@ def _resolve_selected_recipe(
     with _recipe_errors():
         if path.stat().st_size > MAX_RECIPE_BYTES:
             raise SparkrunError("Recipe exceeds the size limit")
-        recipe = Recipe.load(path, resolve=False)
+        recipe = Recipe.load(path, resolve=False, allow_local_includes=not imported)
         tag_recipe_source(recipe, registry, config=config, external=imported)
         values = {str(key): coerce_value(value) if isinstance(value, str) else value for key, value in (overrides or {}).items()}
         image = values.pop("image", None)

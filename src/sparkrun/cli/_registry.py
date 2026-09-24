@@ -583,8 +583,8 @@ def export_metadata(ctx, output, include_hidden):
                 data = read_yaml(str(f))
                 if not isinstance(data, dict):
                     continue
-                recipe = Recipe(data, source_path=str(f))
-                recipe.resolve()
+                # Load (not construct) so an `include:` base is resolved.
+                recipe = Recipe.load(f, registry_manager=registry_mgr)
             except Exception as e:
                 click.echo("  Warning: skipping %s: %s" % (f.name, e), err=True)
                 continue

@@ -493,8 +493,10 @@ def _load_recipe(config, recipe_name, resolve=True, retry_after_update=False):
         except RecipeError as e:
             click.echo("Error: %s" % e, err=True)
             sys.exit(1)
+        registry_mgr = config.get_registry_manager()
+        registry_mgr.ensure_initialized()
         try:
-            recipe = Recipe.load(cached_path, resolve=resolve)
+            recipe = Recipe.load(cached_path, resolve=resolve, registry_manager=registry_mgr, allow_local_includes=False)
         except RecipeError as e:
             click.echo("Error: %s" % e, err=True)
             sys.exit(1)
@@ -504,9 +506,6 @@ def _load_recipe(config, recipe_name, resolve=True, retry_after_update=False):
         # core.launcher.resolve_recipe_trust): their hooks require
         # --trust or interactive confirmation.
         tag_recipe_source(recipe, None, config=config, external=True)
-        # Registry manager still needed by callers (e.g. tuning sync)
-        registry_mgr = config.get_registry_manager()
-        registry_mgr.ensure_initialized()
         return recipe, cached_path, registry_mgr
 
     registry_mgr = config.get_registry_manager()
@@ -555,7 +554,7 @@ def _load_recipe(config, recipe_name, resolve=True, retry_after_update=False):
                 logger.debug("Registry update failed during retry: %s", update_err)
 
     try:
-        recipe = Recipe.load(recipe_path, resolve=resolve)
+        recipe = Recipe.load(recipe_path, resolve=resolve, registry_manager=registry_mgr)
         registry = recipe_registry_entry(recipe_path, registry_mgr, registry_name=selected_registry)
         tag_recipe_source(recipe, registry, config=config)
     except (RecipeError, RegistryError) as e:

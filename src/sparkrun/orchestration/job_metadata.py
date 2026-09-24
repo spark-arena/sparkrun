@@ -268,8 +268,11 @@ def generate_intent_id(recipe: "Recipe", overrides: dict | None = None) -> str:
     # Empty/unset container (recipe relies on the runtime's default image)
     # contributes nothing, so recipes that predate an explicit container keep
     # hashing as before rather than all colliding on a placeholder.
-    if getattr(recipe, "container", None):
-        parts.append("image=%s" % recipe.container)
+    # The *declared* image: a matched `overrides:` container is hardware-
+    # dependent, and `stop` / `logs` recompute this without applying overrides.
+    container = getattr(recipe, "declared_container", None) or getattr(recipe, "container", None)
+    if container:
+        parts.append("image=%s" % container)
     # Per-machine images (``containers:``) participate for the same reason the
     # single image does: the intent is the *destroy* key, and two recipes that
     # differ only in one machine's tuned image are workloads a user runs side by
@@ -280,6 +283,14 @@ def generate_intent_id(recipe: "Recipe", overrides: dict | None = None) -> str:
     # hashes byte-identically and no running workload is orphaned.
     for host, img in sorted((e["host"], e["image"]) for e in getattr(recipe, "containers", None) or ()):
         parts.append("image@%s=%s" % (host, img))
+    # Override images, *declared* (the ImagePlan.declared rule): a recipe whose
+    # sm_120 hosts run a different image is a different workload from one that
+    # never does, but which one a launch resolved to must not move the intent.
+    # Appended only when present, so recipes without them hash as before.
+    if not getattr(recipe, "_cli_image", False):
+        for override in getattr(recipe, "overrides", None) or ():
+            if override.container:
+                parts.append("image@when:%s=%s" % (json.dumps(override.when, sort_keys=True, default=str), override.container))
     if port is not None:
         parts.append("port=%s" % port)
     if served_name is not None:
@@ -347,7 +358,9 @@ def derive_recipe_fingerprint(recipe: "Recipe", overrides: dict | None = None) -
 
     parts: list[str] = [generate_intent_id(recipe, overrides=overrides)]
 
-    config_chain = recipe.build_config_chain(overrides)
+    # Declared config: matched `overrides:` layers are placement-dependent; the
+    # declared block itself is hashed below.
+    config_chain = recipe.build_config_chain(overrides, declared=True)
     for key in sorted(config_chain.keys()):
         # ``Recipe.build_config_chain`` injects the top-level model revision as
         # a command-template variable.  The fingerprint already records
@@ -357,10 +370,11 @@ def derive_recipe_fingerprint(recipe: "Recipe", overrides: dict | None = None) -
         # not invalidate existing artifact references.  A revision explicitly
         # declared in defaults or supplied as an override remains part of the
         # config-chain surface because it can change the rendered command.
-        if key == "model_revision" and key not in recipe.defaults and key not in (overrides or {}):
+        if key == "model_revision" and key not in getattr(recipe, "declared_defaults", recipe.defaults) and key not in (overrides or {}):
             continue
         parts.append("%s=%s" % (key, _val(config_chain.get(key))))
 
+    declared_attrs = {"container": "declared_container", "env": "declared_env"}
     for attr in (
         "container",
         "command",
@@ -372,7 +386,10 @@ def derive_recipe_fingerprint(recipe: "Recipe", overrides: dict | None = None) -
         "mods",
         "runtime_config",
     ):
-        parts.append("%s=%s" % (attr, _val(getattr(recipe, attr, None))))
+        value = getattr(recipe, declared_attrs.get(attr, attr), None)
+        if value is None and attr in declared_attrs:
+            value = getattr(recipe, attr, None)
+        parts.append("%s=%s" % (attr, _val(value)))
 
     recipe_layout = getattr(recipe, "layout", None)
     layout = recipe_layout.to_dict() if recipe_layout is not None else None
@@ -385,6 +402,13 @@ def derive_recipe_fingerprint(recipe: "Recipe", overrides: dict | None = None) -
     declared_images = getattr(recipe, "containers", None) or []
     if declared_images:
         parts.append("containers=%s" % _val(sorted((e["host"], e["image"]) for e in declared_images)))
+
+    # The declared `overrides:` block, appended only when present (existing
+    # recipes hash byte-identically). What matched is not hashed: that is a
+    # property of the hosts, not of the recipe.
+    declared_overrides = getattr(recipe, "overrides", None) or []
+    if declared_overrides:
+        parts.append("overrides=%s" % _val([o.to_dict() for o in declared_overrides]))
 
     # Declared hooks only — ``recipe.pre_exec`` and friends are extended in
     # place by v1 mods / builders during resolution (see core/mods.py), and

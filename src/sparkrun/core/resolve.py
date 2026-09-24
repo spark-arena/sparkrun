@@ -80,6 +80,8 @@ def apply_recipe_overrides(
         overrides["max_model_len"] = max_model_len
     if image:
         recipe.container = image
+        # A matched `overrides:` container layer must not replace an explicit --image.
+        recipe._cli_image = True
         if recipe.containers:
             # An explicit --image is a whole-launch override: anything subtler
             # (override the fallback but keep the machine-specific images) would
@@ -100,6 +102,7 @@ def apply_recipe_overrides(
     for k, v in list(overrides.items()):
         if k.startswith("env."):
             recipe.env[k[4:]] = str(v)
+            recipe._cli_env_keys.add(k[4:])
             del overrides[k]
 
     # Resolve runtime with overrides visible to resolvers
@@ -138,6 +141,8 @@ def apply_env_overrides(recipe, env_pairs) -> dict[str, str]:
         applied[key] = value
     if recipe is not None and applied:
         recipe.env.update(applied)
+        # Matched `overrides:` env layers must not replace what -e set.
+        recipe._cli_env_keys.update(applied)
     return applied
 
 
@@ -181,21 +186,21 @@ def load_recipe(
     if is_recipe_url(recipe_name):
         logger.debug("Loading recipe from URL: %s", recipe_name)
         cached_path = fetch_and_cache_recipe(recipe_name)
-        recipe = Recipe.load(cached_path, resolve=resolve)
+        registry_mgr = config.get_registry_manager()
+        registry_mgr.ensure_initialized()
+        recipe = Recipe.load(cached_path, resolve=resolve, registry_manager=registry_mgr, allow_local_includes=False)
         recipe.source_path = recipe_name
         # URL-sourced recipes are never auto-trusted (see
         # core.launcher.resolve_recipe_trust): their hooks require --trust
         # or interactive confirmation.
         tag_recipe_source(recipe, None, config=config, external=True)
-        registry_mgr = config.get_registry_manager()
-        registry_mgr.ensure_initialized()
         return recipe, cached_path, registry_mgr
 
     registry_mgr = config.get_registry_manager()
     registry_mgr.ensure_initialized()
 
     recipe_path = find_recipe(recipe_name, registry_manager=registry_mgr, local_files=discover_cwd_recipes())
-    recipe = Recipe.load(recipe_path, resolve=resolve)
+    recipe = Recipe.load(recipe_path, resolve=resolve, registry_manager=registry_mgr)
 
     scope, _ = parse_scoped_name(recipe_name)
     registry = recipe_registry_entry(recipe_path, registry_mgr, registry_name=scope)

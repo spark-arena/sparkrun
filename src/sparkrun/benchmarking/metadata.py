@@ -86,4 +86,12 @@ def benchmark_recipe_fingerprint(recipe: "Recipe", overrides: dict[str, Any] | N
     measurement_recipe = copy(recipe)
     for field in ("defaults", "env", "runtime_config", "command", "_raw"):
         setattr(measurement_recipe, field, public_benchmark_data(getattr(recipe, field)))
+    # With `overrides:` applied, identity reads the declared snapshot: redact it too.
+    declared = getattr(recipe, "_declared", None)
+    if declared is not None:
+        measurement_recipe._declared = {
+            **declared,
+            "defaults": public_benchmark_data(declared["defaults"]),
+            "env": public_benchmark_data(declared["env"]),
+        }
     return derive_recipe_fingerprint(measurement_recipe, public_benchmark_data(overrides))

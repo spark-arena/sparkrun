@@ -600,7 +600,7 @@ class BenchmarkExecution:
         if not isinstance(declared, str):
             raise ValueError("Benchmark recipe export must return text when no path is supplied")
         declared_text = public_recipe_text(declared)
-        effective = recipe.to_dict(overrides=overrides)
+        effective = recipe.to_dict(overrides=overrides, effective=True)
         # None is explicit unknown here; Recipe.export(None) would reuse the declaration.
         effective["container"] = recipe_container
         text = public_recipe_text(yaml.safe_dump(effective, sort_keys=False))

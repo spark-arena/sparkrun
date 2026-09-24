@@ -741,6 +741,11 @@ def run(
 
     for _note in run_plan.notes:
         click.echo(_note)
+    # Which conditional `overrides:` applied, so a value that differs from the
+    # recipe's `defaults` is explained before anything starts.
+    if run_plan.override_resolution is not None:
+        for _line in run_plan.override_resolution.describe():
+            click.echo(_line)
 
     host_list = list(run_plan.host_list)
     is_solo = run_plan.is_solo

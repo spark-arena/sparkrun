@@ -70,6 +70,15 @@ def _configuration_fingerprint(recipe, overrides):
     recipe = copy(recipe)
     recipe.container = "<verified-image>"
     recipe.defaults = {key: value for key, value in recipe.defaults.items() if key != "image"}
+    # Identity reads the declared snapshot when `overrides:` were applied; it
+    # needs the same normalization, and must not be shared with the caller's.
+    declared = getattr(recipe, "_declared", None)
+    if declared is not None:
+        recipe._declared = {
+            **declared,
+            "container": "<verified-image>",
+            "defaults": {key: value for key, value in declared["defaults"].items() if key != "image"},
+        }
     overrides = {key: value for key, value in (overrides or {}).items() if key != "image"}
     return benchmark_recipe_fingerprint(recipe, overrides)
 
