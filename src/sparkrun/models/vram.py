@@ -8,6 +8,7 @@ architecture.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 from collections.abc import Mapping
@@ -172,10 +173,32 @@ def parse_param_count(value: int | float | str) -> int | None:
     return None
 
 
+def cached_hub_file(model_id: str, filename: str, revision: str | None = None, cache_dir: str | None = None) -> str | None:
+    """Path of *filename* in the local HuggingFace cache, or ``None``. Never touches the network.
+
+    An unpinned *revision* resolves through the cache's ``refs/main``, i.e. the
+    snapshot the weights on this machine came from. For metadata that is the
+    *right* answer, not just a cheaper one: it describes the checkpoint that
+    would actually be served.
+    """
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        from sparkrun.models.download import _hub_cache
+
+        found = try_to_load_from_cache(model_id, filename, cache_dir=_hub_cache(cache_dir) if cache_dir else None, revision=revision)
+    except Exception as error:
+        logger.debug("Local cache lookup failed for %s/%s: %s", model_id, filename, error)
+        return None
+    return found if isinstance(found, str) else None
+
+
 def fetch_model_config(
     model_id: str,
     revision: str | None = None,
     cache_dir: str | None = None,
+    *,
+    local_only: bool = False,
 ) -> dict[str, Any] | None:
     """Fetch model config.json from HuggingFace Hub without downloading weights.
 
@@ -183,11 +206,25 @@ def fetch_model_config(
         model_id: HuggingFace model identifier.
         revision: Optional revision (branch, tag, or commit hash).
         cache_dir: Optional HuggingFace cache directory override.
+        local_only: Read the local cache only (listing paths, which must not
+            touch the network). ``None`` on a miss.
 
-    Returns the config dict or None on failure.  Advisory: runs under the shared
-    Hub metadata budget (:mod:`sparkrun.models.hub`), so it also returns ``None``
+    Returns the config dict or None on failure.  **Cache first**: a copy
+    already in the local HuggingFace cache is read without any network round
+    trip (``hf_hub_download`` alone still validates freshness remotely for an
+    unpinned revision). Otherwise it is advisory and runs under the shared Hub
+    metadata budget (:mod:`sparkrun.models.hub`), so it also returns ``None``
     when the budget is already spent.
     """
+    cached = cached_hub_file(model_id, "config.json", revision, cache_dir)
+    if cached is not None:
+        try:
+            with open(cached) as f:
+                return json.load(f)
+        except (OSError, ValueError) as error:
+            logger.debug("Cached config.json for %s is unreadable (%s); asking the Hub", model_id, error)
+    if local_only:
+        return None
     return hub_metadata_call(
         "config.json",
         model_id,

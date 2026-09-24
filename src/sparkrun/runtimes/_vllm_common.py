@@ -54,6 +54,32 @@ class VllmRuntimeBase(RuntimePlugin):
         """
         return ("--revision",)
 
+    #: The structured command passes a pinned ``model_revision`` itself (see
+    #: :meth:`structured_revision_args`), so ``check_unpinned_model_revision``
+    #: only needs to police ``command:`` templates.
+    structured_command_passes_revision = True
+
+    def structured_revision_args(self, recipe: "Recipe", config) -> list[str]:
+        """``--revision <sha>`` for a pinned repo id, else nothing.
+
+        sparkrun downloads a pinned model by commit SHA, which writes no
+        ``refs/`` entry in the HuggingFace cache, and the container runs
+        ``HF_HUB_OFFLINE=1`` (see :meth:`model_revision_flags`). An engine
+        handed the bare repo id then fails with ``LocalEntryNotFoundError``
+        after the weights have synced. Not for pre-placed weights (an absolute
+        ``model:`` or ``cluster_config.resolved_model_path``), which have no
+        revision to look up.
+        """
+        from sparkrun.core.recipe import is_local_model_path
+        from sparkrun.utils.shell import quote
+
+        revision = getattr(recipe, "model_revision", None)
+        if not revision or is_local_model_path(recipe.model):
+            return []
+        if getattr(getattr(recipe, "cluster_config", None), "resolved_model_path", None):
+            return []
+        return ["--revision", quote(str(revision))]
+
     def known_config_keys(self) -> frozenset[str]:
         """Flag-map keys plus the vLLM keys read outside it.
 
@@ -241,6 +267,7 @@ class VllmRuntimeBase(RuntimePlugin):
         explicitly (or omit them) based on the clustering strategy.
         """
         parts = ["vllm", "serve", recipe.model]
+        parts.extend(self.structured_revision_args(recipe, config))
 
         tp = config.get("tensor_parallel")
         if tp:
@@ -420,6 +447,7 @@ VLLM_FLAG_MAP = {
     "decode_refill_target": "--decode-refill-target",
     "scheduler_reserve_full_isl": "--scheduler-reserve-full-isl",
     "jit_monitor_mode": "--jit-monitor-mode",
+    "disable_custom_all_reduce": "--disable-custom-all-reduce",
 }
 
 # Boolean flags (present = True, absent = False).
@@ -436,6 +464,7 @@ VLLM_BOOL_FLAGS = {
     "enable_request_id_headers",
     "enable_flashinfer_autotune",
     "scheduler_reserve_full_isl",
+    "disable_custom_all_reduce",
 }
 
 # Boolean flags the engine turns on by default (or decides itself), so

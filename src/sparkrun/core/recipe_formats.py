@@ -105,6 +105,11 @@ def unregister_recipe_format(name: str) -> None:
     _FORMATS.pop(name, None)
 
 
+def reset_recipe_formats() -> None:
+    """Drop every registration. Process-global, so the test suite resets it per test."""
+    _FORMATS.clear()
+
+
 def get_recipe_format(name: str | None) -> RecipeFormat | None:
     """The registered format called *name*; ``None`` for the default or an unknown one."""
     if not name or name == DEFAULT_RECIPE_FORMAT:

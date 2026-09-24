@@ -57,6 +57,7 @@ where = ["src"]
 "sparkrun.orchestration.executors" = ["seccomp/*.json", "seccomp/LICENSE", "seccomp/README.md"]
 "sparkrun.plugins.sparkroute" = ["LICENSE", "LICENSE_EXCEPTION", "README.md", "VENDORED.toml"]
 "sparkrun.plugins.coldsnap" = ["LICENSE", "LICENSE_EXCEPTION", "README.md", "VENDORED.toml"]
+"sparkrun.plugins.lil" = ["LICENSE", "bases.yaml"]
 "sparkrun.bin" = ["nv-monitor-*", "prom2json-*"]
 
 [tool.pytest.ini_options]

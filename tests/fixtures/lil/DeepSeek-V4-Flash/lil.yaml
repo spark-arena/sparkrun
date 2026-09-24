@@ -1,0 +1,19 @@
+schema_version: 1
+kind: model
+model: deepseek-ai/DeepSeek-V4-Flash
+revision: 60d8d70770c6776ff598c94bb586a859a38244f1
+family: deepseek-v4
+description: DeepSeek V4 Flash with block-FP8 projections, MXFP4 routed experts, and the standard MTP head
+serving:
+  served_model_name: DeepSeek-V4-Flash
+speculators:
+  default: mtp
+  mtp:
+    tokens: 2
+    moe_quantization: mxfp4
+    draft_sample_method: probabilistic
+    rejection_sample_method: standard
+capacity:
+  gpu_memory_utilization: 0.91
+  max_num_seqs: 64
+  max_num_batched_tokens: 8192

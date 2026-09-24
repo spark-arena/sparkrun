@@ -2385,6 +2385,35 @@ Three rules, each silently wrong if broken:
   format needing remote facts (checkpoint config) must degrade locally, the same
   budget rule as the Hub metadata work.
 
+### lil Catalog (`plugins/lil/`, flag `registry.lil`, alpha)
+
+Serves `@lil/<Entry>` from the [lil](https://github.com/local-inference-lab/lil) launcher's catalog
+(`local-inference-lab/lil-catalog` on Hugging Face, one `<Entry>/lil.yaml` each). It is the first user of three
+seams: a plugin-declared registry (`subpath: "/"`, `format: lil`), a `RecipeFormat`, and recipe `overrides:`. A
+manifest translates to an ordinary v2 recipe for the B12X vLLM image, so `run`, `export`, `-o` and validation need
+nothing lil-specific.
+
+- **Layering** (`manifest.py`) is lil's: vendored bases `defaults` → `family` (parent chain) → entry, where
+  mappings merge and scalars, lists and explicit nulls replace. The bases are **not** in the catalog (the launcher
+  embeds them), so `bases.yaml` is vendored at a pinned upstream commit. `BASES_UPSTREAM.sha256` is its drift guard.
+- **Translation** (`translate.py`) follows lil's `buildVLLMArgv` flag for flag. What lil decides per launch becomes
+  generated overrides: the loader per arch, PCIe vs multi-node all-reduce tuning, speculator alternatives
+  (`-o speculator=dflash|none`), and lil's own `when:` (kind → nodes, arch, tp, speculator → `config.speculator`).
+  lil's memory utilization is tuned for discrete cards, so it applies only off unified memory. GB10 keeps the
+  platform default.
+- **Checkpoint facts** (`checkpoint.py`, a port of lil's MTP expert-backend detection, `fit` TP and cudagraph
+  capture sizes) come **cache first** through the shared Hub path (`models/vram.py:cached_hub_file`,
+  `fetch_model_config(local_only=)`). Listing is offline and degrades (no TP) instead of failing.
+- **TP is decided at load**, because it is workload identity and `when:` reads it: `fit` against DGX Spark GB10
+  usable memory. `--tp` overrides.
+- **Parity is tested, not asserted.** `tests/test_lil_plugin.py::test_matches_lil_render` compares the rendered
+  serve flags against `lil render --format json` output captured in `tests/fixtures/lil/` (8 entries, 0 diffs, TP
+  included). Re-capture with `.slop/lil_capture_golden.py` (needs a built lil binary and the network) when the
+  catalog or the launcher moves.
+- The structured vLLM command now passes a pinned `model_revision` as `--revision` itself
+  (`VllmRuntimeBase.structured_revision_args`). This was a general gap, found by the parity run: without it a
+  command-less pinned recipe dies offline with `LocalEntryNotFoundError`.
+
 ### Plugin-Declared Registries (`core/registry_defaults.py`)
 
 `BOOTSTRAP_REGISTRY_URLS` / `FALLBACK_DEFAULT_REGISTRIES` are closed constants. `register_default_registry(entry,

@@ -1,0 +1,35 @@
+schema_version: 1
+kind: model
+model: local-inference-lab/Qwen3.8-27B-NVFP4-QAD
+description: Qwen3.8 27B quantization-aware distillation with NVFP4 dense MLPs, MXFP8 attention and LM head, and BF16 MTP
+serving:
+  served_model_name: Qwen3.8-27B
+  reasoning_parser: qwen3
+  tool_call_parser: qwen3_xml
+  async_scheduling: true
+  generation_config: vllm
+  multimodal:
+    encoder_tp_mode: data
+    processor_cache_gb: 0
+    limit_per_prompt:
+      image: 1
+cache:
+  kv_cache_dtype: bfloat16
+  block_size: 16
+  mamba_cache_mode: align
+precision:
+  quantization: modelopt_mixed
+kernels:
+  gdn_decode: b12x
+speculators:
+  default: mtp
+  mtp:
+    tokens: 3
+    model: target
+compilation:
+  cudagraph_mode: FULL_AND_PIECEWISE
+  custom_ops:
+    - all
+environment:
+  CUDA_DEVICE_MAX_CONNECTIONS: "32"
+  VLLM_SSM_CONV_STATE_LAYOUT: DS

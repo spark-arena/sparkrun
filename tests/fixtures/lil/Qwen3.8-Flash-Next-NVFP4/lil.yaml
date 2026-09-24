@@ -1,0 +1,56 @@
+schema_version: 1
+kind: model
+model: local-inference-lab/Qwen3.8-Flash-Next-NVFP4
+description: Qwen3.8 Flash Next with NVFP4 routed experts and MTP, plus MXFP8 attention and shared experts
+serving:
+  served_model_name: Qwen3.8-Flash-Next
+  reasoning_parser: qwen3
+  tool_call_parser: qwen3_xml
+  async_scheduling: true
+  multimodal:
+    encoder_tp_mode: data
+    processor_cache_gb: 0
+cache:
+  kv_cache_dtype: bfloat16
+  block_size: 16
+  mamba_cache_mode: align
+precision:
+  quantization: modelopt_mixed
+kernels:
+  gdn_decode: b12x
+  flashinfer_autotune: false
+speculators:
+  default: mtp
+  mtp:
+    tokens: 3
+    moe_quantization: nvfp4
+capacity:
+  gpu_memory_utilization: 0.94
+  max_num_seqs: 4
+compilation:
+  cudagraph_mode: FULL_AND_PIECEWISE
+  custom_ops:
+    - all
+environment:
+  VLLM_SSM_CONV_STATE_LAYOUT: DS
+  VLLM_PLE_CPU_OFFLOAD: "0"
+overrides:
+  - when:
+      tp: 1
+    capacity:
+      max_num_seqs: 1
+      max_model_len: "65536"
+      max_num_batched_tokens: 2048
+      kv_cache_memory_bytes: "1610612736"
+    compilation:
+      pass_config:
+        fuse_act_quant: true
+    environment:
+      VLLM_PLE_CPU_OFFLOAD: "1"
+  - when:
+      kind: spark_rdma
+    capacity:
+      max_num_batched_tokens: 2048
+    compilation:
+      pass_config:
+        fuse_act_quant: true

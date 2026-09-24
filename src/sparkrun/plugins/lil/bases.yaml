@@ -1,0 +1,70 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the lil project
+
+# Model families shared by several catalog entries. An entry names one
+# family; a family may name a parent. Mappings merge, and scalars, lists, or
+# explicit nulls in the entry replace the family value.
+
+schema_version: 1
+
+# Applied to every model before its family and manifest, including entries
+# without a family. Explicit values and nulls in those layers take precedence.
+defaults:
+  serving:
+    async_scheduling: true
+    scheduler_reserve_full_isl: false
+    prefix_caching: true
+    chunked_prefill: true
+    prefill_compute_share: auto
+    prefill_compute_half_life: smooth
+    max_parallel_prefills: auto
+    prefill_policy: decode-aware
+    decode_refill_target: auto
+    generation_config: vllm
+    prompt_tokens_details: true
+    force_include_usage: true
+    request_id_headers: true
+  compilation:
+    cudagraph_mode: FULL_AND_PIECEWISE
+    custom_ops:
+      - all
+  environment:
+    CUDA_DEVICE_MAX_CONNECTIONS: "32"
+    VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS: "1"
+    VLLM_MULTI_STREAM_GEMM_TOKEN_THRESHOLD: "1024"
+
+families:
+  # GLM-5.3 checkpoints with NVFP4 routed experts served through B12X W4A16,
+  # the GLM 4.5 reasoning parser, and the GLM 4.7 tool parser. Recurrent
+  # cache settings belong to the Flash entries, whose architecture has GDN
+  # layers; the DSA architecture has none.
+  glm:
+    serving:
+      reasoning_parser: glm45
+      tool_call_parser: glm47
+    kernels:
+      attention: B12X
+    environment:
+      VLLM_B12X_MOE_FP4_FORCE_A16: "1"
+
+  # DeepSeek V4 checkpoints on the SM120 PCIe stack: block-FP8 projections
+  # with MXFP4 routed experts served through the B12X attention, linear, and
+  # MoE backends, the deepseek_v4 tokenizer and parsers, and thinking enabled
+  # by default in the chat template.
+  deepseek-v4:
+    serving:
+      trust_remote_code: true
+      tokenizer_mode: deepseek_v4
+      reasoning_parser: deepseek_v4
+      tool_call_parser: deepseek_v4
+      chat_template_kwargs:
+        thinking: true
+        reasoning_effort: high
+    cache:
+      block_size: 256
+      prefix_cache_retention_interval: 4096
+    kernels:
+      attention: B12X
+      flashinfer_autotune: true
+    environment:
+      VLLM_B12X_MOE_FP4_FORCE_A16: "0"

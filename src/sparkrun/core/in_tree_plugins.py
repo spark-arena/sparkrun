@@ -75,6 +75,7 @@ IN_TREE_PLUGIN_FEATURES: dict[str, str] = {
     "coldsnap": "plugins.coldsnap",
     "sparkarena": "integration.arena",
     "k8s": "integration.k8s",
+    "lil": "registry.lil",
 }
 
 

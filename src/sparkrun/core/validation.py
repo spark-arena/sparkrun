@@ -849,6 +849,8 @@ def check_unpinned_model_revision(recipe: Recipe, runtime: RuntimePlugin | None)
         return []
 
     command = recipe.command or ""
+    if not command and getattr(runtime, "structured_command_passes_revision", False):
+        return []  # the runtime's structured command passes the pin itself
     tokens = {t for t in command.split() if t != "\\"}
     if any(f in tokens or any(t.startswith(f + "=") for t in tokens) for f in flags):
         return []

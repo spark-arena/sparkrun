@@ -1,0 +1,25 @@
+schema_version: 1
+kind: model
+model: local-inference-lab/GLM-5.3-NVFP4
+family: glm
+description: GLM-5.3 with NVFP4 routed experts and an unquantized BF16 MTP expert layer
+serving:
+  served_model_name: GLM-5.3
+  trust_remote_code: true
+  async_scheduling: true
+  generation_config: vllm
+  long_prefill_token_threshold: 2048
+speculators:
+  default: mtp
+  mtp:
+    tokens: 3
+    moe_quantization: bf16
+    attention: B12X
+    draft_sample_method: probabilistic
+    model: target
+compilation:
+  cudagraph_mode: FULL_AND_PIECEWISE
+  custom_ops:
+    - all
+environment:
+  CUDA_DEVICE_MAX_CONNECTIONS: "32"

@@ -1,0 +1,25 @@
+schema_version: 1
+kind: model
+model: deepseek-ai/DeepSeek-V4-Flash-Vision-Exp
+revision: 6821d6ad3681a4b137b066b76094fa82ebd0a380
+family: deepseek-v4
+description: DeepSeek V4 Flash Vision with the 0731 B12X policy and multimodal DSpark settings; requires vLLM DeepSeek V4 vision support
+serving:
+  served_model_name: DeepSeek-V4-Flash-Vision-Exp
+speculators:
+  default: dspark
+  dspark:
+    tokens: 7
+    model: target
+    draft_sample_method: probabilistic
+    rejection_sample_method: standard
+    adaptive_verification: true
+capacity:
+  gpu_memory_utilization: 0.975
+  max_num_seqs: 8
+  max_num_batched_tokens: 4096
+overrides:
+  - when:
+      speculator: none
+    capacity:
+      max_num_seqs: 32

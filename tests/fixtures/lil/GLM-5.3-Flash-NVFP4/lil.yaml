@@ -1,0 +1,37 @@
+schema_version: 1
+kind: model
+model: local-inference-lab/GLM-5.3-Flash-NVFP4
+family: glm
+description: GLM-5.3 Flash with NVFP4 routed experts and an MXFP8 MTP expert layer
+serving:
+  served_model_name: zai-org/GLM-5.3-Flash
+  multimodal:
+    encoder_tp_mode: data
+    processor_cache_gb: 0
+precision:
+  quantization: modelopt_mixed
+cache:
+  block_size: 256
+  mamba_cache_mode: align
+kernels:
+  flashinfer_autotune: false
+speculators:
+  default: mtp
+  mtp:
+    tokens: 5
+    moe_quantization: mxfp8
+    attention: B12X
+  dflash:
+    tokens: 7
+    model: local-inference-lab/GLM-5.3-Flash-DFlash2
+capacity:
+  max_num_seqs: 4
+environment:
+  VLLM_SSM_CONV_STATE_LAYOUT: DS
+overrides:
+  - when:
+      kind: local
+      tp: 2
+    capacity:
+      max_num_batched_tokens: 2048
+      kv_cache_memory_bytes: 2G

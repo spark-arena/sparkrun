@@ -384,6 +384,16 @@ FEATURE_PLUGIN_COLDSNAP = register_feature(
 )
 
 
+FEATURE_REGISTRY_LIL = register_feature(
+    FeatureFlag(
+        name="registry.lil",
+        description="The @lil registry: lil-catalog launch manifests translated for the B12X vLLM image (on for alpha)",
+        channel_defaults={CHANNEL_ALPHA: True},
+        default=False,
+    )
+)
+
+
 FEATURE_GATEWAY_SPARKROUTE = register_feature(
     FeatureFlag(
         name="gateway.sparkroute",

@@ -55,6 +55,10 @@ def isolate_stateful(tmp_path: Path, monkeypatch):
     from sparkrun.core.registry_defaults import reset_declared_registries
 
     reset_declared_registries()
+    # Recipe formats (core/recipe_formats.py) are the same kind of overlay.
+    from sparkrun.core.recipe_formats import reset_recipe_formats
+
+    reset_recipe_formats()
     # ...and block the send itself, because the env var above is only policy.
     # Any test can drop it (test_telemetry.py does, on purpose), and telemetry
     # fails *open*: a MagicMock config makes `telemetry_enabled` return True,
@@ -128,6 +132,14 @@ def isolate_stateful(tmp_path: Path, monkeypatch):
     import sparkrun.core.registry as _registry_module
 
     monkeypatch.setattr(_registry_module, "BOOTSTRAP_REGISTRY_URLS", [], raising=False)
+
+    # The HuggingFace hub cache is read cache-first by metadata lookups
+    # (models/vram.py:cached_hub_file). Left pointing at the developer's real
+    # cache, a model that happens to be downloaded there would answer instead
+    # of a test's mocked hf_hub_download, so results would depend on the machine.
+    import huggingface_hub.constants as _hf_constants
+
+    monkeypatch.setattr(_hf_constants, "HF_HUB_CACHE", str(tmp_path / "hf-hub-cache"), raising=False)
 
     # Registry synchronization is best-effort and already returns False on
     # failure, so stubbing it takes a path callers handle. Profiling one CLI test showed
