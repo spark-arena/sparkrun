@@ -2321,6 +2321,20 @@ Before launching, sparkrun can pre-sync models and container images from the con
   snapshot's top level only, because narrowing it would re-download every repo that shards weights into a
   subdirectory. `revision` is recipe content, so it is `shlex.quote`d and reaches the downloader through the script's
   positional parameters — interpolating it as command text was a live injection running on every host.
+
+  **A model directory is not always self-contained, and a name is not a file.** Since huggingface_hub 1.32 a
+  cache-wide shared blob store (`hub/blobs/<xx>/<sha256>`, **on by default**, opt out with
+  `HF_HUB_DISABLE_SHARED_BLOBS`) holds the bytes, and the per-model `blobs/<sha>` entries become symlinks pointing
+  *out* of `models--org--name`. Distribution rsyncs that one directory, so `--links` alone reproduced both symlink
+  layers and transferred no payload — rsync still exited 0, and the launch failed much later inside the engine, on
+  the worker, as a rendezvous timeout. Both transfer paths therefore carry **`--copy-unsafe-links`**, which
+  materialises only the links that leave the tree; plain `-L` would dereference the in-tree `snapshots/ -> blobs/`
+  hop as well and roughly double the bytes on disk. Correspondingly, every weight-existence probe asks whether a
+  **readable file** is there, not whether a name is: `is_model_cached` and `resolve_gguf_path` filter on
+  `Path.is_file()`, and the two ensure scripts use `find -L … -type f`. The `-L` is load-bearing in the opposite
+  direction — a bare `-type f` rejects the symlinks every real HF cache uses, and would re-download on every launch.
+  Getting this wrong is self-perpetuating: a bytes-less skeleton that reports "already cached" skips the download
+  *and* the redistribution that would have repaired it (issue #299).
 - **Containers** (`containers/`): Pulls image locally (`containers/registry.py`), then streams via
   `docker save | ssh docker load` (`containers/distribute.py`, `containers/sync.py`). Checks image IDs to skip hosts
   that already have the correct image.
