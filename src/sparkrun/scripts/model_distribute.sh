@@ -37,7 +37,10 @@ for TARGET in $TARGETS; do
     echo "  Syncing $MODEL_PATH -> $TARGET ..."
     # HF cache is content-addressed (blobs/<sha256>): --size-only lets
     # rsync skip already-synced shards instantly.  Quantized weights
-    # don't compress, so -z is omitted.  RSYNC_ATTR_FLAGS defaults to
+    # don't compress, so -z is omitted.  RSYNC_ATTR_FLAGS carries
+    # --copy-unsafe-links, without which a shared blob store living outside
+    # this directory -- huggingface_hub 1.32 and later, on by default -- is
+    # never transferred and the target is left holding dangling links (#299).  RSYNC_ATTR_FLAGS defaults to
     # "-a --no-perms --no-group --omit-dir-times" -- the attributes rsync
     # cannot apply to a destination directory it does not own, which is
     # what made a completed transfer exit 23 on a shared/NFS cache.  It

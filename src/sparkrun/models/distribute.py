@@ -46,17 +46,36 @@ _SHARED_CACHE_FSTYPES = {"nfs", "nfs4", "cifs", "smb3"}
 def _model_rsync_options(preserve_perms: bool) -> list[str]:
     """Return the rsync flag list for a model-cache transfer.
 
-    The HF cache is content-addressed (``blobs/<sha256>``), so transfers only
-    need contents + symlinks; ``--size-only`` skips already-synced shards
-    instantly.  When *preserve_perms* is ``True`` we keep ``-a`` (archive,
-    historical default) minus :data:`~sparkrun.orchestration.ssh.NFS_SAFE_ATTR_OPTS`,
+    A model directory is content-addressed (``blobs/<sha256>``) but is **not
+    always self-contained**: since huggingface_hub 1.32 a cache-wide shared blob
+    store (``hub/blobs/<xx>/<sha256>``, on by default) holds the bytes, and the
+    per-model ``blobs/<sha>`` entries are symlinks pointing OUT of the copied
+    tree.  ``--links`` alone therefore reproduced both symlink layers and
+    transferred no payload at all, leaving the target with a complete skeleton of
+    dangling links -- and rsync still exited 0 (#299).
+
+    ``--copy-unsafe-links`` materialises only the links that leave the tree, so
+    the in-tree ``snapshots/ -> blobs/`` ones stay links and the target lands as
+    a self-contained cache with each blob stored **exactly once**.  Plain ``-L``
+    would dereference both layers and roughly double the bytes on disk.
+    ``--size-only`` skips already-synced shards instantly.
+
+    When *preserve_perms* is ``True`` we keep ``-a`` (archive, historical default) minus :data:`~sparkrun.orchestration.ssh.NFS_SAFE_ATTR_OPTS`,
     which is what makes the default work on a shared/NFS cache without
     configuration.  When ``False`` we use ``-r --links``, additionally dropping
     file times — the harder relaxation, for destinations where even that EPERMs.
     """
     if preserve_perms:
-        return ["-a", "--size-only", "--mkpath", "--partial", "--links", *NFS_SAFE_ATTR_OPTS]
-    return ["-r", "--links", "--size-only", "--mkpath", "--partial"]
+        return [
+            "-a",
+            "--size-only",
+            "--mkpath",
+            "--partial",
+            "--links",
+            "--copy-unsafe-links",
+            *NFS_SAFE_ATTR_OPTS,
+        ]
+    return ["-r", "--links", "--copy-unsafe-links", "--size-only", "--mkpath", "--partial"]
 
 
 def detect_shared_cache(
@@ -460,7 +479,7 @@ def distribute_model_from_head(
         ssh_key=ssh_key,
         ssh_options=ssh_options,
     )
-    rsync_attr_flags = " ".join(["-a", *NFS_SAFE_ATTR_OPTS]) if preserve_perms else "-r --links"
+    rsync_attr_flags = " ".join(["-a", "--copy-unsafe-links", *NFS_SAFE_ATTR_OPTS]) if preserve_perms else "-r --links --copy-unsafe-links"
     dist_script = read_script("model_distribute.sh").format(
         # Validated rather than quoted (double-quoted on use, must still expand
         # $HOME on the head); targets get the same treatment as the image

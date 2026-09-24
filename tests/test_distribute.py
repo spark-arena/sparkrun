@@ -12,6 +12,8 @@ Covers:
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from unittest import mock
 
 import pytest
@@ -1054,7 +1056,17 @@ class TestDistributeModelFromLocal:
 
         distribute_model_from_local("org/model", ["h1"])
         opts = mock_rsync.call_args.kwargs["rsync_options"]
-        assert opts == ["-a", "--size-only", "--mkpath", "--partial", "--links", "--no-perms", "--no-group", "--omit-dir-times"]
+        assert opts == [
+            "-a",
+            "--size-only",
+            "--mkpath",
+            "--partial",
+            "--links",
+            "--copy-unsafe-links",
+            "--no-perms",
+            "--no-group",
+            "--omit-dir-times",
+        ]
         # Best-effort chown runs when preserving perms.
         mock_fix.assert_called_once()
 
@@ -1093,7 +1105,7 @@ class TestDistributeModelFromLocal:
 
         distribute_model_from_local("org/model", ["h1"], preserve_perms=False)
         opts = mock_rsync.call_args.kwargs["rsync_options"]
-        assert opts == ["-r", "--links", "--size-only", "--mkpath", "--partial"]
+        assert opts == ["-r", "--links", "--copy-unsafe-links", "--size-only", "--mkpath", "--partial"]
         assert "-a" not in opts
         # No ownership/group preservation flags that trip chgrp under root_squash.
         assert "-o" not in opts and "-g" not in opts
@@ -1221,7 +1233,7 @@ class TestDistributeModelFromHead:
         dist_script = mock_run.call_args_list[1][0][1]
         # The head→worker hop lands on the same kind of destination as the
         # control→host one, so it carries the same NFS-safe relaxation.
-        assert 'RSYNC_ATTR_FLAGS="-a --no-perms --no-group --omit-dir-times"' in dist_script
+        assert 'RSYNC_ATTR_FLAGS="-a --copy-unsafe-links --no-perms --no-group --omit-dir-times"' in dist_script
 
     @mock.patch("sparkrun.orchestration.ssh.run_remote_script_streaming")
     def test_no_preserve_perms_renders_recursive_flag(self, mock_run):
@@ -1231,7 +1243,7 @@ class TestDistributeModelFromHead:
 
         distribute_model_from_head("org/model", ["head", "w1"], preserve_perms=False)
         dist_script = mock_run.call_args_list[1][0][1]
-        assert 'RSYNC_ATTR_FLAGS="-r --links"' in dist_script
+        assert 'RSYNC_ATTR_FLAGS="-r --links --copy-unsafe-links"' in dist_script
 
     @mock.patch("sparkrun.orchestration.ssh.run_remote_script_streaming")
     def test_skip_fan_out_ensures_head_only(self, mock_run):
@@ -2222,3 +2234,146 @@ class TestEmbeddedDistributeScriptsParallel:
         )
         proc = subprocess.run(["bash", "-n"], input=s, text=True, capture_output=True)
         assert proc.returncode == 0, proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# Shared blob store: a model directory is not always self-contained (#299)
+# ---------------------------------------------------------------------------
+
+
+def _rsync_has(*flags: str) -> bool:
+    """Whether the local rsync advertises every flag in *flags*."""
+    binary = shutil.which("rsync")
+    if binary is None:
+        return False
+    proc = subprocess.run([binary, "--help"], capture_output=True, text=True)
+    help_text = proc.stdout + proc.stderr
+    return all(flag in help_text for flag in flags)
+
+
+needs_rsync = pytest.mark.skipif(
+    not _rsync_has("--copy-unsafe-links", "--mkpath"),
+    reason="requires rsync with --copy-unsafe-links and --mkpath",
+)
+
+_PAYLOAD = "WEIGHTS-PAYLOAD"
+_SHA = "a" * 64
+
+
+def _make_shared_blob_cache(root):
+    """Build a hub cache in the huggingface_hub >= 1.32 shared-blob layout.
+
+    Mirrors the real thing: a large file is reached through *two* symlink hops,
+    the second of which leaves the model directory for the cache-wide store,
+    while small files are ordinary files inside it.  Returns the model dir.
+    """
+    hub = root / "hub"
+    cas = hub / "blobs" / _SHA[:2]
+    cas.mkdir(parents=True)
+    (cas / _SHA).write_text(_PAYLOAD)
+    (hub / "blobs" / ".huggingface-shared-blobs").write_text("1")
+
+    model = hub / "models--org--model"
+    (model / "blobs").mkdir(parents=True)
+    snapshot = model / "snapshots" / "rev1"
+    snapshot.mkdir(parents=True)
+
+    # Leaves the model directory -> "unsafe" to rsync; this is the payload hop.
+    (model / "blobs" / _SHA).symlink_to(f"../../blobs/{_SHA[:2]}/{_SHA}")
+    # Stays inside the model directory -> "safe"; must remain a symlink.
+    (snapshot / "model-00001-of-00001.safetensors").symlink_to(f"../../blobs/{_SHA}")
+    # Small files are stored directly, exactly as a real cache does.
+    (model / "blobs" / "smallsha").write_text("{}")
+    (snapshot / "config.json").symlink_to("../../blobs/smallsha")
+    return model
+
+
+def _model_options(preserve_perms: bool):
+    """Lazily fetch the real flag list, matching this file's import style."""
+    from sparkrun.models.distribute import _model_rsync_options
+
+    return _model_rsync_options(preserve_perms)
+
+
+def _rsync(src, dst, options):
+    dst.mkdir(parents=True, exist_ok=True)
+    return subprocess.run(
+        ["rsync", *options, f"{src}/", f"{dst}/"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+def _weights(model_dir):
+    return model_dir / "snapshots" / "rev1" / "model-00001-of-00001.safetensors"
+
+
+@needs_rsync
+class TestSharedBlobStoreTransfer:
+    """The flags must move the bytes, not just the symlinks that name them.
+
+    Both defects in #299 lived entirely in rsync's symlink semantics, which no
+    amount of mocking the rsync call would have caught -- so the flag list is
+    exercised against a real fixture tree by a real rsync.
+    """
+
+    def test_payload_reaches_the_target(self, tmp_path):
+        model = _make_shared_blob_cache(tmp_path / "src")
+        dst = tmp_path / "dst"
+
+        proc = _rsync(model, dst, _model_options(True))
+
+        assert proc.returncode == 0, proc.stderr
+        dangling = [p for p in (dst / "snapshots" / "rev1").iterdir() if not p.exists()]
+        assert dangling == []
+        assert _weights(dst).read_text() == _PAYLOAD
+
+    def test_in_tree_links_survive_and_the_blob_is_stored_once(self, tmp_path):
+        """Only the hop that leaves the tree is materialised.
+
+        Plain ``-L`` would dereference the snapshot entry too, storing the
+        payload twice; the point of ``--copy-unsafe-links`` is that it does not.
+        """
+        model = _make_shared_blob_cache(tmp_path / "src")
+        dst = tmp_path / "dst"
+
+        _rsync(model, dst, _model_options(True))
+
+        assert _weights(dst).is_symlink(), "in-tree snapshot link should stay a link"
+        blob = dst / "blobs" / _SHA
+        assert blob.is_file() and not blob.is_symlink(), "out-of-tree link should be materialised"
+        copies = [p for p in dst.rglob("*") if not p.is_symlink() and p.is_file() and p.read_text() == _PAYLOAD]
+        assert len(copies) == 1, f"payload stored {len(copies)} times, expected once"
+
+    def test_without_copy_unsafe_links_the_target_holds_no_bytes(self, tmp_path):
+        """The pre-fix behaviour, pinned so the flag cannot be dropped again.
+
+        Note rsync still exits 0 -- which is why the broken distribution was
+        reported as a success and only failed later, inside the engine.
+        """
+        model = _make_shared_blob_cache(tmp_path / "src")
+        dst = tmp_path / "dst"
+        options = [o for o in _model_options(True) if o != "--copy-unsafe-links"]
+
+        proc = _rsync(model, dst, options)
+
+        assert proc.returncode == 0
+        assert not _weights(dst).exists(), "expected the historical dangling-skeleton result"
+
+    def test_resync_repairs_a_target_left_dangling(self, tmp_path):
+        """A host already broken by an earlier release must self-heal.
+
+        The cache check reports the skeleton as a miss once #299 is fixed, so
+        this re-sync is what actually runs on the next launch.
+        """
+        model = _make_shared_blob_cache(tmp_path / "src")
+        dst = tmp_path / "dst"
+        broken = [o for o in _model_options(True) if o != "--copy-unsafe-links"]
+        _rsync(model, dst, broken)
+        assert not _weights(dst).exists()
+
+        proc = _rsync(model, dst, _model_options(True))
+
+        assert proc.returncode == 0, proc.stderr
+        assert _weights(dst).read_text() == _PAYLOAD
