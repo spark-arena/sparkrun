@@ -19,7 +19,7 @@ import hashlib
 import json
 import logging
 
-from sparkrun.core.hardware import AcceleratorSpec, HostHardware
+from sparkrun.core.hardware import AcceleratorSpec, HostHardware, normalize_compute_capability
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +51,16 @@ if command -v nvidia-smi >/dev/null 2>&1; then
         emit "NVIDIA_GPU_${NVIDIA_COUNT}_MEMORY_MIB" "$mem"
         NVIDIA_COUNT=$((NVIDIA_COUNT + 1))
     done < <(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || true)
+    # Separate query: drivers predating the compute_cap field reject the whole
+    # query, which must not cost the name/memory detection above. Index order
+    # matches the query above (both enumerate in nvidia-smi's GPU order).
+    CC_INDEX=0
+    while IFS= read -r cc; do
+        cc=$(printf '%s' "$cc" | awk '{$1=$1};1')
+        [[ -z "$cc" ]] && continue
+        emit "NVIDIA_GPU_${CC_INDEX}_COMPUTE_CAP" "$cc"
+        CC_INDEX=$((CC_INDEX + 1))
+    done < <(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
 fi
 emit NVIDIA_GPU_COUNT "$NVIDIA_COUNT"
 emit NVIDIA_PRESENT "$([[ $NVIDIA_COUNT -gt 0 ]] && echo 1 || echo 0)"
@@ -196,44 +206,43 @@ mib_to_gb = _mib_to_gb
 
 
 def _group_accelerators(
-    entries: list[tuple[str, str, float | None]],
+    entries: list[tuple],
     vendor: str,
     capabilities: frozenset[str],
 ) -> list[AcceleratorSpec]:
-    """Compact a list of per-index (idx, model, memory_gb) into AcceleratorSpec groups."""
-    if not entries:
-        return []
+    """Compact per-index ``(idx, model, memory_gb[, compute_capability])`` into groups.
+
+    Adjacent GPUs group only when every recorded field agrees, so a host whose
+    GPUs report different capabilities keeps them apart.
+    """
     grouped: list[AcceleratorSpec] = []
-    current_model: str | None = None
-    current_mem: float | None = None
+    current: tuple | None = None
     current_count = 0
-    for _idx, model, mem in entries:
-        if model == current_model and mem == current_mem:
-            current_count += 1
-            continue
-        if current_model is not None:
-            grouped.append(
-                AcceleratorSpec(
-                    vendor=vendor,
-                    model=current_model,
-                    count=current_count,
-                    memory_gb=current_mem,
-                    capabilities=capabilities,
-                )
-            )
-        current_model = model
-        current_mem = mem
-        current_count = 1
-    if current_model is not None:
+
+    def _flush() -> None:
+        model, mem, cc = current
         grouped.append(
             AcceleratorSpec(
                 vendor=vendor,
-                model=current_model,
+                model=model,
                 count=current_count,
-                memory_gb=current_mem,
+                memory_gb=mem,
                 capabilities=capabilities,
+                compute_capability=cc,
             )
         )
+
+    for entry in entries:
+        key = (entry[1], entry[2], entry[3] if len(entry) > 3 else None)
+        if key == current:
+            current_count += 1
+            continue
+        if current is not None:
+            _flush()
+        current = key
+        current_count = 1
+    if current is not None:
+        _flush()
     return grouped
 
 
@@ -251,7 +260,8 @@ def build_host_hardware(parsed: dict[str, str]) -> HostHardware:
         for i in range(nvidia_count):
             raw_name = parsed.get("NVIDIA_GPU_%d_NAME" % i, "")
             mem = _mib_to_gb(parsed.get("NVIDIA_GPU_%d_MEMORY_MIB" % i))
-            entries.append((i, _normalize_nvidia_model(raw_name), mem))
+            cc = normalize_compute_capability(parsed.get("NVIDIA_GPU_%d_COMPUTE_CAP" % i))
+            entries.append((i, _normalize_nvidia_model(raw_name), mem, cc))
         caps = frozenset({"cuda"}) | rdma_cap
         accelerators.extend(_group_accelerators(entries, vendor="nvidia", capabilities=caps))
 

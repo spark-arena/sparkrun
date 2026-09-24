@@ -9,8 +9,53 @@ Assumed hardware carries provenance and is never device detection.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field, replace
 from typing import Any
+
+
+_COMPUTE_CAPABILITY_RE = re.compile(r"^(\d{1,2})\.(\d)$")
+_ARCH_RE = re.compile(r"^sm_?(\d{2,3})[af]?$")
+
+
+def normalize_compute_capability(value: Any) -> str | None:
+    """Canonical ``"<major>.<minor>"`` form, or ``None`` when *value* is not one.
+
+    Accepts what ``nvidia-smi --query-gpu=compute_cap`` prints (``"12.1"``) and
+    the numeric YAML spelling a hand-written inventory produces (``12.1``).
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    text = str(value).strip()
+    match = _COMPUTE_CAPABILITY_RE.match(text)
+    if match is None:
+        return None
+    return "%d.%s" % (int(match.group(1)), match.group(2))
+
+
+def compute_capability_to_arch(capability: str | None) -> str | None:
+    """``"12.1"`` → ``"sm_121"``; ``None`` for anything unparseable."""
+    canonical = normalize_compute_capability(capability)
+    if canonical is None:
+        return None
+    major, minor = canonical.split(".")
+    return "sm_%s%s" % (major, minor)
+
+
+def normalize_arch(value: Any) -> str | None:
+    """Canonical ``sm_<NN>`` spelling of an architecture name.
+
+    Drops the arch-specific / family suffix (``sm_120a`` → ``sm_120``), so the
+    feature-set spellings CUDA toolchains use compare equal to the architecture
+    itself. Also accepts a compute capability (``"12.0"``).
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    text = str(value).strip().lower()
+    match = _ARCH_RE.match(text)
+    if match is not None:
+        return "sm_%s" % match.group(1)
+    return compute_capability_to_arch(text)
 
 
 @dataclass(frozen=True)
@@ -56,6 +101,16 @@ class AcceleratorSpec:
     memory_capacity_source: str | None = None
     """Ephemeral capacity provenance; not persisted as an inventory override."""
 
+    compute_capability: str | None = None
+    """``"<major>.<minor>"`` as recorded by inventory (probed or hand-written).
+
+    Not the authoritative value: compute capability is a fixed property of an
+    accelerator model, so a platform that knows the model declares it
+    (:meth:`~sparkrun.platforms.base.HardwarePlatformPlugin.default_compute_capability`)
+    and that declaration wins. This field fills in for models no platform
+    declares, and is what ``validate_host`` checks the declaration against.
+    Resolve through :func:`sparkrun.platforms.resolve_compute_capability`."""
+
     def to_dict(self) -> dict[str, Any]:
         """JSON/YAML-serializable form. Omits defaults to keep YAML small."""
         d: dict[str, Any] = {"vendor": self.vendor, "model": self.model}
@@ -67,6 +122,8 @@ class AcceleratorSpec:
             d["capabilities"] = sorted(self.capabilities)
         if self.max_gpu_memory_utilization is not None:
             d["max_gpu_memory_utilization"] = self.max_gpu_memory_utilization
+        if self.compute_capability is not None:
+            d["compute_capability"] = self.compute_capability
         return d
 
     @classmethod
@@ -80,6 +137,7 @@ class AcceleratorSpec:
             memory_gb=float(data["memory_gb"]) if data.get("memory_gb") is not None else None,
             capabilities=frozenset(str(c) for c in caps),
             max_gpu_memory_utilization=float(raw_max_util) if raw_max_util is not None else None,
+            compute_capability=normalize_compute_capability(data.get("compute_capability")),
         )
 
 

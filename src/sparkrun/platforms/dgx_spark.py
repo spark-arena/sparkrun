@@ -16,6 +16,7 @@ from sparkrun.core.setup_plans import SetupPlan
 # Per-runtime defaults curated for GB10 / Spark Arena.  ``None`` means
 # "no default image — recipe.container must be set explicitly".
 DGX_SPARK_MEMORY_GB = 121.0
+DGX_SPARK_COMPUTE_CAPABILITY = "12.1"
 DGX_SPARK_SCHEDULING_FRACTION = 0.90
 
 
@@ -60,9 +61,16 @@ _DGX_SPARK_RUNTIME_FLAGS: dict[str, dict[str, object]] = {
 # and are deliberately left alone.
 _TORCH_EXPANDABLE_SEGMENTS = {"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"}
 
+# ``CUTE_DSL_ARCH`` names the target the CuTe DSL (nvidia-cutlass-dsl) JIT
+# compiles for. B12X and FlashInfer's CuTe kernels need the arch-specific
+# ``sm_121a`` feature set on GB10, and every B12X recipe used to restate it in
+# its own ``env:``. It is a fact about the hardware, not the model, so it lives
+# here. A recipe that sets it still wins, since this tier is the lowest.
+_CUTE_DSL_ARCH = {"CUTE_DSL_ARCH": "sm_121a"}
+
 _DGX_SPARK_RUNTIME_ENV: dict[str, dict[str, str]] = {
-    "vllm": _TORCH_EXPANDABLE_SEGMENTS,
-    "sglang": _TORCH_EXPANDABLE_SEGMENTS,
+    "vllm": {**_TORCH_EXPANDABLE_SEGMENTS, **_CUTE_DSL_ARCH},
+    "sglang": {**_TORCH_EXPANDABLE_SEGMENTS, **_CUTE_DSL_ARCH},
 }
 
 
@@ -156,6 +164,11 @@ class DgxSparkPlatform(HardwarePlatformPlugin):
             return DGX_SPARK_MEMORY_GB
         return None
 
+    def default_compute_capability(self, accelerator: AcceleratorSpec) -> str | None:
+        if accelerator.vendor == "nvidia" and accelerator.model == "gb10":
+            return DGX_SPARK_COMPUTE_CAPABILITY
+        return None
+
     def default_max_gpu_memory_utilization(self, accelerator: AcceleratorSpec) -> float | None:
         """GB10 unified memory → cap usable memory at 0.90 for scheduling/fit."""
         if accelerator.vendor == "nvidia" and accelerator.model == "gb10":
@@ -188,6 +201,8 @@ class DgxSparkPlatform(HardwarePlatformPlugin):
                 % (", ".join(nvidia_models) if nvidia_models else "none")
             )
             return warnings
+
+        warnings.extend(self.compute_capability_warnings(host_hardware))
 
         # Assumed hardware intentionally omits fabric capabilities. The caller
         # reports that hardware is unverified; absence here is not detection.

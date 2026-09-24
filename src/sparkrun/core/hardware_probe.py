@@ -68,6 +68,14 @@ if command -v nvidia-smi >/dev/null 2>&1; then
         emit "NVIDIA_GPU_${{NVIDIA_COUNT}}_MEMORY_MIB" "$mem"
         NVIDIA_COUNT=$((NVIDIA_COUNT + 1))
     done < <(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || true)
+    # Separate query so drivers without compute_cap keep name/memory detection.
+    CC_INDEX=0
+    while IFS= read -r cc; do
+        cc=$(printf '%s' "$cc" | awk '{{$1=$1}};1')
+        [[ -z "$cc" ]] && continue
+        emit "NVIDIA_GPU_${{CC_INDEX}}_COMPUTE_CAP" "$cc"
+        CC_INDEX=$((CC_INDEX + 1))
+    done < <(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
 fi
 emit NVIDIA_GPU_COUNT "$NVIDIA_COUNT"
 emit NVIDIA_PRESENT "$([[ $NVIDIA_COUNT -gt 0 ]] && echo 1 || echo 0)"

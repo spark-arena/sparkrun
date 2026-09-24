@@ -113,7 +113,7 @@ def test_dgx_spark_runtime_flags_non_gb10_empty():
 def test_dgx_spark_env_defaults_match_by_family():
     """The table is family-keyed, so every vllm variant inherits without enumeration."""
     p = DgxSparkPlatform()
-    want = {"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"}
+    want = {"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True", "CUTE_DSL_ARCH": "sm_121a"}
     assert p.default_env("vllm-ray", _gb10_accel(), runtime_family="vllm") == want
     assert p.default_env("eugr-vllm", _gb10_accel(), runtime_family="vllm") == want
     assert p.default_env("sglang", _gb10_accel(), runtime_family="sglang") == want
@@ -121,7 +121,10 @@ def test_dgx_spark_env_defaults_match_by_family():
 
 def test_dgx_spark_env_defaults_family_omitted_falls_back_to_name():
     """Callers that pass no family still match a runtime whose name IS the family."""
-    assert DgxSparkPlatform().default_env("sglang", _gb10_accel()) == {"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"}
+    assert DgxSparkPlatform().default_env("sglang", _gb10_accel()) == {
+        "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+        "CUTE_DSL_ARCH": "sm_121a",
+    }
     assert DgxSparkPlatform().default_env("vllm-ray", _gb10_accel()) == {}
 
 
@@ -134,8 +137,10 @@ def test_dgx_spark_env_defaults_non_gb10_accelerator_empty():
     assert DgxSparkPlatform().default_env("vllm-ray", h100, runtime_family="vllm") == {}
 
 
-def test_base_platform_env_defaults_empty():
-    assert GenericNvidiaPlatform().default_env("vllm-ray", _gb10_accel(), runtime_family="vllm") == {}
+def test_generic_platform_env_defaults_skip_undeclared_models():
+    """No declared or recorded capability → no CuTe target, so nothing is published."""
+    unknown = AcceleratorSpec(vendor="nvidia", model="unknown-gpu")
+    assert GenericNvidiaPlatform().default_env("vllm-ray", unknown, runtime_family="vllm") == {}
 
 
 def test_dgx_spark_executor_config_pins_gpus_mode():

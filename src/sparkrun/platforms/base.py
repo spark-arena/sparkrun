@@ -21,7 +21,7 @@ from logging import Logger
 
 from scitrera_app_framework import Plugin, Variables
 
-from sparkrun.core.hardware import AcceleratorSpec, HostHardware
+from sparkrun.core.hardware import AcceleratorSpec, HostHardware, normalize_compute_capability
 from sparkrun.core.setup_plans import SetupPlan
 from sparkrun.orchestration.collectives import CollectiveBackend
 
@@ -210,6 +210,42 @@ class HardwarePlatformPlugin(Plugin):
         """
         return None
 
+    def default_compute_capability(self, accelerator: AcceleratorSpec) -> str | None:
+        """Declared ``"<major>.<minor>"`` compute capability for *accelerator*.
+
+        Compute capability is fixed per accelerator model, so the platform that
+        recognizes the model is the authority, and its answer needs no probe.
+        That keeps ``arch`` known for assumed hardware, under ``--dry-run``,
+        and before placement. It **outranks** inventory, which is the reverse
+        of :meth:`default_accelerator_memory_gb`: memory is a measurement, while
+        a probed compute capability that disagrees with the model means
+        misdetection. :meth:`compute_capability_warnings` reports that case.
+
+        Return a value only for models this platform qualifies. Unknown models
+        keep ``None``; never infer from the vendor alone.
+        """
+        return None
+
+    def compute_capability_warnings(self, host_hardware: HostHardware) -> list[str]:
+        """Warn where inventory disagrees with this platform's declaration.
+
+        The probe is a cross-check on :meth:`default_compute_capability`, not
+        a source. Shared so every platform's ``validate_host`` reports the
+        disagreement the same way.
+        """
+        warnings: list[str] = []
+        for accel in host_hardware.accelerators:
+            declared = normalize_compute_capability(self.default_compute_capability(accel))
+            recorded = normalize_compute_capability(accel.compute_capability)
+            if declared is None or recorded is None or declared == recorded:
+                continue
+            warnings.append(
+                "%s declares compute capability %s for %s %s, but the host reports %s — "
+                "the host may not be the hardware this platform describes"
+                % (self.display_name or self.platform_name, declared, accel.vendor, accel.model, recorded)
+            )
+        return warnings
+
     def validate_host(self, host_hardware: HostHardware) -> list[str]:
         """Return a list of warning strings about this host's hardware.
 
@@ -217,7 +253,8 @@ class HardwarePlatformPlugin(Plugin):
         means there are concerns the user should be aware of (e.g. missing
         RoCEv2 capability on DGX Spark, mismatched accelerator family).
 
-        Default implementation returns an empty list — subclasses may
-        override to add platform-specific validation.
+        Default implementation reports only
+        :meth:`compute_capability_warnings`; subclasses that override should
+        include it.
         """
-        return []
+        return self.compute_capability_warnings(host_hardware)

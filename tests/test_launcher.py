@@ -107,7 +107,7 @@ class _StubRuntimeForEnv:
         return self._family
 
 
-_EXPANDABLE = {"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"}
+_EXPANDABLE = {"PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True", "CUTE_DSL_ARCH": "sm_121a"}
 
 
 @pytest.mark.parametrize(
@@ -130,10 +130,10 @@ def test_platform_env_defaults_skips_non_torch_runtimes(runtime_name):
     assert resolve_platform_env_defaults(_StubRuntimeForEnv(runtime_name), _nvidia_hw()) == {}
 
 
-def test_platform_env_defaults_non_gb10_noop():
-    """A non-GB10 NVIDIA host is served by the generic platform — no env."""
+def test_platform_env_defaults_non_gb10_gets_generic_tier_only():
+    """A non-GB10 NVIDIA host is served by the generic platform: no GB10 allocator env, only its CuTe target."""
     h100 = HostHardware(accelerators=[AcceleratorSpec(vendor="nvidia", model="h100")])
-    assert resolve_platform_env_defaults(_StubRuntimeForEnv("vllm-ray", "vllm"), h100) == {}
+    assert resolve_platform_env_defaults(_StubRuntimeForEnv("vllm-ray", "vllm"), h100) == {"CUTE_DSL_ARCH": "sm_90a"}
 
 
 def test_platform_env_defaults_unclaimed_hardware_noop():

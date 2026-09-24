@@ -40,7 +40,7 @@ from sparkrun.core.registration import enlist_registry_state
 
 import logging
 
-from sparkrun.core.hardware import HostHardware
+from sparkrun.core.hardware import HostHardware, compute_capability_to_arch, normalize_compute_capability
 from sparkrun.platforms.base import EXT_PLATFORM, HardwarePlatformPlugin
 from sparkrun.platforms.dgx_spark import DgxSparkPlatform
 from sparkrun.platforms.nvidia_generic import GenericNvidiaPlatform
@@ -133,6 +133,8 @@ __all__ = [
     "get_platform_by_name",
     "iter_platforms",
     "register_platform",
+    "resolve_accelerator_arch",
+    "resolve_compute_capability",
     "resolve_platform",
 ]
 
@@ -142,6 +144,29 @@ def resolve_accelerator_platform(accelerator, host_hardware: HostHardware) -> Ha
     from dataclasses import replace
 
     return resolve_platform(replace(host_hardware, accelerators=[replace(accelerator, count=1)]), strict=True)
+
+
+def resolve_compute_capability(accelerator, host_hardware: HostHardware) -> tuple[str | None, str]:
+    """Compute capability for *accelerator* and where it came from.
+
+    Platform declaration → inventory (probed or hand-written) → ``None``. The
+    platform outranks inventory because the capability is fixed per model; see
+    :meth:`HardwarePlatformPlugin.default_compute_capability`.
+    """
+    platform = resolve_accelerator_platform(accelerator, host_hardware)
+    if platform is not None:
+        declared = normalize_compute_capability(platform.default_compute_capability(accelerator))
+        if declared is not None:
+            return declared, "platform %s" % platform.platform_name
+    recorded = normalize_compute_capability(accelerator.compute_capability)
+    if recorded is not None:
+        return recorded, host_hardware.source or "inventory"
+    return None, "unknown"
+
+
+def resolve_accelerator_arch(accelerator, host_hardware: HostHardware) -> str | None:
+    """``sm_<NN>`` for *accelerator* (``"12.1"`` → ``"sm_121"``), or ``None``."""
+    return compute_capability_to_arch(resolve_compute_capability(accelerator, host_hardware)[0])
 
 
 def accelerator_defaults(host_hardware: HostHardware, getter, *, overrides=None) -> dict:

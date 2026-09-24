@@ -177,7 +177,7 @@ stay in-process (not SAF-scanned) because their resolution is **order-sensitive*
 onto SAF; platforms did not.
 
 **Platform default tiers.** A platform publishes hardware-conditional defaults
-through five hooks, each folded in at a different layer so anything the user
+through six hooks, each folded in at a different layer so anything the user
 wrote always wins:
 
 | Hook                                   | Scope                        | Folded in by                                              |
@@ -187,6 +187,7 @@ wrote always wins:
 | `default_env(runtime, accel, family=)` | container env                | `launcher.resolve_platform_env_defaults` (lowest env tier) |
 | `default_executor_config(executor)`    | `ExecutorConfig`             | `executor.resolve_executor(host_hardware=…)`, layer 9      |
 | `default_max_gpu_memory_utilization`   | usable-memory cap            | `core.limits`                                              |
+| `default_compute_capability(accel)`    | compute capability / `arch`  | `platforms.resolve_compute_capability`                     |
 
 All are keyed off the **head host's** hardware — one image / serve command /
 executor is built per launch, so a representative host is the right scope.
@@ -194,8 +195,21 @@ executor is built per launch, so a representative host is the right scope.
 vllm-ray / vllm-distributed / eugr-vllm) alongside the exact name, so a platform
 can target a family without enumerating variants; exact name wins over family.
 Today DGX Spark uses this for `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`
-on vllm/sglang and `gpu_access_mode: gpus` (classic `--gpus` rather than CDI,
+and `CUTE_DSL_ARCH=sm_121a` on vllm/sglang and `gpu_access_mode: gpus` (classic `--gpus` rather than CDI,
 whose `/etc/cdi/nvidia.yaml` goes stale across driver upgrades).
+
+**Compute capability is declared, not probed.** It is fixed per accelerator
+model, so the platform recognizing the model is the authority (GB10 → `12.1`;
+`nvidia-generic` keeps a table keyed by model-slug prefix). That keeps `arch`
+known for assumed hardware, `--dry-run` and pre-placement. It is the reverse of
+memory: a declaration **outranks** inventory, because a probed value that
+disagrees means misdetection. The probe (`nvidia-smi --query-gpu=compute_cap`, a
+*separate* query so drivers without the field keep name/memory detection)
+fills in for undeclared models and feeds `compute_capability_warnings`, which
+every `validate_host` reports. It is not in `compute_fingerprint_hash`, which
+would otherwise re-key every host. **Hardware facts belong in these tiers, not in
+recipes:** a recipe that restates `CUTE_DSL_ARCH` or an arch-specific env var is
+a sign the platform is missing it.
 
 ### In-Tree Plugins (`plugins/` + `core/in_tree_plugins.py`)
 
