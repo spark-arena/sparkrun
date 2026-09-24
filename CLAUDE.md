@@ -2304,7 +2304,10 @@ consequences: sparse checkout is **disabled** for such a registry (`_apply_spars
 list its own `.sparkrun/registry.yaml` as a recipe.
 
 **`registries.yaml` is parsed once per version of the file** (`_read_registries_document`, a module-level cache keyed
-by path and `(mtime_ns, ctime_ns, size, inode)`, validated with one `stat` per use). Every lookup reads through
+by path and `(mtime_ns, ctime_ns, size, inode)`, validated with one `stat` per use). Saves are **atomic**
+(`_write_registries_document`: temp file + `os.replace`, mode preserved), so every version has a fresh inode and
+the key is exact even on coarse-mtime filesystems. A save caches its document only if the file is still its own
+inode after the replace, so a concurrent writer is never served under our copy. Every lookup reads through
 `_load_registries`, which parsed the file four times per call. It is *not* read once at construction, because the
 file is shared mutable state and long-lived processes (sidecar, proxy daemon) must see another terminal's `registry
 add`. Module-level because `SparkrunConfig.get_registry_manager()` builds a fresh manager per call. `_save_registries`
@@ -2380,7 +2383,12 @@ Three rules, each silently wrong if broken:
   otherwise pick which installed plugin parses its files. It is honored only for
   a **trusted** registry or a **plugin-declared** one (whose format came from
   local code). Otherwise the registry is inert, the same as an unregistered
-  format, and `registry show` says why.
+  format, and `registry show` says why. `registry disable/enable/untrust`
+  *materializes* a declared entry (clearing `declared_by`), so the gate also
+  accepts an entry that a loaded plugin still declares with the same
+  name, URL and format (`_still_declared`). Without that, one `disable`/`enable`
+  would turn `@lil` off for good. A caller-named `recipe_format=` is honored
+  only where the owning registry agrees; it can never bypass the gate.
 - **Listing is offline.** `_list_dir_recipes` calls `load(offline=True)`. A
   format needing remote facts (checkpoint config) must degrade locally, the same
   budget rule as the Hub metadata work.
@@ -2405,13 +2413,22 @@ nothing lil-specific.
   capture sizes) come **cache first** through the shared Hub path (`models/vram.py:cached_hub_file`,
   `fetch_model_config(local_only=)`). Listing is offline and degrades (no TP) instead of failing.
 - **TP is decided at load**, because it is workload identity and `when:` reads it: `fit` against DGX Spark GB10
-  usable memory. `--tp` overrides.
+  usable memory. `--tp` overrides. Because `stop` / `logs` / `--ensure` recompute it, the facts must not
+  drift. They are one quantity from every source (stored shard file sizes, from a *complete* local snapshot or
+  from the Hub; never the index's `total_size`, which is what lil's local path uses and would flip `fit` after a
+  download), and the first complete answer is memoised at `<cache>/lil/facts/`.
+- **Manifests are third-party content.** `environment:` is held to lil's rules (name charset, strings only) plus
+  a denylist (lil's `derivedEnvironment`, the HF / XDG cache wiring, `LD_PRELOAD` / `PYTHONPATH` / `PATH`, the
+  `NCCL_` / `GLOO_` / `UCX_` / `OMPI_` / `SPARKRUN_` prefixes). A catalog entry setting `PYTHONPATH` at a
+  "weights" snapshot is code execution without `trust_remote_code`. Every plain-string serve value is held to
+  `[A-Za-z0-9_.:/@+,=-]`, because it reaches the `bash -c` command unquoted while lil passes argv. Violations
+  raise `LilManifestError`; they are never repaired.
 - **Parity is tested, not asserted.** `tests/test_lil_plugin.py::test_matches_lil_render` compares the rendered
   serve flags against `lil render --format json` output captured in `tests/fixtures/lil/` (8 entries, 0 diffs, TP
   included). Re-capture with `.slop/lil_capture_golden.py` (needs a built lil binary and the network) when the
   catalog or the launcher moves.
 - The structured vLLM command now passes a pinned `model_revision` as `--revision` itself
-  (`VllmRuntimeBase.structured_revision_args`). This was a general gap, found by the parity run: without it a
+  (`VllmRuntimeBase.structured_revision_args`; not for GGUF `repo:quant` or pre-placed weights). This was a general gap, found by the parity run: without it a
   command-less pinned recipe dies offline with `LocalEntryNotFoundError`.
 
 ### Plugin-Declared Registries (`core/registry_defaults.py`)

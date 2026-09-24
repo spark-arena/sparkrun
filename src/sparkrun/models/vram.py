@@ -212,7 +212,10 @@ def fetch_model_config(
     Returns the config dict or None on failure.  **Cache first**: a copy
     already in the local HuggingFace cache is read without any network round
     trip (``hf_hub_download`` alone still validates freshness remotely for an
-    unpinned revision). Otherwise it is advisory and runs under the shared Hub
+    unpinned revision). For an unpinned repo that means the control machine's
+    ``refs/main`` snapshot, the one whose weights it holds, rather than the
+    Hub's newest: deliberate, and the reason a recipe that must track the Hub
+    should pin a revision. Otherwise it is advisory and runs under the shared Hub
     metadata budget (:mod:`sparkrun.models.hub`), so it also returns ``None``
     when the budget is already spent.
     """

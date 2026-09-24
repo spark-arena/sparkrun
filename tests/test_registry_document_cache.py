@@ -66,3 +66,33 @@ def test_reset_to_defaults_drops_the_cached_document(manager, monkeypatch):
     monkeypatch.setattr(RegistryManager, "update", lambda self, *a, **kw: None)  # no git
     manager.reset_to_defaults()
     assert "a" not in {e.name for e in manager._load_registries()}
+
+
+def test_saves_are_atomic_and_keyed_by_a_fresh_inode(manager):
+    import os
+
+    path = Path(manager._registries_path)
+    os.chmod(path, 0o640)
+    first = path.stat().st_ino
+    manager._save_registries(manager._load_registries())
+    second = path.stat()
+    assert second.st_ino != first  # replaced, not rewritten in place
+    assert second.st_mode & 0o777 == 0o640  # the file's mode survives the replace
+    assert reg._DOCUMENT_CACHE[str(path)][0][3] == second.st_ino
+    assert not [p for p in path.parent.iterdir() if p.name.endswith(".tmp")]
+
+
+def test_a_concurrent_replace_is_not_cached_as_ours(manager, monkeypatch):
+    """If another writer replaces the file between our replace and our stat, we must not claim its key."""
+    real_replace = reg.os.replace
+
+    def _racing_replace(src, dst):
+        real_replace(src, dst)
+        other = Path(dst).with_name("other.tmp")
+        other.write_text(Path(dst).read_text().replace("subpath: recipes", "subpath: theirs"))
+        real_replace(other, dst)
+
+    monkeypatch.setattr(reg.os, "replace", _racing_replace)
+    manager._save_registries(manager._load_registries())
+    monkeypatch.setattr(reg.os, "replace", real_replace)
+    assert manager.get_registry("a").subpath == "theirs"

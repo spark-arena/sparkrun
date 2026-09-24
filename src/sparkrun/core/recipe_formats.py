@@ -136,7 +136,7 @@ def entry_recipe_format(entry: Any) -> tuple[RecipeFormat | None, str | None]:
     name = getattr(entry, "format", DEFAULT_RECIPE_FORMAT) or DEFAULT_RECIPE_FORMAT
     if not is_foreign_format(name):
         return None, None
-    if not (getattr(entry, "trusted", False) or getattr(entry, "declared_by", "")):
+    if not (getattr(entry, "trusted", False) or getattr(entry, "declared_by", "") or _still_declared(entry)):
         return None, (
             "its %r recipe format is only honored for trusted registries (sparkrun registry trust %s)" % (name, getattr(entry, "name", "?"))
         )
@@ -144,6 +144,22 @@ def entry_recipe_format(entry: Any) -> tuple[RecipeFormat | None, str | None]:
     if handler is None:
         return None, "no loaded plugin provides its %r recipe format" % name
     return handler, None
+
+
+def _still_declared(entry: Any) -> bool:
+    """A materialized plugin registry (``registry disable/enable/untrust`` clears ``declared_by``).
+
+    Materializing writes the entry to ``registries.yaml``, where it looks
+    exactly like one learned from a remote manifest. What distinguishes it is
+    that a loaded plugin still declares the same name, URL **and** format, so
+    the format still comes from local code.
+    """
+    from sparkrun.core.registry_defaults import iter_declared_registries
+
+    return any(
+        d.entry.name == getattr(entry, "name", None) and d.entry.url == getattr(entry, "url", None) and d.entry.format == entry.format
+        for d in iter_declared_registries()
+    )
 
 
 def find_in_format(recipe_format: RecipeFormat, root: Path, name: str) -> list[Path]:

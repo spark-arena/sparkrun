@@ -36,6 +36,7 @@ concern:
 from __future__ import annotations
 
 import logging
+import re
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
@@ -99,6 +100,34 @@ MULTI_NODE_ENV = {"VLLM_ENABLE_PCIE_ALLREDUCE": "0"}
 
 #: Largest tensor-parallel size the ``fit`` policy considers (an 8-node cluster).
 MAX_FIT_TP = 8
+
+#: ``environmentName`` in lil's ``profiles.go``.
+_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+#: Variables a manifest may not set. lil's ``derivedEnvironment`` (the launcher
+#: computes them), plus what sparkrun owns: the model cache wiring, its runtime
+#: cache, and loader hooks. A catalog entry that could set ``PYTHONPATH`` or
+#: ``LD_PRELOAD`` would run code shipped as "weights" without
+#: ``trust_remote_code``; one setting ``HF_HUB_OFFLINE`` or an interface
+#: variable would quietly break distribution or rendezvous.
+FORBIDDEN_ENV = frozenset(
+    {
+        "PYTHONPATH", "LD_LIBRARY_PATH", "CUDA_HOME", "TRITON_PTXAS_PATH", "CUTE_DSL_ARCH", "CUDA_VISIBLE_DEVICES",
+        "B12X_POLICY_MODE", "NCCL_DEBUG", "NCCL_IB_GID_INDEX", "NCCL_IB_MERGE_NICS", "HF_HUB_OFFLINE",
+        "TRANSFORMERS_OFFLINE", "GLOO_SOCKET_IFNAME", "MN_IF_NAME", "NCCL_IB_HCA", "NCCL_SOCKET_IFNAME",
+        "OMPI_MCA_btl_tcp_if_include", "TP_SOCKET_IFNAME", "UCX_NET_DEVICES", "VLLM_HOST_IP",
+        "LD_PRELOAD", "PYTHONSTARTUP", "PYTHONHOME", "PATH", "HOME",
+        "HF_HOME", "HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "TRANSFORMERS_CACHE", "XDG_CACHE_HOME", "HF_TOKEN",
+    }
+)  # fmt: skip
+_FORBIDDEN_ENV_PREFIXES = ("NCCL_", "GLOO_", "UCX_", "OMPI_", "SPARKRUN_")
+
+#: Plain-string serve values reach a generated ``bash -c`` command unquoted
+#: (``render_flag_value``), and lil passes them as argv, so catalog authors
+#: never had to think about shell syntax. Every string that is not JSON is
+#: held to this charset: identifiers, versions, paths, ``key=value``.
+_SAFE_SCALAR = re.compile(r"^[A-Za-z0-9_.:/@+,=-]+$")
+_HF_MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
 @dataclass(frozen=True)
@@ -176,6 +205,8 @@ def _speculative_config(
         tokens = policy.get("tokens") or 0
         if tokens == 0:
             return None, 0
+        if not isinstance(policy.get("model"), str) or not _HF_MODEL_ID.match(policy["model"]):
+            raise LilManifestError("%s: speculators.dflash.model must be a Hugging Face model id" % entry.name)
         config = {"method": "dflash", "model": policy["model"], "num_speculative_tokens": tokens, "kv_cache_dtype": "auto"}
         if _present(policy, "attention"):
             config["attention_backend"] = policy["attention"]
@@ -219,8 +250,27 @@ def _compilation(
     return config
 
 
-def _env(values: dict[str, Any] | None) -> dict[str, str]:
-    return {str(k): str(v) for k, v in (values or {}).items() if v is not None}
+def _env(values: dict[str, Any] | None, where: str) -> dict[str, str]:
+    """A manifest ``environment:`` block, held to lil's rules and sparkrun's ownership."""
+    env: dict[str, str] = {}
+    for name, value in (values or {}).items():
+        if not isinstance(name, str) or not _ENV_NAME.match(name):
+            raise LilManifestError("%s contains an invalid variable name: %r" % (where, name))
+        if name in FORBIDDEN_ENV or name.startswith(_FORBIDDEN_ENV_PREFIXES):
+            raise LilManifestError("%s.%s is managed by the launcher and cannot be configured by a manifest" % (where, name))
+        if not isinstance(value, str):
+            raise LilManifestError("%s values must be strings; quote %s" % (where, name))
+        if "\n" in value or "\0" in value:
+            raise LilManifestError("%s.%s must be a single line" % (where, name))
+        env[name] = value
+    return env
+
+
+def _check_scalars(defaults: dict[str, Any], where: str) -> None:
+    """Refuse plain-string values that would be shell syntax in the serve command."""
+    for key, value in defaults.items():
+        if isinstance(value, str) and not _SAFE_SCALAR.match(value):
+            raise LilManifestError("%s.%s: %r is not a plain value (letters, digits and _.:/@+,=- only)" % (where, key, value))
 
 
 def _when(condition: dict[str, Any]) -> dict[str, Any]:
@@ -387,7 +437,7 @@ def translate(entry: LilEntry, facts: CheckpointFacts, *, strict: bool = True) -
     compilation = _compilation(entry, base_capacity, default_speculator, spec_tokens)
     if compilation is not None:
         defaults["compilation_config"] = compilation
-    env.update(_env(entry.section("environment")))
+    env.update(_env(entry.section("environment"), "%s.environment" % entry.name))
 
     # --- topology tuning ---
     overrides.append({"when": {"nodes": 1, "gpus_per_node": {"gt": 1}}, "env": dict(MULTI_GPU_HOST_ENV)})
@@ -440,9 +490,13 @@ def translate(entry: LilEntry, facts: CheckpointFacts, *, strict: bool = True) -
         if layer_defaults:
             translated["defaults"] = layer_defaults
         if raw.get("environment"):
-            translated["env"] = _env(raw["environment"])
+            translated["env"] = _env(raw["environment"], "%s.overrides[%d].environment" % (entry.name, index))
         if len(translated) > 1:
             overrides.append(translated)
+
+    _check_scalars(defaults, entry.name)
+    for override in overrides:
+        _check_scalars(override.get("defaults") or {}, "%s.overrides" % entry.name)
 
     requires = entry.section("requires").get("arch")
     if requires:

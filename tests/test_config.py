@@ -9,7 +9,7 @@ import pytest
 import yaml
 
 import sparkrun.core.config as config_module
-from sparkrun.core.config import SparkrunConfig, DEFAULT_HF_CACHE_DIR
+from sparkrun.core.config import SparkrunConfig
 
 
 def test_config_defaults_no_file(tmp_path: Path):
@@ -25,7 +25,7 @@ def test_config_defaults_no_file(tmp_path: Path):
     # redirects it into the sandbox, so an import-time copy would be the real
     # ~/.cache/sparkrun and never match.
     assert config.cache_dir == config_module.DEFAULT_CACHE_DIR
-    assert config.hf_cache_dir == DEFAULT_HF_CACHE_DIR
+    assert config.hf_cache_dir == config_module.DEFAULT_HF_CACHE_DIR  # redirected by isolate_stateful too
     assert config.default_hosts == []
     assert config.ssh_user is None
     assert config.ssh_key is None

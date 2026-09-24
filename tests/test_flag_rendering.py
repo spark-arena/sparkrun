@@ -125,3 +125,36 @@ def test_negatable_flags_are_reachable_booleans():
 
     assert VLLM_NEGATABLE_BOOL_FLAGS <= VLLM_BOOL_FLAGS
     assert all(key in VLLM_FLAG_MAP for key in VLLM_NEGATABLE_BOOL_FLAGS)
+
+
+def test_structured_commands_pass_a_pinned_revision():
+    from sparkrun.runtimes.vllm_ray import VllmRayRuntime
+
+    recipe = Recipe.from_dict({"model": "org/model", "model_revision": "a" * 40, "runtime": "vllm-distributed", "defaults": {"port": 8000}})
+    assert ("--revision " + "a" * 40) in VllmDistributedRuntime().generate_command(recipe, {}, is_cluster=False)
+    ray = Recipe.from_dict({"model": "org/model", "model_revision": "a" * 40, "runtime": "vllm-ray", "defaults": {"port": 8000}})
+    assert ("--revision " + "a" * 40) in VllmRayRuntime().generate_command(ray, {}, is_cluster=False)
+
+
+def test_no_revision_for_gguf_or_pre_placed_weights():
+    gguf = Recipe.from_dict({"model": "org/model-GGUF:Q4_K_M", "model_revision": "a" * 40, "runtime": "vllm", "defaults": {"port": 8000}})
+    assert "--revision" not in VllmDistributedRuntime().generate_command(gguf, {}, is_cluster=False)
+    local = Recipe.from_dict({"model": "/models/qwen", "model_revision": "a" * 40, "runtime": "vllm", "defaults": {"port": 8000}})
+    assert "--revision" not in VllmDistributedRuntime().generate_command(local, {}, is_cluster=False)
+
+
+def test_unpinned_revision_warning_now_only_for_command_templates():
+    from sparkrun.core.validation import check_unpinned_model_revision
+
+    structured = Recipe.from_dict({"model": "org/model", "model_revision": "a" * 40, "runtime": "vllm", "defaults": {"port": 8000}})
+    assert check_unpinned_model_revision(structured, VllmDistributedRuntime()) == []
+    templated = Recipe.from_dict(
+        {
+            "model": "org/model",
+            "model_revision": "a" * 40,
+            "runtime": "vllm",
+            "command": "vllm serve {model} --port {port}",
+            "defaults": {"port": 8000},
+        }
+    )
+    assert [i.code for i in check_unpinned_model_revision(templated, VllmDistributedRuntime())] == ["unpinned-model-revision"]

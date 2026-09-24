@@ -76,6 +76,10 @@ class VllmRuntimeBase(RuntimePlugin):
         revision = getattr(recipe, "model_revision", None)
         if not revision or is_local_model_path(recipe.model):
             return []
+        if ":" in recipe.model:
+            # ``repo:quant`` is GGUF quant selection; the weights are resolved
+            # to a local file, not looked up by revision.
+            return []
         if getattr(getattr(recipe, "cluster_config", None), "resolved_model_path", None):
             return []
         return ["--revision", quote(str(revision))]

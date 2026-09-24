@@ -775,7 +775,7 @@ def _load_foreign_format(
     as sparkrun YAML. Its files are not recipes, and misreading them would
     launch something nobody wrote.
     """
-    from sparkrun.core.recipe_formats import claiming_format, format_for_path, get_recipe_format, is_foreign_format
+    from sparkrun.core.recipe_formats import claiming_format, format_for_path, is_foreign_format
 
     if known_format is not None and not is_foreign_format(known_format):
         return None
@@ -791,7 +791,11 @@ def _load_foreign_format(
             ownership.unavailable,
         )
     elif known_format is not None:
-        recipe_format, format_name, root = get_recipe_format(known_format), known_format, None
+        # A caller-named format is only honored for a path whose registry says
+        # so: otherwise it would bypass the trust gate on foreign formats.
+        raise RecipeError(
+            "%s was loaded as recipe format %r, but no foreign-format registry owns it (%s)" % (path, known_format, ownership.kind)
+        )
     elif ownership.kind == "native":
         return None
     else:

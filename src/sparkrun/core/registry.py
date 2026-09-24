@@ -1052,16 +1052,54 @@ def _read_registries_document(path: Path) -> Any:
     return data
 
 
-def _remember_registries_document(path: Path, data: Any) -> None:
-    """Record what we just wrote, so our own save never costs a re-read.
+def _write_registries_document(path: Path, data: Any) -> None:
+    """Write ``registries.yaml`` atomically and record exactly what was written.
 
-    This also avoids trusting mtime alone on a filesystem with coarse
-    timestamps, where two writes in one tick would share a key.
+    Temp file in the same directory, then ``os.replace``. Every version gets a
+    fresh inode, so the cache key distinguishes versions even where mtimes are
+    coarse, and a reader never parses a half-written file. The document is
+    recorded only when the file on disk is still ours after the replace: a
+    concurrent writer that replaced it in between must not have our copy served
+    under its key.
     """
+    import tempfile
+
+    path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        _DOCUMENT_CACHE[str(path)] = (_document_key(path), deepcopy(data))
+        mode = path.stat().st_mode & 0o777
+    except FileNotFoundError:
+        mode = 0o644 & ~_current_umask()
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".%s." % path.name, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+            f.flush()
+            ours = os.fstat(f.fileno()).st_ino
+        try:
+            os.chmod(tmp, mode)  # keep the file's mode; mkstemp creates 0600. (os.fchmod is POSIX-only on 3.12.)
+        except OSError as error:
+            logger.debug("Could not set the mode of %s: %s", path, error)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError as error:
+            logger.debug("Could not remove temporary %s: %s", tmp, error)
+        raise
+    try:
+        key = _document_key(path)
     except OSError:
+        key = None
+    if key is not None and key[3] == ours:
+        _DOCUMENT_CACHE[str(path)] = (key, deepcopy(data))
+    else:
         _DOCUMENT_CACHE.pop(str(path), None)
+
+
+def _current_umask() -> int:
+    mask = os.umask(0)
+    os.umask(mask)
+    return mask
 
 
 class RegistryManager:
@@ -1800,9 +1838,7 @@ class RegistryManager:
             data[SUPPRESSED_REGISTRIES_KEY] = sorted(set(suppressed))
         if pending_bootstrap_urls:
             data[PENDING_BOOTSTRAP_KEY] = list(pending_bootstrap_urls)
-        with open(self._registries_path, "w") as f:
-            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
-        _remember_registries_document(self._registries_path, data)
+        _write_registries_document(Path(self._registries_path), data)
         logger.debug("Saved registries to %s", self._registries_path)
 
     @staticmethod

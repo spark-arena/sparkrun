@@ -174,10 +174,16 @@ def test_loading_translates_to_a_v2_recipe(toy_registry, toy_format):
     assert CALLS[-1] is False  # a launch load may use the network
 
 
-def test_known_format_skips_registry_lookup(toy_registry, toy_format):
+def test_known_format_is_refused_where_no_registry_vouches_for_it(toy_registry, toy_format):
+    """A caller naming a format must not bypass the trust gate (no manager, so no owning registry)."""
     _, toy_dir = toy_registry
-    recipe = Recipe.load(toy_dir / "Beta" / "toy.yaml", recipe_format="toy")
-    assert recipe.model == "org/beta"
+    with pytest.raises(RecipeError, match="no foreign-format registry owns it"):
+        Recipe.load(toy_dir / "Beta" / "toy.yaml", recipe_format="toy")
+
+
+def test_known_format_agreeing_with_the_owning_registry_loads(toy_registry, toy_format):
+    mgr, toy_dir = toy_registry
+    assert Recipe.load(toy_dir / "Beta" / "toy.yaml", registry_manager=mgr, recipe_format="toy").model == "org/beta"
 
 
 def test_direct_path_is_claimed_by_content(tmp_path, toy_format):
@@ -212,7 +218,7 @@ def test_without_the_plugin_loading_its_file_is_refused(toy_registry):
     with pytest.raises(RecipeError, match="no loaded plugin provides"):
         Recipe.load(toy_dir / "README.yaml", registry_manager=mgr)
     with pytest.raises(RecipeError, match="no loaded plugin provides"):
-        Recipe.load(toy_dir / "Alpha" / "toy.yaml", recipe_format="toy")
+        Recipe.load(toy_dir / "Alpha" / "toy.yaml", registry_manager=mgr, recipe_format="toy")
 
 
 def test_translation_errors_name_the_format(tmp_path, toy_format):
@@ -310,3 +316,28 @@ def test_a_plugin_declared_registry_needs_no_trust_for_its_format(toy_format):
     manifest_sourced = RegistryEntry(name="m", url="https://example.invalid/m.git", subpath="/", format="toy")
     handler, why = entry_recipe_format(manifest_sourced)
     assert handler is None and "sparkrun registry trust m" in why
+
+
+def test_a_materialized_plugin_registry_keeps_its_format(tmp_path, toy_format):
+    """disable/enable/untrust clear declared_by; the live declaration must still vouch for the format."""
+    from sparkrun.core.registry_defaults import register_default_registry
+
+    config, cache = tmp_path / "config", tmp_path / "cache"
+    config.mkdir()
+    cache.mkdir()
+    register_default_registry(
+        RegistryEntry(name="toycat", url="https://example.invalid/toycat.git", subpath="/", format="toy"), owner="tests"
+    )
+    mgr = RegistryManager(config, cache)
+    mgr._manifest_discovery_attempted = True
+    mgr._save_registries([])
+    checkout = cache / "toycat"
+    (checkout / ".git").mkdir(parents=True)
+    (checkout / "Alpha").mkdir()
+    (checkout / "Alpha" / "toy.yaml").write_text(yaml.safe_dump({"weights": "org/alpha"}))
+    assert [r["name"] for r in mgr.search_recipes("")] == ["@toycat/Alpha"]
+    mgr.disable_registry("toycat")
+    mgr.enable_registry("toycat")
+    [entry] = [e for e in mgr._load_registries() if e.name == "toycat"]
+    assert entry.declared_by == ""  # materialized into registries.yaml
+    assert [r["name"] for r in mgr.search_recipes("")] == ["@toycat/Alpha"]

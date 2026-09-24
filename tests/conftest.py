@@ -140,6 +140,9 @@ def isolate_stateful(tmp_path: Path, monkeypatch):
     import huggingface_hub.constants as _hf_constants
 
     monkeypatch.setattr(_hf_constants, "HF_HUB_CACHE", str(tmp_path / "hf-hub-cache"), raising=False)
+    # ...and sparkrun's own default, which callers pass explicitly (a plugin
+    # asking SparkrunConfig().hf_cache_dir would otherwise read the real cache).
+    monkeypatch.setattr(config_module, "DEFAULT_HF_CACHE_DIR", tmp_path / "hf-cache", raising=False)
 
     # Registry synchronization is best-effort and already returns False on
     # failure, so stubbing it takes a path callers handle. Profiling one CLI test showed
