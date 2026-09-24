@@ -39,7 +39,9 @@ from typing import TYPE_CHECKING, Any
 
 from sparkrun.api._context import resolve_sctx
 from sparkrun.api._errors import (
+    InsufficientCapacity,
     IntegrationUnavailable,
+    LayoutRequired,
     SparkrunError,
 )
 from sparkrun.api._models import RunOptions, RunPlan, RunResult
@@ -180,15 +182,6 @@ def plan(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunPl
     sctx = sctx.for_cluster(cluster_def)
     config = sctx.config
 
-    # Conditional `overrides:` layers, resolved before anything reads the
-    # config: they can change max_model_len / gpu_memory_utilization, which
-    # feed the memory estimate placement uses. Evaluated over the candidate
-    # hosts; a hardware predicate those hosts disagree on is refused rather
-    # than decided by whichever host happens to be the head.
-    override_resolution = _apply_recipe_overrides_for_plan(
-        recipe, options, runtime=runtime, cluster=cluster_def, hosts=hosts, host_hardware=host_hardware
-    )
-
     # Scheduler selection chain: caller > recipe > cluster > greedy default.
     from sparkrun.core.scheduler import FALLBACK_DEFAULT_SCHEDULER, get_scheduler, resolve_scheduler_selector
 
@@ -226,16 +219,29 @@ def plan(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunPl
 
     placement: "RankAssignment | None"
     is_solo_request = bool(options.solo) or recipe.mode == "solo"
-    host_list, is_solo, notes, placement = resolve_effective_hosts(
-        list(hosts),
-        recipe,
-        options.overrides,
-        cluster_def=cluster_def,
-        runtime=runtime,
-        sctx=sctx,
-        solo=is_solo_request,
-        scheduler=effective_scheduler,
-        exclude_intent_id=intent_id,
+
+    def _place(candidates, status_snapshot=None):
+        return resolve_effective_hosts(
+            list(candidates),
+            recipe,
+            options.overrides,
+            cluster_def=cluster_def,
+            runtime=runtime,
+            sctx=sctx,
+            solo=is_solo_request,
+            scheduler=effective_scheduler,
+            exclude_intent_id=intent_id,
+            status_snapshot=status_snapshot,
+        )
+
+    # Conditional `overrides:` layers are applied before the placement that
+    # uses them (they can change max_model_len / gpu_memory_utilization, which
+    # feed its memory estimate), and over hosts that agree on every hardware
+    # `when:`. On a mixed cluster that means choosing a group: see
+    # _place_with_overrides. The intent and fingerprint above read declared
+    # values, so where the launch lands never moves them.
+    override_resolution, (host_list, is_solo, notes, placement) = _place_with_overrides(
+        recipe, options, _place, runtime=runtime, cluster=cluster_def, hosts=hosts, host_hardware=host_hardware, sctx=sctx
     )
 
     # 3a. Compute intent_id + placement_token; compose cluster_id.
@@ -304,6 +310,95 @@ def plan(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunPl
         override_resolution=override_resolution,
         _destination=destination,
     )
+
+
+def _place_with_overrides(recipe, options: RunOptions, place, *, runtime, cluster, hosts, host_hardware, sctx):
+    """Apply ``overrides:`` and place, choosing a hardware group on a mixed cluster.
+
+    Returns ``(override_resolution, placement_result)`` where the second item
+    is :func:`resolve_effective_hosts`' tuple.
+
+    Launch-wide layers take one value, so the launch must land on hosts that
+    agree on every hardware ``when:``. When the candidates split into several
+    such groups, **the scheduler picks**: a probe placement over all candidates
+    with the declared config decides which group comes first (the one holding
+    the probe's rank 0), so occupancy-aware schedulers still prefer idle
+    hosts. Then that group's overrides are applied and the launch is placed
+    within it, falling back to the remaining groups in cluster order when one
+    has no room. All placements share one status sweep.
+
+    A layout that pins hosts is evaluated over the pinned hosts only. If those
+    disagree, the split is real and is refused.
+    """
+    from sparkrun.core.recipe_overrides import build_override_context, partition_hosts_by_hardware
+
+    if not getattr(recipe, "overrides", None):
+        return None, place(hosts)
+
+    pinned = [p.host for p in (getattr(recipe.layout, "placements", None) or ())]
+    if pinned:
+        return _apply_recipe_overrides_for_plan(
+            recipe, options, runtime=runtime, cluster=cluster, hosts=pinned, host_hardware=host_hardware
+        ), place(hosts)
+
+    everything = build_override_context(
+        recipe, options.overrides, runtime=runtime, cluster=cluster, hosts=list(hosts), host_hardware=host_hardware
+    )
+    groups = partition_hosts_by_hardware(recipe.overrides, everything.hosts)
+    if len(groups) <= 1:
+        return _apply_recipe_overrides_for_plan(
+            recipe, options, runtime=runtime, cluster=cluster, hosts=hosts, host_hardware=host_hardware
+        ), place(hosts)
+
+    import sparkrun.api as api
+
+    try:
+        status_snapshot = api.status(list(hosts), cluster=cluster, sctx=sctx)
+    except Exception:
+        logger.debug("overrides: shared status sweep failed; each placement will query", exc_info=True)
+        status_snapshot = None
+
+    recipe.restore_declared_values()
+    head = None
+    try:
+        probe_hosts, _solo, _notes, probe = place(hosts, status_snapshot)
+        head = probe.host_for_rank(0) if probe is not None else (probe_hosts[0] if probe_hosts else None)
+    except (InsufficientCapacity, LayoutRequired) as error:
+        # The declared config may not fit anywhere while a group's overrides
+        # would; fall back to trying the groups in cluster order.
+        logger.debug("overrides: probe placement found no fit (%s); trying groups in cluster order", error)
+    ordered = sorted(groups, key=lambda group: 0 if head in group else 1)
+
+    last_error: Exception | None = None
+    for group in ordered:
+        resolution = _apply_recipe_overrides_for_plan(
+            recipe, options, runtime=runtime, cluster=cluster, hosts=group, host_hardware=host_hardware
+        )
+        try:
+            result = place(group, status_snapshot)
+        except (InsufficientCapacity, LayoutRequired) as error:
+            last_error = error
+            logger.debug("overrides: hardware group %s has no fit: %s", ", ".join(group), error)
+            continue
+        host_list, is_solo, notes, placement = result
+        notes = [
+            "Note: hosts disagree on the recipe's hardware overrides; using the group %s (%d of %d hosts)"
+            % (", ".join(group), len(group), len(hosts)),
+            *notes,
+        ]
+        return resolution, (host_list, is_solo, notes, placement)
+
+    recipe.restore_declared_values()
+    summary = "; ".join(", ".join(group) for group in groups)
+    if isinstance(last_error, InsufficientCapacity):
+        raise InsufficientCapacity(
+            "no group of hosts that agree on the recipe's hardware overrides has room (groups: %s): %s" % (summary, last_error),
+            status=getattr(last_error, "status", None),
+            host_list=list(hosts),
+            required=getattr(last_error, "required", None),
+            rejections=getattr(last_error, "rejections", ()),
+        ) from last_error
+    raise last_error
 
 
 def _apply_recipe_overrides_for_plan(recipe, options: RunOptions, *, runtime, cluster, hosts, host_hardware):

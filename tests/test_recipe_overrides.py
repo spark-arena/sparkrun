@@ -375,18 +375,94 @@ def test_plan_without_overrides_has_no_resolution(tmp_path, v):
     assert run_plan.override_resolution is None
 
 
-def test_plan_refuses_a_hardware_split(tmp_path, v):
-    from sparkrun.api import SparkrunError
+def _mixed_plan(tmp_path, hosts, *, tp=1, layout=None, status=None, monkeypatch=None):
+    """Plan on a cluster where s* hosts are GB10 (assumed) and w* hosts are RTX PRO (inventory)."""
+    import sparkrun.api as api
     from sparkrun.core.cluster_manager import ClusterDefinition
 
-    import sparkrun.api as api
-
-    path = tmp_path / "ov.yaml"
-    path.write_text(yaml.safe_dump({**_BASE, "overrides": [{"when": {"arch": "sm_121"}, "defaults": {"a": 1}}]}))
+    data = {
+        **_BASE,
+        "defaults": {**_BASE["defaults"], "tensor_parallel": tp},
+        "overrides": [
+            {"when": {"arch": "sm_121"}, "defaults": {"max_num_seqs": 121}},
+            {"when": {"arch": "sm_120"}, "defaults": {"max_num_seqs": 120}},
+        ],
+    }
+    if layout:
+        data["layout"] = layout
+    path = tmp_path / "mixed.yaml"
+    path.write_text(yaml.safe_dump(data))
     recipe = Recipe.load(str(path), resolve=False)
-    cluster = ClusterDefinition(name="c", hosts=["s1", "w1"], hosts_hardware={"w1": _rtx()})
+    cluster = ClusterDefinition(name="c", hosts=list(hosts), hosts_hardware={h: _rtx() for h in hosts if h.startswith("w")})
+    return api.plan(api.RunOptions(recipe=recipe, cluster=cluster, hosts=tuple(hosts), dry_run=True))
+
+
+@pytest.mark.parametrize("hosts,group,seqs", [(("s1", "w1"), {"s1"}, 121), (("w1", "s1"), {"w1"}, 120)])
+def test_mixed_cluster_lands_in_the_group_the_scheduler_picks(tmp_path, v, hosts, group, seqs):
+    """Greedy places rank 0 on the first candidate; its hardware group wins and its overrides apply."""
+    run_plan = _mixed_plan(tmp_path, hosts)
+    assert set(run_plan.host_list) <= group
+    assert run_plan.recipe.defaults["max_num_seqs"] == seqs
+    assert any("hardware overrides" in note for note in run_plan.notes)
+    assert run_plan.candidate_hosts == hosts  # identity inputs stay the whole cluster
+
+
+def test_mixed_cluster_falls_back_to_a_group_that_fits(tmp_path, v):
+    """tp=2: the probe puts rank 0 on w1, whose group is one host; the GB10 pair fits."""
+    run_plan = _mixed_plan(tmp_path, ("w1", "s1", "s2"), tp=2)
+    assert set(run_plan.host_list) == {"s1", "s2"}
+    assert run_plan.recipe.defaults["max_num_seqs"] == 121
+
+
+def test_mixed_cluster_without_any_fitting_group_reports_the_groups(tmp_path, v):
+    from sparkrun.api import InsufficientCapacity
+
+    with pytest.raises(InsufficientCapacity, match="groups: s1; w1"):
+        _mixed_plan(tmp_path, ("s1", "w1"), tp=2)
+
+
+def test_mixed_cluster_identity_does_not_depend_on_the_group(tmp_path, v):
+    a = _mixed_plan(tmp_path, ("s1", "w1"))
+    b = _mixed_plan(tmp_path, ("w1", "s1"))
+    assert a.intent_id == b.intent_id and a.recipe_fingerprint == b.recipe_fingerprint
+
+
+def test_mixed_cluster_placement_sweeps_status_once(tmp_path, v, monkeypatch):
+    import sparkrun.api as api
+    from sparkrun.core.cluster_status import ClusterStatus
+
+    calls = []
+
+    def _status(hosts, **_kw):
+        calls.append(tuple(hosts))
+        return ClusterStatus()
+
+    monkeypatch.setattr(api, "status", _status)
+    _mixed_plan(tmp_path, ("w1", "s1", "s2"), tp=2)
+    assert calls == [("w1", "s1", "s2")]
+
+
+def test_pinned_layout_across_a_hardware_split_is_refused(tmp_path, v):
+    from sparkrun.api import SparkrunError
+
+    layout = {"placements": [{"host": "s1", "ranks": [0]}, {"host": "w1", "ranks": [1]}]}
     with pytest.raises(SparkrunError, match="every host to agree"):
-        api.plan(api.RunOptions(recipe=recipe, cluster=cluster, hosts=("s1", "w1"), dry_run=True))
+        _mixed_plan(tmp_path, ("s1", "w1"), tp=2, layout=layout)
+
+
+def test_partition_groups_hosts_by_hardware_answers():
+    from sparkrun.core.recipe_overrides import partition_hosts_by_hardware
+
+    overrides = parse_overrides(
+        [
+            {"when": {"arch": "sm_121"}, "defaults": {"a": 1}},
+            {"when": {"tp": 2}, "defaults": {"b": 1}},  # not hardware: never splits
+            {"when": {"future": 1, "arch": "sm_120"}, "defaults": {"c": 1}},  # unknown selector: never matches, never splits
+        ]
+    )
+    hosts = {"s1": _gb10(), "w1": _rtx(), "s2": _gb10()}
+    assert partition_hosts_by_hardware(overrides, hosts) == [("s1", "s2"), ("w1",)]
+    assert partition_hosts_by_hardware(overrides[1:], hosts) == [("s1", "w1", "s2")]
 
 
 # --- review hardening ---------------------------------------------------------------------

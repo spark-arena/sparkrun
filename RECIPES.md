@@ -449,10 +449,12 @@ overrides:
 | `capability`                                   | accelerator tags (`unified-memory`, `rdma:roce-v2`, …)             |
 | `memory_gb`                                    | per-accelerator memory                                             |
 
-Hardware selectors are evaluated per accelerator: `accelerator` and `arch` must hold for the same device. They must
-also agree across every host the launch may use. If a cluster's hosts disagree, the launch is refused; narrow it with
-`--hosts`. A selector or operator this sparkrun does not know makes the entry **not match**, and
-`recipe validate` warns about it.
+Hardware selectors are evaluated per accelerator: `accelerator` and `arch` must hold for the same device. A launch
+always runs on hosts that agree on every hardware `when:`. On a mixed cluster (say GB10s and RTX PRO boxes),
+sparkrun splits the hosts into groups that agree, lets the scheduler pick where rank 0 would go, and places the launch
+within that host's group with that group's overrides. If that group has no room it tries the others, and the run output
+says which group was used. A `layout:` that pins hosts across a hardware split is refused. A selector or operator this
+sparkrun does not know makes the entry **not match**, and `recipe validate` warns about it.
 
 **Layers**: `defaults`, `env`, `container`. Matching entries apply in list order and later wins. CLI `-o`, `-e` and
 `--image` always win. An override cannot set `port`, `served_model_name` or parallelism keys, because those identify

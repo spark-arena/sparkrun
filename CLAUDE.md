@@ -2045,8 +2045,15 @@ Three more rules that fail silently if broken:
   `apply_recipe_overrides` / `apply_env_overrides` record them
   (`_cli_env_keys`, `_cli_image`) and matched layers skip them. `-o` serve keys
   need nothing: they are a higher config-chain layer.
-- **A hardware split is an error**, not a head-host decision
-  (`OverrideConflictError` → `SparkrunError`). Launch-wide layers have one value.
+- **A launch never spans a hardware split.** Launch-wide layers have one value,
+  so `api/_run.py:_place_with_overrides` partitions candidates
+  (`partition_hosts_by_hardware`) and places within one agreeing group. **The
+  scheduler picks**: a probe placement over all candidates with the declared
+  config orders the groups (rank 0's group first), then the rest in cluster order
+  on no-fit. All passes share **one** status sweep (`resolve_effective_hosts(
+  status_snapshot=…)`), which keeps plan's one-sweep property. `RunPlan.candidate_hosts`
+  stays the whole cluster (cluster-id derivation, eviction). Only a pinned
+  `layout:` across a split still raises (`OverrideConflictError` → `SparkrunError`).
 - **Unknown selector or operator → no match + warning**
   (`override-unknown-selector`). Registries version independently, and "matched
   because we couldn't tell" applies tuning to the wrong launch.

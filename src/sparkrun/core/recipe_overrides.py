@@ -319,6 +319,36 @@ def _accelerator_facts(host_hardware: HostHardware) -> list[dict[str, Any]]:
     return facts
 
 
+def _hardware_predicates(override: RecipeOverride) -> dict[str, list[tuple[str, Any]]] | None:
+    """The entry's hardware predicates, or ``None`` when it has none it can evaluate.
+
+    An entry with an unknown selector or operator never matches, so it cannot
+    split hosts either.
+    """
+    if any(selector not in SELECTORS for selector in override.when):
+        return None
+    hardware = {sel: _compile(val) for sel, val in override.when.items() if sel in HARDWARE_SELECTORS}
+    if not hardware or any(_check(sel, preds, None)[1] for sel, preds in hardware.items()):
+        return None
+    return hardware
+
+
+def partition_hosts_by_hardware(overrides: list[RecipeOverride], hosts: Mapping[str, HostHardware]) -> list[tuple[str, ...]]:
+    """Split *hosts* into groups that answer every hardware ``when:`` the same way.
+
+    Groups keep the hosts' order and are ordered by where each group's first
+    host appears, so the result is deterministic. A recipe with no hardware
+    predicates, or a homogeneous cluster, yields a single group. A launch
+    placed within one group can never hit :class:`OverrideConflictError`.
+    """
+    predicates = [p for p in (_hardware_predicates(o) for o in overrides) if p is not None]
+    groups: dict[tuple[bool, ...], list[str]] = {}
+    for host, hardware in hosts.items():
+        signature = tuple(_host_matches(p, hardware) for p in predicates)
+        groups.setdefault(signature, []).append(host)
+    return [tuple(members) for members in groups.values()]
+
+
 def _host_matches(hardware_when: dict[str, list[tuple[str, Any]]], host_hardware: HostHardware) -> bool:
     """A host matches when one accelerator satisfies every hardware predicate."""
     for facts in _accelerator_facts(host_hardware):
@@ -516,4 +546,5 @@ __all__ = [
     "build_override_context",
     "evaluate_override",
     "parse_overrides",
+    "partition_hosts_by_hardware",
 ]

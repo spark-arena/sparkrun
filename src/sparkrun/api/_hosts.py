@@ -83,6 +83,7 @@ def resolve_effective_hosts(
     solo: bool = False,
     scheduler: str | None = None,
     exclude_intent_id: str | None = None,
+    status_snapshot=None,
 ) -> tuple[list[str], bool, list[str], RankAssignment | None]:
     """Compute the effective host list + solo flag via the scheduler.
 
@@ -122,6 +123,10 @@ def resolve_effective_hosts(
             occupy instead of treating them as foreign load (which would
             falsely report "no capacity" or relocate the workload off its
             own hosts).
+        status_snapshot: A :class:`ClusterStatus` already taken for (a
+            superset of) *host_list*. Used instead of a fresh ``api.status``
+            sweep, so a caller placing more than once (``api.plan`` choosing a
+            hardware group for ``overrides:``) still sweeps the cluster once.
 
     Returns:
         ``(effective_host_list, is_solo, notes, placement)`` where
@@ -188,6 +193,7 @@ def resolve_effective_hosts(
                 scheduler=scheduler,
                 exclude_intent_id=exclude_intent_id,
                 layout=recipe.layout,
+                status_snapshot=status_snapshot,
             )
         except InsufficientCapacity as e:
             cluster_status = getattr(e, "status", None)
@@ -239,6 +245,7 @@ def resolve_effective_hosts(
                 scheduler=scheduler,
                 exclude_intent_id=exclude_intent_id,
                 layout=None,
+                status_snapshot=status_snapshot,
             )
             placement = result.assignment
             host_list = list(result.assignment.hosts_used)
@@ -260,6 +267,7 @@ def resolve_effective_hosts(
             scheduler=scheduler,
             exclude_intent_id=exclude_intent_id,
             runtime=runtime,
+            status_snapshot=status_snapshot,
         )
         host_list = list(placement.hosts_used)
         if original_count > 1:
@@ -280,6 +288,7 @@ def _schedule_hosts(
     exclude_intent_id,
     layout,
     single_host=False,
+    status_snapshot=None,
 ):
     """Build a :class:`SchedulingRequest` and run it through ``api.schedule``.
 
@@ -295,7 +304,13 @@ def _schedule_hosts(
     from sparkrun.core.scheduler import SchedulingRequest
 
     cluster_status, effective_hw, resources = _gather_scheduling_inputs(
-        host_list, recipe, overrides, cluster_def=cluster_def, sctx=sctx, exclude_intent_id=exclude_intent_id
+        host_list,
+        recipe,
+        overrides,
+        cluster_def=cluster_def,
+        sctx=sctx,
+        exclude_intent_id=exclude_intent_id,
+        status_snapshot=status_snapshot,
     )
     request = SchedulingRequest(
         parallelism=parallelism,
@@ -316,7 +331,7 @@ def _schedule_hosts(
     return result, cluster_status
 
 
-def _gather_scheduling_inputs(host_list, recipe, overrides, *, cluster_def, sctx, exclude_intent_id=None):
+def _gather_scheduling_inputs(host_list, recipe, overrides, *, cluster_def, sctx, exclude_intent_id=None, status_snapshot=None):
     """Best-effort ``(status, host_hardware, resources)`` for a scheduling request.
 
     Shared by the multi-node scheduling block and the single-host occupancy
@@ -337,9 +352,10 @@ def _gather_scheduling_inputs(host_list, recipe, overrides, *, cluster_def, sctx
     from sparkrun.core.limits import resolved_hardware_for_scheduling
     from sparkrun.core.scheduler import ResourceRequest
 
-    cluster_status = None
+    cluster_status = status_snapshot
     try:
-        cluster_status = api.status(list(host_list), cluster=cluster_def, sctx=sctx)
+        if cluster_status is None:
+            cluster_status = api.status(list(host_list), cluster=cluster_def, sctx=sctx)
     except Exception as e:
         from sparkrun.core.cluster_status import ClusterStatus
 
@@ -383,7 +399,9 @@ def _gather_scheduling_inputs(host_list, recipe, overrides, *, cluster_def, sctx
     return cluster_status, effective_hw, resources
 
 
-def _pick_single_host(host_list, recipe, overrides, *, cluster_def, sctx, scheduler, exclude_intent_id=None, runtime=None):
+def _pick_single_host(
+    host_list, recipe, overrides, *, cluster_def, sctx, scheduler, exclude_intent_id=None, runtime=None, status_snapshot=None
+):
     """Schedule every rank on a single host and retain its GPU assignment.
 
     Solo uses the same ownership and capacity rules as multi-host launches.
@@ -409,6 +427,7 @@ def _pick_single_host(host_list, recipe, overrides, *, cluster_def, sctx, schedu
             exclude_intent_id=exclude_intent_id,
             layout=recipe.layout,
             single_host=True,
+            status_snapshot=status_snapshot,
         )
     except InsufficientCapacity as e:
         detail = str(e) or "all %d host(s) occupied" % len(host_list)
