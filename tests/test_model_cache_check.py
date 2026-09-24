@@ -371,3 +371,65 @@ class TestParityWithIsModelCached:
 
         assert "already cached" in proc.stdout
         assert is_model_cached(_MODEL, cache_dir=str(tmp_path)) is False
+
+
+# ---------------------------------------------------------------------------
+# Shared blob store: a snapshot entry is a symlink — does it RESOLVE? (#299)
+# ---------------------------------------------------------------------------
+
+
+@needs_bash
+class TestSharedBlobSkeleton:
+    """Presence of a *name* is not presence of the weights.
+
+    huggingface_hub >= 1.32 keeps blobs in a cache-wide store outside the model
+    directory, so distributing that directory alone left the target with a full
+    set of snapshot symlinks and no bytes.  Both checks matched the name and
+    reported a hit, which skipped the download and the redistribution on every
+    later launch -- nothing ever repaired the skeleton.
+
+    Every HF cache reaches weights through symlinks, so the two cases below must
+    come apart: a link that resolves is a hit, a link that dangles is a miss.
+    """
+
+    def _cache(self, tmp_path, *, resolves: bool):
+        model_cache = tmp_path / "hub" / _EXPECTED_DIR
+        snapshot = model_cache / "snapshots" / "sha1"
+        snapshot.mkdir(parents=True)
+        refs = model_cache / "refs"
+        refs.mkdir(parents=True, exist_ok=True)
+        (refs / "main").write_text("sha1\n")
+        blobs = model_cache / "blobs"
+        blobs.mkdir()
+        if resolves:
+            (blobs / "blobsha").write_text("weights")
+        (snapshot / "model-00001-of-00002.safetensors").symlink_to("../../blobs/blobsha")
+        return snapshot
+
+    def test_dangling_skeleton_is_a_miss_in_both_implementations(self, tmp_path):
+        from sparkrun.models.download import is_model_cached
+
+        self._cache(tmp_path, resolves=False)
+
+        proc = _run(_render(_MODEL, cache=str(tmp_path)), _stub_bin(tmp_path))
+
+        assert "already cached" not in proc.stdout
+        assert "STUB-DOWNLOAD" in proc.stdout, "a bytes-less cache must reach the downloader"
+        assert is_model_cached(_MODEL, cache_dir=str(tmp_path)) is False
+
+    def test_resolving_symlink_is_a_hit_in_both_implementations(self, tmp_path):
+        """Guards the fix itself.
+
+        ``-type f`` without ``-L`` -- and any check that rejected symlinks
+        outright -- would report every real HF cache as empty and re-download
+        the model on every launch.
+        """
+        from sparkrun.models.download import is_model_cached
+
+        self._cache(tmp_path, resolves=True)
+
+        proc = _run(_render(_MODEL, cache=str(tmp_path)), _stub_bin(tmp_path))
+
+        assert "already cached" in proc.stdout
+        assert "STUB-DOWNLOAD" not in proc.stdout
+        assert is_model_cached(_MODEL, cache_dir=str(tmp_path)) is True

@@ -135,7 +135,9 @@ def resolve_gguf_path(
     # Never resolve the multimodal projector as the main weights file.  A
     # projector named e.g. ``mmproj-F16.gguf`` can match a quant pattern like
     # ``*F16*``; exclude it so the main model resolution stays correct.
-    matched = [f for f in matched if "mmproj" not in f.name.lower()]
+    # ``is_file()`` also drops dangling symlinks, so a .gguf whose blob never
+    # arrived is never resolved as a usable local path (#299).
+    matched = [f for f in matched if "mmproj" not in f.name.lower() and f.is_file()]
 
     if not matched:
         return None
@@ -378,7 +380,12 @@ def is_model_cached(
 
     for snapshot_dir in snapshot_dirs:
         for pattern in weight_patterns:
-            if any(snapshot_dir.glob(pattern)):
+            # ``is_file()`` follows the link, so an entry whose blob never
+            # arrived is a MISS.  A bare glob matches the NAME alone, which
+            # reported a skeleton of dangling symlinks as fully cached and
+            # skipped both the download and the redistribution -- forever,
+            # since nothing ever repaired the skeleton (#299).
+            if any(p for p in snapshot_dir.glob(pattern) if p.is_file()):
                 return True
     return False
 
