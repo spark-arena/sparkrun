@@ -57,12 +57,16 @@ class RecipeFormat:
         name_of: ``(path, root) -> name`` a user types after ``@registry/``.
             ``root`` is ``None`` for a manifest loaded by path from outside
             any registry.
-        load: ``(path, *, registry_manager, offline) -> dict`` returning v2
-            recipe data. ``offline=True`` is the listing path and must not
-            touch the network.
+        load: ``(path, *, registry_manager, offline, allow_local) -> dict``
+            returning v2 recipe data. ``offline=True`` is the listing path and
+            must not touch the network. ``allow_local=False`` (a URL-fetched
+            or imported source) forbids reading files next to *path*, the rule
+            ``include:`` follows. The manifest is read as YAML before
+            dispatch, so formats are YAML-based.
         claims: Optional ``(path, data) -> bool`` recognizing a manifest by
-            content, so a direct path (outside any registry) still loads with
-            the right format.
+            content. Consulted **only** for a path outside every registry
+            from a local source, never for a native registry's files or a
+            URL-fetched / imported recipe.
     """
 
     name: str
@@ -135,35 +139,44 @@ def claiming_format(path: Path, data: dict[str, Any]) -> RecipeFormat | None:
     return claimed[0] if claimed else None
 
 
-def format_for_path(path: Path, registry_manager: RegistryManager | None) -> tuple[RecipeFormat | None, Path | None, str | None]:
-    """``(format, registry_root, format_name)`` for a manifest file.
+@dataclass(frozen=True)
+class PathOwnership:
+    """Who owns a manifest path, for format dispatch.
 
-    Ownership comes from the registry the path belongs to. ``format_name`` is
-    reported even when no plugin provides it, so the caller can refuse clearly
-    instead of misreading the file.
+    ``kind`` is ``"foreign"`` (a foreign-format registry: ``format_name`` is
+    set, and ``recipe_format`` is ``None`` when no plugin provides it),
+    ``"native"`` (a sparkrun-format registry), ``"outside"`` (no registry), or
+    ``"unknown"`` (no registry manager to ask).
+    """
+
+    kind: str
+    recipe_format: RecipeFormat | None = None
+    root: Path | None = None
+    format_name: str | None = None
+
+
+def format_for_path(path: Path, registry_manager: RegistryManager | None) -> PathOwnership:
+    """Classify *path* by the registry that owns it.
+
+    Ownership failures (an orphaned cache path, a path two registries claim)
+    raise :class:`~sparkrun.core.registry.RegistryError` rather than reading as
+    "outside": falling through would parse a foreign manifest as sparkrun YAML.
     """
     if registry_manager is None:
-        return None, None, None
-    try:
-        registry_name = registry_manager.registry_for_path(path, allow_discovery=False)
-    except Exception:
-        logger.debug("recipe format: could not attribute %s to a registry", path, exc_info=True)
-        return None, None, None
+        return PathOwnership("unknown")
+    registry_name = registry_manager.registry_for_path(path, allow_discovery=False)
     if registry_name is None:
-        return None, None, None
-    try:
-        entry = registry_manager.get_registry(registry_name, allow_discovery=False)
-    except Exception:
-        logger.debug("recipe format: registry %s unavailable", registry_name, exc_info=True)
-        return None, None, None
+        return PathOwnership("outside")
+    entry = registry_manager.get_registry(registry_name, allow_discovery=False)
     name = getattr(entry, "format", DEFAULT_RECIPE_FORMAT) or DEFAULT_RECIPE_FORMAT
     if not is_foreign_format(name):
-        return None, None, None
-    return get_recipe_format(name), registry_manager._recipe_dir(entry), name
+        return PathOwnership("native")
+    return PathOwnership("foreign", get_recipe_format(name), registry_manager._recipe_dir(entry), name)
 
 
 __all__ = [
     "DEFAULT_RECIPE_FORMAT",
+    "PathOwnership",
     "RecipeFormat",
     "claiming_format",
     "find_in_format",

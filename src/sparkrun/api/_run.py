@@ -41,7 +41,6 @@ from sparkrun.api._context import resolve_sctx
 from sparkrun.api._errors import (
     InsufficientCapacity,
     IntegrationUnavailable,
-    LayoutRequired,
     SparkrunError,
 )
 from sparkrun.api._models import RunOptions, RunPlan, RunResult
@@ -325,62 +324,74 @@ def _place_with_overrides(recipe, options: RunOptions, place, *, runtime, cluste
     the probe's rank 0), so occupancy-aware schedulers still prefer idle
     hosts. Then that group's overrides are applied and the launch is placed
     within it, falling back to the remaining groups in cluster order when one
-    has no room. All placements share one status sweep.
+    cannot take it. All placements share one status sweep.
+
+    Every attempt starts from the declared recipe: overrides, resolver output
+    (builder) and the metadata a memory estimate writes back are all reset,
+    so a failed group leaves nothing behind for the next one.
 
     A layout that pins hosts is evaluated over the pinned hosts only. If those
     disagree, the split is real and is refused.
     """
+    from copy import deepcopy
+
     from sparkrun.core.recipe_overrides import build_override_context, partition_hosts_by_hardware
 
     if not getattr(recipe, "overrides", None):
         return None, place(hosts)
 
+    apply_args = dict(runtime=runtime, cluster=cluster, host_hardware=host_hardware)
     pinned = [p.host for p in (getattr(recipe.layout, "placements", None) or ())]
     if pinned:
-        return _apply_recipe_overrides_for_plan(
-            recipe, options, runtime=runtime, cluster=cluster, hosts=pinned, host_hardware=host_hardware
-        ), place(hosts)
+        return _apply_recipe_overrides_for_plan(recipe, options, hosts=pinned, **apply_args), place(hosts)
 
-    everything = build_override_context(
-        recipe, options.overrides, runtime=runtime, cluster=cluster, hosts=list(hosts), host_hardware=host_hardware
-    )
+    everything = build_override_context(recipe, options.overrides, hosts=list(hosts), **apply_args)
     groups = partition_hosts_by_hardware(recipe.overrides, everything.hosts)
     if len(groups) <= 1:
-        return _apply_recipe_overrides_for_plan(
-            recipe, options, runtime=runtime, cluster=cluster, hosts=hosts, host_hardware=host_hardware
-        ), place(hosts)
+        return _apply_recipe_overrides_for_plan(recipe, options, hosts=hosts, **apply_args), place(hosts)
 
     import sparkrun.api as api
+    from sparkrun.core.cluster_status import ClusterStatus
 
     try:
         status_snapshot = api.status(list(hosts), cluster=cluster, sctx=sctx)
-    except Exception:
-        logger.debug("overrides: shared status sweep failed; each placement will query", exc_info=True)
-        status_snapshot = None
+    except Exception as error:
+        # Same shape _gather_scheduling_inputs builds on failure. Passing None
+        # instead would make every placement below sweep (and time out) again.
+        logger.debug("overrides: shared status sweep failed: %s", error)
+        status_snapshot = ClusterStatus(errors={host: "status query failed" for host in hosts})
 
-    recipe.restore_declared_values()
+    # estimate_vram writes detected facts (kv_dtype, …) back into metadata,
+    # and metadata outranks defaults. A probe or a failed group's estimate
+    # must not freeze its values into the next attempt.
+    declared_metadata = deepcopy(recipe.metadata)
+
+    def _reset_to_declared():
+        recipe.restore_declared_values()
+        recipe.resolve(recipe._applied_overrides)
+        recipe.metadata = deepcopy(declared_metadata)
+
+    _reset_to_declared()
     head = None
     try:
         probe_hosts, _solo, _notes, probe = place(hosts, status_snapshot)
         head = probe.host_for_rank(0) if probe is not None else (probe_hosts[0] if probe_hosts else None)
-    except (InsufficientCapacity, LayoutRequired) as error:
-        # The declared config may not fit anywhere while a group's overrides
-        # would; fall back to trying the groups in cluster order.
-        logger.debug("overrides: probe placement found no fit (%s); trying groups in cluster order", error)
+    except SparkrunError as error:
+        # The probe only orders the groups. The declared config may fit nowhere
+        # while a group's overrides would; try the groups in cluster order.
+        logger.debug("overrides: probe placement failed (%s); trying groups in cluster order", error)
     ordered = sorted(groups, key=lambda group: 0 if head in group else 1)
 
-    last_error: Exception | None = None
+    failures: list[tuple[tuple[str, ...], SparkrunError]] = []
     for group in ordered:
-        resolution = _apply_recipe_overrides_for_plan(
-            recipe, options, runtime=runtime, cluster=cluster, hosts=group, host_hardware=host_hardware
-        )
+        _reset_to_declared()
         try:
-            result = place(group, status_snapshot)
-        except (InsufficientCapacity, LayoutRequired) as error:
-            last_error = error
-            logger.debug("overrides: hardware group %s has no fit: %s", ", ".join(group), error)
+            resolution = _apply_recipe_overrides_for_plan(recipe, options, hosts=group, **apply_args)
+            host_list, is_solo, notes, placement = place(group, status_snapshot)
+        except SparkrunError as error:
+            failures.append((group, error))
+            logger.debug("overrides: hardware group %s cannot take the launch: %s", ", ".join(group), error)
             continue
-        host_list, is_solo, notes, placement = result
         notes = [
             "Note: hosts disagree on the recipe's hardware overrides; using the group %s (%d of %d hosts)"
             % (", ".join(group), len(group), len(hosts)),
@@ -388,17 +399,20 @@ def _place_with_overrides(recipe, options: RunOptions, place, *, runtime, cluste
         ]
         return resolution, (host_list, is_solo, notes, placement)
 
-    recipe.restore_declared_values()
-    summary = "; ".join(", ".join(group) for group in groups)
-    if isinstance(last_error, InsufficientCapacity):
+    _reset_to_declared()
+    detail = "; ".join("[%s] %s" % (", ".join(group), error) for group, error in failures)
+    message = "no group of hosts that agree on the recipe's hardware overrides can take this launch: %s" % detail
+    capacity = [error for _group, error in failures if isinstance(error, InsufficientCapacity)]
+    if len(capacity) == len(failures):
+        last = capacity[-1]
         raise InsufficientCapacity(
-            "no group of hosts that agree on the recipe's hardware overrides has room (groups: %s): %s" % (summary, last_error),
-            status=getattr(last_error, "status", None),
+            message,
+            status=getattr(last, "status", None),
             host_list=list(hosts),
-            required=getattr(last_error, "required", None),
-            rejections=getattr(last_error, "rejections", ()),
-        ) from last_error
-    raise last_error
+            required=getattr(last, "required", None),
+            rejections=tuple(r for error in capacity for r in (getattr(error, "rejections", ()) or ())),
+        ) from last
+    raise SparkrunError(message) from failures[-1][1]
 
 
 def _apply_recipe_overrides_for_plan(recipe, options: RunOptions, *, runtime, cluster, hosts, host_hardware):
@@ -414,6 +428,10 @@ def _apply_recipe_overrides_for_plan(recipe, options: RunOptions, *, runtime, cl
         resolution = apply_recipe_override_layers(recipe, ctx)
     except OverrideConflictError as error:
         raise SparkrunError(str(error)) from error
+    # Re-run the resolver chain every time, matched or not: applying restores
+    # the declared values first, and resolver output (the builder, notably) must
+    # follow whatever is now in effect rather than a previous application's.
+    recipe.resolve(recipe._applied_overrides)
     if not resolution.matched:
         return resolution
     # What the `when:` clauses matched on must still hold once the layers are
@@ -421,7 +439,6 @@ def _apply_recipe_overrides_for_plan(recipe, options: RunOptions, *, runtime, cl
     # picks vllm-ray) or the world size (sglang's enable_dp_attention), and the
     # runtime plugin and shape used here were resolved before. Re-derive both
     # rather than enumerating every key that could move them.
-    recipe.resolve(recipe._applied_overrides)
     if recipe.runtime != original_runtime:
         raise SparkrunError(
             "overrides %s change the resolved runtime (%s → %s); set runtime: explicitly or move that setting out of overrides"

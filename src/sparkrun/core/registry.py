@@ -189,6 +189,23 @@ OPTIONAL_SUBPATH_FIELDS = ("tuning_subpath", "benchmark_subpath", "mods_subpath"
 #: remote manifest.
 SUBPATH_FIELDS = ("subpath",) + OPTIONAL_SUBPATH_FIELDS
 
+#: The subpath spelling for "the repository root". Every subpath is relative to
+#: the repo root, so an absolute ``/`` can mean nothing else. (``""`` already
+#: means "this registry serves no assets of that kind".) A registry whose
+#: manifests sit at the top level, like the lil catalog, needs it. Resolve it
+#: only through :func:`resolve_registry_subpath`: ``Path(...) / "/"`` is the
+#: *filesystem* root.
+REPO_ROOT_SUBPATH = "/"
+
+
+def resolve_registry_subpath(checkout: Path, subpath: str) -> Path | None:
+    """The directory *subpath* names inside *checkout* (``None`` when it names none)."""
+    if not subpath:
+        return None
+    if subpath == REPO_ROOT_SUBPATH:
+        return checkout
+    return checkout / subpath
+
 
 @dataclass(frozen=True)
 class RegistryAsset:
@@ -283,8 +300,20 @@ def iter_asset_files(directory: Path, asset: RegistryAsset) -> list[Path]:
     chosen: dict[tuple[Path, str], Path] = {}
     for ext in asset.extensions:
         for f in globber("*" + ext):
+            if _in_hidden_dir(f, directory):
+                continue
             chosen.setdefault((f.parent, f.stem), f)
     return sorted(chosen.values())
+
+
+def _in_hidden_dir(path: Path, base: Path) -> bool:
+    """True when *path* sits under a dot-directory of *base* (``.git``, ``.sparkrun``).
+
+    A registry rooted at the repository root (:data:`REPO_ROOT_SUBPATH`) would
+    otherwise scan its own ``.sparkrun/registry.yaml`` manifest and git
+    internals as recipes. Nothing launchable lives in a hidden directory.
+    """
+    return any(part.startswith(".") for part in path.relative_to(base).parts[:-1])
 
 
 def _scan_asset_dir(
@@ -316,7 +345,7 @@ def _scan_asset_dir(
     found: list[Path] = []
     for ext in asset.extensions:
         for candidate in sorted(base.rglob(name + ext)):
-            if candidate.parent in seen_dirs:
+            if candidate.parent in seen_dirs or _in_hidden_dir(candidate, base):
                 continue
             if accept is not None and not accept(candidate):
                 continue
@@ -784,12 +813,14 @@ def assert_safe_registry_subpath(subpath: str, field: str = "subpath") -> None:
         RegistryError: The subpath is absolute, contains a traversal segment,
             or holds a character outside the segment charset.
     """
-    if not subpath:
+    if not subpath or subpath == REPO_ROOT_SUBPATH:
         return
     if "\\" in subpath:
         raise RegistryError("Registry %s %r must not contain a backslash (use '/' to separate path segments)" % (field, subpath))
     if subpath.startswith("/"):
-        raise RegistryError("Registry %s %r must be relative to the repository root, not absolute" % (field, subpath))
+        raise RegistryError(
+            "Registry %s %r must be relative to the repository root, not absolute ('/' alone means the repository root)" % (field, subpath)
+        )
 
     segments = [seg for seg in subpath.split("/") if seg]
     if not segments:
@@ -1069,11 +1100,8 @@ class RegistryManager:
             Path to the directory, or None when the registry does not declare
             one or it is not cached.
         """
-        subpath = getattr(entry, asset.subpath_field, "")
-        if not subpath:
-            return None
-        path = self._cache_dir(entry.name) / subpath
-        return path if path.exists() else None
+        path = resolve_registry_subpath(self._cache_dir(entry.name), getattr(entry, asset.subpath_field, ""))
+        return path if path is not None and path.exists() else None
 
     def find_asset_in_registries(
         self,
@@ -1770,6 +1798,20 @@ class RegistryManager:
         paths.append(".sparkrun")
         return paths
 
+    @staticmethod
+    def _apply_sparse_paths(checkout: Path, sparse_paths: list[str], git_env: dict[str, str]) -> subprocess.CompletedProcess:
+        """Point *checkout*'s sparse checkout at *sparse_paths*.
+
+        A repo-root subpath (:data:`REPO_ROOT_SUBPATH`) needs every file, and
+        cone-mode sparse checkout has no pattern that means "everything", so
+        that case disables sparse checkout instead of setting paths.
+        """
+        if REPO_ROOT_SUBPATH in sparse_paths:
+            command = ["git", "-C", str(checkout), "sparse-checkout", "disable"]
+        else:
+            command = ["git", "-C", str(checkout), "sparse-checkout", "set"] + sparse_paths
+        return subprocess.run(command, capture_output=True, text=True, timeout=30, check=False, stdin=subprocess.DEVNULL, env=git_env)
+
     def _sparse_checkout_paths_for_url(self, url: str) -> list[str]:
         """Collect all subpaths that need to be checked out for a given URL.
 
@@ -1838,17 +1880,9 @@ class RegistryManager:
 
             # Update sparse-checkout paths
             if sparse_paths:
-                result = subprocess.run(
-                    ["git", "-C", str(clone_dir), "sparse-checkout", "set"] + sparse_paths,
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                    check=False,
-                    stdin=subprocess.DEVNULL,
-                    env=git_env,
-                )
+                result = self._apply_sparse_paths(clone_dir, sparse_paths, git_env)
                 if result.returncode != 0:
-                    logger.warning("sparse-checkout set failed for %s: %s", url, result.stderr.strip())
+                    logger.warning("sparse-checkout update failed for %s: %s", url, result.stderr.strip())
 
             return True
         except subprocess.TimeoutExpired:
@@ -1903,16 +1937,7 @@ class RegistryManager:
                 # Ensure sparse checkout covers all configured subpaths
                 # (picks up tuning_subpath / benchmark_subpath added after
                 # the initial clone)
-                sparse_paths = self._build_sparse_paths(entry)
-                subprocess.run(
-                    ["git", "-C", str(cache_dir), "sparse-checkout", "set"] + sparse_paths,
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                    check=False,
-                    stdin=subprocess.DEVNULL,
-                    env=git_env,
-                )
+                self._apply_sparse_paths(cache_dir, self._build_sparse_paths(entry), git_env)
 
                 # Fetch + hard reset to ensure deleted files are removed
                 # and rebased histories are handled correctly
@@ -1971,23 +1996,7 @@ class RegistryManager:
                     return False
 
                 # Configure sparse checkout for all subpaths
-                sparse_paths = self._build_sparse_paths(entry)
-                result = subprocess.run(
-                    [
-                        "git",
-                        "-C",
-                        str(cache_dir),
-                        "sparse-checkout",
-                        "set",
-                    ]
-                    + sparse_paths,
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                    check=False,
-                    stdin=subprocess.DEVNULL,
-                    env=git_env,
-                )
+                result = self._apply_sparse_paths(cache_dir, self._build_sparse_paths(entry), git_env)
                 if result.returncode != 0:
                     logger.debug(
                         "Sparse checkout setup failed for %s: %s",
@@ -2678,7 +2687,7 @@ class RegistryManager:
             recipes = []
             for f in handler.iter_files(recipe_dir):
                 try:
-                    data = handler.load(f, registry_manager=self, offline=True)
+                    data = handler.load(f, registry_manager=self, offline=True, allow_local=True)
                 except Exception as error:
                     logger.debug("Skipping %s manifest %s: %s", recipe_format, f, error)
                     continue

@@ -143,6 +143,10 @@ class TestSafeRegistrySubpath:
     def test_accepts_ordinary_subpaths(self, subpath):
         assert_safe_registry_subpath(subpath)
 
+    def test_accepts_the_repository_root_marker(self):
+        """``/`` alone is the repo-root spelling; it resolves to the checkout, never the filesystem root."""
+        assert_safe_registry_subpath("/")
+
     @pytest.mark.parametrize(
         "field",
         SUBPATH_FIELDS,
@@ -167,7 +171,6 @@ class TestSafeRegistrySubpath:
             "recipes/.git/config",
             "has space/recipes",
             "$(whoami)",
-            "/",
         ],
     )
     def test_rejects_unsafe_subpaths(self, subpath):

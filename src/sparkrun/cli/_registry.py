@@ -334,6 +334,11 @@ def registry_show(ctx, name, config_path=None):
     click.echo("Name:        %s" % entry.name)
     click.echo("URL:         %s" % entry.url)
     click.echo("Subpath:     %s" % entry.subpath)
+    if entry.format != "sparkrun":
+        from sparkrun.core.recipe_formats import get_recipe_format
+
+        provided = "" if get_recipe_format(entry.format) is not None else " (no loaded plugin provides it; recipes unavailable)"
+        click.echo("Format:      %s%s" % (entry.format, provided))
     if entry.description:
         click.echo("Description: %s" % entry.description)
     click.echo("Enabled:     %s" % ("yes" if entry.enabled else "no"))
@@ -452,7 +457,10 @@ def _build_raw_url(repo_url: str, subpath: str, rel_path: str) -> str:
         url = url[:-4]
     m = re.match(r"https?://github\.com/([^/]+/[^/]+)", url)
     if m:
-        return "https://raw.githubusercontent.com/%s/main/%s/%s" % (m.group(1), subpath, rel_path)
+        from sparkrun.core.registry import REPO_ROOT_SUBPATH
+
+        prefix = "" if subpath in ("", REPO_ROOT_SUBPATH) else "%s/" % subpath
+        return "https://raw.githubusercontent.com/%s/main/%s%s" % (m.group(1), prefix, rel_path)
     return ""
 
 

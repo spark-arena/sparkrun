@@ -902,6 +902,27 @@ def _complete_yaml_files(incomplete):
     return items
 
 
+def _registry_recipe_summaries(registry_mgr, entry) -> list[dict]:
+    """Recipe summaries from one registry, for completion.
+
+    Goes through the registry's own recipe directory and format, so a
+    repo-root subpath and a foreign-format registry complete correctly rather
+    than being scanned as sparkrun YAML at a hand-built path.
+    """
+    from sparkrun.core.registry import RECIPE_ASSET
+
+    recipe_dir = registry_mgr.asset_dir(entry, RECIPE_ASSET)
+    if recipe_dir is None:
+        return []
+    seen: set[str] = set()
+    unique = []
+    for summary in registry_mgr._list_dir_recipes(recipe_dir, entry.name, entry.format):
+        if summary["file"] not in seen:  # one completion per typeable name
+            seen.add(summary["file"])
+            unique.append(summary)
+    return unique
+
+
 class RecipeNameType(click.ParamType):
     """Click parameter type with shell completion for recipe names."""
 
@@ -939,8 +960,7 @@ class RecipeNameType(click.ParamType):
                         if not reg.enabled or not reg.name.startswith(prefix):
                             continue
                         matching_registries.append(reg)
-                        recipe_path = registry_mgr.cache_root / reg.name / reg.subpath
-                        recipes = list_recipes(search_paths=[recipe_path])
+                        recipes = _registry_recipe_summaries(registry_mgr, reg)
                         for r in recipes:
                             items.append(click.shell_completion.CompletionItem("@%s/%s" % (reg.name, r["file"])))
                     if not items and matching_registries:
@@ -963,8 +983,7 @@ class RecipeNameType(click.ParamType):
                         entry = registry_mgr.get_registry(registry_name)
                     except Exception:
                         return []
-                    recipe_path = registry_mgr.cache_root / entry.name / entry.subpath
-                    recipes = list_recipes(search_paths=[recipe_path])
+                    recipes = _registry_recipe_summaries(registry_mgr, entry)
                     return [
                         click.shell_completion.CompletionItem("@%s/%s" % (registry_name, r["file"]))
                         for r in recipes

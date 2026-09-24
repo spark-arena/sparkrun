@@ -263,11 +263,17 @@ def resolve_catalog_recipe(
     the recipe before runtime selection and fingerprint derivation.
     """
     sctx = resolve_sctx(sctx)
-    return _resolve_selected_recipe(*_selection(reference, sctx), overrides, config=sctx.config)
+    return _resolve_selected_recipe(*_selection(reference, sctx), overrides, config=sctx.config, registry_manager=sctx.registry_manager)
 
 
 def _resolve_selected_recipe(
-    path: Path, registry: RegistryEntry | None, imported: bool, overrides: dict[str, Any] | None, *, config: SparkrunConfig
+    path: Path,
+    registry: RegistryEntry | None,
+    imported: bool,
+    overrides: dict[str, Any] | None,
+    *,
+    config: SparkrunConfig,
+    registry_manager=None,
 ) -> ResolvedCatalogRecipe:
     """Load a selected source once, sharing normalization across preview and resolution."""
     from sparkrun.core.recipe import Recipe
@@ -278,7 +284,11 @@ def _resolve_selected_recipe(
         if path.stat().st_size > MAX_RECIPE_BYTES:
             raise SparkrunError("Recipe exceeds the size limit")
         recipe = Recipe.load(
-            path, resolve=False, allow_local_includes=not imported, recipe_format=registry.format if registry is not None else None
+            path,
+            resolve=False,
+            allow_local_includes=not imported,
+            registry_manager=registry_manager,
+            recipe_format=registry.format if registry is not None else None,
         )
         tag_recipe_source(recipe, registry, config=config, external=imported)
         values = {str(key): coerce_value(value) if isinstance(value, str) else value for key, value in (overrides or {}).items()}
@@ -300,7 +310,9 @@ def get_recipe_details(
 
     sctx = resolve_sctx(sctx)
     path, registry, imported = _selection(reference, sctx)
-    recipe, normalized = _resolve_selected_recipe(path, registry, imported, overrides, config=sctx.config)
+    recipe, normalized = _resolve_selected_recipe(
+        path, registry, imported, overrides, config=sctx.config, registry_manager=sctx.registry_manager
+    )
     runtime = resolve_runtime(recipe, sctx=sctx)
     trusted = resolve_recipe_trust(recipe, False, sctx=sctx, registry_entry=registry)
     issues: list[CatalogIssue] = [

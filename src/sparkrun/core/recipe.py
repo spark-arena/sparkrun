@@ -760,7 +760,12 @@ def resolve_builder(data: dict[str, Any]) -> str:
 
 
 def _load_foreign_format(
-    path: Path, data: dict[str, Any], registry_manager: RegistryManager | None, known_format: str | None = None
+    path: Path,
+    data: dict[str, Any],
+    registry_manager: RegistryManager | None,
+    known_format: str | None = None,
+    *,
+    allow_local: bool = True,
 ) -> tuple[dict[str, Any], str] | None:
     """``(v2 data, recipe name)`` when *path* is a foreign-format manifest, else ``None``.
 
@@ -772,24 +777,28 @@ def _load_foreign_format(
     """
     from sparkrun.core.recipe_formats import claiming_format, format_for_path, get_recipe_format, is_foreign_format
 
+    if known_format is not None and not is_foreign_format(known_format):
+        return None
+    ownership = format_for_path(path, registry_manager)
     if known_format is not None:
-        if not is_foreign_format(known_format):
-            return None
         recipe_format, format_name = get_recipe_format(known_format), known_format
-        root = None
-        if recipe_format is not None and registry_manager is not None:
-            root = format_for_path(path, registry_manager)[1]
+        root = ownership.root if ownership.kind == "foreign" else None
+    elif ownership.kind == "foreign":
+        recipe_format, format_name, root = ownership.recipe_format, ownership.format_name, ownership.root
+    elif ownership.kind == "native":
+        return None
     else:
-        recipe_format, root, format_name = format_for_path(path, registry_manager)
+        # Outside every registry (or no manager to ask). Only a local source
+        # may be claimed by content: a URL-fetched or imported file is
+        # someone else's, and a plugin must not be handed it by guesswork.
+        recipe_format = claiming_format(path, data) if allow_local else None
+        format_name, root = (recipe_format.name if recipe_format else None), None
     if format_name is not None and recipe_format is None:
         raise RecipeError("%s belongs to a registry in the %r recipe format, which no loaded plugin provides" % (path, format_name))
     if recipe_format is None:
-        # Outside any registry: the format names it with root=None.
-        recipe_format = claiming_format(path, data)
-    if recipe_format is None:
         return None
     try:
-        translated = recipe_format.load(path, registry_manager=registry_manager, offline=False)
+        translated = recipe_format.load(path, registry_manager=registry_manager, offline=False, allow_local=allow_local)
     except RecipeError:
         raise
     except Exception as error:
@@ -1692,7 +1701,7 @@ class Recipe:
         data = read_yaml(str(path))
         if not isinstance(data, dict):
             raise RecipeError("Recipe file must contain a YAML mapping: %s" % path)
-        foreign = _load_foreign_format(path, data, registry_manager, recipe_format)
+        foreign = _load_foreign_format(path, data, registry_manager, recipe_format, allow_local=allow_local_includes)
         if foreign is not None:
             data, foreign_name = foreign
             recipe = cls(data, source_path=str(path))
@@ -2659,7 +2668,7 @@ def list_recipes(
     local_files: list[Path] | None = None,
 ) -> list[dict[str, Any]]:
     """List all available recipes with name and path."""
-    from sparkrun.core.registry import RECIPE_ASSET, iter_asset_files
+    from sparkrun.core.registry import RECIPE_ASSET, iter_asset_files, resolve_registry_subpath
 
     recipes: list[dict[str, Any]] = []
     seen_names: set[str] = set()
@@ -2688,8 +2697,8 @@ def list_recipes(
         if registry_manager:
             for reg in registry_manager.list_registries():
                 if reg.enabled:
-                    reg_path = registry_manager.cache_root / reg.name / reg.subpath
-                    if search_dir == reg_path or search_dir.is_relative_to(reg_path):
+                    reg_path = resolve_registry_subpath(registry_manager.cache_root / reg.name, reg.subpath)
+                    if reg_path is not None and (search_dir == reg_path or search_dir.is_relative_to(reg_path)):
                         registry_name = reg.name
                         break
 

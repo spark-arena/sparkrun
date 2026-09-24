@@ -2295,6 +2295,14 @@ tuning lookup is by runtime and returns a collection, so it is deliberately not 
 4. The combined list is saved to `registries.yaml` for subsequent loads.
 5. If all manifest URLs fail, pure `FALLBACK_DEFAULT_REGISTRIES` is returned (offline/no-git safety net).
 
+**`subpath: "/"` means the repository root** (`REPO_ROOT_SUBPATH`), for catalogs whose manifests sit at the top
+level. Subpaths are always repo-relative, so `/` can mean nothing else (`""` already means "serves no assets of
+that kind"). Resolve it only through `resolve_registry_subpath`: `Path(...) / "/"` is the **filesystem** root, which is
+why `asset_dir`, completion and `list_recipes` stopped building `cache_root / name / subpath` by hand. Two
+consequences: sparse checkout is **disabled** for such a registry (`_apply_sparse_paths`), since cone mode has no
+"everything" pattern, and recursive scans skip dot-directories (`_in_hidden_dir`), or a root-level registry would
+list its own `.sparkrun/registry.yaml` as a recipe.
+
 **Manifest format** (`.sparkrun/registry.yaml` in a git repo): supports both canonical keys (`subpath`,
 `tuning_subpath`, `benchmark_subpath`) and short keys (`recipes`, `tuning`, `benchmarks`). Canonical keys take
 precedence when both are present.
@@ -2350,9 +2358,14 @@ Three rules, each silently wrong if broken:
   foreign registry lists and resolves nothing, and `Recipe.load` of one of its
   files **raises**. A lil manifest has a top-level `model:`, so reading it as v2
   would build a launchable recipe nobody wrote. `Recipe.load` finds the format
-  through the owning registry (`format_for_path`), or from `recipe_format=` when
-  the caller already holds the entry (`api/_catalog.py`). Only a path outside
-  every registry falls back to `claims()`.
+  through the owning registry (`format_for_path`, which returns an explicit
+  `PathOwnership` and lets `RegistryError` propagate: an orphaned or doubly-owned
+  cache path must not read as "outside"), or from `recipe_format=` when the
+  caller already holds the entry (`api/_catalog.py`). `claims()` is consulted
+  **only** for a path outside every registry **from a local source**: never a
+  native registry's file, never a URL-fetched or imported recipe
+  (`allow_local_includes=False`). The format's `load()` receives the same
+  `allow_local` flag, so it can refuse to read neighbouring files.
 - **Listing is offline.** `_list_dir_recipes` calls `load(offline=True)`. A
   format needing remote facts (checkpoint config) must degrade locally, the same
   budget rule as the Hub metadata work.

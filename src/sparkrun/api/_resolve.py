@@ -139,8 +139,14 @@ def resolve_recipe(
             raise RecipeNotFound("Recipe %r not found: %s" % (recipe_input, exc)) from exc
         if not recipe_path:
             raise RecipeNotFound("Recipe %r not found in any configured registry" % recipe_input)
-        with _recipe_errors():
-            recipe = Recipe.load(recipe_path, resolve=False, registry_manager=registry_mgr)
+        try:
+            with _recipe_errors():
+                recipe = Recipe.load(recipe_path, resolve=False, registry_manager=registry_mgr)
+        except RegistryError as exc:
+            # Ownership is decided while loading (it selects the recipe format);
+            # an ambiguous or orphaned cache path is the same failure the
+            # source attribution below reports.
+            raise RecipeNotFound("Recipe source could not be established: %s" % recipe_input) from exc
         try:
             scope, _ = parse_scoped_name(recipe_input)
             registry = recipe_registry_entry(recipe_path, registry_mgr, registry_name=scope)

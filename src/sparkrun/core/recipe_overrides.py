@@ -439,13 +439,17 @@ def build_override_context(
     chain = recipe.build_config_chain(cli_overrides, declared=declared)
     parallelism = extract_parallelism(chain)
 
+    from sparkrun.core.hardware import resolve_hardware
+
     hardware: dict[str, HostHardware] = {}
     for host in hosts:
         observed = (host_hardware or {}).get(host)
         if observed is not None and observed.source == "detected":
             hardware[host] = observed
-        elif cluster is not None:
-            hardware[host] = cluster.hardware_for(host)
+        else:
+            # Inventory, then the application-policy assumption: the order
+            # placement uses. A host must never drop out of every group.
+            hardware[host] = cluster.hardware_for(host) if cluster is not None else resolve_hardware(None)
 
     gpus = [hw.total_gpus for hw in hardware.values() if hw.total_gpus > 0]
     gpus_per_node = min(gpus) if gpus else 1

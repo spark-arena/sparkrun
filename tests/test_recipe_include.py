@@ -184,6 +184,9 @@ class _Registries:
     def _recipe_dir(self, entry):
         return self.root
 
+    def registry_for_path(self, path, *, allow_discovery=True, entries=None):
+        return self.name if Path(path).resolve().is_relative_to(self.root.resolve()) else None
+
 
 def test_registry_include_records_provenance_and_scopes_mods(tmp_path):
     reg_root = tmp_path / "reg"

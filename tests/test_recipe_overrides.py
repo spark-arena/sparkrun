@@ -417,8 +417,10 @@ def test_mixed_cluster_falls_back_to_a_group_that_fits(tmp_path, v):
 def test_mixed_cluster_without_any_fitting_group_reports_the_groups(tmp_path, v):
     from sparkrun.api import InsufficientCapacity
 
-    with pytest.raises(InsufficientCapacity, match="groups: s1; w1"):
+    with pytest.raises(InsufficientCapacity) as excinfo:
         _mixed_plan(tmp_path, ("s1", "w1"), tp=2)
+    message = str(excinfo.value)
+    assert "[s1]" in message and "[w1]" in message  # every group's reason, not just the last one
 
 
 def test_mixed_cluster_identity_does_not_depend_on_the_group(tmp_path, v):
@@ -534,3 +536,114 @@ def test_plan_refuses_an_override_that_changes_the_runtime(tmp_path, v):
             [{"when": {"nodes": 1}, "defaults": {"distributed_executor_backend": "ray"}}],
             recipe_extra={"runtime": "vllm"},
         )
+
+
+# --- review round 2: group fallback leaves nothing behind ------------------------------------------
+
+
+def test_group_fallback_starts_every_attempt_from_the_declared_recipe(tmp_path, v, monkeypatch):
+    """H1/M3/M4/L1: a failed group's builder, metadata write-back and probe errors must not leak."""
+    import sparkrun.api as api
+    import sparkrun.api._hosts as hosts_module
+    from sparkrun.api import InsufficientCapacity, SparkrunError
+    from sparkrun.core.cluster_manager import ClusterDefinition
+
+    seen = []
+
+    def _fake_place(host_list, recipe, overrides=None, **kw):
+        seen.append((tuple(host_list), recipe.builder, recipe.container, recipe.metadata.get("scribble")))
+        recipe.metadata["scribble"] = tuple(host_list)  # what estimate_vram's write-back does
+        if tuple(host_list) == ("s1", "w1", "w2"):
+            raise SparkrunError("scheduler exploded")  # a probe failure that is not about capacity
+        if tuple(host_list) == ("s1",):
+            raise InsufficientCapacity("s1 alone cannot fit")
+        return list(host_list), False, [], None
+
+    def _failing_status(*_a, **_kw):
+        calls.append(1)
+        raise OSError("ssh down")
+
+    calls = []
+    monkeypatch.setattr(hosts_module, "resolve_effective_hosts", _fake_place)
+    monkeypatch.setattr(api, "status", _failing_status)
+
+    data = {
+        **_BASE,
+        "runtime": "vllm",  # eugr is inferred from the image only for a bare `vllm` runtime
+        "overrides": [
+            {"when": {"arch": "sm_121"}, "container": "ghcr.io/spark-arena/dgx-vllm-eugr-nightly:latest"},
+            # Matches nothing on either group: the fallback group applies no
+            # layer, which is exactly when a stale builder used to survive.
+            {"when": {"arch": "sm_90"}, "defaults": {"max_num_seqs": 90}},
+        ],
+    }
+    path = tmp_path / "fallback.yaml"
+    path.write_text(yaml.safe_dump(data))
+    recipe = Recipe.load(str(path), resolve=False)
+    hosts = ("s1", "w1", "w2")
+    cluster = ClusterDefinition(name="c", hosts=list(hosts), hosts_hardware={"w1": _rtx(), "w2": _rtx()})
+    run_plan = api.plan(api.RunOptions(recipe=recipe, cluster=cluster, hosts=hosts, dry_run=True))
+
+    assert run_plan.host_list == ("w1", "w2")
+    assert run_plan.recipe.builder == ""  # not the eugr builder group s1's image implied
+    assert run_plan.recipe.container == _BASE["container"]
+    assert run_plan.recipe.defaults["max_num_seqs"] == 8
+    probe, group_a, group_b = seen
+    assert group_a[1] == "eugr" and group_a[2].startswith("ghcr.io/spark-arena/dgx-vllm-eugr-nightly")  # applied for s1
+    assert group_b[1] == "" and group_b[3] is None  # ...and fully undone for w1/w2
+    assert calls == [1]  # the failed sweep was not retried per placement
+
+
+def test_claims_are_never_consulted_inside_a_native_registry_or_for_url_sources(tmp_path):
+    from sparkrun.core.recipe_formats import RecipeFormat, register_recipe_format, unregister_recipe_format
+
+    consulted = []
+
+    def _claims(path, data):
+        consulted.append(path)
+        return True
+
+    def _load(path, **_kw):
+        raise AssertionError("a claimed manifest must not be translated here")
+
+    register_recipe_format(
+        RecipeFormat(name="greedy", owner="tests", iter_files=lambda r: [], name_of=lambda p, r: p.stem, load=_load, claims=_claims)
+    )
+    try:
+        config, cache = tmp_path / "config", tmp_path / "cache"
+        config.mkdir()
+        cache.mkdir()
+        from sparkrun.core.registry import RegistryEntry, RegistryManager
+
+        mgr = RegistryManager(config, cache)
+        mgr._manifest_discovery_attempted = True
+        mgr._save_registries([RegistryEntry(name="native", url="https://example.invalid/n.git", subpath="recipes")])
+        recipe_dir = cache / "native" / "recipes"
+        recipe_dir.mkdir(parents=True)
+        (cache / "native" / ".git").mkdir()
+        inside = recipe_dir / "plain.yaml"
+        inside.write_text(yaml.safe_dump(dict(_BASE)))
+        assert Recipe.load(inside, registry_manager=mgr).model == _BASE["model"]
+
+        outside = tmp_path / "fetched.yaml"
+        outside.write_text(yaml.safe_dump(dict(_BASE)))
+        assert Recipe.load(outside, allow_local_includes=False).model == _BASE["model"]
+        assert consulted == []
+    finally:
+        unregister_recipe_format("greedy")
+
+
+def test_orphaned_registry_cache_paths_raise_instead_of_parsing(tmp_path):
+    from sparkrun.core.registry import RegistryError, RegistryManager
+
+    config, cache = tmp_path / "config", tmp_path / "cache"
+    config.mkdir()
+    cache.mkdir()
+    mgr = RegistryManager(config, cache)
+    mgr._manifest_discovery_attempted = True
+    mgr._save_registries([])
+    orphan = cache / "gone" / "recipes" / "x.yaml"
+    orphan.parent.mkdir(parents=True)
+    orphan.write_text(yaml.safe_dump(dict(_BASE)))
+    with pytest.raises(RegistryError, match="no configured registry"):
+        Recipe.load(orphan, registry_manager=mgr)

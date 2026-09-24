@@ -33,7 +33,7 @@ def _toy_name(path: Path, root: Path | None) -> str:
     return path.parent.name
 
 
-def _toy_load(path: Path, *, registry_manager=None, offline: bool) -> dict:
+def _toy_load(path: Path, *, registry_manager=None, offline: bool, allow_local: bool = True) -> dict:
     CALLS.append(offline)
     data = yaml.safe_load(path.read_text())
     return {
@@ -219,7 +219,7 @@ def test_translation_errors_name_the_format(tmp_path, toy_format):
     manifest.parent.mkdir()
     manifest.write_text(yaml.safe_dump({"weights": "org/x", "seqs": 1}))
 
-    def _boom(path, *, registry_manager=None, offline):
+    def _boom(path, *, registry_manager=None, offline, allow_local=True):
         raise KeyError("capacity")
 
     register_recipe_format(
@@ -231,3 +231,46 @@ def test_translation_errors_name_the_format(tmp_path, toy_format):
             Recipe.load(manifest)
     finally:
         unregister_recipe_format("toy2")
+
+
+def test_known_format_loads_under_the_same_name_it_lists(toy_registry):
+    """M2: a format whose name depends on the registry root names a load and a listing identically."""
+    mgr, toy_dir = toy_registry
+
+    def _rooted(path, root):
+        return "no-root" if root is None else path.parent.relative_to(root).as_posix()
+
+    register_recipe_format(RecipeFormat(name="toy", owner="tests", iter_files=_toy_iter, name_of=_rooted, load=_toy_load))
+    try:
+        listed = {r["file"] for r in mgr.search_recipes("")}
+        loaded = Recipe.load(toy_dir / "Alpha" / "toy.yaml", registry_manager=mgr, recipe_format="toy")
+        assert loaded.name == "Alpha" and "Alpha" in listed
+    finally:
+        unregister_recipe_format("toy")
+
+
+def test_the_format_is_told_when_neighbouring_files_are_off_limits(tmp_path, toy_format):
+    manifest = tmp_path / "Delta" / "toy.yaml"
+    manifest.parent.mkdir()
+    manifest.write_text(yaml.safe_dump({"weights": "org/delta"}))
+    seen = []
+    original = TOY.load
+
+    def _spy(path, **kw):
+        seen.append(kw["allow_local"])
+        return original(path, **kw)
+
+    register_recipe_format(RecipeFormat(name="toy", owner="tests", iter_files=_toy_iter, name_of=_toy_name, load=_spy, claims=_toy_claims))
+    Recipe.load(manifest)
+    assert seen == [True]
+
+
+def test_registry_show_explains_an_inert_format(toy_registry, monkeypatch):
+    from click.testing import CliRunner
+
+    from sparkrun.cli import main
+
+    mgr, _ = toy_registry
+    monkeypatch.setattr("sparkrun.core.config.SparkrunConfig.get_registry_manager", lambda self: mgr)
+    result = CliRunner().invoke(main, ["registry", "show", "toyreg"])
+    assert "Format:      toy (no loaded plugin provides it" in result.output, result.output
