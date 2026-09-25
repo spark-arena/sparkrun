@@ -99,9 +99,15 @@ def test_dgx_spark_runtime_flags_llama_cpp_mmap_off():
     assert DgxSparkPlatform().default_runtime_flags("llama-cpp", _gb10_accel()) == {"mmap": False}
 
 
+@pytest.mark.parametrize("runtime", ["vllm-distributed", "vllm-ray", "eugr-vllm", "sglang"])
+def test_dgx_spark_runtime_flags_serve_memory_default(runtime):
+    """GB10 vLLM/SGLang default to 0.8 memory utilization when the recipe sets none."""
+    assert DgxSparkPlatform().default_runtime_flags(runtime, _gb10_accel()) == {"gpu_memory_utilization": 0.8}
+
+
 def test_dgx_spark_runtime_flags_other_runtime_empty():
-    """Non-llama.cpp runtimes get no GB10 flag defaults."""
-    assert DgxSparkPlatform().default_runtime_flags("vllm-distributed", _gb10_accel()) == {}
+    """Runtimes that manage their own memory get no GB10 flag defaults."""
+    assert DgxSparkPlatform().default_runtime_flags("trtllm", _gb10_accel()) == {}
 
 
 def test_dgx_spark_runtime_flags_non_gb10_empty():

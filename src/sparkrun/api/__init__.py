@@ -110,6 +110,7 @@ from sparkrun.api._models import (
     StopAllResult,
     StopResult,
 )
+from sparkrun.api._realize import RealizedRecipe, realize_recipe
 from sparkrun.api._recipes import resolve_recipe_filter, search_recipes
 from sparkrun.api._run import plan, run
 from sparkrun.api._schedule import schedule
@@ -221,6 +222,8 @@ __all__ = [
     # Functions
     "plan",
     "materialize",
+    "realize_recipe",
+    "RealizedRecipe",
     "run",
     "stop",
     "stop_all",

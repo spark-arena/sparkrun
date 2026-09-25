@@ -463,6 +463,18 @@ the workload or are read by `when:`.
 `sparkrun run` (including `--dry-run`) prints which entries matched and why the others did not. Workload identity is
 unaffected by what matched: `stop` / `logs` / `--ensure` find the deployment without re-evaluating anything.
 
+**Realizing a recipe for your hardware.** `sparkrun export recipe <recipe> --realize` takes the same host and override
+options as `run` (`--hosts` / `--cluster`, `--tp`, `-o`, …). It probes the hosts and places the workload exactly as `run`
+would, launches nothing, and writes a plain recipe with the matching entries and your CLI values baked into `defaults` /
+`env` / `container` and the `overrides:` block removed. Launching the result on the same hardware renders the same serve
+command. It is how you turn an `@lil/<Entry>` into an ordinary v2 recipe. Details:
+
+- `metadata.realized_for` records what it was realized against (platform, accelerator, node count, no host names).
+- A default that only fed a `when: {config: …}` predicate (lil's `speculator`) is dropped, since nothing reads it once
+  the overrides are gone. Pass it with `-o` to keep it.
+- Platform defaults (DGX Spark's `CUTE_DSL_ARCH`, its `gpu_memory_utilization` fallback) are **not** written in. The
+  platform applies them at launch, and writing them into the recipe would restate hardware facts.
+
 ---
 
 ## Command Templates

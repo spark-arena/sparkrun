@@ -647,3 +647,42 @@ def test_orphaned_registry_cache_paths_raise_instead_of_parsing(tmp_path):
     orphan.write_text(yaml.safe_dump(dict(_BASE)))
     with pytest.raises(RegistryError, match="no configured registry"):
         Recipe.load(orphan, registry_manager=mgr)
+
+
+# --- platform-declared capabilities and the serve memory ceiling ---------------------------------------
+
+
+def _detected_gb10() -> HostHardware:
+    """What a real probe reports: no unified-memory tag (the platform knows it; the probe cannot see it)."""
+    return HostHardware(
+        accelerators=[AcceleratorSpec(vendor="nvidia", model="gb10", capabilities=frozenset({"cuda", "rdma:roce-v2"}))], source="detected"
+    )
+
+
+def test_detected_gb10_counts_as_unified_memory():
+    ctx = _ctx(hosts={"s1": _detected_gb10()})
+    assert evaluate_override(_one({"capability": "unified-memory"}), ctx).matched
+    assert not evaluate_override(_one({"capability": {"ne": "unified-memory"}}), ctx).matched
+
+
+def _plan_with(tmp_path, *, gpu_mem, overrides=None, cli=None, hosts=("s1", "s2")):
+    import sparkrun.api as api
+    from sparkrun.core.cluster_manager import ClusterDefinition
+
+    data = {**_BASE, "defaults": {**_BASE["defaults"], "gpu_memory_utilization": gpu_mem, "tensor_parallel": len(hosts)}}
+    if overrides:
+        data["overrides"] = overrides
+    path = tmp_path / "mem.yaml"
+    path.write_text(yaml.safe_dump(data))
+    recipe = Recipe.load(str(path), resolve=False)
+    cluster = ClusterDefinition(name="c", hosts=list(hosts), hosts_hardware={h: _detected_gb10() for h in hosts})
+    return api.plan(api.RunOptions(recipe=recipe, cluster=cluster, hosts=tuple(hosts), dry_run=True, overrides=cli or {}))
+
+
+def test_recipe_memory_utilization_is_served_as_written(tmp_path, v):
+    # Recipe content is never rewritten for the hardware: the fix for GB10 is the
+    # unified-memory tag (above), which keeps discrete-card overrides off it.
+    run_plan = _plan_with(tmp_path, gpu_mem=0.94)
+    assert run_plan.recipe.defaults["gpu_memory_utilization"] == 0.94
+    discrete_only = [{"when": {"capability": {"ne": "unified-memory"}}, "defaults": {"gpu_memory_utilization": 0.97}}]
+    assert _plan_with(tmp_path, gpu_mem=0.8, overrides=discrete_only).recipe.defaults["gpu_memory_utilization"] == 0.8

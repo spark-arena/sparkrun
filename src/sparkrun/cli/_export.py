@@ -75,13 +75,74 @@ def export(ctx):
     is_flag=True,
     help="Emit a recipe that uses include: as written, instead of the flattened, self-contained recipe",
 )
+@click.option(
+    "--realize",
+    is_flag=True,
+    help="Plan against the target hosts and emit the plain recipe that launch would run (overrides resolved for this hardware)",
+)
+@host_options
+@recipe_override_options
 @click.pass_context
-def export_recipe(ctx, recipe_name, output_json=False, save_path=None, keep_include=False):
+def export_recipe(
+    ctx,
+    recipe_name,
+    output_json=False,
+    save_path=None,
+    keep_include=False,
+    realize=False,
+    hosts=None,
+    hosts_file=None,
+    cluster_name=None,
+    options=(),
+    tensor_parallel=None,
+    pipeline_parallel=None,
+    data_parallel=None,
+    gpu_mem=None,
+    max_model_len=None,
+    image=None,
+):
     """Export normalized recipe to stdout or file.
 
     A recipe built with include: is flattened into one self-contained recipe
     (its bases merged in) unless --keep-include is given.
+
+    --realize probes the target hosts (--hosts / --cluster, or the default
+    cluster) and places the workload exactly as run would, then emits an
+    ordinary v2 recipe with the matching overrides: layers and any --tp / -o
+    values baked in and the overrides: block removed. Nothing is launched.
+    Platform defaults (e.g. DGX Spark env and memory utilization) are left to
+    the platform, which applies them at launch.
+
+    Examples:
+
+      {app_command} export recipe @lil/Qwen3.8-Flash-Next-NVFP4 --realize --tp 2
+
+      {app_command} export recipe my-recipe --realize --cluster mylab --save realized.yaml
     """
+    launch_flags = (hosts, hosts_file, cluster_name, tensor_parallel, pipeline_parallel, data_parallel, gpu_mem, max_model_len, image)
+    if not realize and (options or any(flag is not None for flag in launch_flags)):
+        raise click.UsageError("host and override options (--hosts, --cluster, --tp, -o, ...) only apply with --realize")
+    if realize and keep_include:
+        raise click.UsageError("--realize emits a flattened recipe; it cannot be combined with --keep-include")
+    if realize:
+        _export_realized_recipe(
+            ctx,
+            recipe_name,
+            output_json=output_json,
+            save_path=save_path,
+            hosts=hosts,
+            hosts_file=hosts_file,
+            cluster_name=cluster_name,
+            options=options,
+            tensor_parallel=tensor_parallel,
+            pipeline_parallel=pipeline_parallel,
+            data_parallel=data_parallel,
+            gpu_mem=gpu_mem,
+            max_model_len=max_model_len,
+            image=image,
+        )
+        return
+
     config, _ = _get_config_and_registry()
     recipe, recipe_path, registry_mgr = _load_recipe(config, recipe_name)
 
@@ -112,6 +173,51 @@ def export_recipe(ctx, recipe_name, output_json=False, save_path=None, keep_incl
         return
 
     click.echo("Recipe saved to %s" % recipe.export(path=save_path, json=output_json))
+
+
+def _export_realized_recipe(ctx, recipe_name, *, output_json, save_path, hosts, hosts_file, cluster_name, options, **flags):
+    """``export recipe --realize``: plan like ``run``, then write the recipe that plan would launch."""
+    from sparkrun import api
+    from sparkrun.cli._common import resolve_host_context
+    from sparkrun.utils.yaml_helpers import LiteralBlockDumper
+
+    sctx = _get_context(ctx)
+    config = sctx.config
+    hctx = resolve_host_context(hosts, hosts_file, cluster_name, config, sctx.variables, sctx=sctx)
+    recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name, resolve=False)
+    recipe, overrides = _apply_recipe_overrides(options, recipe=recipe, **flags)
+
+    try:
+        realized = api.realize_recipe(
+            api.RunOptions(recipe=recipe, hosts=tuple(hctx.host_list), cluster=hctx.cluster_name, overrides=dict(overrides)),
+            sctx=sctx,
+        )
+    except api.SparkrunError as exc:
+        click.echo("Error: %s" % exc, err=True)
+        sys.exit(1)
+
+    info = realized.recipe["metadata"]["realized_for"]
+    click.echo(
+        "Realized for %s (%d node(s)); %s"
+        % (info.get("platform") or info.get("accelerator") or "unknown hardware", info["nodes"], hctx.describe()),
+        err=True,
+    )
+    if realized.plan.override_resolution is not None:
+        for line in realized.plan.override_resolution.describe():
+            click.echo("  %s" % line, err=True)
+    if realized.dropped_keys:
+        click.echo("  dropped override-only keys: %s" % ", ".join(realized.dropped_keys), err=True)
+
+    text = (
+        json.dumps(realized.recipe, indent=2)
+        if output_json
+        else yaml.dump(realized.recipe, Dumper=LiteralBlockDumper, indent=2, sort_keys=False, default_flow_style=False)
+    )
+    if save_path is None:
+        click.echo(text)
+    else:
+        Path(save_path).write_text(text, encoding="utf-8")
+        click.echo("Recipe saved to %s" % save_path, err=True)
 
 
 @export.command("running-recipe")

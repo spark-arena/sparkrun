@@ -79,11 +79,21 @@ def test_platform_flag_defaults_respects_explicit_recipe_value():
     assert recipe.defaults["mmap"] is True
 
 
-def test_platform_flag_defaults_non_llama_runtime_noop():
+def test_platform_flag_defaults_non_llama_runtime_gets_no_mmap():
     recipe = _llama_recipe()
     applied = apply_platform_runtime_flag_defaults(recipe, "vllm-distributed", _nvidia_hw())
-    assert applied == {}
+    assert "mmap" not in applied
     assert "mmap" not in recipe.defaults
+
+
+def test_platform_serve_memory_default_fills_only_a_gap():
+    recipe = _llama_recipe()
+    assert apply_platform_runtime_flag_defaults(recipe, "vllm-distributed", _nvidia_hw()) == {"gpu_memory_utilization": 0.8}
+    assert recipe.defaults["gpu_memory_utilization"] == 0.8
+
+    explicit = _llama_recipe({"gpu_memory_utilization": 0.94})
+    assert apply_platform_runtime_flag_defaults(explicit, "vllm-distributed", _nvidia_hw()) == {}
+    assert explicit.defaults["gpu_memory_utilization"] == 0.94
 
 
 def test_platform_flag_defaults_non_gb10_noop():

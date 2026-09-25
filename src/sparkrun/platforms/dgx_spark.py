@@ -39,12 +39,25 @@ _DGX_SPARK_DEFAULTS: dict[str, str | None] = {
 _DGX_SPARK_MAX_GPU_MEMORY_UTILIZATION = DGX_SPARK_SCHEDULING_FRACTION
 
 
+# ``gpu_memory_utilization`` for vLLM / SGLang on GB10 when the recipe sets
+# none. The engines' own defaults (0.9 upstream, 0.92 in the B12X image) are
+# discrete-card numbers, and GB10's 121 GiB pool is shared with the OS, so they
+# can fail at startup with too little free memory. A recipe, override or CLI
+# value always wins: this only fills a gap, it never lowers what a recipe says.
+DGX_SPARK_DEFAULT_SERVE_GPU_MEMORY_UTILIZATION = 0.8
+
+_SERVE_MEMORY_DEFAULT = {"gpu_memory_utilization": DGX_SPARK_DEFAULT_SERVE_GPU_MEMORY_UTILIZATION}
+
 # Per-runtime recipe-flag defaults for GB10.  Applied at the recipe-default
 # tier (only when the recipe/CLI are silent).  Memory-mapped GGUF loading
 # performs poorly on GB10's unified memory, so llama.cpp defaults to
 # ``--no-mmap`` (mmap off) unless a recipe opts back in with ``mmap: true``.
 _DGX_SPARK_RUNTIME_FLAGS: dict[str, dict[str, object]] = {
     "llama-cpp": {"mmap": False},
+    "vllm-distributed": _SERVE_MEMORY_DEFAULT,
+    "vllm-ray": _SERVE_MEMORY_DEFAULT,
+    "eugr-vllm": _SERVE_MEMORY_DEFAULT,
+    "sglang": _SERVE_MEMORY_DEFAULT,
 }
 
 
@@ -135,7 +148,7 @@ class DgxSparkPlatform(HardwarePlatformPlugin):
         return dict(_DGX_SPARK_EXECUTOR_CONFIG.get(executor_name, {}))
 
     def default_runtime_flags(self, runtime_name: str, accelerator: AcceleratorSpec) -> dict[str, object]:
-        """GB10 recipe-flag defaults (e.g. ``mmap: False`` for llama.cpp)."""
+        """GB10 recipe-flag defaults (``mmap: False`` for llama.cpp, serve memory for vLLM/SGLang)."""
         if accelerator.vendor == "nvidia" and accelerator.model == "gb10":
             return dict(_DGX_SPARK_RUNTIME_FLAGS.get(runtime_name, {}))
         return {}
@@ -168,6 +181,11 @@ class DgxSparkPlatform(HardwarePlatformPlugin):
         if accelerator.vendor == "nvidia" and accelerator.model == "gb10":
             return DGX_SPARK_COMPUTE_CAPABILITY
         return None
+
+    def declared_capabilities(self, accelerator: AcceleratorSpec) -> frozenset[str]:
+        if accelerator.vendor == "nvidia" and accelerator.model == "gb10":
+            return frozenset({"unified-memory"})
+        return frozenset()
 
     def default_max_gpu_memory_utilization(self, accelerator: AcceleratorSpec) -> float | None:
         """GB10 unified memory → cap usable memory at 0.90 for scheduling/fit."""

@@ -312,7 +312,10 @@ def _accelerator_facts(host_hardware: HostHardware) -> list[dict[str, Any]]:
                 "vendor": accel.vendor,
                 "accelerator": accel.model,
                 "arch": resolve_accelerator_arch(accel, host_hardware),
-                "capability": frozenset(accel.capabilities),
+                # Probe-reported tags plus what the platform declares for the model
+                # (GB10's unified-memory is never probed, only known).
+                "capability": frozenset(accel.capabilities)
+                | (platform.declared_capabilities(accel) if platform is not None else frozenset()),
                 "memory_gb": resolve_accelerator_memory_gb(accel, host_hardware),
             }
         )

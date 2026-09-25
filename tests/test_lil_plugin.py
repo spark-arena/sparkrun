@@ -492,3 +492,29 @@ def test_local_snapshot_is_sized_by_shard_files_and_only_when_complete(tmp_path,
     assert lil._local_weight_bytes("org/m", None, None) is None  # s2 missing: a partial download
     (snapshot / "s2.safetensors").write_bytes(b"x" * 5)
     assert lil._local_weight_bytes("org/m", None, None) == 15  # file sizes, not the index's total_size
+
+
+def test_discrete_card_utilization_does_not_reach_a_detected_gb10():
+    """Qwen3.8-Flash-Next declares 0.94; on real (probed) GB10 hardware it must not apply."""
+    from sparkrun.core.cluster_manager import ClusterDefinition
+    from sparkrun.core.hardware import AcceleratorSpec, HostHardware
+    from sparkrun.core.recipe import Recipe
+    from sparkrun.core.recipe_overrides import apply_recipe_override_layers, build_override_context
+    from sparkrun.runtimes.vllm_distributed import VllmDistributedRuntime
+
+    directory = FIXTURES / "Qwen3.8-Flash-Next-NVFP4"
+    recipe = Recipe.from_dict(translate(load_entry(directory / "lil.yaml"), _fixture_facts(directory)))
+    probed = HostHardware(
+        accelerators=[AcceleratorSpec(vendor="nvidia", model="gb10", capabilities=frozenset({"cuda", "rdma:roce-v2"}))], source="detected"
+    )
+    hosts = ["s1", "s2"]
+    context = build_override_context(
+        recipe,
+        {"tensor_parallel": 2},
+        runtime=VllmDistributedRuntime(),
+        cluster=ClusterDefinition(name="c", hosts=hosts),
+        hosts=hosts,
+        host_hardware={h: probed for h in hosts},
+    )
+    apply_recipe_override_layers(recipe, context)
+    assert "gpu_memory_utilization" not in recipe.defaults

@@ -220,6 +220,17 @@ class HardwarePlatformPlugin(Plugin):
         assumed = self.assumed_hardware()
         return list(assumed.accelerators) if assumed is not None else []
 
+    def declared_capabilities(self, accelerator: AcceleratorSpec) -> frozenset[str]:
+        """Capability tags this platform knows *accelerator* has, whether or not a probe reported them.
+
+        Detection records what it can see (``cuda``, an RDMA fabric). A fact
+        fixed by the model, such as GB10's ``unified-memory``, is the
+        platform's to declare, the same rule as
+        :meth:`default_compute_capability`. Consumers that match on
+        capabilities (recipe ``overrides:``) take the union.
+        """
+        return frozenset()
+
     def default_compute_capability(self, accelerator: AcceleratorSpec) -> str | None:
         """Declared ``"<major>.<minor>"`` compute capability for *accelerator*.
 

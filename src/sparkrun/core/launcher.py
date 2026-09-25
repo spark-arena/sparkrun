@@ -768,6 +768,27 @@ def report_unmapped_config_keys(
     return messages
 
 
+def selector_only_config_keys(recipe: Recipe, runtime: RuntimePlugin) -> set[str]:
+    """Defaults that exist only to feed an ``overrides[].when.config`` predicate.
+
+    Once the overrides are baked in (a realized export), nothing reads these,
+    and :func:`report_unmapped_config_keys` would report them as dropped. Empty
+    when the runtime does not declare ``known_config_keys``, for the same
+    reason that report stays silent then.
+    """
+    from sparkrun.runtimes.base import BASE_CONSUMED_CONFIG_KEYS
+
+    try:
+        known = runtime.known_config_keys()
+    except Exception:
+        logger.debug("Runtime %r known_config_keys raised", getattr(runtime, "runtime_name", "?"), exc_info=True)
+        return set()
+    if known is None:
+        return set()
+    consumed = set(known) | BASE_CONSUMED_CONFIG_KEYS | _referenced_placeholders(recipe)
+    return {k for k in recipe.override_config_keys() if k not in consumed and not _is_internal_config_key(k)}
+
+
 def resolve_platform_env_defaults(runtime: RuntimePlugin, host_hardware) -> dict[str, str]:
     """Return the platform's container-env defaults for *runtime*.
 

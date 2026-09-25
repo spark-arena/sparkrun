@@ -196,7 +196,13 @@ vllm-ray / vllm-distributed / eugr-vllm) alongside the exact name, so a platform
 can target a family without enumerating variants; exact name wins over family.
 Today DGX Spark uses this for `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`
 and `CUTE_DSL_ARCH=sm_121a` on vllm/sglang and `gpu_access_mode: gpus` (classic `--gpus` rather than CDI,
-whose `/etc/cdi/nvidia.yaml` goes stale across driver upgrades).
+whose `/etc/cdi/nvidia.yaml` goes stale across driver upgrades). Through
+`default_runtime_flags` it also gives vLLM / SGLang `gpu_memory_utilization: 0.8`
+when the recipe sets none: the engines' own defaults (0.92 in the B12X image) are
+discrete-card numbers. It is a `setdefault`, never a clamp. A recipe value, even
+one too high for GB10, is served as written, because recipe content is not
+rewritten for the hardware. Don't confuse it with `default_max_gpu_memory_utilization`
+(0.90), which is the scheduling and fit budget, not a serve flag.
 
 **Compute capability is declared, not probed.** It is fixed per accelerator
 model, so the platform recognizing the model is the authority (GB10 → `12.1`;
@@ -2061,6 +2067,23 @@ Three more rules that fail silently if broken:
 Hardware facts (`CUTE_DSL_ARCH`, allocator env) belong to the platform tier,
 not to overrides. See Platform default tiers above.
 
+**`export recipe --realize`** (`api/_realize.py:realize_recipe`) is `api.plan` plus
+`to_dict(effective=True)`: matched layers and CLI serve overrides are baked in and the
+`overrides:` block is dropped, so launching the file on the same hardware renders the
+same serve command. Three details that are easy to break:
+
+- **The plan is forced non-dry.** A dry-run plan skips `_observe_plan_hardware`, so it
+  would realize against inventory or platform assumptions rather than the hosts. Planning
+  is still read-only (a probe plus a status sweep).
+- **Selector-only defaults are dropped** (`launcher.selector_only_config_keys`).
+  `report_unmapped_config_keys` treats `when.config` keys as consumed, but once the overrides
+  are gone nothing reads them, and the realized recipe would warn at every launch. A key
+  given on the CLI is kept.
+- **Platform tiers are not baked in.** They are the platform's to apply at launch, and a
+  realized recipe restating them would trip `restated-platform-env`.
+  `metadata.realized_for` records the platform, accelerator and node count (no host names;
+  `metadata` is outside the fingerprint).
+
 ### Recipe Validation (`core/validation.py`)
 
 The single aggregator behind `sparkrun recipe validate`, and — through
@@ -2407,8 +2430,11 @@ nothing lil-specific.
 - **Translation** (`translate.py`) follows lil's `buildVLLMArgv` flag for flag. What lil decides per launch becomes
   generated overrides: the loader per arch, PCIe vs multi-node all-reduce tuning, speculator alternatives
   (`-o speculator=dflash|none`), and lil's own `when:` (kind → nodes, arch, tp, speculator → `config.speculator`).
-  lil's memory utilization is tuned for discrete cards, so it applies only off unified memory. GB10 keeps the
-  platform default.
+  A manifest's `gpu_memory_utilization` becomes an override gated on `capability ne unified-memory`. This is a
+  deliberate departure from lil, which passes it everywhere: the values (0.9–0.975) are tuned for discrete cards
+  and fail at startup on GB10, which falls back to the platform default (0.8). It depends on GB10 carrying the
+  `unified-memory` tag even when *detected*, which is why the platform declares it (`declared_capabilities`).
+  The parity test skips this flag.
 - **Checkpoint facts** (`checkpoint.py`, a port of lil's MTP expert-backend detection, `fit` TP and cudagraph
   capture sizes) come **cache first** through the shared Hub path (`models/vram.py:cached_hub_file`,
   `fetch_model_config(local_only=)`). Listing is offline and degrades (no TP) instead of failing.
