@@ -229,6 +229,8 @@ def build_sparkrun_set(
         }
         if entry.overrides:
             deployment["endpoint_source"]["overrides"] = dict(sorted(entry.overrides.items()))
+        if entry.request_profiles:
+            deployment["request_profiles"] = deepcopy(entry.request_profiles)
         deployments.append(deployment)
 
         model = models.setdefault(entry.virtual_model, {"name": entry.virtual_model, "targets": []})
@@ -245,24 +247,38 @@ def build_sparkrun_set(
     # a second target would count one upstream twice.
     bound_models = {entry.virtual_model for entry in entries}
     for upstream_model in sorted(set(discovered_models or ()) - bound_models):
-        name = discovered_deployment_name(upstream_model)
-        deployment: dict[str, Any] = {
-            "name": name,
-            "title": deployment_title(upstream_model, (discovered_clusters or {}).get(upstream_model, []), fallback="discovered"),
-            "provider": SPARKRUN_PROVIDER,
-            "model": upstream_model,
-            "native_protocols": (discovered_apis or {}).get(upstream_model, {}).get("native_protocols") or [DEFAULT_PROTOCOL],
-            "capabilities": (discovered_apis or {}).get(upstream_model, {}).get("capabilities", []),
-            "endpoint_source": {"type": "discovered", "controller": "sparkrun"},
-        }
-        discovered_metadata = (discovered_apis or {}).get(upstream_model, {}).get("model_metadata")
-        if discovered_metadata:
-            deployment["model_metadata"] = deepcopy(discovered_metadata)
-        if permissive:
-            deployment["capability_policy"] = {"unknown": "try"}
-        deployments.append(deployment)
-        models[upstream_model] = {"name": upstream_model, "targets": [name]}
-        _collect_profiles(profiles, upstream_model, (discovered_apis or {}).get(upstream_model, {}).get("request_profiles", {}), name)
+        state = (discovered_apis or {}).get(upstream_model, {})
+        split_candidates = state.get("profile_deployments") or []
+        # Keep the historical aggregate ID available to saved operator models.
+        # New generated routing uses only the job-specific targets when split.
+        candidates = [state, *split_candidates] if split_candidates else [state]
+        models[upstream_model] = {"name": upstream_model, "targets": []}
+        for candidate in candidates:
+            job_ids = candidate.get("job_ids", [])
+            identity = upstream_model + ("\0" + job_ids[0] if job_ids else "")
+            name = discovered_deployment_name(identity)
+            deployment = {
+                "name": name,
+                "title": deployment_title(upstream_model, (discovered_clusters or {}).get(upstream_model, []), fallback="discovered"),
+                "provider": SPARKRUN_PROVIDER,
+                "model": upstream_model,
+                "native_protocols": candidate.get("native_protocols") or [DEFAULT_PROTOCOL],
+                "capabilities": candidate.get("capabilities", []),
+                "endpoint_source": {"type": "discovered", "controller": "sparkrun"},
+            }
+            if job_ids:
+                deployment["discovery_job_ids"] = job_ids
+            if candidate.get("model_metadata") or state.get("model_metadata"):
+                deployment["model_metadata"] = deepcopy(candidate.get("model_metadata") or state["model_metadata"])
+            if permissive:
+                deployment["capability_policy"] = {"unknown": "try"}
+            declarations = candidate.get("request_profiles", {})
+            if declarations:
+                deployment["request_profiles"] = deepcopy(declarations)
+            deployments.append(deployment)
+            if job_ids or not split_candidates:
+                models[upstream_model]["targets"].append(name)
+            _collect_profiles(profiles, upstream_model, declarations, name)
 
     deployments.sort(key=lambda deployment: deployment["name"])
 
@@ -541,12 +557,9 @@ __all__ = [
 
 
 def _collect_profiles(profiles, parent, declarations, deployment):
-    for selector, overrides in declarations.items():
+    for selector in declarations:
         name = f"{parent}:{selector}"
-        profile = profiles.setdefault(name, {"parent": parent, "overrides": deepcopy(overrides), "targets": set()})
-        if profile["overrides"] != overrides:
-            raise ProjectionError(f"Recipes serving {parent!r} define conflicting request profile {selector!r}")
-        profile["targets"].add(deployment)
+        profiles.setdefault(name, {"parent": parent, "selector": selector})
 
 
 def _append_profiles(models, profiles):
@@ -554,16 +567,10 @@ def _append_profiles(models, profiles):
     occupied = set(by_name) | {alias for model in models for alias in model.get("aliases", [])}
     for name, profile in sorted(profiles.items()):
         parent = by_name[profile["parent"]]
-        suffix = name[len(parent["name"]) :]
-        aliases = [alias + suffix for alias in parent.get("aliases", [])]
-        for public_name in [name, *aliases]:
+        suffix = ":" + profile["selector"]
+        for public_name in [name, *[alias + suffix for alias in parent.get("aliases", [])]]:
             if public_name in occupied:
                 raise ProjectionError(f"Recipe request profile conflicts with existing model or alias {public_name!r}")
             occupied.add(public_name)
-        model = deepcopy(parent)
-        model.update(name=name, request_overrides=deepcopy(profile["overrides"]))
-        if aliases:
-            model["aliases"] = aliases
-        model["pools"] = [{"priority": 0, "targets": [{"deployment": target, "weight": 1} for target in sorted(profile["targets"])]}]
-        models.append(model)
+        models.append({"name": name, "profile": {"parent": parent["name"], "selector": profile["selector"]}})
     models.sort(key=lambda model: model["name"])

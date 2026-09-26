@@ -13,7 +13,7 @@ import pytest
 from sparkrun.core.recipe import Recipe, RecipeError
 from sparkrun.plugins.sparkroute.recipe_config import parse_sparkroute, SparkrouteRecipeError
 from sparkrun.plugins.sparkroute.projection import ProjectedBinding, ProjectionError, resolve_bindings, dedupe_bindings, build_sparkrun_set
-from sparkrun.plugins.sparkroute.engine import SparkrouteEngine, SparkrouteConfigError
+from sparkrun.plugins.sparkroute.engine import SparkrouteEngine
 from sparkrun.plugins.sparkroute.operations import _catalog
 from sparkrun.plugins.sparkroute.protocol import Request, ProtocolError
 from sparkrun.runtimes.vllm_distributed import VllmDistributedRuntime
@@ -62,12 +62,13 @@ def test_recipe_defaults_project_and_do_not_change_deployment_or_binding_identit
     assert deployment["capabilities"] == ["responses", "vision"]
     assert deployment["endpoint_source"] == before["deployments"][0]["endpoint_source"]
     models = {model["name"]: model for model in after["virtual_models"]}
-    assert models["coding:low"]["aliases"] == ["code:low"]
-    assert models["coding:low"]["pools"] == models["coding"]["pools"]
-    assert models["coding:low"]["request_overrides"] == PROFILES["low"]
+    assert models["coding:low"]["profile"] == {"parent": "coding", "selector": "low"}
+    assert models["coding"]["aliases"] == ["code"]
+    assert "pools" not in models["coding:low"]
+    assert deployment["request_profiles"] == PROFILES
     assert "request_overrides" not in models["coding"]
     assert "required_capabilities" not in models["coding"]  # declaring vision does not require it on every request
-    models["coding:low"]["request_overrides"]["responses"]["reasoning"]["effort"] = "high"
+    deployment["request_profiles"]["low"]["responses"]["reasoning"]["effort"] = "high"
     assert recipe.plugin_item("sparkroute") == SETTINGS
 
 
@@ -76,7 +77,7 @@ def test_profile_routes_only_to_recipes_that_declare_it_and_matching_definitions
     document = build_sparkrun_set([three, two, one])
     models = {model["name"]: model for model in document["virtual_models"]}
     assert len(models["coding"]["pools"][0]["targets"]) == 3
-    assert [target["deployment"] for target in models["coding:low"]["pools"][0]["targets"]] == ["sparkrun:one", "sparkrun:three"]
+    assert [d["name"] for d in document["deployments"] if "low" in d.get("request_profiles", {})] == ["sparkrun:one", "sparkrun:three"]
     assert document == build_sparkrun_set([one, two, three])
 
 
@@ -84,8 +85,13 @@ def test_profile_routes_only_to_recipes_that_declare_it_and_matching_definitions
 def test_conflicting_recipe_profiles_fail_instead_of_selecting_arbitrary_parameters(same_identity):
     one = binding("one", PROFILES)
     other = binding("one" if same_identity else "two", {"low": {"chat_completions": {"temperature": 1}}})
-    with pytest.raises(ProjectionError, match="conflicting request profile"):
-        build_sparkrun_set(dedupe_bindings([one, other]))
+    if same_identity:
+        with pytest.raises(ProjectionError, match="conflicting request profile"):
+            build_sparkrun_set(dedupe_bindings([one, other]))
+    else:
+        document = build_sparkrun_set(dedupe_bindings([one, other]))
+        assert len(document["deployments"]) == 2
+        assert document["deployments"][0]["request_profiles"] != document["deployments"][1]["request_profiles"]
 
 
 @pytest.mark.parametrize("alias", [False, True])
@@ -148,36 +154,57 @@ def test_bridge_preview_enriches_capabilities_and_reports_field_errors():
         _catalog(Request("test", "catalog_resolve", arguments={"reference": "@test/coder"}), None)
 
 
-def test_discovery_preserves_only_common_profiles_for_a_shared_upstream(tmp_path):
+def test_discovery_preserves_per_job_profiles_for_a_shared_upstream(tmp_path):
     engine = SparkrouteEngine(host="127.0.0.1", port=8000, state_dir=tmp_path / "proxy")
     endpoint = SimpleNamespace(
-        healthy=True, actual_models=["coding"], native_protocols=["openai"], capabilities=[], plugin_items={"sparkroute": SETTINGS}
+        cluster_id="job-a",
+        healthy=True,
+        actual_models=["coding"],
+        native_protocols=["openai"],
+        capabilities=[],
+        plugin_items={"sparkroute": SETTINGS},
     )
+    plain = SimpleNamespace(**{**vars(endpoint), "cluster_id": "job-b", "plugin_items": {}})
+    different = SimpleNamespace(
+        **{
+            **vars(endpoint),
+            "cluster_id": "job-c",
+            "plugin_items": {"sparkroute": {"request_profiles": {"low": {"responses": {"temperature": 1}}}}},
+        }
+    )
+    engine._persist_discovered_apis([endpoint, plain, different])
+    doc = build_sparkrun_set([], discovered_models=["coding"], discovered_apis=engine._read_discovered_apis())
+    assert len(doc["deployments"]) == 4  # Includes the legacy aggregate for saved references.
+    by_job = {d["discovery_job_ids"][0]: d for d in doc["deployments"] if d.get("discovery_job_ids")}
+    assert len(doc["virtual_models"][0]["pools"][0]["targets"]) == 3
+    assert by_job["job-a"]["request_profiles"] == PROFILES
+    assert "request_profiles" not in by_job["job-b"]
+    assert by_job["job-c"]["request_profiles"] != PROFILES
+    assert doc["virtual_models"][1]["profile"] == {"parent": "coding", "selector": "low"}
+    before = {job: d["name"] for job, d in by_job.items()}
+    endpoint.plugin_items = {"sparkroute": {"request_profiles": {"high": PROFILES["low"]}}}
+    engine._persist_discovered_apis([different, plain, endpoint])
+    updated = build_sparkrun_set([], discovered_models=["coding"], discovered_apis=engine._read_discovered_apis())
+    assert {d["discovery_job_ids"][0]: d["name"] for d in updated["deployments"] if d.get("discovery_job_ids")} == before
+
+
+def test_discovery_profiles_without_job_identity_are_not_exposed(tmp_path):
+    engine = SparkrouteEngine(host="127.0.0.1", port=8000, state_dir=tmp_path / "proxy")
+    endpoint = SimpleNamespace(healthy=True, actual_models=["coding"], plugin_items={"sparkroute": SETTINGS})
     engine._persist_discovered_apis([endpoint])
     doc = build_sparkrun_set([], discovered_models=["coding"], discovered_apis=engine._read_discovered_apis())
-    assert doc["deployments"][0]["capabilities"] == ["vision"]
-    assert doc["virtual_models"][1]["request_overrides"] == PROFILES["low"]
-    plain = SimpleNamespace(**{**vars(endpoint), "plugin_items": {}})
-    engine._persist_discovered_apis([endpoint, plain])
-    assert "request_profiles" not in engine._read_discovered_apis()["coding"]
-    different = SimpleNamespace(
-        **{**vars(endpoint), "plugin_items": {"sparkroute": {"request_profiles": {"low": {"responses": {"temperature": 1}}}}}}
-    )
-    with pytest.raises(SparkrouteConfigError, match="conflicting request profiles"):
-        engine._persist_discovered_apis([endpoint, different])
+    assert len(doc["virtual_models"]) == 1
+    assert "request_profiles" not in doc["deployments"][0]
 
 
-def test_discovery_profile_conflicts_do_not_depend_on_endpoint_order(tmp_path):
-    from itertools import permutations
-
-    engine = SparkrouteEngine(host="127.0.0.1", port=8000, state_dir=tmp_path / "proxy")
-    endpoints = [
-        SimpleNamespace(healthy=True, actual_models=["coding"], plugin_items={"sparkroute": settings})
-        for settings in (SETTINGS, {}, {"request_profiles": {"low": {"chat_completions": {"temperature": 1}}}})
-    ]
-    for ordered in permutations(endpoints):
-        with pytest.raises(SparkrouteConfigError, match="conflicting request profiles"):
-            engine._persist_discovered_apis(list(ordered))
+def test_expanded_profile_parameters_keep_ingress_and_upstream_separate():
+    profile = {
+        "supported_operations": ["responses"],
+        "upstream_overrides": {"chat_completions": {"chat_template_kwargs": {"enable_thinking": False}}},
+    }
+    assert parse_sparkroute({"request_profiles": {"low": profile}})["request_profiles"]["low"] == profile
+    with pytest.raises(SparkrouteRecipeError):
+        parse_sparkroute({"request_profiles": {"low": {"upstream_overrides": {"chat_completions": {"temperature": 0}}}}})
 
 
 def test_plugin_owns_recipe_schema_and_saved_state_without_core_attributes():
@@ -233,3 +260,38 @@ def test_catalog_plugin_parse_failures_retain_field_diagnostics(tmp_path):
     with pytest.raises(ProtocolError, match="sparkroute.request_profiles.low.responses.model") as error:
         _catalog(Request("test", "catalog_resolve", arguments={"reference": str(path)}), sctx)
     assert error.value.code == "catalog_invalid"
+
+
+def test_shared_recipe_profile_contract():
+    import json
+    from pathlib import Path
+
+    fixtures = json.loads((Path(__file__).parent / "fixtures/request_profiles.json").read_text())
+    for fixture in fixtures:
+        if fixture["valid"]:
+            parse_sparkroute({"request_profiles": fixture["profiles"]})
+        else:
+            with pytest.raises(SparkrouteRecipeError):
+                parse_sparkroute({"request_profiles": fixture["profiles"]})
+
+
+def test_discovery_keeps_aggregate_identity_and_deduplicates_job_observations(tmp_path):
+    from sparkrun.plugins.sparkroute.projection import discovered_deployment_name
+
+    engine = SparkrouteEngine(host="127.0.0.1", port=8000, state_dir=tmp_path / "proxy")
+    endpoint = SimpleNamespace(
+        cluster_id="job-a", healthy=True, actual_models=["coding"], native_protocols=["openai"], capabilities=[], plugin_items={}
+    )
+    engine._persist_discovered_apis([endpoint, endpoint])
+    plain = build_sparkrun_set([], discovered_models=["coding"], discovered_apis=engine._read_discovered_apis())
+    assert [d["name"] for d in plain["deployments"]] == [discovered_deployment_name("coding")]
+    endpoint.plugin_items = {"sparkroute": SETTINGS}
+    engine._persist_discovered_apis([endpoint, endpoint])
+    split = build_sparkrun_set([], discovered_models=["coding"], discovered_apis=engine._read_discovered_apis())
+    assert len(split["deployments"]) == 2
+    assert discovered_deployment_name("coding") in {d["name"] for d in split["deployments"]}
+    endpoint.plugin_items = {}
+    engine._persist_discovered_apis([endpoint])
+    removed = build_sparkrun_set([], discovered_models=["coding"], discovered_apis=engine._read_discovered_apis())
+    assert [d["name"] for d in removed["deployments"]] == [d["name"] for d in split["deployments"]]
+    assert len(removed["virtual_models"]) == 1

@@ -817,8 +817,9 @@ class SparkrouteEngine(GatewaySupervisor):
                 jobs = {job.cluster_id: job for job in api.list_jobs(sctx=self.sctx)}
             except Exception:
                 logger.debug("Job model metadata unavailable", exc_info=True)
+        previous_snapshot = self._read_discovered_apis()
         snapshot: dict[str, dict[str, Any]] = {}
-        declared_profiles: dict[str, dict[str, Any]] = {}
+        unknown_profile_identity: set[str] = set()
         for endpoint in endpoints:
             if not getattr(endpoint, "healthy", False):
                 continue
@@ -835,21 +836,13 @@ class SparkrouteEngine(GatewaySupervisor):
             ]:
                 if not model:
                     continue
-                declared = declared_profiles.setdefault(model, {})
-                for selector, parameters in profiles.items():
-                    if selector in declared and declared[selector] != parameters:
-                        raise SparkrouteConfigError(f"Discovered recipes serving {model!r} define conflicting request profiles")
-                    declared[selector] = parameters
                 if model in snapshot:
                     # One discovered model can cover multiple jobs: advertise
                     # only APIs shared by all candidates for that model.
                     shared_protocols = [p for p in protocols if p in snapshot[model]["native_protocols"]]
                     shared_capabilities = [c for c in capabilities if c in snapshot[model]["capabilities"]]
-                    previous_profiles = snapshot[model].get("request_profiles", {})
-                    common = set(profiles) & set(previous_profiles)
-                    shared_profiles = {key: profiles[key] for key in sorted(common)}
                 else:
-                    shared_protocols, shared_capabilities, shared_profiles = protocols, capabilities, profiles
+                    shared_protocols, shared_capabilities = protocols, capabilities
                 job = jobs.get(getattr(endpoint, "cluster_id", ""))
                 fields = build_model_metadata(_recipe_of(job), [model]).get(model, {})
                 context = getattr(endpoint, "max_model_len", None)
@@ -860,14 +853,39 @@ class SparkrouteEngine(GatewaySupervisor):
                 if revision and fields:
                     recipe_metadata[revision] = reduce_model_metadata(recipe_metadata.get(revision, {}), fields)
                 fields = reduce_model_metadata(snapshot.get(model, {}).get("model_metadata", {}), fields)
+                profile_deployments = list(snapshot.get(model, {}).get("profile_deployments", []))
+                job_id = getattr(endpoint, "cluster_id", "")
+                if not job_id:
+                    unknown_profile_identity.add(model)
+                if job_id:
+                    candidate = {
+                        "job_ids": [job_id],
+                        "native_protocols": protocols,
+                        "capabilities": capabilities,
+                        "request_profiles": profiles,
+                    }
+                    previous_candidate = next((item for item in profile_deployments if item["job_ids"] == [job_id]), None)
+                    if previous_candidate is None:
+                        profile_deployments.append(candidate)
+                    elif previous_candidate != candidate:
+                        # Conflicting observations of one job cannot establish
+                        # which implementation its endpoint actually runs.
+                        unknown_profile_identity.add(model)
                 snapshot[model] = {"native_protocols": shared_protocols, "capabilities": shared_capabilities}
+                if profile_deployments:
+                    snapshot[model]["profile_deployments"] = sorted(profile_deployments, key=lambda item: item["job_ids"])
+
                 if fields:
                     snapshot[model]["model_metadata"] = fields
                 if recipe_metadata:
                     snapshot[model]["recipe_metadata"] = recipe_metadata
-                if shared_profiles:
-                    snapshot[model]["request_profiles"] = shared_profiles
-        if snapshot == self._read_discovered_apis():
+
+        for model, state in snapshot.items():
+            has_profiles = any(candidate["request_profiles"] for candidate in state.get("profile_deployments", []))
+            already_split = bool(previous_snapshot.get(model, {}).get("profile_deployments"))
+            if model in unknown_profile_identity or not (has_profiles or already_split):
+                state.pop("profile_deployments", None)
+        if snapshot == previous_snapshot:
             return
         self.state_dir.mkdir(parents=True, exist_ok=True)
         _restrict_dir_permissions(self.state_dir)

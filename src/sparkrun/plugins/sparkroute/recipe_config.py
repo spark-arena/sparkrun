@@ -79,7 +79,25 @@ def parse_sparkroute(value: Any, *, source: str = "recipe") -> dict[str, Any]:
             fail("request_profiles selectors must be 1–64 letters/digits, dots, underscores or hyphens, starting with a letter/digit")
         if not isinstance(overrides, dict) or not overrides:
             fail(f"request_profiles.{selector} must map API names to parameter objects")
-        for operation, parameters in overrides.items():
+        expanded = bool(set(overrides) & {"ingress_overrides", "upstream_overrides", "supported_operations"})
+        if expanded:
+            if set(overrides) - {"ingress_overrides", "upstream_overrides", "supported_operations"}:
+                fail(f"request_profiles.{selector} contains unknown profile fields")
+            supported = overrides.get("supported_operations", [])
+            if (
+                not isinstance(supported, list)
+                or any(not isinstance(op, str) or op not in OPERATIONS for op in supported)
+                or len(supported) != len(set(supported))
+            ):
+                fail(f"request_profiles.{selector}.supported_operations must contain unique API operations")
+            stages = [overrides.get("ingress_overrides", {}), overrides.get("upstream_overrides", {})]
+            if any(not isinstance(stage, dict) for stage in stages):
+                fail(f"request_profiles.{selector} override stages must be mappings")
+            if not supported and not stages[0]:
+                fail(f"request_profiles.{selector} requires supported_operations or ingress_overrides")
+        else:
+            stages = [overrides]
+        for operation, parameters in ((op, params) for stage in stages for op, params in stage.items()):
             if not isinstance(operation, str) or operation not in OPERATIONS:
                 fail(f"request_profiles.{selector} contains an unsupported API operation")
             if not isinstance(parameters, dict) or not parameters or len(parameters) > 64:
@@ -93,7 +111,7 @@ def parse_sparkroute(value: Any, *, source: str = "recipe") -> dict[str, Any]:
                     or any(unicodedata.category(c) == "Cc" for c in key)
                 ):
                     fail(f"request_profiles.{selector}.{operation} contains an invalid parameter name")
-                if key.lower() in PROTECTED_FIELDS:
+                if key.lower() in PROTECTED_FIELDS | {"store", "background"}:
                     fail(f"request_profiles.{selector}.{operation}.{key} is a protected request structure field")
     json_value(profiles)
     try:
@@ -139,6 +157,9 @@ def catalog_sparkroute(details: Mapping[str, Any], overrides: dict[str, Any] | N
     return {
         **details,
         "sparkroute": settings,
+        "profile_source_kind": "snapshot"
+        if "/recipe-catalog/imports/" in str(details.get("source_path", "")).replace("\\", "/")
+        else "recipe",
         "capabilities": sorted(set(details.get("capabilities", [])) | set(settings.get("capabilities", []))),
     }
 

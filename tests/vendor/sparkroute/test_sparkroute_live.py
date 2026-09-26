@@ -80,14 +80,22 @@ def test_real_gateway_is_supervised_authenticated_and_serves_warm_aliases(tmp_pa
                 "providers": [
                     {"name": "fixture", "type": "openai_compatible", "base_url": "http://127.0.0.1:%d/v1" % upstream.server_port}
                 ],
-                "deployments": [{"name": "warm", "provider": "fixture", "model": "upstream-model"}],
+                "deployments": [
+                    {
+                        "name": "warm",
+                        "provider": "fixture",
+                        "model": "upstream-model",
+                        "request_profiles": {"low": {"chat_completions": {"temperature": 0.2}}},
+                    }
+                ],
                 "virtual_models": [
                     {
                         "name": "assistant",
                         "aliases": ["coding"],
                         "response_model": "virtual",
                         "pools": [{"targets": [{"deployment": "warm", "weight": 1}]}],
-                    }
+                    },
+                    {"name": "assistant:low", "profile": {"parent": "assistant", "selector": "low"}},
                 ],
             }
         )
@@ -116,13 +124,20 @@ def test_real_gateway_is_supervised_authenticated_and_serves_warm_aliases(tmp_pa
         assert engine.is_running()
         base = "http://" + engine.data_address
         names = {entry["id"] for entry in _json(base + "/v1/models", token="test-only-token")["data"]}
-        assert {"assistant", "coding"} <= names
+        assert {"assistant", "coding", "assistant:low", "coding:low"} <= names
         reply = _json(
             base + "/v1/chat/completions", {"model": "coding", "messages": [{"role": "user", "content": "hi"}]}, "test-only-token"
         )
         assert reply["model"] == "assistant"  # response_model=virtual uses the canonical name
         assert calls[0][0] == "/v1/chat/completions"
         assert calls[0][1]["model"] == "upstream-model"
+        _json(
+            base + "/v1/chat/completions",
+            {"model": "coding:low", "messages": [{"role": "user", "content": "hi"}], "temperature": 0.9},
+            "test-only-token",
+        )
+        assert calls[-1][1]["temperature"] == 0.2
+        assert calls[-1][1]["model"] == "upstream-model"
         assert engine.reconcile(reason="idempotent integration check") == (0, 0)
         with pytest.raises(urllib.error.HTTPError) as rejected:
             _json(engine.admin_url + "/v1/ui/bootstrap")
@@ -152,7 +167,7 @@ def test_real_gateway_is_supervised_authenticated_and_serves_warm_aliases(tmp_pa
         # The actual host console script must accept the hidden JSON bridge.
         bridge = subprocess.run(
             [resolve_sparkrun_executable(), "gateway-bridge"],
-            input=json.dumps({"schema_version": 4, "request_id": "live-capabilities", "operation": "capabilities"}),
+            input=json.dumps({"schema_version": 5, "request_id": "live-capabilities", "operation": "capabilities"}),
             capture_output=True,
             text=True,
             timeout=30,
@@ -160,7 +175,7 @@ def test_real_gateway_is_supervised_authenticated_and_serves_warm_aliases(tmp_pa
         )
         payload = json.loads(bridge.stdout)
         assert payload["request_id"] == "live-capabilities"
-        assert payload["schema_version"] == 4
+        assert payload["schema_version"] == 5
         assert payload["ok"] is True
         # A later CLI invocation has the persisted PID but no Popen handle.
         # Restart repeatedly on the same ports and private credential database.

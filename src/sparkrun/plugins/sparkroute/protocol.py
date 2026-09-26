@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, BinaryIO
 
 #: Current bridge schema. This unreleased integration upgrades both sides together.
-PROTOCOL_VERSION = 4
+PROTOCOL_VERSION = 5
 SUPPORTED_VERSIONS = (PROTOCOL_VERSION,)
 
 SUPPORTED_OPERATIONS = (

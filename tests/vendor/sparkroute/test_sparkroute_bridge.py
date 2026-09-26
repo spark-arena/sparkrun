@@ -48,7 +48,7 @@ def _gateway_feature_enabled(monkeypatch):
 
 
 def _request(operation: str = "capabilities", **extra):
-    value = {"schema_version": 4, "request_id": "request-1", "operation": operation}
+    value = {"schema_version": 5, "request_id": "request-1", "operation": operation}
     value.update(extra)
     return value
 
@@ -120,7 +120,7 @@ def test_hidden_command_is_not_in_help_but_is_invokable():
     assert result.exit_code == 0
     response = json.loads(result.output)
     assert response["ok"] is True
-    assert response["result"]["protocol_version"] == 4
+    assert response["result"]["protocol_version"] == 5
     assert "ensure_ready" in response["result"]["operations"]
 
 
@@ -147,7 +147,7 @@ def test_stdio_returns_structured_operation_error():
         exit_code = bridge.run_stdio(io.BytesIO(request), output)
     assert exit_code == 0
     assert json.loads(output.getvalue()) == {
-        "schema_version": 4,
+        "schema_version": 5,
         "request_id": "request-1",
         "ok": False,
         "error": {"code": "recipe_not_found", "message": "not found", "retryable": False},

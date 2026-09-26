@@ -58,30 +58,80 @@ API operations, then parameter objects, matching SparkRoute's `request_overrides
 - Overrides are keyed by ingress API, such as `chat_completions`, `responses`, or
   `messages`. They override caller parameters before translation. Nested objects
   merge recursively; scalar/array/null values replace the corresponding value.
-  An API absent from a profile receives no override from that profile.
+  An API absent from a shorthand profile is not supported by that implementation.
 - Request structure and routing fields such as `model`, `messages`, `input`,
   `stream`, `system`, and `tools` cannot be overridden. Selectors use 1–64 ASCII
   letters/digits, dots, underscores, or hyphens, starting with a letter/digit.
   At most 64 profiles and 256 KiB of settings are accepted. Malformed JSON values,
   non-finite numbers, unknown operations, and ambiguous names are rejected.
 
-Explicit recipe bindings follow their recipe on subsequent `proxy sync`. Normal
-`sparkrun run` and `sparkrun proxy load` workloads are discovery-only and carry
-the settings saved at launch;
-editing the source file alone does not alter that saved recipe state. Multiple
-recipes serving the same public model may share an identical profile, but its
-routing pool only includes recipes declaring it. Conflicting definitions fail
-reconciliation. A discovery-only model aggregates its jobs and exposes only
-identical profiles common to every candidate. Capability declarations likewise
-intersect across discovery candidates.
+Profiles are public children of a virtual model. Each deployment keeps its own
+implementation, so two recipes can both define `low` with different parameters.
+A profile inherits parent routing pools, weights, aliases, limits, and policies;
+only deployments implementing the requested profile/API are eligible. Missing
+support never silently falls back to the unprofiled model. Conflicting definitions
+for the same deployment identity remain an error.
 
-The on-demand UI previews the recipe defaults and imports profiles under the
-chosen public model name when adding it to a draft, including when reusing a
-deployment. They then become operator configuration: edits in the profile table
-are preserved. Applying recipe/lifecycle edits to an existing deployment does
-not refresh or overwrite its profiles. Generated profiles remain read-only.
-A generated profile cannot silently replace an operator model/profile with the
-same name: resolve the reported collision by renaming or removing one definition.
+The shorthand above means incoming API parameters, before translation. For a
+profile implemented by runtime-native parameters after translation, use:
+
+```yaml
+sparkroute:
+  request_profiles:
+    low:
+      supported_operations: [responses, chat_completions]
+      upstream_overrides:
+        chat_completions:
+          chat_template_kwargs:
+            enable_thinking: false
+```
+
+`ingress_overrides` and `upstream_overrides` may be combined. Upstream keys name
+operations, not protocol families. `supported_operations` declares incoming APIs;
+without it, the ingress override keys define support. An explicit supported
+operation with no overrides is an intentional no-op. Contradictory controls at
+both stages are rejected when their overlap is known. State fields `store` and
+`background` are protected in these deployment implementations.
+
+Explicit bindings follow their recipe on `proxy sync`. Discovery-only workloads
+use saved launch recipe settings and preserve job identity, so different runtimes
+serving the same model can expose different implementations. Without reliable job
+identity, only the base model is exposed. Editing the source YAML alone does not
+change a discovery-only job's saved state. The historical aggregate deployment
+remains available to saved operator references; generated profile routes use the
+job-specific targets. Excluding the aggregate still excludes that model's jobs.
+
+Recipe-picker deployments automatically follow their resolved recipe source at
+startup, after configuration/catalog updates, and every 60 seconds (gateway flag
+`-sparkrun-profile-refresh-interval`). This reads the local catalog; registry
+network refresh policy is unchanged. Uploaded YAML is an immutable snapshot until
+explicitly replaced. A recipe change that changes workload identity requires a
+deployment update before its profiles can apply to the old runtime.
+
+In **Virtual Models / Aliases → Request profiles**, choose **Use recipe profile**
+and edit common or deployment-specific overrides. Recipe values and operator
+patches are stored separately. A recipe update changes inherited values while
+preserving your patches. **Reset to inherited** removes a patch for the selected
+scope, stage, and API. Suppression uses JSON pointers such as `/temperature` and
+removes an inherited override, allowing caller values through; JSON null remains
+a literal value. New recipe selectors become available without automatically
+publishing new public model names.
+
+The gateway persists refreshed sources in its read-only `recipe_profiles` managed
+set. Source errors retain last-known-good values and appear in the editor.
+Confirmed selector removal makes that implementation unavailable; operator patches
+remain available if the selector returns. Profile digests are separate from
+workload fingerprints, so profile-only edits do not restart workloads.
+
+Existing flat `request_overrides` virtual models keep their historical behavior,
+including no override for an absent API. **Review migration** previews the routing
+change before linking one to its parent. Existing values become operator patches;
+select **Follow deployment recipes** to subscribe a recipe-backed deployment.
+Generated entries remain read-only. Public model/alias collisions remain errors.
+
+This implementation requires a gateway built from the matching bridge-v5 source.
+The currently published gateway pin is not a release of this change; use a local
+build via `SPARKROUTE_BINARY` until coordinated gateway/plugin releases are made.
 
 These settings stay outside the workload fingerprint and binding identity.
 The plugin declares `sparkroute` through `register_recipe_item` with

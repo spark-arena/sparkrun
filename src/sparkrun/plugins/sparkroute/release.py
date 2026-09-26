@@ -73,14 +73,14 @@ SPARKROUTE_BINARY = "sparkroute"
 #:
 #: Populated from the release's published ``checksums.txt`` when a version is
 #: pinned.  An absent entry is deliberately fatal — see the module docstring.
-#: Source: https://github.com/sparksq/sparkroute/releases/tag/v0.0.2
+#: Source: https://github.com/sparksq/sparkroute/releases/tag/v0.0.3
 RELEASE_CHECKSUMS: dict[tuple[str, str, str], str] = {
-    ("0.0.2", "darwin", "amd64"): "a286cf46e18be49d1bc46ccca177cec1093909b0410e725afe1e81d8e4d4931e",
-    ("0.0.2", "darwin", "arm64"): "2e3e8c61b94b2c780f235b7e123ef5e805c86f280290a4a53994527949007ab8",
-    ("0.0.2", "linux", "amd64"): "81ba51e6d32f825818fa65f1689be4967327804a6e294fbbcd5f3aae35e11cbe",
-    ("0.0.2", "linux", "arm64"): "1b59689f246fe98cf1f598f0c7b0da7a20a679582cbd0ef1bf48b9f60a238807",
-    ("0.0.2", "windows", "amd64"): "81023da51b0abe53aea2135138495eb5c78e32d4edbf3952f7f9b7ed67086e66",
-    ("0.0.2", "windows", "arm64"): "eb0fe99465785e3bd7f26f0d08f0e3f26d18e950c10ff3df96dc70a5b1e76663",
+    ("0.0.3", "darwin", "amd64"): "72b3460dbb8c9afe4956f9360a1225462c08b3ef5ea3c420b4d63ce2d5c9bf34",
+    ("0.0.3", "darwin", "arm64"): "e242b9dc9e18e4eb423e593c08ad8e31110f2da8af60e21ba52e9bc1e0dbbd36",
+    ("0.0.3", "linux", "amd64"): "20d2cde8e9bbaaeaa5c6c06623d0cda9e4808e3bdbdaf19cabf279b9363b09b8",
+    ("0.0.3", "linux", "arm64"): "d91f9c09ccb455c5c8382c875ca477dcfa65039ebe83ac85763f037b361d6244",
+    ("0.0.3", "windows", "amd64"): "d83462cb60c126528edcf682f5f97dbbe458b929bd72fd6744b345665e1e84d6",
+    ("0.0.3", "windows", "arm64"): "5db75df7548d2acb00656008f4a22e1333e2362dcc8541d5b16c039e3607457a",
 }
 
 #: Point at a locally-built binary instead of a release asset.  Development
