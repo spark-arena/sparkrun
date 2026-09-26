@@ -63,7 +63,7 @@ def _options(tmp_path, *, overrides=None, data=None):
 def test_realize_bakes_matched_layers_and_drops_the_rest(tmp_path, v, planned):
     import sparkrun.api as api
 
-    realized = api.realize_recipe(_options(tmp_path))
+    realized = api.realize_recipe(_options(tmp_path), pin=False)
     data = realized.recipe
     assert "overrides" not in data
     assert data["defaults"]["max_num_seqs"] == 4  # nodes=2 layer matched
@@ -76,14 +76,14 @@ def test_realize_plans_for_real_so_hardware_is_probed(tmp_path, v, planned):
     import sparkrun.api as api
 
     options = replace(_options(tmp_path), dry_run=True)
-    api.realize_recipe(options)
+    api.realize_recipe(options, pin=False)
     assert planned[0].dry_run is False  # a dry-run plan skips the probe
 
 
 def test_selector_only_keys_are_dropped(tmp_path, v, planned):
     import sparkrun.api as api
 
-    realized = api.realize_recipe(_options(tmp_path))
+    realized = api.realize_recipe(_options(tmp_path), pin=False)
     assert "speculator" not in realized.recipe["defaults"]
     assert realized.dropped_keys == ("speculator",)
 
@@ -91,7 +91,7 @@ def test_selector_only_keys_are_dropped(tmp_path, v, planned):
 def test_a_selector_key_given_on_the_cli_is_kept(tmp_path, v, planned):
     import sparkrun.api as api
 
-    realized = api.realize_recipe(_options(tmp_path, overrides={"speculator": "mtp"}))
+    realized = api.realize_recipe(_options(tmp_path, overrides={"speculator": "mtp"}), pin=False)
     assert realized.recipe["defaults"]["speculator"] == "mtp"
     assert realized.dropped_keys == ()
 
@@ -99,14 +99,14 @@ def test_a_selector_key_given_on_the_cli_is_kept(tmp_path, v, planned):
 def test_cli_overrides_are_baked_in(tmp_path, v, planned):
     import sparkrun.api as api
 
-    realized = api.realize_recipe(_options(tmp_path, overrides={"max_model_len": 4096}))
+    realized = api.realize_recipe(_options(tmp_path, overrides={"max_model_len": 4096}), pin=False)
     assert realized.recipe["defaults"]["max_model_len"] == 4096
 
 
 def test_realized_recipe_loads_with_the_same_effective_config(tmp_path, v, planned):
     import sparkrun.api as api
 
-    realized = api.realize_recipe(_options(tmp_path))
+    realized = api.realize_recipe(_options(tmp_path), pin=False)
     out = tmp_path / "realized.yaml"
     out.write_text(yaml.safe_dump(realized.recipe))
     reloaded = Recipe.load(str(out))
@@ -135,7 +135,7 @@ def test_cli_realize_writes_plain_yaml_to_stdout(tmp_path, v, planned):
 
     path = tmp_path / "r.yaml"
     path.write_text(yaml.safe_dump(_RECIPE))
-    result = CliRunner().invoke(main, ["export", "recipe", str(path), "--realize", "--hosts", ",".join(_HOSTS)])
+    result = CliRunner().invoke(main, ["export", "recipe", str(path), "--realize", "--no-pin", "--hosts", ",".join(_HOSTS)])
     assert result.exit_code == 0, result.output
     data = yaml.safe_load(result.stdout)
     assert "overrides" not in data

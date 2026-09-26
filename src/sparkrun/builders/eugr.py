@@ -12,7 +12,7 @@ import urllib.request
 from datetime import datetime, timezone
 from logging import Logger
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping, NamedTuple
 
 from scitrera_app_framework import Variables, get_working_path
 
@@ -378,6 +378,60 @@ def _fetch_upstream_wheel_hashes() -> dict[str, str]:
     return result
 
 
+class _ImageSelection(NamedTuple):
+    """What eugr does with a recipe's image: see :func:`_select_image`."""
+
+    image: str
+    path: str
+    """``pull`` (a registry ref), ``build`` (build-and-copy.sh when absent),
+    ``present`` (a local image already there) or ``substitute`` (our nightly)."""
+    mapped_from: str | None
+    nightly_latest: str
+
+
+def _select_image(image, build_args, *, use_sentinel_image, image_present, force_rebuild=False) -> _ImageSelection:
+    """eugr's pull-first decision for *image*, with no side effects.
+
+    Shared by :meth:`EugrBuilder.prepare`, which then acts on it, and
+    :meth:`EugrBuilder.pull_ref`, which only reports it, so the two cannot
+    disagree about what a launch would run. *image_present* is a callable,
+    consulted only for a non-pullable image on the pull-first path.
+    """
+    wants_build = _wants_build(build_args)
+    # `--exp-b12x` / `--experimental-b12x` selects build-and-copy.sh's b12x
+    # preset. It doesn't set CUSTOM_BUILD_REQUESTED upstream (so it pulls on its
+    # own — see `_PULL_COMPATIBLE_BUILD_ARGS`), and it swaps the *variant* on
+    # both paths: our b12x nightly when pulling, the b12x local tag when a
+    # custom build flag alongside it does request a build. Naming the b12x
+    # prebuilt image selects the variant just as the flag does.
+    wants_b12x = _wants_b12x(build_args) or image.strip() in EUGR_B12X_LATEST_SENTINELS
+    nightly_latest = GHCR_EUGR_NIGHTLY_B12X_LATEST if wants_b12x else GHCR_EUGR_NIGHTLY_LATEST
+    local_nightly = LOCAL_EUGR_NIGHTLY_B12X if wants_b12x else LOCAL_EUGR_NIGHTLY
+
+    # Recognized nightly ":latest" sentinels map to our canonical names — the
+    # sparkrun-prefixed local tag when building, our GHCR nightly when pulling.
+    # tf5 and non-tf5 nightlies are identical now, so both map the same way;
+    # b12x keeps its own pair of names.
+    mapped_from = None
+    if use_sentinel_image and image.strip() in EUGR_NIGHTLY_LATEST_SENTINELS + EUGR_B12X_LATEST_SENTINELS:
+        mapped_from = image.strip()
+        image = local_nightly if wants_build else nightly_latest
+
+    # Docker's reference grammar, not a host allowlist: `vllm/vllm-openai:tag`
+    # is as pullable as `ghcr.io/org/img:tag`, and requiring the redundant
+    # `docker.io/` prefix sent every upstream image down the substitution
+    # branch below.
+    if is_pullable_image_ref(image):
+        return _ImageSelection(image, "pull", mapped_from, nightly_latest)
+    if wants_build or not use_sentinel_image:
+        return _ImageSelection(image, "build", mapped_from, nightly_latest)
+    # Pull-first default for a non-pullable eugr image with no build flags:
+    # reuse it if already present, otherwise substitute OUR nightly and pull.
+    if image_present(image) and not force_rebuild:
+        return _ImageSelection(image, "present", mapped_from, nightly_latest)
+    return _ImageSelection(nightly_latest, "substitute", mapped_from, nightly_latest)
+
+
 class EugrBuilder(BuilderPlugin):
     """Builder for eugr-style container images.
 
@@ -468,18 +522,6 @@ class EugrBuilder(BuilderPlugin):
         # `use_sentinel_image` (default True) gates this pull-first substitution.
         # Set it False to opt out: images are used verbatim and a missing one is
         # built via `build-and-copy.sh` the legacy way.
-        wants_build = _wants_build(build_args)
-
-        # `--exp-b12x` / `--experimental-b12x` selects build-and-copy.sh's b12x
-        # preset. It doesn't set CUSTOM_BUILD_REQUESTED upstream (so it pulls on its
-        # own — see `_PULL_COMPATIBLE_BUILD_ARGS`), and it swaps the *variant* on
-        # both paths: our b12x nightly when pulling, the b12x local tag when a
-        # custom build flag alongside it does request a build. Naming the b12x
-        # prebuilt image selects the variant just as the flag does.
-        wants_b12x = _wants_b12x(build_args) or image.strip() in EUGR_B12X_LATEST_SENTINELS
-        nightly_latest = GHCR_EUGR_NIGHTLY_B12X_LATEST if wants_b12x else GHCR_EUGR_NIGHTLY_LATEST
-        local_nightly = LOCAL_EUGR_NIGHTLY_B12X if wants_b12x else LOCAL_EUGR_NIGHTLY
-
         def _image_present(img: str) -> bool:
             if delegated:
                 return self._image_exists_on_host(img, head, ssh_kwargs)
@@ -487,29 +529,22 @@ class EugrBuilder(BuilderPlugin):
 
             return image_exists_locally(img)
 
-        # Recognized nightly ":latest" sentinels map to our canonical names — the
-        # sparkrun-prefixed local tag when building, our GHCR nightly when pulling.
-        # tf5 and non-tf5 nightlies are identical now, so both map the same way;
-        # b12x keeps its own pair of names.
-        if use_sentinel_image and image.strip() in EUGR_NIGHTLY_LATEST_SENTINELS + EUGR_B12X_LATEST_SENTINELS:
-            if wants_build:
-                logger.info("Mapped eugr nightly image '%s' to local build '%s'", image.strip(), local_nightly)
-                image = local_nightly
+        original_image = image
+        selection = _select_image(
+            image, build_args, use_sentinel_image=use_sentinel_image, image_present=_image_present, force_rebuild=force_rebuild
+        )
+        image, nightly_latest = selection.image, selection.nightly_latest
+        if selection.mapped_from is not None:
+            if selection.path == "build":
+                logger.info("Mapped eugr nightly image '%s' to local build '%s'", selection.mapped_from, image)
             else:
                 logger.info(
                     "Mapped eugr nightly image '%s' to pullable '%s' (add --use-wheels to build_args to build from wheels)",
-                    image.strip(),
-                    nightly_latest,
+                    selection.mapped_from,
+                    image,
                 )
-                image = nightly_latest
 
-        # Docker's reference grammar, not a host allowlist: `vllm/vllm-openai:tag`
-        # is as pullable as `ghcr.io/org/img:tag`, and requiring the redundant
-        # `docker.io/` prefix sent every upstream image down the substitution
-        # branch below.
-        is_pullable = is_pullable_image_ref(image)
-
-        if is_pullable:
+        if selection.path == "pull":
             # Pull path — covers sentinel→canonical and any external pullable ref.
             # build_args don't apply to a pull, so they're ignored here.
             if force_rebuild:
@@ -519,7 +554,7 @@ class EugrBuilder(BuilderPlugin):
             else:
                 logger.info("image '%s' is pullable; skipping build (will be pulled at runtime)", image)
             needs_build = False
-        elif wants_build or not use_sentinel_image:
+        elif selection.path == "build":
             # Build path: `--use-wheels`/custom-build flags, or the legacy escape hatch.
             if force_rebuild:
                 # Rebuild forces a from-scratch build regardless of a present image.
@@ -532,51 +567,47 @@ class EugrBuilder(BuilderPlugin):
                     image,
                     " on head '%s'" % head if delegated else " locally",
                 )
+        elif selection.path == "present":
+            logger.info("image '%s' found; using it (add --use-wheels to build_args to rebuild from wheels)", image)
+            needs_build = False
         else:
-            # Pull-first default for a non-pullable eugr image with no build flags.
-            # Reuse it if already present; otherwise substitute OUR nightly and pull —
-            # eugr won't build without `--use-wheels` (or a custom-build flag).
-            if _image_present(image) and not force_rebuild:
-                logger.info("image '%s' found; using it (add --use-wheels to build_args to rebuild from wheels)", image)
+            # WARNING, not INFO, in both spellings: this runs a different
+            # image than the recipe names, and the CLI's default level is
+            # PROGRESS (25) > INFO (20), so the INFO version was invisible to
+            # everyone who hit it.
+            #
+            # Two wordings, because the same branch serves two situations that
+            # want opposite advice. An eugr-native recipe naming `vllm-node*`
+            # is on the expected path and needs no action; anything else is
+            # plausibly a registry ref that was spelled wrong, where naming the
+            # grammar is the useful thing to say. Offering the second reading
+            # to the first audience — which is every eugr recipe — sent people
+            # looking for a misconfiguration that was not there.
+            where = " on head '%s'" % head if delegated else " locally"
+            if _is_eugr_local_build_tag(original_image):
+                logger.warning(
+                    "recipe names eugr's local build tag '%s', which is not present%s; "
+                    "running our prebuilt nightly '%s' instead. This is the expected path: "
+                    "'%s' exists only where eugr's build-and-copy.sh has been run by hand, "
+                    "so there is nothing else to launch.",
+                    original_image,
+                    where,
+                    nightly_latest,
+                    original_image,
+                )
             else:
-                # WARNING, not INFO, in both spellings: this runs a different
-                # image than the recipe names, and the CLI's default level is
-                # PROGRESS (25) > INFO (20), so the INFO version was invisible to
-                # everyone who hit it.
-                #
-                # Two wordings, because the same branch serves two situations that
-                # want opposite advice. An eugr-native recipe naming `vllm-node*`
-                # is on the expected path and needs no action; anything else is
-                # plausibly a registry ref that was spelled wrong, where naming the
-                # grammar is the useful thing to say. Offering the second reading
-                # to the first audience — which is every eugr recipe — sent people
-                # looking for a misconfiguration that was not there.
-                where = " on head '%s'" % head if delegated else " locally"
-                if _is_eugr_local_build_tag(image):
-                    logger.warning(
-                        "recipe names eugr's local build tag '%s', which is not present%s; "
-                        "running our prebuilt nightly '%s' instead. This is the expected path: "
-                        "'%s' exists only where eugr's build-and-copy.sh has been run by hand, "
-                        "so there is nothing else to launch.",
-                        image,
-                        where,
-                        nightly_latest,
-                        image,
-                    )
-                else:
-                    logger.warning(
-                        "image '%s' is not a pullable registry reference and is not present%s; "
-                        "substituting our nightly '%s'. If '%s' is a registry image, spell it as a "
-                        "full reference (e.g. 'namespace/name:tag'); add --use-wheels to build_args "
-                        "to build it from wheels instead.",
-                        image,
-                        where,
-                        nightly_latest,
-                        image,
-                    )
-                image = nightly_latest
-                if force_rebuild:
-                    self._force_pull_image(image, head if delegated else None, ssh_kwargs if delegated else None, dry_run=dry_run)
+                logger.warning(
+                    "image '%s' is not a pullable registry reference and is not present%s; "
+                    "substituting our nightly '%s'. If '%s' is a registry image, spell it as a "
+                    "full reference (e.g. 'namespace/name:tag'); add --use-wheels to build_args "
+                    "to build it from wheels instead.",
+                    original_image,
+                    where,
+                    nightly_latest,
+                    original_image,
+                )
+            if force_rebuild:
+                self._force_pull_image(image, head if delegated else None, ssh_kwargs if delegated else None, dry_run=dry_run)
             needs_build = False
 
         # nothing eugr-specific to prepare -- no build
@@ -636,6 +667,23 @@ class EugrBuilder(BuilderPlugin):
 
         # TODO: potentially inject metadata flags as needed into recipe?
         return image
+
+    def pull_ref(self, image: str, recipe: Recipe, config: SparkrunConfig | None = None) -> str | None:
+        """The GHCR nightly or registry ref a launch would pull, or ``None`` for a local build.
+
+        Same decision as :meth:`prepare` (:func:`_select_image`). Presence is
+        checked on this machine, the ``local`` transfer mode's view.
+        """
+        from sparkrun.containers.registry import image_exists_locally
+
+        builder_defaults = config.get_defaults_builder("eugr") if config is not None else {}
+        selection = _select_image(
+            image,
+            recipe.runtime_config.get("build_args", []),
+            use_sentinel_image=bool(builder_defaults.get("use_sentinel_image", True)),
+            image_present=image_exists_locally,
+        )
+        return selection.image if selection.path in ("pull", "substitute") else None
 
     def validate_recipe(self, recipe: Recipe) -> list[str]:
         """Validate eugr-specific recipe fields.

@@ -80,6 +80,14 @@ def export(ctx):
     is_flag=True,
     help="Plan against the target hosts and emit the plain recipe that launch would run (overrides resolved for this hardware)",
 )
+@click.option(
+    "--no-pin", "no_pin", is_flag=True, help="With --realize: keep the image tag and model revision as written instead of pinning them"
+)
+@click.option(
+    "--offline",
+    is_flag=True,
+    help="With --realize: pin what the hosts already have (resident image, cached model) instead of asking the registry and the Hub",
+)
 @host_options
 @recipe_override_options
 @click.pass_context
@@ -90,6 +98,8 @@ def export_recipe(
     save_path=None,
     keep_include=False,
     realize=False,
+    no_pin=False,
+    offline=False,
     hosts=None,
     hosts_file=None,
     cluster_name=None,
@@ -113,6 +123,12 @@ def export_recipe(
     Platform defaults (e.g. DGX Spark env and memory utilization) are left to
     the platform, which applies them at launch.
 
+    --realize also pins: the image becomes repo@sha256:... (through the
+    recipe's builder, so an eugr :latest pins the nightly it would pull) and
+    the model revision a commit. By default those are what the registry and
+    the Hub name now; --offline pins what the hosts already hold instead.
+    --no-pin keeps the references as written.
+
     Examples:
 
       {app_command} export recipe @lil/Qwen3.8-Flash-Next-NVFP4 --realize --tp 2
@@ -124,12 +140,18 @@ def export_recipe(
         raise click.UsageError("host and override options (--hosts, --cluster, --tp, -o, ...) only apply with --realize")
     if realize and keep_include:
         raise click.UsageError("--realize emits a flattened recipe; it cannot be combined with --keep-include")
+    if not realize and (no_pin or offline):
+        raise click.UsageError("--no-pin and --offline only apply with --realize")
+    if no_pin and offline:
+        raise click.UsageError("--offline chooses where pins come from; it has no effect with --no-pin")
     if realize:
         _export_realized_recipe(
             ctx,
             recipe_name,
             output_json=output_json,
             save_path=save_path,
+            pin=not no_pin,
+            offline=offline,
             hosts=hosts,
             hosts_file=hosts_file,
             cluster_name=cluster_name,
@@ -175,7 +197,7 @@ def export_recipe(
     click.echo("Recipe saved to %s" % recipe.export(path=save_path, json=output_json))
 
 
-def _export_realized_recipe(ctx, recipe_name, *, output_json, save_path, hosts, hosts_file, cluster_name, options, **flags):
+def _export_realized_recipe(ctx, recipe_name, *, output_json, save_path, pin, offline, hosts, hosts_file, cluster_name, options, **flags):
     """``export recipe --realize``: plan like ``run``, then write the recipe that plan would launch."""
     from sparkrun import api
     from sparkrun.cli._common import resolve_host_context
@@ -187,11 +209,17 @@ def _export_realized_recipe(ctx, recipe_name, *, output_json, save_path, hosts, 
     recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name, resolve=False)
     recipe, overrides = _apply_recipe_overrides(options, recipe=recipe, **flags)
 
+    local_cache_dir, remote_cache_dir, _mode, _iface = hctx.cluster.resolve_transfer_config(config)
+    run_options = api.RunOptions(
+        recipe=recipe,
+        hosts=tuple(hctx.host_list),
+        cluster=hctx.cluster_name,
+        overrides=dict(overrides),
+        cache_dir=remote_cache_dir,
+        local_cache_dir=local_cache_dir,
+    )
     try:
-        realized = api.realize_recipe(
-            api.RunOptions(recipe=recipe, hosts=tuple(hctx.host_list), cluster=hctx.cluster_name, overrides=dict(overrides)),
-            sctx=sctx,
-        )
+        realized = api.realize_recipe(run_options, pin=pin, offline=offline, sctx=sctx)
     except api.SparkrunError as exc:
         click.echo("Error: %s" % exc, err=True)
         sys.exit(1)
@@ -207,6 +235,10 @@ def _export_realized_recipe(ctx, recipe_name, *, output_json, save_path, hosts, 
             click.echo("  %s" % line, err=True)
     if realized.dropped_keys:
         click.echo("  dropped override-only keys: %s" % ", ".join(realized.dropped_keys), err=True)
+    for pinned in realized.pins:
+        click.echo("  pinned %s: %s -> %s (%s)" % (pinned.field, pinned.before, pinned.after, pinned.source), err=True)
+    for note in realized.unpinned:
+        click.echo("  not pinned: %s" % note, err=True)
 
     text = (
         json.dumps(realized.recipe, indent=2)

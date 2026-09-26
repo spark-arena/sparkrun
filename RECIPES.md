@@ -475,6 +475,27 @@ command. It is how you turn an `@lil/<Entry>` into an ordinary v2 recipe. Detail
 - Platform defaults (DGX Spark's `CUTE_DSL_ARCH`, its `gpu_memory_utilization` fallback) are **not** written in. The
   platform applies them at launch, and writing them into the recipe would restate hardware facts.
 
+**Pinning.** A realized recipe is pinned by default:
+
+- **Container:** `container:` (and each `containers:` entry) becomes `repo@sha256:…`. The image goes through the
+  recipe's builder first, so an eugr `:latest` sentinel pins the GHCR nightly the launch would actually pull. A recipe
+  that relied on the platform's default image gets it written in, pinned.
+- **Model:** `model_revision` becomes a commit.
+- **Provenance:** `metadata.pinned` records when, how, and the references it replaced.
+
+| Mode            | Container digest from                                | Model commit from                                   |
+|-----------------|------------------------------------------------------|-----------------------------------------------------|
+| default         | the registry (what the tag names now; no pull)       | the Hugging Face Hub                                |
+| `--offline`     | the placed hosts (what is resident; all must agree)  | the hosts' caches (else this machine's, if a host lacks it) |
+| `--no-pin`      | not pinned                                           | not pinned                                          |
+
+`--offline` never leaves the cluster. It handles images sparkrun distributed by `docker save | docker load`: those
+carry no registry digest on the hosts, so the digest is taken from a copy with the same image id (typically this
+machine's). A recipe that builds its image locally (eugr `--use-wheels`) cannot be pinned, and says so: use
+`--no-pin`. A separate draft model in `speculative_config.model` is reported, not pinned. Registry access is anonymous
+or uses inline credentials in `~/.docker/config.json`; credential helpers are not run (use `--offline` for a private
+image the hosts already have).
+
 ---
 
 ## Command Templates

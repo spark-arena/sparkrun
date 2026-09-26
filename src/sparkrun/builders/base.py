@@ -219,6 +219,17 @@ class BuilderPlugin(Plugin):
             logger.debug("Container label collection failed", exc_info=True)
             return {}
 
+    def pull_ref(self, image: str, recipe: Recipe, config: SparkrunConfig | None = None) -> str | None:
+        """The registry ref :meth:`prepare` would have pulled for *image*, or ``None``.
+
+        Side-effect free: no pull, no build, no clone. ``export recipe
+        --realize`` uses it to pin an image without running the builder.
+        ``None`` means the launch runs a locally built image, which has no
+        registry digest to pin. The default suits a builder that leaves the
+        ref alone; one that builds must override it.
+        """
+        return None if self.transforms_image else image
+
     def resolve_long_term_image(
         self,
         container_image: str,

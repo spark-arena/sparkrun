@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sparkrun.api._models import RunOptions, RunPlan
+
+if TYPE_CHECKING:
+    from sparkrun.api._pin import Pin
 
 
 @dataclass(frozen=True)
@@ -24,6 +27,10 @@ class RealizedRecipe:
     plan: RunPlan
     dropped_keys: tuple[str, ...] = field(default=())
     """Selector-only defaults removed because no override reads them any more."""
+    pins: tuple["Pin", ...] = field(default=())
+    """What was pinned (empty with ``pin=False``)."""
+    unpinned: tuple[str, ...] = field(default=())
+    """References a pin does not cover (e.g. a separate draft model)."""
 
 
 def _realized_for(run_plan: RunPlan) -> dict[str, Any]:
@@ -50,7 +57,7 @@ def _realized_for(run_plan: RunPlan) -> dict[str, Any]:
     return info
 
 
-def realize_recipe(options: RunOptions, *, sctx=None) -> RealizedRecipe:
+def realize_recipe(options: RunOptions, *, pin: bool = True, offline: bool = False, sctx=None) -> RealizedRecipe:
     """Plan *options* against the real cluster and export the recipe it would run.
 
     Runs :func:`sparkrun.api.plan` (hardware probe, one status sweep,
@@ -58,9 +65,19 @@ def realize_recipe(options: RunOptions, *, sctx=None) -> RealizedRecipe:
     The plan is never a dry run, because a dry run skips the hardware probe
     and would realize against inventory or platform assumptions instead of
     the hosts.
+
+    With *pin* (the default) the image becomes ``repo@sha256:…`` and the model
+    revision a commit (:func:`sparkrun.api._pin.pin_realized_recipe`). Online,
+    those come from the registry and the Hub: what the tags name now.
+    *offline* reads them from the placed hosts instead (their resident image
+    and cached model), and needs no network beyond the cluster.
     """
+    from sparkrun.api._context import resolve_sctx
+    from sparkrun.api._pin import pin_realized_recipe, unpinned_references
     from sparkrun.api._run import plan
     from sparkrun.core.launcher import selector_only_config_keys
+
+    sctx = resolve_sctx(sctx)
 
     run_plan = plan(replace(options, dry_run=False), sctx=sctx)
     recipe = run_plan.recipe
@@ -77,4 +94,7 @@ def realize_recipe(options: RunOptions, *, sctx=None) -> RealizedRecipe:
     metadata = dict(data.get("metadata") or {})
     metadata["realized_for"] = _realized_for(run_plan)
     data["metadata"] = metadata
-    return RealizedRecipe(recipe=data, plan=run_plan, dropped_keys=tuple(dropped))
+    pins = pin_realized_recipe(data, run_plan, options, offline=offline, sctx=sctx) if pin else ()
+    return RealizedRecipe(
+        recipe=data, plan=run_plan, dropped_keys=tuple(dropped), pins=pins, unpinned=tuple(unpinned_references(data)) if pin else ()
+    )

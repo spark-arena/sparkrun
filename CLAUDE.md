@@ -2084,6 +2084,28 @@ same serve command. Three details that are easy to break:
   `metadata.realized_for` records the platform, accelerator and node count (no host names;
   `metadata` is outside the fingerprint).
 
+**Pinning** (`api/_pin.py`, on by default, `--no-pin` off) has two sources, and the difference
+is the point. **Online** asks what the references name *now*: `containers/digest.py:resolve_registry_digest`
+(OCI API, bearer challenge, anonymous or inline `~/.docker/config.json` auth, no credential
+helpers) and `models/revision.py:resolve_hub_commit` (through `hub_metadata_call`).
+**Offline** (`--offline`) asks what the cluster *holds*: `resolve_host_digest` and
+`resolve_cached_commit` over SSH. This is the seam a future `run --offline` should reuse.
+Four details that fail silently if broken:
+
+- **The builder decides which image is pinned** (`BuilderPlugin.pull_ref`, side-effect free).
+  eugr's pull-first choice is one pure function, `_select_image`, called by both `prepare()`
+  and `pull_ref`, so they cannot disagree. `tests/test_pinning.py` has a drift guard comparing
+  them. `None` means a local build: pinning refuses rather than keep a mutable tag.
+- **A `docker load`ed image has no `RepoDigests`**, only its image id. sparkrun's push and
+  delegated modes produce exactly that, so offline matches digestless hosts by image id to a
+  holder that has one (usually the control machine). Hosts that each record a digest agree
+  by digest instead, since image ids vary across storage drivers.
+- **Hosts must agree.** A mismatch (different builds, different cached commits) raises. The
+  control-machine cache is a fallback only for hosts *missing* the model
+  (`RevisionResolutionError.missing`), never for a disagreement.
+- **Pins are the manifest digest** the registry serves for the tag (the index for multi-arch),
+  which is what `docker pull repo@sha256:` resolves per platform.
+
 ### Recipe Validation (`core/validation.py`)
 
 The single aggregator behind `sparkrun recipe validate`, and — through
