@@ -189,6 +189,31 @@ def test_latest_import_pins_the_release_tag_not_newer_branch_content(import_targ
     assert import_target.LOCK_PATH.read_bytes() == before
 
 
+def test_test_fixtures_are_imported_and_locked(import_target, upstream):
+    fixtures = upstream / "tests/fixtures/nested"
+    fixtures.mkdir(parents=True)
+    (fixtures / "profiles.json").write_text("[]\n")
+    (upstream / "tests/conftest.py").write_text("# upstream-only\n")
+    _commit(upstream)
+    import_target.update(source=str(upstream), revision="HEAD", initial=True, force=False)
+    imported = import_target.TEST_DESTINATION / "fixtures/nested/profiles.json"
+    assert imported.read_text() == "[]\n"
+    assert not (import_target.TEST_DESTINATION / "conftest.py").exists()  # only the declared tests and their fixtures
+    lock = tomllib.loads(import_target.LOCK_PATH.read_text())
+    assert "tests/vendor/sparkroute/fixtures/nested/profiles.json" in {f["path"] for f in lock["files"]}
+    imported.write_text("tampered\n")
+    with pytest.raises(import_target.VendorError, match="differs from its lock"):
+        import_target.verify()
+
+
+def test_a_symlinked_fixture_is_refused(import_target, upstream):
+    (upstream / "tests/fixtures").mkdir()
+    (upstream / "tests/fixtures/alias.py").symlink_to("../test_sparkroute_fixture.py")  # relative: passes tar's data filter
+    _commit(upstream)
+    with pytest.raises(import_target.VendorError, match="symlinks"):
+        import_target.update(source=str(upstream), revision="HEAD", initial=True, force=False)
+
+
 def test_bad_release_does_not_replace_the_existing_snapshot(import_target, upstream, monkeypatch):
     import_target.update(source=str(upstream), revision="HEAD", initial=True, force=False)
     before = import_target.LOCK_PATH.read_bytes()

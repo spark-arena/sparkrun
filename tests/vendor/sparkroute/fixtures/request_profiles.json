@@ -1,0 +1,133 @@
+[
+  {
+    "name": "legacy ingress",
+    "valid": true,
+    "profiles": {
+      "low": {
+        "chat_completions": {
+          "temperature": 0.2
+        }
+      }
+    }
+  },
+  {
+    "name": "expanded upstream",
+    "valid": true,
+    "profiles": {
+      "low.v2": {
+        "supported_operations": [
+          "responses"
+        ],
+        "upstream_overrides": {
+          "chat_completions": {
+            "chat_template_kwargs": {
+              "enable_thinking": false
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "explicit noop",
+    "valid": true,
+    "profiles": {
+      "low": {
+        "supported_operations": [
+          "messages"
+        ]
+      }
+    }
+  },
+  {
+    "name": "empty parameters",
+    "valid": false,
+    "profiles": {
+      "low": {
+        "chat_completions": {}
+      }
+    }
+  },
+  {
+    "name": "missing supported ingress",
+    "valid": false,
+    "profiles": {
+      "low": {
+        "upstream_overrides": {
+          "chat_completions": {
+            "temperature": 0.2
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "protected state",
+    "valid": false,
+    "profiles": {
+      "low": {
+        "responses": {
+          "store": true
+        }
+      }
+    }
+  },
+  {
+    "name": "protected content",
+    "valid": false,
+    "profiles": {
+      "low": {
+        "messages": {
+          "system": "injected"
+        }
+      }
+    }
+  },
+  {
+    "name": "null stage",
+    "valid": false,
+    "profiles": {
+      "low": {
+        "supported_operations": [
+          "responses"
+        ],
+        "ingress_overrides": null
+      }
+    }
+  },
+  {
+    "name": "duplicate operation",
+    "valid": false,
+    "profiles": {
+      "low": {
+        "supported_operations": [
+          "messages",
+          "messages"
+        ]
+      }
+    }
+  },
+  {
+    "name": "unknown field",
+    "valid": false,
+    "profiles": {
+      "low": {
+        "supported_operations": [
+          "messages"
+        ],
+        "typo": {}
+      }
+    }
+  },
+  {
+    "name": "invalid selector",
+    "valid": false,
+    "profiles": {
+      "low:bad": {
+        "responses": {
+          "temperature": 0
+        }
+      }
+    }
+  }
+]

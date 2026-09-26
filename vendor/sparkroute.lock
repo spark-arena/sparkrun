@@ -8,7 +8,7 @@ repository = "https://github.com/sparksq/sparkrun-sparkroute-plugin.git"
 commit = "3f158829acfe49f88c2cb78a1215f2acfbb6c738"
 tree = "86a6fa66df8fd85261c3a63e6dd092ced6d8ba09"
 sparkrun = ">=0.4,<0.5"
-content_sha256 = "107bea98547ebc046bc4c52d7d74a8927e700c5b479edd57c7e0ccc8c6b6b40e"
+content_sha256 = "99e55bd41bc166fb8d3d5a970b4e36e293505a6182794fb093c5b09144462bda"
 application_profile_api = 1
 release_tag = "v0.2.0"
 
@@ -87,6 +87,10 @@ sha256 = "7d10facc3cad70e4c797b8521bdc83fac3dfcc920bbebc3da861c92e83c482fc"
 [[files]]
 path = "src/sparkrun/plugins/sparkroute/workload_plugins.py"
 sha256 = "071baa53de7c03de124c3602f2a28723e41772834cc51f9aec14d4c5a69d6c52"
+
+[[files]]
+path = "tests/vendor/sparkroute/fixtures/request_profiles.json"
+sha256 = "41a868aea1742d641f0d90801b365270ba4bff7d78c23ee3a2fb783338871c70"
 
 [[files]]
 path = "tests/vendor/sparkroute/test_sparkroute_admin.py"

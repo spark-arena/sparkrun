@@ -51,6 +51,10 @@ git add vendor/sparkroute.lock src/sparkrun/plugins/sparkroute tests/vendor/spar
 git commit -m "Update vendored SparkRoute plugin"
 ```
 
+An update imports the plugin source, the upstream `tests/test_sparkroute_*.py` files, and the
+`tests/fixtures/` directory they read. Everything is recorded file by file in
+`vendor/sparkroute.lock`, and symlinks are refused.
+
 `--latest` resolves the canonical plugin repository's latest published GitHub
 release, excludes drafts/prereleases, and imports its exact tag. It checks the
 tag against the declared plugin version, preserves the license and combination

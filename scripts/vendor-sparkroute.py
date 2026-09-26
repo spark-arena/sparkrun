@@ -28,6 +28,9 @@ PROVENANCE_PATH = SOURCE_DESTINATION / "VENDORED.toml"
 _IGNORED_PARTS = {"__pycache__", ".pytest_cache", ".ruff_cache"}
 _UPSTREAM_SOURCE = "src/sparkrun/plugins/sparkroute"
 _UPSTREAM_TESTS = "tests/test_sparkroute_*.py"
+#: Data the exported tests read, next to them (``Path(__file__).parent / "fixtures/..."``).
+#: Imported whole, at the same relative path, and locked like every other file.
+_TEST_FIXTURES = "fixtures"
 UPSTREAM_REPOSITORY = "https://github.com/sparksq/sparkrun-sparkroute-plugin.git"
 UPSTREAM_SLUG = "sparksq/sparkrun-sparkroute-plugin"
 
@@ -387,7 +390,11 @@ def update(*, source: str, revision: str, initial: bool, force: bool, release_ta
             test_files = sorted(extracted.glob(manifest.tests))
             if not test_files or any(not path.is_file() or path.is_symlink() for path in test_files):
                 raise VendorError("upstream test export is empty or contains unsupported entries")
-            test_mapping = {path.name: path for path in test_files}
+            test_mapping = {Path(path.name): path for path in test_files}
+            # _regular_files refuses symlinks, so a fixture cannot point outside the export.
+            fixture_root = extracted / Path(manifest.tests).parent / _TEST_FIXTURES
+            for path in _regular_files(fixture_root):
+                test_mapping[Path(_TEST_FIXTURES) / path.relative_to(fixture_root)] = path
 
             imported: list[ImportedFile] = []
             for relative, path in source_mapping.items():
@@ -399,7 +406,7 @@ def update(*, source: str, revision: str, initial: bool, force: bool, release_ta
             digest = _content_digest(imported)
 
             _replace_directory(SOURCE_DESTINATION, source_mapping)
-            _replace_directory(TEST_DESTINATION, {Path(name): path for name, path in test_mapping.items()})
+            _replace_directory(TEST_DESTINATION, test_mapping)
 
     PROVENANCE_PATH.write_text(
         _render_provenance(manifest=manifest, commit=commit, tree=tree, digest=digest, release_tag=release_tag),

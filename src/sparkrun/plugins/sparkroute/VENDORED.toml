@@ -4,6 +4,6 @@ repository = "https://github.com/sparksq/sparkrun-sparkroute-plugin.git"
 commit = "3f158829acfe49f88c2cb78a1215f2acfbb6c738"
 tree = "86a6fa66df8fd85261c3a63e6dd092ced6d8ba09"
 version = "0.2.0"
-content_sha256 = "107bea98547ebc046bc4c52d7d74a8927e700c5b479edd57c7e0ccc8c6b6b40e"
+content_sha256 = "99e55bd41bc166fb8d3d5a970b4e36e293505a6182794fb093c5b09144462bda"
 application_profile_api = 1
 release_tag = "v0.2.0"
