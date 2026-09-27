@@ -408,3 +408,39 @@ def test_compose_style_include_list_is_not_a_recipe(tmp_path):
     compose = tmp_path / "compose.yaml"
     compose.write_text(yaml.safe_dump({"include": ["other.yaml"], "services": {"a": {"image": "x"}}}))
     assert not is_recipe_file(compose)
+
+
+@pytest.mark.parametrize("ref", ["_common", "_common.yaml", "_common.yml"])
+def test_underscore_include_can_supply_shared_configuration(tmp_path, ref):
+    base = {"recipe_version": "2", "builder": "coldsnap", "coldsnap": {"capsule": {"repository": "registry/capsules"}}}
+    path = tmp_path / (ref if ref.endswith((".yaml", ".yml")) else ref + ".yaml")
+    path.write_text(yaml.safe_dump(base))
+    data = {"include": ref, **_BASE}
+    outer = _write(tmp_path, "variant", data)
+    merged, chain = resolve_recipe_includes(data, outer)
+    assert merged["coldsnap"] == base["coldsnap"]
+    assert merged["defaults"] == _BASE["defaults"]
+    assert merged["env"] == _BASE["env"]
+    assert chain[0].path == str(path)
+    recipe = Recipe.load(outer, resolve=False)
+    assert recipe.builder == "coldsnap"
+    assert recipe.model == _BASE["model"]
+
+
+def test_registry_include_accepts_underscore_filename(tmp_path):
+    reg_root = tmp_path / "reg"
+    reg_root.mkdir()
+    _write(reg_root, "_base", _BASE)
+    outer = _write(tmp_path, "variant", {"include": "@reg/_base"})
+    recipe = Recipe.load(outer, registry_manager=_Registries(reg_root))
+    assert recipe.model == _BASE["model"]
+    assert recipe.include_chain[-1].ref == "@reg/_base"
+
+
+def test_underscore_include_symlink_cannot_escape_directory(tmp_path):
+    outside = _write(tmp_path, "outside", _BASE)
+    recipes = tmp_path / "recipes"
+    recipes.mkdir()
+    (recipes / "_base.yaml").symlink_to(outside)
+    with pytest.raises(RecipeError, match="outside its registry or directory"):
+        Recipe.load(_write(recipes, "variant", {"include": "_base.yaml"}))

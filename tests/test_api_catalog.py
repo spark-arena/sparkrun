@@ -229,3 +229,17 @@ def test_plugin_parse_failures_use_catalog_error_surface(catalog, passive_recipe
     with pytest.raises(api.SparkrunError, match="Recipe is invalid") as error:
         api.get_recipe_details(str(path), sctx=sctx)
     assert isinstance(error.value.__cause__, RecipeError)
+
+
+def test_include_error_detail_survives_api_resolution(catalog):
+    from sparkrun.api._resolve import resolve_recipe
+    from sparkrun.core.recipe import RecipeError
+
+    sctx, root, data = catalog
+    path = root / "one/same.yaml"
+    data["include"] = "_missing.yaml"
+    path.write_text(yaml.safe_dump(data))
+    with pytest.raises(api.SparkrunError, match="include: '_missing.yaml' not found next to") as error:
+        resolve_recipe(str(path), sctx=sctx)
+    assert isinstance(error.value.__cause__, RecipeError)
+    assert str(error.value) == "Recipe is invalid: " + str(error.value.__cause__)

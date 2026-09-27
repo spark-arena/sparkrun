@@ -83,7 +83,9 @@ def _recipe_errors():
 
     try:
         yield
-    except (RecipeError, OSError, YAMLError, ValueError, TypeError) as exc:
+    except RecipeError as exc:
+        raise SparkrunError("Recipe is invalid: %s" % (str(exc) or type(exc).__name__)) from exc
+    except (OSError, YAMLError, ValueError, TypeError) as exc:
         raise SparkrunError("Recipe is invalid: %s" % type(exc).__name__) from exc
 
 

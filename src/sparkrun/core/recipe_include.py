@@ -57,10 +57,10 @@ _ATOMIC_VALUE_SECTIONS = frozenset({"defaults", "env"})
 
 _RECIPE_SUFFIXES = (".yaml", ".yml")
 
-#: One path component of an include name: starts alphanumeric (rules out
-#: ``..``, dotfiles and a leading ``-``) and carries no separator or drive
-#: colon. The registry-subpath charset.
-_SAFE_COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
+#: One path component of an include name: starts alphanumeric or underscore
+#: (allowing shared fragments such as ``_common.yaml``), with no leading dot or
+#: dash, separator or drive colon. Shared by sibling and registry references.
+_SAFE_COMPONENT = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._+-]*$")
 
 
 @dataclass(frozen=True)
