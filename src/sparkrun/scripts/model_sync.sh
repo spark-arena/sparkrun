@@ -12,6 +12,10 @@ echo "Checking model cache for $MODEL_ID..."
 CACHE_PATH="{cache_path}"
 # Pre-quoted control-side; empty string when the entry is unpinned.
 MODEL_REVISION={revision}
+# "1" under `sparkrun run --offline`: no internet egress.  A cache hit still
+# succeeds; a miss fails here -- before any download and before any uv or
+# huggingface_hub installation, both of which reach the internet.
+OFFLINE="{offline}"
 
 # sparkrun:include _hf_snapshots.sh
 
@@ -46,6 +50,11 @@ done <<<"$SNAPSHOT_DIRS"
 if [ "$FOUND_WEIGHTS" = true ]; then
     echo "Model already cached: $MODEL_ID"
     exit 0
+fi
+
+if [ "$OFFLINE" = "1" ]; then
+    echo "OFFLINE: model $MODEL_ID is not in this host's Hugging Face cache and offline mode does not download" >&2
+    exit 3
 fi
 
 # Positional params carry the optional --revision so the value is never

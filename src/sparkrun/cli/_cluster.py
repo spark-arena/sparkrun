@@ -107,6 +107,13 @@ def cluster(ctx):
     help="Cluster-wide cap (0.0 < x <= 1.0) on the fraction of GPU memory usable for "
     "scheduling/fit (e.g. 0.85). Overrides platform defaults. Per-type/per-host caps via cluster YAML.",
 )
+@click.option(
+    "--offline",
+    is_flag=True,
+    default=False,
+    help="Launch on this cluster offline by default: existing images, models and recipes only, no internet access "
+    "(run --online overrides it)",
+)
 @click.option("--default", "set_default", is_flag=True, default=False, help="Set as the default cluster")
 @click.pass_context
 def cluster_create(
@@ -123,6 +130,7 @@ def cluster_create(
     executor_opts,
     scheduler_name,
     max_gpu_mem_util,
+    offline,
     set_default,
 ):
     """Create a new named cluster."""
@@ -162,6 +170,7 @@ def cluster_create(
             executor_config=executor_config,
             scheduler=scheduler_name,
             max_gpu_memory_utilization=max_gpu_mem_util,
+            offline=True if offline else None,
         )
         click.echo(f"Cluster '{name}' created with {len(host_list)} host(s).")
         if scheduler_name and scheduler_name != "greedy":
@@ -402,6 +411,13 @@ cluster_import.add_command(cluster_import_svd, "eugr")
     help="Cluster-wide cap (0.0 < x <= 1.0) on the fraction of GPU memory usable for "
     "scheduling/fit (e.g. 0.85). Pass 0 to clear. Per-type/per-host caps via cluster YAML.",
 )
+@click.option(
+    "--offline/--online",
+    "offline",
+    default=None,
+    help="Make launches on this cluster offline by default (existing images, models and recipes only), or remove that "
+    "default with --online",
+)
 @click.pass_context
 def cluster_update(
     ctx,
@@ -423,6 +439,7 @@ def cluster_update(
     clear_executor_config,
     scheduler_name,
     max_gpu_mem_util,
+    offline,
 ):
     """Update an existing cluster.
 
@@ -480,12 +497,13 @@ def cluster_update(
         and not executor_opts_provided
         and not scheduler_provided
         and not max_gpu_mem_util_provided
+        and offline is None
     ):
         click.echo(
             "Error: Nothing to update. Provide --hosts, --hosts-file, --add-host, "
             "--remove-host, -d, --user, --cache-dir, --transfer-mode, "
             "--transfer-interface, --topology, --mgmt-interface, --infer-hardware, --executor, "
-            "--executor-opt, --clear-executor-config, --scheduler, or --max-gpu-mem-util.",
+            "--executor-opt, --clear-executor-config, --scheduler, --max-gpu-mem-util, or --offline/--online.",
             err=True,
         )
         sys.exit(1)
@@ -564,6 +582,9 @@ def cluster_update(
     if max_gpu_mem_util_provided:
         # 0 clears the cluster-wide cap (defer to platform default / 1.0 fallback)
         update_kwargs["max_gpu_memory_utilization"] = max_gpu_mem_util if max_gpu_mem_util else None
+    if offline is not None:
+        # --online removes the field (online is the default) rather than writing `offline: false`
+        update_kwargs["offline"] = True if offline else None
 
     if infer_hardware:
         from sparkrun.core.hardware_probe import probe_host
@@ -713,6 +734,8 @@ def cluster_show(ctx, name, output_json):
         click.echo(f"Scheduler:   {effective_scheduler} (default — not set on this cluster)")
     else:
         click.echo(f"Scheduler:   {effective_scheduler}")
+    if c.offline:
+        click.echo("Offline:     yes (launches use existing images and models only; run --online overrides)")
     click.echo(f"Default:     {'yes' if c.name == default_name else 'no'}")
     click.echo(f"Hosts ({len(c.hosts)}):")
     for h in c.hosts:

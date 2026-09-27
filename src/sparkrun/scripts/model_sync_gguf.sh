@@ -11,6 +11,10 @@ echo "Checking GGUF model cache for $REPO_ID (quant: $GGUF_QUANT)..."
 CACHE_PATH="{cache_path}"
 # Pre-quoted control-side; empty string when the entry is unpinned.
 MODEL_REVISION={revision}
+# "1" under `sparkrun run --offline`: no internet egress.  A cache hit still
+# succeeds; a miss fails here -- before any download and before any uv or
+# huggingface_hub installation, both of which reach the internet.
+OFFLINE="{offline}"
 
 # sparkrun:include _hf_snapshots.sh
 
@@ -32,6 +36,11 @@ done <<<"$SNAPSHOT_DIRS"
 if [ -n "$GGUF_MATCH" ]; then
     echo "GGUF model already cached: $GGUF_MATCH"
     exit 0
+fi
+
+if [ "$OFFLINE" = "1" ]; then
+    echo "OFFLINE: GGUF model $REPO_ID (quant: $GGUF_QUANT) is not in this host's Hugging Face cache and offline mode does not download" >&2
+    exit 3
 fi
 
 # Positional params carry the optional --revision so the value is never

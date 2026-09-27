@@ -766,6 +766,7 @@ def _load_foreign_format(
     known_format: str | None = None,
     *,
     allow_local: bool = True,
+    offline: bool = False,
 ) -> tuple[dict[str, Any], str] | None:
     """``(v2 data, recipe name)`` when *path* is a foreign-format manifest, else ``None``.
 
@@ -812,7 +813,7 @@ def _load_foreign_format(
     if recipe_format is None:
         return None
     try:
-        translated = recipe_format.load(path, registry_manager=registry_manager, offline=False, allow_local=allow_local)
+        translated = recipe_format.load(path, registry_manager=registry_manager, offline=offline, allow_local=allow_local)
     except RecipeError:
         raise
     except Exception as error:
@@ -950,7 +951,7 @@ def _url_cache_path(url: str) -> Path:
     return resolve_sparkrun_cache_dir() / "remote-recipes" / ("%s.yaml" % url_hash)
 
 
-def fetch_and_cache_recipe(url: str, *, allow_untrusted_host: bool = False) -> Path:
+def fetch_and_cache_recipe(url: str, *, allow_untrusted_host: bool = False, offline: bool = False) -> Path:
     """Fetch a recipe from URL and cache it locally.
 
     Only ``https://`` URLs are accepted, and only from
@@ -969,6 +970,11 @@ def fetch_and_cache_recipe(url: str, *, allow_untrusted_host: bool = False) -> P
     _validate_recipe_url(url, allow_untrusted_host=allow_untrusted_host)
 
     cache_path = _url_cache_path(url)
+    if offline:
+        # Offline: the cached copy or nothing, without attempting the fetch.
+        if cache_path.exists():
+            return cache_path
+        raise RecipeError("Recipe %s is not cached on this machine, and an offline launch does not fetch it." % url)
 
     class _ValidatingRedirectHandler(HTTPRedirectHandler):
         max_redirections = _RECIPE_FETCH_MAX_REDIRECTS
@@ -1690,8 +1696,12 @@ class Recipe:
         registry_manager: RegistryManager | None = None,
         allow_local_includes: bool = True,
         recipe_format: str | None = None,
+        offline: bool = False,
     ) -> Recipe:
         """Load a recipe from a YAML file path.
+
+        *offline* is passed to a foreign recipe format (``RecipeFormat.load``),
+        which must then use only local facts (an offline launch).
 
         Args:
             path: Path to the recipe YAML file.
@@ -1715,7 +1725,7 @@ class Recipe:
         data = read_yaml(str(path))
         if not isinstance(data, dict):
             raise RecipeError("Recipe file must contain a YAML mapping: %s" % path)
-        foreign = _load_foreign_format(path, data, registry_manager, recipe_format, allow_local=allow_local_includes)
+        foreign = _load_foreign_format(path, data, registry_manager, recipe_format, allow_local=allow_local_includes, offline=offline)
         if foreign is not None:
             data, foreign_name = foreign
             recipe = cls(data, source_path=str(path))

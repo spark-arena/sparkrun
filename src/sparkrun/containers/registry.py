@@ -117,17 +117,31 @@ def get_image_id(image: str) -> str | None:
     return get_image_identity(image)[0]
 
 
-def ensure_image(image: str, dry_run: bool = False, force_pull: bool = False) -> int:
+def ensure_image(image: str, dry_run: bool = False, force_pull: bool = False, offline: bool = False) -> int:
     """Ensure an image exists locally, pulling if needed.
 
     Args:
         image: Image reference.
         dry_run: If True, show what would be done without executing.
         force_pull: If True, force pull even if it exists locally.
+        offline: Never contact a registry (``sparkrun run --offline``).  A
+            present image is used as-is, with no opportunistic ``:latest``
+            refresh; an absent one, or a *force_pull* request, is an error
+            rather than a pull.
 
     Returns:
         Exit code (0 = success).
     """
+    if offline:
+        if force_pull:
+            logger.error("offline: a fresh pull of image %s was requested, and offline mode does not pull", image)
+            return 1
+        if image_exists_locally(image):
+            logger.info("Image already available (offline): %s", image)
+            return 0
+        logger.error("offline: image %s is not present on the control machine, and offline mode does not pull", image)
+        return 1
+
     # if force_pull, then we pull regardless of local presence or tag; failure to pull on explicit force_pull is an error
     if force_pull:
         logger.info("Force pull requested for image: %s", image)

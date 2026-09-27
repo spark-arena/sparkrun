@@ -240,7 +240,7 @@ def _heredoc_delimiter(index: int, content: str) -> str:
     return delim
 
 
-def _provision_script(spec: _Spec) -> str:
+def _provision_script(spec: _Spec, *, offline: bool = False) -> str:
     # venv_path / env_file are trusted config and may be $HOME-relative — emit them
     # double-quoted so bash expands $HOME/$VAR on the host (shlex-quoting would freeze
     # them to a literal). Requirements/python are shlex-quoted (no expansion wanted).
@@ -283,6 +283,7 @@ def _provision_script(spec: _Spec) -> str:
         "set -euo pipefail\n"
         'VENV="%(venv)s"; ENV_FILE="%(env_file)s"; MARKER="$VENV/.sparkrun-uv-venv.hash"; WANT="%(want)s"\n'
         'export PATH="/usr/local/bin:%(uv_bin)s:$PATH"\n'
+        "%(offline_env)s"
         'if [ -x "$VENV/bin/python" ] && [ "$(cat "$MARKER" 2>/dev/null || true)" = "$WANT" ]; then\n'
         '  echo "uv-venv: up-to-date ($VENV)"\n'
         "else\n"
@@ -290,16 +291,12 @@ def _provision_script(spec: _Spec) -> str:
         # Both acquisition routes are version-pinned in sparkrun.core.tooling.
         # The unversioned installer URL is whatever Astral published this
         # morning, which is not a thing to fan out across a cluster.
-        "  if ! command -v uv >/dev/null 2>&1; then\n"
-        "    python3 -m pip install -q %(uv_spec)s || curl -LsSf %(uv_url)s | sh || true\n"
-        "  fi\n"
+        "%(acquire_uv)s"
         # Fail with guidance rather than letting `uv venv` report "command not
         # found": on an air-gapped host neither route can work, and that is a
         # fact about the host, not a defect in the recipe.
         "  if ! command -v uv >/dev/null 2>&1; then\n"
-        '    echo "uv-venv: ERROR: uv %(uv_version)s is absent and could not be installed on $(hostname)." >&2\n'
-        '    echo "  This host may have no outbound network access. Either install uv on it," >&2\n'
-        '    echo "  or use a container image instead of the uv-venv builder." >&2\n'
+        "%(uv_missing)s"
         "    exit 1\n"
         "  fi\n"
         '  echo "uv-venv: creating venv at $VENV (python %(python)s)"\n'
@@ -318,6 +315,25 @@ def _provision_script(spec: _Spec) -> str:
         "EOF\n"
         'echo "uv-venv: env_file $ENV_FILE"\n'
     ) % {
+        # Offline (sparkrun.core.offline): UV_OFFLINE makes `uv venv` and `uv
+        # pip install` use only uv's local cache and local files, and uv itself
+        # is never fetched. An up-to-date venv needs no network either way.
+        "offline_env": "export UV_OFFLINE=1\n" if offline else "",
+        "acquire_uv": (
+            ""
+            if offline
+            else "  if ! command -v uv >/dev/null 2>&1; then\n"
+            "    python3 -m pip install -q %s || curl -LsSf %s | sh || true\n"
+            "  fi\n" % (quote(uv_pip_spec()), quote(UV_INSTALL_URL))
+        ),
+        "uv_missing": (
+            '    echo "uv-venv: ERROR: uv is absent on $(hostname), and an offline launch does not install it." >&2\n'
+            '    echo "  Install uv on the host, or provision the venv once online." >&2\n'
+            if offline
+            else '    echo "uv-venv: ERROR: uv %s is absent and could not be installed on $(hostname)." >&2\n'
+            '    echo "  This host may have no outbound network access. Either install uv on it," >&2\n'
+            '    echo "  or use a container image instead of the uv-venv builder." >&2\n' % UV_VERSION
+        ),
         "verify_guard": (
             '  echo "uv-venv: preseed missing or mismatched ($VENV); rebuild the serving image" >&2\n  exit 1\n' if spec.verify_only else ""
         ),
@@ -330,9 +346,6 @@ def _provision_script(spec: _Spec) -> str:
         "path_line": path_line,
         "cuda_line": cuda_line,
         "uv_bin": UV_INSTALL_BIN_DIR,
-        "uv_spec": quote(uv_pip_spec()),
-        "uv_url": quote(UV_INSTALL_URL),
-        "uv_version": UV_VERSION,
     }
 
 
@@ -359,8 +372,9 @@ class UvVenvBuilder(BuilderPlugin):
         builder_context=None,
     ) -> str:
         """Provision the venv on every target host. Returns *image* unchanged (no container)."""
+        offline = bool(builder_context and builder_context.get("offline"))
         spec = _resolve_spec(recipe)
-        script = _provision_script(spec)
+        script = _provision_script(spec, offline=offline)
         logger.info("uv-venv: ensuring venv %s on %d host(s)", spec.venv_path, len(hosts))
 
         # Parallel, and under the session guard. A first-time vllm+torch

@@ -84,9 +84,11 @@ def export(ctx):
     "--no-pin", "no_pin", is_flag=True, help="With --realize: keep the image tag and model revision as written instead of pinning them"
 )
 @click.option(
-    "--offline",
-    is_flag=True,
-    help="With --realize: pin what the hosts already have (resident image, cached model) instead of asking the registry and the Hub",
+    "--offline/--online",
+    "offline",
+    default=None,
+    help="With --realize: pin what the hosts already have (resident image, cached model) instead of asking the registry and the "
+    "Hub. Defaults to the cluster's offline setting.",
 )
 @host_options
 @recipe_override_options
@@ -99,7 +101,7 @@ def export_recipe(
     keep_include=False,
     realize=False,
     no_pin=False,
-    offline=False,
+    offline=None,
     hosts=None,
     hosts_file=None,
     cluster_name=None,
@@ -140,7 +142,7 @@ def export_recipe(
         raise click.UsageError("host and override options (--hosts, --cluster, --tp, -o, ...) only apply with --realize")
     if realize and keep_include:
         raise click.UsageError("--realize emits a flattened recipe; it cannot be combined with --keep-include")
-    if not realize and (no_pin or offline):
+    if not realize and (no_pin or offline is not None):
         raise click.UsageError("--no-pin and --offline only apply with --realize")
     if no_pin and offline:
         raise click.UsageError("--offline chooses where pins come from; it has no effect with --no-pin")

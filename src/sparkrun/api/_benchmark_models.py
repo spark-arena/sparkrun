@@ -223,6 +223,8 @@ class BenchmarkOptions:
     rootful: bool = False
     """Run containers privileged + as root."""
     trust: bool = False
+    offline: bool | None = None
+    """Launch offline (:mod:`sparkrun.core.offline`); ``None`` defers to the cluster."""
     """Pre-acknowledge trust for third-party recipe hooks (``pre_exec`` /
     ``post_exec`` / ``post_commands``), mirroring ``run``'s ``--trust``.
 

@@ -444,7 +444,7 @@ def _recipe_name_looks_like_path(name: str) -> bool:
     return False
 
 
-def _load_recipe(config, recipe_name, resolve=True, retry_after_update=False):
+def _load_recipe(config, recipe_name, resolve=True, retry_after_update=False, offline=False):
     """Find, load, and return a recipe.
 
     Handles disambiguation when a recipe name matches multiple registries.
@@ -461,6 +461,9 @@ def _load_recipe(config, recipe_name, resolve=True, retry_after_update=False):
             "not found" error, run ``registry_mgr.update()`` once and retry
             the lookup. Useful for ``sparkrun run`` so that copy-pasted
             recipe names from newly-published sources just work.
+        offline: An offline launch: a URL recipe comes from the local cache
+            only, registries are never refreshed, and a plugin format reads
+            local facts only.
 
     Returns:
         Tuple of (recipe, recipe_path, registry_mgr).
@@ -479,14 +482,14 @@ def _load_recipe(config, recipe_name, resolve=True, retry_after_update=False):
 
         logger.debug("Loading recipe from URL: %s", recipe_name)
         try:
-            cached_path = _fetch_and_cache_recipe(recipe_name)
+            cached_path = _fetch_and_cache_recipe(recipe_name, offline=offline)
         except RecipeUntrustedHostError as e:
             # Off-allowlist https host: confirm interactively, else abort.
             if sys.stdin.isatty() and click.confirm(
                 "Recipe URL host '%s' is not in the trusted allowlist. Fetch anyway?" % e.host,
                 default=False,
             ):
-                cached_path = _fetch_and_cache_recipe(recipe_name, allow_untrusted_host=True)
+                cached_path = _fetch_and_cache_recipe(recipe_name, allow_untrusted_host=True, offline=offline)
             else:
                 click.echo("Error: %s" % e, err=True)
                 sys.exit(1)
@@ -541,7 +544,7 @@ def _load_recipe(config, recipe_name, resolve=True, retry_after_update=False):
                 break
             raise click.ClickException(str(e)) from e
         except RecipeError as e:
-            if retried or not retry_after_update or _recipe_name_looks_like_path(recipe_name):
+            if retried or not retry_after_update or offline or _recipe_name_looks_like_path(recipe_name):
                 click.echo("Error: %s" % e, err=True)
                 sys.exit(1)
             retried = True
@@ -554,7 +557,7 @@ def _load_recipe(config, recipe_name, resolve=True, retry_after_update=False):
                 logger.debug("Registry update failed during retry: %s", update_err)
 
     try:
-        recipe = Recipe.load(recipe_path, resolve=resolve, registry_manager=registry_mgr)
+        recipe = Recipe.load(recipe_path, resolve=resolve, registry_manager=registry_mgr, offline=offline)
         registry = recipe_registry_entry(recipe_path, registry_mgr, registry_name=selected_registry)
         tag_recipe_source(recipe, registry, config=config)
     except (RecipeError, RegistryError) as e:
@@ -1628,3 +1631,29 @@ def resolve_hosts_with_metadata_fallback(
             err=True,
         )
         sys.exit(1)
+
+
+def _enter_offline_mode(offline: bool | None, cluster=None, *, benchmark_apps: bool = False) -> bool:
+    """Resolve ``--offline/--online`` against *cluster* and apply the process-wide half.
+
+    ``api.plan`` makes the launch decision; this covers what the CLI does before
+    and around it, in a one-shot process: Hub metadata lookups off (the
+    ``--no-auto-detect`` switch), telemetry off (offline outranks a forced-on
+    setting), and, for ``benchmark``, ``HF_HUB_OFFLINE`` / ``TRANSFORMERS_OFFLINE``
+    for the benchmark application, which then fails loudly if it needs the
+    network rather than being held to the launch's preflight.
+    """
+    import os
+
+    from sparkrun.core.application_profile import env_name
+    from sparkrun.core.offline import resolve_offline
+    from sparkrun.models.hub import disable_hub_metadata
+
+    if not resolve_offline(offline, cluster).offline:
+        return False
+    disable_hub_metadata()
+    os.environ[env_name("NO_TELEMETRY")] = "1"
+    if benchmark_apps:
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    return True

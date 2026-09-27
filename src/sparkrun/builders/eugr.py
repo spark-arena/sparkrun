@@ -496,6 +496,12 @@ class EugrBuilder(BuilderPlugin):
         # images. Applied identically for local/push (non-delegated, on the control
         # machine) and delegated (on the head) transfer modes.
         force_rebuild = bool(recipe.builder_config.get("rebuild")) if recipe.builder_config else False
+        # Offline (sparkrun.core.offline): never pull, never build. A pullable
+        # image is left to distribution, which refuses to fetch; a local build
+        # is used only when its image is already present.
+        offline = bool(builder_context and builder_context.get("offline"))
+        if offline and force_rebuild:
+            raise RuntimeError("--rebuild pulls or rebuilds the image, which an offline launch cannot do; use --online")
 
         # Builder-level user defaults from `defaults.builders.eugr` in the user config.
         # `use_sentinel_image` (default True) enables eugr's pull-first substitution:
@@ -613,6 +619,11 @@ class EugrBuilder(BuilderPlugin):
         # nothing eugr-specific to prepare -- no build
         if not needs_build:
             return image
+        if offline:
+            raise RuntimeError(
+                "image '%s' is not present%s and would have to be built from wheels, which an offline launch cannot do; "
+                "build it once online, or use --online" % (image, " on head '%s'" % head if delegated else " locally")
+            )
 
         # Resolve optional branch override from builder_config
         branch = recipe.builder_config.get("branch") if recipe.builder_config else None

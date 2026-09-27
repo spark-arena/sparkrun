@@ -57,7 +57,7 @@ def _realized_for(run_plan: RunPlan) -> dict[str, Any]:
     return info
 
 
-def realize_recipe(options: RunOptions, *, pin: bool = True, offline: bool = False, sctx=None) -> RealizedRecipe:
+def realize_recipe(options: RunOptions, *, pin: bool = True, offline: bool | None = None, sctx=None) -> RealizedRecipe:
     """Plan *options* against the real cluster and export the recipe it would run.
 
     Runs :func:`sparkrun.api.plan` (hardware probe, one status sweep,
@@ -70,7 +70,9 @@ def realize_recipe(options: RunOptions, *, pin: bool = True, offline: bool = Fal
     revision a commit (:func:`sparkrun.api._pin.pin_realized_recipe`). Online,
     those come from the registry and the Hub: what the tags name now.
     *offline* reads them from the placed hosts instead (their resident image
-    and cached model), and needs no network beyond the cluster.
+    and cached model), and needs no network beyond the cluster. ``None``
+    defers to ``options.offline`` and then the cluster's ``offline:`` default,
+    the same resolution a launch uses.
     """
     from sparkrun.api._context import resolve_sctx
     from sparkrun.api._pin import pin_realized_recipe, unpinned_references
@@ -79,7 +81,8 @@ def realize_recipe(options: RunOptions, *, pin: bool = True, offline: bool = Fal
 
     sctx = resolve_sctx(sctx)
 
-    run_plan = plan(replace(options, dry_run=False), sctx=sctx)
+    run_plan = plan(replace(options, dry_run=False, offline=options.offline if offline is None else offline), sctx=sctx)
+    offline = bool(run_plan.offline and run_plan.offline.offline)
     recipe = run_plan.recipe
     data = recipe.to_dict(overrides=dict(options.overrides or {}) or None, effective=True)
 

@@ -20,6 +20,7 @@ from ._common import (
     PROFILE_NAME,
     RECIPE_NAME,
     _display_vram_estimate,
+    _enter_offline_mode,
     _get_context,
     dry_run_option,
     host_options,
@@ -163,6 +164,13 @@ def _shared_run_options(f):
         host_options,
         recipe_override_options,
         click.option("--solo", is_flag=True, help="Force single-node mode"),
+        click.option(
+            "--offline/--online",
+            "offline",
+            default=None,
+            help="Launch from existing images and models only, with no internet access. The benchmark application runs with "
+            "HF_HUB_OFFLINE=1 and fails if it needs the network. --online overrides a cluster set to offline.",
+        ),
         click.option("--port", type=int, default=None, help="Override serve port"),
         click.option("--profile", default=None, type=PROFILE_NAME, help="Benchmark profile name or file path"),
         click.option("--framework", default=None, help="benchmarking framework (default from config.default_benchmark_framework)"),
@@ -295,6 +303,7 @@ def _invoke_benchmark(ctx, *, category, **kwargs):
         cluster_mgr=kwargs.pop("cluster_mgr", None),
         category=category,
         integrations=integrations,
+        offline=kwargs.pop("offline", None),
     )
 
     return bench_result
@@ -453,6 +462,7 @@ def _run_benchmark(
     host_list=None,
     cluster_mgr=None,
     category: str | None = None,
+    offline: bool | None = None,
 ):
     """Thin CLI presentation shell over ``sparkrun.api._benchmark._execute_benchmark``.
 
@@ -533,6 +543,13 @@ def _run_benchmark(
     from ._common import resolve_cluster_config
 
     cluster_cfg = resolve_cluster_config(cluster_name, hosts, hosts_file, cluster_mgr)
+    _named_cluster = None
+    if cluster_mgr is not None and cluster_cfg.name:
+        try:
+            _named_cluster = cluster_mgr.get(cluster_cfg.name)
+        except Exception as error:  # an unreadable cluster is reported by the launch itself
+            logger.debug("Could not load cluster %s for its offline default: %s", cluster_cfg.name, error)
+    _enter_offline_mode(offline, _named_cluster, benchmark_apps=True)
 
     opts = BenchmarkOptions(
         recipe=recipe_name,
@@ -565,6 +582,7 @@ def _run_benchmark(
         extra_docker_opts=tuple(executor_args) if executor_args else None,
         progress_callback=None,
         decision_callback=decision_callback,
+        offline=offline,
     )
 
     emitter = _CliEmitter(show_recipe=True, decision_callback=decision_callback)

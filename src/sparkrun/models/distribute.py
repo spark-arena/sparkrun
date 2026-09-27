@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 
 from sparkrun.core.config import resolve_hf_cache_home
-from sparkrun.models.download import download_model, model_cache_path
+from sparkrun.models.download import download_model, is_model_cached, model_cache_path
 from sparkrun.orchestration.transfer import (
     TransferFailure,
     map_transfer_failures_detailed,
@@ -41,6 +41,11 @@ DEFAULT_MODEL_RSYNC_TIMEOUT = 2 * 60 * 60  # 2 hours
 # Filesystem types that indicate a network-shared cache directory.  Used by
 # the setup wizard's shared-cache detection (see ``detect_shared_cache``).
 _SHARED_CACHE_FSTYPES = {"nfs", "nfs4", "cifs", "smb3"}
+
+# TransferFailure reasons for ``sparkrun run --offline``, which copies only
+# weights that already exist inside the cluster and never downloads.
+OFFLINE_MODEL_NOT_CACHED_REASON = "offline: model not in the control machine's cache"
+OFFLINE_REMOTE_MODEL_NOT_CACHED_REASON = "offline: model not in the host's cache, not downloaded"
 
 
 def _model_rsync_options(preserve_perms: bool) -> list[str]:
@@ -185,6 +190,7 @@ def distribute_model_from_local(
     transfer_hosts: list[str] | None = None,
     preserve_perms: bool = True,
     skip_fan_out: bool = False,
+    offline: bool = False,
 ) -> list[TransferFailure]:
     """Download a model locally then rsync it to all hosts.
 
@@ -219,6 +225,10 @@ def distribute_model_from_local(
         skip_fan_out: When ``True``, the model is downloaded locally but the
             per-host rsync is skipped entirely (the cache is shared across
             all hosts, so a single download makes it visible everywhere).
+        offline: Never download (``sparkrun run --offline``).  The model must
+            already be in the control machine's cache (same revision rules as
+            :func:`~sparkrun.models.download.is_model_cached`); otherwise every
+            host fails with an ``offline:`` reason.  The rsync is allowed.
 
     Returns:
         List of :class:`TransferFailure` records, one per host that
@@ -230,8 +240,18 @@ def distribute_model_from_local(
     remote_cache = resolve_hf_cache_home(cache_dir)
     logger.debug("Distributing model '%s' from local to %d host(s)", model_id, len(hosts))
 
-    # Step 1: download model locally
-    rc = download_model(model_id, cache_dir=local_cache, token=token, revision=revision, dry_run=dry_run)
+    # Step 1: download model locally -- or, offline, require the existing copy.
+    if offline:
+        if not is_model_cached(model_id, cache_dir=local_cache, revision=revision):
+            logger.error(
+                "offline: model '%s' is not in the control machine's cache (%s), and offline mode does not download",
+                model_id,
+                local_cache,
+            )
+            return [TransferFailure(host=h, reason=OFFLINE_MODEL_NOT_CACHED_REASON) for h in hosts]
+        rc = 0
+    else:
+        rc = download_model(model_id, cache_dir=local_cache, token=token, revision=revision, dry_run=dry_run)
     if rc != 0:
         logger.error("Failed to download model '%s' locally — aborting distribution", model_id)
         return [TransferFailure(host=h, reason="local model download failed") for h in hosts]
@@ -297,6 +317,7 @@ def _build_model_ensure_script(
     cache: str,
     revision: str | None = None,
     hf_token: str | None = None,
+    offline: bool = False,
 ) -> str:
     """Build the bash script that ensures *model_id* is present in *cache*.
 
@@ -318,6 +339,10 @@ def _build_model_ensure_script(
     ``_hf_snapshots.sh``: it previously reached only the *download* command, so
     a host holding a different revision reported a hit and the pin was silently
     ignored.
+
+    *offline* (``sparkrun run --offline``) renders ``OFFLINE="1"``: a cache hit
+    still succeeds, a miss exits 3 with an ``OFFLINE:`` message before any
+    download or ``uv`` / ``huggingface_hub`` installation.
     """
     from sparkrun.core.tooling import UV_INSTALL_BIN_DIR, UV_INSTALL_URL, UV_VERSION
     from sparkrun.models.download import is_gguf_model, parse_gguf_model_spec
@@ -333,6 +358,7 @@ def _build_model_ensure_script(
         "uv_version": UV_VERSION,
         "uv_install_url": UV_INSTALL_URL,
         "uv_bin_dir": UV_INSTALL_BIN_DIR,
+        "offline": "1" if offline else "0",
     }
     if is_gguf_model(model_id):
         repo_id, quant = parse_gguf_model_spec(model_id)
@@ -369,6 +395,7 @@ def distribute_model_per_node(
     ssh_key: str | None = None,
     ssh_options: list[str] | None = None,
     dry_run: bool = False,
+    offline: bool = False,
 ) -> list[TransferFailure]:
     """Have every host download the model itself, in parallel (``pull`` mode).
 
@@ -378,6 +405,8 @@ def distribute_model_per_node(
 
     Callers must not use this when the cache is shared across hosts — see the
     ``skip_fan_out`` guard in ``_distribute_single_model``.
+
+    *offline* makes each host verify its own cache instead of downloading.
     """
     from sparkrun.orchestration.primitives import sync_resource_to_hosts
 
@@ -385,7 +414,7 @@ def distribute_model_per_node(
         return []
 
     cache = resolve_hf_cache_home(cache_dir)
-    script = _build_model_ensure_script(model_id, cache, revision=revision, hf_token=hf_token)
+    script = _build_model_ensure_script(model_id, cache, revision=revision, hf_token=hf_token, offline=offline)
 
     logger.log(PROGRESS, "  Downloading model '%s' on %d host(s) in parallel", model_id, len(hosts))
     failed_hosts = sync_resource_to_hosts(
@@ -396,7 +425,8 @@ def distribute_model_per_node(
         ssh_key=ssh_key,
         dry_run=dry_run,
     )
-    return [TransferFailure(host=h, reason="model download failed on host (see log above)") for h in failed_hosts]
+    reason = OFFLINE_REMOTE_MODEL_NOT_CACHED_REASON if offline else "model download failed on host (see log above)"
+    return [TransferFailure(host=h, reason=reason) for h in failed_hosts]
 
 
 def distribute_model_from_head(
@@ -413,6 +443,7 @@ def distribute_model_from_head(
     worker_transfer_hosts: list[str] | None = None,
     preserve_perms: bool = True,
     skip_fan_out: bool = False,
+    offline: bool = False,
 ) -> list[TransferFailure]:
     """Download a model on the head node then distribute to remaining hosts.
 
@@ -434,6 +465,8 @@ def distribute_model_from_head(
         worker_transfer_hosts: Optional IB/fast-network IPs for workers
             (``hosts[1:]``).  Used as targets in the distribution script
             running on the head.  Falls back to ``hosts[1:]`` when ``None``.
+        offline: Never download on the head (``sparkrun run --offline``): the
+            head must already hold the model, which is then rsynced to workers.
 
     Returns:
         List of hostnames where distribution failed (empty = full success).
@@ -447,7 +480,7 @@ def distribute_model_from_head(
     head = hosts[0]
     logger.debug("Distributing model '%s' from head (%s) to %d host(s)", model_id, head, len(hosts))
 
-    ensure_script = _build_model_ensure_script(model_id, cache, revision=revision, hf_token=hf_token)
+    ensure_script = _build_model_ensure_script(model_id, cache, revision=revision, hf_token=hf_token, offline=offline)
 
     # Shared-cache fast path: download once on the head, skip the head→worker
     # rsync entirely (workers already mount the same cache).  Running
@@ -467,7 +500,8 @@ def distribute_model_from_head(
             timeout=timeout,
             dry_run=dry_run,
         )
-        return [TransferFailure(host=h, reason="model download on head failed (see log above)") for h in failed_hosts]
+        reason = OFFLINE_REMOTE_MODEL_NOT_CACHED_REASON if offline else "model download on head failed (see log above)"
+        return [TransferFailure(host=h, reason=reason) for h in failed_hosts]
 
     # Build distribute script (rsync from head to workers).  The head→worker hop
     # lands on the same kind of destination as the control→host one, so it takes
@@ -509,4 +543,8 @@ def distribute_model_from_head(
     # can't classify the cause here.  Surface a generic reason and let
     # users consult the head's rsync log (already echoed above) for
     # detail like "No space left on device".
+    # The head appears in the failures only when its ensure step failed; under
+    # offline that means the head does not hold the model and would not fetch it.
+    if offline and head in failed_hosts:
+        return [TransferFailure(host=h, reason=OFFLINE_REMOTE_MODEL_NOT_CACHED_REASON) for h in failed_hosts]
     return [TransferFailure(host=h, reason="rsync from head failed (see log above for stderr)") for h in failed_hosts]

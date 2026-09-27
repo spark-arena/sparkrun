@@ -274,6 +274,7 @@ def _distribute_image_push(
     ssh_kwargs: dict,
     dry_run: bool,
     force_pull: bool = False,
+    offline: bool = False,
 ) -> list[str]:
     """Push-mode image distribution: local → head, then head → workers via IB.
 
@@ -283,6 +284,10 @@ def _distribute_image_push(
 
     *force_pull* re-pulls on the control machine (step 1 sources the image from
     there); the head then receives it over the wire, so step 2 is not forced.
+
+    *offline* (``sparkrun run --offline``) forbids pulling on either side:
+    the control machine must already hold the image.  Both copies stay inside
+    the cluster and are allowed.
 
     Returns:
         List of hostnames where distribution failed.
@@ -299,6 +304,7 @@ def _distribute_image_push(
         transfer_hosts=None,
         dry_run=dry_run,
         force_pull=force_pull,
+        offline=offline,
         **ssh_kwargs,
     )
     if head_failed:
@@ -312,6 +318,7 @@ def _distribute_image_push(
             hosts,
             worker_transfer_hosts=worker_transfer_hosts,
             dry_run=dry_run,
+            offline=offline,
             **ssh_kwargs,
         )
         return worker_failed
@@ -330,6 +337,7 @@ def _distribute_model_push(
     dry_run: bool = False,
     local_cache_dir: str | None = None,
     prefs: ModelDistributionPrefs | None = None,
+    offline: bool = False,
 ) -> list["TransferFailure"]:
     """Push-mode model distribution: local → head, then head → workers via IB.
 
@@ -342,6 +350,9 @@ def _distribute_model_push(
     suppresses the head→worker fan-out (step 2), since workers already
     mount the head's shared cache.  *prefs.preserve_perms* selects the rsync
     flag set for both legs.
+
+    *offline* skips the download: the model must already be in the control
+    machine's cache (and, for the fan-out, on the head once pushed).
 
     Returns:
         List of :class:`TransferFailure` records (empty = full success).
@@ -364,6 +375,7 @@ def _distribute_model_push(
         transfer_hosts=None,
         dry_run=dry_run,
         preserve_perms=prefs.preserve_perms,
+        offline=offline,
         **ssh_kwargs,
     )
     if head_failed:
@@ -387,10 +399,21 @@ def _distribute_model_push(
             dry_run=dry_run,
             preserve_perms=prefs.preserve_perms,
             skip_fan_out=prefs.skip_fan_out,
+            offline=offline,
             **ssh_kwargs,
         )
 
     return []
+
+
+def _require_cached_model_offline(model: str, cache_dir: str | None, revision: str | None) -> None:
+    """Raise unless *model* is already in the local HF cache (``--offline`` fast path)."""
+    from sparkrun.models.download import is_model_cached
+
+    if not is_model_cached(model, cache_dir=cache_dir, revision=revision):
+        raise DistributionError(
+            f"offline: model {model} is not in the control machine's Hugging Face cache, and offline mode does not download"
+        )
 
 
 def distribute_resources(
@@ -408,6 +431,7 @@ def distribute_resources(
     pre_ib: TransferModeResult | None = None,
     topology: str | None = None,
     prefs: ModelDistributionPrefs | None = None,
+    offline: bool = False,
 ) -> tuple["ClusterCommEnv | None", dict[str, str], dict[str, str]]:
     """Detect IB, distribute container image and model to target hosts.
 
@@ -447,6 +471,9 @@ def distribute_resources(
             management IPs regardless of IB availability.
         local_cache_dir: Control-machine cache dir for model downloads.
             Defaults to *cache_dir* when not provided.
+        offline: No internet egress (``sparkrun run --offline``).  Only copies
+            that already exist (control machine or head) are distributed;
+            every pull/download refuses instead.
 
     Returns:
         Tuple of (comm_env, ib_ip_map, mgmt_ip_map).  ``comm_env`` is
@@ -502,12 +529,14 @@ def distribute_resources(
         # Local-only (same user): just ensure image and model exist, no SSH needed
         with pending_op(_lock_id, "image_pull", **_pop_kw):
             logger.info("Ensuring container image is available locally...")
-            if ensure_image(image, dry_run=dry_run) != 0:
+            if ensure_image(image, dry_run=dry_run, offline=offline) != 0:
                 raise DistributionError(f"Failed to pull or locate image: {image}")
         if model:
             with pending_op(_lock_id, "model_download", **_pop_kw):
                 logger.info("Ensuring model %s is available locally...", model)
-                if download_model(model, cache_dir=effective_local_cache, token=hf_token, revision=model_revision, dry_run=dry_run) != 0:
+                if offline:
+                    _require_cached_model_offline(model, effective_local_cache, model_revision)
+                elif download_model(model, cache_dir=effective_local_cache, token=hf_token, revision=model_revision, dry_run=dry_run) != 0:
                     raise DistributionError(f"Failed to download model: {model}")
         return None, {}, {}  # let runtime handle its own local IB detection
 
@@ -619,6 +648,7 @@ def distribute_resources(
                 host_list,
                 transfer_hosts=transfer_hosts,
                 dry_run=dry_run,
+                offline=offline,
                 **ssh_kwargs,
             )
         elif transfer_mode == "push":
@@ -628,6 +658,7 @@ def distribute_resources(
                 worker_transfer_hosts=worker_transfer_hosts,
                 ssh_kwargs=ssh_kwargs,
                 dry_run=dry_run,
+                offline=offline,
             )
         elif transfer_mode == "delegated":
             img_failed = distribute_image_from_head(
@@ -635,6 +666,7 @@ def distribute_resources(
                 host_list,
                 worker_transfer_hosts=worker_transfer_hosts,
                 dry_run=dry_run,
+                offline=offline,
                 **ssh_kwargs,
             )
             if img_failed and _auto_delegated:
@@ -645,6 +677,7 @@ def distribute_resources(
                     worker_transfer_hosts=worker_transfer_hosts,
                     ssh_kwargs=ssh_kwargs,
                     dry_run=dry_run,
+                    offline=offline,
                 )
         else:
             logger.warning("Unknown transfer_mode '%s', falling back to local", transfer_mode)
@@ -653,6 +686,7 @@ def distribute_resources(
                 host_list,
                 transfer_hosts=transfer_hosts,
                 dry_run=dry_run,
+                offline=offline,
                 **ssh_kwargs,
             )
 
@@ -675,6 +709,7 @@ def distribute_resources(
                     dry_run=dry_run,
                     preserve_perms=prefs.preserve_perms,
                     skip_fan_out=prefs.skip_fan_out,
+                    offline=offline,
                     **ssh_kwargs,
                 )
             elif transfer_mode == "push":
@@ -689,6 +724,7 @@ def distribute_resources(
                     dry_run=dry_run,
                     local_cache_dir=effective_local_cache,
                     prefs=prefs,
+                    offline=offline,
                 )
             elif transfer_mode == "delegated":
                 mdl_failed = distribute_model_from_head(
@@ -701,6 +737,7 @@ def distribute_resources(
                     dry_run=dry_run,
                     preserve_perms=prefs.preserve_perms,
                     skip_fan_out=prefs.skip_fan_out,
+                    offline=offline,
                     **ssh_kwargs,
                 )
                 if mdl_failed and _auto_delegated:
@@ -716,6 +753,7 @@ def distribute_resources(
                         dry_run=dry_run,
                         local_cache_dir=effective_local_cache,
                         prefs=prefs,
+                        offline=offline,
                     )
             else:
                 mdl_failed = distribute_model_from_local(
@@ -729,6 +767,7 @@ def distribute_resources(
                     dry_run=dry_run,
                     preserve_perms=prefs.preserve_perms,
                     skip_fan_out=prefs.skip_fan_out,
+                    offline=offline,
                     **ssh_kwargs,
                 )
 
@@ -778,6 +817,7 @@ def distribute_from_config(
     job_cluster_id: str = "",
     cluster_name: str = "",
     container_distribution: "DistributionResourceConfig[DistributionContainerEntry] | None" = None,
+    offline: bool = False,
 ) -> tuple["ClusterCommEnv | None", dict[str, str], dict[str, str], dict[str, str]]:
     """Distribute resources based on recipe ``distribution_config``.
 
@@ -814,6 +854,11 @@ def distribute_from_config(
         cluster_name: Named cluster the launch targets, recorded likewise.
         container_distribution: Launch-local image transfer policy from preparation.
             Resolving transfers never mutates the recipe's distribution templates.
+        offline: No internet egress (``sparkrun run --offline``).  Copies inside
+            the cluster of images/models that already exist (control machine or
+            head) are allowed; every leaf that would pull or download refuses
+            instead.  The auto→delegated→push fallbacks stay armed, since a push
+            from the control machine's existing copy is allowed.
 
     Returns:
         Tuple of (comm_env, ib_ip_map, mgmt_ip_map, ib_iface_map).
@@ -887,7 +932,7 @@ def distribute_from_config(
             with pending_op(_lock_id, "image_pull", **_pop_kw):
                 for entry_image, _ in image_plan:
                     logger.info("Ensuring container image %s is available locally...", entry_image)
-                    if ensure_image(entry_image, dry_run=dry_run, force_pull=_force_pull) != 0:
+                    if ensure_image(entry_image, dry_run=dry_run, force_pull=_force_pull, offline=offline) != 0:
                         raise DistributionError(f"Failed to pull or locate image: {entry_image}")
         if after_container_sync is not None:
             after_container_sync()
@@ -898,7 +943,9 @@ def distribute_from_config(
                     logger.info("Ensuring model %s is available locally...", mn)
                     # Per-entry revision, as on the cluster path below.
                     entry_revision = getattr(entry, "revision", None)
-                    if (
+                    if offline:
+                        _require_cached_model_offline(mn, local_cache_dir or cache_dir, entry_revision)
+                    elif (
                         download_model(mn, cache_dir=local_cache_dir or cache_dir, token=hf_token, revision=entry_revision, dry_run=dry_run)
                         != 0
                     ):
@@ -992,6 +1039,7 @@ def distribute_from_config(
                     _auto_delegated,
                     force_pull=_force_pull,
                     heterogeneous=_heterogeneous,
+                    offline=offline,
                 )
         if img_failed:
             raise DistributionError("Image distribution failed on: %s" % ", ".join(img_failed))
@@ -1028,6 +1076,7 @@ def distribute_from_config(
                         dry_run,
                         _auto_delegated,
                         prefs=prefs,
+                        offline=offline,
                     )
             if mdl_failed:
                 from sparkrun.orchestration.transfer import present_and_raise_transfer_failure
@@ -1091,6 +1140,7 @@ def _distribute_image_plan(
     auto_delegated: bool,
     force_pull: bool = False,
     heterogeneous: bool = False,
+    offline: bool = False,
 ) -> list[str]:
     """Distribute every ``(image, targets)`` pair, overlapping across images.
 
@@ -1121,6 +1171,7 @@ def _distribute_image_plan(
             auto_delegated,
             force_pull=force_pull,
             heterogeneous=heterogeneous,
+            offline=offline,
         )
 
     if len(image_plan) == 1:
@@ -1164,6 +1215,7 @@ def _distribute_single_image(
     auto_delegated: bool,
     force_pull: bool = False,
     heterogeneous: bool = False,
+    offline: bool = False,
 ) -> list[str]:
     """Distribute a single image to a subset of hosts.
 
@@ -1179,12 +1231,16 @@ def _distribute_single_image(
     redirects ``delegated`` to per-node ``pull``: delegated's head-pull-then-
     ``docker save | ssh docker load`` fan-out would make the head pull images it
     does not run and copy a machine-tuned image onto the wrong machine.
+
+    *offline* reaches every leaf alongside *force_pull*, but where force_pull
+    picks the side that pulls, offline makes every side refuse to: only an
+    existing copy (control machine or head) is distributed.
     """
     from sparkrun.containers.distribute import distribute_image_from_local, distribute_image_from_head
     from sparkrun.containers.sync import sync_image_to_hosts
 
     if transfer_mode == "pull" or (transfer_mode == "delegated" and heterogeneous):
-        failed = sync_image_to_hosts(image, targets, dry_run=dry_run, force_pull=force_pull, **ssh_kwargs)
+        failed = sync_image_to_hosts(image, targets, dry_run=dry_run, force_pull=force_pull, offline=offline, **ssh_kwargs)
         # Registry-unreachable fallback: the control machine may hold
         # credentials or a route the nodes lack, so push it each node's own
         # image.  Armed only when the mode was *inferred* (auto → delegated) —
@@ -1197,7 +1253,7 @@ def _distribute_single_image(
                 len(failed),
             )
             push_failed = distribute_image_from_local(
-                image, failed, transfer_hosts=None, dry_run=dry_run, force_pull=force_pull, **ssh_kwargs
+                image, failed, transfer_hosts=None, dry_run=dry_run, force_pull=force_pull, offline=offline, **ssh_kwargs
             )
             if push_failed:
                 logger.error(
@@ -1218,21 +1274,25 @@ def _distribute_single_image(
     w_hosts = _subset_transfer_hosts(full_hosts[1:], worker_transfer_hosts, target_set)
 
     if transfer_mode == "local":
-        return distribute_image_from_local(image, targets, transfer_hosts=t_hosts, dry_run=dry_run, force_pull=force_pull, **ssh_kwargs)
+        return distribute_image_from_local(
+            image, targets, transfer_hosts=t_hosts, dry_run=dry_run, force_pull=force_pull, offline=offline, **ssh_kwargs
+        )
     elif transfer_mode == "push":
         head = targets[0]
         if targets == full_hosts:
-            return _distribute_image_push(image, targets, w_hosts, ssh_kwargs, dry_run, force_pull=force_pull)
+            return _distribute_image_push(image, targets, w_hosts, ssh_kwargs, dry_run, force_pull=force_pull, offline=offline)
         # Subset push: push to head only, then head distributes
-        head_failed = distribute_image_from_local(image, [head], transfer_hosts=None, dry_run=dry_run, force_pull=force_pull, **ssh_kwargs)
+        head_failed = distribute_image_from_local(
+            image, [head], transfer_hosts=None, dry_run=dry_run, force_pull=force_pull, offline=offline, **ssh_kwargs
+        )
         if head_failed:
             return list(targets)
         if len(targets) > 1:
-            return distribute_image_from_head(image, targets, worker_transfer_hosts=w_hosts, dry_run=dry_run, **ssh_kwargs)
+            return distribute_image_from_head(image, targets, worker_transfer_hosts=w_hosts, dry_run=dry_run, offline=offline, **ssh_kwargs)
         return []
     elif transfer_mode == "delegated":
         result = distribute_image_from_head(
-            image, targets, worker_transfer_hosts=w_hosts, dry_run=dry_run, force_pull=force_pull, **ssh_kwargs
+            image, targets, worker_transfer_hosts=w_hosts, dry_run=dry_run, force_pull=force_pull, offline=offline, **ssh_kwargs
         )
         if result and auto_delegated:
             # Delegated pull failed (e.g. a private image the head can't pull).
@@ -1241,16 +1301,20 @@ def _distribute_single_image(
             logger.info("Delegated image pull failed; falling back to push from the control machine")
             head = targets[0]
             head_failed = distribute_image_from_local(
-                image, [head], transfer_hosts=None, dry_run=dry_run, force_pull=force_pull, **ssh_kwargs
+                image, [head], transfer_hosts=None, dry_run=dry_run, force_pull=force_pull, offline=offline, **ssh_kwargs
             )
             if head_failed:
                 result = list(targets)
             elif len(targets) > 1:
-                result = distribute_image_from_head(image, targets, worker_transfer_hosts=w_hosts, dry_run=dry_run, **ssh_kwargs)
+                result = distribute_image_from_head(
+                    image, targets, worker_transfer_hosts=w_hosts, dry_run=dry_run, offline=offline, **ssh_kwargs
+                )
             else:
                 result = []
         return result
-    return distribute_image_from_local(image, targets, transfer_hosts=t_hosts, dry_run=dry_run, force_pull=force_pull, **ssh_kwargs)
+    return distribute_image_from_local(
+        image, targets, transfer_hosts=t_hosts, dry_run=dry_run, force_pull=force_pull, offline=offline, **ssh_kwargs
+    )
 
 
 def _distribute_single_model(
@@ -1268,6 +1332,7 @@ def _distribute_single_model(
     dry_run: bool,
     auto_delegated: bool,
     prefs: ModelDistributionPrefs | None = None,
+    offline: bool = False,
 ) -> list["TransferFailure"]:
     """Distribute a single model to a subset of hosts.
 
@@ -1278,6 +1343,9 @@ def _distribute_single_model(
     push / delegated-fallback push-to-head leg never sets *skip_fan_out* (the
     external control cache is not the shared one) but does honor
     *preserve_perms*.
+
+    *offline* reaches every leaf: none downloads, each copies an existing
+    cache entry or fails with an ``offline:`` reason.
     """
     from sparkrun.models.distribute import distribute_model_from_local, distribute_model_from_head, distribute_model_per_node
     from sparkrun.orchestration.transfer import TransferFailure
@@ -1309,6 +1377,7 @@ def _distribute_single_model(
                 dry_run=dry_run,
                 preserve_perms=prefs.preserve_perms,
                 skip_fan_out=True,
+                offline=offline,
                 **ssh_kwargs,
             )
         return distribute_model_per_node(
@@ -1318,6 +1387,7 @@ def _distribute_single_model(
             revision=revision,
             hf_token=hf_token,
             dry_run=dry_run,
+            offline=offline,
             **ssh_kwargs,
         )
 
@@ -1333,6 +1403,7 @@ def _distribute_single_model(
             dry_run=dry_run,
             preserve_perms=prefs.preserve_perms,
             skip_fan_out=prefs.skip_fan_out,
+            offline=offline,
             **ssh_kwargs,
         )
     elif transfer_mode == "push":
@@ -1347,6 +1418,7 @@ def _distribute_single_model(
             transfer_hosts=None,
             dry_run=dry_run,
             preserve_perms=prefs.preserve_perms,
+            offline=offline,
             **ssh_kwargs,
         )
         if head_failed:
@@ -1363,6 +1435,7 @@ def _distribute_single_model(
                 dry_run=dry_run,
                 preserve_perms=prefs.preserve_perms,
                 skip_fan_out=prefs.skip_fan_out,
+                offline=offline,
                 **ssh_kwargs,
             )
         return []
@@ -1377,6 +1450,7 @@ def _distribute_single_model(
             dry_run=dry_run,
             preserve_perms=prefs.preserve_perms,
             skip_fan_out=prefs.skip_fan_out,
+            offline=offline,
             **ssh_kwargs,
         )
         if result and auto_delegated:
@@ -1392,6 +1466,7 @@ def _distribute_single_model(
                 transfer_hosts=None,
                 dry_run=dry_run,
                 preserve_perms=prefs.preserve_perms,
+                offline=offline,
                 **ssh_kwargs,
             )
             if head_failed:
@@ -1408,6 +1483,7 @@ def _distribute_single_model(
                     dry_run=dry_run,
                     preserve_perms=prefs.preserve_perms,
                     skip_fan_out=prefs.skip_fan_out,
+                    offline=offline,
                     **ssh_kwargs,
                 )
             else:
@@ -1424,5 +1500,6 @@ def _distribute_single_model(
         dry_run=dry_run,
         preserve_perms=prefs.preserve_perms,
         skip_fan_out=prefs.skip_fan_out,
+        offline=offline,
         **ssh_kwargs,
     )

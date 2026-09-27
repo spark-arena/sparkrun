@@ -1079,6 +1079,53 @@ discovery, `logs` and the desktop sidecar all read the scalar. All three
 `save_job_metadata` call sites must forward it: each rewrites the file
 wholesale, so an omission is an erasure.
 
+### Offline launches (`core/offline.py`)
+
+`run` / `benchmark` / `proxy load --offline` (and a cluster's `offline: true`, set with
+`cluster create --offline` / `cluster update --offline|--online`) launch from what already exists.
+**Offline means no internet egress; copies inside the cluster of copies that already exist are
+allowed** (a control-machine image `save | load`ed to a worker, a head-cached model rsynced).
+Precedence is `--offline/--online` > cluster > online (`resolve_offline`, which also reports the
+deciding layer for the `Offline:` banner line). It is decided once in `api.plan` (`RunPlan.offline`)
+and is **not** workload identity: it changes where bytes come from, never what runs, so it stays out
+of the intent id and the fingerprint.
+
+Two layers, deliberately separate:
+
+- **The preflight** (`launcher._offline_preflight` → `find_offline_gaps`) runs at the end of phase 1,
+  **before the builder and before eviction**, and raises one `OfflineUnavailableError` listing every
+  image/model gap per host. It resolves what would run without running anything (the image plan
+  through the builder's side-effect-free `pull_ref`) and checks each against the hosts **and this
+  transfer mode's copy sources** (`copy_sources`, which mirrors `orchestration.distribution`: control
+  machine for `local`/`push`; head for `delegated`, plus the control machine only when the mode was
+  inferred; nothing for `pull`; a heterogeneous delegated launch is a per-node pull). `--rebuild` is
+  refused. Skipped under `--dry-run` (no SSH).
+- **The guarantee** is at the leaves: distribution threads `offline` down to every step that could
+  fetch (control-machine `docker pull` / HF download, `image_sync.sh`, the model ensure scripts), and
+  each refuses instead. The preflight exists so the answer comes first and complete, not one transfer
+  failure at a time; the leaves are why a preflight bug still cannot cause egress.
+
+An unpinned tag runs whatever is resident, and the job records the resident image's registry digest
+as `effective_container_digest` (via `containers/digest.py:resolve_host_digest`, best effort), so
+it is known afterwards what actually ran.
+
+The process-wide half is CLI-only (`cli/_common.py:_enter_offline_mode`): Hub metadata off (the
+`--no-auto-detect` switch), telemetry off (outranking a forced-on setting), and for `benchmark`
+`HF_HUB_OFFLINE` / `TRANSFORMERS_OFFLINE` for the benchmark application, which is **not** held to
+the preflight: it fails loudly if it needs the network. Recipe loading is offline too: URL recipes
+come from the cache without attempting a fetch, registries are never refreshed on a miss, and a
+plugin recipe format loads with `offline=True`. API callers set `RunOptions.offline`; the launch
+path honors it, but Hub metadata and telemetry are process-wide switches the API does not flip for
+them (a long-lived process may run online launches beside an offline one).
+
+Builders: eugr never pulls or builds offline (a local build is used only when its image is already
+present); `uv-venv` provisions with `UV_OFFLINE=1`, so `uv venv` / `uv pip install` use only uv's
+local cache and local files, and never installs `uv` itself (a host without it fails with guidance).
+An up-to-date venv needs no network either way. Both receive the flag as `builder_context={"offline":
+True}`.
+
+Not offline-capable yet: bootstrapping registries on a fresh control machine.
+
 ### Transfer mode `pull`
 
 The fourth transfer mode. The other three route bytes through *somewhere* — the

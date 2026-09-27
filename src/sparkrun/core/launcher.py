@@ -680,6 +680,117 @@ def _referenced_placeholders(recipe: Recipe) -> set[str]:
     return found
 
 
+def _offline_preflight(
+    recipe: Recipe,
+    runtime: RuntimePlugin,
+    host_list: list[str],
+    *,
+    cluster,
+    launch_hardware,
+    config,
+    v,
+    ssh_kwargs: dict,
+    transfer_result,
+    cache_dir: str | None,
+    local_cache_dir: str | None,
+    skip_model: bool,
+    skip_images: bool,
+    shared_model_cache: bool,
+) -> None:
+    """Refuse an offline launch that would have to fetch anything, before any side effect.
+
+    Resolves what the launch would run without running anything (the image
+    plan, through the builder's side-effect-free ``pull_ref``) and checks each
+    image and the model against the hosts and this transfer mode's copy
+    sources (:func:`sparkrun.core.offline.find_offline_gaps`). One error lists
+    every gap. Distribution refuses to fetch regardless; this exists so the
+    answer comes first and complete, not one transfer failure at a time.
+    """
+    from sparkrun.core.offline import OfflineUnavailableError, find_offline_gaps
+
+    if recipe.builder_config and recipe.builder_config.get("rebuild"):
+        raise OfflineUnavailableError([], reason="--rebuild fetches a fresh image or rebuilds it; drop --rebuild or use --online")
+    images: dict[str, list[str]] = {}
+    heterogeneous = False
+    if not skip_images:
+        from sparkrun.core.images import resolve_runtime_image_plan
+
+        plan = resolve_runtime_image_plan(recipe, runtime, list(host_list), cluster=cluster, host_hardware=launch_hardware)
+        heterogeneous = plan.heterogeneous
+        builder = None
+        if recipe.builder:
+            from sparkrun.core.bootstrap import get_builder
+
+            builder = get_builder(recipe.builder, v)
+        for host, image in zip(host_list, plan.images_by_node, strict=True):
+            ref = (builder.pull_ref(image, recipe, config) if builder is not None else image) or image
+            images.setdefault(ref, []).append(host)
+
+    model = None if skip_model else recipe.model
+    revision = recipe.model_revision
+
+    def image_present_on(image: str, hosts: list[str]) -> set[str]:
+        from sparkrun.containers.distribute import _check_remote_image_identities
+
+        return set(
+            _check_remote_image_identities(
+                image,
+                hosts,
+                ssh_user=ssh_kwargs.get("ssh_user"),
+                ssh_key=ssh_kwargs.get("ssh_key"),
+                ssh_options=ssh_kwargs.get("ssh_options"),
+            )
+        )
+
+    def image_on_control(image: str) -> bool:
+        from sparkrun.containers.registry import image_exists_locally
+
+        return image_exists_locally(image)
+
+    def model_present_on(hosts: list[str]) -> set[str]:
+        from sparkrun.models.revision import hosts_with_snapshot
+
+        return hosts_with_snapshot(recipe.model, revision, hosts, ssh_kwargs=ssh_kwargs, cache_dir=cache_dir)
+
+    def model_on_control() -> bool:
+        from sparkrun.models.download import is_model_cached
+
+        return is_model_cached(recipe.model, local_cache_dir or cache_dir, revision)
+
+    gaps = find_offline_gaps(
+        images=images,
+        model=model,
+        model_hosts=list(host_list[:1] if shared_model_cache else host_list),
+        head=host_list[0],
+        transfer_mode=transfer_result.mode,
+        auto_delegated=transfer_result.auto_delegated,
+        heterogeneous=heterogeneous,
+        image_present_on=image_present_on,
+        image_on_control=image_on_control,
+        model_present_on=model_present_on,
+        model_on_control=model_on_control,
+    )
+    if gaps:
+        raise OfflineUnavailableError(gaps)
+    logger.log(PROGRESS, "Offline: every image and model is present or copyable within the cluster")
+
+
+def _resident_digest(image: str | None, hosts: list[str], ssh_kwargs: dict) -> str | None:
+    """The registry digest of *image* as resident on *hosts*, or ``None`` (best effort, offline launches)."""
+    if not image:
+        return None
+    from sparkrun.containers.digest import DigestResolutionError, is_pinned, resolve_host_digest
+    from sparkrun.utils.images import parse_image_ref
+
+    if is_pinned(image):
+        return parse_image_ref(image).digest
+    try:
+        return resolve_host_digest(image, list(hosts), ssh_kwargs)
+    except DigestResolutionError as error:
+        logger.debug("Could not record the resident digest of %s: %s", image, error)
+        return None
+
+
 def report_unmapped_config_keys(
     recipe: Recipe,
     runtime: RuntimePlugin,
@@ -928,6 +1039,10 @@ def launch_inference(
     prepared_execution: "PreparedExecution | None" = None,
     hardware_observations: "Mapping[str, HostHardware] | None" = None,
     sctx: SparkrunContext | None = None,
+    # Offline (sparkrun.core.offline): no internet egress. A preflight at the
+    # end of phase 1 proves every image and model is present or copyable
+    # before anything runs, and distribution refuses to fetch.
+    offline: bool = False,
 ) -> LaunchResult:
     """Launch an inference workload.
 
@@ -1280,6 +1395,30 @@ def launch_inference(
         else:
             logger.warning("Cannot resolve recipe.mods: no RegistryManager available")
 
+    if offline and not dry_run:
+        _offline_preflight(
+            recipe,
+            runtime,
+            host_list,
+            cluster=cluster,
+            launch_hardware=launch_hardware,
+            config=config,
+            v=v,
+            ssh_kwargs=ssh_kwargs,
+            transfer_result=transfer_result,
+            cache_dir=cache_dir,
+            local_cache_dir=local_cache_dir,
+            skip_model=_skip_model_distribution
+            or not getattr(getattr(getattr(cluster, "distribution", None), "model", None), "enabled", True)
+            or (asset_policy is not None and not asset_policy.prepare_model),
+            skip_images=not executor.needs_image or (asset_policy is not None and not asset_policy.distribute_images),
+            shared_model_cache=(
+                skip_model_fan_out
+                if skip_model_fan_out is not None
+                else getattr(getattr(getattr(cluster, "distribution", None), "model", None), "skip_fan_out", False)
+            ),
+        )
+
     if p:
         p.phase_end()
 
@@ -1316,6 +1455,7 @@ def launch_inference(
         images_by_node=(asset_policy.images_by_node if asset_policy is not None else None),
         # Already gated above, before the builder could run.
         validate=False,
+        builder_context={"offline": True} if offline else None,
     )
     builder = prepared_images.builder
     image_plan = prepared_images.image_plan
@@ -1454,6 +1594,7 @@ def launch_inference(
             timeline=timeline,
             job_cluster_id=cluster_id,
             cluster_name=getattr(cluster, "name", "") or "",
+            offline=offline,
         )
         if p:
             p.phase_end()
@@ -1575,6 +1716,7 @@ def launch_inference(
                 runtime_info=runtime_info,
                 container_image=container_image,
                 container_images=(image_plan.images_by_node if image_plan is not None and image_plan.heterogeneous else None),
+                container_digest=_resident_digest(container_image, host_list, ssh_kwargs) if offline else None,
                 runtime=runtime,
                 backends=backends,
                 recipe_fingerprint=recipe_fingerprint,

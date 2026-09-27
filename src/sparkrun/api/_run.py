@@ -29,6 +29,7 @@ Invalid programmatic inputs may raise ValueError/TypeError; interrupts propagate
 
 from __future__ import annotations
 
+from sparkrun.core.offline import resolve_offline
 from sparkrun.core.status_observation import RunningSnapshot
 
 import logging
@@ -307,6 +308,7 @@ def plan(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunPl
         recipe_fingerprint=recipe_fingerprint,
         executor_target=executor_target,
         override_resolution=override_resolution,
+        offline=resolve_offline(options.offline, cluster_def),
         _destination=destination,
     )
 
@@ -734,6 +736,7 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
         "execution_strategy": execution_strategy,
         "prepared_execution": prepared_execution,
         "hardware_observations": {host: plan.host_hardware[host] for host in host_list if host in plan.host_hardware},
+        "offline": bool(plan.offline and plan.offline.offline),
     }
 
     # 5. Launch.

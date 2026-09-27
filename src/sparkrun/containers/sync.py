@@ -18,6 +18,7 @@ def sync_image_to_hosts(
     ssh_key: str | None = None,
     dry_run: bool = False,
     force_pull: bool = False,
+    offline: bool = False,
 ) -> list[str]:
     """Ensure a container image is available on all hosts, pulling in parallel.
 
@@ -38,11 +39,13 @@ def sync_image_to_hosts(
         ssh_key: Optional path to SSH private key.
         dry_run: If True, show what would be done without executing.
         force_pull: Re-pull even when a copy is already present.
+        offline: Never pull (``sparkrun run --offline``): a host already
+            holding the image succeeds, one lacking it fails.
 
     Returns:
         List of hostnames where the image sync failed.
     """
-    script = read_script("image_sync.sh").format(image=quote(image), force_pull="1" if force_pull else "0")
+    script = read_script("image_sync.sh").format(image=quote(image), force_pull="1" if force_pull else "0", offline="1" if offline else "0")
 
     return sync_resource_to_hosts(
         script,

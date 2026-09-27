@@ -239,6 +239,7 @@ def stage_prepared_images(
     mgmt_interface: str | None = None,
     cluster_name: str = "",
     timeline: Timeline | None = None,
+    offline: bool = False,
 ) -> StagedImageSet:
     """Stage a prepared container plan without launching a workload.
 
@@ -248,6 +249,8 @@ def stage_prepared_images(
     policy; neither reusable recipe templates nor the policy are mutated.
     Required image identities are verified on every host after image transfer
     and before model transfer. Dry runs never inspect a Docker daemon.
+    *offline* is forwarded to distribution: nothing is pulled or downloaded,
+    only existing copies are distributed.
     """
     from sparkrun.orchestration.distribution import distribute_from_config
     from sparkrun.orchestration.primitives import build_ssh_kwargs
@@ -289,6 +292,7 @@ def stage_prepared_images(
         after_container_sync=verify_images if require_content_ids else None,
         container_distribution=prepared.container_distribution,
         timeline=timeline,
+        offline=offline,
     )
     return StagedImageSet(
         prepared=prepared,

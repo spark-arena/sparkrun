@@ -56,6 +56,9 @@ class TransferFailure:
 # matters — earlier patterns take precedence so the most specific match
 # wins.  All patterns are matched case-insensitively.
 _RSYNC_FAILURE_PATTERNS: tuple[tuple[str, str], ...] = (
+    # `sparkrun run --offline`: the sync scripts refuse with an "OFFLINE:" line
+    # rather than fetching, which is a policy verdict, not a transfer fault.
+    ("offline:", "offline: not present, not pulled"),
     ("no space left on device", "out of disk space"),
     ("disk quota exceeded", "disk quota exceeded"),
     ("permission denied", "permission denied"),

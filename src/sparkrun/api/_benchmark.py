@@ -642,6 +642,7 @@ def _execute_benchmark(
             sync_tuning=sync_tuning,
             extra_docker_opts=tuple(executor_args) if executor_args else None,
             recipe_ref=recipe_ref,
+            offline=options.offline,
         )
         try:
             run_plan = api.plan(run_options, sctx=sctx)

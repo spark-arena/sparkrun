@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from sparkrun.core.application_profile import render_identity_text
 
+import logging
 import sys
 
 import click
@@ -11,6 +12,7 @@ import click
 from ._common import (
     RECIPE_NAME,
     _apply_recipe_overrides,
+    _enter_offline_mode,
     _get_context,
     _load_recipe,
     dry_run_option,
@@ -22,6 +24,8 @@ from ._common import (
     resolve_cluster_config,
     with_host_context,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @click.group()
@@ -520,6 +524,12 @@ def alias_list(output_json):
 @recipe_override_options
 @click.option("--solo", is_flag=True, help="Force single-node mode")
 @click.option("--port", type=int, default=None, help="Override serve port")
+@click.option(
+    "--offline/--online",
+    "offline",
+    default=None,
+    help="Launch from existing images and models only, with no internet access. --online overrides a cluster set to offline.",
+)
 @dry_run_option
 @with_host_context
 def load_cmd(
@@ -536,6 +546,7 @@ def load_cmd(
     image,
     solo,
     port,
+    offline,
     dry_run,
     *,
     host_list: list[str],
@@ -561,8 +572,17 @@ def load_cmd(
     v = sctx.variables
     config = sctx.config
 
+    named_cluster = None
+    if cluster_mgr is not None and (cluster_name or (not hosts and not hosts_file)):
+        _name = cluster_name or cluster_mgr.get_default()
+        try:
+            named_cluster = cluster_mgr.get(_name) if _name else None
+        except Exception as error:  # an unreadable cluster is reported by the launch itself
+            logger.debug("Could not load cluster %s for its offline default: %s", _name, error)
+    offline_early = _enter_offline_mode(offline, named_cluster)
+
     # Load recipe (defer resolution until overrides are built)
-    recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name, resolve=False, retry_after_update=True)
+    recipe, _recipe_path, _registry_mgr = _load_recipe(config, recipe_name, resolve=False, retry_after_update=True, offline=offline_early)
 
     # Build overrides and resolve runtime (overrides may influence resolution)
     recipe, overrides = _apply_recipe_overrides(
@@ -618,6 +638,7 @@ def load_cmd(
         dry_run=dry_run,
         detached=True,
         follow=False,
+        offline=offline,
     )
     try:
         run_plan = api.plan(run_options, sctx=sctx)

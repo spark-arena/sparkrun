@@ -134,3 +134,34 @@ def resolve_local_cached_commit(model: str, revision: str | None, cache_dir: str
     except OSError:
         return None
     return value if is_commit(value) else None
+
+
+def hosts_with_snapshot(
+    model: str,
+    revision: str | None,
+    hosts: list[str],
+    *,
+    ssh_kwargs: dict | None = None,
+    cache_dir: str | None = None,
+) -> set[str]:
+    """The subset of *hosts* whose HuggingFace cache holds a snapshot of *model* at *revision*.
+
+    A commit is checked directly; a branch or tag (default ``main``) through
+    its ``refs/`` entry, which must point at a snapshot that exists. Presence
+    only, like the ensure scripts: not a completeness check.
+    """
+    from sparkrun.core.config import resolve_hf_cache_home
+    from sparkrun.models.download import model_cache_path
+    from sparkrun.orchestration.ssh import run_remote_scripts_parallel
+    from sparkrun.utils.shell import validate_interpolated_path
+
+    ref = str(revision) if revision else "main"
+    if not is_commit(ref) and (not _REF_NAME_RE.match(ref) or ".." in ref):
+        raise RevisionResolutionError("revision %r is not a plain branch or tag name" % ref)
+    path = validate_interpolated_path(model_cache_path(model, resolve_hf_cache_home(cache_dir)), field_name="model cache path")
+    if is_commit(ref):
+        script = 'test -d "%s/snapshots/%s" && echo PRESENT\n' % (path, ref)
+    else:
+        script = 'c=$(cat "%s/refs/%s" 2>/dev/null) && [ -n "$c" ] && test -d "%s/snapshots/$c" && echo PRESENT\n' % (path, ref, path)
+    results = run_remote_scripts_parallel(list(hosts), script, timeout=15, **(ssh_kwargs or {}))
+    return {r.host for r in results if r.success and "PRESENT" in (r.stdout or "")}

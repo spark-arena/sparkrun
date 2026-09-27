@@ -540,6 +540,7 @@ def save_job_metadata(
     runtime_info: dict[str, str] | None = None,
     container_image: Optional[str] = None,
     container_images: "list[str] | tuple[str, ...] | None" = None,
+    container_digest: str | None = None,
     runtime: "RuntimePlugin | None" = None,
     backends: "dict[str, BackendBundle] | None" = None,
     *,
@@ -733,6 +734,10 @@ def save_job_metadata(
     # list would break every one of them.  The scalar stays the head's image.
     if container_images:
         meta["effective_container_images"] = [str(i) for i in container_images]
+    if container_digest:
+        # Offline launches record what actually ran for an unpinned tag: the
+        # resident image's registry digest, when one is known.
+        meta["effective_container_digest"] = str(container_digest)
 
     # Persist per-host backend bundle so stop/logs can recover collective
     # backend selection without re-probing hardware.  Schema:

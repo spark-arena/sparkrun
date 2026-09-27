@@ -347,6 +347,11 @@ class ClusterDefinition:
     :attr:`transport` is provider-backed (e.g. a Thunder instance uuid).  Used
     by the transport to re-resolve the resource across sessions and as the
     re-import identity for ``cluster import <provider>``."""
+    offline: bool | None = None
+    """Launch on this cluster offline by default: only images, models and
+    registry content that already exist, no internet egress (see
+    :mod:`sparkrun.core.offline`). ``--online`` / ``--offline`` on the command
+    line win. ``None`` (online) is omitted from the file."""
 
     def resolve_env(self) -> dict[str, str]:
         """Resolve :attr:`env`, substituting ``${VAR}`` from :attr:`env_file`.
@@ -430,6 +435,8 @@ class ClusterDefinition:
             d["transport"] = self.transport
         if self.provider_ref:
             d["provider_ref"] = self.provider_ref
+        if self.offline is not None:
+            d["offline"] = self.offline
         if self.hosts_hardware:
             d["hosts_hardware"] = {h: hw.to_dict() for h, hw in self.hosts_hardware.items()}
         if self.executor:
@@ -550,6 +557,17 @@ class ClusterStatusResult:
         return out
 
 
+def _parse_offline(value: Any, name: Any) -> bool | None:
+    """``offline:`` from a cluster file: a boolean or absent.
+
+    Anything else raises rather than reading as online: a cluster someone
+    marked offline (``offline: "yes"``) must not quietly start pulling.
+    """
+    if value is None or isinstance(value, bool):
+        return value
+    raise ClusterError("cluster '%s' offline must be true or false, got %r" % (name, value))
+
+
 class ClusterManager:
     """Manages named cluster definitions stored as YAML files."""
 
@@ -612,6 +630,7 @@ class ClusterManager:
         distribution: ClusterDistributionConfig | None = None,
         sparkrun_cache_dir: str | None = None,
         plugins: dict[str, dict[str, Any]] | None = None,
+        offline: bool | None = None,
     ) -> None:
         """Create a new named cluster.
 
@@ -679,6 +698,7 @@ class ClusterManager:
             scheduler=scheduler,
             max_gpu_memory_utilization=max_gpu_memory_utilization,
             distribution=distribution if distribution is not None else ClusterDistributionConfig(),
+            offline=offline,
         )
         for plugin in cluster_def.plugins:
             cluster_def.plugin_settings(plugin)
@@ -726,6 +746,7 @@ class ClusterManager:
         distribution: ClusterDistributionConfig | None | _Unset = _UNSET,
         sparkrun_cache_dir: str | None | _Unset = _UNSET,
         plugins: dict[str, dict[str, Any]] | None | _Unset = _UNSET,
+        offline: bool | None | _Unset = _UNSET,
     ) -> None:
         """Update existing cluster definition.
 
@@ -835,6 +856,10 @@ class ClusterManager:
         if scheduler is not _UNSET:
             cluster_def.scheduler = scheduler
             logger.debug("Updated scheduler for cluster '%s'", name)
+
+        if offline is not _UNSET:
+            cluster_def.offline = offline
+            logger.debug("Updated offline default for cluster '%s'", name)
 
         if max_gpu_memory_utilization is not _UNSET:
             cluster_def.max_gpu_memory_utilization = max_gpu_memory_utilization
@@ -976,6 +1001,8 @@ class ClusterManager:
             data["transport"] = cluster_def.transport
         if cluster_def.provider_ref:
             data["provider_ref"] = cluster_def.provider_ref
+        if cluster_def.offline is not None:
+            data["offline"] = cluster_def.offline
         if cluster_def.hosts_hardware:
             data["hosts_hardware"] = {h: hw.to_dict() for h, hw in cluster_def.hosts_hardware.items()}
         if cluster_def.executor:
@@ -1080,6 +1107,7 @@ class ClusterManager:
             max_gpu_memory_utilization=max_gpu_memory_utilization,
             accelerator_memory_limits=accelerator_memory_limits,
             distribution=ClusterDistributionConfig.from_dict(data.get("distribution")),
+            offline=_parse_offline(data.get("offline"), data.get("name")),
         )
 
 

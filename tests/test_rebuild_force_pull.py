@@ -55,7 +55,7 @@ def fake_docker(tmp_path):
         _write_stub(present)
         if log.exists():
             log.unlink()
-        script = read_script("image_sync.sh").format(image="img:latest", force_pull=force_pull)
+        script = read_script("image_sync.sh").format(image="img:latest", force_pull=force_pull, offline="0")
         env = dict(os.environ, PATH="%s:%s" % (bin_dir, os.environ["PATH"]))
         proc = subprocess.run(["bash", "-s"], input=script, capture_output=True, text=True, env=env)
         assert proc.returncode == 0, proc.stderr
@@ -91,7 +91,7 @@ class TestImageSyncScriptForcePull:
 
     def test_script_has_no_stray_format_braces(self):
         """image_sync.sh is consumed via str.format(); literal braces break it."""
-        rendered = read_script("image_sync.sh").format(image="i", force_pull="0")
+        rendered = read_script("image_sync.sh").format(image="i", force_pull="0", offline="0")
         assert "{" not in rendered and "}" not in rendered
 
 

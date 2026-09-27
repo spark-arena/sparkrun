@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, Mapping
 
 if TYPE_CHECKING:
     from sparkrun.core.recipe_overrides import OverrideResolution
+    from sparkrun.core.offline import OfflineMode
     from sparkrun.orchestration.executor import ExecutorTarget
     from sparkrun.core.cluster_manager import ClusterDefinition, ClusterStatusResult
     from sparkrun.core._executor_destination import ExecutorDestination
@@ -108,6 +109,11 @@ class RunOptions:
     ``push`` / ``delegated``)."""
     cache_dir: str | None = None
     """Override the remote HuggingFace cache dir on target hosts."""
+    offline: bool | None = None
+    """Launch from existing images, models and registry content only, with no
+    internet egress (:mod:`sparkrun.core.offline`). ``None`` defers to the
+    cluster's ``offline:``; ``True`` / ``False`` force it. Not workload
+    identity: it changes where bytes come from, not what runs."""
     runtime_cache: bool | None = None
     """Toggle the persistent compilation/autotune cache for this launch.
 
@@ -267,6 +273,9 @@ class RunPlan:
     overlaid with configured budgets; this mapping keeps the raw facts.
     """
     override_resolution: "OverrideResolution | None" = field(default=None, kw_only=True)
+    offline: "OfflineMode | None" = field(default=None, kw_only=True)
+    """Resolved offline mode (value and deciding layer); ``None`` only for a
+    plan built outside :func:`sparkrun.api.plan`."""
     """Which ``overrides:`` entries matched this launch and what they applied.
 
     ``None`` when the recipe declares none. Already applied to

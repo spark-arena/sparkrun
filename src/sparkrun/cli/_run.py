@@ -29,6 +29,7 @@ from ._common import (
     _expand_recipe_shortcut,
     _get_context,
     _is_recipe_url,
+    _enter_offline_mode,
     _load_recipe,
     _simplify_recipe_ref,
     dry_run_option,
@@ -322,6 +323,13 @@ def _summarize_platforms(
     hidden=HIDE_ADVANCED_OPTIONS,
 )
 @click.option(
+    "--offline/--online",
+    "offline",
+    default=None,
+    help="Launch from images, models and recipes that already exist, with no internet access (copies inside the "
+    "cluster are allowed). --online overrides a cluster set to offline.",
+)
+@click.option(
     "--rebuild/--no-rebuild",
     "rebuild",
     default=None,
@@ -394,6 +402,7 @@ def run(
     runtime_cache,
     scheduler_name,
     rebuild,
+    offline,
     env_overrides,
     labels_override,
     options,
@@ -461,7 +470,10 @@ def run(
     # Find and load recipe (defer resolution until overrides are built).
     # Retry after a registry refresh when the recipe isn't found, so that
     # copy-pasted recipe names from newly-published sources just work.
-    recipe, _recipe_path, registry_mgr = _load_recipe(config, recipe_name, resolve=False, retry_after_update=True)
+    # Offline is decided in api.plan, but the recipe loads before planning, so
+    # the same resolver runs here once to keep that step local too.
+    offline_early = _enter_offline_mode(offline, cluster_def)
+    recipe, _recipe_path, registry_mgr = _load_recipe(config, recipe_name, resolve=False, retry_after_update=True, offline=offline_early)
 
     # If recipe was loaded from a URL, simplify for display
     _resolved_name = _expand_recipe_shortcut(recipe_name)
@@ -617,6 +629,7 @@ def run(
         extra_docker_opts=tuple(executor_args) if executor_args else None,
         topology=cluster_cfg.topology,
         recipe_ref=recipe_ref,
+        offline=offline,
     )
 
     has_post_hooks = bool(recipe.post_exec or recipe.post_commands)
@@ -766,6 +779,8 @@ def run(
         for _h, _line in _per_host:
             click.echo("  %-8s %s" % (_h + ":", _line))
     click.echo("Scheduler: %s" % run_plan.scheduler)
+    if run_plan.offline is not None and (run_plan.offline.offline or run_plan.offline.source != "default"):
+        click.echo("Offline:   %s" % run_plan.offline.describe())
     # When nothing in the chain selected a scheduler we fell back to the 0.2.x
     # greedy default; recommend opting the cluster into occupancy-aware spreading.
     if run_plan.scheduler_defaulted and not is_solo:
