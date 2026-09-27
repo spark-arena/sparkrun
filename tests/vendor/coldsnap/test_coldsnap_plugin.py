@@ -3461,3 +3461,30 @@ def test_job_control_uses_saved_recipe_and_exact_activation_receipt(monkeypatch)
     assert captured["expected_cluster_id"] == "exact-job"
     assert captured["expected_capture_id"] == "exact-capture"
     assert captured["artifact"] == "/test/committed.json"
+
+
+@pytest.mark.parametrize("operation", ["capture", "restore", "warm", "status"])
+def test_cli_reports_planning_errors_without_traceback(monkeypatch, operation):
+    from click.testing import CliRunner
+    from sparkrun.core.timing import STATUS_ERROR
+
+    _recipe, _options, _plan, sctx = _setup()
+    finished = []
+    message = "Recipe is invalid: include: '_missing.yaml' not found next to recipe.yaml"
+    monkeypatch.setattr("sparkrun.api._context.default_sctx", lambda: sctx)
+    monkeypatch.setattr("sparkrun.plugins.coldsnap.cli._begin_operation_timing", lambda *a, **kw: finished.append)
+
+    def fail_plan(*args, **kwargs):
+        raise api.SparkrunError(message)
+
+    monkeypatch.setattr(api, "plan", fail_plan)
+    monkeypatch.setattr(
+        "sparkrun.plugins.coldsnap.cli.ColdSnapService",
+        lambda *a, **kw: pytest.fail("invalid plan started a ColdSnap operation"),
+    )
+    result = CliRunner().invoke(build_command(), [operation, "recipe.yaml", "--cluster", "g580"])
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit)
+    assert "Error: " + message in result.output
+    assert "Traceback" not in result.output
+    assert finished == [STATUS_ERROR]

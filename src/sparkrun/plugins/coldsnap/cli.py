@@ -833,6 +833,9 @@ def _run(
     )
     try:
         plan = api.plan(options, sctx=sctx)
+    except api.SparkrunError as error:
+        finish_timing(STATUS_ERROR)
+        raise click.ClickException(str(error)) from error
     except Exception:
         finish_timing(STATUS_ERROR)
         raise
