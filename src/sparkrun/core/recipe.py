@@ -2359,6 +2359,13 @@ class Recipe:
             meta["quantization"] = str(meta["quantization"])
         if meta and meta.get("quant_bits", None) is not None:
             meta["quant_bits"] = int(meta["quant_bits"])
+        # Detected per-layer attention types: a list the length of the model,
+        # kept only where the KV estimate reads it (see layer_types_affect_sizing).
+        if "layer_types" in meta:
+            from sparkrun.models.kv.mla import layer_types_affect_sizing
+
+            if not layer_types_affect_sizing(meta):
+                del meta["layer_types"]
 
         # -- Builder --
         if self.builder:

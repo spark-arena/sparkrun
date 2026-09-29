@@ -106,6 +106,27 @@ def is_mla_model_type(model_type: str | None) -> bool:
     return any(t.startswith(p) for p in _MLA_MODEL_TYPE_PREFIXES)
 
 
+def layer_types_affect_sizing(metadata: Mapping[str, Any]) -> bool:
+    """Whether recipe ``metadata.layer_types`` changes the KV estimate.
+
+    It is read in one place: :meth:`MlaKVStrategy.size` refuses to size a
+    hybrid linear/MLA cache. So it matters only for an MLA model (the same
+    markers :meth:`MlaKVStrategy.detect` uses) with ``linear_attention``
+    layers. Recipe export drops it otherwise: it is a list the length of the
+    model, and once the other architecture fields are in ``metadata`` it is
+    not re-detected, so dropping it where it *is* read would silently turn a
+    refusal into a wrong estimate.
+    """
+    if "linear_attention" not in (metadata.get("layer_types") or ()):
+        return False
+    return bool(
+        metadata.get("kv_lora_rank")
+        or metadata.get("qk_rope_head_dim")
+        or dtype_key(str(metadata.get("kv_dtype") or "")) in _MLA_SLOT_BYTES
+        or is_mla_model_type(metadata.get("model_type"))
+    )
+
+
 def mla_latent_dim(*, kv_lora_rank: int | None = None, head_dim: int | None = None, qk_rope_head_dim: int | None = None) -> int | None:
     """Resolve the non-RoPE part of an MLA model's cached width.
 

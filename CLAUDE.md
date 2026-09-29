@@ -2739,6 +2739,11 @@ Two rules the seam exists to enforce:
   copies of the same list, where omitting one silently reverted the estimate on the path that decides placement.
   `estimate_vram(arch={...})` takes them as a mapping, never as per-architecture keyword arguments.
 
+Recipe export drops the written-back `metadata.layer_types` (a list as long as the model) unless the
+estimate reads it (`kv/mla.py:layer_types_affect_sizing`: an MLA model with `linear_attention` layers,
+where `size()` refuses rather than guesses). It must not be dropped there: once the other architecture
+fields are in `metadata` it is not re-detected, and the refusal would become a wrong estimate.
+
 `tests/test_kv_strategies.py` registers a sliding-window strategy at runtime and asserts it reaches extraction,
 estimation, recipe write-back and validation with **no core edit** — the executable form of that claim.
 
