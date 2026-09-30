@@ -614,6 +614,18 @@ class HostContext:
         return "Hosts: %s (config default_hosts)" % n
 
 
+def _require_cluster(cluster_mgr, cluster_name: str) -> None:
+    """Raise a clean usage error when *cluster_name* names no saved cluster."""
+    from sparkrun.core.cluster_manager import ClusterError
+
+    try:
+        cluster_mgr.get(cluster_name)
+    except ClusterError:
+        names = sorted(c.name for c in cluster_mgr.list_clusters())
+        available = ", ".join(names) if names else "none defined (see: sparkrun cluster create)"
+        raise click.ClickException("Cluster '%s' not found. Available clusters: %s" % (cluster_name, available)) from None
+
+
 def resolve_host_context(hosts, hosts_file, cluster_name, config, v=None, sctx: SparkrunContext | None = None) -> HostContext:
     """Resolve hosts *and* the cluster they came from; exit if none are found.
 
@@ -624,6 +636,10 @@ def resolve_host_context(hosts, hosts_file, cluster_name, config, v=None, sctx: 
     from sparkrun.core.hosts import resolve_hosts
 
     cluster_mgr = _get_cluster_manager(v) if sctx is None else _get_cluster_manager(sctx=sctx)
+    if cluster_name:
+        # resolve_hosts only warns on an unknown name and falls through to the
+        # default cluster, so a typo would silently target a different cluster.
+        _require_cluster(cluster_mgr, cluster_name)
     host_list = resolve_hosts(
         hosts=hosts,
         hosts_file=hosts_file,

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from unittest import mock
 
+import click
 import pytest
 import yaml
 from click.testing import CliRunner
@@ -5137,6 +5138,25 @@ class TestResolveHostsAppliesClusterUser:
         # The override should flow through to build_ssh_kwargs
         kwargs = build_ssh_kwargs(config)
         assert kwargs["ssh_user"] == "cluster_user"
+
+    def test_unknown_cluster_is_a_clean_error(self, tmp_path, monkeypatch):
+        """An unknown --cluster fails cleanly instead of falling back to the default cluster."""
+        from sparkrun.cli._common import _resolve_hosts_or_exit
+        from sparkrun.core.cluster_manager import ClusterManager
+        from sparkrun.core.config import SparkrunConfig
+
+        import sparkrun.core.config as config_mod
+
+        monkeypatch.setattr(config_mod, "DEFAULT_CONFIG_DIR", tmp_path)
+        config = SparkrunConfig(config_path=tmp_path / "config.yaml")
+
+        mgr = ClusterManager(tmp_path)
+        mgr.create("mylab", ["10.0.0.1"])
+        mgr.set_default("mylab")
+        monkeypatch.setattr("sparkrun.cli._common._get_cluster_manager", lambda v=None: mgr)
+
+        with pytest.raises(click.ClickException, match="Cluster 'notacluster' not found.*mylab"):
+            _resolve_hosts_or_exit(None, None, "notacluster", config)
 
     def test_no_op_when_hosts_flag_given(self, tmp_path, monkeypatch):
         """When --hosts is provided, cluster user is not applied."""
