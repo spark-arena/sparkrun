@@ -943,7 +943,8 @@ class RuntimePlugin(Plugin, ABC):
             import re
 
             return re.sub(re.escape(flag) + r"\s+\S+", "%s %s" % (flag, value), command, count=1)
-        return "%s %s %s" % (command.rstrip(), flag, value)
+        # A trailing line continuation would escape the appended flag.
+        return "%s %s %s" % (command.rstrip().rstrip("\\").rstrip(), flag, value)
 
     @staticmethod
     def _augment_served_model_name(
