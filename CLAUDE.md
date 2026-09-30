@@ -2040,6 +2040,21 @@ made every first connection as `root`. `_run_ssh_mesh` prefers
 `bash` is absent. The wizard runs the gate **once**, after the cluster-name and
 SSH-username prompts and before any other probe.
 
+**known_hosts refresh** (`networking.distribute_host_keys` →
+`scripts/known_hosts_refresh.sh`) must **replace**, never append. ssh accepts a
+host when *any* recorded key matches, so the old append-only keyscan hid a
+changed host key (re-imaged Spark) while keeping the stale one trusted, and —
+`-H` salts every hash, so `sort -u` never deduped — grew the file every run.
+Per target it compares scanned vs `ssh-keygen -F`: a recorded key whose *type*
+the host now presents differently is `ssh-keygen -R`'d and reported as
+replaced, *even when nothing is missing* (the old code left hosts holding both).
+One concurrent `ssh-keyscan` call for all targets, because a sequential loop
+paid 5s per unreachable address and the control machine never reaches CX7
+fabric IPs (`setup ssh` passes `local_ips=` the control-reachable set). Targets
+are lowercased (`ssh-keyscan` prints hostnames that way) and charset-validated
+(they include addresses parsed from remote output). "+ this machine" is claimed
+only when something was actually registered locally.
+
 > Note: other `os.environ.get("USER", "root")` call sites remain outside setup
 > (`cli/_common.py`, `orchestration/primitives.py:is_local_user`,
 > `orchestration/distribution.py`, `core/launcher.py`). They affect *launch-time*

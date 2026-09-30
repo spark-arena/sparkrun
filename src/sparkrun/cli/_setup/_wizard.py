@@ -68,7 +68,13 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
     from sparkrun.utils.net import local_ip_for
 
     from .._common import _get_cluster_manager
-    from ._ssh import _default_ssh_user, _ensure_ssh_access, _run_ssh_mesh, _detect_and_update_mgmt_ips
+    from ._ssh import (
+        _default_ssh_user,
+        _detect_and_update_mgmt_ips,
+        _ensure_ssh_access,
+        _report_host_key_distribution,
+        _run_ssh_mesh,
+    )
 
     # Manifest tracking
     from sparkrun.core.setup_manifest import ManifestManager
@@ -820,11 +826,14 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                             # Distribute host keys for CX7 IPs
                             all_cx7_ips = [a.ip for hp in plan.host_plans for a in hp.assignments if a.ip]
                             if all_cx7_ips:
-                                distribute_host_keys(
-                                    all_cx7_ips,
-                                    host_list,
-                                    ssh_kwargs=ssh_kwargs,
-                                    dry_run=dry_run,
+                                _report_host_key_distribution(
+                                    distribute_host_keys(
+                                        all_cx7_ips,
+                                        host_list,
+                                        ssh_kwargs=ssh_kwargs,
+                                        dry_run=dry_run,
+                                    ),
+                                    len(all_cx7_ips),
                                 )
 
                             results["cx7"] = "configured (%s)" % effective_topology.value if ok_count else "failed"

@@ -530,15 +530,44 @@ def _run_ssh_mesh(mesh_hosts, user, cluster_hosts=None, ssh_key=None, discover_i
     # Distribute host keys for all IPs (management + discovered)
     click.echo()
     click.echo("Distributing host keys for %d IP(s)..." % len(all_discovered_ips))
-    ks_results = distribute_host_keys(
+    dist = distribute_host_keys(
         all_discovered_ips,
         cluster_hosts,
         ssh_kwargs=ssh_kwargs,
+        # Fabric IPs are unreachable from a non-member control machine;
+        # scanning them there only costs a timeout.
+        local_ips=reachable,
     )
-    ks_ok = sum(1 for r in ks_results if r.success)
-    ks_fail = sum(1 for r in ks_results if not r.success)
-    if ks_fail:
-        click.echo("  Warning: keyscan failed on %d host(s)." % ks_fail, err=True)
-    click.echo("  Host keys for %d IP(s) distributed to %d host(s) + local." % (len(all_discovered_ips), ks_ok))
+    _report_host_key_distribution(dist, len(all_discovered_ips))
 
     return True
+
+
+def _report_host_key_distribution(dist, ip_count: int) -> None:
+    """Render a :class:`~sparkrun.orchestration.networking.HostKeyDistribution`."""
+    ks_ok = sum(1 for o in dist.hosts if o.success)
+    for o in dist.hosts:
+        if not o.success:
+            click.echo("  Warning: known_hosts refresh failed on %s: %s" % (o.target, o.error), err=True)
+    if dist.local is not None and not dist.local.success:
+        click.echo("  Warning: known_hosts refresh failed on this machine: %s" % dist.local.error, err=True)
+
+    for machine, targets in sorted(dist.replaced.items()):
+        where = "this machine" if machine == "local" else machine
+        click.echo(
+            "  CHANGED host key(s) replaced in %s's known_hosts: %s" % (where, ", ".join(targets)),
+            err=True,
+        )
+    if dist.replaced:
+        click.echo(
+            "  A changed host key is expected after re-imaging a host; if none was re-imaged, investigate.",
+            err=True,
+        )
+
+    # Claim this machine only if something was actually registered here —
+    # a scan in which every target went unanswered is not a distribution.
+    local_ok = dist.local is not None and dist.local.registered
+    click.echo(
+        "  Host keys for %d IP(s) distributed to %d/%d host(s)%s."
+        % (ip_count, ks_ok, len(dist.hosts), " + this machine" if local_ok else "")
+    )

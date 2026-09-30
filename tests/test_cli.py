@@ -3361,12 +3361,15 @@ class TestSetupSshCommand:
 
         monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
 
-        from sparkrun.orchestration.ssh import RemoteResult
+        from sparkrun.orchestration.networking import HostKeyDistribution, KeyscanOutcome
 
-        mock_ks_results = [
-            RemoteResult(host="10.0.0.1", returncode=0, stdout="KEYSCAN_ADDED=2", stderr=""),
-            RemoteResult(host="10.0.0.2", returncode=0, stdout="KEYSCAN_ADDED=2", stderr=""),
-        ]
+        mock_ks_results = HostKeyDistribution(
+            local=KeyscanOutcome(target="local", success=True, added=1),
+            hosts=[
+                KeyscanOutcome(target="10.0.0.1", success=True, added=2),
+                KeyscanOutcome(target="10.0.0.2", success=True, added=2),
+            ],
+        )
 
         with (
             mock.patch("subprocess.run", return_value=mock.Mock(returncode=0)),
@@ -3409,6 +3412,11 @@ class TestSetupSshCommand:
         call_ips = mock_dist.call_args[0][0]
         assert "192.168.11.1" in call_ips
         assert "192.168.11.2" in call_ips
+        # Only IPs reachable from the control machine are scanned locally.
+        local_ips = mock_dist.call_args.kwargs["local_ips"]
+        assert "192.168.11.1" in local_ips
+        assert "192.168.11.2" not in local_ips
+        assert "distributed to 2/2 host(s) + this machine" in result.output
 
     def test_setup_ssh_skip_self_when_user_differs(self, runner, tmp_path, monkeypatch):
         """Test that --include-self skips auto-adding control machine when SSH user differs."""
@@ -3551,7 +3559,9 @@ class TestSetupSshCommand:
 
         mock_rrs.return_value = [RemoteResult(host="192.168.1.6", stdout="", stderr="", returncode=0)]
         mock_dk = MagicMock()
-        mock_dk.return_value = [RemoteResult(host="192.168.1.6", stdout="", stderr="", returncode=0)]
+        from sparkrun.orchestration.networking import HostKeyDistribution, KeyscanOutcome
+
+        mock_dk.return_value = HostKeyDistribution(hosts=[KeyscanOutcome(target="192.168.1.6", success=True)])
         mock_tcp = MagicMock(return_value={"192.168.1.6": True})
 
         with patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as mock_run:

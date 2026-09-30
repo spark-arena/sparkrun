@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import re
 from dataclasses import dataclass, field, replace
 from enum import Enum
 
@@ -1874,92 +1875,207 @@ def discover_host_network_ips(
     return discovered
 
 
+_KEYSCAN_TARGET_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
+
+#: ``ssh-keyscan -T``.  All targets are probed concurrently, so this bounds
+#: the whole scan, not each address.
+KEYSCAN_TIMEOUT_S = 5
+
+
+@dataclass
+class KeyscanOutcome:
+    """Result of refreshing ``known_hosts`` on one machine.
+
+    ``replaced`` lists targets whose recorded host key differed from the one
+    presented now; the stale entries were removed.  ``unanswered`` lists
+    targets that did not answer from that machine (normal for fabric IPs
+    seen from the control machine).
+    """
+
+    target: str
+    success: bool
+    added: int = 0
+    unchanged: int = 0
+    replaced: list[str] = field(default_factory=list)
+    unanswered: list[str] = field(default_factory=list)
+    error: str = ""
+
+    @property
+    def registered(self) -> bool:
+        """True when at least one target's keys are now recorded there."""
+        return self.success and (self.added + self.unchanged + len(self.replaced)) > 0
+
+
+@dataclass
+class HostKeyDistribution:
+    """Outcome of :func:`distribute_host_keys` — control machine plus hosts."""
+
+    local: KeyscanOutcome | None = None
+    hosts: list[KeyscanOutcome] = field(default_factory=list)
+
+    @property
+    def replaced(self) -> dict[str, list[str]]:
+        """Machine -> targets whose changed host key was replaced there."""
+        outcomes = ([self.local] if self.local else []) + self.hosts
+        return {o.target: o.replaced for o in outcomes if o.replaced}
+
+
+def parse_keyscan_output(target: str, returncode: int, stdout: str, stderr: str) -> KeyscanOutcome:
+    """Parse ``known_hosts_refresh.sh`` output into a :class:`KeyscanOutcome`."""
+    kv = parse_kv_output(stdout or "")
+    error = kv.get("KEYSCAN_ERROR", "")
+    if returncode != 0 and not error:
+        error = (stderr or "").strip()[:200] or "exit code %d" % returncode
+    if "KEYSCAN_ADDED" not in kv and not error:
+        error = "no result reported"
+    failed = kv.get("KEYSCAN_FAILED", "").split()
+    if failed and not error:
+        error = "could not remove changed host key(s) for %s" % ", ".join(failed)
+
+    def _int(key: str) -> int:
+        try:
+            return int(kv.get(key, "0") or 0)
+        except ValueError:
+            return 0
+
+    return KeyscanOutcome(
+        target=target,
+        success=not error,
+        added=_int("KEYSCAN_ADDED"),
+        unchanged=_int("KEYSCAN_UNCHANGED"),
+        replaced=kv.get("KEYSCAN_REPLACED", "").split(),
+        unanswered=kv.get("KEYSCAN_UNANSWERED", "").split(),
+        error=error,
+    )
+
+
+def _is_keyscan_target(value: str) -> bool:
+    return bool(_KEYSCAN_TARGET_RE.match(value)) and not value.startswith("-")
+
+
+def _keyscan_targets(values: list[str]) -> list[str]:
+    """Normalize to keyscan targets: drop ``user@``, lowercase, dedupe, skip invalid."""
+    out: list[str] = []
+    for value in values:
+        target = value.rsplit("@", 1)[-1].strip().lower()
+        if not _is_keyscan_target(target):
+            logger.warning("  Skipping invalid host/IP for known_hosts refresh: %r", value)
+            continue
+        if target not in out:
+            out.append(target)
+    return out
+
+
+def build_known_hosts_refresh_script(targets: list[str], timeout: int = KEYSCAN_TIMEOUT_S) -> str:
+    """Render ``known_hosts_refresh.sh`` for *targets*.
+
+    Targets reach the script word-split, so each is held to an IP/hostname
+    charset — they include addresses parsed from remote command output.
+    They are lowercased because ``ssh-keyscan`` prints hostnames lowercased
+    (as ssh looks them up), so ``Spark-01`` would otherwise never match.
+    """
+    bad = [t for t in targets if not _is_keyscan_target(t)]
+    if bad:
+        raise ValueError("Refusing to keyscan invalid host/IP value(s): %s" % ", ".join(repr(b) for b in bad))
+    return inject_shell_vars(
+        read_script("known_hosts_refresh.sh"),
+        KEYSCAN_TARGETS=" ".join(t.lower() for t in targets),
+        KEYSCAN_TIMEOUT=str(timeout),
+    )
+
+
 def distribute_host_keys(
     ips: list[str],
     hosts: list[str],
     ssh_kwargs: dict | None = None,
     dry_run: bool = False,
-) -> list:
-    """Scan IPs and add to ``known_hosts`` on control machine and all hosts.
+    local_ips: list[str] | None = None,
+) -> HostKeyDistribution:
+    """Refresh ``known_hosts`` for *ips* on the control machine and all hosts.
 
     After network configuration (CX7, IB) the new IPs are unknown SSH
-    endpoints.  This runs ``ssh-keyscan`` to register their host keys so
-    that transfers and inter-node SSH over additional networks succeed
-    without host-key-verification prompts.
+    endpoints.  This registers their host keys so that transfers and
+    inter-node SSH over additional networks succeed without host-key
+    prompts.  A recorded key that no longer matches is replaced and
+    reported (see ``scripts/known_hosts_refresh.sh``), never silently
+    kept alongside the new one.
 
     Args:
-        ips: All additional IPs across the cluster.
+        ips: All endpoints across the cluster (management + discovered).
         hosts: Management-IP host list (used to reach each host via SSH).
         ssh_kwargs: SSH connection parameters.
         dry_run: Log without executing.
+        local_ips: Endpoints to register on the control machine; defaults
+            to *ips*.  Pass only those reachable from the control machine —
+            fabric IPs usually are not.
 
     Returns:
-        List of RemoteResult from the remote keyscan step.
+        :class:`HostKeyDistribution` with the control machine's outcome and
+        one outcome per host.
     """
-    import subprocess
-
-    from sparkrun.orchestration.ssh import RemoteResult, run_remote_scripts_parallel
-
-    if not ips:
-        return []
-
-    ip_list = " ".join(ips)
-    script = (
-        "#!/bin/bash\n"
-        "set -uo pipefail\n"
-        "mkdir -p ~/.ssh\n"
-        "touch ~/.ssh/known_hosts\n"
-        "ADDED=0\n"
-        "for ip in %s; do\n"
-        '    keys=$(ssh-keyscan -H "$ip" 2>/dev/null)\n'
-        '    if [ -n "$keys" ]; then\n'
-        '        printf "%%s\\n" "$keys" >> ~/.ssh/known_hosts\n'
-        "        ADDED=$((ADDED + 1))\n"
-        "    fi\n"
-        "done\n"
-        "sort -u ~/.ssh/known_hosts -o ~/.ssh/known_hosts\n"
-        'echo "KEYSCAN_ADDED=$ADDED"\n'
-    ) % ip_list
-
-    # Local keyscan (control machine)
-    if not dry_run:
-        try:
-            subprocess.run(
-                ["bash", "-c", script],
-                timeout=30,
-                capture_output=True,
-                text=True,
-            )
-            logger.info("  local: host keys added to known_hosts")
-        except Exception as e:
-            logger.warning("  local: keyscan failed: %s", e)
-    else:
-        logger.info("[dry-run] Would scan %d IPs locally", len(ips))
-
-    # Remote keyscan on all hosts (via management IPs)
-    from sparkrun.orchestration.primitives import run_local_script
+    from sparkrun.orchestration.ssh import run_local_script, run_remote_scripts_parallel
     from sparkrun.utils import is_local_host
+
+    dist = HostKeyDistribution()
+    ips = _keyscan_targets(ips)
+    if not ips:
+        return dist
+
+    script = build_known_hosts_refresh_script(ips)
+    if local_ips is None:
+        local_targets = list(ips)
+    else:
+        allowed = set(_keyscan_targets(local_ips))
+        local_targets = [ip for ip in ips if ip in allowed]
+
+    # Control machine.  The scan is concurrent, so this is bounded by the
+    # keyscan timeout; the wall-clock cap is a backstop.
+    if local_targets:
+        if dry_run:
+            logger.info("[dry-run] Would refresh known_hosts for %d IP(s) locally", len(local_targets))
+            dist.local = KeyscanOutcome(target="local", success=True)
+        else:
+            lr = run_local_script(build_known_hosts_refresh_script(local_targets), timeout=60)
+            dist.local = parse_keyscan_output("local", lr.returncode, lr.stdout, lr.stderr)
 
     kw = ssh_kwargs or {}
     local_hosts = [h for h in hosts if is_local_host(h)]
     remote_hosts = [h for h in hosts if not is_local_host(h)]
 
-    results = []
+    raw = []
     for host in local_hosts:
-        lr = run_local_script(script, dry_run=dry_run)
-        results.append(RemoteResult(host=host, returncode=lr.returncode, stdout=lr.stdout, stderr=lr.stderr))
+        lr = run_local_script(script, dry_run=dry_run, timeout=60)
+        raw.append((host, lr))
     if remote_hosts:
-        # ssh-keyscan is a fast probe; bound it so an unreachable host that
-        # completes TCP connect but then stalls can't hang the keyscan step.
-        results.extend(run_remote_scripts_parallel(remote_hosts, script, timeout=60, dry_run=dry_run, **kw))
+        for r in run_remote_scripts_parallel(remote_hosts, script, timeout=60, dry_run=dry_run, **kw):
+            raw.append((r.host, r))
 
-    for r in results:
-        if r.success:
-            logger.info("  %s: host keys added to known_hosts", r.host)
+    for host, r in raw:
+        if dry_run:
+            dist.hosts.append(KeyscanOutcome(target=host, success=True))
         else:
-            logger.warning("  %s: keyscan failed: %s", r.host, r.stderr.strip()[:100])
+            dist.hosts.append(parse_keyscan_output(host, r.returncode, r.stdout, r.stderr))
 
-    return results
+    for o in ([dist.local] if dist.local else []) + dist.hosts:
+        if not o.success:
+            logger.warning("  %s: known_hosts refresh failed: %s", o.target, o.error)
+            continue
+        if o.replaced:
+            logger.warning(
+                "  %s: replaced CHANGED host key(s) for %s (host re-imaged? if not, investigate)",
+                o.target,
+                ", ".join(o.replaced),
+            )
+        logger.info(
+            "  %s: %d added, %d unchanged, %d replaced, %d unanswered",
+            o.target,
+            o.added,
+            o.unchanged,
+            len(o.replaced),
+            len(o.unanswered),
+        )
+
+    return dist
 
 
 # ---------------------------------------------------------------------------
