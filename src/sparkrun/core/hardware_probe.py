@@ -136,6 +136,9 @@ if [[ -d /sys/class/infiniband ]] && compgen -G "/sys/class/infiniband/*" >/dev/
 fi
 emit IB_PRESENT "$IB_PRESENT"
 
+# --- Host RAM (Linux; see fingerprint.py) ---
+emit HOST_MEM_TOTAL_KIB "$(awk '/^MemTotal:/ {{print $2; exit}}' /proc/meminfo 2>/dev/null || true)"
+
 # --- OS / arch ---
 emit OS "$(uname -s 2>/dev/null || echo unknown)"
 emit ARCH "$(uname -m 2>/dev/null || echo unknown)"

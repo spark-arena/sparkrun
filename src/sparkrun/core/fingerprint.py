@@ -124,6 +124,11 @@ if [[ -d /sys/class/infiniband ]] && compgen -G "/sys/class/infiniband/*" >/dev/
 fi
 emit IB_PRESENT "$IB_PRESENT"
 
+# --- Host RAM (Linux) ---
+# Unified-memory accelerators (GB10) report memory.total as [N/A]; the GPU's
+# pool is the host's RAM, so this is the only measurement of it there is.
+emit HOST_MEM_TOTAL_KIB "$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo 2>/dev/null || true)"
+
 # --- OS / arch (debugging aid) ---
 emit OS "$(uname -s 2>/dev/null || echo unknown)"
 emit ARCH "$(uname -m 2>/dev/null || echo unknown)"
@@ -301,6 +306,8 @@ def build_host_hardware(parsed: dict[str, str]) -> HostHardware:
                 )
             )
 
+    accelerators = _fill_unified_memory(accelerators, parsed)
+
     from sparkrun.core.hardware_probe_extensions import enrich_host_hardware
 
     nvidia_driver = parsed.get("NVIDIA_DRIVER_VERSION", "").strip()
@@ -311,6 +318,43 @@ def build_host_hardware(parsed: dict[str, str]) -> HostHardware:
     )
     hardware.fingerprint = compute_fingerprint_hash(hardware.accelerators)
     return hardware
+
+
+def _kib_to_gb(kib: str | None) -> float | None:
+    if not kib:
+        return None
+    try:
+        # KiB → GiB, the unit _mib_to_gb produces for discrete cards.
+        return round(int(kib) / (1024.0 * 1024.0), 1)
+    except ValueError:
+        return None
+
+
+def _fill_unified_memory(accelerators: list[AcceleratorSpec], parsed: dict[str, str]) -> list[AcceleratorSpec]:
+    """Measure a unified-memory accelerator's capacity from host RAM.
+
+    GB10's ``nvidia-smi`` reports ``memory.total`` as ``[N/A]``, so without
+    this every GB10 fell back to the platform's fixed capacity — a 64 GB part
+    was scheduled, fit-checked and matched by ``memory_gb`` overrides as a
+    128 GB one. Its pool *is* the host's RAM, so ``MemTotal`` is the
+    measurement. Only for a platform-declared ``unified-memory`` device that
+    reported nothing itself, and only when it is the host's sole accelerator:
+    a shared pool cannot be attributed to one of several devices.
+    """
+    if len(accelerators) != 1 or accelerators[0].count != 1 or accelerators[0].memory_gb is not None:
+        return accelerators
+    host_gb = _kib_to_gb(parsed.get("HOST_MEM_TOTAL_KIB"))
+    if host_gb is None or host_gb <= 0:
+        return accelerators
+    from dataclasses import replace
+
+    from sparkrun.platforms import resolve_accelerator_platform
+
+    accel = accelerators[0]
+    platform = resolve_accelerator_platform(accel, HostHardware(accelerators=[accel], source="detected"))
+    if platform is None or "unified-memory" not in platform.declared_capabilities(accel):
+        return accelerators
+    return [replace(accel, memory_gb=host_gb)]
 
 
 def compute_fingerprint_hash(accelerators: list[AcceleratorSpec]) -> str:

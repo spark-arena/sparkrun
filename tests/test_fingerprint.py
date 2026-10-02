@@ -266,3 +266,86 @@ def test_probe_host_failure_returns_empty_with_note(monkeypatch):
     hw = probe_host("dead-host")
     assert hw.accelerators == []
     assert "probe failed" in hw.notes
+
+
+# --------------------------------------------------------------------------
+# Unified-memory capacity from host RAM
+# --------------------------------------------------------------------------
+
+# What a GB10 really reports: nvidia-smi prints "[N/A]" for memory.total, and
+# the probe script's awk keeps the first word.
+_GB10_NA = "NVIDIA_PRESENT=1\nNVIDIA_GPU_COUNT=1\nNVIDIA_GPU_0_NAME=NVIDIA GB10\nNVIDIA_GPU_0_MEMORY_MIB=[N/A]\nIB_PRESENT=1\n"
+_MEMTOTAL_128 = 125511968  # kB, measured on a 128 GB DGX Spark
+_MEMTOTAL_64 = 65011712  # kB, a hypothetical 64 GB GB10
+
+
+def _gb10(memtotal_kib: int | None) -> str:
+    return _GB10_NA + ("HOST_MEM_TOTAL_KIB=%d\n" % memtotal_kib if memtotal_kib is not None else "")
+
+
+def test_probe_scripts_emit_host_memtotal():
+    from sparkrun.core.hardware_probe import generate_combined_probe_script
+
+    assert "HOST_MEM_TOTAL_KIB" in generate_fingerprint_script()
+    combined = generate_combined_probe_script()
+    # The combined script goes through str.format(): a doubled brace surviving
+    # into the output would hand awk a literal "{{".
+    assert "awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo" in combined
+
+
+def test_gb10_capacity_measured_from_host_ram():
+    a = build_host_hardware(parse_fingerprint_output(_gb10(_MEMTOTAL_128))).accelerators[0]
+    assert a.model == "gb10"
+    assert a.memory_gb == 119.7
+
+
+def test_gb10_64gb_variant_is_not_reported_as_128():
+    from sparkrun.core.limits import resolve_accelerator_memory
+
+    hw = build_host_hardware(parse_fingerprint_output(_gb10(_MEMTOTAL_64)))
+    assert hw.accelerators[0].memory_gb == 62.0
+    capacity, source = resolve_accelerator_memory(hw.accelerators[0], hw)
+    assert (capacity, source) == (62.0, "detected")
+
+
+def test_gb10_without_memtotal_falls_back_to_platform_default():
+    from sparkrun.core.limits import resolve_accelerator_memory
+    from sparkrun.platforms.dgx_spark import DGX_SPARK_MEMORY_GB
+
+    hw = build_host_hardware(parse_fingerprint_output(_gb10(None)))
+    assert hw.accelerators[0].memory_gb is None
+    assert resolve_accelerator_memory(hw.accelerators[0], hw) == (DGX_SPARK_MEMORY_GB, "platform default")
+
+
+def test_reported_accelerator_memory_beats_host_ram():
+    hw = build_host_hardware(parse_fingerprint_output(_probe_dgx_spark() + "HOST_MEM_TOTAL_KIB=%d\n" % _MEMTOTAL_64))
+    assert hw.accelerators[0].memory_gb == 128.0
+
+
+def test_discrete_card_without_memory_does_not_take_host_ram():
+    # Host RAM says nothing about a discrete card's VRAM.
+    parsed = parse_fingerprint_output(
+        "NVIDIA_GPU_COUNT=1\nNVIDIA_GPU_0_NAME=NVIDIA H200\nNVIDIA_GPU_0_MEMORY_MIB=[N/A]\nHOST_MEM_TOTAL_KIB=%d\n" % _MEMTOTAL_128
+    )
+    assert build_host_hardware(parsed).accelerators[0].memory_gb is None
+
+
+def test_shared_pool_is_not_attributed_to_one_of_several_devices():
+    parsed = parse_fingerprint_output(
+        "NVIDIA_GPU_COUNT=2\nNVIDIA_GPU_0_NAME=NVIDIA GB10\nNVIDIA_GPU_0_MEMORY_MIB=[N/A]\n"
+        "NVIDIA_GPU_1_NAME=NVIDIA GB10\nNVIDIA_GPU_1_MEMORY_MIB=[N/A]\nHOST_MEM_TOTAL_KIB=%d\n" % _MEMTOTAL_128
+    )
+    assert all(a.memory_gb is None for a in build_host_hardware(parsed).accelerators)
+
+
+def test_memory_gb_override_separates_gb10_variants():
+    from sparkrun.core.recipe_overrides import OverrideContext, evaluate_override, parse_overrides
+
+    (small,) = parse_overrides([{"when": {"accelerator": "gb10", "memory_gb": {"lt": 100}}, "defaults": {"max_model_len": 32768}}])
+
+    def matches(memtotal_kib: int) -> bool:
+        hw = build_host_hardware(parse_fingerprint_output(_gb10(memtotal_kib)))
+        return evaluate_override(small, OverrideContext(hosts={"spark": hw})).matched
+
+    assert matches(_MEMTOTAL_64)
+    assert not matches(_MEMTOTAL_128)

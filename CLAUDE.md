@@ -217,6 +217,18 @@ would otherwise re-key every host. **Hardware facts belong in these tiers, not i
 recipes:** a recipe that restates `CUTE_DSL_ARCH` or an arch-specific env var is
 a sign the platform is missing it.
 
+**Memory is the opposite: measured, and the platform constant is the
+fallback.** GB10's `nvidia-smi` reports `memory.total` as `[N/A]`, so every
+GB10 used to resolve to `DGX_SPARK_MEMORY_GB` (121) — a 64 GB variant was
+scheduled, fit-checked and matched by `memory_gb` overrides as a 128 GB part.
+The probes now emit `HOST_MEM_TOTAL_KIB`, and `fingerprint._fill_unified_memory`
+takes it as the capacity of a platform-declared `unified-memory` device that
+reported none — only when it is the host's **sole** accelerator, since a shared
+pool cannot be attributed to one of several. A 128 GB Spark measures 119.7 GiB
+(not 121); the constant now applies only to assumed hardware or a probe without
+`/proc/meminfo`. Detected GB10 host fingerprints changed once as a result
+(`memory_gb` is in `compute_fingerprint_hash`; nothing compares them).
+
 ### In-Tree Plugins (`plugins/` + `core/in_tree_plugins.py`)
 
 `sparkrun.plugins` is the **mate of the out-of-tree plugin system**: same

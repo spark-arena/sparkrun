@@ -447,7 +447,7 @@ overrides:
 | `platform`, `vendor`, `accelerator`            | e.g. `dgx-spark`, `nvidia`, `gb10`                                 |
 | `arch`                                         | `sm_121` (GB10), `sm_120` (RTX PRO 6000). `sm_120a` also accepted  |
 | `capability`                                   | accelerator tags (`unified-memory`, `rdma:roce-v2`, …)             |
-| `memory_gb`                                    | per-accelerator memory                                             |
+| `memory_gb`                                    | per-accelerator memory (GiB; unified-memory parts: host RAM)       |
 
 Hardware selectors are evaluated per accelerator: `accelerator` and `arch` must hold for the same device. A launch
 always runs on hosts that agree on every hardware `when:`. On a mixed cluster (say GB10s and RTX PRO boxes),

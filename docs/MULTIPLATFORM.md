@@ -48,10 +48,12 @@ entry points. Generic operational code uses the central resolver.
 
 Scheduling and per-host fit resolve capacity from `AcceleratorSpec.memory_gb`
 first, then the matched platform's `default_accelerator_memory_gb(accelerator)`.
-DGX Spark supplies the existing 121 GiB planning capacity for identified NVIDIA
-GB10 devices when the probe reports memory as unavailable. The default 90%
-scheduling/fit cap therefore gives 108.9 GiB usable capacity. These are planning
-defaults, not a fresh measurement of available memory.
+GB10's `nvidia-smi` reports memory as unavailable, so for a unified-memory
+device that is the host's only accelerator the probe measures capacity from the
+host's `MemTotal` instead (119.7 GiB on a 128 GB DGX Spark, about 62 GiB on a
+64 GB part). DGX Spark's 121 GiB planning capacity applies only when nothing was
+measured (assumed hardware, no probe). The default 90% scheduling/fit cap is
+applied on top of either.
 
 Explicit inventory capacity takes precedence. Generic or unidentified devices
 remain unknown unless their platform provides a qualified capacity. Resolution
