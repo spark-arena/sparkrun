@@ -4,8 +4,11 @@ Instead of having every host pull from the internet, these functions
 pull once (locally or on the head node) and then stream the image
 to targets via ``docker save | ssh … docker load``.
 
-A hash check (comparing Docker image IDs) is performed before each
-transfer so hosts that already have the correct image are skipped.
+A content check is performed before each transfer so hosts that already
+have the correct image are skipped.  See :func:`_images_match` for why
+comparing Docker image IDs alone is not sufficient across a fleet, and
+:func:`~sparkrun.containers.registry.content_signature` for the signal
+that is.
 
 # TODO: [FUTURE]: allow alternatives to docker!
 """
@@ -13,8 +16,16 @@ transfer so hosts that already have the correct image are skipped.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
-from sparkrun.containers.registry import ensure_image, get_image_identity
+from sparkrun.containers.registry import (
+    IMAGE_INSPECT_FORMAT,
+    LEGACY_IMAGE_INSPECT_FORMAT,
+    ImageIdentity,
+    ensure_image,
+    get_image_identity,
+    parse_image_identity,
+)
 from sparkrun.orchestration.transfer import map_transfer_failures
 from sparkrun.orchestration.ssh import (
     HEAD_DISTRIBUTE_MAX_PARALLEL,
@@ -30,25 +41,49 @@ from sparkrun.core.progress import PROGRESS
 
 logger = logging.getLogger(__name__)
 
-# Command to get a Docker image identity (Id + RepoDigests) on a remote host.
-# Empty output = image not present.  Output shape after substitution:
-#     <sha256:id>|<repo1@sha256:dig> <repo2@sha256:dig> ...
-_REMOTE_IMAGE_IDENTITY_CMD = (
-    "docker image inspect --format '{{{{.Id}}}}|{{{{range .RepoDigests}}}}{{{{.}}}} {{{{end}}}}' {image} 2>/dev/null || true"
-)
+def remote_image_identity_cmd(image: str) -> str:
+    """Build the remote command that reports a Docker image's identity.
+
+    Empty output = image not present.  Output shape:
+    ``<id>|<repo@sha> ...|<layer> ...|<config json>``
+
+    The image reference is spliced in by concatenation, never with
+    :meth:`str.format`.  This matters: the inspect template is full of Go
+    template braces, and ``format`` would collapse each ``{{`` to ``{`` --
+    and ``docker inspect --format '{.Id}'`` is *valid literal text* that
+    happily exits 0 printing the brace string back.  That failure mode is
+    silent: every host would report unparseable garbage, every comparison
+    would mismatch, and the fleet would re-transfer the image forever.
+    (The previous revision avoided this only by quadrupling every brace.)
+
+    The command falls back to the pre-content-signature template so an
+    older daemon still reports the identities it can provide, rather than
+    looking like the image is missing and forcing a pointless re-transfer.
+
+    The template is single-quoted for the remote shell; it contains no
+    single quotes, so no escaping is required.
+    """
+    ref = quote(image)
+    return (
+        "docker image inspect --format '"
+        + IMAGE_INSPECT_FORMAT
+        + "' "
+        + ref
+        + " 2>/dev/null || docker image inspect --format '"
+        + LEGACY_IMAGE_INSPECT_FORMAT
+        + "' "
+        + ref
+        + " 2>/dev/null || true"
+    )
 
 
-def _parse_identity(raw: str) -> tuple[str | None, list[str]]:
+def _parse_identity(raw: str) -> ImageIdentity:
     """Parse the output of ``_REMOTE_IMAGE_IDENTITY_CMD``.
 
-    Returns ``(image_id, repo_digests)``.  ``image_id`` is ``None`` when
-    the image is absent (empty output).
+    Thin alias for :func:`~sparkrun.containers.registry.parse_image_identity`,
+    kept so the remote command and its parser stay adjacent here.
     """
-    raw = raw.strip()
-    if not raw:
-        return None, []
-    image_id, _, digests_str = raw.partition("|")
-    return (image_id or None), digests_str.split()
+    return parse_image_identity(raw)
 
 
 def _digest_shas(repo_digests: list[str]) -> set[str]:
@@ -61,27 +96,75 @@ def _digest_shas(repo_digests: list[str]) -> set[str]:
     return {d.rsplit("@", 1)[-1] for d in repo_digests if "@" in d}
 
 
+def _as_identity(value: Any) -> ImageIdentity:
+    """Coerce a legacy ``(image_id, repo_digests)`` pair to :class:`ImageIdentity`.
+
+    Identities were historically carried as bare pairs.  Accepting both
+    shapes lets the content signature be threaded through without forcing
+    every caller and every existing mock to change at once; a full
+    ``ImageIdentity`` passes straight through, a pair arrives with no
+    content signature and falls back to the ID/digest signals.
+    """
+    if isinstance(value, ImageIdentity):
+        return value
+    image_id, repo_digests = value
+    return ImageIdentity(image_id, list(repo_digests or []), None)
+
+
 def _images_match(
     local_id: str | None,
     local_digests: list[str],
     remote_id: str | None,
     remote_digests: list[str],
+    local_content: str | None = None,
+    remote_content: str | None = None,
 ) -> bool:
     """Decide whether two image identities refer to the same image.
 
-    Match if **either** the image IDs are equal **or** any RepoDigest sha
-    is shared.  Image IDs vary across hosts with different Docker storage
-    drivers (issue #152), so RepoDigests are the storage-driver-agnostic
-    signal.  RepoDigests are absent for locally-built/save-loaded images,
-    so we keep Id equality as a fallback.
+    Matches if **any** of: the content signatures are equal, the image IDs
+    are equal, or a RepoDigest sha is shared.
+
+    Each signal covers a gap the others leave, and the content signature is
+    checked first because it is the only one that survives both known
+    failure modes at once:
+
+    * Image IDs are recomputed by the local storage driver, so hosts on
+      different drivers never agree on them for identical content (issue
+      #152).  RepoDigests cover that case.
+    * RepoDigests are registry metadata, so they are simply **absent** for
+      an image that was built locally or moved with
+      ``docker save | docker load``.  Image IDs cover that case *only*
+      when the drivers match.
+
+    The combination that defeats both — a ``save | load`` fan-out onto a
+    host running a different storage driver — produced neither matching IDs
+    nor any RepoDigests, so the node was reported stale on every launch and
+    re-received the whole image forever.  The content signature is a digest
+    of the configuration plus the ordered layer chain, both read verbatim
+    from the image manifest and stored identically by every driver, so it
+    matches there too.
+
+    ``local_content``/``remote_content`` are optional so existing callers
+    that only have IDs and digests keep working unchanged.
     """
     if not remote_id and not remote_digests:
         return False
+    if local_content and remote_content and local_content == remote_content:
+        return True
     if local_id and remote_id and local_id == remote_id:
         return True
     local_shas = _digest_shas(local_digests)
     remote_shas = _digest_shas(remote_digests)
     return bool(local_shas & remote_shas)
+
+
+def _match_reason(local: ImageIdentity, remote: ImageIdentity) -> str:
+    """Which signal matched, for human-readable progress output."""
+    if local.content_sig and remote.content_sig and local.content_sig == remote.content_sig:
+        return "content match"
+    if local.image_id and remote.image_id and local.image_id == remote.image_id:
+        return "id match"
+    return "digest match"
 
 
 def _check_remote_image_identities(
@@ -91,8 +174,8 @@ def _check_remote_image_identities(
     ssh_key: str | None = None,
     ssh_options: list[str] | None = None,
     dry_run: bool = False,
-) -> dict[str, tuple[str | None, list[str]]]:
-    """Check the Docker image identity (Id + RepoDigests) on multiple hosts.
+) -> dict[str, ImageIdentity]:
+    """Check the Docker image identity on multiple hosts.
 
     Args:
         image: Image reference to check.
@@ -103,8 +186,9 @@ def _check_remote_image_identities(
         dry_run: If True, return empty dict (skip checks).
 
     Returns:
-        Mapping of host → ``(image_id, repo_digests)``.  Hosts where the
-        image is absent or the SSH command failed are omitted.
+        Mapping of host → :class:`ImageIdentity` (ID, RepoDigests and
+        content signature).  Hosts where the image is absent or the SSH
+        command failed are omitted.
     """
     if dry_run or not hosts:
         return {}
@@ -112,8 +196,8 @@ def _check_remote_image_identities(
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from sparkrun.orchestration.ssh import resolve_parallel_cap
 
-    cmd = _REMOTE_IMAGE_IDENTITY_CMD.format(image=quote(image))
-    result_map: dict[str, tuple[str | None, list[str]]] = {}
+    cmd = remote_image_identity_cmd(image)
+    result_map: dict[str, ImageIdentity] = {}
 
     with ThreadPoolExecutor(max_workers=resolve_parallel_cap(len(hosts))) as executor:
         futures = {
@@ -133,16 +217,17 @@ def _check_remote_image_identities(
             if not result.success:
                 logger.debug("  %s: identity check failed (rc=%s)", result.host, result.returncode)
                 continue
-            image_id, repo_digests = _parse_identity(result.stdout)
+            identity = _parse_identity(result.stdout)
             logger.debug(
-                "  %s: remote id=%s digests=%s",
+                "  %s: remote id=%s digests=%s content=%s",
                 result.host,
-                image_id or "(absent)",
-                repo_digests or "(none)",
+                identity.image_id or "(absent)",
+                identity.repo_digests or "(none)",
+                (identity.content_sig or "(none)")[:19],
             )
-            if image_id is None and not repo_digests:
+            if identity.image_id is None and not identity.repo_digests:
                 continue
-            result_map[result.host] = (image_id, repo_digests)
+            result_map[result.host] = identity
 
     return result_map
 
@@ -156,14 +241,13 @@ def _filter_hosts_needing_image(
     ssh_key: str | None = None,
     ssh_options: list[str] | None = None,
     dry_run: bool = False,
+    local_content_sig: str | None = None,
 ) -> list[str]:
     """Return the subset of hosts that need the image transferred.
 
-    Compares the local image identity (Id + RepoDigests) with each remote
-    host's identity.  Hosts whose images match are skipped.  RepoDigest
-    overlap is preferred because Docker image IDs differ across hosts that
-    use different storage drivers (issue #152); Id equality is the
-    fallback for locally-built/save-loaded images that lack RepoDigests.
+    Compares the local image identity with each remote host's identity and
+    skips the hosts that already match.  See :func:`_images_match` for what
+    counts as a match and why ID equality alone is not enough.
 
     Args:
         image: Image reference.
@@ -176,17 +260,29 @@ def _filter_hosts_needing_image(
         ssh_key: Optional path to SSH private key.
         ssh_options: Additional SSH options.
         dry_run: If True, return all hosts (no filtering).
+        local_content_sig: Local content signature (from
+            :func:`get_image_identity`).  This is the signal that makes a
+            save-loaded copy on a host with a different storage driver
+            recognizable as the same image; without it such a host looks
+            stale forever.
 
     Returns:
         List of hosts that need the image.
     """
     if dry_run or not hosts:
         return list(hosts)
-    if not local_image_id and not local_repo_digests:
+    if not local_image_id and not local_repo_digests and not local_content_sig:
         return list(hosts)
 
     local_digests = local_repo_digests or []
-    logger.debug("Local image '%s' id=%s digests=%s", image, local_image_id, local_digests)
+    local = ImageIdentity(local_image_id, local_digests, local_content_sig)
+    logger.debug(
+        "Local image '%s' id=%s digests=%s content=%s",
+        image,
+        local_image_id,
+        local_digests,
+        (local_content_sig or "(none)")[:19],
+    )
 
     remote_identities = _check_remote_image_identities(
         image,
@@ -198,19 +294,27 @@ def _filter_hosts_needing_image(
 
     needs_transfer = []
     for host in hosts:
-        remote_id, remote_digests = remote_identities.get(host, (None, []))
-        if _images_match(local_image_id, local_digests, remote_id, remote_digests):
-            reason = "digest match" if _digest_shas(local_digests) & _digest_shas(remote_digests) else "id match"
-            logger.info("  %s: image up-to-date (%s), skipping", host, reason)
+        remote = _as_identity(remote_identities.get(host, ImageIdentity.empty()))
+        if _images_match(
+            local.image_id,
+            local.repo_digests,
+            remote.image_id,
+            remote.repo_digests,
+            local.content_sig,
+            remote.content_sig,
+        ):
+            logger.info("  %s: image up-to-date (%s), skipping", host, _match_reason(local, remote))
         else:
-            if remote_id or remote_digests:
+            if remote.image_id or remote.repo_digests:
                 logger.info("  %s: image mismatch, will transfer", host)
                 logger.debug(
-                    "    local: id=%s digests=%s | remote: id=%s digests=%s",
-                    local_image_id,
-                    local_digests,
-                    remote_id,
-                    remote_digests,
+                    "    local: id=%s digests=%s content=%s | remote: id=%s digests=%s content=%s",
+                    local.image_id,
+                    local.repo_digests,
+                    (local.content_sig or "(none)")[:19],
+                    remote.image_id,
+                    remote.repo_digests,
+                    (remote.content_sig or "(none)")[:19],
                 )
             else:
                 logger.info("  %s: image not present, will transfer", host)
@@ -280,18 +384,23 @@ def distribute_image_from_local(
 
     xfer = transfer_hosts or hosts
 
-    # Step 2: identity check — skip hosts that already have the correct image
-    local_id, local_digests = get_image_identity(image) if not dry_run else (None, [])
+    # Step 2: identity check — skip hosts that already have the correct image.
+    # ``_as_identity`` normalizes the result so a caller or mock that still
+    # supplies the pre-content-signature ``(id, digests)`` pair is treated as
+    # an identity with no content signature -- a real state (older daemons),
+    # not an error -- and falls back to the ID/digest signals.
+    local = _as_identity(get_image_identity(image) if not dry_run else ImageIdentity.empty())
 
     needs_transfer = _filter_hosts_needing_image(
         image,
         xfer,
-        local_id,
-        local_repo_digests=local_digests,
+        local.image_id,
+        local_repo_digests=local.repo_digests,
         ssh_user=ssh_user,
         ssh_key=ssh_key,
         ssh_options=ssh_options,
         dry_run=dry_run,
+        local_content_sig=local.content_sig,
     )
 
     if not needs_transfer:
@@ -381,13 +490,24 @@ def distribute_image_from_head(
             ssh_options=ssh_options,
         )
         ref = remote_identities.get(head)
-        if ref:
-            ref_id, ref_digests = ref
-            # Head already has the image — check which workers need it
+        if ref is not None:
+            ref = _as_identity(ref)
+            # Head already has the image — check which workers need it.
+            # The head is the transfer source, so its content signature is
+            # the reference every worker is compared against.  Without it a
+            # save-loaded worker on a different storage driver could never
+            # match, and the head would re-stream the image on every launch.
             needs_transfer = []
             for h in hosts:
-                r_id, r_digests = remote_identities.get(h, (None, []))
-                if not _images_match(ref_id, ref_digests, r_id, r_digests):
+                remote = _as_identity(remote_identities.get(h, ImageIdentity.empty()))
+                if not _images_match(
+                    ref.image_id,
+                    ref.repo_digests,
+                    remote.image_id,
+                    remote.repo_digests,
+                    ref.content_sig,
+                    remote.content_sig,
+                ):
                     needs_transfer.append(h)
             if not needs_transfer:
                 logger.log(PROGRESS, "  Container image up-to-date on all %d host(s)", len(hosts))

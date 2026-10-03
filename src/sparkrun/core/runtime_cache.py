@@ -366,10 +366,15 @@ def probe_image_identity(
         logger.debug("runtime_cache: image identity probe failed", exc_info=True)
         return None
 
-    for image_id, repo_digests in identities.values():
+    for identity in identities.values():
         # Prefer the local image ID; a repo digest is the fallback for an image
         # pulled but not built locally.
-        return image_id or (repo_digests[0] if repo_digests else None)
+        #
+        # Deliberately *not* switched to ``identity.content_sig``: that would be
+        # a more driver-agnostic cache key, but it silently orphans every
+        # runtime cache already keyed by image ID.  Cache-key semantics are a
+        # separate change from the distribution staleness this fixes.
+        return identity.image_id or (identity.repo_digests[0] if identity.repo_digests else None)
     return None
 
 

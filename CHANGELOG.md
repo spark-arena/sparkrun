@@ -110,6 +110,39 @@ For the long-form 0.3.0 narrative, see [`docs/RELEASE_NOTES.md`](docs/RELEASE_NO
   validated (they are emitted bare or double-quoted, so they cannot be
   shell-quoted without changing what bash sees).
 
+### Fixed
+
+- Image cache detection no longer reports an already-present image as stale
+  when a cluster mixes Docker storage drivers **and** the image arrived by
+  `docker save | docker load`. Such a node re-received the entire image on
+  **every** launch — ~36 GB per node per run for a typical vLLM image — and
+  pre-pulling it changed nothing.
+
+  The check compared Docker image IDs, falling back to RepoDigest overlap.
+  Each signal covers one gap but not both at once: an image ID is recomputed
+  by the *local* storage driver, so an `overlay2` host and a
+  containerd-`overlayfs` host disagree about it for byte-identical content
+  (the known #152), while RepoDigests are registry metadata and
+  `docker save | docker load` strips them, leaving the fallback with nothing
+  to compare. A node on the other driver matched *neither* signal and so was
+  permanently stale. The #152 fix only covered the half of this where both
+  hosts pulled the image themselves.
+
+  `get_image_identity` now also returns a **content signature** — a digest of
+  the image configuration plus its ordered layer chain, both read verbatim
+  from the image manifest and stored identically by every storage driver —
+  and `_images_match` consults it first, since it is the only signal that
+  survives both failure modes at once. The ID and RepoDigest signals are
+  kept, so hosts that matched before match identically now. An older daemon
+  that cannot render the new fields falls back to the previous template
+  rather than reporting the image absent, which would itself have forced a
+  pointless re-transfer.
+
+  `sparkrun adv compare-images` now prints the content signature beside the
+  ID and RepoDigest for the local machine and every cluster host, and names
+  which signal matched, so this class of mismatch is diagnosable rather than
+  something to infer from an unexpected re-transfer.
+
 ### Security
 
 - Registry names and asset subpaths are now contained to the registry cache.
