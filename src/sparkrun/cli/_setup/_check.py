@@ -10,13 +10,16 @@ Today each readiness signal is a :class:`SetupCheck` in the ordered
 :data:`SETUP_CHECKS` registry: a stable ``key`` and an
 ``evaluate(state, ctx)`` callable that turns a host's :class:`HostState`
 (shallow probe facts + richer signals like CX7 detection) into a
-:class:`CheckItem`. This is deliberately the *check half* of a larger
-"setup step" abstraction we want to grow into: a registry of ordered,
+:class:`CheckItem`. The wizard is the *apply* half of that abstraction:
+before each phase it asks which checks already pass
+(:func:`probe_host_states` + :func:`evaluate_host` — the same sweep this
+command renders) and skips the phase when every host already satisfies it,
+so ``sparkrun setup check`` and the wizard can never disagree about what a
+host has. What is still missing is the fuller form: a registry of ordered,
 possibly dependency-driven steps assignable per hardware/platform or per
-cluster, each carrying both a ``check`` and an ``apply`` stage so that
-``setup check`` (check-only) and ``setup wizard`` (check-then-apply) drive
-off one source of truth. For now the ``guidance`` string names the command
-that would apply the fix — the eventual ``apply`` stage's stand-in.
+cluster, each carrying its own ``apply`` stage — for now the ``guidance``
+string names the command that would apply the fix, the ``apply`` stage's
+stand-in.
 """
 
 from __future__ import annotations
@@ -572,6 +575,93 @@ def evaluate_host(state: HostState, ctx: CheckContext) -> list[CheckItem]:
     return items
 
 
+@dataclass
+class SetupProbe:
+    """Result of one read-only host sweep (:func:`probe_host_states`)."""
+
+    states: dict[str, HostState] = field(default_factory=dict)
+    """Verified :class:`HostState` per host; failed hosts get empty facts."""
+    unreachable: list[str] = field(default_factory=list)
+    """Hosts whose probe did not complete (also present in *states*)."""
+    errors: dict[str, str] = field(default_factory=dict)
+    """host → why its probe failed (clipped stderr, or "no response")."""
+
+
+def probe_host_states(host_list, ssh_kwargs) -> SetupProbe:
+    """Probe every host once and build the :class:`HostState` each check consumes.
+
+    This is the single read-only sweep behind ``sparkrun setup check`` and the
+    wizard's already-configured detection, so the two cannot disagree about
+    what a host has: one renders it, the other skips the phases it already
+    satisfies. Each host gets its own peer list (all other hosts) injected
+    into ``setup_check.sh`` for the SSH-mesh probe; CX7 and RDMA facts are
+    enriched from the same machinery the real flows use — dedicated
+    :class:`HostState` fields, for the reason it documents.
+
+    A host whose probe fails yields an empty-facts :class:`HostState` (and a
+    place in *unreachable* / *errors*): every check then reads as "could not
+    verify", which callers must treat as *not satisfied*, never as *broken* —
+    the same ``exists=None`` rule the executor post-mortem follows.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from sparkrun.orchestration.ssh import run_remote_script
+    from sparkrun.scripts import read_script
+    from sparkrun.utils.text import parse_kv_output
+
+    def _probe(host: str):
+        peers = " ".join(h for h in host_list if h != host)
+        script = read_script("setup_check.sh").format(peers=peers)
+        return run_remote_script(host, script, timeout=60, quiet=True, **ssh_kwargs)
+
+    with ThreadPoolExecutor(max_workers=min(len(host_list), 16)) as pool:
+        raw_results = dict(zip(host_list, pool.map(_probe, host_list), strict=True))
+
+    multi_host = len(host_list) > 1
+
+    # CX7 readiness reuses the real detection machinery (per-interface link
+    # state + IP + netplan), so it reflects effective networking rather than
+    # a config file's presence. Only meaningful multi-host; best-effort.
+    cx7_detections: dict[str, "CX7HostDetection"] = {}
+    if multi_host:
+        from sparkrun.orchestration.networking import detect_cx7_for_hosts
+
+        try:
+            cx7_detections = detect_cx7_for_hosts(host_list, ssh_kwargs=ssh_kwargs)
+        except Exception:
+            logger.debug("CX7 detection failed during setup probe", exc_info=True)
+            cx7_detections = {}
+
+    # RDMA device state, from the same probe `setup rdma-test` uses — so
+    # the check and the test cannot disagree about what hardware is there.
+    # Read-only and cheap: it sends nothing over the fabric.
+    rdma_facts: dict[str, "RdmaHostFacts"] = {}
+    if multi_host:
+        from sparkrun.api.setup._rdma import _run_probe
+
+        try:
+            rdma_facts = _run_probe(host_list, ssh_kwargs, dry_run=False)
+        except Exception:
+            logger.debug("RDMA probe failed during setup probe", exc_info=True)
+            rdma_facts = {}
+
+    probe = SetupProbe()
+    for host in host_list:
+        r = raw_results.get(host)
+        if r is None or not r.success or "CHECK_COMPLETE=1" not in (r.stdout or ""):
+            probe.unreachable.append(host)
+            probe.errors[host] = (r.stderr.strip()[:160] if r and r.stderr else "no response") if r else "no response"
+            probe.states[host] = HostState(host=host)
+            continue
+        probe.states[host] = HostState(
+            host=host,
+            facts=parse_kv_output(r.stdout),
+            cx7=cx7_detections.get(host),
+            rdma=rdma_facts.get(host),
+        )
+    return probe
+
+
 # --- CLI command ------------------------------------------------------------
 
 
@@ -667,12 +757,7 @@ def register(setup_group) -> None:
 
           sparkrun setup check --hosts 10.0.0.1,10.0.0.2 --json
         """
-        from concurrent.futures import ThreadPoolExecutor
-
         from sparkrun.core.config import SparkrunConfig
-        from sparkrun.orchestration.ssh import run_remote_script
-        from sparkrun.scripts import read_script
-        from sparkrun.utils.text import parse_kv_output
 
         from .._common import _resolve_setup_context, print_json
 
@@ -699,73 +784,31 @@ def register(setup_group) -> None:
         click.echo("=" * 56)
         click.echo()
 
-        # Probe every host concurrently. Each host gets its own peer list
-        # (all other hosts) injected into the script for the SSH-mesh probe.
+        # One read-only sweep, shared with the wizard's already-configured
+        # detection — the report and the skip decisions must never disagree
+        # about what a host has.
         results_by_host: dict[str, list[CheckItem]] = {}
-        unreachable: list[str] = []
         json_hosts: dict[str, object] = {}
-
-        def _probe(host: str):
-            peers = " ".join(h for h in host_list if h != host)
-            script = read_script("setup_check.sh").format(peers=peers)
-            return run_remote_script(host, script, timeout=60, quiet=True, **ssh_kwargs)
-
-        with ThreadPoolExecutor(max_workers=min(len(host_list), 16)) as pool:
-            raw_results = dict(zip(host_list, pool.map(_probe, host_list), strict=True))
-
-        # CX7 readiness reuses the real detection machinery (per-interface link
-        # state + IP + netplan), so it reflects effective networking rather than
-        # a config file's presence. Only meaningful multi-host; best-effort.
-        cx7_detections = {}
-        if multi_host:
-            from sparkrun.orchestration.networking import detect_cx7_for_hosts
-
-            try:
-                cx7_detections = detect_cx7_for_hosts(host_list, ssh_kwargs=ssh_kwargs)
-            except Exception:
-                logger.debug("CX7 detection failed during setup check", exc_info=True)
-                cx7_detections = {}
-
-        # RDMA device state, from the same probe `setup rdma-test` uses — so
-        # the check and the test cannot disagree about what hardware is there.
-        # Read-only and cheap: it sends nothing over the fabric.
-        rdma_facts = {}
-        if multi_host:
-            from sparkrun.api.setup._rdma import _run_probe
-
-            try:
-                rdma_facts = _run_probe(host_list, ssh_kwargs, dry_run=False)
-            except Exception:
-                logger.debug("RDMA probe failed during setup check", exc_info=True)
-                rdma_facts = {}
+        probe = probe_host_states(host_list, ssh_kwargs)
+        unreachable = probe.unreachable
 
         # Render in a deterministic host order.
         for host in host_list:
-            r = raw_results.get(host)
-            if r is None or not r.success or "CHECK_COMPLETE=1" not in (r.stdout or ""):
-                unreachable.append(host)
+            if host in unreachable:
                 click.echo(host)
-                detail = (r.stderr.strip()[:160] if r and r.stderr else "no response") if r else "no response"
-                click.echo("  %s SSH connectivity — %s" % (_STATUS_MARK[FAIL], detail))
+                click.echo("  %s SSH connectivity — %s" % (_STATUS_MARK[FAIL], probe.errors.get(host, "no response")))
                 click.echo("         → sparkrun setup ssh%s (verify SSH access first)" % check_ctx.cluster_flag)
                 click.echo()
                 json_hosts[host] = {"reachable": False, "checks": []}
                 continue
 
-            state = HostState(
-                host=host,
-                facts=parse_kv_output(r.stdout),
-                cx7=cx7_detections.get(host),
-                rdma=rdma_facts.get(host),
-            )
-            items = evaluate_host(state, check_ctx)
+            items = evaluate_host(probe.states[host], check_ctx)
             results_by_host[host] = items
             _render_host(host, items)
             json_hosts[host] = {
                 "reachable": True,
                 "checks": [{"key": i.key, "label": i.label, "status": i.status, "detail": i.detail, "guidance": i.guidance} for i in items],
             }
-
         # Aggregate.
         fail_count = sum(1 for items in results_by_host.values() for i in items if i.status == FAIL)
         warn_count = sum(1 for items in results_by_host.values() for i in items if i.status == WARN)

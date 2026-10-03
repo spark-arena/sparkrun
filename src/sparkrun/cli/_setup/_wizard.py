@@ -458,25 +458,57 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
         # access gate has not run yet — run it here before probing.
         user = _gate_ssh_access(user)
 
-        # Detect CX7 on cluster hosts if not already known (e.g. reusing
-        # an existing cluster skips the host-discovery path above).
-        if ssh_access_hosts and not cx7_detected_any and len(ssh_access_hosts) >= 2 and not dry_run:
+        # ── Readiness probe: what is already configured? ─────────────
+        # The wizard *says* it detects existing setup, and `sparkrun setup
+        # check` reports it — so the two must agree. One read-only sweep of
+        # the same SETUP_CHECKS probe feeds every phase below: a phase whose
+        # checks all pass on every host is reported and skipped instead of
+        # being re-prompted and re-applied. Probe failure (or dry-run) leaves
+        # the maps empty, which sends every phase down its prompt path —
+        # exactly the behavior this probe predates.
+        from ._check import FAIL, OK, CheckContext, CheckItem, evaluate_host, probe_host_states
+
+        host_checks: dict[str, dict[str, CheckItem]] = {}
+        if ssh_access_hosts and not dry_run:
+            click.echo("Checking existing configuration on %d host(s)..." % len(ssh_access_hosts))
             ssh_kwargs_probe = build_ssh_kwargs(config)
             if user:
                 ssh_kwargs_probe["ssh_user"] = user
             try:
-                probe = detect_cx7_for_hosts(ssh_access_hosts, ssh_kwargs=ssh_kwargs_probe)
-                cx7_detected_any = any(d.detected for d in probe.values())
+                probe = probe_host_states(ssh_access_hosts, ssh_kwargs_probe)
+                check_ctx = CheckContext(cluster_name=cluster_name, multi_host=len(ssh_access_hosts) > 1)
+                host_checks = {host: {item.key: item for item in evaluate_host(state, check_ctx)} for host, state in probe.states.items()}
+                cx7_detected_any = cx7_detected_any or any(state.cx7 is not None and state.cx7.detected for state in probe.states.values())
             except Exception as e:
-                logger.debug("CX7 probe on existing cluster failed: %s", e)
+                logger.debug("Wizard readiness probe failed: %s", e)
+
+        def _phase_satisfied(*keys: str) -> bool:
+            """True when every target host reports OK for every named check.
+
+            Anything unknown — host not probed, check omitted for a shape that
+            does not apply, probe failed — counts as *not* satisfied, so the
+            phase prompts and applies exactly as it did before this probe
+            existed. A false "already configured" would skip real work; a
+            false "needs setup" only costs a prompt.
+            """
+            if not host_list:
+                return False
+            return all((item := host_checks.get(h, {}).get(key)) is not None and item.status == OK for h in host_list for key in keys)
 
         # ── Phase 2: SSH Mesh ────────────────────────────────────────
         if host_list:
             click.echo("Phase 2: SSH Mesh")
             click.echo("-" * 30)
 
-            run_mesh = True
-            if not yes:
+            _mesh_done = _phase_satisfied("ssh_mesh")
+            if _mesh_done:
+                click.echo("  SSH mesh already working between all host(s) — skipping.")
+                click.echo("  (Run 'sparkrun setup ssh' to re-key the mesh deliberately.)")
+                results["ssh"] = "OK (already configured)"
+                run_mesh = False
+            elif yes:
+                run_mesh = True
+            else:
                 run_mesh = click.confirm(
                     "Set up SSH mesh across %d host(s) + this machine?" % len(host_list),
                     default=True,
@@ -529,7 +561,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                     click.echo("SSH mesh error: %s" % e, err=True)
                     if not yes and not click.confirm("Continue?", default=True):
                         return
-            else:
+            elif not _mesh_done:
                 results["ssh"] = "skipped"
             click.echo()
 
@@ -560,7 +592,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
         # ── Management IP normalization ──────────────────────────────
         # After SSH mesh, detect each host's management IP and update the
         # cluster definition if the user provided CX7 or other non-mgmt IPs.
-        if host_list and cluster_name and results.get("ssh") == "OK":
+        if host_list and cluster_name and (results.get("ssh") or "").startswith("OK"):
             prev_len = len(host_list)
             _detect_and_update_mgmt_ips(
                 host_list,
@@ -652,7 +684,16 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
             click.echo("-" * 30)
             click.echo("Configures high-speed CX7 networking between hosts.")
 
-            run_cx7 = yes or click.confirm("Configure CX7 networking?", default=True)
+            _cx7_done = _phase_satisfied("cx7")
+            if _cx7_done:
+                click.echo("  CX7 already configured and persisted on all host(s) — skipping.")
+                click.echo("  (Run 'sparkrun setup cx7' to re-plan addresses deliberately.)")
+                results["cx7"] = "OK (already configured)"
+                run_cx7 = False
+            elif yes:
+                run_cx7 = True
+            else:
+                run_cx7 = click.confirm("Configure CX7 networking?", default=True)
 
             if run_cx7:
                 try:
@@ -804,7 +845,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                     click.echo("CX7 error: %s" % e, err=True)
                     if not yes and not click.confirm("Continue?", default=True):
                         return
-            else:
+            elif not _cx7_done:
                 results["cx7"] = "skipped"
             click.echo()
 
@@ -812,7 +853,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
         # CX7 configuration may add new IPs that need to be in the SSH
         # mesh.  Re-run the mesh (discover-ips phase only) so inter-node
         # SSH works over the newly configured CX7 interfaces.
-        if cx7_changed_ips and host_list and len(host_list) >= 2 and results.get("ssh") == "OK":
+        if cx7_changed_ips and host_list and len(host_list) >= 2 and (results.get("ssh") or "").startswith("OK"):
             click.echo("Phase 3b: Re-meshing SSH after CX7 IP changes")
             click.echo("-" * 30)
             click.echo("CX7 configuration changed network IPs. Re-running SSH mesh")
@@ -861,10 +902,25 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
             click.echo("-" * 30)
             click.echo("Ensures user can run Docker commands without sudo.")
 
-            run_docker = yes or click.confirm(
-                "Add '%s' to the docker group on all hosts?" % user,
-                default=True,
-            )
+            _docker_done = _phase_satisfied("docker_group")
+            if _docker_done:
+                click.echo("  '%s' is already in the docker group on all host(s) — skipping." % user)
+                results["docker"] = "OK (already configured)"
+                # Group membership is satisfied, but the daemon may still not
+                # be usable until the user re-logs-in — surface that gap rather
+                # than letting the skip hide it.
+                for _h in host_list:
+                    _item = host_checks.get(_h, {}).get("docker_usable")
+                    if _item is not None and _item.status == FAIL:
+                        click.echo("  %s: %s" % (_h, _item.detail), err=True)
+                run_docker = False
+            elif yes:
+                run_docker = True
+            else:
+                run_docker = click.confirm(
+                    "Add '%s' to the docker group on all hosts?" % user,
+                    default=True,
+                )
 
             if run_docker:
                 try:
@@ -926,7 +982,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                     click.echo("Docker group error: %s" % e, err=True)
                     if not yes and not click.confirm("Continue?", default=True):
                         return
-            else:
+            elif not _docker_done:
                 results["docker"] = "skipped"
             click.echo()
 
@@ -940,10 +996,18 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
             click.echo("-" * 30)
             click.echo("Generates /etc/cdi/nvidia.yaml so Docker can access the GPU(s).")
 
-            run_cdi = yes or click.confirm(
-                "Generate the NVIDIA CDI spec on all hosts?",
-                default=True,
-            )
+            _cdi_done = _phase_satisfied("cdi_spec")
+            if _cdi_done:
+                click.echo("  NVIDIA CDI spec already present and current on all host(s) — skipping.")
+                results["cdi"] = "OK (already configured)"
+                run_cdi = False
+            elif yes:
+                run_cdi = True
+            else:
+                run_cdi = click.confirm(
+                    "Generate the NVIDIA CDI spec on all hosts?",
+                    default=True,
+                )
 
             if run_cdi:
                 try:
@@ -985,7 +1049,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                     click.echo("CDI error: %s" % e, err=True)
                     if not yes and not click.confirm("Continue?", default=True):
                         return
-            else:
+            elif not _cdi_done:
                 results["cdi"] = "skipped"
             click.echo()
 
@@ -995,7 +1059,15 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
             click.echo("-" * 30)
             click.echo("Scoped sudoers for fix-permissions + clear-cache (no broad sudo).")
 
-            run_sudoers = yes or click.confirm("Install sudoers entries?", default=True)
+            _sudoers_done = _phase_satisfied("sudoers")
+            if _sudoers_done:
+                click.echo("  Sudoers entries already installed on all host(s) — skipping.")
+                results["sudoers"] = "OK (already configured)"
+                run_sudoers = False
+            elif yes:
+                run_sudoers = True
+            else:
+                run_sudoers = click.confirm("Install sudoers entries?", default=True)
 
             if run_sudoers:
                 try:
@@ -1065,7 +1137,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                     click.echo("Sudoers error: %s" % e, err=True)
                     if not yes and not click.confirm("Continue?", default=True):
                         return
-            else:
+            elif not _sudoers_done:
                 results["sudoers"] = "skipped"
             click.echo()
 
@@ -1075,7 +1147,15 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
             click.echo("-" * 30)
             click.echo("Prevents system hangs by proactively managing memory pressure.")
 
-            run_earlyoom = yes or click.confirm("Install earlyoom?", default=True)
+            _earlyoom_done = _phase_satisfied("earlyoom")
+            if _earlyoom_done:
+                click.echo("  earlyoom already installed and active on all host(s) — skipping.")
+                results["earlyoom"] = "OK (already configured)"
+                run_earlyoom = False
+            elif yes:
+                run_earlyoom = True
+            else:
+                run_earlyoom = click.confirm("Install earlyoom?", default=True)
 
             if run_earlyoom:
                 try:
@@ -1134,7 +1214,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                     click.echo("earlyoom error: %s" % e, err=True)
                     if not yes and not click.confirm("Continue?", default=True):
                         return
-            else:
+            elif not _earlyoom_done:
                 results["earlyoom"] = "skipped"
             click.echo()
 

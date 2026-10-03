@@ -110,6 +110,23 @@ For the long-form 0.3.0 narrative, see [`docs/RELEASE_NOTES.md`](docs/RELEASE_NO
   validated (they are emitted bare or double-quoted, so they cannot be
   shell-quoted without changing what bash sees).
 
+### Fixed
+
+- `sparkrun setup wizard` now detects an already-configured cluster instead
+  of walking through every step again. The wizard ran each phase's prompt
+  and apply unconditionally, so a host where everything already passed —
+  which `sparkrun setup check` correctly reported as all-clear — was
+  re-prompted for the SSH mesh, CX7, docker group, CDI, sudoers and
+  earlyoom as if it were fresh. Before each phase the wizard now runs the
+  same read-only probe `setup check` uses (`probe_host_states`, extracted
+  so the report and the skip decisions come from one sweep) and skips any
+  phase whose checks all pass on every host, printing what it found and
+  pointing at the explicit command (`sparkrun setup ssh` / `setup cx7`)
+  for a deliberate re-run. Probe failure, a partially-configured host, or
+  `--dry-run` degrades to the previous prompt-and-apply behavior; a false
+  "already configured" would skip real work, a false "needs setup" only
+  costs a prompt.
+
 ### Security
 
 - Registry names and asset subpaths are now contained to the registry cache.

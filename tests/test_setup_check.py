@@ -450,3 +450,42 @@ def test_host_ipc_warns_when_lingering_cannot_be_confirmed():
     item = next(i for i in evaluate_host(_state(facts), _ipc_ctx()) if i.key == "host_ipc")
     assert item.status == WARN
     assert "could not be confirmed" in item.detail
+
+
+# ---------------------------------------------------------------------------
+# probe_host_states — the shared sweep (check command + wizard skips)
+# ---------------------------------------------------------------------------
+
+
+def test_probe_host_states_parses_and_marks_unreachable():
+    """Verified hosts get parsed facts; failed hosts get empty facts + an error."""
+    from sparkrun.cli._setup._check import probe_host_states
+
+    def _run(host, script, *a, **k):
+        if host == "bad-host":
+            return RemoteResult(host, 255, "", "Connection refused")
+        return RemoteResult(host, 0, _facts_kv(_FACTS_ALL_GOOD), "")
+
+    with mock.patch("sparkrun.orchestration.ssh.run_remote_script", side_effect=_run):
+        probe = probe_host_states(["10.0.0.1", "bad-host"], {})
+
+    assert probe.unreachable == ["bad-host"]
+    assert probe.errors["bad-host"] == "Connection refused"
+    assert probe.states["bad-host"].facts == {}  # reads as "could not verify"
+    assert probe.states["10.0.0.1"].facts["CHECK_COMPLETE"] == "1"
+
+
+def test_probe_host_states_single_host_skips_fabric_probes():
+    """A single-host sweep runs no CX7/RDMA detection — inter-node only."""
+    from sparkrun.cli._setup._check import probe_host_states
+
+    with (
+        mock.patch("sparkrun.orchestration.ssh.run_remote_script", return_value=RemoteResult("h", 0, _facts_kv(_FACTS_ALL_GOOD), "")),
+        mock.patch("sparkrun.orchestration.networking.detect_cx7_for_hosts") as mock_cx7,
+        mock.patch("sparkrun.api.setup._rdma._run_probe") as mock_rdma,
+    ):
+        probe = probe_host_states(["10.0.0.1"], {})
+
+    assert not mock_cx7.called
+    assert not mock_rdma.called
+    assert probe.unreachable == []
