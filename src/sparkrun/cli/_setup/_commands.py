@@ -21,6 +21,7 @@ from .._common import (
     HIDE_ADVANCED_OPTIONS,
 )
 from . import setup
+from ._sudo import install_sudoers_entry
 from ._phases import (
     EARLYOOM_PREFER_PATTERNS,
     EARLYOOM_AVOID_PATTERNS,
@@ -1713,6 +1714,9 @@ def setup_fix_permissions(ctx, hosts, hosts_file, cluster_name, user, cache_dir,
     click.echo()
 
     sudo_password = None
+    # Hosts whose sudoers entry is still missing after the --save-sudo
+    # install (below) — filled only when *save_sudo* is set.
+    sudoers_failed_hosts: list[str] = []
 
     from sparkrun.scripts import read_script
 
@@ -1742,23 +1746,13 @@ def setup_fix_permissions(ctx, hosts, hosts_file, cluster_name, user, cache_dir,
             click.echo()
         else:
             sudo_password = click.prompt("[sudo] password for %s" % user, hide_input=True)
-            sudoers_ok = 0
-            sudoers_fail = 0
-            for h in host_list:
-                r = run_sudo_script_on_host(
-                    h,
-                    sudoers_script,
-                    sudo_password,
-                    ssh_kwargs=ssh_kwargs,
-                    timeout=300,
-                    dry_run=False,
-                )
-                if r.success:
-                    sudoers_ok += 1
-                    click.echo("  [OK]   %s: %s" % (h, r.stdout.strip()))
-                else:
-                    sudoers_fail += 1
-                    click.echo("  [FAIL] %s: %s" % (h, r.stderr.strip()[:200]), err=True)
+            sudoers_ok, sudoers_fail, sudoers_failed_hosts = install_sudoers_entry(
+                host_list,
+                sudoers_script,
+                sudo_password,
+                user,
+                ssh_kwargs=ssh_kwargs,
+            )
             click.echo("Sudoers install: %d OK, %d failed." % (sudoers_ok, sudoers_fail))
             if sudoers_ok:
                 _record_setup_phase(
@@ -1821,6 +1815,25 @@ def setup_fix_permissions(ctx, hosts, hosts_file, cluster_name, user, cache_dir,
                     dry_run=dry_run,
                 )
                 result_map[fhost] = retry_result
+                # This password is now proven for the host — install the
+                # --save-sudo entry it never accepted with the cluster-wide
+                # one, so the next run needs no password at all.
+                if save_sudo and fhost in sudoers_failed_hosts:
+                    sudoers_retry = run_sudo_script_on_host(
+                        fhost,
+                        sudoers_script,
+                        per_host_pw,
+                        ssh_kwargs=ssh_kwargs,
+                        timeout=300,
+                        dry_run=dry_run,
+                    )
+                    if sudoers_retry.success:
+                        click.echo("  [OK]   %s: %s" % (fhost, sudoers_retry.stdout.strip()))
+                    else:
+                        click.echo(
+                            "  [FAIL] %s: sudoers entry still not installed: %s" % (fhost, sudoers_retry.stderr.strip()[:200]),
+                            err=True,
+                        )
 
     # Report results
     ok_count = 0
@@ -1896,6 +1909,9 @@ def setup_clear_cache(ctx, hosts, hosts_file, cluster_name, user, save_sudo, dry
     click.echo()
 
     sudo_password = None
+    # Hosts whose sudoers entry is still missing after the --save-sudo
+    # install (below) — filled only when *save_sudo* is set.
+    sudoers_failed_hosts: list[str] = []
 
     from sparkrun.scripts import read_script
 
@@ -1914,23 +1930,13 @@ def setup_clear_cache(ctx, hosts, hosts_file, cluster_name, user, save_sudo, dry
             click.echo()
         else:
             sudo_password = click.prompt("[sudo] password for %s" % user, hide_input=True)
-            sudoers_ok = 0
-            sudoers_fail = 0
-            for h in host_list:
-                r = run_sudo_script_on_host(
-                    h,
-                    sudoers_script,
-                    sudo_password,
-                    ssh_kwargs=ssh_kwargs,
-                    timeout=300,
-                    dry_run=False,
-                )
-                if r.success:
-                    sudoers_ok += 1
-                    click.echo("  [OK]   %s: %s" % (h, r.stdout.strip()))
-                else:
-                    sudoers_fail += 1
-                    click.echo("  [FAIL] %s: %s" % (h, r.stderr.strip()[:200]), err=True)
+            sudoers_ok, sudoers_fail, sudoers_failed_hosts = install_sudoers_entry(
+                host_list,
+                sudoers_script,
+                sudo_password,
+                user,
+                ssh_kwargs=ssh_kwargs,
+            )
             click.echo("Sudoers install: %d OK, %d failed." % (sudoers_ok, sudoers_fail))
             if sudoers_ok:
                 _record_setup_phase(
@@ -1986,6 +1992,25 @@ def setup_clear_cache(ctx, hosts, hosts_file, cluster_name, user, save_sudo, dry
                     dry_run=dry_run,
                 )
                 result_map[fhost] = retry_result
+                # This password is now proven for the host — install the
+                # --save-sudo entry it never accepted with the cluster-wide
+                # one, so the next run needs no password at all.
+                if save_sudo and fhost in sudoers_failed_hosts:
+                    sudoers_retry = run_sudo_script_on_host(
+                        fhost,
+                        sudoers_script,
+                        per_host_pw,
+                        ssh_kwargs=ssh_kwargs,
+                        timeout=300,
+                        dry_run=dry_run,
+                    )
+                    if sudoers_retry.success:
+                        click.echo("  [OK]   %s: %s" % (fhost, sudoers_retry.stdout.strip()))
+                    else:
+                        click.echo(
+                            "  [FAIL] %s: sudoers entry still not installed: %s" % (fhost, sudoers_retry.stderr.strip()[:200]),
+                            err=True,
+                        )
 
     # Report results
     ok_count = 0
