@@ -433,6 +433,21 @@ system, gateway registry, and execution-strategy extension points shipped in
 
 - Quoted remote log-reading commands so SSH preserves the intended shell command.
 
+## [0.3.10] — 2026-09-24
+
+### Fixed
+
+- Fixed model distribution transferring no weights when a host's HF cache uses
+  huggingface_hub's shared blob store (1.32 and later, on by default): both
+  transfer paths now pass `--copy-unsafe-links`, materialising the blob links
+  that leave the model directory while keeping the in-tree snapshot links as
+  links, with one copy per repo blob on the destination. Weight-existence
+  checks reject dangling links, and GGUF weights/projectors are filtered before
+  fallback or precision selection. Re-sync repairs previously broken targets
+  without deleting the cache. These presence checks do not establish complete
+  snapshots or read permissions; cross-repo deduplication remains source-side
+  (#299, #300).
+
 ## [0.3.0] — 2026-07-30
 
 The largest release since 0.1: multiplatform foundations, a console-free

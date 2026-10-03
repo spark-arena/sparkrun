@@ -243,6 +243,7 @@ def sync_resource_to_hosts(
     resource_label: str,
     ssh_user: str | None = None,
     ssh_key: str | None = None,
+    ssh_options: list[str] | None = None,
     dry_run: bool = False,
 ) -> list[str]:
     """Run a sync script on all hosts in parallel and return failures.
@@ -268,6 +269,7 @@ def sync_resource_to_hosts(
         script,
         ssh_user=ssh_user,
         ssh_key=ssh_key,
+        ssh_options=ssh_options,
         dry_run=dry_run,
         session_guard=True,
     )
