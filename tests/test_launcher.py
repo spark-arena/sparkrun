@@ -710,9 +710,14 @@ def test_execution_strategy_records_the_same_job_identity_as_a_normal_launch(mon
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("reported", [False, True])
 @pytest.mark.parametrize("hardware_source", ["inventory", "detected", "assumed"])
-def test_launch_inference_logs_platform_warnings_without_raising(monkeypatch, tmp_path, caplog, hardware_source):
-    """validate_host warnings appear in the log at WARNING level but do not abort launch."""
+def test_launch_inference_logs_platform_warnings_without_raising(monkeypatch, tmp_path, caplog, hardware_source, reported):
+    """validate_host warnings appear in the log at WARNING level but do not abort launch.
+
+    When the caller already showed api.plan's assessment (``hardware_reported``)
+    the launch does not log it a second time.
+    """
     import logging
 
     from sparkrun.core import launcher
@@ -816,6 +821,7 @@ def test_launch_inference_logs_platform_warnings_without_raising(monkeypatch, tm
             return _CC()
 
     runtime = _StubRuntime()
+    from sparkrun.core.hardware_assessment import assess_launch_hardware
 
     with caplog.at_level(logging.WARNING, logger="sparkrun.core.launcher"):
         result = launch_inference(
@@ -828,6 +834,11 @@ def test_launch_inference_logs_platform_warnings_without_raising(monkeypatch, tm
             is_solo=True,
             dry_run=True,
             sync_tuning=False,
+            **(
+                {"hardware_assessment": assess_launch_hardware(runtime, ["dgx-host"], cluster, None), "hardware_reported": True}
+                if reported
+                else {}
+            ),
         )
 
     # Launch must succeed (return 0 from stub runtime)
@@ -835,7 +846,9 @@ def test_launch_inference_logs_platform_warnings_without_raising(monkeypatch, tm
 
     # At least one warning mentioning the host and the missing capability
     warning_texts = [r.message for r in caplog.records if r.levelno == logging.WARNING]
-    if hardware_source == "assumed":
+    if reported:
+        assert not any("dgx-host" in w and ("rdma:roce-v2" in w or "hardware is assumed" in w) for w in warning_texts)
+    elif hardware_source == "assumed":
         assert not any("rdma:roce-v2" in w for w in warning_texts)
         assert any("dgx-host" in w and "hardware is assumed" in w for w in warning_texts)
     else:

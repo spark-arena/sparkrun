@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Mapping
 
 if TYPE_CHECKING:
+    from sparkrun.core.hardware_assessment import HardwareAssessment
     from sparkrun.core.recipe_overrides import OverrideResolution
     from sparkrun.core.offline import OfflineMode
     from sparkrun.orchestration.executor import ExecutorTarget
@@ -273,14 +274,26 @@ class RunPlan:
     overlaid with configured budgets; this mapping keeps the raw facts.
     """
     override_resolution: "OverrideResolution | None" = field(default=None, kw_only=True)
-    offline: "OfflineMode | None" = field(default=None, kw_only=True)
-    """Resolved offline mode (value and deciding layer); ``None`` only for a
-    plan built outside :func:`sparkrun.api.plan`."""
     """Which ``overrides:`` entries matched this launch and what they applied.
 
     ``None`` when the recipe declares none. Already applied to
     :attr:`recipe`; carried so a renderer can show *why* a value differs from
     the recipe's ``defaults`` without re-evaluating anything."""
+    offline: "OfflineMode | None" = field(default=None, kw_only=True)
+    """Resolved offline mode (value and deciding layer); ``None`` only for a
+    plan built outside :func:`sparkrun.api.plan`."""
+    hardware_assessment: "HardwareAssessment | None" = field(default=None, kw_only=True)
+    """Per-host hardware evidence and warnings for :attr:`host_list`.
+
+    Decided here so a renderer can show them beside the fit table they back.
+    Incompatibilities are not carried: :func:`sparkrun.api.plan` raises on
+    them. ``None`` for a plan built outside :func:`sparkrun.api.plan`, or when
+    an application profile requires probed metadata the targets lack; the
+    launch then assesses (and refuses) at its own boundary."""
+    hardware_reported: bool = field(default=False, kw_only=True)
+    """``True`` once the caller has shown :attr:`hardware_assessment`
+    (``dataclasses.replace(plan, hardware_reported=True)``), so the launch does
+    not log it a second time. Left ``False``, the launch logs it as before."""
     recipe_fingerprint: str = ""
     """Serve-configuration digest of the *declared* recipe.
 

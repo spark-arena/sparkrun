@@ -970,6 +970,27 @@ error that rejected them. Regression tests: `tests/test_api_plan.py`,
 `api/_hosts.py:resolve_effective_hosts()` remains the single placement authority
 underneath; `plan` is its one caller on the launch path.
 
+**Hardware checks are decided in `plan` too** (`core/hardware_assessment.py`):
+per-host evidence lines, platform `validate_host` warnings, the assumed-hardware
+warning, runtime `requires_capability` refusals, and a cross-host **driver
+mismatch** warning (only between hosts *detected* this operation — inventory is
+history). All are pure functions of the probe + placement, yet they used to run
+in launch phase 1, printing evidence *after* the fit table it backs and leaving
+`api.plan` callers blind to them. `plan` now raises on an incompatibility (before
+`[1/6]`) and carries the rest as `RunPlan.hardware_assessment`; a renderer that
+shows it sets `hardware_reported=True` (`dataclasses.replace`) so the launcher —
+which still re-runs the checks, since they are cheap and the refusal must hold
+for every caller — logs only hosts a strategy observed beyond the plan. Left
+`False` (benchmark, plugins), the launch logs as before. One deferral: under a
+`require-metadata` application profile with unprobed targets, `resolve_hardware`
+raises; `plan` leaves the assessment `None` and the launch refuses at its old
+point, *after* the trust gate (`test_recipe_source_handoffs` pins that order).
+
+`UNVERIFIED` fit verdicts name their cause (`HostFitDetail.unverified_reasons`,
+`VRAMEstimate.memory_estimate_gaps`) instead of "partial estimate or unverified
+hardware/capacity", which sent people to re-check hardware that had been probed.
+Unknown capacity no longer marks the *estimate* incomplete in `check_fit`.
+
 **Which scheduler is in effect** is reported by
 `core/scheduler.py:describe_effective_scheduler()` — the display peer of
 `resolve_scheduler_selector` (that returns the *selector*, `None` when nothing

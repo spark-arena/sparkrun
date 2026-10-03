@@ -63,6 +63,8 @@ class HostFitDetail:
     hardware_source: str = "inventory"
     memory_limit_source: str | None = None
     memory_estimate_complete: bool = True
+    memory_estimate_gaps: tuple[str, ...] = ()
+    """:attr:`VRAMEstimate.memory_estimate_gaps`, so a report can name them."""
     allocation_mode: str = "exclusive"
 
     @property
@@ -83,6 +85,27 @@ class HostFitDetail:
         ):
             return "unknown"
         return "fits"
+
+    @property
+    def unverified_reasons(self) -> tuple[str, ...]:
+        """Why :attr:`status` is ``"unknown"`` (empty otherwise), naming the actual gap.
+
+        Capacity provenance and estimate completeness are independent causes;
+        a generic "partial estimate or unverified capacity" sends the reader
+        to check hardware that was in fact probed.
+        """
+        if self.status != "unknown":
+            return ()
+        reasons = []
+        if self.accelerator_memory_gb is None:
+            reasons.append("accelerator capacity unknown")
+        elif self.memory_capacity_verification == "estimated":
+            reasons.append("capacity is a platform estimate, not measured")
+        if self.hardware_source == "assumed":
+            reasons.append("hardware assumed, not probed")
+        if not self.memory_estimate_complete:
+            reasons.extend(self.memory_estimate_gaps or ("memory estimate incomplete",))
+        return tuple(reasons)
 
 
 @dataclass
@@ -106,6 +129,14 @@ class FitResult:
         if not self.per_host or any(d.status == "unknown" for d in self.per_host.values()):
             return "unknown"
         return "fits"
+
+    @property
+    def unverified_reasons(self) -> tuple[str, ...]:
+        """Distinct per-host :attr:`HostFitDetail.unverified_reasons`, in host order."""
+        reasons: list[str] = []
+        for detail in self.per_host.values():
+            reasons.extend(r for r in detail.unverified_reasons if r not in reasons)
+        return tuple(reasons)
 
     @property
     def hosts_used(self) -> tuple[str, ...]:
@@ -135,6 +166,7 @@ def _detail_to_dict(d: HostFitDetail) -> dict:
         "hardware_source": d.hardware_source,
         "status": d.status,
         "memory_estimate_complete": d.memory_estimate_complete,
+        "unverified_reasons": list(d.unverified_reasons),
         "allocation_mode": d.allocation_mode,
         "headroom_gb": d.headroom_gb,
         "ok": d.ok,
@@ -228,7 +260,8 @@ def check_fit(
                 headroom_gb=None,
                 ok=True,
                 note=note,
-                memory_estimate_complete=False,
+                memory_estimate_complete=estimate.memory_estimate_complete,
+                memory_estimate_gaps=estimate.memory_estimate_gaps,
                 memory_capacity_source="unknown",
                 allocation_mode=mode,
                 hardware_source=hw.source,
@@ -251,6 +284,7 @@ def check_fit(
                 memory_limit_source=source,
                 memory_capacity_source=capacity_source,
                 memory_estimate_complete=estimate.memory_estimate_complete,
+                memory_estimate_gaps=estimate.memory_estimate_gaps,
                 allocation_mode=mode,
                 hardware_source=hw.source,
             )

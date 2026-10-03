@@ -244,6 +244,24 @@ def plan(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunPl
         recipe, options, _place, runtime=runtime, cluster=cluster_def, hosts=hosts, host_hardware=host_hardware, sctx=sctx
     )
 
+    # Hardware checks need only the probe and the placement, so they are
+    # decided here: a renderer shows them beside the fit table, and an
+    # incompatible host is refused before any launch phase starts.
+    from sparkrun.core.hardware_assessment import assess_launch_hardware
+    from sparkrun.runtimes.compatibility import IncompatibleHardwareError
+
+    try:
+        hardware_assessment = assess_launch_hardware(runtime, host_list, cluster_def, placement, host_hardware)
+    except ValueError:
+        # A require-metadata application profile with unprobed targets has no
+        # hardware to assess. Not plan's to refuse: the launch does, at its own
+        # boundary, after the trust gate (it recomputes when this is None).
+        logger.debug("Plan-time hardware assessment unavailable; deferring to launch", exc_info=True)
+        hardware_assessment = None
+    if hardware_assessment is not None and hardware_assessment.errors:
+        error = IncompatibleHardwareError(runtime.runtime_name, list(hardware_assessment.errors))
+        raise SparkrunError(str(error)) from error
+
     # 3a. Compute intent_id + placement_token; compose cluster_id.
     # The launcher honours ``cluster_id_override`` so we hand it the
     # composed cluster_id rather than letting it derive one from
@@ -309,6 +327,7 @@ def plan(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunPl
         executor_target=executor_target,
         override_resolution=override_resolution,
         offline=resolve_offline(options.offline, cluster_def),
+        hardware_assessment=hardware_assessment,
         _destination=destination,
     )
 
@@ -736,6 +755,8 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
         "execution_strategy": execution_strategy,
         "prepared_execution": prepared_execution,
         "hardware_observations": {host: plan.host_hardware[host] for host in host_list if host in plan.host_hardware},
+        "hardware_assessment": plan.hardware_assessment,
+        "hardware_reported": plan.hardware_reported,
         "offline": bool(plan.offline and plan.offline.offline),
     }
 

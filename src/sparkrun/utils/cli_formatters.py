@@ -346,7 +346,7 @@ def display_vram_estimate(
     if fit is not None:
         fit_str = {
             "fits": "YES (estimate)",
-            "unknown": "UNVERIFIED (partial estimate or unverified hardware/capacity)",
+            "unknown": "UNVERIFIED (%s)" % ("; ".join(fit.unverified_reasons) or "partial estimate or unverified hardware/capacity"),
             "exceeds": "EXCEEDS (see per-host budgets)",
         }[fit.status]
         scope = "Placement" if placement is not None else "Candidate"

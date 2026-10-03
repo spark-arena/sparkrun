@@ -30,6 +30,7 @@ from sparkrun.core.readiness import (
 
 if TYPE_CHECKING:
     from sparkrun.core.hardware import HostHardware
+    from sparkrun.core.hardware_assessment import HardwareAssessment
     from sparkrun.core.backend_select import BackendBundle
     from sparkrun.core.cluster_manager import ClusterDefinition
     from sparkrun.core.config import SparkrunConfig
@@ -1038,6 +1039,12 @@ def launch_inference(
     execution_strategy: "RecipeExecutionStrategy | None" = None,
     prepared_execution: "PreparedExecution | None" = None,
     hardware_observations: "Mapping[str, HostHardware] | None" = None,
+    # api.plan's assessment of the same cluster + placement. With
+    # ``hardware_reported`` (the caller already showed it) only hosts a
+    # strategy observed beyond it are logged here; the checks still re-run,
+    # since they are pure and the refusal must hold for every caller.
+    hardware_assessment: "HardwareAssessment | None" = None,
+    hardware_reported: bool = False,
     sctx: SparkrunContext | None = None,
     # Offline (sparkrun.core.offline): no internet egress. A preflight at the
     # end of phase 1 proves every image and model is present or copyable
@@ -1331,26 +1338,23 @@ def launch_inference(
 
     # Global serve flags must agree across assigned devices. Explicit runtime
     # settings win over the platform tier and resolve conflicting defaults.
-    from sparkrun.platforms import accelerator_defaults, resolve_accelerator_platform
-    from sparkrun.runtimes.compatibility import check_runtime_host_compatibility, IncompatibleHardwareError
+    from sparkrun.core.hardware_assessment import assess_launch_hardware
+    from sparkrun.runtimes.compatibility import IncompatibleHardwareError
 
-    compat_errors = []
-    for host, hw in launch_hardware.items():
-        if host in launch_observations and launch_observations[host].source == "detected" and cluster is not None:
-            from sparkrun.core.hardware_observations import format_hardware_evidence, hardware_evidence
-
-            logger.log(PROGRESS, "Host %s hardware: %s", host, format_hardware_evidence(hardware_evidence(cluster, host, placement)))
-        if getattr(runtime, "requires_capability", ()):
-            compat_errors.extend(check_runtime_host_compatibility(runtime, host, hw))
-        for accel in hw.accelerators:
-            platform = resolve_accelerator_platform(accel, hw)
-            if platform is not None:
-                for warning in platform.validate_host(hw):
-                    logger.warning("Host %s: %s", host, warning)
-        if hw.source == "assumed":
-            logger.warning("Host %s hardware is assumed by application policy; probe it to verify identity and capacity", host)
-    if compat_errors:
-        raise IncompatibleHardwareError(runtime.runtime_name, compat_errors)
+    assessment = assess_launch_hardware(runtime, host_list, cluster, placement, launch_observations)
+    if hardware_assessment is not None and hardware_reported:
+        # The caller showed the plan's assessment. Strategy preparation may
+        # have observed hosts the plan did not; report only those.
+        for host, line in assessment.evidence.items():
+            if host not in hardware_assessment.evidence:
+                logger.log(PROGRESS, "Host %s hardware: %s", host, line)
+    else:
+        for host, line in assessment.evidence.items():
+            logger.log(PROGRESS, "Host %s hardware: %s", host, line)
+        for warning in assessment.warnings:
+            logger.warning("%s", warning)
+    if assessment.errors:
+        raise IncompatibleHardwareError(runtime.runtime_name, list(assessment.errors))
     recipe.defaults.update(resolve_platform_runtime_flags(runtime.runtime_name, launch_hardware, config_chain))
     report_unmapped_config_keys(recipe, runtime, overrides)
 
@@ -1899,6 +1903,8 @@ def launch_inference(
     # executors. Each host receives its assigned-device platform defaults.
     cluster_env = cluster.resolve_env() if (cluster is not None and getattr(cluster, "env", None)) else {}
     effective_env = {**cluster_env, **(recipe.env or {})}
+    from sparkrun.platforms import accelerator_defaults
+
     runtime.platform_env_by_host = {
         host: {
             str(k): str(value)

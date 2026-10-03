@@ -136,6 +136,19 @@ class VRAMEstimate:
             self.kv_cache_memory_bytes is not None or (self.kv_cache_total_gb is not None and not self.kv_estimate_is_floor)
         )
 
+    @property
+    def memory_estimate_gaps(self) -> tuple[str, ...]:
+        """Why :attr:`memory_estimate_complete` is ``False``; empty when it is ``True``."""
+        gaps = []
+        if self.model_weights_gb <= 0:
+            gaps.append("model weight size unknown")
+        if self.kv_cache_memory_bytes is None:
+            if self.kv_cache_total_gb is None:
+                gaps.append("KV cache not sized (no max_model_len)" if not self.max_model_len else "KV cache could not be sized")
+            elif self.kv_estimate_is_floor:
+                gaps.append("%s KV estimate is a lower bound (auxiliary caches not counted)" % self.kv_arch.upper())
+        return tuple(gaps)
+
     def to_dict(self) -> dict[str, Any]:
         """Convert the estimate to a JSON-serializable dictionary."""
         from dataclasses import asdict

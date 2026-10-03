@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from sparkrun.core.application_profile import render_identity_text
 
+import dataclasses
 import logging
 import sys
 from typing import Any
@@ -817,6 +818,16 @@ def run(
         click.echo("  Head:    %s" % host_list[0])
         if len(host_list) > 1:
             click.echo("  Workers: %s" % ", ".join(host_list[1:]))
+    # What the plan probed, beside the fit table it backs, rather than inside
+    # phase 1 after that table has already been read.
+    if run_plan.hardware_assessment is not None:
+        if run_plan.hardware_assessment.evidence:
+            click.echo("  Hardware:")
+            for _h, _line in run_plan.hardware_assessment.evidence.items():
+                click.echo("    %s: %s" % (_h, _line))
+        for _warning in run_plan.hardware_assessment.warnings:
+            click.echo("Warning: %s" % _warning, err=True)
+        run_plan = dataclasses.replace(run_plan, hardware_reported=True)
     click.echo()
 
     # Own the timeline here rather than letting ``launch_inference`` create one
