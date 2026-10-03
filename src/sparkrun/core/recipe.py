@@ -1135,6 +1135,23 @@ class RecipeAmbiguousError(RecipeError):
         super().__init__(format_ambiguity("Recipe", name, matches, self.labels))
 
 
+def _coerce_hook_list(value: Any) -> list[str | dict[str, str]]:
+    """Coerce a recipe hook value into a command list.
+
+    Hooks are normally lists, but a one-command hook is naturally spelled as
+    a plain YAML block scalar (``pre_exec: |``), which arrives as a single
+    string.  ``list()`` over that string explodes it into one entry per
+    *character* — every character then runs as its own command, and entry
+    ``[1]`` is the hook's first letter, surfacing as a baffling ``command
+    not found`` (exit 127) far from the recipe shape that caused it.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    return list(value)
+
+
 class Recipe:
     """A loaded and validated sparkrun recipe."""
 
@@ -1269,10 +1286,12 @@ class Recipe:
         self.capabilities: list[str] = [str(c) for c in (data.get("capabilities") or [])]
         self.unsupported_capabilities: list[str] = [str(c) for c in (data.get("unsupported_capabilities") or [])]
 
-        # Lifecycle hooks
-        self.pre_exec: list[str | dict[str, str]] = list(data.get("pre_exec", []))
-        self.post_exec: list[str] = list(data.get("post_exec", []))
-        self.post_commands: list[str] = list(data.get("post_commands", []))
+        # Lifecycle hooks.  A hook may be spelled as a plain YAML block scalar
+        # (a single string); _coerce_hook_list keeps it one command rather than
+        # exploding it per character.
+        self.pre_exec: list[str | dict[str, str]] = _coerce_hook_list(data.get("pre_exec", []))
+        self.post_exec: list[str] = _coerce_hook_list(data.get("post_exec", []))
+        self.post_commands: list[str] = _coerce_hook_list(data.get("post_commands", []))
         self.stop_after_post: bool = bool(data.get("stop_after_post", False))
 
         # Mods (generic, builder-agnostic): list of references resolved to
@@ -2195,9 +2214,9 @@ class Recipe:
             self.runtime_config.pop(key, None)
         self.capabilities = list(state.get("capabilities") or [])
         self.unsupported_capabilities = list(state.get("unsupported_capabilities") or [])
-        self.pre_exec = list(state.get("pre_exec") or [])
-        self.post_exec = list(state.get("post_exec") or [])
-        self.post_commands = list(state.get("post_commands") or [])
+        self.pre_exec = _coerce_hook_list(state.get("pre_exec") or [])
+        self.post_exec = _coerce_hook_list(state.get("post_exec") or [])
+        self.post_commands = _coerce_hook_list(state.get("post_commands") or [])
         self.stop_after_post = bool(state.get("stop_after_post", False))
         self.mods = list(state.get("mods") or [])
         self.builder = state.get("builder", "")

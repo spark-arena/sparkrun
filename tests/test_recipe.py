@@ -237,6 +237,35 @@ def test_recipe_from_dict(sample_v2_recipe_data: dict[str, Any]):
     assert recipe.env["CUDA_VISIBLE_DEVICES"] == "0,1"
 
 
+def test_hook_block_scalar_is_single_command():
+    """A hook spelled as a plain YAML block scalar loads as ONE command entry.
+
+    Regression: list() over the string exploded it per character, so hook
+    entry [1] was the hook's first letter and executed as its own command.
+    """
+    recipe = Recipe.from_dict(
+        {
+            "model": "org/model",
+            "pre_exec": "echo hello\ntouch /tmp/f",
+        }
+    )
+    assert recipe.pre_exec == ["echo hello\ntouch /tmp/f"]
+
+
+def test_hook_block_scalar_survives_state_round_trip():
+    """Registry-cached recipes restore hooks through __setstate__, not __init__."""
+    import copy
+
+    recipe = Recipe.from_dict(
+        {
+            "model": "org/model",
+            "post_exec": "curl -s http://localhost:8000/health",
+        }
+    )
+    clone = copy.deepcopy(recipe)
+    assert clone.post_exec == ["curl -s http://localhost:8000/health"]
+
+
 def test_recipe_model_revision():
     """model_revision is parsed from recipe data."""
     recipe = Recipe.from_dict(

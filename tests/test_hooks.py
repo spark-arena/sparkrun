@@ -288,6 +288,22 @@ class TestRunPreExec:
         expected = base64.b64encode(b"echo hello").decode("utf-8")
         assert expected in script
 
+    @mock.patch("sparkrun.orchestration.primitives.run_script_on_host")
+    def test_run_pre_exec_bare_string_is_one_command(self, mock_run):
+        """A bare string hook (YAML block scalar) runs as ONE command, not per-character."""
+        mock_run.return_value = self._make_success()
+        hook = "d=/cache/x; sed -i 's/a/b/g' \"$d/f\""
+        run_pre_exec(
+            hosts_containers=[("spark-01", "sparkrun_abc_solo")],
+            commands=hook,
+            config_chain={},
+            trust=True,
+        )
+        # One command for the whole string — not one per character
+        mock_run.assert_called_once()
+        expected = base64.b64encode(hook.encode("utf-8")).decode("utf-8")
+        assert expected in mock_run.call_args[0][1]
+
     @mock.patch("sparkrun.orchestration.primitives.should_run_locally", return_value=True)
     @mock.patch("sparkrun.orchestration.primitives.run_script_on_host")
     def test_run_pre_exec_copy_commands(self, mock_run, mock_should_run_locally):
@@ -471,6 +487,23 @@ class TestRunPostExec:
         assert "sparkrun_abc_solo" in script
         expected = base64.b64encode(b"curl http://localhost:8000/health").decode("utf-8")
         assert expected in script
+
+    @mock.patch("sparkrun.orchestration.primitives.run_script_on_host")
+    def test_run_post_exec_bare_string_is_one_command(self, mock_run):
+        """A bare string hook (YAML block scalar) runs as ONE command, not per-character."""
+        mock_run.return_value = self._make_success()
+        hook = "curl -s http://localhost:8000/health"
+        run_post_exec(
+            head_host="spark-01",
+            container_name="sparkrun_abc_solo",
+            commands=hook,
+            context={},
+            trust=True,
+        )
+        # One command for the whole string — not one per character
+        mock_run.assert_called_once()
+        expected = base64.b64encode(hook.encode("utf-8")).decode("utf-8")
+        assert expected in mock_run.call_args[0][1]
 
     @mock.patch("sparkrun.orchestration.primitives.run_script_on_host")
     def test_run_post_exec_fail_fast(self, mock_run):
