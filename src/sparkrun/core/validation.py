@@ -440,6 +440,37 @@ def _script_texts(recipe: Recipe) -> list[tuple[str, str]]:
     return out
 
 
+def check_forgiven_command_shapes(recipe: Recipe) -> list[RecipeIssue]:
+    """Advise authors about source shapes tolerated by the execution helpers."""
+    from sparkrun.utils.text import strip_dangling_line_continuations
+
+    issues: list[RecipeIssue] = []
+    if recipe.command and strip_dangling_line_continuations(recipe.command) != recipe.command.rstrip():
+        issues.append(
+            RecipeIssue(
+                SUGGESTION,
+                "dangling-line-continuation",
+                "command ends with a continuation backslash but has no following command text; "
+                "sparkrun tolerates this when appending runtime flags.",
+                "Remove the final continuation backslash from command.",
+            )
+        )
+    # The effective attributes have already been normalized into lists. Keep
+    # looking at the author's input, including after a serialization round trip.
+    for name in ("pre_exec", "post_exec", "post_commands"):
+        if isinstance(recipe._raw.get(name), str):
+            issues.append(
+                RecipeIssue(
+                    SUGGESTION,
+                    "scalar-hook-command-list",
+                    "%s is a string instead of a command list; sparkrun tolerates it as one command." % name,
+                    "Wrap the whole %s block in a one-item list (%s: followed by an indented '- |'); "
+                    "keep its lines together so they share shell state." % (name, name),
+                )
+            )
+    return issues
+
+
 def _defaults_texts(recipe: Recipe, *, skip_internal: bool) -> list[tuple[str, str]]:
     """``(where, text)`` for each string ``defaults:`` value.
 
@@ -1763,6 +1794,7 @@ def validate_recipe(
     issues.extend(_safe("non-portable-mount", lambda: check_mount_portability(recipe)))
     issues.extend(_safe("internal-config-key", lambda: check_internal_config_keys(recipe)))
     issues.extend(_safe("inline-script", lambda: check_inline_scripting(recipe)))
+    issues.extend(_safe("forgiven-command-shape", lambda: check_forgiven_command_shapes(recipe)))
     issues.extend(_safe("hardcoded-rendezvous-flag", lambda: check_hardcoded_rendezvous_flags(recipe, runtime)))
     issues.extend(_safe("unpinned-model-revision", lambda: check_unpinned_model_revision(recipe, runtime)))
     issues.extend(_safe("hardcoded-serve-flag", lambda: check_hardcoded_serve_flags(recipe, runtime)))

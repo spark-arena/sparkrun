@@ -13,7 +13,7 @@ import subprocess
 from pathlib import Path
 from collections.abc import Sequence
 
-from sparkrun.utils.text import render_template, sanitize_line_continuations
+from sparkrun.utils.text import coerce_command_list, render_template, sanitize_line_continuations
 
 logger = logging.getLogger(__name__)
 
@@ -78,20 +78,6 @@ def build_hook_context(
     return ctx
 
 
-def _coerce_command_list(commands: str | list[str | dict[str, str]]) -> list[str | dict[str, str]]:
-    """Coerce a bare string hook into a single-entry command list.
-
-    Recipes commonly spell a one-command hook as a plain YAML block scalar
-    rather than a list.  Iterating that string directly executes it one
-    *character* at a time — hook entry ``[1]`` becomes the hook's first
-    letter, surfacing as a baffling ``command not found`` (exit 127) far
-    from the recipe shape that caused it.
-    """
-    if isinstance(commands, str):
-        return [commands]
-    return list(commands)
-
-
 def render_hook_command(cmd: str, context: dict[str, str]) -> str:
     """Render ``{key}`` placeholders in a hook command string.
 
@@ -140,7 +126,7 @@ def render_hook_commands(
     Returns:
         New list with rendered commands.
     """
-    commands = _coerce_command_list(commands)
+    commands = coerce_command_list(commands)
 
     rendered: list[str | dict[str, str]] = []
     for cmd in commands:
@@ -240,7 +226,7 @@ def run_pre_exec(
     if not commands:
         return
 
-    commands = _coerce_command_list(commands)
+    commands = coerce_command_list(commands)
 
     _confirm_hook_execution("pre_exec", commands, trust)
 
@@ -269,7 +255,7 @@ def run_pre_exec(
 def run_post_exec(
     head_host: str,
     container_name: str,
-    commands: str | list[str],
+    commands: str | Sequence[str],
     context: dict[str, str],
     ssh_kwargs: dict | None = None,
     dry_run: bool = False,
@@ -302,7 +288,7 @@ def run_post_exec(
     if not commands:
         return
 
-    commands = _coerce_command_list(commands)
+    commands = coerce_command_list(commands)
 
     _confirm_hook_execution("post_exec", commands, trust)
 
@@ -318,7 +304,7 @@ def run_post_exec(
 
 
 def run_post_commands(
-    commands: str | list[str],
+    commands: str | Sequence[str],
     context: dict[str, str],
     dry_run: bool = False,
     trust: bool = False,
@@ -349,7 +335,7 @@ def run_post_commands(
     if not commands:
         return
 
-    commands = _coerce_command_list(commands)
+    commands = coerce_command_list(commands)
 
     if not trust:
         logger.warning("Recipe post_commands will execute on this machine:")

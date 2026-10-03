@@ -2250,7 +2250,7 @@ you and your logs. It runs **after** `should_fail`, on the display list only, so
 `--strict` still fails on a deprecation it described in one line. `run` threads
 the reference the user typed (`recipe_ref`) so the suggested command is pasteable.
 
-**Two checks must read `recipe._raw`, and both would be silently wrong without
+**Source-shape checks must read `recipe._raw`; they would be silently wrong without
 it** — the parsed recipe is lossy exactly where they look:
 
 - `_resolve_brace_escapes` collapses `{{`→`{` in `defaults` **in place** at
@@ -2260,6 +2260,14 @@ it** — the parsed recipe is lossy exactly where they look:
   when `min_nodes > 1`). Reporting the deprecated `mode:` key off the parsed
   value would fire on every recipe that correctly uses `min_nodes`/`max_nodes`
   and never wrote `mode` at all — i.e. on exactly what the finding advises.
+
+Scalar `pre_exec`, `post_exec`, and `post_commands` values are normalized into
+one-item lists, preserving multiline shell state. `scalar-hook-command-list`
+reads `_raw` to suggest wrapping the whole block in a list (`- |`). The
+`dangling-line-continuation` suggestion advises removing an unmatched terminal
+backslash from `command:`; flag injection tolerates it while preserving escaped
+literal backslashes. These are suggestions, not deprecations: normal launch and
+`--strict` permit them, while `--fail-on suggestion` enforces authoring cleanup.
 
 **Deprecation notices belong here, not at their point of use.** Two of them
 previously lived only as a `logger.warning` on a path `recipe validate` never

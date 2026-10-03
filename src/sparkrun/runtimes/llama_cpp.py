@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, TYPE_CHECKING
 
+from sparkrun.utils.text import strip_dangling_line_continuations
 from sparkrun.core.config import SparkrunConfig
 from sparkrun.runtimes._util import resolve_api_key
 from sparkrun.core.validation import RecipeIssue
@@ -238,7 +239,7 @@ class LlamaCppRuntime(RuntimePlugin):
         """
         if not mmproj_path or "--mmproj" in command:
             return command
-        return "%s --mmproj %s" % (command.rstrip().rstrip("\\").rstrip(), mmproj_path)
+        return "%s --mmproj %s" % (strip_dangling_line_continuations(command), mmproj_path)
 
     def prepare(
         self,

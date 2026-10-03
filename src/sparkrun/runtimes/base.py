@@ -11,6 +11,7 @@ from typing import Any, Mapping, TYPE_CHECKING
 
 from scitrera_app_framework import Plugin, Variables, ext_parse_bool
 
+from sparkrun.utils.text import strip_dangling_line_continuations
 from sparkrun.core.validation import ERROR, WARNING, RecipeIssue
 from sparkrun.core.log_source import (
     MODE_FILE,
@@ -944,7 +945,7 @@ class RuntimePlugin(Plugin, ABC):
 
             return re.sub(re.escape(flag) + r"\s+\S+", "%s %s" % (flag, value), command, count=1)
         # A trailing line continuation would escape the appended flag.
-        return "%s %s %s" % (command.rstrip().rstrip("\\").rstrip(), flag, value)
+        return "%s %s %s" % (strip_dangling_line_continuations(command), flag, value)
 
     @staticmethod
     def _augment_served_model_name(

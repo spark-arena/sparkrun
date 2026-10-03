@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from sparkrun.core.cluster_manager import ModelDistributionPrefs
 from sparkrun.orchestration.distribution import _distribute_single_image, _distribute_single_model
 
@@ -205,3 +207,49 @@ def test_head_and_per_node_paths_build_the_same_fetch_script():
 
     gated = _build_model_ensure_script("org/model", "/cache", hf_token="hf_secret")
     assert gated.startswith("export HF_TOKEN=")
+
+
+@pytest.mark.parametrize("mode,heterogeneous", [("pull", False), ("delegated", True)])
+@pytest.mark.parametrize("options", [None, ["-p", "2222", "-o", "ProxyJump=bastion"]])
+@pytest.mark.parametrize("dry_run,offline,force_pull", [(False, False, True), (True, True, False)])
+def test_pull_forwards_configured_ssh_through_real_sync_helpers(mode, heterogeneous, options, dry_run, offline, force_pull):
+    from sparkrun.orchestration.ssh import RemoteResult
+
+    results = [RemoteResult(host=h, returncode=int(h == "h2"), stdout="", stderr="") for h in HOSTS]
+    ssh = {"ssh_user": "user", "ssh_key": "/key", "ssh_options": options}
+    with patch("sparkrun.orchestration.primitives.run_remote_scripts_parallel", return_value=results) as run:
+        failed = _distribute_single_image(
+            "org/img:v1",
+            HOSTS,
+            HOSTS,
+            mode,
+            None,
+            None,
+            ssh,
+            dry_run=dry_run,
+            auto_delegated=False,
+            force_pull=force_pull,
+            heterogeneous=heterogeneous,
+            offline=offline,
+        )
+    assert failed == ["h2"]
+    run.assert_called_once()
+    assert run.call_args.args[0] == HOSTS
+    assert run.call_args.kwargs == {**ssh, "dry_run": dry_run, "session_guard": True}
+    script = run.call_args.args[1]
+    assert 'FORCE_PULL="%d"' % force_pull in script
+    assert 'OFFLINE="%d"' % offline in script
+
+
+@pytest.mark.parametrize("helper", ["image", "resource"])
+def test_sync_helpers_keep_the_existing_positional_dry_run(helper):
+    from sparkrun.containers.sync import sync_image_to_hosts
+    from sparkrun.orchestration.primitives import sync_resource_to_hosts
+
+    with patch("sparkrun.orchestration.primitives.run_remote_scripts_parallel", return_value=[]) as run:
+        if helper == "image":
+            sync_image_to_hosts("org/img:v1", HOSTS, "user", "/key", True)
+        else:
+            sync_resource_to_hosts("echo sync", HOSTS, "Resource", "user", "/key", True)
+    assert run.call_args.kwargs["dry_run"] is True
+    assert run.call_args.kwargs["ssh_options"] is None

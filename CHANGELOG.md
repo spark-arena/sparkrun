@@ -12,6 +12,13 @@ first tagged release containing them, regardless of their original commit date.
 
 ### 0.4.0 application and API changes
 
+- Tolerate dangling command continuations and scalar lifecycle hooks while
+  `recipe validate` suggests their canonical forms. Preserve escaped literal
+  backslashes and keep multiline hook blocks in one shell invocation (#303, #305).
+- Forward configured SSH options through pull-mode image distribution, including
+  heterogeneous delegated launches, without changing positional dry-run arguments
+  or offline behavior (#304).
+
 - Fixed model distribution transferring no weights when a host's HF cache uses
   huggingface_hub's shared blob store (1.32 and later, on by default): both
   transfer paths now pass `--copy-unsafe-links`, materialising the blob links

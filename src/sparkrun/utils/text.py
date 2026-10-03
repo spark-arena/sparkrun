@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Sequence
 from typing import Any
 
 from vpd.legacy.arguments import arg_substitute
@@ -48,6 +49,67 @@ def sanitize_line_continuations(value: str) -> str:
     Windows has already lost its carriage returns before rendering.
     """
     return _TRAILING_BLANK_CONTINUATION_RE.sub("\\\n", value)
+
+
+def strip_dangling_line_continuations(command: str) -> str:
+    """Remove unmatched terminal escapes outside quotes and shell comments.
+
+    Track quoting rather than stripping a run of backslashes: escaped pairs
+    represent literal argument content. A hash starts a comment only at a word
+    boundary (``model#revision`` is an argument, not a comment).
+    """
+
+    def has_terminal_escape(text: str) -> bool:
+        quote = ""
+        quote_escapes = False
+        escaped = comment = dollar = False
+        word_start = True
+        for char in text:
+            if comment:
+                if char == "\n":
+                    comment = False
+                    word_start = True
+            elif escaped:
+                escaped = False
+                dollar = False
+                if char != "\n":
+                    word_start = False
+            elif quote:
+                if char == quote:
+                    quote = ""
+                elif char == "\\" and quote_escapes:
+                    escaped = True
+            elif char in "\"'`":
+                quote = char
+                quote_escapes = char != "'" or dollar  # Bash $'...' quoting
+                word_start = dollar = False
+            elif char == "\\":
+                escaped = True
+            elif char == "#" and word_start:
+                comment = True
+            else:
+                word_start = char.isspace() or char in ";|&()<>"
+                dollar = char == "$"
+        return escaped and not quote and not comment
+
+    command = command.rstrip()
+    while command.endswith("\\") and has_terminal_escape(command):
+        command = command[:-1].rstrip()
+    return command
+
+
+def coerce_command_list[T](commands: str | Sequence[T] | None) -> list[str | T]:
+    """Tolerate a scalar hook as one command; recipe authors should use lists.
+
+    Preserve the whole block so shell variables and multiline constructs stay
+    in one invocation. Copy sequences so later hook injection cannot mutate
+    the source recipe. Validation reports scalar authoring from the raw input.
+    """
+    if commands is None:
+        return []
+    if isinstance(commands, str):
+        return [commands]
+    return list(commands)
 
 
 def uses_brace_escapes(value: str) -> bool:

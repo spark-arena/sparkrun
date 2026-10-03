@@ -243,8 +243,9 @@ def sync_resource_to_hosts(
     resource_label: str,
     ssh_user: str | None = None,
     ssh_key: str | None = None,
-    ssh_options: list[str] | None = None,
     dry_run: bool = False,
+    *,
+    ssh_options: list[str] | None = None,
 ) -> list[str]:
     """Run a sync script on all hosts in parallel and return failures.
 
@@ -259,6 +260,7 @@ def sync_resource_to_hosts(
         resource_label: Human-readable label for log messages (e.g. "Model", "Image").
         ssh_user: Optional SSH username.
         ssh_key: Optional path to SSH private key.
+        ssh_options: Additional SSH options passed to every host.
         dry_run: If True, show what would be done without executing.
 
     Returns:

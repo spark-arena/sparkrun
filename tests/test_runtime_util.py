@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import subprocess
+
+import pytest
+
 from sparkrun.core.recipe import Recipe
 from sparkrun.runtimes._util import resolve_api_key
 
@@ -305,3 +309,36 @@ def test_reconcile_flag_override_mode():
     assert out.count(flag) == 1
     # Idempotent under the same target value.
     assert rec(out, flag, "mp", override=True) == out
+
+
+# Verify argv boundaries with Bash, rather than asserting only a rendered string.
+
+
+@pytest.mark.parametrize(
+    "suffix,expected",
+    [
+        ("value \\\n", ["value"]),
+        ("value " + "\\", ["value"]),
+        ("value \\\n \\\n", ["value"]),
+        ("value#suffix " + "\\", ["value#suffix"]),
+        ("value" + "\\" * 2 + "\n", ["value\\"]),
+        ("value" + "\\" * 3 + "\n", ["value\\"]),
+        ("'value\\'", ["value\\"]),
+        ('"value\\\\"', ["value\\"]),
+        ("value \\\n --other next", ["value", "--other", "next"]),
+    ],
+)
+@pytest.mark.parametrize("injection", ["reconcile", "mmproj"])
+def test_flag_injection_preserves_shell_arguments(suffix, expected, injection):
+    from sparkrun.runtimes.base import RuntimePlugin
+    from sparkrun.runtimes.llama_cpp import LlamaCppRuntime
+
+    command = "printf '%s\\0' " + suffix
+    if injection == "reconcile":
+        rendered = RuntimePlugin.reconcile_flag_in_command(command, "--extra", "alias")
+        appended = ["--extra", "alias"]
+    else:
+        rendered = LlamaCppRuntime._inject_mmproj(command, "projector.gguf")
+        appended = ["--mmproj", "projector.gguf"]
+    result = subprocess.run(["bash", "-c", rendered], capture_output=True, check=True)
+    assert result.stdout.decode().split("\0")[:-1] == expected + appended

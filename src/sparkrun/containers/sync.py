@@ -16,10 +16,11 @@ def sync_image_to_hosts(
     hosts: list[str],
     ssh_user: str | None = None,
     ssh_key: str | None = None,
-    ssh_options: list[str] | None = None,
     dry_run: bool = False,
     force_pull: bool = False,
     offline: bool = False,
+    *,
+    ssh_options: list[str] | None = None,
 ) -> list[str]:
     """Ensure a container image is available on all hosts, pulling in parallel.
 
@@ -38,6 +39,7 @@ def sync_image_to_hosts(
         hosts: List of remote hostnames or IPs.
         ssh_user: Optional SSH username.
         ssh_key: Optional path to SSH private key.
+        ssh_options: Additional SSH options passed to every host.
         dry_run: If True, show what would be done without executing.
         force_pull: Re-pull even when a copy is already present.
         offline: Never pull (``sparkrun run --offline``): a host already
