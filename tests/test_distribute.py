@@ -292,30 +292,62 @@ class TestParseIdentity:
     def test_id_and_one_digest(self):
         from sparkrun.containers.distribute import _parse_identity
 
-        image_id, digests = _parse_identity("sha256:abc|repo@sha256:xyz \n")
-        assert image_id == "sha256:abc"
-        assert digests == ["repo@sha256:xyz"]
+        identity = _parse_identity("sha256:abc|repo@sha256:xyz \n")
+        assert identity.image_id == "sha256:abc"
+        assert identity.repo_digests == ["repo@sha256:xyz"]
+        # Layers/config omitted → no content signature to compare on.
+        assert identity.content_sig is None
 
     def test_id_and_multiple_digests(self):
         from sparkrun.containers.distribute import _parse_identity
 
-        image_id, digests = _parse_identity("sha256:abc|r1@sha256:x r2@sha256:x ")
-        assert image_id == "sha256:abc"
-        assert digests == ["r1@sha256:x", "r2@sha256:x"]
+        identity = _parse_identity("sha256:abc|r1@sha256:x r2@sha256:x ")
+        assert identity.image_id == "sha256:abc"
+        assert identity.repo_digests == ["r1@sha256:x", "r2@sha256:x"]
 
     def test_id_and_no_digests(self):
         from sparkrun.containers.distribute import _parse_identity
 
-        image_id, digests = _parse_identity("sha256:abc|")
-        assert image_id == "sha256:abc"
-        assert digests == []
+        identity = _parse_identity("sha256:abc|")
+        assert identity.image_id == "sha256:abc"
+        assert identity.repo_digests == []
 
     def test_empty_means_absent(self):
         from sparkrun.containers.distribute import _parse_identity
 
-        image_id, digests = _parse_identity("")
-        assert image_id is None
-        assert digests == []
+        identity = _parse_identity("")
+        assert identity.image_id is None
+        assert identity.repo_digests == []
+        assert identity.content_sig is None
+
+    def test_full_format_yields_content_signature(self):
+        """The 4-field inspect output carries a comparable content signature."""
+        from sparkrun.containers.distribute import _parse_identity
+
+        raw = 'sha256:abc|repo@sha256:xyz |sha256:L1 sha256:L2 |{"Env":["A=1"]}'
+        identity = _parse_identity(raw)
+        assert identity.image_id == "sha256:abc"
+        assert identity.repo_digests == ["repo@sha256:xyz"]
+        assert identity.content_sig is not None
+        assert identity.content_sig.startswith("sha256:")
+
+    def test_config_containing_separator_survives_parsing(self):
+        """A ``|`` inside the JSON config must not truncate or corrupt it.
+
+        The config is the trailing field and is split with a bound, so the
+        signature equals that of the equivalent direct call.  An unbounded
+        split here would silently drop part of the config and make two
+        identical images look different.
+        """
+        from sparkrun.containers.distribute import _parse_identity
+        from sparkrun.containers.registry import content_signature
+
+        config = '{"Env":["PIPE=a|b"]}'
+        # shape: <id>|<digests>|<layers>|<config>
+        identity = _parse_identity("sha256:abc||sha256:L1 |" + config)
+        assert identity.image_id == "sha256:abc"
+        assert identity.repo_digests == []
+        assert identity.content_sig == content_signature("sha256:L1", config)
 
 
 class TestImagesMatch:
@@ -385,23 +417,95 @@ class TestImagesMatch:
 
         assert _images_match("sha256:a", ["r@sha256:X"], None, []) is False
 
+    def test_content_sig_matches_with_different_ids_and_no_remote_digests(self):
+        """THE regression: save/load fan-out onto a different storage driver.
+
+        Reproduces the fleet state that made a node permanently stale:
+        the control host pulled the image (so it has RepoDigests and one
+        Image ID), the worker received it via ``docker save | docker load``
+        (which strips RepoDigests) on a *different* storage driver (which
+        recomputes a different Image ID).  Neither existing signal can
+        match, so the worker re-received ~36 GB on every single launch.
+
+        The content signature is computed from the config + layer chain,
+        both identical across drivers, so it matches and the transfer is
+        skipped.
+        """
+        from sparkrun.containers.distribute import _images_match
+
+        sig = "sha256:" + "ab" * 32
+        assert (
+            _images_match(
+                "sha256:control_driver_id",  # local: differs
+                ["registry/img@sha256:X"],  # local has digests...
+                "sha256:worker_driver_id",  # remote: differs
+                [],  # ...remote has none (save/load stripped them)
+                sig,  # local content signature
+                sig,  # remote content signature: identical
+            )
+            is True
+        )
+
+        # And the same pairing without the signature is exactly the old bug:
+        # every signal disagrees, so the host looks stale.
+        assert (
+            _images_match("sha256:control_driver_id", ["registry/img@sha256:X"], "sha256:worker_driver_id", [])
+            is False
+        )
+
+    def test_different_content_signatures_with_equal_ids_still_match(self):
+        """ID equality still wins; a signature mismatch alone is not trusted.
+
+        Guards against the signature being over-trusted in the other
+        direction: identical IDs mean the same local image regardless of
+        what the content fields happened to report.
+        """
+        from sparkrun.containers.distribute import _images_match
+
+        assert (
+            _images_match("sha256:same", [], "sha256:same", [], "sha256:one", "sha256:two")
+            is True
+        )
+
+    def test_content_sig_mismatch_is_not_a_match(self):
+        """Genuinely different content must not match on weaker signals alone."""
+        from sparkrun.containers.distribute import _images_match
+
+        assert (
+            _images_match("sha256:a", [], "sha256:b", [], "sha256:one", "sha256:two")
+            is False
+        )
+
+    def test_one_sided_content_signature_falls_back(self):
+        """A signature present on only one side must not force a match."""
+        from sparkrun.containers.distribute import _images_match
+
+        assert _images_match("sha256:a", [], "sha256:b", [], "sha256:one", None) is False
+        assert _images_match("sha256:a", [], "sha256:b", [], None, "sha256:two") is False
+        # ...but it still falls back to the digest signal.
+        assert (
+            _images_match("sha256:a", ["r@sha256:X"], "sha256:b", ["r@sha256:X"], "sha256:one", None)
+            is True
+        )
+
 
 class TestCheckRemoteImageIdentities:
     """Test _check_remote_image_identities."""
 
     @mock.patch("sparkrun.containers.distribute.run_remote_command")
     def test_returns_host_identity_map(self, mock_cmd):
-        """Returns mapping of host → (id, repo_digests) for hosts with the image."""
+        """Returns mapping of host → ImageIdentity for hosts with the image."""
         mock_cmd.side_effect = [
             RemoteResult(host="h1", returncode=0, stdout="sha256:abc|repo@sha256:x \n", stderr=""),
             RemoteResult(host="h2", returncode=0, stdout="sha256:def|\n", stderr=""),
         ]
         from sparkrun.containers.distribute import _check_remote_image_identities
+        from sparkrun.containers.registry import ImageIdentity
 
         result = _check_remote_image_identities("img:latest", ["h1", "h2"])
         assert result == {
-            "h1": ("sha256:abc", ["repo@sha256:x"]),
-            "h2": ("sha256:def", []),
+            "h1": ImageIdentity("sha256:abc", ["repo@sha256:x"], None),
+            "h2": ImageIdentity("sha256:def", [], None),
         }
 
     @mock.patch("sparkrun.containers.distribute.run_remote_command")
@@ -412,9 +516,10 @@ class TestCheckRemoteImageIdentities:
             RemoteResult(host="h2", returncode=0, stdout="", stderr=""),
         ]
         from sparkrun.containers.distribute import _check_remote_image_identities
+        from sparkrun.containers.registry import ImageIdentity
 
         result = _check_remote_image_identities("img:latest", ["h1", "h2"])
-        assert result == {"h1": ("sha256:abc", ["r@sha256:x"])}
+        assert result == {"h1": ImageIdentity("sha256:abc", ["r@sha256:x"], None)}
 
     @mock.patch("sparkrun.containers.distribute.run_remote_command")
     def test_skips_failed_commands(self, mock_cmd):
@@ -424,9 +529,42 @@ class TestCheckRemoteImageIdentities:
             RemoteResult(host="h2", returncode=1, stdout="", stderr="error"),
         ]
         from sparkrun.containers.distribute import _check_remote_image_identities
+        from sparkrun.containers.registry import ImageIdentity
 
         result = _check_remote_image_identities("img:latest", ["h1", "h2"])
-        assert result == {"h1": ("sha256:abc", [])}
+        assert result == {"h1": ImageIdentity("sha256:abc", [], None)}
+
+    @mock.patch("sparkrun.containers.distribute.run_remote_command")
+    def test_parses_content_signature_from_remote(self, mock_cmd):
+        """The remote content signature is captured, not just id/digests."""
+        mock_cmd.side_effect = [
+            RemoteResult(
+                host="h1",
+                returncode=0,
+                stdout='sha256:abc||sha256:L1 sha256:L2 |{"Env":["A=1"]}',
+                stderr="",
+            ),
+        ]
+        from sparkrun.containers.distribute import _check_remote_image_identities
+        from sparkrun.containers.registry import content_signature
+
+        result = _check_remote_image_identities("img:latest", ["h1"])
+        assert result["h1"].content_sig == content_signature("sha256:L1 sha256:L2", '{"Env":["A=1"]}')
+
+    @mock.patch("sparkrun.containers.distribute.run_remote_command")
+    def test_uses_shared_inspect_template(self, mock_cmd):
+        """The remote probe sends the same template the local probe uses.
+
+        Both sides must ask Docker for identical fields or their content
+        signatures are computed over different inputs and can never match.
+        """
+        from sparkrun.containers.distribute import _check_remote_image_identities
+        from sparkrun.containers.registry import IMAGE_INSPECT_FORMAT
+
+        mock_cmd.return_value = RemoteResult(host="h1", returncode=0, stdout="", stderr="")
+        _check_remote_image_identities("img:latest", ["h1"])
+        sent_cmd = mock_cmd.call_args[0][1]
+        assert IMAGE_INSPECT_FORMAT in sent_cmd
 
     def test_dry_run_returns_empty(self):
         from sparkrun.containers.distribute import _check_remote_image_identities

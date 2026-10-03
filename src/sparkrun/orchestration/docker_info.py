@@ -3,14 +3,16 @@
 Detects each host's Docker storage driver and snapshotter so the CLI can
 warn when a cluster has heterogeneous drivers across hosts.  Different
 drivers (e.g. ``overlay2`` vs containerd-snapshotter ``overlayfs``)
-produce different local Image IDs for the same registry image, which
-causes ``sparkrun`` to unnecessarily re-sync containers — see
+produce different local Image IDs for the same registry image — see
 `#152 <https://github.com/spark-arena/sparkrun/issues/152>`_.
 
-The runtime image-sync code (:func:`sparkrun.containers.distribute._images_match`)
-already falls back to RepoDigest comparison so the bug is non-blocking,
-but a proactive setup-time warning lets users normalize their fleet
-before they hit the slow path.
+This probe is **diagnostic only**.  sparkrun's own image sync no longer
+depends on the fleet agreeing on a driver: :func:`sparkrun.containers.distribute._images_match`
+compares a content signature derived from the image manifest, which is
+identical on every driver.  The warning is still worth showing because a
+mixed-driver fleet surprises other tooling and makes any comparison that
+*does* rely on local Image IDs unreliable — but it no longer predicts a
+re-sync.
 """
 
 from __future__ import annotations

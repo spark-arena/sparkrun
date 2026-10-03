@@ -7,12 +7,125 @@ Container image registry operations.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import subprocess
+from typing import NamedTuple
 
 from sparkrun.utils.images import is_pullable_image_ref, parse_image_ref
 
 logger = logging.getLogger(__name__)
+
+
+class ImageIdentity(NamedTuple):
+    """Every identity Docker reports for a locally-present image.
+
+    Each field answers a different question, and no single one is reliable
+    across hosts, which is why cache decisions consult all of them rather
+    than picking a favourite:
+
+    ``image_id``
+        The local ``.Id``.  It is recomputed by the *local storage driver*,
+        so two hosts on different drivers report **different** IDs for
+        byte-identical content (issue #152).  Trustworthy only when the
+        drivers agree.
+
+    ``repo_digests``
+        ``repo@sha256:...`` entries recorded at pull time.  Registry-
+        canonical and driver-agnostic, so this is the best cross-host
+        signal available — but it is **empty** for any image built locally
+        or moved with ``docker save | docker load``, because neither path
+        carries registry metadata.
+
+    ``content_sig``
+        A digest of the image's actual content: its configuration plus its
+        ordered layer chain.  Both are read verbatim out of the image
+        manifest and are stored identically by every driver, so this covers
+        the two failure modes above *at once* — different drivers and no
+        RepoDigests, which is exactly what a ``save | load`` fan-out
+        produces.  ``None`` only when the host could not report it.
+    """
+
+    image_id: str | None
+    repo_digests: list[str]
+    content_sig: str | None = None
+
+    @classmethod
+    def empty(cls) -> "ImageIdentity":
+        """The identity of an image that is not present."""
+        return cls(None, [], None)
+
+
+# Content-bearing ``docker image inspect`` template, shared by the local and
+# the remote probe so the two can never drift apart.
+#
+# Field order is deliberate: the configuration is last because it is JSON
+# and may legitimately contain the ``|`` separator inside a string value,
+# whereas the ID, the digest list and the layer list cannot.  A bounded
+# split therefore keeps the configuration intact.
+#
+# The template quotes nothing, which lets the remote probe wrap it in single
+# quotes for the shell without escaping anything inside it.
+IMAGE_INSPECT_FORMAT = (
+    "{{.Id}}|{{range .RepoDigests}}{{.}} {{end}}|{{range .RootFS.Layers}}{{.}} {{end}}|{{json .Config}}"
+)
+
+# What ships in :func:`get_image_identity` predates ``content_sig``.  Used as
+# a fallback so a host on a Docker too old to render the newer fields
+# degrades to the old answer instead of reporting the image as missing.
+LEGACY_IMAGE_INSPECT_FORMAT = "{{.Id}}|{{range .RepoDigests}}{{.}} {{end}}"
+
+
+def content_signature(layers_str: str, config_json: str) -> str | None:
+    """Digest an image's content: configuration plus ordered layer chain.
+
+    Both inputs are what Docker read out of the image manifest, so the
+    result depends on the image and not on the host that stored it.  The
+    configuration is re-serialised canonically because JSON makes no key
+    ordering promise.
+
+    Returns ``None`` when neither input is available, so a caller can tell
+    "no content signature" apart from "content differs".
+    """
+    layers = (layers_str or "").strip()
+    config_json = (config_json or "").strip()
+    if not layers and not config_json:
+        return None
+
+    if config_json:
+        try:
+            config_json = json.dumps(json.loads(config_json), sort_keys=True, separators=(",", ":"))
+        except (ValueError, TypeError):
+            # Unparsable config: hash it verbatim rather than dropping the
+            # field.  A false *mismatch* only costs a redundant transfer,
+            # whereas discarding it could mask a real change.
+            logger.debug("content_signature: config JSON unparsable; hashing verbatim")
+
+    # NUL cannot occur in either field, so it separates them with no risk of
+    # one field bleeding into the other's digest.
+    return "sha256:" + hashlib.sha256(("\x00".join([config_json, layers])).encode()).hexdigest()
+
+
+def parse_image_identity(raw: str) -> ImageIdentity:
+    """Parse the output of :data:`IMAGE_INSPECT_FORMAT`.
+
+    Empty *raw* means the image is absent.  Output from a Docker too old for
+    the trailing fields parses to an identity without a ``content_sig``, so
+    callers keep falling back to the ID/digest signals they already used.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return ImageIdentity.empty()
+
+    # Bounded split: everything past the third separator is the JSON config,
+    # which may itself contain the separator.
+    parts = raw.split("|", 3)
+    image_id = parts[0].strip() or None
+    repo_digests = parts[1].split() if len(parts) > 1 else []
+    layers_str = parts[2] if len(parts) > 2 else ""
+    config_json = parts[3] if len(parts) > 3 else ""
+    return ImageIdentity(image_id, repo_digests, content_signature(layers_str, config_json))
 
 
 def pull_image(image: str, dry_run: bool = False, required: bool = True) -> int:
@@ -61,8 +174,8 @@ def image_exists_locally(image: str) -> bool:
     return result.returncode == 0
 
 
-def get_image_identity(image: str) -> tuple[str | None, list[str]]:
-    """Get the Docker image ID and RepoDigests for a local image.
+def get_image_identity(image: str) -> ImageIdentity:
+    """Get every Docker-reported identity for a local image.
 
     Image IDs are derived from the *local* image configuration and so vary
     across hosts that use different Docker storage drivers (e.g. overlay2
@@ -70,34 +183,49 @@ def get_image_identity(image: str) -> tuple[str | None, list[str]]:
     image.  RepoDigests, by contrast, encode the registry manifest hash and
     are stable across storage drivers — but they are absent for images that
     were built locally and never pushed, or that were transferred via
-    ``docker save | docker load``.
+    ``docker save | docker load``.  The content signature covers both gaps.
 
     Args:
         image: Image reference to inspect.
 
     Returns:
-        Tuple ``(image_id, repo_digests)``.  ``image_id`` is
-        ``"sha256:abc..."`` or ``None`` if the image is not present
-        locally.  ``repo_digests`` is the list of ``"repo@sha256:..."``
-        entries (possibly empty).
+        An :class:`ImageIdentity`.  ``image_id`` is ``"sha256:abc..."`` or
+        ``None`` if the image is not present locally.  ``repo_digests`` is
+        the list of ``"repo@sha256:..."`` entries (possibly empty).
+        ``content_sig`` is ``None`` only when the host could not report the
+        layer chain or configuration.
     """
     result = subprocess.run(
-        [
-            "docker",
-            "image",
-            "inspect",
-            "--format",
-            "{{.Id}}|{{range .RepoDigests}}{{.}} {{end}}",
-            image,
-        ],
+        ["docker", "image", "inspect", "--format", IMAGE_INSPECT_FORMAT, image],
         capture_output=True,
         text=True,
     )
-    if result.returncode != 0:
-        return None, []
-    image_id, _, digests_str = result.stdout.strip().partition("|")
-    digests = digests_str.split()
-    return (image_id or None), digests
+    if result.returncode == 0:
+        return parse_image_identity(result.stdout)
+
+    # The rich template failed.  That is either "no such image" or a daemon
+    # too old for ``.RootFS.Layers``/``json .Config`` -- and the two are
+    # indistinguishable from the exit code alone.  Retry with the
+    # pre-content_sig template so a legacy daemon still yields the
+    # identities it *can* report.  Treating a template error as "image
+    # absent" would force a pointless re-transfer of an image that is
+    # right there; the retry costs one extra local inspect only on this
+    # path.
+    legacy = subprocess.run(
+        ["docker", "image", "inspect", "--format", LEGACY_IMAGE_INSPECT_FORMAT, image],
+        capture_output=True,
+        text=True,
+    )
+    if legacy.returncode != 0:
+        return ImageIdentity.empty()
+
+    identity = parse_image_identity(legacy.stdout)
+    if identity.image_id is not None:
+        logger.debug(
+            "image inspect needed legacy format for %r (content signature unavailable on this host)",
+            image,
+        )
+    return identity
 
 
 def get_image_id(image: str) -> str | None:
