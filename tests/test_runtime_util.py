@@ -284,6 +284,9 @@ def test_reconcile_flag_fill_mode():
     assert rec("vllm serve m --served-model-name keep", "--served-model-name", "alias", override=False) == (
         "vllm serve m --served-model-name keep"
     )
+    # A trailing line continuation must not escape the appended flag.
+    cmd = "vllm serve m \\\n  --tool-call-parser qwen3_coder \\\n"
+    assert rec(cmd, "--served-model-name", "alias") == "vllm serve m \\\n  --tool-call-parser qwen3_coder --served-model-name alias"
 
 
 def test_reconcile_flag_override_mode():
