@@ -297,6 +297,7 @@ def _build_model_ensure_script(
     cache: str,
     revision: str | None = None,
     hf_token: str | None = None,
+    force_download: bool = False,
 ) -> str:
     """Build the bash script that ensures *model_id* is present in *cache*.
 
@@ -352,6 +353,12 @@ def _build_model_ensure_script(
             revision=revision_arg,
             **uv,
         )
+
+    # Bypass the presence shortcut: set when verification has just removed
+    # corrupt blobs, so the "any weight file found" scan cannot hit a
+    # surviving shard and skip the re-download that must happen.
+    if force_download:
+        script = "export SPARKRUN_FORCE_DOWNLOAD=1\n" + script
 
     # Inject HF token for gated models
     if hf_token:

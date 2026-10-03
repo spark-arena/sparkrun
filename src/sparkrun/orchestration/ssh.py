@@ -1255,7 +1255,11 @@ def _run_rsync_impl(
     #
     # Deferred import — transfer.py imports RemoteResult from this module, so
     # a module-level import here would be circular.
-    from sparkrun.orchestration.transfer import rsync_attribute_errors_only, rsync_has_attribute_permission_error
+    from sparkrun.orchestration.transfer import (
+        rsync_attribute_errors_only,
+        rsync_had_vanished_files,
+        rsync_has_attribute_permission_error,
+    )
 
     if rsync_attribute_errors_only(result):
         # Every byte arrived and only attributes were refused.  The caller's
@@ -1265,6 +1269,22 @@ def _run_rsync_impl(
         return result
     if rsync_options_are_relaxed(rsync_options) or rsync_retry_disabled():
         return result
+
+    # Vanished source files (rc=24) leave the destination incomplete, but
+    # rsync is incremental: one plain retry re-walks the tree and sends only
+    # what the vanished entries would have carried.  A live HF cache written
+    # concurrently makes this routine, so it should not cost a failed launch.
+    if rsync_had_vanished_files(result):
+        logger.warning(
+            "  Rsync %s %s: source files vanished mid-transfer; retrying once (rsync is incremental).",
+            direction,
+            host,
+        )
+        retry = _run_subprocess(cmd, host, "Rsync", timeout=timeout, detail_limit=RSYNC_FAILURE_DETAIL_LIMIT)
+        if retry.success:
+            logger.info("  Rsync %s %s OK (after vanished-source retry)", direction, host)
+        return retry
+
     if not rsync_has_attribute_permission_error(result):
         # A destination we cannot write to at all is not fixed by asking for
         # fewer attributes; retrying would double the wait and change nothing.

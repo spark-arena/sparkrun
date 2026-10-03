@@ -43,7 +43,7 @@ while IFS= read -r SNAPSHOT_DIR; do
     fi
 done <<<"$SNAPSHOT_DIRS"
 
-if [ "$FOUND_WEIGHTS" = true ]; then
+if [ "$FOUND_WEIGHTS" = true ] && [ -z "$(printenv SPARKRUN_FORCE_DOWNLOAD)" ]; then
     echo "Model already cached: $MODEL_ID"
     exit 0
 fi

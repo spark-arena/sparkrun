@@ -1228,6 +1228,143 @@ def _distribute_single_image(
     return distribute_image_from_local(image, targets, transfer_hosts=t_hosts, dry_run=dry_run, force_pull=force_pull, **ssh_kwargs)
 
 
+def _preflight_applicable(model: str, transfer_mode: str, dry_run: bool, done: bool) -> bool:
+    """True when this launch should verify caches before distributing.
+
+    rsync-carrying modes only -- ``pull`` already ensures per node, and GGUF
+    caches lack the blob-hash layout the verifier relies on.  *done*
+    (``_preflight_done``) is the recursion guard: the re-dispatches below
+    must not verify twice.
+    """
+    from sparkrun.models.download import is_gguf_model
+    from sparkrun.models.verify import model_verify_disabled
+
+    return (
+        not done
+        and not dry_run
+        and transfer_mode in ("local", "push", "delegated")
+        and not is_gguf_model(model)
+        and not model_verify_disabled()
+    )
+
+
+def _redistribute_after_preflight(
+    *,
+    model: str,
+    bad: list[str],
+    full_hosts: list[str],
+    cache_dir: str,
+    local_cache_dir: str,
+    transfer_mode: str,
+    transfer_hosts: list[str] | None,
+    worker_transfer_hosts: list[str] | None,
+    ssh_kwargs: dict,
+    revision: str | None,
+    hf_token: str | None,
+    dry_run: bool,
+    prefs: "ModelDistributionPrefs",
+) -> list["TransferFailure"]:
+    """Route distribution to exactly the hosts that failed pre-flight.
+
+    The ladder, per the verified pre-flight results:
+
+    1. local/push: the control machine is the source — that is the mode's
+       whole point (it holds the HF credentials/egress), so the idempotent
+       control-side download runs FIRST (instant on a warm cache, and it is
+       what a cold cache needs before anything can be verified).  The copy is
+       then verified; corrupt blobs are purged and re-downloaded.  Only a
+       control download that actually failed falls back to the head.
+    2. delegated (or the local/push fallback): the head is the source.  A
+       head copy that failed verification is repaired in place (bad blobs
+       removed, forced re-download) before the fan-out, and only the bad
+       hosts receive the rsync.
+    """
+    from sparkrun.models.download import download_model
+    from sparkrun.models.distribute import distribute_model_from_head
+    from sparkrun.models.verify import repair_model_on_host, verify_model_local
+    from sparkrun.orchestration.transfer import TransferFailure
+
+    head = full_hosts[0]
+    use_head_fanout = transfer_mode == "delegated"
+
+    if transfer_mode in ("local", "push"):
+        cache_for_control = local_cache_dir or cache_dir
+        # Control-first: the download is idempotent, so it is both the cold-
+        # cache fetch and the warm-cache no-op, and verification always has
+        # something real to look at.  Rerouting a cold cache to the head here
+        # would break the mode: local/push is chosen precisely because the
+        # control machine holds the HF credentials/egress, and a head without
+        # HF access could not serve the fallback.
+        control_ready = download_model(model, cache_dir=cache_for_control, token=hf_token, revision=revision) == 0
+        if control_ready:
+            local_state = verify_model_local(model, cache_for_control, revision)
+            if local_state is None:
+                control_ready = False
+            elif local_state:
+                for blob in local_state:
+                    logger.warning("Purging corrupt blob on the control machine: %s", blob)
+                    blob.unlink(missing_ok=True)
+                control_ready = download_model(model, cache_dir=cache_for_control, token=hf_token, revision=revision) == 0
+        if control_ready:
+            # The control copy now verifies: push only to the hosts that
+            # failed the pre-flight.
+            return _distribute_single_model(
+                model,
+                bad,
+                full_hosts,
+                cache_dir,
+                local_cache_dir,
+                transfer_mode,
+                transfer_hosts,
+                worker_transfer_hosts,
+                ssh_kwargs,
+                revision,
+                hf_token,
+                dry_run,
+                False,  # dispatch-local: this recursion is only reached for local/push, whose dispatch never reads it
+                prefs,
+                # Recursion guard: _preflight_applicable() must not run again.
+                _preflight_done=True,
+            )
+        logger.warning("Control machine cannot source '%s'; falling back to a head download", model)
+        use_head_fanout = True
+
+    if not use_head_fanout:
+        return []
+
+    # Fan out from the head.  A corrupt source must not become every node's
+    # problem: repair the head in place first when it is among the bad hosts.
+    if head in bad:
+        logger.warning("Head cache for '%s' failed verification; repairing before distribution", model)
+        if not repair_model_on_host(
+            model,
+            head,
+            cache_dir=cache_dir,
+            revision=revision,
+            hf_token=hf_token,
+            ssh_user=ssh_kwargs.get("ssh_user"),
+            ssh_key=ssh_kwargs.get("ssh_key"),
+            ssh_options=ssh_kwargs.get("ssh_options"),
+        ):
+            return [TransferFailure(host=h, reason="head cache repair failed") for h in bad]
+
+    workers_bad = [h for h in bad if h != head]
+    if not workers_bad:
+        return []
+    return distribute_model_from_head(
+        model,
+        [head] + workers_bad,
+        cache_dir=cache_dir,
+        revision=revision,
+        hf_token=hf_token,
+        worker_transfer_hosts=_subset_transfer_hosts(full_hosts[1:], worker_transfer_hosts, set(workers_bad)),
+        dry_run=dry_run,
+        preserve_perms=prefs.preserve_perms,
+        skip_fan_out=prefs.skip_fan_out,
+        **ssh_kwargs,
+    )
+
+
 def _distribute_single_model(
     model: str,
     targets: list[str],
@@ -1243,6 +1380,7 @@ def _distribute_single_model(
     dry_run: bool,
     auto_delegated: bool,
     prefs: ModelDistributionPrefs | None = None,
+    _preflight_done: bool = False,
 ) -> list["TransferFailure"]:
     """Distribute a single model to a subset of hosts.
 
@@ -1258,6 +1396,46 @@ def _distribute_single_model(
     from sparkrun.orchestration.transfer import TransferFailure
 
     prefs = prefs or ModelDistributionPrefs()
+
+    # Pre-flight verification for the rsync-carrying modes (pull already
+    # ensures per node, and GGUF caches lack the blob-hash layout the
+    # verifier relies on).  Hosts whose pinned snapshot hashes clean are
+    # skipped entirely, and the distributing source is verified before
+    # anything pushes from it: one raced transfer must not become every
+    # node's problem.  SPARKRUN_NO_MODEL_VERIFY=1 switches this off.
+    if _preflight_applicable(model, transfer_mode, dry_run, _preflight_done):
+        from sparkrun.models.verify import verify_model_on_hosts
+
+        bad = verify_model_on_hosts(
+            model,
+            targets,
+            cache_dir=cache_dir,
+            revision=revision,
+            ssh_user=ssh_kwargs.get("ssh_user"),
+            ssh_key=ssh_kwargs.get("ssh_key"),
+            ssh_options=ssh_kwargs.get("ssh_options"),
+        )
+        if not bad:
+            from sparkrun.core.progress import PROGRESS as _PROGRESS
+
+            logger.log(_PROGRESS, "  Model '%s' checksum-verified on all target host(s); skipping distribution", model)
+            return []
+        logger.info("Model '%s' failed verification on %d of %d target host(s)", model, len(bad), len(targets))
+        return _redistribute_after_preflight(
+            model=model,
+            bad=bad,
+            full_hosts=full_hosts,
+            cache_dir=cache_dir,
+            local_cache_dir=local_cache_dir,
+            transfer_mode=transfer_mode,
+            transfer_hosts=transfer_hosts,
+            worker_transfer_hosts=worker_transfer_hosts,
+            ssh_kwargs=ssh_kwargs,
+            revision=revision,
+            hf_token=hf_token,
+            dry_run=dry_run,
+            prefs=prefs,
+        )
 
     # Position-aligned subset (see _subset_transfer_hosts docstring).
     target_set = set(targets)

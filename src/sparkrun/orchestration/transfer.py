@@ -63,6 +63,7 @@ _RSYNC_FAILURE_PATTERNS: tuple[tuple[str, str], ...] = (
     # the "permission denied" pattern above does not match — such failures used
     # to fall all the way through to the generic "rsync failed (rc=23)".
     ("operation not permitted", "permission denied (could not change file attributes)"),
+    ("file has vanished", "source files changed during transfer"),
     ("connection refused", "SSH connection refused"),
     ("connection timed out", "SSH connection timed out"),
     ("connection closed", "SSH connection closed unexpectedly"),
@@ -91,6 +92,12 @@ def classify_rsync_failure(result: RemoteResult) -> str:
 # returns both when data genuinely failed to transfer *and* when every byte
 # arrived but the generator could not apply attributes to the destination.
 RSYNC_PARTIAL_TRANSFER_RC = 23
+
+# rsync exit code for "partial transfer due to vanished source files": entries
+# the file list saw were gone by the time the generator reached them.  Routine
+# for a live cache directory written concurrently (e.g. a model cache where a
+# huggingface_hub process materialises blobs mid-transfer).
+RSYNC_VANISHED_SOURCE_RC = 24
 
 # Truncation budget for the stderr excerpt carried on a :class:`TransferFailure`.
 _TRANSFER_DETAIL_LIMIT = 1200
@@ -183,6 +190,21 @@ def rsync_has_attribute_permission_error(result: RemoteResult) -> bool:
         if "operation not permitted" in line or "permission denied" in line:
             return True
     return False
+
+
+def rsync_had_vanished_files(result: RemoteResult) -> bool:
+    """True when rsync exited 24 because source files vanished mid-transfer.
+
+    A model cache is a live directory: a concurrent huggingface_hub process
+    materialises blobs (atomic ``.incomplete`` renames) while the transfer
+    walks the tree, so entries in the file list can be gone by the time the
+    generator reaches them.  The destination is left without those files,
+    but rsync is incremental — one plain retry re-walks and sends only what
+    is missing, so unlike a hard failure this one is worth retrying.
+    """
+    if result.returncode != RSYNC_VANISHED_SOURCE_RC:
+        return False
+    return "file has vanished" in ((result.stderr or "") + (result.stdout or "")).lower()
 
 
 def rsync_transfer_ok(result: RemoteResult) -> bool:
