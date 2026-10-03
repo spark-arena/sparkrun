@@ -12,6 +12,10 @@ first tagged release containing them, regardless of their original commit date.
 
 ### 0.4.0 application and API changes
 
+- Reduce unit-test delays from DNS, Hub metadata, SSH diagnostics, hardware scans,
+  and retry sleeps. Add per-test hang detection and explicit fixtures for tests
+  exercising real locality logic (#307).
+
 - Tolerate dangling command continuations and scalar lifecycle hooks while
   `recipe validate` suggests their canonical forms. Preserve escaped literal
   backslashes and keep multiline hook blocks in one shell invocation (#303, #305).

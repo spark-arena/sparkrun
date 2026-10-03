@@ -11,6 +11,7 @@ import yaml
 from _telemetry_guard import describe_escapes, install_telemetry_blocker
 from sparkrun.core.bootstrap import init_sparkrun
 from sparkrun.core.registry import RegistryManager
+from sparkrun.utils.net import is_local_host as _REAL_IS_LOCAL_HOST
 
 #: Captured before ``isolate_stateful`` stubs it out, so the ``real_registry_git``
 #: opt-out fixture can hand the genuine implementation back.
@@ -186,52 +187,56 @@ def isolate_stateful(tmp_path: Path, monkeypatch):
         pytest.fail(describe_escapes(telemetry_attempts), pytrace=False)
 
 
+_LOCALITY_BINDINGS = (
+    "sparkrun.utils.net.is_local_host",
+    "sparkrun.utils.is_local_host",
+    "sparkrun.orchestration.distribution.is_local_host",
+    "sparkrun.tuning.distribute.is_local_host",
+    "sparkrun.core.hosts.is_local_host",
+)
+
+
 @pytest.fixture(autouse=True)
 def fast_locality_probes(monkeypatch):
-    """Cut ``is_local_host``'s DNS bind-probe fallback out of the suite.
+    """Only loopback names are local unless a test declares another host.
 
-    ``is_local_host`` answers "is this host me?" with hostname matching,
-    interface-IP enumeration and a bind probe whose last resort *resolves
-    arbitrary names via DNS*. Every fabricated test host (``h1``,
-    ``spark-01``, ``myhost``) is unresolvable, so each probe burns a full
-    resolver timeout — seconds, wildly environment-dependent, and paid once
-    per call by anything dispatching through ``should_run_locally`` /
-    ``run_command_on_host`` (measured: 42s of pure DNS in one fully-mocked
-    port-scan test).
-
-    Nothing the suite asserts changes under this fixture: localhost, the
-    hostname/FQDN and enumerated interface IPs still match. Only the
-    name-resolution fallback is cut — and a unit test never runs on a
-    machine whose own names are spelled like a fabricated cluster node.
-    Tests that need locality behavior patch their own seam (e.g.
-    ``distribution.is_local_host``) and override this one.
-
-    Modules that bind the name at *import time* keep their own reference,
-    so their bindings are patched too — a stale original there would
-    reintroduce the probe exactly where it is hardest to see, in tests
-    that stub the ssh fan-out and would only pay timing.
+    Unit-test dispatch must not depend on the developer's DNS, hostname or
+    interfaces. Even getfqdn() performs DNS, and enumerating interfaces costs
+    a subprocess per call. Tests needing different placement patch their own
+    locality seam; helper tests opt into real_locality_probes and mock the
+    socket/interface boundaries instead.
     """
-    import socket as _socket
 
-    from sparkrun.utils import get_local_ips
+    def is_test_local(host):
+        return host in ("localhost", "127.0.0.1", "::1", "")
 
-    def _no_dns_is_local_host(host):
-        if host in ("localhost", "127.0.0.1", "::1", ""):
-            return True
-        try:
-            if host == _socket.gethostname() or host == _socket.getfqdn():
-                return True
-        except OSError:
-            pass
-        return host in get_local_ips()
+    # Include import-time aliases, as well as the original leaf module.
+    for binding in _LOCALITY_BINDINGS:
+        monkeypatch.setattr(binding, is_test_local)
 
-    monkeypatch.setattr("sparkrun.utils.is_local_host", _no_dns_is_local_host)
-    # Module-level `from sparkrun.utils import is_local_host` bindings:
-    monkeypatch.setattr("sparkrun.orchestration.distribution.is_local_host", _no_dns_is_local_host)
-    monkeypatch.setattr("sparkrun.tuning.distribute.is_local_host", _no_dns_is_local_host)
-    # core.hosts re-exports it call-free; patched so a future caller of the
-    # re-export cannot silently bypass the fixture.
-    monkeypatch.setattr("sparkrun.core.hosts.is_local_host", _no_dns_is_local_host)
+
+@pytest.fixture
+def real_locality_probes(fast_locality_probes, monkeypatch):
+    """Restore production locality detection; callers must mock its I/O."""
+    for binding in _LOCALITY_BINDINGS:
+        monkeypatch.setattr(binding, _REAL_IS_LOCAL_HOST)
+
+
+@pytest.fixture(autouse=True)
+def offline_hub_metadata(monkeypatch):
+    """Advisory Hub reads have no data unless a test supplies a response.
+
+    Keep the real budget/memo/cache code active, but never obtain metadata
+    from the internet. Metadata/revision tests override these public client
+    seams with their fixtures; this does not switch product offline policy.
+    """
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    def missing_metadata(*args, **kwargs):
+        raise LocalEntryNotFoundError("Hub metadata must be supplied by a test fixture")
+
+    for name in ("hf_hub_download", "model_info", "list_repo_tree"):
+        monkeypatch.setattr("huggingface_hub." + name, missing_metadata)
 
 
 @pytest.fixture

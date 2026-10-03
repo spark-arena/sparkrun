@@ -1964,10 +1964,13 @@ class TestAutodiscover:
         from sparkrun.proxy import autodiscover
         from sparkrun.proxy.autodiscover import run_autodiscover
 
-        # The exit condition is "missing for PROXY_GONE_TOLERANCE sweeps";
-        # the production value (30) makes the exit itself cost 30s of sleeps.
-        # Shortening it tests the same transition — gone → exit — in 2s.
-        monkeypatch.setattr(autodiscover, "PROXY_GONE_TOLERANCE", 2)
+        # Exercise the full production missing-proxy budget without real
+        # sleeps, PID lookups or endpoint probes between those checks.
+        monkeypatch.setattr("sparkrun.proxy._supervisor.GatewayState.current_pid", lambda self: None)
+        monkeypatch.setattr("sparkrun.proxy.discovery.discover_endpoints", lambda **kw: [])
+        monkeypatch.setattr(autodiscover.signal, "signal", lambda *args: None)
+        sleeper = MagicMock()
+        monkeypatch.setattr(autodiscover.time, "sleep", sleeper)
 
         cfg_path = tmp_path / "autodiscover.yaml"
         cfg = {
@@ -1978,5 +1981,6 @@ class TestAutodiscover:
         with open(cfg_path, "w") as f:
             yaml.safe_dump(cfg, f)
 
-        # Should exit quickly since PID 999999 doesn't exist
         run_autodiscover(str(cfg_path))
+        assert sleeper.call_count == autodiscover.PROXY_GONE_TOLERANCE
+        sleeper.assert_called_with(1)

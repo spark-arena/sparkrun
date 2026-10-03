@@ -15,7 +15,8 @@ from sparkrun.core.hosts import (
     _get_local_identifiers,
 )
 from sparkrun.core.cluster_manager import ClusterManager
-from sparkrun.utils import get_local_ips, is_local_host
+from sparkrun import utils
+from sparkrun.utils import get_local_ips
 
 
 def test_parse_hosts_file_basic(tmp_path: Path):
@@ -423,21 +424,41 @@ class TestGetLocalIps:
         assert get_local_ips() == {"127.0.0.1", "::1"}
 
 
+@pytest.mark.usefixtures("real_locality_probes")
 class TestIsLocalHost:
-    """Tests for utils.is_local_host() routed through get_local_ips()."""
+    """Production locality logic with all OS/network boundaries controlled."""
+
+    @pytest.fixture(autouse=True)
+    def local_identity(self, monkeypatch):
+        monkeypatch.setattr("sparkrun.utils.net.socket.gethostname", lambda: "test-control")
+        monkeypatch.setattr("sparkrun.utils.net.socket.getfqdn", lambda: "test-control.example")
+        monkeypatch.setattr("sparkrun.utils.net.get_local_ips", lambda: {"127.0.0.1", "::1"})
+
+    @pytest.mark.parametrize("host", ["test-control", "test-control.example"])
+    def test_hostname_shortcircuits_without_bind(self, host):
+        with mock.patch("sparkrun.utils.net.socket.socket") as socket:
+            assert utils.is_local_host(host) is True
+        socket.assert_not_called()
+
+    def test_bind_fallback_recognizes_a_local_alias(self):
+        with mock.patch("sparkrun.utils.net.socket.socket") as socket:
+            assert utils.is_local_host("local-alias") is True
+        socket.return_value.__enter__.return_value.bind.assert_called_once_with(("local-alias", 0))
 
     def test_localhost_shortcircuits(self):
-        assert is_local_host("localhost") is True
-        assert is_local_host("127.0.0.1") is True
-        assert is_local_host("") is True
+        assert utils.is_local_host("localhost") is True
+        assert utils.is_local_host("127.0.0.1") is True
+        assert utils.is_local_host("") is True
 
     @mock.patch("sparkrun.utils.net.get_local_ips", return_value={"127.0.0.1", "192.168.1.157"})
     def test_lan_ip_matched_without_bind(self, mock_ips):
         """A LAN interface IP is recognized via enumeration, no bind needed."""
-        assert is_local_host("192.168.1.157") is True
+        assert utils.is_local_host("192.168.1.157") is True
 
     @mock.patch("sparkrun.utils.net.get_local_ips", return_value={"127.0.0.1"})
     def test_remote_ip_not_local(self, mock_ips):
         """A non-local, non-bindable IP returns False."""
-        # 203.0.113.x is TEST-NET-3 (RFC 5737) — never assigned locally.
-        assert is_local_host("203.0.113.7") is False
+        with mock.patch("sparkrun.utils.net.socket.socket") as socket:
+            socket.return_value.__enter__.return_value.bind.side_effect = OSError("not a local address")
+            assert utils.is_local_host("203.0.113.7") is False
+        socket.return_value.__enter__.return_value.bind.assert_called_once_with(("203.0.113.7", 0))

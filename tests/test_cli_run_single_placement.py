@@ -272,6 +272,12 @@ def test_native_handler_result_needs_no_private_launch_handle(
     runner, cluster_env, busy_cluster_status, monkeypatch, tmp_path, dry_run, diagnostics, no_ready_wait
 ):
     from sparkrun import api
+    from sparkrun.core.hardware import default_dgx_spark_hardware
+
+    # This exercises the public launch-result contract, not live discovery.
+    # Non-dry planning otherwise SSHes the four fabricated cluster addresses.
+    probe = mock.Mock(side_effect=lambda hosts, **kw: {h: default_dgx_spark_hardware() for h in hosts})
+    monkeypatch.setattr("sparkrun.core.hardware_probe.probe_hosts", probe)
 
     def native_run(options, *, sctx, plan):
         assert options.trust is False
@@ -305,6 +311,11 @@ def test_native_handler_result_needs_no_private_launch_handle(
     result = runner.invoke(main, args)
     assert result.exit_code == (0 if dry_run or no_ready_wait else 1), result.output + repr(result.exception)
     assert "native serve --port 9001" in result.output
+    if dry_run:
+        probe.assert_not_called()
+    else:
+        probe.assert_called_once()
+        assert probe.call_args.args[0] == _HOSTS
     lifecycle.assert_not_called()
     follow.assert_not_called()
     if diagnostics:

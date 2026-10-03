@@ -29,6 +29,17 @@ _FIXTURE_DEVICES = {
 }
 
 
+@pytest.fixture(autouse=True)
+def fixture_gid_command(tmp_path, monkeypatch):
+    """The real show_gids scans host hardware even with fixture sysfs."""
+    bin_dir = tmp_path / "gid-bin"
+    bin_dir.mkdir()
+    show_gids = bin_dir / "show_gids"
+    show_gids.write_text("#!/bin/sh\nprintf 'fixture 1 3 192.0.2.1 v2\\n'\n")
+    show_gids.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ["PATH"])
+
+
 @pytest.fixture
 def ib_sysfs(tmp_path):
     """Materialize a fixture ``/sys/class/infiniband`` tree."""
@@ -169,7 +180,8 @@ def test_runner_retries_a_failing_command(tmp_path):
     marker = tmp_path / "attempts"
     cmd = "echo x >> %s; test $(wc -l < %s) -ge 3" % (marker, marker)
 
-    r = _run(_runner([cmd], RDMA_TIMEOUT="10", RDMA_RETRIES="4"), timeout=90)
+    # Assert actual attempts and exit propagation, without two 2s backoffs.
+    r = _run("sleep() { :; };\n" + _runner([cmd], RDMA_TIMEOUT="10", RDMA_RETRIES="4"), timeout=10)
     assert parse_framed_runs(r.stdout)[0][1] == 0
     assert marker.read_text().count("x") == 3
 
@@ -179,7 +191,7 @@ def test_runner_gives_up_after_the_retry_budget(tmp_path):
     marker = tmp_path / "attempts"
     cmd = "echo x >> %s; false" % marker
 
-    r = _run(_runner([cmd], RDMA_TIMEOUT="5", RDMA_RETRIES="2"), timeout=90)
+    r = _run("sleep() { :; };\n" + _runner([cmd], RDMA_TIMEOUT="5", RDMA_RETRIES="2"), timeout=10)
     assert parse_framed_runs(r.stdout)[0][1] != 0
     # initial attempt + 2 retries
     assert marker.read_text().count("x") == 3

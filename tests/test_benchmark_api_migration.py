@@ -91,6 +91,9 @@ def fake_recipe_env(tmp_path: Path, monkeypatch):
     """
     from sparkrun.core.recipe import Recipe
 
+    # These tests assert CLI/API wiring, not the installed uvx tool version.
+    monkeypatch.setattr("sparkrun.benchmarking.llama_benchy.LlamaBenchyFramework.detect_version", lambda self: None)
+
     recipe = Recipe(
         {
             "name": "test-recipe",

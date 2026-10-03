@@ -123,7 +123,15 @@ def test_native_teardown_accounts_for_workers_after_leader_exit(tmp_path, leader
             replacement = bash(executor.run_cmd("", "true", NAME))
             assert replacement.returncode != 0
             assert record.read_text() == str(pid) + "\n"
-        result = bash(executor.teardown_script([NAME]))
+        # These workers deliberately ignore TERM. Advance only the ten
+        # one-second grace sleeps; keep real process checks, signals, and the
+        # post-KILL polling delay so scheduler latency cannot make this flaky.
+        waits = tmp_path / "grace-waits"
+        sleep_stub = (
+            "sleep() { if [ \"$1\" = 1 ]; then printf 'wait\\n' >> " + shlex.quote(str(waits)) + '; else command sleep "$@"; fi; };\n'
+        )
+        result = bash(sleep_stub + executor.teardown_script([NAME]))
+        assert waits.read_text().splitlines() == ["wait"] * 10
         assert result.returncode == 0, result.stderr
         assert parse_teardown_removed(result.stdout) == 1
         assert not record.exists() and not Path(str(record) + ".owner").exists()

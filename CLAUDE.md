@@ -2999,16 +2999,17 @@ registry is process-global, so a plugin can't be re-hidden mid-process).
 
 ### Testing Patterns
 
-Tests use pytest with `pytest-asyncio`. The `conftest.py` provides an `isolate_stateful` autouse fixture that redirects
+Tests use pytest with `pytest-timeout`: each test has a 120-second wall-clock limit and a stack dump after 60 seconds.
+These are hang guards; external I/O still needs a fixture. The `conftest.py` provides an `isolate_stateful` autouse fixture that redirects
 SAF's stateful root to `tmp_path`, preventing tests from touching `~/.config/sparkrun/`. The bootstrap singleton (
 `_variables`) is reset between tests. All core module imports in tests use `sparkrun.core.*` paths (e.g.,
 `from sparkrun.core.registry import RegistryManager`).
 
-All SSH/Docker operations in tests are mocked — no real hosts are needed. Common fixtures: `tmp_recipe_dir` (creates
+Mock SSH/Docker operations in tests so no real hosts are needed. Common fixtures: `tmp_recipe_dir` (creates
 sample v1/v2 recipes), `cluster_dir`, `hosts_file`, `v` (initialized SAF Variables instance).
 
-**The suite is hermetic — it touches neither the developer's state nor the network.** Both properties are enforced in
-`isolate_stateful`, and both were once broken in ways that hid for a long time:
+**Keep tests isolated from the developer's state and external services.** `isolate_stateful` redirects state and
+stubs registry downloads; other fixtures control locality, metadata, and test-specific SSH/Docker boundaries:
 
 | Guard                                                          | What it prevents                                                                                    |
 |----------------------------------------------------------------|------------------------------------------------------------------------------------------------------|
@@ -3017,9 +3018,9 @@ sample v1/v2 recipes), `cluster_dir`, `hosts_file`, `v` (initialized SAF Variabl
 | `BOOTSTRAP_REGISTRY_URLS` → `[]`                               | first-run manifest discovery git-cloning three GitHub repos                                          |
 | `RegistryManager._clone_or_pull` → stub                        | every other registry `git clone` / `fetch`                                                           |
 
-The last two are why the suite runs in ~70s rather than 30+ minutes: registry git was costing seconds *per test*, masked
-for years by the cache dir leaking out to an already-populated `~/.cache/sparkrun/registries`. Sandboxing the cache
-turned those pulls into full clones, which is how it surfaced.
+Registry git previously cost seconds per test, hidden by an already-populated real registry cache. Locality detection
+and advisory Hub metadata also introduced repeated DNS, HTTP, and subprocess delays. Profile with
+`.venv/bin/python -m pytest --durations=40` when investigating slow tests; suite runtime varies with the machine.
 
 Consequences for writing tests:
 
@@ -3031,6 +3032,15 @@ Consequences for writing tests:
 - Tests that exercise **manifest discovery** supply their own URLs (`bootstrap_urls` in `test_registry.py`) and mock
   `_discover_manifest_entries`.
 - Assert against `<module>.DEFAULT_CACHE_DIR` rather than an import-time copy, which would be the real path.
+- `fast_locality_probes` treats only loopback names as local. Placement tests declare other local hosts explicitly.
+  Tests of the production helper request `real_locality_probes` and mock socket/interface boundaries themselves.
+- `offline_hub_metadata` makes `hf_hub_download`, `model_info`, and `list_repo_tree` report missing metadata unless a
+  test provides a response. This keeps budget/cache/fallback behavior active without switching product offline policy.
+  Model/revision tests supply their own public Hub-client mocks; weight downloads still need explicit mocks.
+- Use `idle_occupancy` for tests that do not exercise scheduling admission. Occupancy tests supply their own snapshots.
+- Stub backoff or grace-period sleeps when asserting retry counts or termination escalation. Keep real elapsed-time
+  checks in tests whose contract is concurrency, deadlines, or cancellation. Mock hardware/diagnostic probes and
+  external-tool version detection in CLI wiring tests.
 
 Test files cover: benchmarking, bootstrap, CLI commands, CLI recipe integration, cluster manager, config, distribution,
 Docker command generation, GGUF handling, host resolution, InfiniBand, networking, orchestration primitives, recipes,

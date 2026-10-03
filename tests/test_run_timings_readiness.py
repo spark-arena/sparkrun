@@ -508,6 +508,14 @@ def run_env(tmp_path, monkeypatch, v):
             for host in hosts
         },
     )
+    # Keep the actual diagnostics writer/timeline code, but supply the remote
+    # probe result instead of paying SSH's connect timeout on the fake host.
+    from sparkrun.orchestration.ssh import RemoteResult
+
+    monkeypatch.setattr(
+        "sparkrun.diagnostics.spark_collector.run_remote_scripts_parallel",
+        lambda hosts, **kw: [RemoteResult(h, 0, "HOSTNAME=test-host\n", "") for h in hosts],
+    )
     return config_root
 
 
