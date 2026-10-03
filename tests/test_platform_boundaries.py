@@ -114,7 +114,7 @@ def test_measured_shared_memory_and_explicit_kv_budget(edge_platform, model, cap
 
 
 def test_unknown_edge_capacity_remains_unknown(edge_platform, capsys):
-    from sparkrun.utils.cli_formatters import display_vram_estimate
+    from sparkrun.utils.cli_formatters import display_memory_plan
 
     hw = hardware("jetson-orin")
     cluster, placement = placed(hw)
@@ -129,9 +129,9 @@ def test_unknown_edge_capacity_remains_unknown(edge_platform, capsys):
     recipe = Recipe.from_dict(
         {"model": "test", "runtime": "vllm-distributed", "metadata": {"model_vram": 3}, "defaults": {"gpu_memory_utilization": 0.8}}
     )
-    display_vram_estimate(recipe, auto_detect=False, cluster=cluster, placement=placement)
+    display_memory_plan(recipe, auto_detect=False, cluster=cluster, placement=placement)
     output = capsys.readouterr().out
-    assert "UNVERIFIED" in output
+    assert "UNVERIFIED    accelerator capacity unknown" in output
     assert "121" not in output
     assert "DGX Spark" not in output
 

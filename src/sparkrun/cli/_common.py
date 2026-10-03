@@ -805,28 +805,19 @@ def report_launch_validation(recipe_ref: str, issues, failed: bool) -> None:
         click.echo("\nNothing above blocks the launch. Continuing.", err=True)
 
 
-def _display_vram_estimate(
-    recipe,
-    cli_overrides=None,
-    auto_detect=True,
-    cache_dir=None,
-    cluster=None,
-    placement=None,
-):
-    """Display VRAM estimation (delegates to cli_formatters).
-
-    When *cluster* + *placement* are threaded through, the formatter
-    renders per-host fit alongside the legacy DGX-Spark single-line fit.
-    """
+def _display_vram_estimate(recipe, cli_overrides=None, auto_detect=True, cache_dir=None):
+    """Display a standalone VRAM estimate (delegates to cli_formatters)."""
     from sparkrun.utils.cli_formatters import display_vram_estimate
 
-    display_vram_estimate(
-        recipe,
-        cli_overrides=cli_overrides,
-        auto_detect=auto_detect,
-        cache_dir=cache_dir,
-        cluster=cluster,
-        placement=placement,
+    display_vram_estimate(recipe, cli_overrides=cli_overrides, auto_detect=auto_detect, cache_dir=cache_dir)
+
+
+def _display_memory_plan(recipe, *, cluster, placement=None, cli_overrides=None, auto_detect=True, cache_dir=None):
+    """Display the memory plan for a placed launch (delegates to cli_formatters)."""
+    from sparkrun.utils.cli_formatters import display_memory_plan
+
+    display_memory_plan(
+        recipe, cluster=cluster, placement=placement, cli_overrides=cli_overrides, auto_detect=auto_detect, cache_dir=cache_dir
     )
 
 

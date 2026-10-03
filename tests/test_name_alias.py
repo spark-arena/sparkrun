@@ -65,7 +65,7 @@ def test_run_with_name_override(monkeypatch):
     hardware.source = "detected"
     monkeypatch.setattr("sparkrun.core.hardware_probe.probe_hosts", lambda hosts, **kwargs: {host: hardware for host in hosts})
     monkeypatch.setattr("sparkrun.api.status", lambda hosts, **kwargs: empty_status(hosts))
-    monkeypatch.setattr("sparkrun.cli._run._display_vram_estimate", lambda *args, **kwargs: None)
+    monkeypatch.setattr("sparkrun.cli._run._display_memory_plan", lambda *args, **kwargs: None)
 
     result = runner.invoke(main, ["run", "test-recipe", "--container-name", "custom-cluster-id", "--solo", "--no-ready-wait"])
 

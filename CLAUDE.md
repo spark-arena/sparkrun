@@ -986,6 +986,26 @@ for every caller — logs only hosts a strategy observed beyond the plan. Left
 raises; `plan` leaves the assessment `None` and the launch refuses at its old
 point, *after* the trust gate (`test_recipe_source_handoffs` pins that order).
 
+**The `run` summary reads where → whether it fits.** `Placement:` line, then one
+hosts table (`cli_formatters.format_host_table`, from `hardware_assessment.hosts`
+— structured `hardware_evidence` per host), then `Memory per GPU`
+(`format_memory_plan`), which is sized to the smallest host *above* it. Two
+rules keep it short: **each number appears once** (per-host fit rows only when
+hosts differ or one fails), and **only exceptions are marked** — no marker means
+probed this run; `*` inventory, `~` assumed/platform estimate, `!` differs from
+head, each with one legend line. Assumed hosts are therefore *data*
+(`HardwareAssessment.assumed`), not a warning sentence per host; the launcher
+turns them back into sentences for callers that only log. `-v` restores the
+long-form evidence lines and RDMA interface names. `display_vram_estimate` is now
+the standalone (`recipe vram`) view only.
+
+The KV-space token figure is bounded by the model's own limit
+(`vram.derive_model_max_len`, mirroring vLLM: the smallest length key, scaled by
+a RoPE `factor` except for `su`/`longrope`/`llama3`, YaRN from its original
+length). Display only; it never sizes anything, so it is **not** a detection
+trigger — it reaches later estimates in a run solely through the
+`metadata.model_max_len` write-back.
+
 `UNVERIFIED` fit verdicts name their cause (`HostFitDetail.unverified_reasons`,
 `VRAMEstimate.memory_estimate_gaps`) instead of "partial estimate or unverified
 hardware/capacity", which sent people to re-check hardware that had been probed.

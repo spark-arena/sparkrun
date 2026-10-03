@@ -162,8 +162,8 @@ def test_reported_scenario_launches_on_the_idle_hosts(runner, cluster_env, busy_
     assert "insufficient free capacity" not in result.output
 
     # Banner reflects the idle pair...
-    assert "Head:    %s" % _FREE[0] in result.output
-    assert "Workers: %s" % _FREE[1] in result.output
+    rows = {line.split()[0]: line.split()[1] for line in result.output.splitlines() if line.split()[:1] in (["head"], ["worker"])}
+    assert rows == {"head": _FREE[0], "worker": _FREE[1]}
     # ...and so does the placement actually handed to the runtime.
     assert list(mock_run.call_args.kwargs["hosts"]) == _FREE
 

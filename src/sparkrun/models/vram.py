@@ -110,6 +110,10 @@ class VRAMEstimate:
     available_kv_gb: float | None = None
     max_context_tokens: int | None = None
     context_multiplier: float | None = None
+    model_max_len: int | None = None
+    """The model's own context limit (:func:`derive_model_max_len`), or ``None``
+    when unknown. Bounds how :attr:`max_context_tokens` is presented; never
+    used to size anything."""
 
     kv_cache_memory_bytes: int | None = None
     """Explicit runtime KV allocation per GPU; independent of TP/PP and sequence count."""
@@ -607,7 +611,56 @@ def _extract_from_config(cfg: dict[str, Any]) -> dict[str, Any]:
     if cfg.get("model_type"):
         info["model_type"] = cfg["model_type"]
 
+    model_max_len = derive_model_max_len(cfg)
+    if model_max_len is not None:
+        info["model_max_len"] = model_max_len
+
     return info
+
+
+#: Config keys a serving engine reads the context limit from; the smallest wins.
+_MAX_LEN_KEYS = (
+    "max_position_embeddings",
+    "n_positions",
+    "max_seq_len",
+    "seq_length",
+    "model_max_length",
+    "max_sequence_length",
+    "max_seq_length",
+    "seq_len",
+)
+
+
+def derive_model_max_len(cfg: Mapping[str, Any]) -> int | None:
+    """Longest context the model's own config allows, derived as vLLM does.
+
+    The smallest of the length keys present, scaled by a RoPE ``factor`` —
+    except for the rope types whose ``max_position_embeddings`` already states
+    the extended length (``su`` / ``longrope`` / ``llama3``). YaRN scales its
+    ``original_max_position_embeddings``. ``None`` when the config states none.
+
+    Display only: a context figure derived from the KV budget alone (millions
+    of tokens for an MLA latent) is meaningless past this limit.
+    """
+    lengths = [cfg[k] for k in _MAX_LEN_KEYS if isinstance(cfg.get(k), int) and not isinstance(cfg.get(k), bool) and cfg[k] > 0]
+    if not lengths:
+        return None
+    derived = float(min(lengths))
+    rope = cfg.get("rope_scaling") or cfg.get("rope_parameters")
+    if isinstance(rope, Mapping):
+        rope_type = rope.get("rope_type") or rope.get("type")
+        factor = rope.get("factor")
+        if (
+            rope_type not in ("su", "longrope", "llama3")
+            and isinstance(factor, (int, float))
+            and not isinstance(factor, bool)
+            and factor > 0
+        ):
+            original = rope.get("original_max_position_embeddings")
+            if rope_type == "yarn" and isinstance(original, int) and original > 0:
+                derived = float(original)
+            derived *= factor
+    return int(derived)
 
 
 # Architecture keys that make an estimate possible at all.  Their absence is
@@ -693,6 +746,7 @@ def estimate_vram(
     total_gpu_memory_gb: float | None = None,
     model_type: str | None = None,
     arch: Mapping[str, Any] | None = None,
+    model_max_len: int | None = None,
 ) -> VRAMEstimate:
     """Estimate VRAM usage for an inference workload.
 
@@ -726,6 +780,7 @@ def estimate_vram(
             ``{"kv_lora_rank": 512, "qk_rope_head_dim": 64}`` for MLA. Which keys
             are meaningful is declared by the registered KV strategies
             (:func:`sparkrun.models.kv.arch_fields`), never by this signature.
+        model_max_len: The model's own context limit, carried through for display.
 
     Returns:
         VRAMEstimate with per-GPU totals and any warnings.
@@ -881,4 +936,5 @@ def estimate_vram(
         available_kv_gb=available_kv_gb,
         max_context_tokens=max_context_tokens,
         context_multiplier=context_multiplier,
+        model_max_len=model_max_len,
     )

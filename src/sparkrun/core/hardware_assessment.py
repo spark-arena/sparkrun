@@ -23,13 +23,31 @@ if TYPE_CHECKING:
 class HardwareAssessment:
     """What the target hardware says about this launch, decided once."""
 
-    evidence: dict[str, str] = field(default_factory=dict)
-    """Host → one-line description of its *detected* hardware. Hosts whose
-    facts came from inventory or assumption have no entry."""
+    hosts: dict[str, dict] = field(default_factory=dict)
+    """Host → :func:`~sparkrun.core.hardware_observations.hardware_evidence`
+    for every launch host, in launch order (each fact carries its provenance).
+    Empty when there is no cluster to read facts from."""
+    detected: tuple[str, ...] = ()
+    """Hosts probed this operation."""
+    assumed: tuple[str, ...] = ()
+    """Hosts whose hardware is the application policy's assumption, not a fact.
+    Kept as data rather than warning text so a renderer can mark the hosts
+    instead of repeating a sentence per host."""
     warnings: tuple[str, ...] = ()
-    """Concerns that do not block the launch, each already naming its host(s)."""
+    """Other concerns that do not block the launch, each naming its host(s)."""
     errors: tuple[str, ...] = ()
     """Runtime/host incompatibilities; non-empty means the launch must not start."""
+
+    @property
+    def evidence(self) -> dict[str, str]:
+        """Host → one-line description of its *detected* hardware."""
+        from sparkrun.core.hardware_observations import format_hardware_evidence
+
+        return {host: format_hardware_evidence(self.hosts[host]) for host in self.detected if host in self.hosts}
+
+    def assumed_warnings(self) -> list[str]:
+        """The per-host sentence for :attr:`assumed`, for log-only consumers."""
+        return ["Host %s hardware is assumed by application policy; probe it to verify identity and capacity" % h for h in self.assumed]
 
 
 def assess_launch_hardware(
@@ -46,7 +64,7 @@ def assess_launch_hardware(
     an inventory record is history, not a fact about the host right now.
     """
     from sparkrun.core.hardware import resolve_host_hardware
-    from sparkrun.core.hardware_observations import format_hardware_evidence, hardware_evidence
+    from sparkrun.core.hardware_observations import hardware_evidence
     from sparkrun.platforms import resolve_accelerator_platform
     from sparkrun.runtimes.compatibility import check_runtime_host_compatibility
 
@@ -54,12 +72,13 @@ def assess_launch_hardware(
     detected = {h for h in host_list if h in observations and observations[h].source == "detected"}
     launch_hardware = resolve_host_hardware(list(host_list), cluster, placement)
 
-    evidence: dict[str, str] = {}
+    facts: dict[str, dict] = {}
+    assumed: list[str] = []
     warnings: list[str] = []
     errors: list[str] = []
     for host, hw in launch_hardware.items():
-        if host in detected and cluster is not None:
-            evidence[host] = format_hardware_evidence(hardware_evidence(cluster, host, placement))
+        if cluster is not None:
+            facts[host] = hardware_evidence(cluster, host, placement)
         if getattr(runtime, "requires_capability", ()):
             errors.extend(check_runtime_host_compatibility(runtime, host, hw))
         host_warnings: list[str] = []
@@ -69,10 +88,16 @@ def assess_launch_hardware(
                 host_warnings.extend(w for w in platform.validate_host(hw) if w not in host_warnings)
         warnings.extend("Host %s: %s" % (host, w) for w in host_warnings)
         if hw.source == "assumed":
-            warnings.append("Host %s hardware is assumed by application policy; probe it to verify identity and capacity" % host)
+            assumed.append(host)
 
     warnings.extend(driver_mismatch_warnings({h: observations[h] for h in host_list if h in detected}))
-    return HardwareAssessment(evidence=evidence, warnings=tuple(warnings), errors=tuple(errors))
+    return HardwareAssessment(
+        hosts=facts,
+        detected=tuple(h for h in host_list if h in detected),
+        assumed=tuple(assumed),
+        warnings=tuple(warnings),
+        errors=tuple(errors),
+    )
 
 
 def driver_mismatch_warnings(hardware: Mapping[str, HostHardware]) -> list[str]:

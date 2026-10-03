@@ -432,10 +432,10 @@ def test_cluster_update_infer_hardware_persists_fingerprints(tmp_path, monkeypat
 # --------------------------------------------------------------------------
 
 
-def test_display_vram_estimate_renders_per_host_fit(capsys):
-    """When cluster+placement are threaded, the formatter renders per-host fit."""
+def test_memory_plan_lists_hosts_only_when_they_differ(capsys):
+    """Per-host rows appear only when hosts differ; identical hosts say it once."""
     from sparkrun.core.recipe import Recipe
-    from sparkrun.utils.cli_formatters import display_vram_estimate
+    from sparkrun.utils.cli_formatters import display_memory_plan
 
     cluster = ClusterDefinition(
         name="dgx",
@@ -449,11 +449,15 @@ def test_display_vram_estimate_renders_per_host_fit(capsys):
     recipe = Recipe.from_dict({"model": "m", "runtime": "vllm", "container": "img"})
 
     # Auto-detect off keeps test hermetic; estimate returns model_weights=0 etc.
-    display_vram_estimate(recipe, auto_detect=False, cluster=cluster, placement=placement)
+    display_memory_plan(recipe, auto_detect=False, cluster=cluster, placement=placement)
     out = capsys.readouterr().out
-    assert "Per-host fit" in out
-    assert "s1:" in out
-    assert "s2:" in out
+    assert "sized to the smallest host above):" in out
+    assert "s1" not in out and "s2" not in out
+
+    cluster.hosts_hardware["s2"] = HostHardware(accelerators=[AcceleratorSpec(vendor="nvidia", model="gb10", memory_gb=62.0)])
+    display_memory_plan(recipe, auto_detect=False, cluster=cluster, placement=placement)
+    out = capsys.readouterr().out
+    assert "    s1   " in out and "    s2   " in out
 
 
 def test_display_vram_estimate_skips_per_host_fit_without_cluster(capsys):
@@ -464,7 +468,7 @@ def test_display_vram_estimate_skips_per_host_fit_without_cluster(capsys):
     recipe = Recipe.from_dict({"model": "m", "runtime": "vllm", "container": "img"})
     display_vram_estimate(recipe, auto_detect=False)
     out = capsys.readouterr().out
-    assert "Per-host fit" not in out
+    assert "Memory per GPU" not in out
     assert "target capacity unknown" in out
     assert "DGX Spark memory fit" not in out
 

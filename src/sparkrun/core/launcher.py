@@ -1351,7 +1351,7 @@ def launch_inference(
     else:
         for host, line in assessment.evidence.items():
             logger.log(PROGRESS, "Host %s hardware: %s", host, line)
-        for warning in assessment.warnings:
+        for warning in [*assessment.warnings, *assessment.assumed_warnings()]:
             logger.warning("%s", warning)
     if assessment.errors:
         raise IncompatibleHardwareError(runtime.runtime_name, list(assessment.errors))

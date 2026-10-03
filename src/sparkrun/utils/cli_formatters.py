@@ -291,34 +291,17 @@ def display_vram_estimate(
     cli_overrides=None,
     auto_detect=True,
     cache_dir=None,
-    cluster=None,
-    placement=None,
 ):
-    """Display VRAM estimation for a recipe.
+    """Display a standalone VRAM estimate for a recipe (no target hardware).
 
-    When *cluster* is provided, also render a per-host fit table using
-    :func:`sparkrun.models.fit.check_fit`.  When *placement* is also
-    provided, the per-host walk follows the placed rank set rather than
-    every cluster host. The summary and per-host rows use the same fit result;
-    standalone recipe output leaves target capacity unknown.
+    For a placed launch, :func:`display_memory_plan` renders the estimate
+    against the hosts it will run on.
     """
-    # Resolve the target accelerator's memory so the budget/fit reflect the real
-    # GPU (e.g. 48 GB A6000) rather than the hardcoded DGX Spark figure.
-    target_mem, _target_model = _resolve_target_accelerator(cluster, placement)
-
     try:
-        est = recipe.estimate_vram(
-            cli_overrides=cli_overrides, auto_detect=auto_detect, cache_dir=cache_dir, total_gpu_memory_gb=target_mem
-        )
+        est = recipe.estimate_vram(cli_overrides=cli_overrides, auto_detect=auto_detect, cache_dir=cache_dir)
     except Exception as e:
         click.echo(f"\nVRAM estimation failed: {e}", err=True)
         return
-
-    fit = None
-    if cluster is not None:
-        from sparkrun.models.fit import check_fit
-
-        fit = check_fit(est, cluster, placement)
 
     click.echo("\nVRAM Estimation:")
     if est.model_dtype:
@@ -331,6 +314,8 @@ def display_vram_estimate(
     elif all([est.num_layers, est.num_kv_heads, est.head_dim]):
         click.echo(f"  Architecture:     {est.num_layers} layers, {est.num_kv_heads} KV heads, {est.head_dim} head_dim")
     click.echo(f"  Model weights:    {est.model_weights_gb:.2f} GiB")
+    if est.model_max_len:
+        click.echo(f"  Model context:    {est.model_max_len:,} tokens")
     if est.kv_cache_memory_bytes is not None:
         click.echo(f"  KV allocation:    {est.kv_cache_memory_bytes / 1024**3:.2f} GiB per GPU (explicit)")
     if est.kv_cache_total_gb is not None:
@@ -342,66 +327,255 @@ def display_vram_estimate(
     if est.pipeline_parallel > 1:
         click.echo(f"  Pipeline parallel: {est.pipeline_parallel}")
     click.echo(f"  Per-GPU total:    {est.total_per_gpu_gb:.2f} GiB")
-    total_gb = est.total_gpu_memory_gb
-    if fit is not None:
-        fit_str = {
-            "fits": "YES (estimate)",
-            "unknown": "UNVERIFIED (%s)" % ("; ".join(fit.unverified_reasons) or "partial estimate or unverified hardware/capacity"),
-            "exceeds": "EXCEEDS (see per-host budgets)",
-        }[fit.status]
-        scope = "Placement" if placement is not None else "Candidate"
-        click.echo(f"  {scope} memory fit: {fit_str}")
-        modes = sorted({d.allocation_mode for d in fit.per_host.values()})
-        click.echo(f"  Allocation:       {', '.join(modes)}; runtime verifies actual memory fit")
-    else:
-        click.echo("  Memory fit:       UNKNOWN (target capacity unknown)")
-        click.echo("  Allocation:       exclusive GPU by default; runtime verifies actual memory fit")
-
-    # GPU memory budget analysis
+    click.echo("  Memory fit:       UNKNOWN (target capacity unknown)")
+    click.echo("  Allocation:       exclusive GPU by default; runtime verifies actual memory fit")
     if est.kv_cache_memory_bytes is not None:
         click.echo("  KV budget source: explicit bytes; gpu_memory_utilization does not size KV")
         if est.max_context_tokens is not None:
             click.echo(f"  Context estimate: {est.max_context_tokens:,} tokens within the explicit KV budget")
         else:
             click.echo("  Context capacity: unverified; runtime must size the cache")
-    elif est.usable_gpu_memory_gb is not None:
-        click.echo("\n  Runtime GPU Memory Budget (smallest selected capacity):")
-        click.echo(f"    gpu_memory_utilization: {est.gpu_memory_utilization:.0%}")
-        click.echo(f"    Usable GPU memory:     {est.usable_gpu_memory_gb:.1f} GiB ({total_gb:.0f} GiB x {est.gpu_memory_utilization:.0%})")
-        click.echo(f"    Available for KV:      {est.available_kv_gb:.1f} GiB")
-        if est.max_context_tokens is not None:
-            click.echo(f"    Max context tokens:    {est.max_context_tokens:,}")
-            if est.context_multiplier is not None and est.max_model_len:
-                click.echo(f"    Context multiplier:    {est.context_multiplier:.1f}x (vs max_model_len={est.max_model_len:,})")
-                if est.context_multiplier < 1.0:
-                    click.echo(f"    WARNING: max_model_len exceeds available KV budget ({est.context_multiplier:.1%} fits)")
-
     for w in est.warnings:
         click.echo(f"  Warning: {w}")
 
-    if fit is not None:
-        click.echo("\n  Per-host fit:")
-        for host, detail in fit.per_host.items():
-            if detail.accelerator_memory_gb is None:
-                click.echo(f"    {host}: ranks={detail.ranks_assigned}, accelerator memory unknown")
+
+# ---------------------------------------------------------------------------
+# Launch summary: hosts table, then the memory plan sized to those hosts
+# ---------------------------------------------------------------------------
+
+#: Provenance markers. No marker means "measured this run"; only exceptions
+#: are marked, so a fully probed cluster reads clean.
+_INVENTORY_MARK = "*"
+_ESTIMATE_MARK = "~"
+_DIFFERS_MARK = "!"
+
+
+def _table(header: list[str], rows: list[list[str]], indent: str = "  ") -> list[str]:
+    widths = [max(len(cell) for cell in column) for column in zip(header, *rows, strict=True)]
+    return [indent + "  ".join(cell.ljust(w) for cell, w in zip(row, widths, strict=True)).rstrip() for row in [header, *rows]]
+
+
+def _mark(source: str | None) -> str:
+    if source in (None, "detected"):
+        return ""
+    if source == "inventory":
+        return _INVENTORY_MARK
+    return _ESTIMATE_MARK
+
+
+def _capacity_mark(verification: str) -> str:
+    return {"detected": "", "inventory": _INVENTORY_MARK, "estimated": _ESTIMATE_MARK}.get(verification, "")
+
+
+def _suffix(text: str, mark: str) -> str:
+    return f"{text} {mark}" if mark else text
+
+
+def format_host_table(
+    assessment, host_list: list[str], placement=None, *, is_solo: bool = False, verbose: bool = False, dry_run: bool = False
+) -> list[str]:
+    """Render the launch hosts as one table plus a legend for any marked fact.
+
+    *assessment* is :class:`~sparkrun.core.hardware_assessment.HardwareAssessment`.
+    Columns that would say nothing are omitted (``RANKS`` unless a host runs
+    several ranks). ``verbose`` appends the long-form evidence lines and the
+    RDMA interface names.
+    """
+    facts = assessment.hosts
+    multi_rank = placement is not None and any(len(placement.ranks_on_host(h)) > 1 for h in host_list)
+    header = ["ROLE", "HOST"] + (["RANKS"] if multi_rank else []) + ["GPU", "MEMORY", "DRIVER", "RDMA"]
+
+    def _driver(host: str) -> tuple[str | None, str]:
+        drivers = facts.get(host, {}).get("drivers", {})
+        if not drivers:
+            return None, ""
+        vendors = [a["vendor"] for a in facts[host]["accelerators"]]
+        vendor = next((v for v in vendors if v in drivers), next(iter(drivers)))
+        return drivers[vendor]["version"], drivers[vendor]["source"]
+
+    head_driver = _driver(host_list[0])[0] if host_list else None
+    used: set[str] = set()
+    any_rdma = False
+    rows = []
+    for position, host in enumerate(host_list):
+        fact = facts.get(host)
+        role = "target" if is_solo else ("head" if position == 0 else "worker")
+        row = [role, host]
+        if multi_rank:
+            row.append(str(len(placement.ranks_on_host(host))))
+        if fact is None or not fact["accelerators"]:
+            row += ["unknown", "unknown"]
+        else:
+            accels = fact["accelerators"]
+            models = sorted({a["model"] for a in accels})
+            gpu = "+".join(models) + (f" x{len(accels)}" if len(models) == 1 and len(accels) > 1 else "")
+            gpu_mark = _mark(accels[0]["identity_source"])
+            capacities = [a["capacity_gib"] for a in accels]
+            if any(c is None for c in capacities):
+                memory, memory_mark = "unknown", ""
             else:
-                marker = {"fits": "OK (estimate)", "unknown": "UNVERIFIED", "exceeds": "EXCEEDS"}[detail.status]
-                cap = detail.max_gpu_memory_utilization
-                if cap is not None and cap < 1.0 and detail.nominal_memory_gb is not None:
-                    accel_str = (
-                        f"accelerator={detail.nominal_memory_gb:.1f} GiB @{cap:.0%} -> usable={detail.accelerator_memory_gb:.1f} GiB"
-                    )
-                else:
-                    accel_str = f"accelerator={detail.accelerator_memory_gb:.1f} GiB"
-                click.echo(
-                    f"    {host}: ranks={detail.ranks_assigned}, "
-                    f"per-rank={detail.vram_per_rank_gb:.1f} GiB, "
-                    f"{accel_str}, "
-                    f"headroom={detail.headroom_gb:.1f} GiB [{marker}]; allocation={detail.allocation_mode}; "
-                    f"budget source={detail.memory_limit_source}; capacity source={detail.memory_capacity_source}; hardware={detail.hardware_source}"
-                )
-        for w in fit.warnings:
-            click.echo(f"  Warning: {w}")
+                smallest = min(accels, key=lambda a: a["capacity_gib"])
+                memory, memory_mark = f"{smallest['capacity_gib']:.1f} GiB", _capacity_mark(smallest["capacity_verification"])
+            row += [_suffix(gpu, gpu_mark), _suffix(memory, memory_mark)]
+            used.update(m for m in (gpu_mark, memory_mark) if m)
+        version, source = _driver(host)
+        if version is None:
+            row.append("—")
+        else:
+            mark = _DIFFERS_MARK if head_driver is not None and version != head_driver else _mark(source)
+            row.append(_suffix(version, mark))
+            used.update([mark] if mark else [])
+        interfaces = (fact or {}).get("interfaces", {})
+        if interfaces.get("names"):
+            any_rdma = True
+            names = interfaces["names"]
+            row.append(", ".join(names) if verbose else f"{len(names)} port{'s' if len(names) != 1 else ''}")
+        else:
+            row.append("none" if interfaces.get("status") == "not discovered" else "—")
+        rows.append(row)
+
+    lines = _table(header, rows)
+    legend = []
+    if _INVENTORY_MARK in used:
+        legend.append(f"{_INVENTORY_MARK} from saved cluster inventory, not probed this run")
+    if _ESTIMATE_MARK in used:
+        if assessment.assumed:
+            legend.append(f"{_ESTIMATE_MARK} assumed by platform policy, not probed" + (" (dry run doesn't probe)" if dry_run else ""))
+        else:
+            legend.append(f"{_ESTIMATE_MARK} platform default capacity, not measured")
+    if _DIFFERS_MARK in used:
+        legend.append(f"{_DIFFERS_MARK} differs from head")
+    lines.extend("  " + line for line in legend)
+    footer = []
+    if not used and len(assessment.detected) == len(host_list):
+        footer.append("All facts probed this run.")
+    if any_rdma:
+        footer.append("RDMA links not tested.")
+    if footer:
+        lines.append("  " + " ".join(footer))
+    if verbose:
+        for host, line in assessment.evidence.items():
+            lines.append(f"  {host}: {line}")
+    return lines
+
+
+def _tokens(n: int) -> str:
+    return f"{n / 1e6:.2f}M" if n >= 1_000_000 else f"{n:,}"
+
+
+def format_memory_plan(est, fit, *, hosts: int = 1) -> list[str]:
+    """Render the per-GPU memory arithmetic, then the fit verdict, for a placed launch.
+
+    *est* is the :class:`~sparkrun.models.vram.VRAMEstimate` sized to the
+    smallest selected capacity; *fit* the
+    :class:`~sparkrun.models.fit.FitResult` for the same placement. Each number
+    appears once: per-host rows are added only when hosts differ or one fails.
+    """
+    shard = max(1, est.tensor_parallel * est.pipeline_parallel)
+    shape = f"tp={est.tensor_parallel}" + (f", pp={est.pipeline_parallel}" if est.pipeline_parallel > 1 else "")
+    sized = "sized to the smallest host above" if hosts > 1 else "sized to the host above"
+    lines = [f"Memory per GPU ({shape}, {sized}):"]
+
+    def row(label: str, value: str, detail: str = "") -> None:
+        lines.append(f"  {label:<11}{value:>11}    {detail}".rstrip())
+
+    dtype = est.model_dtype or "unknown dtype"
+    if est.model_weights_gb > 0:
+        row(
+            "Weights",
+            f"{est.model_weights_gb / shard:.1f} GiB",
+            f"{est.model_weights_gb:.1f} GiB {dtype}" + (f" / {shard}" if shard > 1 else ""),
+        )
+    else:
+        row("Weights", "unknown", "model size not detected")
+
+    kv_kind = " ".join(p for p in (est.kv_dtype or "bf16", "MLA latent" if est.kv_arch == "mla" else None) if p)
+    if est.kv_cache_memory_bytes is not None:
+        row("KV cache", f"{est.kv_cache_memory_bytes / 1024**3:.1f} GiB", "explicit kv_cache_memory_bytes")
+    elif est.kv_cache_per_gpu_gb is not None and est.max_model_len:
+        replicated = ", replicated per rank" if est.kv_cache_replicated and est.tensor_parallel > 1 else ""
+        row("KV demand", f"{est.kv_cache_per_gpu_gb:.1f} GiB", f"{kv_kind} at max_model_len {est.max_model_len:,}{replicated}")
+
+    details = [d for d in fit.per_host.values() if d.accelerator_memory_gb is not None]
+    limiting = min(details, key=lambda d: d.accelerator_memory_gb) if details else None
+    if limiting is not None:
+        cap = limiting.max_gpu_memory_utilization
+        if limiting.nominal_memory_gb is not None and cap is not None and cap < 1.0:
+            source = limiting.memory_limit_source or ""
+            how = (
+                "gpu_memory_utilization"
+                if source == "runtime gpu_memory_utilization"
+                else f"usable cap ({source})"
+                if source
+                else "usable cap"
+            )
+            budget_detail = f"{limiting.nominal_memory_gb:.1f} GiB x {cap:.0%} {how}"
+        else:
+            budget_detail = f"{limiting.accelerator_memory_gb:.1f} GiB, uncapped"
+        row("Budget", f"{limiting.accelerator_memory_gb:.1f} GiB", budget_detail)
+
+    if est.kv_cache_memory_bytes is not None:
+        if est.max_context_tokens is not None:
+            row("Context", f"{_tokens(est.max_context_tokens)}", "tokens within the explicit KV budget")
+        else:
+            row("Context", "unverified", "runtime sizes the cache")
+    elif est.available_kv_gb is not None:
+        detail = ""
+        if est.available_kv_gb <= 0:
+            detail = "none: the weights alone exceed the budget"
+        elif est.max_context_tokens is not None:
+            detail = f"~{_tokens(est.max_context_tokens)} tokens of {kv_kind} cache"
+            if est.model_max_len and est.max_context_tokens > est.model_max_len:
+                detail += f"; model limit {est.model_max_len:,}"
+            elif est.context_multiplier is not None and est.max_model_len:
+                detail += f" ({est.context_multiplier:.1f}x max_model_len)"
+        row("KV space", f"{est.available_kv_gb:.1f} GiB", detail)
+    elif limiting is not None and limiting.headroom_gb is not None:
+        row("Spare", f"{limiting.headroom_gb:.1f} GiB", "after weights" + (" and KV demand" if est.kv_cache_per_gpu_gb else ""))
+
+    if fit.status == "fits":
+        row("Fit", "YES", "estimate; the runtime verifies actual memory")
+    elif fit.status == "exceeds":
+        row("Fit", "EXCEEDS", "on " + ", ".join(h for h, d in fit.per_host.items() if not d.ok))
+    else:
+        row("Fit", "UNVERIFIED", "; ".join(fit.unverified_reasons))
+    if any(d.allocation_mode == "shared" for d in fit.per_host.values()):
+        row("Allocation", "shared", "GPU shared with other workloads; the runtime verifies actual memory")
+
+    distinct = {(round(d.accelerator_memory_gb or -1, 1), round(d.headroom_gb or 0, 1)) for d in fit.per_host.values()}
+    if len(fit.per_host) > 1 and (len(distinct) > 1 or fit.status == "exceeds"):
+        width = max(len(h) for h in fit.per_host)
+        for host, d in fit.per_host.items():
+            if d.accelerator_memory_gb is None:
+                lines.append(f"    {host:<{width}}  capacity unknown")
+            else:
+                verdict = "" if d.ok else "  EXCEEDS"
+                lines.append(f"    {host:<{width}}  {d.accelerator_memory_gb:>6.1f} GiB budget  {d.headroom_gb:>6.1f} GiB spare{verdict}")
+
+    if est.context_multiplier is not None and est.context_multiplier < 1.0 and est.max_model_len:
+        lines.append(f"  Warning: max_model_len {est.max_model_len:,} exceeds the KV space ({est.context_multiplier:.0%} fits)")
+    for warning in est.warnings:
+        lines.append(f"  Warning: {warning}")
+    return lines
+
+
+def display_memory_plan(recipe, *, cluster, placement=None, cli_overrides=None, auto_detect=True, cache_dir=None) -> None:
+    """Estimate *recipe* against the smallest selected capacity and print :func:`format_memory_plan`."""
+    from sparkrun.models.fit import check_fit
+
+    target_mem, _target_model = _resolve_target_accelerator(cluster, placement)
+    try:
+        est = recipe.estimate_vram(
+            cli_overrides=cli_overrides, auto_detect=auto_detect, cache_dir=cache_dir, total_gpu_memory_gb=target_mem
+        )
+    except Exception as e:
+        click.echo(f"\nMemory estimation failed: {e}", err=True)
+        return
+    fit = check_fit(est, cluster, placement)
+    hosts = len(placement.hosts_used) if placement is not None else len(cluster.hosts)
+    click.echo()
+    for line in format_memory_plan(est, fit, hosts=hosts):
+        click.echo(line)
 
 
 def format_monitor_table(

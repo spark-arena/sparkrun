@@ -1005,8 +1005,7 @@ class TestRunCommand:
             assert "Runtime:" in result.output
             assert "Image:" in result.output
             assert "Model:" in result.output
-            assert "Mode:" in result.output
-            assert "solo" in result.output.lower()
+            assert "Placement: solo on" in result.output
 
             # Verify runtime.run() was called with dry_run=True
             mock_run.assert_called_once()
@@ -1137,8 +1136,7 @@ class TestRunCommand:
         # FALLBACK_DEFAULT_SCHEDULER when neither CLI nor recipe override.
         from sparkrun.core.scheduler import FALLBACK_DEFAULT_SCHEDULER
 
-        assert "Scheduler:" in result.output
-        assert FALLBACK_DEFAULT_SCHEDULER in result.output
+        assert "(%s scheduler)" % FALLBACK_DEFAULT_SCHEDULER in result.output
 
     def test_run_banner_scheduler_honors_cli_override(self, runner, reset_bootstrap):
         """--scheduler flag is reflected in the banner line."""
@@ -1157,7 +1155,7 @@ class TestRunCommand:
             )
 
         assert result.exit_code == 0, result.output
-        assert "Scheduler: greedy" in result.output
+        assert "(greedy scheduler)" in result.output
 
 
 class TestStopCommand:

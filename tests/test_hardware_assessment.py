@@ -84,9 +84,13 @@ def test_incompatible_runtime_is_an_error_not_a_warning():
     assert assessment.errors and "h1" in assessment.errors[0]
 
 
-def test_assumed_hardware_is_warned():
+def test_assumed_hardware_is_data_not_warning_text():
+    # Kept as data so the CLI marks the host instead of printing a sentence
+    # per host; log-only consumers get the sentence from assumed_warnings().
     assessment = assess_launch_hardware(_Runtime(), ["h1"], None, None)
-    assert any("Host h1 hardware is assumed" in w for w in assessment.warnings)
+    assert assessment.assumed == ("h1",)
+    assert not any("assumed" in w for w in assessment.warnings)
+    assert assessment.assumed_warnings() == ["Host h1 hardware is assumed by application policy; probe it to verify identity and capacity"]
     assert assessment.evidence == {}
 
 
@@ -221,7 +225,7 @@ def test_complete_estimate_has_no_gaps():
 
 def test_detected_capacity_with_partial_estimate_blames_the_estimate_only(capsys):
     from sparkrun.models.fit import check_fit
-    from sparkrun.utils.cli_formatters import display_vram_estimate
+    from sparkrun.utils.cli_formatters import display_memory_plan
 
     hw = replace(_gb10(), accelerators=[replace(_gb10().accelerators[0], memory_gb=121.7)])
     cluster = ClusterDefinition(name="c", hosts=["h1"], hosts_hardware={"h1": hw})
@@ -233,9 +237,9 @@ def test_detected_capacity_with_partial_estimate_blames_the_estimate_only(capsys
         def estimate_vram(self, **kw):
             return _estimate()
 
-    display_vram_estimate(_Recipe(), cluster=cluster)
+    display_memory_plan(_Recipe(), cluster=cluster)
     out = capsys.readouterr().out
-    assert "memory fit: UNVERIFIED (KV cache not sized (no max_model_len))" in out
+    assert "Fit         UNVERIFIED    KV cache not sized (no max_model_len)" in out
 
 
 def test_unknown_capacity_and_assumed_hardware_are_named():

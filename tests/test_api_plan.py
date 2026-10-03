@@ -231,7 +231,7 @@ def test_live_hardware_precedes_placement_and_is_reused_by_normal_launch(recipe,
     from dataclasses import replace
     from sparkrun.core.hardware import AcceleratorSpec, HostHardware
     from sparkrun.models.vram import VRAMEstimate
-    from sparkrun.utils.cli_formatters import display_vram_estimate
+    from sparkrun.utils.cli_formatters import display_memory_plan
 
     options = replace(_options(recipe), dry_run=False)
     options.cluster.user = "cluster-user"
@@ -281,13 +281,12 @@ def test_live_hardware_precedes_placement_and_is_reused_by_normal_launch(recipe,
     assert options.cluster == before
     assert plan.host_hardware == observed
     assert plan.cluster.max_gpu_memory_utilization == 0.8
-    display_vram_estimate(recipe, cluster=plan.cluster, placement=plan.placement)
+    display_memory_plan(recipe, cluster=plan.cluster, placement=plan.placement)
     output = capsys.readouterr().out
-    assert "hardware=detected" in output
-    assert "hardware=assumed" not in output
-    assert "probe the target" not in output
-    assert "Placement memory fit: UNVERIFIED" in output
-    assert "capacity source=platform default" in output
+    # Detected hardware with a platform-default capacity: the fit names the
+    # estimate, never "assumed".
+    assert "Fit         UNVERIFIED    capacity is a platform estimate, not measured" in output
+    assert "hardware assumed" not in output
 
     with mock.patch("sparkrun.core.launcher.launch_inference") as launch:
         launch.return_value = mock.MagicMock(

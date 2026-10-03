@@ -135,7 +135,7 @@ def test_cluster_override_and_cli_fit_use_the_same_budget(capsys):
     from sparkrun.core.cluster_manager import ClusterDefinition
     from sparkrun.core.scheduler import RankAssignment, RankSlot
     from sparkrun.models.fit import check_fit
-    from sparkrun.utils.cli_formatters import display_vram_estimate
+    from sparkrun.utils.cli_formatters import display_memory_plan
 
     r = recipe(kv_cache_memory_bytes="8G", gpu_memory_utilization=0.1)
     cluster = ClusterDefinition(name="sparks", hosts=["h1", "h2"], max_gpu_memory_utilization=0.75)
@@ -145,13 +145,13 @@ def test_cluster_override_and_cli_fit_use_the_same_budget(capsys):
     assert not fit.ok
     assert fit.per_host["h1"].accelerator_memory_gb == pytest.approx(90.75)
     assert fit.per_host["h1"].memory_limit_source == "cluster override"
-    display_vram_estimate(r, auto_detect=False, cluster=cluster, placement=placement)
+    display_memory_plan(r, auto_detect=False, cluster=cluster, placement=placement)
     output = capsys.readouterr().out
-    assert "Placement memory fit: EXCEEDS" in output
+    assert "Fit            EXCEEDS    on h1, h2" in output
     assert "DGX Spark memory fit:" not in output
-    assert "KV allocation:    8.00 GiB per GPU" in output
-    assert "Context capacity: unverified" in output
-    assert "budget source=cluster override" in output
+    assert "KV cache       8.0 GiB    explicit kv_cache_memory_bytes" in output
+    assert "Context     unverified    runtime sizes the cache" in output
+    assert "x 75% usable cap (cluster override)" in output
     assert est.to_dict()["memory_estimate_complete"] is True
     assert "dgx_spark_fit_budget_gb" not in est.to_dict()
     assert fit.status == "exceeds"

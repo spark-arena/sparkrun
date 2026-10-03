@@ -1837,6 +1837,7 @@ class Recipe:
         model_vram = self.metadata.get("model_vram")
         kv_vram_per_token = self.metadata.get("kv_vram_per_token")
         model_type = self.metadata.get("model_type")
+        model_max_len = self.metadata.get("model_max_len")
         # Architecture fields declared by the KV strategies — auto-detected
         # below, overridable in metadata.  Read as a sweep over the declaration
         # rather than a hand-written list, so a new architecture's fields reach
@@ -1917,6 +1918,8 @@ class Recipe:
                         arch_extra[_name] = hf_info.get(_name)
                 if not model_type:
                     model_type = hf_info.get("model_type")
+                if not model_max_len:
+                    model_max_len = hf_info.get("model_max_len")
 
                 # Use kv_cache_quant from hf_quant_config to inform kv_dtype
                 if not kv_dtype and quant_info and quant_info.kv_cache_quant:
@@ -2026,6 +2029,7 @@ class Recipe:
             total_gpu_memory_gb=total_gpu_memory_gb,
             model_type=str(model_type) if model_type else None,
             arch={f.name: f.coerce(arch_extra[f.name]) for f in arch_fields() if arch_extra.get(f.name)},
+            model_max_len=integer_setting(model_max_len, key="model_max_len") if model_max_len else None,
         )
         if _kv_from_command:
             result.warnings.append(
@@ -2066,6 +2070,10 @@ class Recipe:
             self.metadata["kv_dtype"] = normalize_dtype(str(kv_dtype))
         if model_type and "model_type" not in self.metadata:
             self.metadata["model_type"] = str(model_type)
+        # Not a detection trigger (it only bounds a displayed figure), so it
+        # survives the later estimates of one run only through this write-back.
+        if model_max_len and "model_max_len" not in self.metadata:
+            self.metadata["model_max_len"] = int(model_max_len)
         # Architecture markers.  A model whose architecture declares none of
         # them leaves these unset on every call, which re-derives the same
         # (correct) verdict.  Sweeping the declaration is what makes the

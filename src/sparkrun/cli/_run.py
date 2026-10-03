@@ -26,7 +26,7 @@ from sparkrun.runtimes.compatibility import IncompatibleHardwareError
 from ._common import (
     RECIPE_NAME,
     _apply_recipe_overrides,
-    _display_vram_estimate,
+    _display_memory_plan,
     _expand_recipe_shortcut,
     _get_context,
     _is_recipe_url,
@@ -753,43 +753,62 @@ def run(
 
     _echo_hub_notice()
 
+    host_list = list(run_plan.host_list)
+    is_solo = run_plan.is_solo
+
+    # Placement-dependent half of the summary, in reading order: where it runs
+    # (placement, then the hosts table), then whether it fits — the memory plan
+    # is sized to the smallest of those hosts, so it reads after them.
+    from sparkrun.core.scheduler import default_scheduler_upgrade_hint
+
+    click.echo()
+    if is_solo:
+        click.echo("Placement: solo on %s (%s)" % (host_list[0] if host_list else "localhost", host_source))
+    else:
+        _of = " of %d" % len(run_plan.candidate_hosts) if len(run_plan.candidate_hosts) > len(host_list) else ""
+        click.echo("Placement: %d%s hosts from %s (%s scheduler)" % (len(host_list), _of, host_source, run_plan.scheduler))
     for _note in run_plan.notes:
         click.echo(_note)
+    if recipe.mode == "cluster" and is_solo and not solo:
+        click.echo("Warning: Recipe requires cluster mode but only one host specified", err=True)
+    if run_plan.scheduler_defaulted and not is_solo:
+        # Nothing in the chain selected a scheduler, so the 0.2.x greedy
+        # default applied; recommend occupancy-aware spreading.
+        click.echo(default_scheduler_upgrade_hint())
+    if run_plan.offline is not None and (run_plan.offline.offline or run_plan.offline.source != "default"):
+        click.echo("Offline:   %s" % run_plan.offline.describe())
+    if effective_transfer_mode not in ("auto", "local"):
+        click.echo("Transfer:  %s" % effective_transfer_mode)
     # Which conditional `overrides:` applied, so a value that differs from the
-    # recipe's `defaults` is explained before anything starts.
+    # recipe's `defaults` is explained before the memory plan that uses it.
     if run_plan.override_resolution is not None:
         for _line in run_plan.override_resolution.describe():
             click.echo(_line)
-
-    host_list = list(run_plan.host_list)
-    is_solo = run_plan.is_solo
-    if recipe.mode == "cluster" and is_solo and not solo:
-        click.echo("Warning: Recipe requires cluster mode but only one host specified", err=True)
-
-    # Placement-dependent half of the summary; the identity half printed above
-    # the plan.
-    from sparkrun.core.scheduler import default_scheduler_upgrade_hint
-
-    if is_solo:
-        click.echo("Mode:      solo")
-    else:
-        click.echo("Mode:      cluster (%d nodes)" % len(host_list))
     _platform_summary, _per_host = _summarize_platforms(host_list, run_plan.cluster)
     click.echo("Platform:  %s" % _platform_summary)
     if _per_host is not None:
         for _h, _line in _per_host:
             click.echo("  %-8s %s" % (_h + ":", _line))
-    click.echo("Scheduler: %s" % run_plan.scheduler)
-    if run_plan.offline is not None and (run_plan.offline.offline or run_plan.offline.source != "default"):
-        click.echo("Offline:   %s" % run_plan.offline.describe())
-    # When nothing in the chain selected a scheduler we fell back to the 0.2.x
-    # greedy default; recommend opting the cluster into occupancy-aware spreading.
-    if run_plan.scheduler_defaulted and not is_solo:
-        click.echo(default_scheduler_upgrade_hint())
-    if effective_transfer_mode not in ("auto", "local"):
-        click.echo("Transfer:  %s" % effective_transfer_mode)
 
-    # The per-host fit table renders the plan's own placement.  It used to be
+    # What the plan probed, as one table, rather than as evidence strings inside
+    # phase 1 after the fit they back had already been read.
+    _assessment = run_plan.hardware_assessment
+    if _assessment is not None and _assessment.hosts:
+        from sparkrun.utils.cli_formatters import format_host_table
+
+        _verbose = (ctx.find_root().obj or {}).get("verbose", 0) >= 1
+        for _line in format_host_table(_assessment, host_list, run_plan.placement, is_solo=is_solo, verbose=_verbose, dry_run=dry_run):
+            click.echo(_line)
+    else:
+        for _role, _hosts in (("Target", host_list[:1]),) if is_solo else (("Head", host_list[:1]), ("Workers", host_list[1:])):
+            if _hosts:
+                click.echo("  %-8s %s" % (_role + ":", ", ".join(_hosts)))
+    if _assessment is not None:
+        for _warning in _assessment.warnings:
+            click.echo("Warning: %s" % _warning, err=True)
+        run_plan = dataclasses.replace(run_plan, hardware_reported=True)
+
+    # The memory plan renders the plan's own placement.  It used to come from
     # a third scheduling call, deliberately made *without* live occupancy —
     # which is how a capacity failure could print a table showing every target
     # host as [OK] directly above the error that rejected them.
@@ -799,35 +818,15 @@ def run(
     # defaults rather than erroring on a bogus repo id.
     from sparkrun.core.recipe import is_local_model_path
 
-    _display_vram_estimate(
+    _display_memory_plan(
         recipe,
+        cluster=run_plan.cluster,
+        placement=run_plan.placement,
         cli_overrides=overrides,
         auto_detect=not is_local_model_path(recipe.model),
         cache_dir=local_cache_dir,
-        cluster=run_plan.cluster,
-        placement=run_plan.placement,
     )
     _echo_hub_notice()
-
-    click.echo()
-    click.echo("Hosts:     %s" % host_source)
-    if is_solo:
-        target = host_list[0] if host_list else "localhost"
-        click.echo("  Target:  %s" % target)
-    else:
-        click.echo("  Head:    %s" % host_list[0])
-        if len(host_list) > 1:
-            click.echo("  Workers: %s" % ", ".join(host_list[1:]))
-    # What the plan probed, beside the fit table it backs, rather than inside
-    # phase 1 after that table has already been read.
-    if run_plan.hardware_assessment is not None:
-        if run_plan.hardware_assessment.evidence:
-            click.echo("  Hardware:")
-            for _h, _line in run_plan.hardware_assessment.evidence.items():
-                click.echo("    %s: %s" % (_h, _line))
-        for _warning in run_plan.hardware_assessment.warnings:
-            click.echo("Warning: %s" % _warning, err=True)
-        run_plan = dataclasses.replace(run_plan, hardware_reported=True)
     click.echo()
 
     # Own the timeline here rather than letting ``launch_inference`` create one

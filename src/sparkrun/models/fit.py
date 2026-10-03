@@ -99,7 +99,8 @@ class HostFitDetail:
         reasons = []
         if self.accelerator_memory_gb is None:
             reasons.append("accelerator capacity unknown")
-        elif self.memory_capacity_verification == "estimated":
+        elif self.memory_capacity_verification == "estimated" and self.hardware_source != "assumed":
+            # Assumed hardware always has an estimated capacity; say it once.
             reasons.append("capacity is a platform estimate, not measured")
         if self.hardware_source == "assumed":
             reasons.append("hardware assumed, not probed")
