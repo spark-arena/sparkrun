@@ -30,6 +30,22 @@ from sparkrun.orchestration.executors.docker import DockerExecutor
 from sparkrun.orchestration.logs import build_read_command, read_log_sources
 
 
+@pytest.fixture(autouse=True)
+def _skip_logs_liveness_precheck(monkeypatch):
+    """Keep ``api.logs``' liveness precheck off the real network.
+
+    The precheck sweeps the job's hosts through ``executor.query_status`` —
+    a real SSH connect-timeout against every fabricated host here. These
+    tests assert source derivation and reader plumbing; the precheck's own
+    decision tree has dedicated coverage (``test_api_run_stop_logs``). An
+    *empty* snapshot leaves every host inconclusive, which is the precheck's
+    documented skip path — nothing this file asserts changes.
+    """
+    from sparkrun.core.cluster_status import ClusterStatus
+
+    monkeypatch.setattr(DockerExecutor, "query_status", lambda self, hosts, **kw: ClusterStatus(hosts=(), executor="docker"))
+
+
 # --------------------------------------------------------------------------
 # Executor: how a source is read on the docker substrate
 # --------------------------------------------------------------------------

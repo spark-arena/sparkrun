@@ -245,7 +245,7 @@ def test_trtllm_mpirun_slot_count_scales_to_placement():
 # --------------------------------------------------------------------------
 
 
-def test_resolve_effective_hosts_for_recipe_threads_cluster(monkeypatch):
+def test_resolve_effective_hosts_for_recipe_threads_cluster(monkeypatch, idle_occupancy):
     from sparkrun.cli import _common
     import sparkrun.api as api
 

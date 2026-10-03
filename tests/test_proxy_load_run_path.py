@@ -16,7 +16,10 @@ from sparkrun.orchestration.job_metadata import derive_recipe_fingerprint, load_
 
 
 @pytest.fixture
-def load_env(tmp_path, monkeypatch):
+def load_env(tmp_path, monkeypatch, idle_occupancy):
+    """Every path here plans, and planning sweeps real occupancy over the
+    fabricated hosts — ``idle_occupancy`` keeps that sweep hermetic so the
+    tests measure this file's contract, not SSH connect timeouts."""
     from sparkrun.core.cluster_manager import ClusterManager
     from sparkrun.core.config import DEFAULT_CONFIG_DIR
 

@@ -643,6 +643,12 @@ def test_execution_strategy_records_the_same_job_identity_as_a_normal_launch(mon
     monkeypatch.setattr("sparkrun.orchestration.job_metadata.save_job_metadata", lambda *a, **kw: writes.append(kw))
     monkeypatch.setattr("sparkrun.orchestration.primitives.build_ssh_kwargs", lambda *a, **kw: {})
     monkeypatch.setattr(launcher, "resolve_effective_cache_dir", lambda *a, **kw: str(tmp_path))
+    # The mount-source preflight SSHes `test -e` per host; its verdict is not
+    # what this test asserts (job-metadata completeness on the strategy path).
+    # {} is the base class's own safe no-op answer.
+    from sparkrun.orchestration.executors.docker import DockerExecutor
+
+    monkeypatch.setattr(DockerExecutor, "verify_mount_sources", lambda self, paths, hosts, **kw: {})
 
     class _Cfg:
         hf_cache_dir = tmp_path / "hf"

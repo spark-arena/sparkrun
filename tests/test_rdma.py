@@ -998,7 +998,11 @@ def test_a_dry_run_cannot_plan_a_suite_the_real_run_would_refuse(suite):
 
 
 def test_perftest_is_ungated_and_runs_with_the_nccl_flag_off():
-    report = rdma_test(_Sctx(_Config(nccl=False)), ["h1", "h2"], {}, suite="perftest", dry_run=True)
+    # The dry-run plan still reads live CX7 state per host (real SSH against
+    # fabricated names); the sibling container-fallback test stubs the same
+    # probe. The gate behavior — what this test asserts — doesn't change.
+    with mock.patch("sparkrun.orchestration.networking.detect_cx7_for_hosts", return_value=_two_spark_direct()):
+        report = rdma_test(_Sctx(_Config(nccl=False)), ["h1", "h2"], {}, suite="perftest", dry_run=True)
     assert report.suite == "perftest"
 
 

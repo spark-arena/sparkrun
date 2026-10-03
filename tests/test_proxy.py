@@ -1959,9 +1959,15 @@ class TestAutodiscover:
         engine.update_autodiscover_pid(300)
         assert engine._read_autodiscover_pid() == 300
 
-    def test_autodiscover_loop_exits_on_dead_proxy(self, tmp_path: Path):
+    def test_autodiscover_loop_exits_on_dead_proxy(self, tmp_path: Path, monkeypatch):
         """run_autodiscover exits when proxy PID is gone."""
+        from sparkrun.proxy import autodiscover
         from sparkrun.proxy.autodiscover import run_autodiscover
+
+        # The exit condition is "missing for PROXY_GONE_TOLERANCE sweeps";
+        # the production value (30) makes the exit itself cost 30s of sleeps.
+        # Shortening it tests the same transition — gone → exit — in 2s.
+        monkeypatch.setattr(autodiscover, "PROXY_GONE_TOLERANCE", 2)
 
         cfg_path = tmp_path / "autodiscover.yaml"
         cfg = {

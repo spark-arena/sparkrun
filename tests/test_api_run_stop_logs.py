@@ -193,7 +193,7 @@ def test_run_dry_run_returns_run_result_without_ssh(reuse_hardware):
     assert result.is_solo is True
 
 
-def test_run_solo_mode_truncates_to_one_host():
+def test_run_solo_mode_truncates_to_one_host(idle_occupancy):
     """Solo mode keeps only the head host even when multiple are passed."""
     from sparkrun.core.recipe import Recipe
 
@@ -270,7 +270,7 @@ def test_stop_unknown_cluster_id_raises_job_not_found(tmp_path):
         api.stop(cluster_id="sparkrun_doesnotexist", cache_dir=str(tmp_path))
 
 
-def test_stop_with_hosts_skips_metadata_lookup(tmp_path):
+def test_stop_with_hosts_skips_metadata_lookup(tmp_path, idle_occupancy):
     """Providing explicit hosts allows stop to proceed without metadata."""
     # Mock the SSH dispatch so no real connection is attempted.
     from sparkrun.orchestration.ssh import RemoteResult

@@ -43,6 +43,7 @@ dev = [
     "pytest==9.0.3",
     "pytest-cov==7.1.0",
     "pyright[nodejs]==1.1.414",
+    "pytest-timeout==2.4.0",
 ]
 
 [project.scripts]
@@ -62,6 +63,15 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Wall-clock cap per test (pytest-timeout). The point is hang detection —
+# an SSH probe into a black hole, a readiness watcher that never returns —
+# not pacing slow tests, so it is set far above the slowest legitimate test
+# (the full-range port scan) with head room for slower CI runners. Signals
+# on POSIX, threads on Windows (the plugin's platform default).
+timeout = 120
+# Dump tracebacks of anything still running at 60s before the cap kills it,
+# so a timeout in CI ships with the stack that caused it.
+faulthandler_timeout = 60
 
 [tool.ruff]
 line-length = 140
@@ -89,6 +99,7 @@ select = ["E4", "E7", "E9", "F", "B"]
 dev = [
     "pre-commit>=4.5.1",
     "pytest>=9.0.2",
+    "pytest-timeout>=2.4",
     "ruff==0.16.6",
     "pyright[nodejs]==1.1.414",
 ]

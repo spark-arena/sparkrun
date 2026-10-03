@@ -186,6 +186,78 @@ def isolate_stateful(tmp_path: Path, monkeypatch):
         pytest.fail(describe_escapes(telemetry_attempts), pytrace=False)
 
 
+@pytest.fixture(autouse=True)
+def fast_locality_probes(monkeypatch):
+    """Cut ``is_local_host``'s DNS bind-probe fallback out of the suite.
+
+    ``is_local_host`` answers "is this host me?" with hostname matching,
+    interface-IP enumeration and a bind probe whose last resort *resolves
+    arbitrary names via DNS*. Every fabricated test host (``h1``,
+    ``spark-01``, ``myhost``) is unresolvable, so each probe burns a full
+    resolver timeout — seconds, wildly environment-dependent, and paid once
+    per call by anything dispatching through ``should_run_locally`` /
+    ``run_command_on_host`` (measured: 42s of pure DNS in one fully-mocked
+    port-scan test).
+
+    Nothing the suite asserts changes under this fixture: localhost, the
+    hostname/FQDN and enumerated interface IPs still match. Only the
+    name-resolution fallback is cut — and a unit test never runs on a
+    machine whose own names are spelled like a fabricated cluster node.
+    Tests that need locality behavior patch their own seam (e.g.
+    ``distribution.is_local_host``) and override this one.
+
+    Modules that bind the name at *import time* keep their own reference,
+    so their bindings are patched too — a stale original there would
+    reintroduce the probe exactly where it is hardest to see, in tests
+    that stub the ssh fan-out and would only pay timing.
+    """
+    import socket as _socket
+
+    from sparkrun.utils import get_local_ips
+
+    def _no_dns_is_local_host(host):
+        if host in ("localhost", "127.0.0.1", "::1", ""):
+            return True
+        try:
+            if host == _socket.gethostname() or host == _socket.getfqdn():
+                return True
+        except OSError:
+            pass
+        return host in get_local_ips()
+
+    monkeypatch.setattr("sparkrun.utils.is_local_host", _no_dns_is_local_host)
+    # Module-level `from sparkrun.utils import is_local_host` bindings:
+    monkeypatch.setattr("sparkrun.orchestration.distribution.is_local_host", _no_dns_is_local_host)
+    monkeypatch.setattr("sparkrun.tuning.distribute.is_local_host", _no_dns_is_local_host)
+    # core.hosts re-exports it call-free; patched so a future caller of the
+    # re-export cannot silently bypass the fixture.
+    monkeypatch.setattr("sparkrun.core.hosts.is_local_host", _no_dns_is_local_host)
+
+
+@pytest.fixture
+def idle_occupancy(monkeypatch):
+    """Point the occupancy sweep at an all-idle snapshot, both import spellings.
+
+    Tests that assert placement / launch / teardown *plumbing* — not what is
+    running — otherwise pay the full SSH connect timeout per fabricated host
+    (~10s each): the sweep is best-effort, so an unreachable host stalls the
+    very tests it cannot fail. Stubbed at both seams because call sites
+    differ: ``sparkrun.api.status`` (module-attribute callers: ``_hosts``,
+    ``_intent``) and ``sparkrun.api._status.status`` (function-level
+    importers: ``_stop``, ``_catalog``). The logs liveness precheck reads
+    ``executor.query_status`` directly, and an *empty* snapshot is what makes
+    it skip (inconclusive) — stub ``DockerExecutor.query_status`` separately
+    where a logs flow runs.
+    """
+    from sparkrun.core.cluster_status import empty_status
+
+    def _idle(hosts, **kwargs):
+        return empty_status(list(hosts))
+
+    monkeypatch.setattr("sparkrun.api._status.status", _idle)
+    monkeypatch.setattr("sparkrun.api.status", _idle)
+
+
 @pytest.fixture
 def real_registry_git(isolate_stateful, monkeypatch):
     """Restore ``RegistryManager._clone_or_pull`` for tests that mock git themselves.

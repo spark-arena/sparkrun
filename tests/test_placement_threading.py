@@ -257,7 +257,7 @@ def test_api_run_passes_placement_to_launch_inference():
     assert "placement" in captured, "launch_inference must receive a ``placement`` kwarg"
 
 
-def test_api_run_passes_placement_when_multi_host_with_parallelism():
+def test_api_run_passes_placement_when_multi_host_with_parallelism(idle_occupancy):
     """Multi-host + parallelism configured → api.run computes placement
     and threads it (non-None) into launch_inference."""
     from unittest.mock import patch

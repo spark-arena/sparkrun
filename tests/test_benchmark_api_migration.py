@@ -248,7 +248,7 @@ def test_benchmark_run_scheduler_flag_defaults_to_none(fake_recipe_env):
     assert captured_options[0].scheduler is None
 
 
-def test_benchmark_run_skip_run_does_not_call_api_run(fake_recipe_env):
+def test_benchmark_run_skip_run_does_not_call_api_run(fake_recipe_env, idle_occupancy):
     """``--skip-run`` short-circuits the launch — ``api.run`` must not be called."""
     with patch("sparkrun.api.run") as mock_run, patch("sparkrun.api.stop"):
         runner = CliRunner()
