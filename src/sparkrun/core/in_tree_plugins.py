@@ -73,6 +73,7 @@ IN_TREE_PLUGIN_PACKAGE = "sparkrun.plugins"
 IN_TREE_PLUGIN_FEATURES: dict[str, str] = {
     "sparkroute": "gateway.sparkroute",
     "coldsnap": "plugins.coldsnap",
+    "oci_relay": "plugins.oci_relay",
     "sparkarena": "integration.arena",
     "k8s": "integration.k8s",
     "lil": "registry.lil",

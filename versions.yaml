@@ -49,6 +49,9 @@ ci:
       - name: Verify optional ColdSnap vendor snapshot
         run: python scripts/vendor-coldsnap.py verify --allow-absent
         working_directory: .
+      - name: Verify optional OCI Relay vendor snapshot
+        run: python scripts/vendor-oci-relay.py verify --allow-absent
+        working_directory: .
       # The runner image ships ~20GB of toolchains this repo never uses, and
       # the ML dependencies pulled in by the test extras do not fit alongside
       # them. Carried over from publish.yml, where it was load-bearing.

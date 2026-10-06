@@ -9,3 +9,8 @@ include docs/COLDSNAP.md
 include vendor/coldsnap.lock
 recursive-include tests/vendor/coldsnap *.py
 include tests/vendor/conftest.py
+
+include scripts/vendor-oci-relay.py
+include docs/OCI_RELAY.md
+include vendor/oci-relay.lock
+recursive-include tests/vendor/oci_relay *.py

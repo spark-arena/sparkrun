@@ -52,6 +52,11 @@ jobs:
           python scripts/vendor-coldsnap.py verify --allow-absent
         working-directory: .
 
+      - name: Verify optional OCI Relay vendor snapshot
+        run: |
+          python scripts/vendor-oci-relay.py verify --allow-absent
+        working-directory: .
+
       - name: Free disk space
         run: |
           df -h /

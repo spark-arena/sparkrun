@@ -14,7 +14,7 @@ import signal
 import subprocess
 from dataclasses import dataclass
 from threading import Lock
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 from urllib.parse import quote as urlquote
 
 from sparkrun.orchestration.ssh import build_ssh_cmd, should_run_locally
@@ -55,6 +55,41 @@ class HostSession(Protocol):
     def close(self) -> None: ...
 
 
+class HostProcess:
+    """Owned duplex process; callers drain streams and close the handle."""
+
+    def __init__(self, session: SshHostSession, process: subprocess.Popen):
+        self._session = session
+        self.process = process
+        self.stdin = process.stdin
+        self.stdout = process.stdout
+        self.stderr = process.stderr
+
+    def poll(self) -> int | None:
+        return self.process.poll()
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self.process.wait(timeout=timeout)
+
+    def cancel(self) -> None:
+        self._session._terminate(self.process)
+
+    def close(self) -> None:
+        self.cancel()
+        for stream in (self.stdin, self.stdout, self.stderr):
+            if stream is not None:
+                stream.close()
+        with self._session._lock:
+            self._session._processes.discard(self.process)
+
+
+@runtime_checkable
+class StreamingHostSession(Protocol):
+    """Optional capability, independent of the finite-command HostSession API."""
+
+    def open_process(self, host: str, arguments: list[str]) -> HostProcess: ...
+
+
 class SshHostSession:
     """Concurrent, cancellable argv execution through Sparkrun's SSH config."""
 
@@ -75,6 +110,93 @@ class SshHostSession:
         self._lock = Lock()
         self._processes: set[subprocess.Popen] = set()
         self._closed = False
+
+    def open_process(self, host: str, arguments: list[str]) -> HostProcess:
+        """Start a supervised process without buffering its stdout/stderr."""
+        if not host or not arguments or any(not isinstance(value, str) or "\x00" in value for value in arguments):
+            raise HostSessionError("host process is invalid")
+        if should_run_locally(host, self.ssh_user):
+            command = list(arguments)
+        else:
+            command = build_ssh_cmd(
+                host,
+                ssh_user=self.ssh_user,
+                ssh_key=self.ssh_key,
+                ssh_options=self.ssh_options,
+                connect_timeout=self.connect_timeout,
+            )
+            from sparkrun.orchestration.ssh import wrap_with_session_guard
+
+            payload = "exec " + " ".join(str(quote(value)) for value in arguments)
+            guarded = wrap_with_session_guard(payload, preserve_stdin=True)
+            command.append("bash -c " + str(quote(guarded)))
+        return self._start_stream(command)
+
+    def open_forward(
+        self,
+        host: str,
+        *,
+        listen_port: int,
+        target_host: str,
+        target_port: int,
+        reverse: bool = False,
+    ) -> HostProcess:
+        """Own a loopback SSH forward; caller verifies readiness before use.
+
+        Reverse port zero asks sshd to allocate a port, reported on stderr.
+        Forwarding never changes host-key policy or enables agent forwarding.
+        """
+        if not host or not 0 <= listen_port <= 65535 or not 1 <= target_port <= 65535:
+            raise HostSessionError("invalid forwarding endpoint")
+        if listen_port == 0 and not reverse:
+            raise HostSessionError("local forwarding requires an allocated port")
+        if not target_host or any(value in target_host for value in ("\x00", "\n", "\r")):
+            raise HostSessionError("invalid forwarding target")
+        command = build_ssh_cmd(
+            host,
+            ssh_user=self.ssh_user,
+            ssh_key=self.ssh_key,
+            ssh_options=self.ssh_options,
+            connect_timeout=self.connect_timeout,
+        )
+        address = f"[{target_host}]" if ":" in target_host else target_host
+        # The handle must own its forwards. Reusing a user's persistent master
+        # can leave listeners alive after this process is cancelled. Put these
+        # before inherited -o options because OpenSSH uses the first value.
+        command[1:1] = ["-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "LogLevel=INFO"]
+        command[-1:-1] = [
+            "-N",
+            "-T",
+            "-o",
+            "ExitOnForwardFailure=yes",
+            "-o",
+            "ServerAliveInterval=10",
+            "-R" if reverse else "-L",
+            f"127.0.0.1:{listen_port}:{address}:{target_port}",
+        ]
+        return self._start_stream(command)
+
+    def _start_stream(self, command: list[str]) -> HostProcess:
+        with self._lock:
+            if self._closed:
+                raise HostSessionError("host session is closed")
+        try:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
+                bufsize=0,
+            )
+        except OSError as error:
+            raise HostSessionError(f"start streaming host process: {error}") from error
+        with self._lock:
+            if self._closed:
+                self._terminate(process)
+                raise HostSessionError("host session closed while process started")
+            self._processes.add(process)
+        return HostProcess(self, process)
 
     def execute(
         self,
@@ -218,4 +340,4 @@ class SshHostSession:
         raise HostSessionError(f"{operation} on {result.host} exited {result.returncode}{suffix}")
 
 
-__all__ = ["HostCommandResult", "HostSession", "HostSessionError", "SshHostSession"]
+__all__ = ["HostCommandResult", "HostProcess", "HostSession", "HostSessionError", "SshHostSession", "StreamingHostSession"]

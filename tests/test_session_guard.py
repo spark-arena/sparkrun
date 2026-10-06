@@ -335,3 +335,16 @@ def test_sigterm_reaps_the_subprocess_run_child():
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=5)
+
+
+@needs_bash
+def test_streaming_guard_preserves_binary_stdin():
+    payload = bytes(range(256)) * 1024
+    result = subprocess.run(
+        ["bash", "-c", wrap_with_session_guard("cat", preserve_stdin=True)],
+        input=payload,
+        capture_output=True,
+        timeout=10,
+    )
+    assert result.returncode == 0
+    assert result.stdout == payload

@@ -119,7 +119,7 @@ def session_guard_disabled() -> bool:
     return product_env("NO_SESSION_GUARD", "").strip().lower() not in ("", "0", "false", "no")
 
 
-def wrap_with_session_guard(script: str) -> str:
+def wrap_with_session_guard(script: str, *, preserve_stdin: bool = False) -> str:
     """Wrap *script* so it dies with its SSH session.
 
     Remote payloads run via ``ssh <host> bash -s``, i.e. **without a PTY**.  On
@@ -149,6 +149,11 @@ def wrap_with_session_guard(script: str) -> str:
     from sparkrun.scripts import read_script
 
     guard = read_script("session_guard.sh")
+    if preserve_stdin:
+        # Streaming argv processes use bash -c, leaving stdin for their duplex
+        # protocol. Explicit redirection prevents a background job getting
+        # /dev/null. Script-on-stdin callers retain the existing behavior.
+        guard = guard.replace(") &\n__sr_job=$!", ") <&0 &\n__sr_job=$!", 1)
     # Splice on the sentinel *line*, not a substring: the guard's own header
     # comment names the token, and a substring replace would splice the payload
     # into that comment instead.

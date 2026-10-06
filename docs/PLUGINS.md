@@ -831,3 +831,9 @@ New engines implement the typed model-query contract in
 issuance, and admin-token management are separate optional protocols. Existing
 dictionary-returning providers must migrate their own response decoding to this
 typed contract; the supervisor supplies no legacy model adapter.
+
+## OCI Relay image distribution
+
+The bundled OCI Relay adapter defaults on for alpha and off for stable/beta.
+See [OCI Relay](OCI_RELAY.md) for enablement, platform support, and the
+commit-pinned vendoring workflow.

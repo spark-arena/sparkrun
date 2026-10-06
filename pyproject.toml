@@ -53,6 +53,7 @@ sparkrun = "sparkrun.application:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
+"sparkrun.plugins.oci_relay" = ["LICENSE", "LICENSE_EXCEPTION", "COPYRIGHT", "CLA.md", "README.md", "VENDORED.toml", "releases.json"]
 "sparkrun" = ["py.typed"]
 "sparkrun.scripts" = ["*.sh"]
 "sparkrun.orchestration.executors" = ["seccomp/*.json", "seccomp/LICENSE", "seccomp/README.md"]
@@ -78,7 +79,7 @@ line-length = 140
 target-version = "py312"
 required-version = "==0.16.6"
 # Vendor snapshots are immutable, including when hooks pass explicit filenames.
-extend-exclude = ["src/sparkrun/plugins/sparkroute", "tests/vendor/sparkroute", "src/sparkrun/plugins/coldsnap", "tests/vendor/coldsnap"]
+extend-exclude = ["src/sparkrun/plugins/sparkroute", "tests/vendor/sparkroute", "src/sparkrun/plugins/coldsnap", "tests/vendor/coldsnap", "src/sparkrun/plugins/oci_relay", "tests/vendor/oci_relay"]
 force-exclude = true
 
 [tool.ruff.format]

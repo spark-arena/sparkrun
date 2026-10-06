@@ -272,6 +272,24 @@ def distribute_image_from_local(
     """
     logger.debug("Distributing image '%s' from local to %d host(s)", image, len(hosts))
 
+    from sparkrun.core.image_distribution import try_image_pull
+
+    pulled = try_image_pull(
+        image=image,
+        source_host=None,
+        targets=hosts,
+        transfer_hosts=transfer_hosts,
+        ssh_user=ssh_user,
+        ssh_key=ssh_key,
+        ssh_options=ssh_options,
+        timeout=timeout,
+        dry_run=dry_run,
+        offline=offline,
+        force_pull=force_pull,
+    )
+    if pulled is not None:
+        return pulled
+
     # Step 1: ensure image exists locally.  The identity check in step 2 runs
     # *after* this, so a forced pull is reflected in the comparison and hosts
     # that already carry the freshly-pulled image are still skipped.
@@ -301,6 +319,24 @@ def distribute_image_from_local(
 
     if not needs_transfer:
         return []
+
+    from sparkrun.core.image_distribution import try_image_copy
+
+    pairs = [(host, address) for host, address in zip(hosts, xfer, strict=True) if address in needs_transfer]
+    copied = try_image_copy(
+        image=image,
+        source_host=None,
+        targets=[host for host, _ in pairs],
+        transfer_hosts=[address for _, address in pairs],
+        ssh_user=ssh_user,
+        ssh_key=ssh_key,
+        ssh_options=ssh_options,
+        timeout=timeout,
+        dry_run=dry_run,
+        offline=offline,
+    )
+    if copied is not None:
+        return copied
 
     # Step 3: stream to hosts that need it
     local_cmd = "docker save %s" % quote(image)
@@ -372,6 +408,24 @@ def distribute_image_from_head(
     head = hosts[0]
     logger.debug("Distributing image '%s' from head (%s) to %d host(s)", image, head, len(hosts))
 
+    from sparkrun.core.image_distribution import try_image_pull
+
+    pulled = try_image_pull(
+        image=image,
+        source_host=head,
+        targets=hosts,
+        transfer_hosts=[head, *(worker_transfer_hosts if worker_transfer_hosts is not None else hosts[1:])],
+        ssh_user=ssh_user,
+        ssh_key=ssh_key,
+        ssh_options=ssh_options,
+        timeout=timeout,
+        dry_run=dry_run,
+        offline=offline,
+        force_pull=force_pull,
+    )
+    if pulled is not None:
+        return pulled
+
     # Pre-check image status on all hosts to avoid unnecessary work.
     #
     # Skipped entirely under force_pull: this check runs *before* the head
@@ -440,6 +494,9 @@ def distribute_image_from_head(
         max_parallel=HEAD_DISTRIBUTE_MAX_PARALLEL,
     )
 
+    from sparkrun.core.image_distribution import has_image_distribution_provider
+
+    provider_kwargs = {"image_copy": (image, targets, offline)} if has_image_distribution_provider() else {}
     return _distribute_from_head(
         head=head,
         hosts=hosts,
@@ -451,4 +508,5 @@ def distribute_image_from_head(
         ssh_options=ssh_options,
         timeout=timeout,
         dry_run=dry_run,
+        **provider_kwargs,
     )

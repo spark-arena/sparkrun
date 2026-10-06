@@ -419,3 +419,13 @@ for _setup_step, _setup_description in {
     "rdma": "Check RDMA fabric readiness",
 }.items():
     register_feature(FeatureFlag("setup.steps." + _setup_step, _setup_description, default=True))
+
+
+FEATURE_PLUGIN_OCI_RELAY = register_feature(
+    FeatureFlag(
+        name="plugins.oci_relay",
+        description="OCI Relay image distribution",
+        channel_defaults={CHANNEL_ALPHA: True},
+        default=False,
+    )
+)

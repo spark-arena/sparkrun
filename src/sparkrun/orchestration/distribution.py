@@ -5,11 +5,13 @@ from __future__ import annotations
 import hashlib
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from sparkrun.core.config import resolve_hf_token as _get_hf_token
 from sparkrun.core.hosts import is_control_in_cluster
+from sparkrun.core.image_distribution import image_distribution_operation
 from sparkrun.core.timing import timed as _timed
 from sparkrun.utils import is_local_host
 from sparkrun.utils.images import image_has_explicit_version, parse_image_ref
@@ -173,6 +175,7 @@ def _distribute_from_head(
     ssh_options: list[str] | None = None,
     timeout: int | None = None,
     dry_run: bool = False,
+    image_copy: tuple[str, list[str], bool] | None = None,
 ) -> list[str]:
     """Shared head-to-workers distribution pattern.
 
@@ -237,6 +240,25 @@ def _distribute_from_head(
     if len(hosts) == 1:
         logger.info("Single host — %s ready", resource_label)
         return []
+
+    if image_copy is not None:
+        from sparkrun.core.image_distribution import try_image_copy
+
+        copy_image, copy_addresses, copy_offline = image_copy
+        copied = try_image_copy(
+            image=copy_image,
+            source_host=head,
+            targets=hosts[1:],
+            transfer_hosts=copy_addresses,
+            ssh_user=ssh_user,
+            ssh_key=ssh_key,
+            ssh_options=ssh_options,
+            timeout=timeout,
+            dry_run=dry_run,
+            offline=copy_offline,
+        )
+        if copied is not None:
+            return copied
 
     # Step 3: distribute from head to remaining hosts
     dist_result = run_remote_script_streaming(
@@ -416,6 +438,7 @@ def _require_cached_model_offline(model: str, cache_dir: str | None, revision: s
         )
 
 
+@image_distribution_operation
 def distribute_resources(
     image: str,
     model: str,
@@ -795,6 +818,7 @@ def _resolve_targets(indices: list[int], host_list: list[str]) -> list[str]:
     return [host_list[i] for i in indices if 0 <= i < len(host_list)]
 
 
+@image_distribution_operation
 def distribute_from_config(
     recipe: "Recipe",
     image: str,
@@ -1182,7 +1206,7 @@ def _distribute_image_plan(
 
     failed: list[str] = []
     with ThreadPoolExecutor(max_workers=resolve_parallel_cap(len(image_plan))) as pool:
-        futures = {pool.submit(_one, name, targets): name for name, targets in image_plan}
+        futures = {pool.submit(copy_context().run, _one, name, targets): name for name, targets in image_plan}
         for future in as_completed(futures):
             name = futures[future]
             try:

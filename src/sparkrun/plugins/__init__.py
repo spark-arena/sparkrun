@@ -16,6 +16,16 @@ of which is "a runtime" or "an executor" on its own.
 """
 
 from sparkrun.core.cli_registry import register_cli_command
+from sparkrun.core.image_distribution import (
+    IMAGE_DISTRIBUTION_API_VERSION,
+    IMAGE_PULL_API_VERSION,
+    ImagePullRequest,
+    ImageDistributionFailed,
+    ImageCopyRequest,
+    ImageCopyResult,
+    ImageDistributionUnsupported,
+    register_image_distribution_provider,
+)
 from sparkrun.core.recipe_items import (
     FunctionalRecipeItemHandler,
     RecipeItemHandler,
@@ -25,6 +35,14 @@ from sparkrun.core.registry import RegistryEntry
 from sparkrun.core.registry_defaults import register_default_registry
 
 __all__ = [
+    "IMAGE_DISTRIBUTION_API_VERSION",
+    "IMAGE_PULL_API_VERSION",
+    "ImagePullRequest",
+    "ImageDistributionFailed",
+    "ImageCopyRequest",
+    "ImageCopyResult",
+    "ImageDistributionUnsupported",
+    "register_image_distribution_provider",
     "FunctionalRecipeItemHandler",
     "RecipeItemHandler",
     "RegistryEntry",
