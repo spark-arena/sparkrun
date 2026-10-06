@@ -59,6 +59,8 @@ class HostProcess:
     """Owned duplex process; callers drain streams and close the handle."""
 
     def __init__(self, session: SshHostSession, process: subprocess.Popen):
+        if process.stdin is None or process.stdout is None or process.stderr is None:
+            raise HostSessionError("streaming host process requires stdin, stdout and stderr pipes")
         self._session = session
         self.process = process
         self.stdin = process.stdin

@@ -142,7 +142,7 @@ def try_image_copy(
         result = _PROVIDERS[selected].copy(request)
     except ImageDistributionUnsupported as error:
         fallback = config.get("container_distribution_fallback", False) if config is not None else False
-        if fallback is True and config.get("container_distribution_provider", "auto") == "auto":
+        if config is not None and fallback is True and config.get("container_distribution_provider", "auto") == "auto":
             logger.warning("Image relay unavailable (%s); using configured Docker save/load fallback", error)
             return None
         logger.error("Image copy unsupported: %s", error)
