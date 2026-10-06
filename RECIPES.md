@@ -976,6 +976,88 @@ stop_after_post: true
 | `{cache_dir}`       | `post_exec`, `post_commands`             | Resolved                              |
 | `{base_url}`        | `post_exec`, `post_commands`             | Derived: `http://{head_ip}:{port}/v1` |
 
+### Hook Environment Variables
+
+Shell hooks and mod `run.sh` scripts receive the following exported variables.
+They are scoped to each hook invocation and its child processes. These names
+override conflicting inherited values during that invocation; other environment
+variables retain their existing values. Unknown or inapplicable values are
+empty strings, and boolean flags use `0`/`1`.
+
+| Variable | Meaning |
+|---|---|
+| `SPARKRUN_HOOK` | `pre_exec`, `post_exec`, or `post_commands`. |
+| `SPARKRUN_CLUSTER_ID` | Launch/workload identifier. |
+| `SPARKRUN_RECIPE_NAME` | Qualified recipe name, or its bare name. |
+| `SPARKRUN_RUNTIME` | Resolved runtime identifier. |
+| `SPARKRUN_MODEL` | Effective model identifier. |
+| `SPARKRUN_MODEL_REVISION` | Model revision, when specified. |
+| `SPARKRUN_NUM_NODES` | Number of participating hosts in the full launch. |
+| `SPARKRUN_NODE_RANK` | Zero-based index of this host in the final launch order. Empty in `post_commands`. |
+| `SPARKRUN_NODE_HOST` | This workload's target host/SSH alias. Empty in `post_commands`. |
+| `SPARKRUN_NODE_ROLE` | `solo`, `head`, `worker`, or `control`. |
+| `SPARKRUN_IS_HEAD` | `1` for the head workload, including solo; `0` otherwise. |
+| `SPARKRUN_HEAD_HOST` | First host in the final launch order. |
+| `SPARKRUN_CONTAINER_NAME` | Target container name. Empty in `post_commands`. |
+| `SPARKRUN_PORT` | Effective API serving port when known, not the distributed rendezvous port. |
+| `SPARKRUN_HEAD_IP` | API address determined for post hooks. Empty in `pre_exec`. |
+| `SPARKRUN_BASE_URL` | Same API base URL as `{base_url}` in post hooks. Empty in `pre_exec`. |
+| `SPARKRUN_RUNTIME_CACHE_ENABLED` | `1` when the persistent compilation-cache mount is configured; otherwise `0`. Does not certify writability. |
+| `SPARKRUN_RUNTIME_CACHE_DIR` | Compilation-cache root inside the workload, currently `/cache/runtime`. Empty in `post_commands` or when disabled. |
+| `SPARKRUN_RUNTIME_CACHE_HOST_DIR` | Exact host directory backing that cache mount; head host's directory in `post_commands`. Empty when disabled. |
+| `SPARKRUN_RUNTIME_CACHE_HOST` | Host owning that backing directory; head host in `post_commands`. Empty when disabled. |
+
+**Node rank is a host index, not a GPU/process rank.** It follows the final
+selected host order after scheduling. A host with multiple GPUs still has one
+node rank; hybrid DP/TP runtimes can use a different replica-local rank for
+serving. `post_exec` receives rank `0` and the full launch's node count.
+`post_commands` has role `control` and no node rank, even when the control
+machine is also the head host.
+
+For example, run a setup action only on the second node:
+
+```yaml
+pre_exec:
+  - |
+    if [ "$SPARKRUN_NODE_RANK" = "1" ]; then
+      /workspace/setup-second-node.sh
+    fi
+```
+
+Mods inherit the same environment automatically. A worker-only mod can begin
+with `if [ "$SPARKRUN_IS_HEAD" = "1" ]; then exit 0; fi`. Skips must exit
+successfully: a standalone `test ... && action` may return a failing status
+when its condition is false, which stops the launch.
+
+The runtime cache variables identify the **same persistent compilation cache
+used by this model launch**. Inside a hook or mod, use
+`"$SPARKRUN_RUNTIME_CACHE_DIR/mods/my-mod"` for your own artifacts after checking
+that `SPARKRUN_RUNTIME_CACHE_ENABLED` is `1`. The resolved host leaf respects
+custom directories and model/image keying; it may intentionally be reused
+across launches. This exposes existing storage and does not synchronize caches
+between nodes.
+
+Container hooks also inherit the actual compiler-specific environment,
+including `VLLM_CACHE_ROOT`, `SGLANG_CACHE_DIR`, `SGLANG_JIT_CACHE_DIR`,
+`TORCHINDUCTOR_CACHE_DIR`, `TRITON_CACHE_DIR`, and `XDG_CACHE_HOME` where supplied.
+Recipe/CLI overrides of these variables remain effective, even when they point
+outside the shared root. The host path is metadata inside a container. In
+`post_commands`, use `SPARKRUN_RUNTIME_CACHE_HOST` when accessing its backing
+directory remotely; it is not necessarily a directory on the control machine.
+These paths are distinct from the Hugging Face `{cache_dir}` and the existing
+`SPARKRUN_CACHE_DIR` configuration setting.
+
+Ordinary `{key}` template substitutions still work. Shell references such as
+`$SPARKRUN_NODE_RANK` and `${SPARKRUN_NODE_RANK:-unknown}` are evaluated inside
+the hook. YAML `copy`/`dest` entries retain their existing template behavior;
+they do not expand shell environment variables. Mods are still copied to every
+target before their scripts decide whether to act.
+
+An `export` in a hook does not persist into later hook entries or the serving
+process. The metadata above is supplied afresh for each invocation. Container
+hooks currently use Docker; this feature does not add hook/mod support to
+other executors.
+
 ---
 
 ## Builders

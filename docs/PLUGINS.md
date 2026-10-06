@@ -142,6 +142,22 @@ Three boundaries are not negotiable:
   choices belong there and are deliberately excluded from the recipe
   fingerprint and intent ID, the same way serve flags are.
 
+## Runtime pre-serve hooks
+
+A runtime overriding `RuntimePlugin._pre_serve` should call
+`super()._pre_serve(...)` to retain recipe hooks and mods. The existing method
+signature is unchanged. Built-in launch paths scope the full launch context
+around that call, so the base implementation supplies the
+[hook environment](../RECIPES.md#hook-environment-variables), including node
+rank and resolved compilation-cache paths.
+
+Context is isolated per invocation and reset on errors. Plugins that dispatch
+hooks directly can pass `launch_context=HookLaunchContext(...)` to
+`run_pre_exec`; supply the full selected host order even for a subset of
+targets. Direct callers without launch context receive ranks derived from
+their supplied host list and empty values for unavailable launch metadata.
+Hooks dispatched in another thread need their context passed explicitly.
+
 ## Preparation-only build hooks
 
 `sparkrun build` and `api.build()` run builders and asset staging without the

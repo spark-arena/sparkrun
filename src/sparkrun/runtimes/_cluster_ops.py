@@ -82,6 +82,7 @@ class ClusterContext:
     """
 
     env_by_host: dict[str, dict[str, str]] = field(default_factory=dict)
+    runtime_cache: RuntimeCacheMounts | None = None
 
     def env_for_host(self, host: str) -> dict[str, str]:
         return self.env_by_host.get(host, self.all_env)
@@ -254,6 +255,7 @@ class ClusterContext:
             cluster=cluster,
             placement=placement,
             images_by_node=images_by_node,
+            runtime_cache=runtime_cache,
         )
 
 
@@ -702,6 +704,8 @@ def run_pre_serve_hooks(
     overrides: dict[str, Any] | None,
     trust: bool = False,
     cache_dir: str | None = None,
+    *,
+    runtime_setup: bool = True,
 ) -> None:
     """Build config chain and invoke runtime._pre_serve.
 
@@ -711,17 +715,38 @@ def run_pre_serve_hooks(
     *cache_dir* is the effective HuggingFace cache directory on remote
     hosts, threaded from the launcher so disk-space failure messages
     show the correct path.
+
+    ``runtime_setup=False`` runs only generic recipe hooks, for runtimes
+    whose cluster path already performed its own pre-serve setup.
     """
+    from sparkrun.orchestration.hooks import build_hook_launch_context, hook_launch_scope
+
     config_chain = recipe.build_config_chain(overrides) if recipe else None
-    runtime._pre_serve(
-        hosts_containers,
-        ctx.ssh_kwargs,
-        ctx.dry_run,
+    hook_context = build_hook_launch_context(
+        ctx.hosts,
+        config_chain,
         recipe=recipe,
-        config_chain=config_chain,
-        trust=trust,
-        cache_dir=cache_dir,
+        runtime=runtime.runtime_name,
+        cluster_id=ctx.cluster_id,
+        runtime_cache=ctx.runtime_cache,
+        volumes=ctx.volumes,
     )
+    with hook_launch_scope(hook_context):
+        if runtime_setup:
+            pre_serve = runtime._pre_serve
+        else:
+            from sparkrun.runtimes.base import RuntimePlugin
+
+            pre_serve = RuntimePlugin._pre_serve.__get__(runtime)
+        pre_serve(
+            hosts_containers,
+            ctx.ssh_kwargs,
+            ctx.dry_run,
+            recipe=recipe,
+            config_chain=config_chain,
+            trust=trust,
+            cache_dir=cache_dir,
+        )
 
 
 # ---------------------------------------------------------------------------

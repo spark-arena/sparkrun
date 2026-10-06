@@ -514,6 +514,7 @@ class TrtllmRuntime(RuntimePlugin):
             cleanup_ranked_containers,
             launch_containers_parallel,
             resolve_comm_env,
+            run_pre_serve_hooks,
         )
 
         progress = kwargs.pop("progress", None)
@@ -521,6 +522,7 @@ class TrtllmRuntime(RuntimePlugin):
         backends = kwargs.pop("backends", None)
         placement = kwargs.pop("placement", None)
         runtime_cache = kwargs.pop("runtime_cache", None)
+        trust = kwargs.pop("trust", False)
 
         executor = self._resolve_executor()
         ctx = ClusterContext.build(
@@ -704,6 +706,20 @@ class TrtllmRuntime(RuntimePlugin):
                 logger.info("  Extra LLM API config written to %s", _EXTRA_CONFIG_PATH)
 
         logger.info("Step 6/7: Rsh wrapper written (%.1fs)", time.monotonic() - t0)
+
+        # Cluster setup above already wrote the effective extra config (with
+        # CLI overrides). Run generic recipe/mod hooks once on every node,
+        # without repeating the solo override's config writer.
+        run_pre_serve_hooks(
+            self,
+            ctx,
+            containers,
+            recipe,
+            overrides,
+            trust=trust,
+            cache_dir=cache_dir,
+            runtime_setup=False,
+        )
 
         # Step 7: Exec mpirun on head container
         t0 = time.monotonic()

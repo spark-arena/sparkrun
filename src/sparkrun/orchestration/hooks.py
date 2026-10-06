@@ -9,13 +9,185 @@ Provides functions for running hook commands defined in recipes:
 from __future__ import annotations
 
 import logging
+import os
+import re
 import subprocess
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, replace
 from pathlib import Path
-from collections.abc import Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from typing import TYPE_CHECKING, Literal
 
 from sparkrun.utils.text import coerce_command_list, render_template, sanitize_line_continuations
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from sparkrun.core.recipe import Recipe
+    from sparkrun.core.runtime_cache import RuntimeCacheMounts
+
+
+HookPhase = Literal["pre_exec", "post_exec", "post_commands"]
+
+
+@dataclass(frozen=True)
+class HookLaunchContext:
+    """Resolved launch metadata, separate from recipe template substitutions.
+
+    ``hosts`` is the full selected node order, even for a hook target subset.
+    Cache paths come from the mount plan used for this launch. ``volumes``
+    optionally records the final mapping so overridden mounts aren't advertised.
+    """
+
+    hosts: tuple[str, ...] = ()
+    cluster_id: str = ""
+    recipe_name: str = ""
+    runtime: str = ""
+    model: str = ""
+    model_revision: str = ""
+    port: str = ""
+    head_ip: str = ""
+    base_url: str = ""
+    runtime_cache: RuntimeCacheMounts | None = None
+    volumes: Mapping[str, str] | None = None
+
+
+def build_hook_launch_context(
+    hosts: Sequence[str],
+    config_chain=None,
+    *,
+    recipe: Recipe | None = None,
+    runtime: str = "",
+    cluster_id: str = "",
+    runtime_cache: RuntimeCacheMounts | None = None,
+    volumes: Mapping[str, str] | None = None,
+) -> HookLaunchContext:
+    """Snapshot launch metadata without probing hosts or resolving settings."""
+    config = config_chain if config_chain is not None else {}
+
+    def value(key: str) -> str:
+        val = config.get(key)
+        return str(val) if val is not None else ""
+
+    return HookLaunchContext(
+        hosts=tuple(dict.fromkeys(hosts)),
+        cluster_id=cluster_id,
+        recipe_name=(getattr(recipe, "qualified_name", None) or getattr(recipe, "name", "") or ""),
+        runtime=runtime,
+        model=value("model"),
+        model_revision=value("model_revision"),
+        port=value("port"),
+        runtime_cache=runtime_cache,
+        volumes=dict(volumes) if volumes is not None else None,
+    )
+
+
+def build_hook_env(
+    context: HookLaunchContext,
+    phase: HookPhase,
+    *,
+    host: str = "",
+    container_name: str = "",
+) -> dict[str, str]:
+    """Build a fresh hook-only environment; node ranks are not GPU ranks."""
+    hosts = tuple(dict.fromkeys(context.hosts))
+    control = phase == "post_commands"
+    rank = None if control else hosts.index(host)
+    role = "control" if control else ("solo" if len(hosts) == 1 else ("head" if rank == 0 else "worker"))
+    head_host = hosts[0] if hosts else ""
+    cache_host = head_host if control else host
+    cache = context.runtime_cache
+    cache_dir = ""
+    cache_leaf = ""
+    if cache is not None and cache_host:
+        volumes = context.volumes if context.volumes is not None else cache.volumes
+        destination = cache.volumes.get(cache.leaf)
+        # Only advertise the cache if its leaf still maps unambiguously to its
+        # intended target after runtime-specific extra volumes have been added.
+        if destination and volumes.get(cache.leaf) == destination and sum(v == destination for v in volumes.values()) == 1:
+            cache_dir, cache_leaf = destination, cache.leaf
+
+    post = phase != "pre_exec"
+    return {
+        "SPARKRUN_HOOK": phase,
+        "SPARKRUN_CLUSTER_ID": context.cluster_id,
+        "SPARKRUN_RECIPE_NAME": context.recipe_name,
+        "SPARKRUN_RUNTIME": context.runtime,
+        "SPARKRUN_MODEL": context.model,
+        "SPARKRUN_MODEL_REVISION": context.model_revision,
+        "SPARKRUN_NUM_NODES": str(len(hosts)) if hosts else "",
+        "SPARKRUN_NODE_RANK": str(rank) if rank is not None else "",
+        "SPARKRUN_NODE_HOST": "" if control else host,
+        "SPARKRUN_NODE_ROLE": role,
+        "SPARKRUN_IS_HEAD": "1" if rank == 0 else "0",
+        "SPARKRUN_HEAD_HOST": head_host,
+        "SPARKRUN_CONTAINER_NAME": "" if control else container_name,
+        "SPARKRUN_PORT": context.port,
+        "SPARKRUN_HEAD_IP": context.head_ip if post and context.head_ip != "<HEAD_IP>" else "",
+        "SPARKRUN_BASE_URL": context.base_url if post and "<HEAD_IP>" not in context.base_url else "",
+        "SPARKRUN_RUNTIME_CACHE_ENABLED": "1" if cache_leaf else "0",
+        "SPARKRUN_RUNTIME_CACHE_DIR": "" if control else cache_dir,
+        "SPARKRUN_RUNTIME_CACHE_HOST_DIR": cache_leaf,
+        "SPARKRUN_RUNTIME_CACHE_HOST": cache_host if cache_leaf else "",
+    }
+
+
+HOOK_ENV_KEYS = frozenset(build_hook_env(HookLaunchContext(), "post_commands"))
+_PRE_SERVE_CONTEXT: ContextVar[HookLaunchContext | None] = ContextVar("sparkrun_pre_serve_context", default=None)
+_LAUNCH_CONTEXTS: ContextVar[list[HookLaunchContext] | None] = ContextVar("sparkrun_hook_launches", default=None)
+
+
+@contextmanager
+def capture_hook_launch_contexts() -> Iterator[list[HookLaunchContext]]:
+    """Retain actual runtime mount snapshots for post hooks, without plugin state."""
+    contexts: list[HookLaunchContext] = []
+    token = _LAUNCH_CONTEXTS.set(contexts)
+    try:
+        yield contexts
+    finally:
+        _LAUNCH_CONTEXTS.reset(token)
+
+
+@contextmanager
+def hook_launch_scope(context: HookLaunchContext) -> Iterator[None]:
+    """Carry context across legacy overrides without changing their signature."""
+    contexts = _LAUNCH_CONTEXTS.get()
+    if contexts is not None:
+        contexts.append(context)
+    token = _PRE_SERVE_CONTEXT.set(context)
+    try:
+        yield
+    finally:
+        _PRE_SERVE_CONTEXT.reset(token)
+
+
+def current_hook_launch_context() -> HookLaunchContext | None:
+    """Context of the current runtime pre-serve invocation, if any."""
+    return _PRE_SERVE_CONTEXT.get()
+
+
+def _log_hook_target(env: Mapping[str, str]) -> None:
+    logger.info(
+        "  %s context: host=%s rank=%s/%s role=%s runtime_cache=%s (host=%s:%s)",
+        env["SPARKRUN_HOOK"],
+        env["SPARKRUN_NODE_HOST"] or "<control>",
+        env["SPARKRUN_NODE_RANK"],
+        env["SPARKRUN_NUM_NODES"],
+        env["SPARKRUN_NODE_ROLE"],
+        env["SPARKRUN_RUNTIME_CACHE_DIR"] or "<none>",
+        env["SPARKRUN_RUNTIME_CACHE_HOST"],
+        env["SPARKRUN_RUNTIME_CACHE_HOST_DIR"],
+    )
+
+
+# Hide the opening brace of metadata shell expansions during substitution.
+# This also allows ordinary {key} placeholders inside parameter defaults.
+# YAML forbids the sentinel in scalar content, so it cannot collide with a
+# recipe's text. Protect values too: nested config references can introduce
+# shell expressions on later template passes.
+_HOOK_ENV_OPEN = re.compile(r"\$\{(?=[#!]?(?:%s)(?![A-Z0-9_]))" % "|".join(sorted(HOOK_ENV_KEYS)))
+_SHELL_LBRACE = "\x02"
 
 
 def build_hook_context(
@@ -107,7 +279,13 @@ def render_hook_command(cmd: str, context: dict[str, str]) -> str:
     Returns:
         Rendered command string.
     """
-    return sanitize_line_continuations(render_template(cmd, context))
+
+    def protect(value: str) -> str:
+        return _HOOK_ENV_OPEN.sub("$" + _SHELL_LBRACE, value)
+
+    template_context = {key: protect(val) if isinstance(val, str) else val for key, val in context.items()}
+    rendered = render_template(protect(cmd), template_context).replace(_SHELL_LBRACE, "{")
+    return sanitize_line_continuations(rendered)
 
 
 def render_hook_commands(
@@ -191,6 +369,8 @@ def run_pre_exec(
     dry_run: bool = False,
     trust: bool = False,
     cache_dir: str | None = None,
+    *,
+    launch_context: HookLaunchContext | None = None,
 ) -> None:
     """Execute pre_exec commands inside containers.
 
@@ -218,6 +398,7 @@ def run_pre_exec(
             Threaded from the launcher so disk-space failure messages
             show the correct path rather than the ``$HOME/.cache/huggingface``
             fallback.
+        launch_context: Full resolved launch metadata for the hook environment.
 
     Raises:
         RuntimeError: If any command fails (fail-fast), or if *trust*
@@ -239,15 +420,18 @@ def run_pre_exec(
                 ctx[key] = str(val)
 
     rendered = render_hook_commands(commands, ctx)
+    launch_context = launch_context or build_hook_launch_context([host for host, _ in hosts_containers], config_chain)
 
     logger.info("Running %d pre_exec command(s) on %d container(s)...", len(rendered), len(hosts_containers))
 
     for host, container_name in hosts_containers:
+        hook_env = build_hook_env(launch_context, "pre_exec", host=host, container_name=container_name)
+        _log_hook_target(hook_env)
         for i, cmd in enumerate(rendered, 1):
             if isinstance(cmd, dict) and "copy" in cmd:
                 _run_copy_command(host, container_name, cmd, ssh_kwargs, dry_run, label="pre_exec[%d]" % i, cache_dir=cache_dir)
             elif isinstance(cmd, str):
-                _run_exec_command(host, container_name, cmd, ssh_kwargs, dry_run, label="pre_exec[%d]" % i)
+                _run_exec_command(host, container_name, cmd, ssh_kwargs, dry_run, label="pre_exec[%d]" % i, env=hook_env)
             else:
                 logger.warning("Skipping unrecognized pre_exec entry: %r", cmd)
 
@@ -261,6 +445,8 @@ def run_post_exec(
     dry_run: bool = False,
     trust: bool = False,
     cache_dir: str | None = None,  # noqa: ARG001 — reserved for future copy-type post_exec entries
+    *,
+    launch_context: HookLaunchContext | None = None,
 ) -> None:
     """Execute post_exec commands inside the head container.
 
@@ -280,6 +466,7 @@ def run_post_exec(
         ssh_kwargs: SSH connection kwargs.
         dry_run: Show what would be done without executing.
         trust: Skip confirmation prompt (auto-trust the commands).
+        launch_context: Full launch metadata, including all participating nodes.
 
     Raises:
         RuntimeError: If any command fails (fail-fast), or if *trust*
@@ -293,12 +480,15 @@ def run_post_exec(
     _confirm_hook_execution("post_exec", commands, trust)
 
     rendered = render_hook_commands(commands, context)
+    launch_context = launch_context or _post_launch_context(context, head_host)
+    hook_env = build_hook_env(launch_context, "post_exec", host=head_host, container_name=container_name)
+    _log_hook_target(hook_env)
 
     logger.info("Running %d post_exec command(s) on %s...", len(rendered), container_name)
 
     for i, cmd in enumerate(rendered, 1):
         if isinstance(cmd, str):
-            _run_exec_command(head_host, container_name, cmd, ssh_kwargs, dry_run, label="post_exec[%d]" % i)
+            _run_exec_command(head_host, container_name, cmd, ssh_kwargs, dry_run, label="post_exec[%d]" % i, env=hook_env)
         else:
             logger.warning("Skipping non-string post_exec entry: %r", cmd)
 
@@ -308,6 +498,8 @@ def run_post_commands(
     context: dict[str, str],
     dry_run: bool = False,
     trust: bool = False,
+    *,
+    launch_context: HookLaunchContext | None = None,
 ) -> None:
     """Execute post_commands on the control machine.
 
@@ -325,6 +517,7 @@ def run_post_commands(
         context: Extended variable dict for substitution.
         dry_run: Show what would be done without executing.
         trust: Skip confirmation prompt (auto-trust the commands).
+        launch_context: Full launch metadata; this shell has no workload rank.
 
     Raises:
         RuntimeError: If any command fails (fail-fast), or if *trust*
@@ -352,6 +545,8 @@ def run_post_commands(
             raise RuntimeError("post_commands execution cancelled by user.")
 
     rendered = render_hook_commands(commands, context)
+    hook_env = build_hook_env(launch_context or _post_launch_context(context), "post_commands")
+    _log_hook_target(hook_env)
 
     logger.info("Running %d post_command(s) on control machine...", len(rendered))
 
@@ -372,6 +567,7 @@ def run_post_commands(
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            env={**os.environ, **hook_env},
         )
 
         # Stream output
@@ -388,6 +584,16 @@ def run_post_commands(
 # ---------------------------------------------------------------------------
 
 
+def _post_launch_context(context: dict[str, str], head_host: str = "") -> HookLaunchContext:
+    """Compatibility for direct post-hook callers without launch metadata."""
+    head_host = head_host or context.get("head_host", "")
+    return replace(
+        build_hook_launch_context([head_host] if head_host else [], context, cluster_id=context.get("cluster_id", "")),
+        head_ip=context.get("head_ip", ""),
+        base_url=context.get("base_url", ""),
+    )
+
+
 def _run_exec_command(
     host: str,
     container_name: str,
@@ -395,6 +601,8 @@ def _run_exec_command(
     ssh_kwargs: dict | None = None,
     dry_run: bool = False,
     label: str = "hook",
+    *,
+    env: Mapping[str, str] | None = None,
 ) -> None:
     """Execute a single command inside a container via docker exec.
 
@@ -405,6 +613,7 @@ def _run_exec_command(
         ssh_kwargs: SSH connection kwargs.
         dry_run: Show what would be done without executing.
         label: Human-readable label for log messages.
+        env: Hook-only metadata exported to this exec and its child processes.
 
     Raises:
         RuntimeError: If the command exits with non-zero status.
@@ -414,7 +623,8 @@ def _run_exec_command(
     from sparkrun.utils.shell import b64_wrap_bash, quote
 
     # TODO: this should delegate via executor implementation; this should allow control over user
-    script = "docker exec --user root %s bash -c %s" % (quote(container_name), b64_wrap_bash(cmd))
+    env_args = "".join(" --env %s" % quote("%s=%s" % (key, value)) for key, value in sorted((env or {}).items()))
+    script = "docker exec --user root%s %s bash -c %s" % (env_args, quote(container_name), b64_wrap_bash(cmd))
 
     logger.info("  %s on %s/%s: %s", label, host, container_name, cmd)
 

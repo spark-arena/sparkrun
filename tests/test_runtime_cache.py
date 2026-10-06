@@ -707,7 +707,7 @@ class _StubRuntime:
         return 0
 
 
-def _launch(monkeypatch, tmp_path, **launch_kw):
+def _launch(monkeypatch, tmp_path, *, return_result=False, **launch_kw):
     from sparkrun.core import launcher
     from sparkrun.core.launcher import launch_inference
 
@@ -746,7 +746,7 @@ def _launch(monkeypatch, tmp_path, **launch_kw):
 
     runtime = _StubRuntime()
     runtime.last_kwargs = {}
-    launch_inference(
+    result = launch_inference(
         recipe=launch_kw.pop("recipe", _recipe()),
         runtime=runtime,
         host_list=["h1"],
@@ -757,7 +757,8 @@ def _launch(monkeypatch, tmp_path, **launch_kw):
         sync_tuning=False,
         **launch_kw,
     )
-    return _StubRuntime.last_kwargs
+    assert result.runtime_cache is _StubRuntime.last_kwargs["runtime_cache"]
+    return result if return_result else _StubRuntime.last_kwargs
 
 
 def test_launcher_threads_the_cache_plan_to_runtime_run(monkeypatch, tmp_path):
@@ -838,3 +839,30 @@ def test_image_identity_probe_is_skipped_on_dry_run_and_never_raises(monkeypatch
         lambda *a, **kw: (_ for _ in ()).throw(OSError("ssh down")),
     )
     assert probe_image_identity("img:v1", ["h1"], {}) is None
+
+
+def test_launcher_retains_actual_runtime_hook_snapshot(monkeypatch, tmp_path):
+    from sparkrun.orchestration.hooks import build_hook_launch_context, hook_launch_scope
+
+    recorded = []
+
+    def run(self, **kwargs):
+        type(self).last_kwargs = dict(kwargs)
+        context = build_hook_launch_context(
+            kwargs["hosts"],
+            kwargs["recipe"].build_config_chain(kwargs["overrides"]),
+            runtime=self.runtime_name,
+            cluster_id=kwargs["cluster_id"],
+            runtime_cache=kwargs["runtime_cache"],
+            volumes={kwargs["runtime_cache"].leaf: "/overridden-destination"},
+        )
+        recorded.append(context)
+        with hook_launch_scope(context):
+            pass
+        return 0
+
+    monkeypatch.setattr(_StubRuntime, "run", run)
+    result = _launch(monkeypatch, tmp_path, return_result=True)
+    assert result.hook_launch_context is recorded[0]
+    assert result.hook_launch_context.runtime_cache is result.runtime_cache
+    assert result.hook_launch_context.volumes[result.runtime_cache.leaf] == "/overridden-destination"

@@ -37,8 +37,10 @@ if TYPE_CHECKING:
     from sparkrun.core.context import SparkrunContext
     from sparkrun.core.progress import LaunchProgress
     from sparkrun.core.recipe import Recipe
+    from sparkrun.core.runtime_cache import RuntimeCacheMounts
     from sparkrun.core.registry import RegistryEntry, RegistryManager
     from sparkrun.orchestration.comm_env import ClusterCommEnv
+    from sparkrun.orchestration.hooks import HookLaunchContext
     from sparkrun.runtimes.base import RuntimePlugin
     from sparkrun.builders.base import BuilderPlugin
     from sparkrun.core.execution import ExecutionContext, PreparedExecution, RecipeExecutionStrategy
@@ -83,6 +85,10 @@ class LaunchResult:
     timeline, so a consumer reading it after readiness sees the whole
     launch-to-serving story."""
     startup_observation: dict[str, Any] = field(default_factory=dict)
+    runtime_cache: RuntimeCacheMounts | None = None
+    """Exact compilation-cache mount plan used for launch, retained for hooks."""
+    hook_launch_context: HookLaunchContext | None = None
+    """Runtime snapshot including final volumes; older/provider launches may omit it."""
 
 
 def resolve_recipe_trust(
@@ -846,7 +852,7 @@ def report_unmapped_config_keys(
 
     # Keys read only by an `overrides[].when.config` predicate are consumed:
     # a selector-only knob (e.g. `speculator`) never reaches the command.
-    override_keys_of = getattr(recipe, "override_config_keys", None)
+    override_keys_of: Callable[[], set[str]] | None = getattr(recipe, "override_config_keys", None)
     override_keys = set(override_keys_of()) if callable(override_keys_of) else set()
     consumed = set(known) | BASE_CONSUMED_CONFIG_KEYS | _referenced_placeholders(recipe) | override_keys
 
@@ -1923,33 +1929,37 @@ def launch_inference(
         before_start()
     record_launch_metadata()
 
-    # Launch
-    rc = runtime.run(
-        hosts=host_list,
-        image=container_image,
-        images_by_node=(image_plan.images_by_node if image_plan is not None and image_plan.heterogeneous else None),
-        serve_command=serve_command,
-        recipe=recipe,
-        overrides=overrides,
-        cluster_id=cluster_id,
-        env=effective_env,
-        cache_dir=effective_cache_dir,
-        config=config,
-        dry_run=dry_run,
-        detached=detached,
-        comm_env=comm_env,
-        ib_ip_map=ib_ip_map,
-        ib_iface_map=ib_iface_map,
-        executor=executor,
-        progress=progress,
-        extra_docker_opts=extra_docker_opts,
-        cluster=cluster,
-        placement=placement,
-        backends=backends or None,
-        trust=recipe_trusted,
-        runtime_cache=runtime_cache_mounts,
-        **run_kwargs,
-    )
+    # Capture the runtime's final mount mapping without storing launch state on
+    # the reusable runtime plugin or recomputing cache settings for post hooks.
+    from sparkrun.orchestration.hooks import capture_hook_launch_contexts
+
+    with capture_hook_launch_contexts() as hook_launch_contexts:
+        rc = runtime.run(
+            hosts=host_list,
+            image=container_image,
+            images_by_node=(image_plan.images_by_node if image_plan is not None and image_plan.heterogeneous else None),
+            serve_command=serve_command,
+            recipe=recipe,
+            overrides=overrides,
+            cluster_id=cluster_id,
+            env=effective_env,
+            cache_dir=effective_cache_dir,
+            config=config,
+            dry_run=dry_run,
+            detached=detached,
+            comm_env=comm_env,
+            ib_ip_map=ib_ip_map,
+            ib_iface_map=ib_iface_map,
+            executor=executor,
+            progress=progress,
+            extra_docker_opts=extra_docker_opts,
+            cluster=cluster,
+            placement=placement,
+            backends=backends or None,
+            trust=recipe_trusted,
+            runtime_cache=runtime_cache_mounts,
+            **run_kwargs,
+        )
 
     if p:
         p.phase_end()
@@ -2026,6 +2036,8 @@ def launch_inference(
         builder=builder,
         backends=backends,
         timeline=timeline,
+        runtime_cache=runtime_cache_mounts,
+        hook_launch_context=hook_launch_contexts[0] if hook_launch_contexts else None,
     )
 
 
@@ -2455,6 +2467,7 @@ def post_launch_lifecycle(
 
     from sparkrun.orchestration.hooks import (
         build_hook_context,
+        build_hook_launch_context,
         run_post_commands,
         run_post_exec,
     )
@@ -2502,6 +2515,21 @@ def post_launch_lifecycle(
         cache_dir=remote_cache_dir,
     )
 
+    launch_context = replace(
+        result.hook_launch_context
+        or build_hook_launch_context(
+            host_list,
+            config_chain,
+            recipe=recipe,
+            runtime=runtime.runtime_name,
+            cluster_id=result.cluster_id,
+            runtime_cache=result.runtime_cache,
+        ),
+        port=str(effective_port),
+        head_ip=head_ip,
+        base_url=hook_context.get("base_url", ""),
+    )
+
     # Resolve trust once for both post_exec (inside head container) and
     # post_commands (on control machine).  Same gate as the pre_exec
     # decision computed in launch_inference().
@@ -2520,12 +2548,13 @@ def post_launch_lifecycle(
                 dry_run=dry_run,
                 trust=_is_trusted,
                 cache_dir=remote_cache_dir,
+                launch_context=launch_context,
             )
 
         # Run post_commands on control machine
         if recipe.post_commands:
             click.echo("Running post_commands on control machine...")
-            run_post_commands(recipe.post_commands, hook_context, dry_run=dry_run, trust=_is_trusted)
+            run_post_commands(recipe.post_commands, hook_context, dry_run=dry_run, trust=_is_trusted, launch_context=launch_context)
     except RuntimeError as e:
         click.echo("Error in post hooks: %s" % e, err=True)
         sys.exit(1)

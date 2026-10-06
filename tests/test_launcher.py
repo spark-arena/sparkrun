@@ -893,6 +893,8 @@ class _LifecycleRuntime:
     as proof the workload died.
     """
 
+    runtime_name = "stub"
+
     def __init__(self, head_suffix="_node_0"):
         from sparkrun.orchestration.executors.docker import DockerExecutor
 
@@ -1694,3 +1696,55 @@ def test_core_launcher_requires_configuration_before_preparation(monkeypatch):
             dry_run=True,
         )
     prepare.assert_not_called()
+
+
+@pytest.mark.parametrize("override_mount", [False, True])
+def test_post_lifecycle_reuses_full_launch_cache_context(monkeypatch, tmp_path, override_mount):
+    from sparkrun.core.launcher import ServeReadiness, post_launch_lifecycle
+    from sparkrun.core.runtime_cache import RuntimeCacheMounts
+    from sparkrun.orchestration.hooks import build_hook_env, build_hook_launch_context
+
+    recipe = _LifecycleRecipe(post_exec=["true"], post_commands=["true"])
+    result = _make_launch_result(recipe, _LifecycleRuntime())
+    result.host_list = ["head", "worker-1", "worker-2"]
+    result.is_solo = False
+    leaf = str(tmp_path / "actual compilation cache")
+    result.runtime_cache = RuntimeCacheMounts(leaf=leaf, family_root=str(tmp_path), volumes={leaf: "/cache/runtime"})
+    if override_mount:
+        result.hook_launch_context = build_hook_launch_context(
+            result.host_list,
+            {},
+            runtime_cache=result.runtime_cache,
+            volumes={leaf: "/elsewhere"},
+        )
+    seen = {}
+
+    def capture(phase):
+        def run(*args, launch_context, **kwargs):
+            assert launch_context.runtime_cache is result.runtime_cache
+            seen[phase] = build_hook_env(launch_context, phase, host="head", container_name="head-container")
+
+        return run
+
+    monkeypatch.setattr("sparkrun.orchestration.hooks.run_post_exec", capture("post_exec"))
+    monkeypatch.setattr("sparkrun.orchestration.hooks.run_post_commands", capture("post_commands"))
+    monkeypatch.setattr("sparkrun.orchestration.primitives.build_ssh_kwargs", lambda *a, **k: {})
+
+    def no_resolution(*a, **k):
+        raise AssertionError("post hooks must not resolve the cache again")
+
+    monkeypatch.setattr("sparkrun.core.runtime_cache.build_runtime_cache_mounts", no_resolution)
+    monkeypatch.setattr("sparkrun.core.runtime_cache.resolve_runtime_cache_settings", no_resolution)
+    post_launch_lifecycle(
+        result,
+        remote_cache_dir="/huggingface",
+        readiness=ServeReadiness(True, "head", "10.0.0.1", 9001, "head-container"),
+    )
+    assert seen["post_exec"]["SPARKRUN_NODE_RANK"] == "0"
+    assert seen["post_commands"]["SPARKRUN_NODE_RANK"] == ""
+    assert seen["post_commands"]["SPARKRUN_RUNTIME_CACHE_DIR"] == ""
+    for env in seen.values():
+        assert env["SPARKRUN_NUM_NODES"] == "3"
+        assert env["SPARKRUN_RUNTIME_CACHE_HOST_DIR"] == ("" if override_mount else leaf)
+        assert env["SPARKRUN_RUNTIME_CACHE_HOST"] == ("" if override_mount else "head")
+        assert env["SPARKRUN_BASE_URL"] == "http://10.0.0.1:9001/v1"

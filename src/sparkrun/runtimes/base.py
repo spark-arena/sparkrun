@@ -678,7 +678,7 @@ class RuntimePlugin(Plugin, ABC):
                 show the correct path.
         """
         if recipe and recipe.pre_exec:
-            from sparkrun.orchestration.hooks import run_pre_exec
+            from sparkrun.orchestration.hooks import current_hook_launch_context, run_pre_exec
 
             run_pre_exec(
                 hosts_containers,
@@ -688,6 +688,7 @@ class RuntimePlugin(Plugin, ABC):
                 dry_run=dry_run,
                 trust=trust,
                 cache_dir=cache_dir,
+                launch_context=current_hook_launch_context(),
             )
 
     def get_extra_volumes(self) -> dict[str, str]:
@@ -1653,15 +1654,27 @@ class RuntimePlugin(Plugin, ABC):
 
         # Pre-serve hook (e.g., apply mods to container, run pre_exec)
         config_chain = recipe.build_config_chain(overrides) if recipe else None
-        self._pre_serve(
-            [(host, container_name)],
-            ssh_kwargs,
-            dry_run,
+        from sparkrun.orchestration.hooks import build_hook_launch_context, hook_launch_scope
+
+        hook_context = build_hook_launch_context(
+            [host],
+            config_chain,
             recipe=recipe,
-            config_chain=config_chain,
-            trust=trust,
-            cache_dir=cache_dir,
+            runtime=self.runtime_name,
+            cluster_id=cluster_id,
+            runtime_cache=runtime_cache,
+            volumes=volumes,
         )
+        with hook_launch_scope(hook_context):
+            self._pre_serve(
+                [(host, container_name)],
+                ssh_kwargs,
+                dry_run,
+                recipe=recipe,
+                config_chain=config_chain,
+                trust=trust,
+                cache_dir=cache_dir,
+            )
 
         # Step 3: Execute serve command
         t0 = time.monotonic()
