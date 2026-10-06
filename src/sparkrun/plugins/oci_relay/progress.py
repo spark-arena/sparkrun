@@ -30,7 +30,7 @@ def layers(value):
 
 
 class Progress:
-    def __init__(self, image, *, interval=5, heartbeat=30):
+    def __init__(self, image, *, interval=30, heartbeat=30):
         self.started = time.monotonic()
         self.interval = interval
         self.heartbeat = heartbeat

@@ -22,12 +22,16 @@ from . import __version__
 from .host import Lines, OperationError, Runner, pump
 from .parallel import parallel
 from .paths import arguments as path_arguments, qualify as qualify_paths
-from .progress import Progress
+from .progress import PROGRESS, Progress
 from .release import BinaryUnavailable, acquire
 from .source_policy import SourceUnavailable, detect, validate
 from .tuning import limits, probe
 
 logger = logging.getLogger(__name__)
+
+
+class RegistrySourceUnavailable(OperationError):
+    """Registry metadata preparation failed before starting any receiver."""
 
 
 def _probe(runner, host, binary, endpoint, credential, *, paths=None):
@@ -147,9 +151,9 @@ class RelayProvider:
         return request.config.plugin_settings("oci-relay")
 
     def pull(self, request):
-        """Decline before transfer when core's existing local-image policy applies."""
+        """Own registry pulls and controller latest refreshes before Docker imports."""
         from sparkrun.plugins import ImageDistributionUnsupported
-        from sparkrun.utils.images import parse_image_ref
+        from sparkrun.utils.images import is_pullable_image_ref, parse_image_ref
         from .source_policy import LOCAL_DOCKER
 
         settings = self._settings(request)
@@ -168,26 +172,50 @@ class RelayProvider:
         timeout = request.timeout or settings.get("timeout_seconds", 3600)
         if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 1 <= timeout <= 86400:
             raise ValueError("relay timeout must be between 1 and 86400 seconds")
+        cached_image = None
         if not request.dry_run and not request.force_pull and settings.get("source_mode") != "registry":
+            logger.log(PROGRESS, "OCI Relay: checking source image on %s", request.source_host or "controller")
             runner = Runner(request.session, settings)
             try:
                 inspected = runner.connection(request.source_host).execute(
                     request.source_host or "localhost", LOCAL_DOCKER + ["image", "inspect", "--format={{.Id}}", request.image], timeout=min(30, timeout),
                 )
                 if inspected.returncode == 0:
-                    # Includes best-effort :latest refresh: core retains its
-                    # established fallback-to-local semantics for existing images.
-                    return None
+                    # Core refreshes controller-local latest references, while
+                    # delegated sources retain a present image unless forced.
+                    refresh = (request.source_host is None and is_pullable_image_ref(request.image)
+                               and ref.tag in {None, "latest"})
+                    if not refresh:
+                        logger.log(PROGRESS, "OCI Relay: using existing source image %s", request.image)
+                        return None
+                    cached_image = inspected.stdout.decode().strip()
+                    if not re.fullmatch(r"sha256:[0-9a-f]{64}", cached_image):
+                        raise OperationError("Docker returned an invalid cached image ID")
             finally:
                 runner.close()
         if not ref.tag:
             request = replace(request, image=request.image + ":latest")
+        action = "refreshing latest image from registry" if cached_image else "pulling from registry"
+        logger.log(PROGRESS, "OCI Relay: %s and distributing directly to receivers: %s", action, request.image)
         remaining = timeout - (time.monotonic() - started)
         if remaining < 1:
             raise OperationError("registry source selection exceeded operation deadline")
-        return self.copy(replace(request, timeout=remaining), registry=True)
+        try:
+            return self.copy(replace(request, timeout=remaining), registry=True)
+        except RegistrySourceUnavailable as error:
+            if cached_image is None:
+                raise
+            # Best-effort refresh can reuse the original local image only
+            # before receiver startup. Never switch identity after a partial
+            # transfer, corrupt payload, receiver failure or cancellation.
+            remaining = timeout - (time.monotonic() - started)
+            if remaining < 1:
+                raise OperationError("registry refresh exhausted the operation deadline")
+            logger.warning("OCI Relay: registry refresh unavailable before transfer (%s); using cached image %s (%s)",
+                           error, request.image, cached_image)
+            return self.copy(replace(request, timeout=remaining), source_image=cached_image)
 
-    def copy(self, request, *, registry=False):
+    def copy(self, request, *, registry=False, source_image=None):
         from sparkrun.plugins import ImageCopyResult, ImageDistributionUnsupported
 
         settings = self._settings(request)
@@ -218,13 +246,13 @@ class RelayProvider:
             remaining = timeout - (time.monotonic() - started)
             if remaining < 1:
                 raise OperationError("image-copy deadline expired before admission")
-            return self._copy(request, settings, int(remaining))
+            return self._copy(request, settings, int(remaining), source_image=source_image)
         except (BinaryUnavailable, SourceUnavailable) as error:
             raise ImageDistributionUnsupported(str(error)) from error
         finally:
             self._operations.release()
 
-    def _copy(self, request, settings, timeout):
+    def _copy(self, request, settings, timeout, *, source_image=None):
         from sparkrun.plugins import ImageCopyResult
 
         transport = settings.get("transport", "auto")
@@ -239,6 +267,7 @@ class RelayProvider:
         timings = {}
         completed = False
         progress = Progress(request.image)
+        source_image = source_image or request.image
 
         def mark(name):
             nonlocal phase_start
@@ -300,7 +329,7 @@ class RelayProvider:
             source_limits = limits(settings, facts[source_host], transport,
                                    local_roles=roles[facts[source_host].get("host_id") or str(source_host)])
             logger.info("OCI Relay source limits: %s; route facts: %s", source_limits, facts[source_host])
-            selection = detect(runner, source_host, request.image, settings, facts[source_host])
+            selection = detect(runner, source_host, source_image, settings, facts[source_host])
             logger.info("OCI Relay source selection: requested=%s selected=%s reason=%s",
                         settings.get("source_mode", "auto"), selection.mode, selection.reason)
             settings = dict(settings, source_mode=selection.mode)
@@ -340,7 +369,7 @@ class RelayProvider:
                 manifest = source_dir + "/manifest.json"
                 runner.write(source_host, manifest, raw)
             plan = {
-                "version": 1, "source": selection.mode, "image": request.image,
+                "version": 1, "source": selection.mode, "image": source_image,
                 "platform": settings.get("platform", ""), "manifest": manifest,
                 "session_dir": source_dir, "socket": source_dir + "/source.sock",
                 "listen": settings.get("listen", "0.0.0.0:0" if transport in {"auto", "http2-direct"} else "127.0.0.1:0"),
@@ -358,7 +387,8 @@ class RelayProvider:
                             registry_plain_http=settings.get("registry_plain_http", False),
                             registry_cache_bytes=settings.get("registry_cache_bytes", 0))
             mark("session")
-            progress.phase(f"preparing {selection.mode} source")
+            progress.phase("fetching registry manifest and configuration" if selection.mode == "registry"
+                           else f"preparing {selection.mode} source")
             source_process = runner.start_source(source_host, source_binary, source_dir, plan)
             source_events = Lines(source_process.stdout, events=True)
             source_errors = Lines(source_process.stderr)
@@ -374,11 +404,14 @@ class RelayProvider:
             threading.Thread(target=heartbeat, daemon=True).start()
             try:
                 ready = source_events.event(deadline)
+                while ready.get("type") == "progress":
+                    progress.event(ready)
+                    ready = source_events.event(deadline)
             except OperationError as error:
-                raise OperationError(str(error) + ": " + "\n".join(source_errors.tail)[-4000:]) from error
-            while ready.get("type") == "progress":
-                ready = source_events.event(deadline)
+                failure = RegistrySourceUnavailable if selection.mode == "registry" else OperationError
+                raise failure(str(error) + ": " + "\n".join(source_errors.tail)[-4000:]) from error
             if ready.get("type") != "ready" or ready.get("version") != 1:
+                # Malformed protocol events are not registry availability failures.
                 raise OperationError("source failed readiness: " + "\n".join(source_errors.tail)[-4000:])
             endpoint = ready["endpoint"]
             parts = urlsplit(endpoint)

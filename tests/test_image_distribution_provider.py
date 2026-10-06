@@ -206,3 +206,19 @@ def test_pre_pull_runs_before_builtin_source_pull(monkeypatch, head):
     else:
         assert distribute.distribute_image_from_local("registry.test/image:tag", ["a", "b"], dry_run=True) == []
         assert calls[0].source_host is None and calls[0].targets == ("a", "b")
+
+
+def test_builtin_pull_announces_work_before_waiting_for_docker(monkeypatch, caplog):
+    from sparkrun.containers import registry
+    from sparkrun.core.progress import PROGRESS
+
+    caplog.set_level(PROGRESS)
+
+    def run(arguments, **kwargs):
+        assert arguments == ["docker", "pull", "registry.test/image:latest"]
+        assert "Pulling image with Docker: registry.test/image:latest" in caplog.text
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(registry.subprocess, "run", run)
+    assert registry.pull_image("registry.test/image:latest") == 0
+    assert "Docker image ready: registry.test/image:latest" in caplog.text

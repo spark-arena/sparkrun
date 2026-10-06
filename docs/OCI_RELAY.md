@@ -18,7 +18,11 @@ or Go build: the controller downloads checksum-pinned v0.1.0 Linux binaries and
 stages them to the execution hosts. Targets need no internet access for binary
 installation. An initial online acquisition is required before offline use.
 Native-store access and preparation reads default on; source and transport
-selection are automatic. To opt out on alpha, set the feature to `false`, or use
+selection are automatic. Controller-local `:latest` refreshes stream from the
+registry through OCI Relay, including when the controller already has an older
+image; there is no preliminary Docker pull/import. Routine receiver and registry
+progress updates use a 30-second cadence, with phase changes and completion
+reported immediately. To opt out on alpha, set the feature to `false`, or use
 `container_distribution_provider: builtin` for the built-in copy path.
 
 Mac controllers should use `transfer_mode: delegated` so that the relay runs
