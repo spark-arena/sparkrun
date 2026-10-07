@@ -717,3 +717,81 @@ def test_sglang_validate_dp_replicas_warns_about_routing():
 
 def test_sglang_validate_dp1_is_quiet():
     assert not SglangRuntime()._validate_parallelism(_dp_recipe({"tensor_parallel": 2}))
+
+
+def test_commandless_native_profile_preserves_flags_revision_and_model_name(tmp_path):
+    """Generate the complete native profile and execute its argv via a fake CLI."""
+    import json
+    import os
+    import subprocess
+    import sys
+
+    recipe = Recipe.from_dict(
+        {
+            "model": "org/model",
+            "model_revision": "a" * 40,
+            "runtime": "sglang",
+            "defaults": {
+                "tensor_parallel": 4,
+                "pipeline_parallel": 1,
+                "data_parallel": 1,
+                "expert_parallel": 1,
+                "model_type": "llm",
+                "revision": "{model_revision}",
+                "gpu_memory_utilization": 0.8,
+                "max_total_tokens": 9400000,
+                "random_seed": 0,
+                "enable_decoder_swa_bounded_replay": True,
+                "speculative_algorithm": "DSPARK",
+                "speculative_dspark_block_size": 5,
+                "trust_remote_code": True,
+            },
+        }
+    )
+    executable = tmp_path / "sglang"
+    executable.write_text("#!" + sys.executable + "\nimport json,sys; print(json.dumps(sys.argv[1:]))\n")
+    executable.chmod(0o755)
+    runtime = SglangRuntime()
+    revision = "a" * 40
+    for rank in range(4):
+        command = runtime.generate_node_command(recipe, {"port": 9123}, "192.0.2.1", 4, rank)
+        assert command.startswith("sglang serve ")
+        result = subprocess.run(
+            ["bash", "-c", command],
+            env={**os.environ, "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"]},
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        argv = json.loads(result.stdout)
+        expected = {
+            "--model-path": "org/model",
+            "--revision": revision,
+            "--model-type": "llm",
+            "--tp-size": "4",
+            "--ep-size": "1",
+            "--pp-size": "1",
+            "--mem-fraction-static": "0.8",
+            "--max-total-tokens": "9400000",
+            "--random-seed": "0",
+            "--speculative-algorithm": "DSPARK",
+            "--speculative-dspark-block-size": "5",
+            "--port": "9123",
+            "--node-rank": str(rank),
+            "--nnodes": "4",
+            "--dist-init-addr": "192.0.2.1:25000",
+        }
+        for flag, value in expected.items():
+            assert argv.count(flag) == 1
+            assert argv[argv.index(flag) + 1] == value
+        assert "--enable-decoder-swa-bounded-replay" in argv
+        assert "--trust-remote-code" in argv
+        assert "--served-model-name" not in argv
+    assert recipe.effective_served_model_name == "org/model"
+    command = runtime.generate_command(recipe, {"enable_decoder_swa_bounded_replay": False, "expert_parallel": 2}, is_cluster=False)
+    assert "--enable-decoder-swa-bounded-replay" not in command
+    assert "--ep-size 2" in command
+    command = runtime.generate_command(recipe, {}, is_cluster=False, skip_keys={"revision", "expert_parallel"})
+    assert "--revision" not in command
+    assert "--ep-size" not in command

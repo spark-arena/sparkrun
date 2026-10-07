@@ -284,3 +284,15 @@ def test_materialize_rejects_invalid_runtime_commands(monkeypatch, command):
     monkeypatch.setattr(plan.runtime, "generate_node_command", lambda **kwargs: command)
     with pytest.raises(ValueError, match="nonempty command"):
         api.materialize(options, plan=plan, sctx=sctx)
+
+
+def test_materialize_refuses_unresolved_env_but_preserves_literal_cli_override():
+    from sparkrun.core.resolve import apply_env_overrides
+
+    options, plan, sctx = _fixture()
+    plan.recipe.env["RANK"] = "{launch.node_rank}"
+    with pytest.raises(ValueError, match="prepared environment contract"):
+        api.materialize(options, plan=plan, sctx=sctx)
+    apply_env_overrides(plan.recipe, ["RANK={launch.node_rank}"])
+    spec = api.materialize(options, plan=plan, sctx=sctx)
+    assert all(unit.environment["RANK"] == "{launch.node_rank}" for unit in spec.units)

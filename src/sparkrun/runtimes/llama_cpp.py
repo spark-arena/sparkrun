@@ -668,7 +668,7 @@ class LlamaCppRuntime(RuntimePlugin):
                     exec_script = self._resolve_executor().generate_exec_serve_script(
                         container_name=worker_container_name,
                         serve_command=rpc_worker_command,
-                        env=ctx.all_env,
+                        env=ctx.env_for_host(host),
                         detached=True,
                     )
                     future = pool.submit(

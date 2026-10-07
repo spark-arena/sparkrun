@@ -1547,6 +1547,9 @@ class RuntimePlugin(Plugin, ABC):
                 **resolved_model_volume(recipe),
             },
         )
+        from sparkrun.core.env_templates import render_launch_env
+
+        template_env = render_launch_env(recipe, host, volumes, runtime_cache, self._resolve_executor().for_host(host))
         all_env = merge_env(
             # The runtime cache sits at the *bottom*: `recipe.env` (and the
             # `-e` overrides folded into it) must be able to repoint any of
@@ -1557,7 +1560,8 @@ class RuntimePlugin(Plugin, ABC):
             self.get_common_env(),  # base env
             self.get_solo_env(),  # solo-specific
             (self.platform_env_by_host or {}).get(host, {}),
-            env,  # recipe
+            env,  # recipe (literal CLI overrides already suppress templates)
+            template_env,
             self.get_extra_env(),  # tuning/other overrides
         )
 

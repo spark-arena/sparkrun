@@ -35,7 +35,7 @@ import logging
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import re
 
@@ -271,7 +271,7 @@ def _locate(
 
 def _registry_root(manager: Any, entry: Any) -> Path | None:
     recipe_dir = getattr(manager, "_recipe_dir", None)
-    return recipe_dir(entry) if callable(recipe_dir) else None
+    return cast(Path | None, recipe_dir(entry)) if callable(recipe_dir) else None
 
 
 def _require_within(path: Path, root: Path | None, ref: str) -> None:

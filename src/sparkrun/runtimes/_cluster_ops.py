@@ -183,6 +183,13 @@ class ClusterContext:
             host: merge_env(all_env, platform_env, env, extra_env)
             for host, platform_env in (getattr(runtime, "platform_env_by_host", None) or {}).items()
         }
+        if getattr(recipe, "env_templates", None):
+            from sparkrun.core.env_templates import render_launch_env
+
+            for host in hosts:
+                template_env = render_launch_env(recipe, host, volumes, runtime_cache, runtime._resolve_executor().for_host(host))
+                env_by_host[host] = merge_env(env_by_host.get(host, all_env), template_env, extra_env)
+            all_env = env_by_host[hosts[0]]
 
         if placement is None and cluster is not None and recipe is not None:
             # Legacy back-compat: ``api.run`` now always threads ``placement``,

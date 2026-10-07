@@ -370,3 +370,58 @@ def test_invalid_initial_timeout_is_rejected_before_state_or_launch(scheduled_en
         benchmark(replace(env.options, timeout=timeout), sctx=env.sctx)
     env.run.assert_not_called()
     assert not list(env.sctx.config.cache_dir.glob("benchmarks/bench_*/state.yaml"))
+
+
+@pytest.mark.parametrize("snapshot", [False, True])
+def test_environment_template_credentials_do_not_change_benchmark_fingerprint(snapshot):
+    from copy import deepcopy
+
+    from sparkrun.benchmarking.metadata import benchmark_recipe_fingerprint
+    from sparkrun.core.recipe import Recipe
+    from sparkrun.orchestration.job_metadata import derive_recipe_fingerprint
+
+    def recipe(secret, cache="engram"):
+        result = Recipe(
+            {
+                "model": "org/model",
+                "runtime": "sglang",
+                "container": "image:test",
+                "env": {
+                    "SERVICE_API_KEY": secret,
+                    "CACHE_PATH": "{launch.runtime_cache_dir}/" + cache,
+                },
+            }
+        )
+        if snapshot:
+            result.snapshot_declared_values()
+        return result
+
+    first, second = recipe("secret-one"), recipe("secret-two")
+    original = deepcopy(first.__getstate__())
+    assert derive_recipe_fingerprint(first) != derive_recipe_fingerprint(second)
+    assert benchmark_recipe_fingerprint(first) == benchmark_recipe_fingerprint(second)
+    assert benchmark_recipe_fingerprint(first) != benchmark_recipe_fingerprint(recipe("secret-one", "other"))
+    assert first.__getstate__() == original
+
+
+def test_published_recipe_redacts_template_credentials_from_state_and_snapshot():
+    from sparkrun.benchmarking.metadata import public_recipe_text
+    from sparkrun.core.recipe import Recipe
+
+    recipe = Recipe(
+        {
+            "model": "org/model",
+            "runtime": "sglang",
+            "env": {
+                "SERVICE_AUTH_TOKEN": "private-auth-value",
+                "MODEL_PATH": "{launch.model_path}",
+            },
+        }
+    )
+    recipe.snapshot_declared_values()
+    published = public_recipe_text(recipe._serialize_yaml())
+    assert "private-auth-value" not in published
+    data = yaml.safe_load(published)
+    assert data["env"] == {"MODEL_PATH": "{launch.model_path}"}
+    assert data["_declared"]["env"] == {"MODEL_PATH": "{launch.model_path}"}
+    assert recipe.env["SERVICE_AUTH_TOKEN"] == "private-auth-value"

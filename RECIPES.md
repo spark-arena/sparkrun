@@ -134,11 +134,11 @@ On DGX Spark (1 GPU per node), `tensor_parallel: N` = N hosts.
 | Field            | Type   | Default | Description                                                                                    |
 |------------------|--------|---------|------------------------------------------------------------------------------------------------|
 | `defaults`       | map    | `{}`    | Default values for serve flags. CLI overrides take priority                                    |
-| `env`            | map    | `{}`    | Container environment variables. Values are passed through **literally** (see note below) |
+| `env`            | map    | `{}`    | Container environment; optional `{config.NAME}` and `{launch.NAME}` interpolation |
 | `command`        | string | `null`  | Command template. `{key}` placeholders resolved from config chain                              |
 | `runtime_config` | map    | `{}`    | Runtime-specific config. Unknown top-level keys are auto-swept here                            |
 
-> **`env` values are not expanded.** Control-machine environment variables are
+> **Host environment variables are never expanded in recipe `env`.** They are
 > no longer substituted into recipe `env`. A `${HF_TOKEN}` in a recipe reaches
 > the container as the literal string `${HF_TOKEN}`, not the token. This closed
 > an exfiltration path: a third-party recipe could otherwise write
@@ -152,7 +152,7 @@ On DGX Spark (1 GPU per node), `tensor_parallel: N` = N hosts.
 
 **Container env tiers** (highest priority first):
 
-1. Recipe `env` — including both CLI forms, which are written into it:
+1. Recipe `env`, with reserved template tokens rendered — including both CLI forms, which are written into `env`:
    - `-e KEY=VALUE` / `--env KEY=VALUE` (repeatable) — value used **verbatim**.
      Hidden from `--help` unless `SPARKRUN_ADVANCED=1`.
    - `-o env.KEY=VALUE` — the generic override path, so the value goes through
@@ -173,6 +173,85 @@ On DGX Spark (1 GPU per node), `tensor_parallel: N` = N hosts.
    empty one (`-o env.PYTORCH_CUDA_ALLOC_CONF=`).
 
 Below all of these sit the runtime's own `get_common_env()` / cluster env.
+
+### Environment templates
+
+Put templates directly in `env` when a value depends on effective recipe
+configuration or the prepared launch. Sparkrun detects reserved tokens
+automatically; values without them remain literal. Conditional `overrides[].env`
+uses the same rules.
+
+```yaml
+defaults:
+  tensor_parallel: 4
+  port: 8000
+env:
+  OFFLOAD_MODE: "nvme"
+  TP_SIZE: "{config.tensor_parallel}"
+  SERVER_PORT: "{config.port}"
+  NODE_RANK: "{launch.node_rank}"
+  NNODES: "{launch.num_nodes}"
+  MODEL_PATH: "{launch.model_path}"
+  PACKED_DIR: "{launch.runtime_cache_dir}/engram/{launch.model_revision}"
+```
+
+Templates are string values. `{config.NAME}` reads a scalar from the effective
+configuration, including CLI overrides. It does not look up the controller's
+environment. `{launch.NAME}` accepts these fields:
+
+| Field | Meaning |
+|---|---|
+| `model_path` | Prepared model directory or selected GGUF file, mapped into the workload's mounts. Local execution uses its host path. |
+| `model_revision` | Concrete Hugging Face snapshot commit shared by the selected nodes. Unavailable for arbitrary local model paths. |
+| `runtime_cache_dir` | This launch's persistent compilation-cache mount, also exposed to in-container hooks as `SPARKRUN_RUNTIME_CACHE_DIR`. Local execution uses the host directory. |
+| `num_nodes` | Number of selected, distinct physical hosts. |
+| `node_rank` | Zero-based position in that host order; a node ordinal, not a GPU/process rank. |
+| `node_host` | Selected host name for this container. |
+| `cluster_id` | Launch cluster identifier. |
+
+Each value is rendered once per node after asset preparation and before
+replacement of an existing workload. The same values reach container creation,
+image healthchecks, in-container hooks/mods, and the serving process. A hook does
+not need to persist exports or write an environment file. Controller-side
+`post_commands` do not inherit the workload's environment.
+
+Only the two namespaces above are supported. There is no shell evaluation,
+ambient environment lookup, recursive substitution, attribute/index access,
+or format conversion. JSON, shell `$VAR` / `${VAR}` and unrelated braces stay
+unchanged. Escape a reserved token as `{{launch.node_rank}}` to pass the literal
+`{launch.node_rank}`. Missing fields,
+non-scalar configuration, and unknown launch fields fail explicitly; referencing
+`runtime_cache_dir` with caching disabled also fails.
+
+A literal CLI override (`-e KEY=value` or `-o env.KEY=value`) replaces that key's
+template, including with an empty value. CLI values are never interpolated.
+Rendered values occupy the recipe env tier; existing runtime tuning and managed
+communication precedence still applies. Exports and fingerprints retain source,
+excluding resolved node paths. Export escapes reserved tokens in literal CLI
+values so reloading preserves their meaning and identity. The earlier separate
+`env_templates` proposal is not part of the recipe schema.
+
+Model fields trigger read-only checks of the prepared cache on each target host.
+A pinned commit needs no `refs/main`; a branch/tag must have its cached ref.
+All nodes must contain the same selected commit and indexed weight files must
+exist. There is no arbitrary snapshot fallback or download during resolution.
+For local paths, the path must exist. Requesting its HF `model_revision` fails.
+A GGUF selector must identify one file or a complete shard set. These checks
+establish path availability, not model correctness or weight-content hashes.
+
+Dry runs perform no model probes and display `<unresolved:launch.model_path>`
+and `<unresolved:launch.model_revision>` where applicable. Configuration, ranks,
+and cache paths still render. Docker and local execution support path fields.
+Normal transfer modes, including `--transfer-mode delegated`, are supported:
+resolution uses the prepared cache on the selected hosts after distribution.
+Plugin-owned execution strategies and external-script runtimes that bypass the
+standard launch pipeline are currently unsupported; they need equivalent
+environment lifecycle integration. `api.materialize()` rejects unresolved recipe
+env templates until its caller can supply a prepared environment contract.
+TRT-LLM MPI requires identical
+rendered values across nodes. Path templates require
+structured `executor_config.volumes` instead of raw Docker mount flags; mounts
+that hide the model or cache are rejected.
 
 ### Metadata
 

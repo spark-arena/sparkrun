@@ -389,6 +389,11 @@ def derive_recipe_fingerprint(recipe: "Recipe", overrides: dict | None = None) -
         value = getattr(recipe, declared_attrs.get(attr, attr), None)
         if value is None and attr in declared_attrs:
             value = getattr(recipe, attr, None)
+        if attr == "env":
+            from sparkrun.core.env_templates import canonical_env
+
+            export_env = getattr(recipe, "export_env", None)
+            value = export_env() if callable(export_env) else canonical_env(value or {}, getattr(recipe, "_cli_env_keys", ()))
         parts.append("%s=%s" % (attr, _val(value)))
 
     recipe_layout = getattr(recipe, "layout", None)

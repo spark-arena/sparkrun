@@ -755,6 +755,7 @@ class TrtllmRuntime(RuntimePlugin):
             host_ips,
             nccl_env=head_env,
             ranks_per_node=ranks_per_node or 1,
+            extra_env_keys=list(getattr(recipe, "env_templates", None) or {}),
         )
 
         logger.info("mpirun command:")

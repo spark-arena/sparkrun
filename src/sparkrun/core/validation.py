@@ -838,9 +838,9 @@ def check_unpinned_model_revision(recipe: Recipe, runtime: RuntimePlugin | None)
     """Warn when ``model_revision`` is pinned but the serve command drops it.
 
     The pin reaches *distribution* — the weights downloaded are the right ones
-    — and then stops.  No flag map exposes a revision key, so unless the recipe
-    spells one of the runtime's ``model_revision_flags`` in ``command:``, the
-    engine is handed a bare repo id and resolves its own default revision.
+    — and can stop there. Unless a structured defaults key or command passes
+    one of the runtime's ``model_revision_flags``, the engine receives a bare
+    repo id and resolves its own default revision.
 
     That is fatal rather than merely unpinned, and the reason is the cache
     layout.  HuggingFace writes ``refs/<branch>`` only when a repo is fetched
@@ -882,6 +882,11 @@ def check_unpinned_model_revision(recipe: Recipe, runtime: RuntimePlugin | None)
     command = recipe.command or ""
     if not command and getattr(runtime, "structured_command_passes_revision", False):
         return []  # the runtime's structured command passes the pin itself
+    if not command:
+        chain = recipe.build_config_chain()
+        mapped_flags = runtime.serve_flag_map() or {}
+        if any(flag in flags and chain.get(key) not in (None, "") for key, flag in mapped_flags.items()):
+            return []
     tokens = {t for t in command.split() if t != "\\"}
     if any(f in tokens or any(t.startswith(f + "=") for t in tokens) for f in flags):
         return []
@@ -1115,7 +1120,17 @@ def check_managed_cache_env(recipe: Recipe, runtime: RuntimePlugin | None) -> li
         )
 
     cache_keys = {XDG_CACHE_ENV, *_hook("runtime_cache_paths")}
-    wins = sorted(k for k in env if k in cache_keys and k not in set(_hook("get_extra_env")))
+
+    def _uses_runtime_cache(key: str) -> bool:
+        # A template anchored to the resolved mount with a literal child path
+        # keeps artifacts on that mount. Do not warn as though it relocates
+        # them. Unknown/config-derived suffixes still need the diagnostic.
+        if key not in recipe.env_templates:
+            return False
+        template = env[key]
+        return bool(re.fullmatch(r"\{launch\.runtime_cache_dir\}(?:/[A-Za-z0-9_.-]+)*/?", template)) and ".." not in template.split("/")
+
+    wins = sorted(k for k in env if k in cache_keys and k not in set(_hook("get_extra_env")) and not _uses_runtime_cache(k))
     if wins:
         found.append(
             RecipeIssue(

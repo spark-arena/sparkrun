@@ -61,6 +61,11 @@ def materialize(
             raise ValueError("materialize() produces container launch units; native process executors are not supported")
 
     recipe = plan.recipe
+    if getattr(recipe, "env_templates", None):
+        raise ValueError(
+            "materialize() cannot resolve templated recipe env without a prepared environment contract; "
+            "use the standard launch pipeline or a strategy that owns capture/restore environment resolution"
+        )
     runtime = plan.runtime
     spec_engine = runtime.get_family()
     hosts = list(plan.host_list)

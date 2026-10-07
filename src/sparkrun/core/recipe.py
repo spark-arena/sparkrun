@@ -1205,10 +1205,17 @@ class Recipe:
             self.readiness = parse_recipe_readiness(data.get("readiness", {}))
         except ValueError as error:
             raise RecipeError(str(error)) from error
-        # Use recipe-provided env values literally.  Do NOT expand control-machine
-        # variables (e.g. ``$AWS_SECRET_ACCESS_KEY``): a third-party recipe could
-        # otherwise exfiltrate host secrets by injecting them into the container.
+        # Keep recipe env source intact. Only reserved config/launch tokens are
+        # rendered at launch; never expand control-machine environment variables.
         self.env: dict[str, str] = {str(k): str(v) for k, v in (data.get("env") or {}).items()}
+        if "env_templates" in data:
+            raise RecipeError("env_templates is not a recipe field; put templates directly in env")
+        from sparkrun.core.env_templates import select_env_templates
+
+        try:
+            select_env_templates(self.env)
+        except ValueError as error:
+            raise RecipeError(str(error)) from error
         self.command: str | None = data.get("command")
 
         # Metadata section (v2 extension for VRAM estimation, model info)
@@ -1350,15 +1357,21 @@ class Recipe:
     # ------------------------------------------------------------------
 
     def snapshot_declared_values(self) -> None:
-        """Record declared ``defaults`` / ``env`` / ``container`` once, before overrides mutate them."""
+        """Record declared config, environment and image before overrides mutate them."""
         if self._declared is None:
-            self._declared = {"defaults": deepcopy(self.defaults), "env": dict(self.env), "container": self.container}
+            self._declared = {
+                "defaults": deepcopy(self.defaults),
+                "env": dict(self.env),
+                "literal_env_keys": sorted(self._cli_env_keys),
+                "container": self.container,
+            }
 
     def restore_declared_values(self) -> None:
         """Undo applied overrides, back to the declared values."""
         if self._declared is not None:
             self.defaults = deepcopy(self._declared["defaults"])
             self.env = dict(self._declared["env"])
+            self._cli_env_keys = set(self._declared.get("literal_env_keys", self._cli_env_keys))
             self.container = self._declared["container"]
 
     @property
@@ -1369,6 +1382,21 @@ class Recipe:
     @property
     def declared_env(self) -> dict[str, str]:
         return self._declared["env"] if self._declared is not None else self.env
+
+    @property
+    def env_templates(self) -> dict[str, str]:
+        """Internal derived view; the public recipe format has one env block."""
+        from sparkrun.core.env_templates import select_env_templates
+
+        return select_env_templates(self.env, getattr(self, "_cli_env_keys", ()))
+
+    def export_env(self, *, effective: bool = False) -> dict[str, str]:
+        from sparkrun.core.env_templates import canonical_env
+
+        literal_keys = self._cli_env_keys
+        if not effective and self._declared is not None:
+            literal_keys = self._declared.get("literal_env_keys", literal_keys)
+        return canonical_env(self.env if effective else self.declared_env, literal_keys)
 
     @property
     def declared_container(self) -> str:
@@ -1573,6 +1601,14 @@ class Recipe:
         issues = []
         try:
             parse_recipe_readiness(self.readiness)
+        except ValueError as error:
+            issues.append(str(error))
+        try:
+            from sparkrun.core.env_templates import select_env_templates
+
+            select_env_templates(self.env, self._cli_env_keys)
+            for layer in self.overrides:
+                select_env_templates(layer.env)
         except ValueError as error:
             issues.append(str(error))
         if not self.name:
@@ -2390,7 +2426,7 @@ class Recipe:
         # -- Configuration -- (declared values; overrides stay conditional,
         # unless the caller asked for what this launch actually ran)
         defaults = self.defaults if effective else self.declared_defaults
-        env = self.env if effective else self.declared_env
+        env = self.export_env(effective=effective)
         if defaults:
             d["defaults"] = dict(defaults)
         if env:

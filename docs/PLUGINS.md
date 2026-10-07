@@ -158,6 +158,40 @@ targets. Direct callers without launch context receive ranks derived from
 their supplied host list and empty values for unavailable launch metadata.
 Hooks dispatched in another thread need their context passed explicitly.
 
+## Recipe environment templates
+
+The standard launch pipeline detects templates inside recipe `env` and prepares
+them after assets and cache
+mounts are available, before the replacement barrier. Built-in solo and cluster
+paths consume the scoped plan while assembling per-host environment, and pass
+the same rendered values to container creation and serve execution. They also
+validate that final mounts still match the prepared context. The runtime plugin
+instance and recipe template source are not mutated with rendered values.
+
+Custom runtimes using these shared paths inherit interpolation. A runtime
+implementing its own launch path must call
+`core.env_templates.render_launch_env(recipe, host, volumes, runtime_cache, executor)`
+inside the standard launch scope and merge the result at the recipe environment
+tier for both creation and serving. Raw calls to `runtime.run()` without that
+prepared context reject active templates. Separate threads need explicit
+context propagation.
+
+`--transfer-mode delegated` remains supported: it changes download/distribution
+and mod staging, while the standard pipeline still resolves target-host assets,
+constructs mounts, and creates containers. It is independent of
+`RecipeExecutionStrategy` and `RuntimePlugin.is_delegating_runtime()`. Those
+plugin-owned execution paths bypass standard launch preparation and currently
+reject active templates, as does `api.materialize()` without a prepared
+environment contract. A future strategy integration should own its environment
+lifecycle: provide actual prepared facts for fresh launches/capture, or use the
+captured environment for snapshot restore. ColdSnap should own model/cache
+logistics and compatible rebinding on restore; the core must not impose normal
+Docker cache probes on that path. No strategy should silently drop templates or
+pass unresolved source to an engine.
+
+See [Environment templates](../RECIPES.md#environment-templates) for syntax and
+availability, including MPI's restriction on differing per-node values.
+
 ## Preparation-only build hooks
 
 `sparkrun build` and `api.build()` run builders and asset staging without the

@@ -685,6 +685,10 @@ def _referenced_placeholders(recipe: Recipe) -> set[str]:
     for text in sources:
         if "{" in text:
             found.update(_TEMPLATE_PLACEHOLDER_RE.findall(text))
+    from sparkrun.core.env_templates import validate_env_template
+
+    for template in (getattr(recipe, "env_templates", None) or {}).values():
+        found.update(validate_env_template(template))
     return found
 
 
@@ -1133,6 +1137,12 @@ def launch_inference(
     if config is None:
         raise ValueError("launch_inference requires config or sctx")
     p = progress  # short alias
+    if getattr(recipe, "env_templates", None) and (execution_strategy is not None or runtime.is_delegating_runtime()):
+        raise ValueError(
+            "templated env requires the standard launch pipeline; plugin-owned execution strategies "
+            "and external-script runtimes do not yet provide its prepared asset/mount context "
+            "(this does not restrict --transfer-mode delegated)"
+        )
     validate_readiness_policy(config=config, recipe=recipe, runtime=runtime)
 
     # Resolve the span collector and attach it to the progress tracker, whose
@@ -1942,6 +1952,40 @@ def launch_inference(
         for host, hw in launch_hardware.items()
     }
 
+    # Resolve requested model fields after distribution; validate env before
+    # replacing a running workload. Rendering is reused at final runtime mounts.
+    from sparkrun.core.env_templates import prepare_env_templates, env_template_scope
+
+    env_template_plan = prepare_env_templates(
+        recipe,
+        overrides,
+        host_list,
+        cluster_id,
+        effective_cache_dir,
+        ssh_kwargs,
+        dry_run=dry_run,
+        extra_docker_opts=(runtime.get_extra_docker_opts() or []) + (extra_docker_opts or []),
+    )
+    if env_template_plan is not None:
+        from sparkrun.orchestration.primitives import build_volumes, resolved_model_volume
+
+        template_volumes = build_volumes(
+            effective_cache_dir,
+            extra={
+                **(runtime_cache_mounts.volumes if runtime_cache_mounts else {}),
+                **runtime.get_extra_volumes(),
+                **resolved_model_volume(recipe),
+            },
+        )
+        for host in host_list:
+            env_template_plan.render(host, template_volumes, runtime_cache_mounts, host_executors[host])
+        if (
+            not is_solo
+            and runtime.get_family() == "trtllm"
+            and any(values != env_template_plan.rendered[host_list[0]] for values in env_template_plan.rendered.values())
+        ):
+            raise ValueError("MPI launches do not support env templates with different values per node")
+
     # Commit only after all preparation and the replacement callback succeed.
     # Persist before submission so an interrupted start remains recoverable.
     if before_start is not None and not dry_run:
@@ -1952,7 +1996,7 @@ def launch_inference(
     # the reusable runtime plugin or recomputing cache settings for post hooks.
     from sparkrun.orchestration.hooks import capture_hook_launch_contexts
 
-    with capture_hook_launch_contexts() as hook_launch_contexts:
+    with capture_hook_launch_contexts() as hook_launch_contexts, env_template_scope(env_template_plan):
         rc = runtime.run(
             hosts=host_list,
             image=container_image,

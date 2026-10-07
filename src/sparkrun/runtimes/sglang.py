@@ -33,6 +33,7 @@ _SGLANG_FLAG_MAP = {
     "host": "--host",
     "tensor_parallel": "--tp-size",
     "pipeline_parallel": "--pp-size",
+    "expert_parallel": "--ep-size",
     # NOTE: emitted by the caller, never by ``build_flags_from_map`` — see
     # ``_append_dp_size``.  ``--dp-size`` describes replicas inside ONE launch,
     # so whether it is legal depends on the launch topology, not on the recipe
@@ -56,6 +57,10 @@ _SGLANG_FLAG_MAP = {
     # a differently-configured server.
     "attention_backend": "--attention-backend",
     "load_format": "--load-format",
+    "revision": "--revision",
+    "model_type": "--model-type",
+    "max_total_tokens": "--max-total-tokens",
+    "random_seed": "--random-seed",
     "reasoning_parser": "--reasoning-parser",
     "tool_call_parser": "--tool-call-parser",
     "mm_feature_transport": "--mm-feature-transport",
@@ -86,6 +91,7 @@ _SGLANG_FLAG_MAP = {
     "enable_torch_compile": "--enable-torch-compile",
     "disable_radix_cache": "--disable-radix-cache",
     "disable_prefill_cuda_graph": "--disable-prefill-cuda-graph",
+    "enable_decoder_swa_bounded_replay": "--enable-decoder-swa-bounded-replay",
 }
 
 # Boolean flags (present = True, absent = False).
@@ -96,6 +102,7 @@ _SGLANG_BOOL_FLAGS = {
     "enable_torch_compile",
     "disable_radix_cache",
     "disable_prefill_cuda_graph",
+    "enable_decoder_swa_bounded_replay",
 }
 
 
@@ -498,6 +505,13 @@ class SglangRuntime(RuntimePlugin):
     def _normalize_config(config) -> None:
         """Apply pre-render config normalizations (GGUF path + speculative alias)."""
         SglangRuntime._inject_gguf_model(config)
+        # Let structured recipes reuse their distribution pin without a shell
+        # environment handoff or a duplicate commit in defaults.revision.
+        revision = config.get("revision")
+        if isinstance(revision, str) and "{model_revision}" in revision:
+            from sparkrun.utils.text import render_template
+
+            config.set("revision", render_template(revision, config))
         # Accept ``speculative_draft_model`` as an alias for the canonical
         # ``speculative_draft_model_path`` key so users can use either in
         # recipe defaults; flag emission only looks at the canonical key.

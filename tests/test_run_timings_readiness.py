@@ -535,6 +535,8 @@ def _fake_run_result(rc: int = 0):
     launch.serve_command = "sglang serve"
     launch.container_image = "scitrera/dgx-spark-sglang:latest"
     launch.runtime_info = {}
+    launch.hook_launch_context = None
+    launch.runtime_cache = None
     launch.effective_cache_dir = "/cache"
     launch.timeline = timeline
 
