@@ -182,6 +182,7 @@ class TestDefaultRegistries:
         assert experimental.name == "experimental"
         assert "github.com/spark-arena/recipe-registry" in experimental.url
         assert experimental.subpath == "experimental-recipes"
+        assert experimental.mods_subpath == "experimental-mods"
         assert experimental.enabled is True
         assert experimental.visible is False
 
@@ -2326,6 +2327,56 @@ class TestBackfillDefaultSubpaths:
         assert mgr._backfill_default_subpaths([entry]) is True
         assert entry.benchmark_subpath == shipped.benchmark_subpath
         assert entry.tuning_subpath == shipped.tuning_subpath
+
+    def test_experimental_mods_backfilled_and_persisted(self, mgr):
+        shipped = next(e for e in FALLBACK_DEFAULT_REGISTRIES if e.name == "experimental")
+        entry = RegistryEntry(name=shipped.name, url=shipped.url, subpath=shipped.subpath)
+        mgr._save_registries([entry])
+
+        loaded = mgr._load_registries(allow_discovery=False)
+        experimental = next(e for e in loaded if e.name == "experimental")
+        assert experimental.mods_subpath == "experimental-mods"
+        saved = mgr._load_registries_from_file()
+        assert next(e for e in saved if e.name == "experimental").mods_subpath == "experimental-mods"
+        assert mgr._backfill_default_subpaths(loaded) is False
+
+    def test_experimental_sparse_checkout_includes_mods(self, mgr):
+        shipped = next(e for e in FALLBACK_DEFAULT_REGISTRIES if e.name == "experimental")
+        assert "experimental-mods" in mgr._build_sparse_paths(shipped)
+        # Old configs must fetch the mod tree on their next registry update.
+        mgr._save_registries([RegistryEntry(name=shipped.name, url=shipped.url, subpath=shipped.subpath)])
+        paths = mgr._sparse_checkout_paths_for_url(shipped.url)
+        assert "experimental-recipes" in paths
+        assert "experimental-mods" in paths
+
+    def test_same_repository_registries_keep_separate_asset_trees(self, mgr):
+        official = next(e for e in FALLBACK_DEFAULT_REGISTRIES if e.name == "official")
+        experimental = next(e for e in FALLBACK_DEFAULT_REGISTRIES if e.name == "experimental")
+        assert official.url == experimental.url
+        entries = [
+            RegistryEntry(name="renamed-official", url=official.url.removesuffix(".git"), subpath=official.subpath),
+            RegistryEntry(name="renamed-experimental", url=experimental.url, subpath=experimental.subpath),
+        ]
+        assert mgr._backfill_default_subpaths(entries) is True
+        assert entries[0].mods_subpath == ""
+        assert entries[0].tuning_subpath == official.tuning_subpath
+        assert entries[0].benchmark_subpath == official.benchmark_subpath
+        assert entries[1].mods_subpath == "experimental-mods"
+        assert entries[1].tuning_subpath == ""
+        assert entries[1].benchmark_subpath == ""
+        assert mgr._backfill_default_subpaths(entries) is False
+
+    def test_custom_recipe_tree_does_not_inherit_another_registrys_assets(self, mgr):
+        shipped = next(e for e in FALLBACK_DEFAULT_REGISTRIES if e.name == "experimental")
+        entry = RegistryEntry(name="custom", url=shipped.url, subpath="my-recipes")
+        assert mgr._backfill_default_subpaths([entry]) is False
+        assert entry.mods_subpath == ""
+
+    def test_custom_experimental_mods_path_is_preserved(self, mgr):
+        shipped = next(e for e in FALLBACK_DEFAULT_REGISTRIES if e.name == "experimental")
+        entry = RegistryEntry(name=shipped.name, url=shipped.url, subpath=shipped.subpath, mods_subpath="my-mods")
+        assert mgr._backfill_default_subpaths([entry]) is False
+        assert entry.mods_subpath == "my-mods"
 
     def test_user_customised_subpath_is_preserved(self, mgr):
         shipped = next(e for e in FALLBACK_DEFAULT_REGISTRIES if e.name == "community")

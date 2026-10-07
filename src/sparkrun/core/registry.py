@@ -426,6 +426,7 @@ FALLBACK_DEFAULT_REGISTRIES = [
         url="https://github.com/spark-arena/recipe-registry.git",
         subpath="experimental-recipes",
         description="Spark Arena registry for experimental recipes",
+        mods_subpath="experimental-mods",
         visible=False,
         trusted=True,
     ),
@@ -1639,15 +1640,17 @@ class RegistryManager:
         Only ever *adds*: a user who deliberately blanked a subpath gets it
         back, which is the accepted trade for repairing the far more common
         case, but a subpath the user has customised is never overwritten.
-        Matching is by URL, so a renamed registry is still repaired.
+        Matching is by URL and recipe subpath, so a renamed registry is
+        still repaired without mixing asset trees belonging to different
+        registries within the same repository.
 
         Returns:
             True when any entry was modified (caller re-saves the file).
         """
-        by_url = {_normalize_registry_url(e.url): e for e in application_profile_registries()}
+        by_source = {(_normalize_registry_url(e.url), e.subpath): e for e in application_profile_registries()}
         changed = False
         for entry in entries:
-            shipped = by_url.get(_normalize_registry_url(entry.url))
+            shipped = by_source.get((_normalize_registry_url(entry.url), entry.subpath))
             if shipped is None:
                 continue
             for field in OPTIONAL_SUBPATH_FIELDS:
