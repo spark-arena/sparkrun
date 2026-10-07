@@ -61,6 +61,9 @@ def materialize(
             raise ValueError("materialize() produces container launch units; native process executors are not supported")
 
     recipe = plan.recipe
+    from sparkrun.core.version import require_recipe_version
+
+    require_recipe_version(recipe)
     if getattr(recipe, "env_templates", None):
         raise ValueError(
             "materialize() cannot resolve templated recipe env without a prepared environment contract; "

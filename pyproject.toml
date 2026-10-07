@@ -34,6 +34,7 @@ dependencies = [
     "pygments==2.20.0", # transitive (rich/textual) pinned to the CVE-2026-4539 fix
     "click==8.3.3",
     "pyyaml==6.0.3",
+    "packaging==26.0", # PEP 440 comparison for recipe minimum core versions
     "huggingface-hub==1.8.0",
     "textual==8.2.5",
 ]

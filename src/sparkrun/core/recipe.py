@@ -20,6 +20,7 @@ from sparkrun.core.images import parse_container_entries
 from sparkrun.core.layout import RecipeLayout
 from sparkrun.core.readiness import parse_recipe_readiness
 from sparkrun.core.recipe_items import get_recipe_item, registered_recipe_items
+from sparkrun.core.version import parse_min_sparkrun_version, require_recipe_version
 from sparkrun.utils.text import (
     coerce_command_list,
     mask_non_placeholder_braces,
@@ -77,6 +78,7 @@ EUGR_CONTAINER_PREFIX = "ghcr.io/spark-arena/dgx-vllm-eugr-nightly"
 _KNOWN_KEYS = {
     "sparkrun_version",
     "recipe_version",
+    "min_sparkrun_version",
     "name",
     "description",
     "model",
@@ -1160,6 +1162,10 @@ class Recipe:
 
         # Detect version
         self.recipe_version = str(data.get("recipe_version", "2"))
+        try:
+            self.min_sparkrun_version = parse_min_sparkrun_version(data.get("min_sparkrun_version"))
+        except ValueError as error:
+            raise RecipeError(str(error)) from error
 
         # Core fields — name defaults to source filename stem if not provided
         default_name = Path(source_path).stem if source_path else "unnamed"
@@ -1599,6 +1605,10 @@ class Recipe:
         :func:`sparkrun.core.validation.validate_recipe` reports as errors.
         """
         issues = []
+        try:
+            require_recipe_version(self)
+        except ValueError as error:
+            issues.append(str(error))
         try:
             parse_recipe_readiness(self.readiness)
         except ValueError as error:
@@ -2146,6 +2156,7 @@ class Recipe:
             "is_url_sourced": self.is_url_sourced,
             "_qualified_name_override": self._qualified_name_override,
             "recipe_version": self.recipe_version,
+            "min_sparkrun_version": self.min_sparkrun_version,
             "description": self.description,
             "model": self.model,
             "model_revision": self.model_revision,
@@ -2200,6 +2211,7 @@ class Recipe:
         self.is_url_sourced = state.get("is_url_sourced", False)
         self._qualified_name_override = state.get("_qualified_name_override")
         self.recipe_version = state.get("recipe_version", "2")
+        self.min_sparkrun_version = parse_min_sparkrun_version(state.get("min_sparkrun_version", self._raw.get("min_sparkrun_version")))
         self.name = state.get("name", "unnamed")
         self.description = state.get("description", "")
         self.model = state.get("model", "")
@@ -2303,6 +2315,7 @@ class Recipe:
     # Keys not listed here are appended alphabetically after the last group.
     EXPORT_KEY_ORDER: list[str] = [
         "recipe_version",
+        "min_sparkrun_version",
         "model*",
         "runtime*",
         "builder*",
@@ -2342,6 +2355,9 @@ class Recipe:
           ``name``, ``mode``, ``runtime_config``, unknown sweep keys).
         """
         d: dict[str, Any] = {"recipe_version": self.recipe_version, "model": self.model}
+
+        if self.min_sparkrun_version is not None:
+            d["min_sparkrun_version"] = self.min_sparkrun_version
 
         # -- Core fields (always present) --
         if self.model_revision:

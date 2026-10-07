@@ -143,6 +143,15 @@ def plan(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunPl
     # downstream code never has to branch on ``cluster is None``.
     cluster_def = resolve_cluster(options.cluster, options.hosts, sctx=sctx, config=config)
 
+    # Reject incompatible recipes before transport/provider preparation.
+    recipe = resolve_recipe(options.recipe, sctx=sctx.for_cluster(cluster_def), overrides=options.overrides)
+    from sparkrun.core.version import require_recipe_version
+
+    try:
+        require_recipe_version(recipe)
+    except ValueError as error:
+        raise SparkrunError(str(error)) from error
+
     # Transport prepare: for provider-backed clusters (e.g. Thunder) this
     # refreshes ephemeral connection details (fresh IP/port, SSH key, managed
     # ssh alias) BEFORE the planning hardware/occupancy probes below.
@@ -152,7 +161,6 @@ def plan(options: RunOptions, *, sctx: "SparkrunContext | None" = None) -> RunPl
     sctx, _ = scope_operation(cluster_def, sctx=sctx, dry_run=options.dry_run)
     config = sctx.config
 
-    recipe = resolve_recipe(options.recipe, sctx=sctx, overrides=options.overrides)
     hosts = list(cluster_def.hosts)
     runtime = resolve_runtime(recipe, sctx=sctx)
     from sparkrun.api._resolve import resolve_operation_target
@@ -443,9 +451,16 @@ def _apply_recipe_overrides_for_plan(recipe, options: RunOptions, *, runtime, cl
     if not getattr(recipe, "overrides", None):
         return None
     original_runtime = recipe.runtime
-    context_args = dict(runtime=runtime, cluster=cluster, hosts=list(hosts), host_hardware=host_hardware, solo=bool(options.solo))
     try:
-        ctx = build_override_context(recipe, options.overrides, **context_args)
+        ctx = build_override_context(
+            recipe,
+            options.overrides,
+            runtime=runtime,
+            cluster=cluster,
+            hosts=list(hosts),
+            host_hardware=host_hardware,
+            solo=bool(options.solo),
+        )
         resolution = apply_recipe_override_layers(recipe, ctx)
     except OverrideConflictError as error:
         raise SparkrunError(str(error)) from error
@@ -465,7 +480,16 @@ def _apply_recipe_overrides_for_plan(recipe, options: RunOptions, *, runtime, cl
             "overrides %s change the resolved runtime (%s → %s); set runtime: explicitly or move that setting out of overrides"
             % (list(resolution.matched), original_runtime, recipe.runtime)
         )
-    after = build_override_context(recipe, options.overrides, declared=False, **context_args)
+    after = build_override_context(
+        recipe,
+        options.overrides,
+        declared=False,
+        runtime=runtime,
+        cluster=cluster,
+        hosts=list(hosts),
+        host_hardware=host_hardware,
+        solo=bool(options.solo),
+    )
     if after.shape != ctx.shape:
         changed = sorted(k for k in ctx.shape if ctx.shape[k] != after.shape.get(k))
         raise SparkrunError(
@@ -523,8 +547,10 @@ def run(options: RunOptions, *, sctx: "SparkrunContext | None" = None, plan: Run
     recipe = plan.recipe
     runtime = plan.runtime
     from sparkrun.core.readiness import validate_readiness_policy
+    from sparkrun.core.version import require_recipe_version
 
     try:
+        require_recipe_version(recipe)
         validate_readiness_policy(config=config, recipe=recipe, runtime=runtime)
     except ValueError as error:
         raise SparkrunError(str(error)) from error

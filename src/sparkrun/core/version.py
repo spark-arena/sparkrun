@@ -9,9 +9,54 @@ from __future__ import annotations
 
 import json
 from importlib.metadata import PackageNotFoundError, distribution, version
+from typing import TYPE_CHECKING
+
+from packaging.version import InvalidVersion, Version
 
 from sparkrun.core.application_profile import get_application_profile
 from sparkrun.core.channels import CHANNEL_STABLE, channel_suffix, normalize_channel
+
+
+if TYPE_CHECKING:
+    from sparkrun.core.recipe import Recipe
+
+
+def parse_min_sparkrun_version(value: object) -> str | None:
+    """Validate an optional minimum core version, preserving its spelling."""
+    if value is None:
+        return None
+    message = 'min_sparkrun_version must be a version string such as "0.4.0" (not a version range)'
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(message)
+    try:
+        Version(value)
+    except InvalidVersion as error:
+        raise ValueError(message) from error
+    return value.strip()
+
+
+def require_recipe_version(recipe: Recipe) -> None:
+    """Reject incompatible execution, while allowing recipes to be inspected.
+
+    Compare the core package metadata, not a branded application version or the
+    display channel suffix. Recheck supplied/serialized plans at execution.
+    """
+    minimum = parse_min_sparkrun_version(getattr(recipe, "min_sparkrun_version", None))
+    if minimum is None:
+        return
+    installed = base_version("sparkrun")
+    upgrade = "Upgrade to Sparkrun %s or newer with `%s setup update`." % (minimum, get_application_profile().command)
+    try:
+        current = Version(installed)
+    except InvalidVersion as error:
+        raise ValueError(
+            "Cannot verify min_sparkrun_version %s: installed Sparkrun version %r is invalid. %s" % (minimum, installed, upgrade)
+        ) from error
+    if current < Version(minimum):
+        raise ValueError(
+            "Recipe %r requires Sparkrun >= %s (min_sparkrun_version); installed version is %s. %s"
+            % (recipe.name, minimum, installed, upgrade)
+        )
 
 
 def installed_commit(package: str | None = None) -> str | None:

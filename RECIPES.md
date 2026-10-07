@@ -430,6 +430,27 @@ callers use `BenchmarkOptions(integrations={"arena": {}})`. See
 | Field            | Type           | Default | Description                                                     |
 |------------------|----------------|---------|-----------------------------------------------------------------|
 | `recipe_version` | `"2"` \| `"1"` | `"2"`   | v1 = legacy eugr format (deprecated). See Runtime Resolution     |
+| `min_sparkrun_version` | string | unset | Minimum Sparkrun core version required to run this recipe, e.g. `"0.4.0"`. |
+
+```yaml
+min_sparkrun_version: "0.4.0"
+```
+
+This optional field accepts a Python package version (PEP 440), not a range such
+as `>=0.4.0`. An absent or `null` value imposes no minimum. Sparkrun compares it
+with the installed **core package** version, independent of application branding
+or the displayed update-channel suffix. Numeric version ordering applies;
+`0.10.0` is newer than `0.9.0`, and `0.4.0rc1` is older than `0.4.0`.
+
+An insufficient or unverifiable installed version stops planning/launch before
+transport or workload preparation, and reports the requirement, installed
+version, and an upgrade command (`sparkrun setup update` for standard installs).
+Supplied plans are checked again at execution/materialization. Recipes can still
+be loaded, inspected, and exported; `recipe validate` reports incompatibility as
+an error. The field survives includes, exports, and saved recipe state.
+
+Enforcement requires a Sparkrun release that recognizes this field (introduced
+in 0.4.0); older releases cannot retroactively enforce it.
 
 ---
 

@@ -1120,7 +1120,9 @@ def launch_inference(
         LaunchResult with the outcome and all resolved context.
     """
     from sparkrun.core.installed_plugins import require_integrations
+    from sparkrun.core.version import require_recipe_version
 
+    require_recipe_version(recipe)
     require_integrations()
 
     from sparkrun.orchestration.job_metadata import derive_cluster_id, save_job_metadata
