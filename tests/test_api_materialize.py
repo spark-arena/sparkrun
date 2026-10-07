@@ -296,3 +296,30 @@ def test_materialize_refuses_unresolved_env_but_preserves_literal_cli_override()
     apply_env_overrides(plan.recipe, ["RANK={launch.node_rank}"])
     spec = api.materialize(options, plan=plan, sctx=sctx)
     assert all(unit.environment["RANK"] == "{launch.node_rank}" for unit in spec.units)
+
+
+def test_materialize_strategy_resolver_sees_final_mounts_and_preserves_precedence(monkeypatch):
+    options, plan, sctx = _fixture()
+    plan.recipe.env.update({"RANK": "{launch.node_rank}", "OMP_NUM_THREADS": "{config.threads}"})
+    plan.recipe.executor_config["volumes"] = ["/prepared:/extra:ro"]
+    seen = []
+
+    def resolve(unit_id, host, mounts):
+        seen.append((unit_id, host))
+        assert any(m.target == "/extra" and m.read_only for m in mounts)
+        return {"RANK": str(plan.host_list.index(host)), "OMP_NUM_THREADS": "7"}
+
+    spec = api.materialize(options, plan=plan, sctx=sctx, env_template_resolver=resolve)
+    assert seen == [("unit-0", "h1"), ("unit-1", "h2")]
+    assert [u.environment["RANK"] for u in spec.units] == ["0", "1"]
+    assert all(u.environment["OMP_NUM_THREADS"] == "7" for u in spec.units)
+    assert all(u.environment["RECIPE_FLAG"] == "yes" for u in spec.units)
+    assert plan.recipe.env["RANK"] == "{launch.node_rank}"
+
+
+@pytest.mark.parametrize("resolved", [{}, {"RANK": "0", "EXTRA": "bad"}, {"RANK": 0}, {"RANK": "a\x00b"}])
+def test_materialize_rejects_incomplete_or_invalid_strategy_environment(resolved):
+    options, plan, sctx = _fixture()
+    plan.recipe.env["RANK"] = "{launch.node_rank}"
+    with pytest.raises(ValueError, match="environment resolver"):
+        api.materialize(options, plan=plan, sctx=sctx, env_template_resolver=lambda *_: resolved)

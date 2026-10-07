@@ -179,15 +179,31 @@ context propagation.
 `--transfer-mode delegated` remains supported: it changes download/distribution
 and mod staging, while the standard pipeline still resolves target-host assets,
 constructs mounts, and creates containers. It is independent of
-`RecipeExecutionStrategy` and `RuntimePlugin.is_delegating_runtime()`. Those
-plugin-owned execution paths bypass standard launch preparation and currently
-reject active templates, as does `api.materialize()` without a prepared
-environment contract. A future strategy integration should own its environment
-lifecycle: provide actual prepared facts for fresh launches/capture, or use the
-captured environment for snapshot restore. ColdSnap should own model/cache
-logistics and compatible rebinding on restore; the core must not impose normal
-Docker cache probes on that path. No strategy should silently drop templates or
-pass unresolved source to an engine.
+`RecipeExecutionStrategy` and `RuntimePlugin.is_delegating_runtime()`.
+External-script runtimes remain unsupported. An execution strategy declares
+`owns_env_templates = True` to accept responsibility for preparation, rendering,
+and restore compatibility. Strategies without that declaration reject active
+templates before their preparation steps are collected.
+
+`api.materialize(..., env_template_resolver=resolver)` accepts an explicit
+strategy-owned resolver. For each launch unit it calls
+`resolver(unit_id, host, mounts)` with the final structured mounts. The resolver
+must return exactly `recipe.env_templates`' keys as resolved strings without
+NULs; values retain recipe environment precedence. Materialization performs no
+implicit asset probes. The caller owns any probing its resolver performs.
+Without a resolver, materialization still rejects active templates. The pure
+`core.env_templates.env_template_launch_fields` and `render_env_template`
+helpers let strategies inspect requirements and reuse interpolation syntax.
+
+ColdSnap resolves fresh capture environment after image/model preparation.
+`launch.runtime_cache_dir` is its capsule cache at
+`/var/cache/coldsnap/runtime`, seeded from a private copy of the ordinary cache
+when available. Restore uses the captured template values without ordinary
+model/cache probes. A captured input fingerprint protects recipe/configuration
+identity, including explicitly referenced host/cluster bindings; incompatible
+changes require recapture. Existing controller checks still validate other
+launch settings and supported communication rebinding. ColdSnap rejects recipe
+hooks and mods until it has an explicit preparation-hook lifecycle.
 
 See [Environment templates](../RECIPES.md#environment-templates) for syntax and
 availability, including MPI's restriction on differing per-node values.

@@ -209,7 +209,7 @@ environment. `{launch.NAME}` accepts these fields:
 | `node_host` | Selected host name for this container. |
 | `cluster_id` | Launch cluster identifier. |
 
-Each value is rendered once per node after asset preparation and before
+For standard launches, each value is rendered once per node after asset preparation and before
 replacement of an existing workload. The same values reach container creation,
 image healthchecks, in-container hooks/mods, and the serving process. A hook does
 not need to persist exports or write an environment file. Controller-side
@@ -244,12 +244,15 @@ and `<unresolved:launch.model_revision>` where applicable. Configuration, ranks,
 and cache paths still render. Docker and local execution support path fields.
 Normal transfer modes, including `--transfer-mode delegated`, are supported:
 resolution uses the prepared cache on the selected hosts after distribution.
-Plugin-owned execution strategies and external-script runtimes that bypass the
-standard launch pipeline are currently unsupported; they need equivalent
-environment lifecycle integration. `api.materialize()` rejects unresolved recipe
-env templates until its caller can supply a prepared environment contract.
-TRT-LLM MPI requires identical
-rendered values across nodes. Path templates require
+Execution strategies must explicitly own environment resolution; external-script
+runtimes remain unsupported. `api.materialize()` requires a strategy-provided
+resolver for templated recipe env. ColdSnap resolves templates during capture
+and restores their captured values, with compatibility checks for changed inputs.
+Its `runtime_cache_dir` is `/var/cache/coldsnap/runtime` inside the capsule;
+restore does not probe the ordinary model or runtime cache. Referencing a host
+name or cluster ID binds those values to the capture; moving them requires
+recapture. ColdSnap currently rejects ordinary hooks and mods.
+TRT-LLM MPI requires identical rendered values across nodes. Path templates require
 structured `executor_config.volumes` instead of raw Docker mount flags; mounts
 that hide the model or cache are rejected.
 

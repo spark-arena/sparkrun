@@ -115,7 +115,8 @@ def render_env_template(template: str, config: Mapping[str, Any], launch: Mappin
     return result
 
 
-def _launch_fields(templates: Mapping[str, str]) -> set[str]:
+def env_template_launch_fields(templates: Mapping[str, str]) -> set[str]:
+    """Return launch facts a strategy must provide, ignoring escaped tokens."""
     return {name[7:] for value in templates.values() for _, name in _parts(value) if name and name.startswith("launch.")}
 
 
@@ -209,7 +210,7 @@ class EnvTemplatePlan:
     contexts: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def render(self, host: str, volumes: Mapping[str, str], runtime_cache, executor) -> dict[str, str]:
-        required = _launch_fields(self.templates)
+        required = env_template_launch_fields(self.templates)
         launch: dict[str, Any] = {
             "num_nodes": len(self.hosts),
             "node_rank": self.hosts.index(host),
@@ -272,7 +273,7 @@ def prepare_env_templates(
         return None
     config = dict(recipe.build_config_chain(overrides))
     plan = EnvTemplatePlan(templates, config, tuple(dict.fromkeys(hosts)), cluster_id, dry_run=dry_run)
-    required = _launch_fields(templates)
+    required = env_template_launch_fields(templates)
     if required & {"model_path", "runtime_cache_dir"}:
         # Raw options bypass the structured mount map. Do not claim a path is
         # visible when these options can replace it or add anonymous mounts.

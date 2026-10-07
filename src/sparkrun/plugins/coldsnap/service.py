@@ -32,6 +32,7 @@ from sparkrun.core.execution import (
 )
 from sparkrun.core.progress import PROGRESS, progress_heartbeat
 from sparkrun.core.timing import timed
+from sparkrun.plugins.coldsnap.environment import validate_environment_recipe
 from sparkrun.plugins.coldsnap.artifacts import promote_generation, resolve_artifact_store, resolve_generation_limit
 from sparkrun.plugins.coldsnap.compatibility import (
     SNAPSHOT_DRIVER_N610,
@@ -759,6 +760,7 @@ class ColdSnapService:
             artifact=str(artifact_path),
             snapshot_driver=snapshot_driver,
             workload_cluster_id=cluster_id,
+            defer_environment=render_only,
         )
         if render_only:
             return request, None
@@ -818,6 +820,7 @@ class ColdSnapService:
         snapshot_driver: str | None = None,
         artifact_scope: str = "portable",
     ) -> tuple[dict[str, Any], tuple[Path, ...], tuple[str, ...]]:
+        validate_environment_recipe(plan.recipe)
         timeline = getattr(sctx, "timing", None)
         with timed(timeline, "coldsnap.hardware", operation=operation):
             hardware = (
@@ -840,6 +843,7 @@ class ColdSnapService:
             native_revision=native_revision,
             snapshot_driver=snapshot_driver,
             artifact_scope=artifact_scope,
+            defer_environment=True,
         )
         if render_only:
             return request, (), ()
@@ -886,6 +890,22 @@ class ColdSnapService:
                             )
                         )
                     _artifact_file(request["artifact"])
+            if operation != "capture":
+                request = build_request(
+                    operation,
+                    options,
+                    plan=plan,
+                    artifact=request["artifact"],
+                    output=request.get("output", ""),
+                    weight_mode=weight_mode,
+                    comm_env=comm_env,
+                    sctx=sctx,
+                    native_repository=native_repository,
+                    native_revision=native_revision,
+                    snapshot_driver=snapshot_driver,
+                    artifact_scope=artifact_scope,
+                    operation_id=request["id"],
+                )
             if operation in {"publish", "publish-native"}:
                 outcome = StageOutcome(request=request, selected_mode=resolve_request_weight_mode(request))
             else:
@@ -1187,11 +1207,13 @@ def _strategy_options(context: ExecutionContext) -> Mapping[str, Any]:
 
 class ColdSnapExecutionStrategy:
     name = "coldsnap"
+    owns_env_templates = True
 
     def __init__(self, service: ColdSnapService | None = None):
         self.service = service or ColdSnapService()
 
     def preparation_steps(self, context: ExecutionContext):
+        validate_environment_recipe(context.plan.recipe)
         return (
             PreparationStep(
                 "coldsnap.hardware",

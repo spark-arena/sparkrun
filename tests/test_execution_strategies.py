@@ -154,3 +154,24 @@ def test_preparation_steps_reject_unknown_dependencies_and_cycles():
                 PreparationStep("two", lambda *_: None, requires=("one",)),
             ),
         )
+
+
+@pytest.mark.parametrize("owns", [False, True])
+def test_templated_strategy_requires_ownership_before_collecting_preparation(monkeypatch, owns):
+    strategy = _Strategy("environment")
+    strategy.owns_env_templates = owns
+    calls = []
+    monkeypatch.setattr(strategy, "preparation_steps", lambda context: calls.append(context) or ())
+    register_recipe_item("env_strategy", _Handler(), owner="tests.environment", execution_strategy=strategy)
+    try:
+        context = _context("env_strategy")
+        context.plan.recipe.env["RANK"] = "{launch.node_rank}"
+        if owns:
+            assert resolve_recipe_execution(context)[0] is strategy
+            assert calls == [context]
+        else:
+            with pytest.raises(ValueError, match="does not own templated env"):
+                resolve_recipe_execution(context)
+            assert calls == []
+    finally:
+        unregister_recipe_item("env_strategy", owner="tests.environment")

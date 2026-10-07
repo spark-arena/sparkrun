@@ -1139,11 +1139,14 @@ def launch_inference(
     if config is None:
         raise ValueError("launch_inference requires config or sctx")
     p = progress  # short alias
-    if getattr(recipe, "env_templates", None) and (execution_strategy is not None or runtime.is_delegating_runtime()):
+    if execution_strategy is not None:
+        from sparkrun.core.execution import validate_strategy_environment
+
+        validate_strategy_environment(recipe, execution_strategy)
+    elif getattr(recipe, "env_templates", None) and runtime.is_delegating_runtime():
         raise ValueError(
-            "templated env requires the standard launch pipeline; plugin-owned execution strategies "
-            "and external-script runtimes do not yet provide its prepared asset/mount context "
-            "(this does not restrict --transfer-mode delegated)"
+            "templated env requires the standard launch pipeline; external-script runtimes "
+            "do not provide its prepared asset/mount context (this does not restrict --transfer-mode delegated)"
         )
     validate_readiness_policy(config=config, recipe=recipe, runtime=runtime)
 

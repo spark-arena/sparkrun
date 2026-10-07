@@ -99,7 +99,12 @@ class ActivationResult:
 
 
 class RecipeExecutionStrategy(Protocol):
-    """Lifecycle implemented by a recipe-owned execution strategy."""
+    """Lifecycle implemented by a recipe-owned execution strategy.
+
+    Strategies supporting recipe env templates declare ``owns_env_templates =
+    True`` and own capture/preparation, rendering, and restore compatibility.
+    Other strategies are rejected before their preparation steps are collected.
+    """
 
     name: str
 
@@ -127,6 +132,7 @@ def resolve_recipe_execution(context: ExecutionContext) -> tuple[RecipeExecution
         if registration.key not in context.plan.recipe.plugin_items:
             continue
         if registration.execution_strategy is not None:
+            validate_strategy_environment(context.plan.recipe, registration.execution_strategy)
             strategies.append(registration.execution_strategy)
             steps.extend(registration.execution_strategy.preparation_steps(context))
         if registration.preparation_steps is not None:
@@ -134,6 +140,12 @@ def resolve_recipe_execution(context: ExecutionContext) -> tuple[RecipeExecution
     if len(strategies) > 1:
         raise ValueError("recipe selects multiple execution strategies: %s" % ", ".join(sorted(strategy.name for strategy in strategies)))
     return (strategies[0] if strategies else None), tuple(steps)
+
+
+def validate_strategy_environment(recipe, strategy) -> None:
+    """Require explicit ownership before handing declarative env to a plugin."""
+    if getattr(recipe, "env_templates", None) and getattr(strategy, "owns_env_templates", False) is not True:
+        raise ValueError("execution strategy does not own templated env preparation and restore: " + strategy.name)
 
 
 def run_preparation_steps(

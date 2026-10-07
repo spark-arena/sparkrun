@@ -113,6 +113,7 @@ def _setup():
         config=SimpleNamespace(
             cache_dir="/cache/sparkrun",
             hf_cache_dir="/fallback",
+            get=lambda _key, default=None: default,
             ssh_user=None,
             ssh_key=None,
             ssh_options=None,

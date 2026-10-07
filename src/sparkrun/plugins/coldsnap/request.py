@@ -18,6 +18,7 @@ import sparkrun.api as api
 from sparkrun.core.log_source import SERVE_LOG_PATH
 from sparkrun.plugins.coldsnap.artifacts import _read_committed_artifact, resolve_artifact_store
 from sparkrun.plugins.coldsnap.config import ColdSnapRecipe
+from sparkrun.plugins.coldsnap.environment import RecipeEnvironment
 from sparkrun.plugins.coldsnap.policy import resolve_coldsnap_policy
 
 
@@ -40,6 +41,7 @@ def build_request(
     artifact_scope: str = "portable",
     activation_state: str = "running",
     workload_cluster_id: str = "",
+    defer_environment: bool = False,
 ) -> dict:
     if operation not in {"capture", "publish", "publish-native", "restore", "sleep", "wake", "status"}:
         raise ValueError("operation must be capture, publish, publish-native, restore, sleep, wake, or status")
@@ -71,12 +73,22 @@ def build_request(
     coldsnap_issues = [issue for issue in issues if issue.startswith("coldsnap.")]
     if coldsnap_issues:
         raise ValueError("invalid coldsnap recipe: %s" % "; ".join(coldsnap_issues))
+    artifact_store = resolve_artifact_store(plan=plan, options=options, sctx=sctx, snapshot_driver=snapshot_driver)
+    environment = RecipeEnvironment(
+        operation,
+        options,
+        plan=plan,
+        sctx=sctx,
+        artifact=artifact or str(artifact_store.current),
+        deferred=defer_environment,
+    )
     spec = api.materialize(
         options,
         plan=plan,
         comm_env=comm_env,
         sctx=sctx,
         images_by_node=images_by_node,
+        env_template_resolver=environment.resolve,
     )
     if spec.engine not in {"vllm", "sglang"}:
         raise ValueError("ColdSnap requires a vLLM or SGLang recipe; got %s" % spec.engine)
@@ -97,7 +109,6 @@ def build_request(
     request_id = operation_id or _request_id(plan.cluster_id, operation)
     if snapshot_driver not in {"n580", "n610"}:
         raise ValueError("snapshot_driver must be n580 or n610")
-    artifact_store = resolve_artifact_store(plan=plan, options=options, sctx=sctx, snapshot_driver=snapshot_driver)
     mode = weight_mode if weight_mode is not None else config.weight_mode
     site_policy = resolve_coldsnap_policy(
         cluster=plan.cluster,
@@ -120,6 +131,7 @@ def build_request(
                 "mounts": [asdict(mount) for mount in unit.mounts],
             }
         )
+    environment.stamp(launch_units)
     process_policy = {
         key: setting
         for key, setting in {

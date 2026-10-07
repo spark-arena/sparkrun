@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 from sparkrun.api._context import default_sctx
 from sparkrun.api._models import (
@@ -28,6 +28,7 @@ def materialize(
     comm_env=None,
     images_by_node: Sequence[str] | None = None,
     sctx=None,
+    env_template_resolver: Callable[[str, str, tuple[ResolvedMount, ...]], Mapping[str, str]] | None = None,
 ) -> ResolvedLaunchSpec:
     """Resolve the launch data an integration needs without starting it.
 
@@ -40,6 +41,11 @@ def materialize(
     A shared image-preparation caller may pass *images_by_node* to replace the
     declarative recipe image plan with already-resident, positionally aligned
     references.
+    A strategy owning environment preparation may pass *env_template_resolver*.
+    It receives each unit's ID, host, and final mounts and must return exactly
+    the recipe's template keys with resolved string values. These values retain
+    recipe-environment precedence; literal CLI overrides are never interpreted.
+    The caller owns any preparation/probing performed by its resolver.
     Integrations that need immutable process identity should require recipe
     images in ``name@sha256:...`` form.
 
@@ -64,7 +70,8 @@ def materialize(
     from sparkrun.core.version import require_recipe_version
 
     require_recipe_version(recipe)
-    if getattr(recipe, "env_templates", None):
+    templates = getattr(recipe, "env_templates", None) or {}
+    if templates and env_template_resolver is None:
         raise ValueError(
             "materialize() cannot resolve templated recipe env without a prepared environment contract; "
             "use the standard launch pipeline or a strategy that owns capture/restore environment resolution"
@@ -255,7 +262,16 @@ def materialize(
                 )
         if not isinstance(command_text, str) or not command_text.strip():
             raise ValueError("%s must produce a nonempty command for launch unit %s" % (runtime.runtime_name, unit_id))
-        unit_environment = merge_env(environment, platform_env_by_host[host], declared_env, runtime.get_extra_env())
+        unit_declared_env = declared_env
+        if templates:
+            assert env_template_resolver is not None
+            resolved = dict(env_template_resolver(unit_id, host, mounts_by_host[host]))
+            if resolved.keys() != templates.keys():
+                raise ValueError("environment resolver must return exactly the recipe env template keys")
+            if any(not isinstance(value, str) or "\x00" in value for value in resolved.values()):
+                raise ValueError("environment resolver values must be strings without NUL")
+            unit_declared_env = {**declared_env, **resolved}
+        unit_environment = merge_env(environment, platform_env_by_host[host], unit_declared_env, runtime.get_extra_env())
         if comm_env:
             host_environment = comm_env.get_env(host)
             host_environment = runtime.finalize_host_comm_env(host_environment)

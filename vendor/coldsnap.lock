@@ -5,11 +5,10 @@ version = "0.1.12"
 module = "sparkrun.plugins.coldsnap"
 feature = "plugins.coldsnap"
 repository = "git@github.com:sparksq/sparkrun-coldsnap-plugin.git"
-commit = "4159926c88b4ba05589345841c3c7674b8bef8ad"
-tree = "3fc0d99391e7eb08bf777a6ad424bde3662cde7a"
+commit = "e9271ae2d47f82bd3a00c752a71ab70093d5494c"
+tree = "7a1207a7b8ffdbe77234b3534488934763c897df"
 sparkrun = ">=0.4.0,<0.5"
-content_sha256 = "6d3252c8d0ab4207e65230df976fb769d63fa960090b6ce31495e39fc5f8681e"
-release_tag = "v0.1.12"
+content_sha256 = "f96a6b79b1d36747d700d51d16ab9448f717731c7d5a8a11383fc856f3958f12"
 
 [[files]]
 path = "src/sparkrun/plugins/coldsnap/LICENSE"
@@ -64,6 +63,10 @@ path = "src/sparkrun/plugins/coldsnap/deletion.py"
 sha256 = "206d4f5096bb02fde8e8cf2bc3e21baf1042c2dcbbca4270f3092cdf27a889d7"
 
 [[files]]
+path = "src/sparkrun/plugins/coldsnap/environment.py"
+sha256 = "e3be4cea78966cf7347a3c765a90e82f290eb0d3e108f6f1b997bb6d46491999"
+
+[[files]]
 path = "src/sparkrun/plugins/coldsnap/git_sources.py"
 sha256 = "71ec417ab05f74a11d4b02b106099fbe3c27280519592e838a6a86519fa2c140"
 
@@ -97,7 +100,7 @@ sha256 = "b5ae11148fc5f84112066c0d8ccf5094d1309ab2f4de3b9720f820078377ed3b"
 
 [[files]]
 path = "src/sparkrun/plugins/coldsnap/request.py"
-sha256 = "a0c0be9f6715e4ecd2f7d38ce553bd96b25e302213ef0724ae3c57dbc0e907cd"
+sha256 = "3836ade4a986c1026644ca411ef312de801e12e522b4bf1a5d6d567780757964"
 
 [[files]]
 path = "src/sparkrun/plugins/coldsnap/runtime_cache.py"
@@ -109,7 +112,7 @@ sha256 = "80f7928b9af7cb440c2f7f4cd0b105f4f31c43106935c6e73a9eebfc80d241ba"
 
 [[files]]
 path = "src/sparkrun/plugins/coldsnap/service.py"
-sha256 = "bec92e9cae76f9826841c89bbaefce557d88e171682886aed61e1f27a709a35e"
+sha256 = "07160998f65ccefe7c52fdb548552e3e1fddc1498f83fecc7ff9857b481fe44b"
 
 [[files]]
 path = "src/sparkrun/plugins/coldsnap/target_tools.py"
@@ -140,6 +143,10 @@ path = "tests/vendor/coldsnap/test_coldsnap_delete.py"
 sha256 = "ba4dd29353ad8fade09aa9c6d7532fdad215511b641dc1f1259c494e59236095"
 
 [[files]]
+path = "tests/vendor/coldsnap/test_coldsnap_environment.py"
+sha256 = "d318db839535730b940975f54f6d651f0a96716137ae5a5c709572514a16bbf9"
+
+[[files]]
 path = "tests/vendor/coldsnap/test_coldsnap_git_sources.py"
 sha256 = "1e21f295c6ac879226fc3b27a6221cebace8452ed6fb32a4b26a4630d272a859"
 
@@ -161,7 +168,7 @@ sha256 = "9f31bc39f03169cd9f5b55c791aa69122f1c6d7830c30718f3bc7cf56e98a10d"
 
 [[files]]
 path = "tests/vendor/coldsnap/test_coldsnap_plugin.py"
-sha256 = "9292754e213d12db239b6a77bee61919712cdab7633a20fe5ce565a425b303e3"
+sha256 = "f5ab57cc7ef8fd3e053d452c9a3c2b18fd2aa2e461965648c3b9435a944b47e1"
 
 [[files]]
 path = "tests/vendor/coldsnap/test_coldsnap_registry.py"
