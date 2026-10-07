@@ -14,7 +14,7 @@ features:
 ```
 
 Then use `sparkrun run YOUR_RECIPE` normally. There is no separate plugin install
-or Go build: the controller downloads checksum-pinned v0.1.1 Linux binaries and
+or Go build: the controller downloads checksum-pinned v0.1.2 Linux binaries and
 stages them to the execution hosts. Targets need no internet access for binary
 installation. Verified cached releases work offline. In automatic provider mode,
 an unavailable release download (including offline mode without a cached bundle)
@@ -28,7 +28,11 @@ selection are automatic. Controller-local `:latest` refreshes stream from the
 registry through OCI Relay, including when the controller already has an older
 image; there is no preliminary Docker pull/import. Routine receiver and registry
 progress updates use a 30-second cadence, with phase changes and completion
-reported immediately. To opt out on alpha, set the feature to `false`, or use
+reported immediately. INFO logs identify each execution host's verified relay
+version, commit, and protocol; DEBUG also includes its checksum and capabilities.
+Large upstream registry blobs can now use bounded parallel HTTP ranges; see the
+[range download settings](https://github.com/scitrera/oci-relay/blob/main/docs/registry-source.md#parallel-upstream-ranges).
+To opt out on alpha, set the feature to `false`, or use
 `container_distribution_provider: builtin` for the built-in copy path.
 
 Mac controllers should use `transfer_mode: delegated` so that the relay runs

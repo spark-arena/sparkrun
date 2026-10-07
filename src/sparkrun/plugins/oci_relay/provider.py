@@ -483,9 +483,12 @@ class RelayProvider:
                 "lease_seconds": 45, "managed_stdin": True,
             }
             if selection.mode == "registry":
+                from .registry_ranges import plan as range_plan
+
                 plan.update(registry_config=settings.get("registry_config", ""),
                             registry_plain_http=settings.get("registry_plain_http", False),
                             registry_cache_bytes=registry_cache_budget(runner, source_host, plan["spool_dir"], settings))
+                plan.update(range_plan(settings, getattr(runner, "binary_capabilities", {}).get(source_host, [])))
             mark("session")
             progress.phase("fetching registry manifest and configuration" if selection.mode == "registry"
                            else f"preparing {selection.mode} source")

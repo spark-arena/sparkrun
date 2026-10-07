@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections import deque
 import json
+import logging
 from pathlib import Path
 import queue
 import re
@@ -18,6 +19,9 @@ import uuid
 
 from .release import file_digest
 from .source_policy import LOCAL_DOCKER, classic_store_reason, containerd_store_reason, docker_facts, native_mounts
+
+
+logger = logging.getLogger(__name__)
 
 
 class OperationError(RuntimeError):
@@ -120,6 +124,10 @@ class Runner:
         if not hasattr(self, "binary_capabilities"):
             self.binary_capabilities = {}
         self.binary_capabilities[host] = observed.get("capabilities", [])
+        logger.info("OCI Relay engine on %s: version=%s commit=%s protocol=%s",
+                    host or "controller", observed["version"], observed.get("commit", "unknown"), observed["protocol"])
+        logger.debug("OCI Relay binary on %s: sha256=%s capabilities=%s",
+                     host or "controller", digest, self.binary_capabilities[host])
         return destination
 
     def stage_decoder(self, host, path, digest):

@@ -28,6 +28,9 @@ class Selection:
 def validate(settings):
     """Return validated plugin settings with defaults, preserving explicit opt-outs."""
     settings = {'allow_native_store': True, 'allow_preparation_read': True, **settings}
+    from .registry_ranges import validate as validate_ranges
+
+    validate_ranges(settings)
     discovery = settings.get('cache_discovery_seconds', 10)
     if type(discovery) is not int or not 1 <= discovery <= 300:
         raise ValueError('cache_discovery_seconds must be between 1 and 300')
