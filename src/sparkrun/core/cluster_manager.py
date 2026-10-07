@@ -108,6 +108,12 @@ class ResourceDistributionPrefs:
     preserve_perms: bool = True
     skip_fan_out: bool = False
     enabled: bool = True
+    # Model-only manifest/provider options. Tuning inherits permission/storage
+    # preferences as before but does not consume these fields.
+    validation: str | None = None
+    file_selection: str | None = None
+    provider: str | None = None
+    fallback: bool | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "ResourceDistributionPrefs":
@@ -117,10 +123,19 @@ class ResourceDistributionPrefs:
             preserve_perms=bool(data.get("preserve_perms", True)),
             skip_fan_out=bool(data.get("skip_fan_out", False)),
             enabled=bool(data.get("enabled", True)),
+            validation=data.get("validation"),
+            file_selection=data.get("file_selection"),
+            provider=data.get("provider"),
+            fallback=data.get("fallback"),
         )
 
     def is_default(self) -> bool:
-        return self.enabled and self.preserve_perms and not self.skip_fan_out
+        return (
+            self.enabled
+            and self.preserve_perms
+            and not self.skip_fan_out
+            and all(value is None for value in (self.validation, self.file_selection, self.provider, self.fallback))
+        )
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {}
@@ -130,6 +145,10 @@ class ResourceDistributionPrefs:
             out["skip_fan_out"] = True
         if not self.enabled:
             out["enabled"] = False
+        for name in ("validation", "file_selection", "provider", "fallback"):
+            value = getattr(self, name)
+            if value is not None:
+                out[name] = value
         return out
 
 

@@ -1611,6 +1611,7 @@ class TestDistributeModelPush:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("unavailable_model_inventory")
 class TestDistributeResourcesTransferMode:
     """Test that distribute_resources routes to the correct distribution
     functions based on transfer_mode."""
@@ -1618,6 +1619,7 @@ class TestDistributeResourcesTransferMode:
     def _make_config(self):
         """Create a minimal mock SparkrunConfig."""
         cfg = mock.MagicMock()
+        cfg.get.side_effect = lambda key, default=None: default
         cfg.cache_dir = "/tmp/cache"
         cfg.ssh_user = None
         cfg.ssh_key = None

@@ -27,6 +27,18 @@ from sparkrun.core.image_distribution import (
     ImageDistributionUnsupported,
     register_image_distribution_provider,
 )
+from sparkrun.core.model_distribution import (
+    MODEL_DISTRIBUTION_API_VERSION,
+    MODEL_PULL_API_VERSION,
+    ModelCopyRequest,
+    ModelPullRequest,
+    ModelTarget,
+    ModelTransferResult,
+    ModelDistributionFailed,
+    ModelDistributionUnsupported,
+    register_model_distribution_provider,
+)
+from sparkrun.models.artifacts import ModelArtifactManifest, ModelArtifactFile
 from sparkrun.core.recipe_items import (
     FunctionalRecipeItemHandler,
     RecipeItemHandler,
@@ -36,6 +48,17 @@ from sparkrun.core.registry import RegistryEntry
 from sparkrun.core.registry_defaults import register_default_registry
 
 __all__ = [
+    "MODEL_DISTRIBUTION_API_VERSION",
+    "MODEL_PULL_API_VERSION",
+    "ModelCopyRequest",
+    "ModelPullRequest",
+    "ModelTarget",
+    "ModelTransferResult",
+    "ModelArtifactManifest",
+    "ModelArtifactFile",
+    "ModelDistributionFailed",
+    "ModelDistributionUnsupported",
+    "register_model_distribution_provider",
     "IMAGE_DISTRIBUTION_API_VERSION",
     "IMAGE_PULL_API_VERSION",
     "IMAGE_RUNTIME_API_VERSION",

@@ -489,6 +489,7 @@ def test_explicit_pull_does_not_fall_back():
     m_push.assert_not_called()
 
 
+@pytest.mark.usefixtures("unavailable_model_inventory")
 def test_model_pull_downloads_per_node():
     from sparkrun.orchestration.distribution import _distribute_single_model
 
@@ -497,6 +498,7 @@ def test_model_pull_downloads_per_node():
     assert m.call_args[0][1] == HOSTS
 
 
+@pytest.mark.usefixtures("unavailable_model_inventory")
 def test_model_pull_with_shared_cache_downloads_on_head_only():
     """N nodes writing one NFS path concurrently is waste at best."""
     from sparkrun.core.cluster_manager import ModelDistributionPrefs

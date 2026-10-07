@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from sparkrun.core.recipe import Recipe
 
 PRIMARY = "Qwen/Qwen3-1.7B"
@@ -66,6 +68,7 @@ def _patch_local(monkeypatch, calls):
     monkeypatch.setattr("sparkrun.models.download.download_model", _dl)
 
 
+@pytest.mark.usefixtures("unavailable_model_inventory")
 def test_local_path_pins_only_the_served_model(monkeypatch):
     calls: list = []
     _patch_local(monkeypatch, calls)
@@ -76,6 +79,7 @@ def test_local_path_pins_only_the_served_model(monkeypatch):
     assert calls == [(PRIMARY, SHA), (DRAFT, None)]
 
 
+@pytest.mark.usefixtures("unavailable_model_inventory")
 def test_local_path_unpinned_recipe_pins_nothing(monkeypatch):
     calls: list = []
     _patch_local(monkeypatch, calls)
@@ -129,6 +133,7 @@ def test_cluster_path_pins_only_the_served_model(
     assert seen == [(PRIMARY, SHA), (DRAFT, None)]
 
 
+@pytest.mark.usefixtures("unavailable_model_inventory")
 def test_repeated_distribution_preserves_recipe_templates(monkeypatch):
     from copy import deepcopy
     from sparkrun.orchestration.distribution import distribute_from_config

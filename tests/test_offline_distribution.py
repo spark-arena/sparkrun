@@ -332,7 +332,7 @@ def image_leaves():
 
 
 @pytest.fixture
-def model_leaves():
+def model_leaves(unavailable_model_inventory):
     with (
         mock.patch("sparkrun.models.distribute.distribute_model_from_local", return_value=[]) as m_local,
         mock.patch("sparkrun.models.distribute.distribute_model_from_head", return_value=[]) as m_head,
@@ -487,7 +487,7 @@ def test_distribute_from_config_reaches_leaves(
         "img:1.0",
         ["head", "w1"],
         "/hf",
-        mock.MagicMock(cache_dir=str(tmp_path)),
+        mock.MagicMock(cache_dir=str(tmp_path), get=mock.Mock(side_effect=lambda key, default=None: default)),
         dry_run=False,
         transfer_mode=mode,
         offline=True,
@@ -501,6 +501,7 @@ def test_distribute_from_config_reaches_leaves(
         assert image_leaves["local"].called and model_leaves["local"].called
 
 
+@pytest.mark.usefixtures("unavailable_model_inventory")
 class TestLocalFastPathOffline:
     """Single-localhost launches ensure locally; offline must not download there either."""
 
@@ -526,7 +527,13 @@ class TestLocalFastPathOffline:
 
         seen, download = self._patch(monkeypatch, cached=True)
         distribute_from_config(
-            _recipe(), "img:1.0", ["localhost"], "/hf", mock.MagicMock(cache_dir=str(tmp_path)), dry_run=False, offline=True
+            _recipe(),
+            "img:1.0",
+            ["localhost"],
+            "/hf",
+            mock.MagicMock(cache_dir=str(tmp_path), get=mock.Mock(side_effect=lambda key, default=None: default)),
+            dry_run=False,
+            offline=True,
         )
 
         assert seen["ensure_offline"] is True
@@ -538,7 +545,13 @@ class TestLocalFastPathOffline:
         _, download = self._patch(monkeypatch, cached=False)
         with pytest.raises(DistributionError, match="offline: model org/model"):
             distribute_from_config(
-                _recipe(), "img:1.0", ["localhost"], "/hf", mock.MagicMock(cache_dir=str(tmp_path)), dry_run=False, offline=True
+                _recipe(),
+                "img:1.0",
+                ["localhost"],
+                "/hf",
+                mock.MagicMock(cache_dir=str(tmp_path), get=mock.Mock(side_effect=lambda key, default=None: default)),
+                dry_run=False,
+                offline=True,
             )
         download.assert_not_called()
 

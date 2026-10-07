@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from sparkrun.core.config import resolve_hf_token as _get_hf_token
 from sparkrun.core.hosts import is_control_in_cluster
 from sparkrun.core.image_distribution import image_distribution_operation
+from sparkrun.core.model_distribution import model_distribution_operation
 from sparkrun.core.timing import timed as _timed
 from sparkrun.utils import is_local_host
 from sparkrun.utils.images import image_has_explicit_version, parse_image_ref
@@ -439,6 +440,7 @@ def _require_cached_model_offline(model: str, cache_dir: str | None, revision: s
 
 
 @image_distribution_operation
+@model_distribution_operation
 def distribute_resources(
     image: str,
     model: str,
@@ -557,7 +559,22 @@ def distribute_resources(
         if model:
             with pending_op(_lock_id, "model_download", **_pop_kw):
                 logger.info("Ensuring model %s is available locally...", model)
-                if offline:
+                prepared = _prepare_manifest_model(
+                    model,
+                    host_list,
+                    cache_dir,
+                    effective_local_cache,
+                    "local",
+                    ssh_kwargs,
+                    model_revision,
+                    hf_token,
+                    dry_run,
+                    offline=offline,
+                )
+                if prepared is not None:
+                    if prepared:
+                        raise DistributionError(prepared[0].detail)
+                elif offline:
                     _require_cached_model_offline(model, effective_local_cache, model_revision)
                 elif download_model(model, cache_dir=effective_local_cache, token=hf_token, revision=model_revision, dry_run=dry_run) != 0:
                     raise DistributionError(f"Failed to download model: {model}")
@@ -720,7 +737,24 @@ def distribute_resources(
     if model:
         logger.log(_PROGRESS_LEVEL, "  Syncing model to %d host(s)", len(host_list))
         with pending_op(_lock_id, "model_download", **_pop_kw):
-            if transfer_mode == "local":
+            prepared = _prepare_manifest_model(
+                model,
+                host_list,
+                cache_dir,
+                effective_local_cache,
+                transfer_mode,
+                ssh_kwargs,
+                model_revision,
+                hf_token,
+                dry_run,
+                transfer_hosts=transfer_hosts,
+                worker_transfer_hosts=worker_transfer_hosts,
+                offline=offline,
+                auto_delegated=_auto_delegated,
+            )
+            if prepared is not None:
+                mdl_failed = prepared
+            elif transfer_mode == "local":
                 mdl_failed = distribute_model_from_local(
                     model,
                     host_list,
@@ -819,6 +853,7 @@ def _resolve_targets(indices: list[int], host_list: list[str]) -> list[str]:
 
 
 @image_distribution_operation
+@model_distribution_operation
 def distribute_from_config(
     recipe: "Recipe",
     image: str,
@@ -967,7 +1002,23 @@ def distribute_from_config(
                     logger.info("Ensuring model %s is available locally...", mn)
                     # Per-entry revision, as on the cluster path below.
                     entry_revision = getattr(entry, "revision", None)
-                    if offline:
+                    prepared = _prepare_manifest_model(
+                        mn,
+                        host_list,
+                        cache_dir,
+                        local_cache_dir or cache_dir,
+                        "local",
+                        ssh_kwargs,
+                        entry_revision,
+                        hf_token,
+                        dry_run,
+                        offline=offline,
+                        projector=recipe.runtime_config.get("mmproj") if mn == recipe.model else None,
+                    )
+                    if prepared is not None:
+                        if prepared:
+                            raise DistributionError(prepared[0].detail)
+                    elif offline:
                         _require_cached_model_offline(mn, local_cache_dir or cache_dir, entry_revision)
                     elif (
                         download_model(mn, cache_dir=local_cache_dir or cache_dir, token=hf_token, revision=entry_revision, dry_run=dry_run)
@@ -1101,6 +1152,7 @@ def distribute_from_config(
                         _auto_delegated,
                         prefs=prefs,
                         offline=offline,
+                        projector=recipe.runtime_config.get("mmproj") if entry.name == recipe.model else None,
                     )
             if mdl_failed:
                 from sparkrun.orchestration.transfer import present_and_raise_transfer_failure
@@ -1341,6 +1393,66 @@ def _distribute_single_image(
     )
 
 
+def _prepare_manifest_model(
+    model,
+    targets,
+    cache_dir,
+    local_cache_dir,
+    transfer_mode,
+    ssh_kwargs,
+    revision,
+    hf_token,
+    dry_run,
+    *,
+    transfer_hosts=None,
+    worker_transfer_hosts=None,
+    offline=False,
+    auto_delegated=False,
+    projector=None,
+):
+    """Use manifest preparation in every policy; None is a compatibility fallback."""
+    from sparkrun.core.model_distribution import operation_config, validation_policy
+    from sparkrun.models.preparation import prepare_model
+    from sparkrun.models.artifacts import ModelArtifactError, ModelInventoryUnavailable
+    from sparkrun.orchestration.transfer import TransferFailure
+
+    policy = validation_policy()
+    config = operation_config()
+    get = getattr(config, "get", None)
+    selection = get("model_file_selection", "auto") if callable(get) else "auto"
+    if not isinstance(selection, str):
+        raise ModelArtifactError("model_file_selection must be auto, all or safetensors")
+    try:
+        prepare_model(
+            model,
+            targets,
+            cache_dir=cache_dir,
+            local_cache_dir=local_cache_dir,
+            revision=revision,
+            projector=projector,
+            file_selection=selection,
+            transfer_mode=transfer_mode,
+            transfer_hosts=transfer_hosts,
+            worker_transfer_hosts=worker_transfer_hosts,
+            ssh_kwargs=ssh_kwargs,
+            token=hf_token,
+            offline=offline,
+            dry_run=dry_run,
+            checksums=policy == "checksum",
+            config=config,
+            auto_delegated=auto_delegated,
+            allow_cached_inventory=policy == "legacy",
+        )
+    except ModelInventoryUnavailable as exc:
+        if policy == "legacy":
+            logger.warning("Model %s is unverified: %s; using existing cache/download checks (legacy compatibility)", model, exc)
+            return None
+        return [TransferFailure(host, "model inventory unavailable", str(exc)) for host in targets]
+    except ModelArtifactError as exc:
+        return [TransferFailure(host, "model preparation failed", str(exc)) for host in targets]
+    return []
+
+
 def _distribute_single_model(
     model: str,
     targets: list[str],
@@ -1357,6 +1469,7 @@ def _distribute_single_model(
     auto_delegated: bool,
     prefs: ModelDistributionPrefs | None = None,
     offline: bool = False,
+    projector: str | None = None,
 ) -> list["TransferFailure"]:
     """Distribute a single model to a subset of hosts.
 
@@ -1380,6 +1493,26 @@ def _distribute_single_model(
     target_set = set(targets)
     t_hosts = _subset_transfer_hosts(full_hosts, transfer_hosts, target_set)
     w_hosts = _subset_transfer_hosts(full_hosts[1:], worker_transfer_hosts, target_set)
+
+    worker_map = dict(zip(full_hosts[1:], worker_transfer_hosts or full_hosts[1:], strict=True))
+    prepared = _prepare_manifest_model(
+        model,
+        targets,
+        cache_dir,
+        local_cache_dir,
+        transfer_mode,
+        ssh_kwargs,
+        revision,
+        hf_token,
+        dry_run,
+        transfer_hosts=t_hosts,
+        worker_transfer_hosts=[worker_map.get(h, h) for h in targets[1:]],
+        offline=offline,
+        auto_delegated=auto_delegated,
+        projector=projector,
+    )
+    if prepared is not None:
+        return prepared
 
     if transfer_mode == "pull":
         # Every node downloads from HuggingFace itself, in parallel — the model

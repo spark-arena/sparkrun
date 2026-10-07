@@ -146,8 +146,10 @@ class SparkrunConfig:
     """Manages sparkrun user configuration."""
 
     _cluster_source: SparkrunConfig | None = None
+    _model_distribution_overrides: dict[str, Any]
 
     def __init__(self, config_path: str | Path | None = None):
+        self._model_distribution_overrides = {}
         self._profile = get_application_profile()
         self.config_path = (Path(config_path) if config_path is not None else resolve_config_path()).expanduser().resolve()
         self._data: dict[str, Any] = {}
@@ -276,11 +278,25 @@ class SparkrunConfig:
         from copy import copy
 
         source = self._cluster_source or self
-        if cluster is None or not cluster.user:
+        model_options = {}
+        if cluster is not None:
+            prefs = cluster.distribution.model
+            for field, key in (
+                ("validation", "model_cache_validation"),
+                ("file_selection", "model_file_selection"),
+                ("provider", "model_distribution_provider"),
+                ("fallback", "model_distribution_fallback"),
+            ):
+                value = getattr(prefs, field, None)
+                if value is not None:
+                    model_options[key] = value
+        if cluster is None or (not cluster.user and not model_options):
             return source
         scoped = copy(source)
         scoped._cluster_source = source
-        scoped.ssh_user = cluster.user
+        if cluster.user:
+            scoped.ssh_user = cluster.user
+        scoped._model_distribution_overrides = model_options
         return scoped
 
     @property
@@ -506,6 +522,9 @@ class SparkrunConfig:
 
     def get(self, key: str, default: Any = None) -> Any:
         """Get a config value by dot-separated key path."""
+        model_overrides = getattr(self, "_model_distribution_overrides", {})
+        if key in model_overrides:
+            return model_overrides[key]
         parts = key.split(".")
         current = self.effective_data
         for part in parts:

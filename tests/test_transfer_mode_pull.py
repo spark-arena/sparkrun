@@ -115,6 +115,7 @@ def test_explicit_pull_is_honored_literally_and_never_pushes(mock_sync, mock_pus
 
 
 @patch("sparkrun.models.distribute.distribute_model_per_node", return_value=[])
+@pytest.mark.usefixtures("unavailable_model_inventory")
 def test_model_pull_downloads_on_every_node(mock_per_node):
     _distribute_single_model(
         "org/model",
@@ -137,6 +138,7 @@ def test_model_pull_downloads_on_every_node(mock_per_node):
 
 @patch("sparkrun.models.distribute.distribute_model_from_head", return_value=[])
 @patch("sparkrun.models.distribute.distribute_model_per_node")
+@pytest.mark.usefixtures("unavailable_model_inventory")
 def test_a_shared_cache_overrides_pull(mock_per_node, mock_from_head):
     """N nodes writing one NFS path concurrently is waste at best.
 
@@ -167,6 +169,7 @@ def test_a_shared_cache_overrides_pull(mock_per_node, mock_from_head):
 
 @patch("sparkrun.models.distribute.distribute_model_from_head")
 @patch("sparkrun.models.distribute.distribute_model_per_node", return_value=[])
+@pytest.mark.usefixtures("unavailable_model_inventory")
 def test_a_shared_cache_on_one_host_still_pulls_directly(mock_per_node, mock_from_head):
     """`skip_fan_out` is about workers mounting the head's copy — with a single
     target there are no workers, so the head indirection buys nothing."""

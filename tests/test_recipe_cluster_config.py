@@ -7,6 +7,8 @@ applies the overrides (cache dirs, resolved_model_path → serve-arg + skip).
 
 from __future__ import annotations
 
+import pytest
+
 from sparkrun.core.recipe import DistributionConfig
 from sparkrun.orchestration.executors._base import ExecutorTarget
 
@@ -178,6 +180,7 @@ class _Cfg:
     cache_dir = _P()
 
 
+@pytest.mark.usefixtures("unavailable_model_inventory")
 def test_distribute_skip_model_skips_download(monkeypatch):
     calls: list = []
     _patch_distribution(monkeypatch, calls)
@@ -188,6 +191,7 @@ def test_distribute_skip_model_skips_download(monkeypatch):
     assert calls == []  # model download skipped entirely
 
 
+@pytest.mark.usefixtures("unavailable_model_inventory")
 def test_distribute_without_skip_downloads_model(monkeypatch):
     calls: list = []
     _patch_distribution(monkeypatch, calls)
@@ -198,6 +202,7 @@ def test_distribute_without_skip_downloads_model(monkeypatch):
     assert calls == ["Qwen/Qwen3-1.7B"]  # model ensured locally
 
 
+@pytest.mark.usefixtures("unavailable_model_inventory")
 def test_distribute_skip_container_skips_image_but_keeps_model(monkeypatch):
     """skip_container=True must skip the image ensure yet still distribute the model."""
     model_calls: list = []
@@ -211,6 +216,7 @@ def test_distribute_skip_container_skips_image_but_keeps_model(monkeypatch):
     assert model_calls == ["Qwen/Qwen3-1.7B"]  # model still ensured locally
 
 
+@pytest.mark.usefixtures("unavailable_model_inventory")
 def test_distribute_without_skip_container_ensures_image(monkeypatch):
     """Default (skip_container=False) still ensures the container image."""
     model_calls: list = []
@@ -305,6 +311,8 @@ class _Recipe:
 def _patch_launch(monkeypatch, tmp_path, captured):
     from sparkrun.core import launcher
 
+    # Placement wiring is isolated from actual remote filesystem observation.
+    monkeypatch.setattr("sparkrun.models.preparation.validate_preplaced", lambda *a, **kw: ())
     monkeypatch.setattr(
         "sparkrun.orchestration.distribution.resolve_auto_transfer_mode",
         lambda *a, **kw: type("R", (), {"mode": "local"})(),

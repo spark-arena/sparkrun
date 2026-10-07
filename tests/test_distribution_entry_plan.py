@@ -13,7 +13,7 @@ from sparkrun.orchestration.infiniband import IBDetectionResult
 
 
 @pytest.fixture
-def distribution_env(monkeypatch, tmp_path):
+def distribution_env(monkeypatch, tmp_path, unavailable_model_inventory):
     recipe = Recipe.from_dict(
         {
             "recipe_version": "2",

@@ -18,6 +18,21 @@ from sparkrun.utils.net import is_local_host as _REAL_IS_LOCAL_HOST
 _REAL_CLONE_OR_PULL = RegistryManager._clone_or_pull
 
 
+@pytest.fixture
+def unavailable_model_inventory(monkeypatch):
+    """Exercise compatibility transport routing with unavailable inventory.
+
+    Opt in only for existing leaf-routing tests. Manifest/default-policy tests
+    exercise real preparation separately, without this fixture.
+    """
+    from sparkrun.models.artifacts import ModelInventoryUnavailable
+
+    def unavailable(*args, **kwargs):
+        raise ModelInventoryUnavailable("inventory unavailable in compatibility routing fixture")
+
+    monkeypatch.setattr("sparkrun.models.preparation.prepare_model", unavailable)
+
+
 @pytest.fixture(autouse=True)
 def isolate_stateful(tmp_path: Path, monkeypatch):
     """Redirect SAF stateful root to temp dir for test isolation.
