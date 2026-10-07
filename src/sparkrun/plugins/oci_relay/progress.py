@@ -45,6 +45,7 @@ class Progress:
         self.pending = set()
         self.registry_sample = None
         self.registry_bytes = None
+        self.registry_cache_errors = 0
         self.wire_bytes = 0
         self.wire_known = True
         self.reused_layers = 0
@@ -97,6 +98,7 @@ class Progress:
                 label = {
                     "checking": "checking image",
                     "discovering": "checking cached layers",
+                    "decoding": "receiving / decoding missing layers",
                     "transferring": "transferring / importing",
                     "importing": "importing into Docker",
                     "verifying": "verifying image",
@@ -113,9 +115,25 @@ class Progress:
                     if rate > 0:
                         detail += f", {size(rate)}/s"
                     detail += f"; {layers(observation.get('reused_layers', 0))}"
+                layer = observation.get("extracting_layer")
+                if layer:
+                    detail += f"; extracting {layer[:12]}"
+                    current, total = observation.get("extract_current", 0), observation.get("extract_total", 0)
+                    if total > 0:
+                        detail += f" {min(100, current * 100 / total):.0f}% ({size(current)}/{size(total)} input)"
+                    detail += f" for {observation.get('extract_seconds', 0):.0f}s"
+                    age = observation.get("extract_update_age_seconds", 0)
+                    if age >= self.interval:
+                        detail += f", last advance {age:.0f}s ago"
+                if observation.get("extracted_layers"):
+                    detail += f"; {observation['extracted_layers']} layers extracted"
                 self._log(f"{self.hosts[identity]}: {label}{detail}; {observation.get('elapsed_seconds', 0):.0f}s")
             metrics = event.get("registry_metrics")
             if metrics is not None:
+                errors = metrics.get("disk_cache_write_errors", 0)
+                if errors > self.registry_cache_errors:
+                    self._log("registry disk cache write failed; continuing without new cache files (late receivers may redownload)")
+                    self.registry_cache_errors = errors
                 current = metrics.get("upstream_blob_bytes", 0)
                 self.registry_bytes = current
                 if self.registry_sample is None or now - self.registry_sample[0] >= self.interval:

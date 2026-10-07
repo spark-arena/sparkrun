@@ -28,3 +28,18 @@ def test_oci_relay_defaults_keep_native_access_and_public_fallback_available():
     assert settings.get('source_mode', 'auto') == 'auto'
     assert settings['allow_native_store'] is True
     assert settings['allow_preparation_read'] is True
+
+
+def test_oci_relay_digest_handoff_capability():
+    from sparkrun.plugins import IMAGE_RUNTIME_API_VERSION, ImageCopyResult
+    from sparkrun.plugins.oci_relay import pins
+    from sparkrun.plugins.oci_relay.provider import RelayProvider
+
+    assert IMAGE_RUNTIME_API_VERSION == 1
+    image = 'registry.test/image:tag@sha256:' + 'a' * 64
+    assert pins.digest(image) == 'sha256:' + 'a' * 64
+    assert pins.retention_tag(image).startswith('oci-relay/pinned:')
+    assert '@' not in pins.retention_tag(image)
+    RelayProvider._require_pin_api()
+    assert RelayProvider.supports_offline_pull is True
+    assert ImageCopyResult({'host': 'complete'}, runtime_images={'host': 'sha256:' + 'b' * 64}).runtime_images['host']

@@ -12,5 +12,19 @@
       "url": "https://github.com/scitrera/oci-relay/releases/download/v0.1.0/oci-relay_0.1.0_darwin_arm64.tar.gz",
       "sha256": "e720c7eda1299181c7a9f241d3bb3d987aba5938b104aab9db7e4b88c83724e6"
     }
+  },
+  "0.1.1": {
+    "linux/amd64": {
+      "url": "https://github.com/scitrera/oci-relay/releases/download/v0.1.1/oci-relay_0.1.1_linux_amd64.tar.gz",
+      "sha256": "63cf22263926ad4fbe35472c037933582b039c4e87b9395f984858d70d4e29a2"
+    },
+    "linux/arm64": {
+      "url": "https://github.com/scitrera/oci-relay/releases/download/v0.1.1/oci-relay_0.1.1_linux_arm64.tar.gz",
+      "sha256": "645da9bd0ad5c914dfe45e0f19dff876afc632a49688940cb7242a390cc211f2"
+    },
+    "darwin/arm64": {
+      "url": "https://github.com/scitrera/oci-relay/releases/download/v0.1.1/oci-relay_0.1.1_darwin_arm64.tar.gz",
+      "sha256": "22e17369e0ea2f6d76dca74c1876bcb40e19003c9b4b64ac284c356f9f156a19"
+    }
   }
 }

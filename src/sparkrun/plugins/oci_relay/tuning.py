@@ -124,7 +124,7 @@ def limits(settings, facts, transport, *, local_roles=1):
         if speed >= 200:
             memory, streams = 1024 * MIB, 32
         elif speed >= 100:
-            memory, streams = 512 * MIB, 16
+            memory, streams = 1024 * MIB, 16
         elif speed >= 25:
             memory, streams = 256 * MIB, 8
     elif transport == "http2-ssh":

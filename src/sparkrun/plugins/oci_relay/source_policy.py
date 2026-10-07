@@ -42,6 +42,18 @@ def validate(settings):
         raise ValueError('connections_per_path must be between 1 and 4')
     if connections != 1 and 'data_paths' not in settings:
         raise ValueError('connections_per_path requires data_paths')
+    threshold = settings.get('stripe_threshold_bytes', 256 << 20)
+    if type(threshold) is not int or (threshold != 0 and not 8 << 20 <= threshold <= 1 << 50):
+        raise ValueError('stripe_threshold_bytes must be 0 (disabled) or between 8 MiB and 1 PiB')
+    stripes = settings.get('stripe_streams', 4)
+    if type(stripes) is not int or not 2 <= stripes <= 8:
+        raise ValueError('stripe_streams must be between 2 and 8')
+    piece = settings.get('stripe_piece_bytes', 1 << 20)
+    if type(piece) is not int or not 1 << 20 <= piece <= 64 << 20 or piece & (piece - 1):
+        raise ValueError('stripe_piece_bytes must be a power of two between 1 and 64 MiB')
+    window = settings.get('http2_stream_window_bytes', 0)
+    if type(window) is not int or (window != 0 and (not 1 << 20 <= window <= 64 << 20 or window & (window - 1))):
+        raise ValueError('http2_stream_window_bytes must be 0 or a power of two between 1 and 64 MiB')
     if 'containerd_content_root' in settings:
         root = settings['containerd_content_root']
         if not isinstance(root, str) or not root.startswith('/') or any(c in root for c in ',\n\r\x00'):
@@ -65,7 +77,19 @@ def validate(settings):
     procs = settings.get('relay_gomaxprocs', 0)
     if type(procs) is not int or not 0 <= procs <= 64:
         raise ValueError('relay_gomaxprocs must be between 0 and 64 (0 inherits the runtime default)')
+    decoder = settings.get('receiver_decoder', 'auto')
+    if decoder not in {'auto', 'none', 'unpigz'}:
+        raise ValueError('receiver_decoder must be auto, none or unpigz')
+    workers = settings.get('decode_workers', 8)
+    if type(workers) is not int or not 1 <= workers <= 16:
+        raise ValueError('decode_workers must be between 1 and 16')
+    for key, minimum, default in [('max_decode_bytes', 4 << 20, 64 << 30), ('decode_reserve_bytes', 0, 16 << 30)]:
+        value = settings.get(key, default)
+        if type(value) is not int or not minimum <= value <= 1 << 50:
+            raise ValueError(key + ' is outside supported byte budgets')
     importer = settings.get('receiver_import', 'pull')
+    if decoder == 'unpigz' and importer != 'pull':
+        raise ValueError('unpigz receiver decoder requires pull import')
     if not isinstance(importer, str) or importer not in {'pull', 'load-cached', 'load'}:
         raise ValueError('receiver_import must be pull, load-cached or load')
     if importer != 'pull':

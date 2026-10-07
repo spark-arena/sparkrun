@@ -119,3 +119,67 @@ def acquire(arch: str, settings: dict, *, offline: bool) -> tuple[Path, str]:
     finally:
         Path(temporary).unlink(missing_ok=True)
     return binary, file_digest(binary)
+
+
+def acquire_decoder(arch: str, settings: dict, binary: Path) -> tuple[Path, str] | None:
+    """Acquire only a decoder bound to a trusted release or explicit dev settings."""
+    paths, hashes = settings.get("decoder_paths", {}), settings.get("decoder_sha256", {})
+    if not isinstance(paths, dict) or not isinstance(hashes, dict):
+        raise BinaryUnavailable("decoder_paths and decoder_sha256 must map architecture to values")
+    if arch in paths:
+        helper = Path(paths[arch]).expanduser()
+        expected = hashes.get(arch)
+        if not isinstance(expected, str) or len(expected) != 64 or file_digest(helper) != expected:
+            raise BinaryUnavailable("decoder checksum mismatch or missing trusted hash")
+        verify_elf(helper, arch)
+        return helper, expected
+    if settings.get("development_binary"):
+        if not settings.get("development_unpigz"):
+            return None
+        helper = Path(settings["development_unpigz"]).expanduser()
+        verify_elf(helper, arch)
+        return helper, file_digest(helper)
+    if arch in settings.get("binary_paths", {}):
+        return None
+    # Revalidate the archive, not an editable sidecar manifest. Legacy releases
+    # have no helper and remain usable through the ordinary compressed import.
+    pins = json.loads(Path(__file__).with_name("releases.json").read_text())
+    pin = pins.get(__version__, {}).get("linux/" + arch, {})
+    archive = binary.parent / "release.tar.gz"
+    if not archive.is_file() or file_digest(archive) != pin.get("sha256"):
+        raise BinaryUnavailable("decoder release archive checksum mismatch")
+    with tarfile.open(archive, "r:gz") as tar:
+        def entry(name, maximum, optional=False):
+            matches = [e for e in tar.getmembers() if e.name in {name, "./" + name}]
+            if not matches and optional:
+                return None
+            if len(matches) != 1 or not matches[0].isfile() or not 0 < matches[0].size <= maximum:
+                raise BinaryUnavailable("release must contain one regular " + name)
+            with tar.extractfile(matches[0]) as stream:
+                return stream.read(maximum + 1)
+        manifest_raw = entry("bundle.json", 64 << 10, optional=True)
+        if manifest_raw is None:
+            return None
+        manifest = json.loads(manifest_raw)
+        if (manifest.get("format") != 1 or manifest.get("version") != __version__
+                or manifest.get("platform") != "linux/" + arch
+                or "receiver-unpigz-v1" not in manifest.get("capabilities", [])):
+            raise BinaryUnavailable("unsupported decoder bundle metadata")
+        for name, payload in (("oci-relay", binary.read_bytes()), ("unpigz", entry("unpigz", 16 << 20))):
+            info = manifest.get("files", {}).get(name, {})
+            if info.get("sha256") != hashlib.sha256(payload).hexdigest() or info.get("size") != len(payload):
+                raise BinaryUnavailable("bundle checksum mismatch: " + name)
+        # Retain redistributed licenses alongside the executable on controller.
+        licenses = entry("UNPIGZ_LICENSES.txt", 1 << 20)
+    helper = binary.parent / "unpigz"
+    fd, temporary = tempfile.mkstemp(prefix=".decoder-", dir=binary.parent)
+    try:
+        with os.fdopen(fd, "wb") as output:
+            output.write(payload)
+        verify_elf(Path(temporary), arch)
+        os.chmod(temporary, 0o555)
+        os.replace(temporary, helper)
+        (binary.parent / "UNPIGZ_LICENSES.txt").write_bytes(licenses)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+    return helper, file_digest(helper)
