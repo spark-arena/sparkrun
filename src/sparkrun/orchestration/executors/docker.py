@@ -497,7 +497,11 @@ class DockerExecutor(Executor):
             + " | "
             + probe.run_cmd(
                 image=image,
-                command="-s",
+                # Nonempty run_cmd commands become `bash -c <wrapper>`.
+                # With Bash as ENTRYPOINT that would make Bash read its own
+                # binary as a script (rc=126). Pass stdin flags directly after
+                # the image instead, preserving the observation pipe.
+                command="",
                 detach=False,
                 volumes=volumes,
                 env={"NVIDIA_VISIBLE_DEVICES": "void"},
@@ -505,6 +509,7 @@ class DockerExecutor(Executor):
                 if getattr(self, "_image_references", {}).get(image)
                 else [*probe_opts, "-i", "--pull=never"],
             )
+            + " --noprofile --norc -s"
         )
 
     def run_cmd(

@@ -143,4 +143,8 @@ def verify_workload_access(hosts, executors, images, volumes, ssh_kwargs, *, ext
             report = replace(report, access_context=executor.executor_name)
             if not report.complete:
                 details = "; ".join(f.path + ": " + f.reason for f in report.failures[:5])
-                raise ModelArtifactError("model is inaccessible to workload on %s: %s" % (binding.host, details or report.detail))
+                details = details or report.detail
+                stderr = result.stderr.decode(errors="replace").strip()[-1500:]
+                if stderr:
+                    details += "; stderr: " + stderr
+                raise ModelArtifactError("model is inaccessible to workload on %s: %s" % (binding.host, details))

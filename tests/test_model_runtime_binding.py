@@ -1,6 +1,7 @@
 """The command, env, and workload access probe consume one prepared artifact."""
 
 import shlex
+import subprocess
 from unittest.mock import Mock
 
 import pytest
@@ -10,6 +11,7 @@ from sparkrun.core.env_templates import prepare_env_templates
 from sparkrun.core.recipe import Recipe
 from sparkrun.models.artifacts import CacheValidationReport, ValidatedModelBinding
 from sparkrun.models.runtime import bind_runtime_models, validate_runtime_command, verify_workload_access
+from sparkrun.models.observation import observation_script, parse_observations
 from sparkrun.orchestration.executors.docker import DockerExecutor
 from sparkrun.orchestration.executors._base import ExecutorConfig
 from sparkrun.runtimes.sglang import SglangRuntime
@@ -97,6 +99,57 @@ def test_docker_probe_uses_effective_user_and_mounts_without_gpu():
     assert "--gpus" not in tokens and not any("nvidia.com/gpu" in t for t in tokens)
     assert tokens[tokens.index("--entrypoint") + 1] == "/bin/bash"
     assert executor.config.entrypoint is None
+
+
+@pytest.mark.parametrize("entrypoint", [None, "", "/app/boot.py"])
+@pytest.mark.parametrize("missing", [False, True])
+def test_docker_probe_executes_observation_from_stdin(tmp_path, entrypoint, missing):
+    manifest = artifact()
+    snapshot = cache(tmp_path / "cache with 'quotes'", manifest)
+    if missing:
+        (snapshot / "tokenizer.json").unlink()
+    executor = DockerExecutor(ExecutorConfig(entrypoint=entrypoint, accelerator_vendor="cpu", privileged=False))
+    command = executor.model_access_command("probe:test", observation_script(manifest, str(snapshot)), {}, [])
+    # Execute the generated pipeline with Docker's ENTRYPOINT + CMD semantics.
+    # This needs no daemon and catches a second `bash` being mistaken for a
+    # script filename, or a command wrapper consuming the observation stdin.
+    docker = """
+docker() {
+    local entrypoint
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --entrypoint) entrypoint=$2; shift 2 ;;
+            probe:test) shift; "$entrypoint" "$@"; return ;;
+            *) shift ;;
+        esac
+    done
+    return 99
+}
+"""
+    result = subprocess.run(["bash"], input=docker + command, capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    report = parse_observations("localhost", manifest, result.stdout, returncode=result.returncode)
+    assert report.complete is not missing
+    assert [(failure.path, failure.reason) for failure in report.failures] == ([("tokenizer.json", "missing")] if missing else [])
+    assert executor.config.entrypoint == entrypoint
+
+
+def test_workload_probe_failure_includes_bounded_stderr(tmp_path, monkeypatch, binding_scope):
+    from sparkrun.models.host_io import ModelHostIO
+    from sparkrun.transports.session import HostCommandResult
+
+    bind(tmp_path)
+    executor = DockerExecutor(ExecutorConfig(accelerator_vendor="cpu", privileged=False))
+    diagnostic = "/usr/bin/bash: /usr/bin/bash: cannot execute binary file"
+    monkeypatch.setattr(
+        ModelHostIO,
+        "execute",
+        Mock(return_value=HostCommandResult("localhost", 126, b"", ("x" * 2000 + "\n" + diagnostic).encode())),
+    )
+    with pytest.raises(ValueError, match="rc=126") as error:
+        verify_workload_access(["localhost"], {"localhost": executor}, ["probe:test"], {str(tmp_path): "/cache/huggingface"}, {})
+    assert str(error.value).endswith(diagnostic)
+    assert len(str(error.value).split("; stderr: ", 1)[1]) == 1500
 
 
 def test_shadow_mount_refused_before_access(tmp_path, binding_scope):
