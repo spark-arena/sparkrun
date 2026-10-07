@@ -46,6 +46,7 @@ class HookLaunchContext:
     runtime: str = ""
     model: str = ""
     model_revision: str = ""
+    model_path: str = ""
     port: str = ""
     head_ip: str = ""
     base_url: str = ""
@@ -77,6 +78,7 @@ def build_hook_launch_context(
         runtime=runtime,
         model=value("model"),
         model_revision=value("model_revision"),
+        model_path=value("_prepared_model_path"),
         port=value("port"),
         runtime_cache=runtime_cache,
         volumes=dict(volumes) if volumes is not None else None,
@@ -116,6 +118,7 @@ def build_hook_env(
         "SPARKRUN_RUNTIME": context.runtime,
         "SPARKRUN_MODEL": context.model,
         "SPARKRUN_MODEL_REVISION": context.model_revision,
+        "SPARKRUN_MODEL_PATH": "" if control else context.model_path,
         "SPARKRUN_NUM_NODES": str(len(hosts)) if hosts else "",
         "SPARKRUN_NODE_RANK": str(rank) if rank is not None else "",
         "SPARKRUN_NODE_HOST": "" if control else host,

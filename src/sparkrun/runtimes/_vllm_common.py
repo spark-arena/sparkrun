@@ -73,7 +73,7 @@ class VllmRuntimeBase(RuntimePlugin):
         from sparkrun.core.recipe import is_local_model_path
         from sparkrun.utils.shell import quote
 
-        revision = getattr(recipe, "model_revision", None)
+        revision = config.get("_prepared_model_revision") or getattr(recipe, "model_revision", None)
         if not revision or is_local_model_path(recipe.model):
             return []
         if ":" in recipe.model:
@@ -270,7 +270,12 @@ class VllmRuntimeBase(RuntimePlugin):
         are always added to the skip set since callers append them
         explicitly (or omit them) based on the clustering strategy.
         """
-        parts = ["vllm", "serve", recipe.model]
+        from sparkrun.utils.shell import quote
+
+        prepared = config.get("_prepared_model_path")
+        parts = ["vllm", "serve", quote(str(prepared)) if prepared else recipe.model]
+        if prepared and not config.get("served_model_name"):
+            parts.extend(["--served-model-name", quote(recipe.model)])
         parts.extend(self.structured_revision_args(recipe, config))
 
         tp = config.get("tensor_parallel")

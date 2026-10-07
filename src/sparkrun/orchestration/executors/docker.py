@@ -464,6 +464,49 @@ class DockerExecutor(Executor):
 
     # --- Low-level command generators (Executor ABC) ---
 
+    def model_access_command(self, image, script, volumes, extra_opts):
+        """Use final UID/mount/security settings without entrypoint or GPUs."""
+        import copy
+        from dataclasses import replace
+
+        probe = copy.copy(self)
+        probe.config = replace(
+            self.config,
+            entrypoint="/bin/bash",
+            accelerator_vendor="cpu",
+            devices=None,
+            auto_remove=True,
+            restart_policy=None,
+        )
+        _, tokens, _ = split_options(None, extra_opts)
+        probe_opts = []
+        skip_value = False
+        for token in tokens:
+            if skip_value:
+                skip_value = False
+                continue
+            if token in {"--gpus", "--device", "--runtime", "--entrypoint"}:
+                skip_value = True
+                continue
+            if token.startswith(("--gpus=", "--device=", "--runtime=", "--entrypoint=")):
+                continue
+            probe_opts.append(token)
+        return (
+            "printf %s "
+            + quote(script)
+            + " | "
+            + probe.run_cmd(
+                image=image,
+                command="-s",
+                detach=False,
+                volumes=volumes,
+                env={"NVIDIA_VISIBLE_DEVICES": "void"},
+                extra_opts=[*probe_opts, "-i"]
+                if getattr(self, "_image_references", {}).get(image)
+                else [*probe_opts, "-i", "--pull=never"],
+            )
+        )
+
     def run_cmd(
         self,
         image: str,

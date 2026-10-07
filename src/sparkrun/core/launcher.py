@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
+from sparkrun.core.model_distribution import model_distribution_operation
 from sparkrun.core.image_distribution import image_distribution_operation, resolve_distributed_image
 from sparkrun.core.progress import PROGRESS
 from sparkrun.core.timing import ROOT as TIMELINE_ROOT, STATUS_ERROR, Timeline, timed
@@ -974,6 +975,7 @@ def resolve_per_host_backends(
 
 
 @image_distribution_operation
+@model_distribution_operation
 def launch_inference(
     *,
     recipe: Recipe,
@@ -1676,8 +1678,28 @@ def launch_inference(
 
     # GGUF model resolution
     from sparkrun.models.download import is_gguf_model, resolve_gguf_container_path, resolve_mmproj_container_path
+    from sparkrun.core.model_distribution import prepared_model
+    from sparkrun.models.runtime import bind_runtime_models, validate_runtime_command
+    from sparkrun.orchestration.primitives import build_volumes, resolved_model_volume
 
-    if is_gguf_model(recipe.model) and not dry_run and not _resolved_model_path:
+    if _resolved_model_path and not dry_run and (asset_policy is None or asset_policy.prepare_model):
+        from sparkrun.core.model_distribution import validation_policy
+        from sparkrun.models.preparation import validate_preplaced
+
+        policy = validation_policy(config)
+        validate_preplaced(recipe.model, host_list, model_path=_resolved_model_path, ssh_kwargs=ssh_kwargs, checksums=policy == "checksum")
+
+    if prepared_model(recipe.model, host_list[0]) is not None:
+        bind_runtime_models(
+            recipe,
+            overrides,
+            runtime,
+            host_list,
+            host_executors,
+            build_volumes(effective_cache_dir, extra={**runtime.get_extra_volumes(), **resolved_model_volume(recipe)}),
+        )
+
+    if is_gguf_model(recipe.model) and not dry_run and not _resolved_model_path and prepared_model(recipe.model, host_list[0]) is None:
         gguf_container_path = resolve_gguf_container_path(
             recipe.model,
             effective_cache_dir,
@@ -1716,6 +1738,7 @@ def launch_inference(
     )
     if not isinstance(serve_command, str) or not serve_command.strip():
         raise ValueError("Runtime %r must generate a non-empty serve command" % runtime.runtime_name)
+    validate_runtime_command(recipe, overrides, runtime, serve_command)
 
     # Best-effort page cache clear
     if not runtime.is_delegating_runtime() and (asset_policy is None or asset_policy.clear_page_cache):
@@ -1798,6 +1821,17 @@ def launch_inference(
         )
         with timed(timeline, "execution.prepare_activation", strategy=prepared_execution.strategy):
             activation_receipt = execution_strategy.prepare_activation(activation_context)
+        if not dry_run and prepared_model(recipe.model, host_list[0]) is not None:
+            from sparkrun.models.runtime import verify_workload_access
+
+            verify_workload_access(
+                host_list,
+                host_executors,
+                prepared_images.images_by_node,
+                build_volumes(effective_cache_dir, extra={**runtime.get_extra_volumes(), **resolved_model_volume(recipe)}),
+                ssh_kwargs,
+                extra_opts=(runtime.get_extra_docker_opts() or []) + (extra_docker_opts or []),
+            )
         # The barrier stays core-owned. A strategy never decides when the
         # deployment it replaces is torn down.
         if before_start is not None and not dry_run:
@@ -1971,7 +2005,7 @@ def launch_inference(
         dry_run=dry_run,
         extra_docker_opts=(runtime.get_extra_docker_opts() or []) + (extra_docker_opts or []),
     )
-    if env_template_plan is not None:
+    if env_template_plan is not None or prepared_model(recipe.model, host_list[0]) is not None:
         from sparkrun.orchestration.primitives import build_volumes, resolved_model_volume
 
         template_volumes = build_volumes(
@@ -1982,10 +2016,23 @@ def launch_inference(
                 **resolved_model_volume(recipe),
             },
         )
-        for host in host_list:
-            env_template_plan.render(host, template_volumes, runtime_cache_mounts, host_executors[host])
+        if not dry_run and prepared_model(recipe.model, host_list[0]) is not None:
+            from sparkrun.models.runtime import verify_workload_access
+
+            verify_workload_access(
+                host_list,
+                host_executors,
+                prepared_images.images_by_node,
+                template_volumes,
+                ssh_kwargs,
+                extra_opts=(runtime.get_extra_docker_opts() or []) + (extra_docker_opts or []),
+            )
+        if env_template_plan is not None:
+            for host in host_list:
+                env_template_plan.render(host, template_volumes, runtime_cache_mounts, host_executors[host])
         if (
-            not is_solo
+            env_template_plan is not None
+            and not is_solo
             and runtime.get_family() == "trtllm"
             and any(values != env_template_plan.rendered[host_list[0]] for values in env_template_plan.rendered.values())
         ):

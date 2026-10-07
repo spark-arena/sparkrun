@@ -153,7 +153,10 @@ class TrtllmRuntime(RuntimePlugin):
 
     def _build_command(self, recipe: Recipe, config, skip_keys: set[str] | frozenset[str] = frozenset()) -> str:
         """Build the trtllm-serve command from structured config."""
-        parts = ["trtllm-serve", recipe.model]
+        from sparkrun.utils.shell import quote
+
+        prepared = config.get("_prepared_model_path")
+        parts = ["trtllm-serve", quote(str(prepared)) if prepared else recipe.model]
 
         # Default to pytorch backend if not specified
         backend = config.get("backend")

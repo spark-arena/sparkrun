@@ -913,3 +913,70 @@ SSH-session lifecycle. Provider selection still uses `image_distribution_operati
 with the operation's `config`; callers dispatching to separate threads must
 establish that scope in each thread. ColdSnap's Docker manager follows this
 contract for capsule pulls, inspections and launches.
+
+## Model distribution providers
+
+`MODEL_DISTRIBUTION_API_VERSION = 1` is exported through `sparkrun.plugins`, along
+with `register_model_distribution_provider`, `ModelCopyRequest`, `ModelTarget`,
+`ModelTransferResult`, `ModelArtifactManifest`, and `ModelArtifactFile`. Providers
+implement `copy(request)`; optionally declare `api_version = 1`. Unsupported
+versions and conflicting registrations fail, and failed plugin registration rolls
+back the model provider registry with the other core registries.
+
+Core resolves the immutable manifest, observes source/targets, holds publication
+leases, and determines `target.required_files`. A provider moves those files from
+`source_cache_root / manifest.relative_snapshot` into each
+`target.cache_root / manifest.relative_snapshot`, preserving the selected file
+contents and a self-contained snapshot. Cache roots are prepared absolute paths;
+`host` identifies management/reporting, while `transfer_host` supplies the chosen
+transfer address. `source_host=None` means the controller. Never replace an entire
+live repository or delete unrelated shared blobs.
+
+```python
+from sparkrun.plugins import (
+    MODEL_DISTRIBUTION_API_VERSION, ModelTransferResult,
+    register_model_distribution_provider,
+)
+
+class ExampleModelProvider:
+    api_version = MODEL_DISTRIBUTION_API_VERSION
+
+    def copy(self, request):
+        outcomes = {}
+        for target in request.targets:
+            # Transfer target.required_files atomically with your transport.
+            # Respect request.offline, timeout and cancelled().
+            self.transport_copy(request, target)
+            outcomes[target.host] = "complete"
+        return ModelTransferResult(request.manifest.identity, outcomes)
+
+    def transport_copy(self, request, target):
+        raise NotImplementedError("Implement the transport before registering")
+
+# Called from your plugin's registration hook:
+# register_model_distribution_provider("example", ExampleModelProvider())
+```
+
+Return exactly the requested hosts with `complete`, `already_present`, or `failed`
+and per-host `errors` for failures. Core rejects changed manifest identities,
+missing/extra hosts, conflicting evidence and failed outcomes; every claimed
+success is independently observed. Only core publishes `ValidatedModelBinding`.
+The request's session is borrowed: do not close it. Config, session, cancellation,
+progress and operation identity are explicit so worker threads need not inherit
+context variables. Credentials are absent from copy requests and manifest JSON.
+
+Optional `pull(ModelPullRequest)` (`MODEL_PULL_API_VERSION = 1`) receives the same
+selected manifest plus a scoped `token()` accessor. Copy-only providers compose
+with builtin origin acquisition. Core refuses origin acquisition offline; providers
+must also honor offline requests without external network access. No provider runs
+in dry-run. Do not log or persist credentials, including generated adapter scripts.
+
+Selection uses `model_distribution_provider: auto|builtin|name`. Zero auto providers
+uses builtin; one selects it; multiple require an explicit name. An explicit
+provider cannot silently fall back. In auto mode, `ModelDistributionUnsupported`
+permits builtin fallback **only before mutation**, when the provider opts in via
+`fallback_on_unsupported = True` or configuration enables
+`model_distribution_fallback`. Other exceptions and partial failures stop the
+operation. Registering an image provider, including OCI Relay, does not register
+a model provider. See [model cache operations](MODEL_CACHE.md) for configuration,
+selection, migration and the runtime validation barrier.

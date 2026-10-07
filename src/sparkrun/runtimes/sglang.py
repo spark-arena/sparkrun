@@ -523,12 +523,16 @@ class SglangRuntime(RuntimePlugin):
     def _build_base_command(self, recipe: Recipe, config, skip_keys: set[str] | frozenset[str] = frozenset()) -> str:
         """Build the sglang command without cluster-specific arguments."""
         # For GGUF models, use the resolved file path instead of the HF repo name
-        model_path = config.get("_gguf_model_path") or recipe.model
+        model_path = config.get("_prepared_model_path") or config.get("_gguf_model_path") or recipe.model
         # ``sglang serve`` is the current entrypoint; ``python3 -m
         # sglang.launch_server`` is the legacy spelling it replaced. Recipes
         # carrying either form in an explicit ``command:`` still work — the
         # runtime detector (``core.recipe._CMD_SGLANG_RE``) matches both.
-        parts = ["sglang", "serve", "--model-path", str(model_path)]
+        from sparkrun.utils.shell import quote
+
+        parts = ["sglang", "serve", "--model-path", quote(str(model_path))]
+        if config.get("_prepared_model_path") and not config.get("served_model_name"):
+            parts.extend(["--served-model-name", quote(recipe.model)])
 
         tp = config.get("tensor_parallel")
         if tp:

@@ -292,14 +292,29 @@ def prepare_env_templates(
         # path or silently select a different model from a command override.
         model = str(recipe.model)
         revision = str(recipe.model_revision or "")
+        from sparkrun.core.model_distribution import prepared_model
+
+        binding = prepared_model(model, plan.hosts[0])
+        if binding is not None:
+            revision = binding.manifest.revision
         configured_model = config.get("model", model)
-        if configured_model != model and configured_model != (overrides or {}).get("_gguf_model_path"):
+        if configured_model != model and configured_model not in (
+            (overrides or {}).get("_gguf_model_path"),
+            (overrides or {}).get("_prepared_model_path"),
+        ):
             raise ValueError("launch model fields require model to match the prepared recipe.model")
         if str(config.get("model_revision") or "") != revision:
             raise ValueError("launch model fields require model_revision to match the prepared recipe.model_revision")
         expected = ""
         for host in plan.hosts:
-            record = probe_model_path(host, model, revision, cache_dir, ssh_kwargs, expected_revision=expected)
+            binding = prepared_model(model, host)
+            record = (
+                PreparedModelPath(binding.model_path, binding.manifest.revision)
+                if binding
+                else probe_model_path(host, model, revision, cache_dir, ssh_kwargs, expected_revision=expected)
+            )
+            if expected and record.revision != expected:
+                raise ValueError("model revision differs between launch nodes: " + host)
             plan.models[host] = record
             expected = expected or record.revision
     return plan

@@ -87,6 +87,7 @@ sparkrun update --yolo     # alias for --alpha
 - **Git-based recipe registries** — we publish official recipes, community recipes, and benchmarked recipes via [Spark Arena](https://spark-arena.com), plus you can add your own registries.
 - **Guided setup wizard** — cluster creation, SSH mesh, CX7 auto-detection, sudoers, earlyoom
 - **Model & container distribution** — syncs models and images to cluster nodes over SSH automatically
+- **Manifest model caches** — automatic [expected-file validation, selective weight downloads and pluggable model transfer](docs/MODEL_CACHE.md)
 
 ## Python API and applications (0.4.0)
 
