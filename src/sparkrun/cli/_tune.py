@@ -62,6 +62,23 @@ def tune(ctx):
 @click.option("--image", default=None, help="Override container image")
 @click.option("--output-dir", default=None, help="Override tuning config output directory")
 @click.option("--skip-clone", is_flag=True, help="Skip cloning SGLang repo (scripts already in image)")
+@click.option(
+    "--mode", type=click.Choice(["moe", "fp8"]), default="moe", show_default=True, help="Tune fused MoE or dense block-FP8 kernels"
+)
+@click.option(
+    "--shape",
+    "shapes",
+    type=(click.IntRange(min=1), click.IntRange(min=1)),
+    multiple=True,
+    help="Per-rank FP8 weight shape: N K (repeatable; required for --mode fp8)",
+)
+@click.option(
+    "--block-shape",
+    type=(click.IntRange(min=16), click.IntRange(min=16)),
+    default=(128, 128),
+    help="FP8 quantization block shape: N K (e.g. 32 32)",
+)
+@click.option("--batch-size", "batch_sizes", type=click.IntRange(min=1), multiple=True, help="Token count M to tune (repeatable; FP8 only)")
 @click.option("--parallel", "-j", type=int, default=1, help="Run N tuning jobs concurrently (default: 1 = sequential)")
 @click.option(
     "--timeout",
@@ -82,6 +99,10 @@ def tune_sglang(
     image,
     output_dir,
     skip_clone,
+    mode,
+    shapes,
+    block_shape,
+    batch_sizes,
     parallel,
     timeout,
     dry_run,
@@ -90,7 +111,7 @@ def tune_sglang(
     host_list: list[str],
     cluster_mgr=None,
 ):
-    """Tune SGLang fused MoE Triton kernels for DGX Spark.
+    """Tune SGLang fused MoE Triton kernels or dense block-FP8 GEMMs.
 
     Runs Triton kernel autotuning inside the recipe's container on a single
     host.  Generates optimal tile configs (BLOCK_M/N/K, warps, stages) for
@@ -106,6 +127,15 @@ def tune_sglang(
       {app_command} tune sglang qwen3.5-35b-bf16-sglang -H myhost --parallel 2
     """
     from sparkrun.tuning.sglang import SglangTuner, DEFAULT_TP_SIZES
+
+    if mode == "fp8" and not shapes:
+        raise click.UsageError("--mode fp8 requires --shape N K (use the per-rank shapes reported by the runtime)")
+    if mode != "fp8" and (shapes or batch_sizes or block_shape != (128, 128)):
+        raise click.UsageError("--shape, --block-shape, and --batch-size require --mode fp8")
+    if any(n & (n - 1) for n in block_shape):
+        raise click.UsageError("--block-shape values must be powers of two")
+    if mode == "fp8" and (len(tp_sizes) > 1 or parallel != 1):
+        raise click.UsageError("FP8 shapes are already per-rank: use one --tp value and --parallel 1")
 
     sctx = _get_context(ctx)
     v = sctx.variables
@@ -143,7 +173,7 @@ def tune_sglang(
     )
 
     # Default TP sizes
-    effective_tp = tuple(tp_sizes) if tp_sizes else DEFAULT_TP_SIZES
+    effective_tp = tuple(tp_sizes) if tp_sizes else (int(recipe.defaults.get("tensor_parallel", 1)),) if mode == "fp8" else DEFAULT_TP_SIZES
 
     tuner = SglangTuner(
         host=target_host,
@@ -155,6 +185,10 @@ def tune_sglang(
         skip_clone=skip_clone,
         timeout=timeout,
         dry_run=dry_run,
+        mode=mode,
+        shapes=shapes,
+        block_shape=block_shape,
+        batch_sizes=batch_sizes,
     )
 
     rc = tuner.run_tuning(tp_sizes=effective_tp, parallel=parallel)

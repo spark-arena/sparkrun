@@ -689,6 +689,14 @@ class SglangRuntime(RuntimePlugin):
 
     # --- Tuning config auto-mount ---
 
+    def _pre_serve(self, hosts_containers, ssh_kwargs, dry_run, recipe=None, config_chain=None, trust=False, cache_dir=None):
+        from sparkrun.tuning.sglang import install_sglang_fp8_configs
+
+        # Recipe mods may prepare/patch the image first. Match configs against
+        # the resulting kernel source hash before the serving process starts.
+        super()._pre_serve(hosts_containers, ssh_kwargs, dry_run, recipe, config_chain, trust, cache_dir)
+        install_sglang_fp8_configs(hosts_containers, self._resolve_executor(), ssh_kwargs, dry_run)
+
     def get_extra_volumes(self) -> dict[str, str]:
         """Mount SGLang tuning configs if available."""
         from sparkrun.tuning.sglang import get_sglang_tuning_volumes

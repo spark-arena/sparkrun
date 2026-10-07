@@ -1,8 +1,8 @@
-"""SGLang fused MoE kernel tuning for DGX Spark.
+"""SGLang fused MoE and dense block-FP8 kernel tuning for DGX Spark.
 
-Launches a container, clones SGLang benchmark scripts, and runs Triton
-kernel tuning for each requested TP size.  Results are saved to the host
-and auto-mounted in future ``sparkrun run`` invocations.
+MoE tuning uses upstream benchmarks for each TP size. Dense FP8 tuning uses
+explicit per-rank shapes and the kernels installed in the serving image.
+Results in the tuning cache are reused by future ``sparkrun run`` invocations.
 """
 
 from __future__ import annotations
@@ -73,13 +73,40 @@ def get_sglang_tuning_env() -> dict[str, str] | None:
     )
 
 
+def install_sglang_fp8_configs(hosts_containers, executor, ssh_kwargs, dry_run=False):
+    """Install matching dense configs without masking the image's bundled ones."""
+    import logging
+    from sparkrun.orchestration.primitives import run_command_on_host
+    from sparkrun.scripts import read_script
+
+    if executor.executor_name != "docker" or not any((get_sglang_tuning_dir() / "fp8").rglob("*.json")):
+        return
+    command = "python3 - --install --output %s <<'SPARKRUN_FP8_PY'\n%s\nSPARKRUN_FP8_PY\n" % (
+        quote(TUNING_CONTAINER_PATH),
+        read_script("sglang_tune_fp8.py"),
+    )
+    logger = logging.getLogger(__name__)
+    for host, container in hosts_containers:
+        result = run_command_on_host(
+            host,
+            executor.exec_cmd(container, command, env={"PYTHONPATH": ""}),
+            ssh_kwargs=ssh_kwargs,
+            timeout=120,
+            dry_run=dry_run,
+        )
+        if not result.success and not dry_run:
+            logger.warning("Could not install SGLang FP8 tuning configs on %s: %s", host, result.stderr[-500:])
+        elif result.stdout.strip():
+            logger.info("%s: %s", host, result.stdout.strip())
+
+
 # ---------------------------------------------------------------------------
 # SglangTuner
 # ---------------------------------------------------------------------------
 
 
 class SglangTuner(BaseTuner):
-    """Orchestrates SGLang fused MoE kernel tuning on a single host.
+    """Orchestrates SGLang MoE or dense block-FP8 tuning on a single host.
 
     Args:
         host: Target host for tuning.
@@ -102,6 +129,43 @@ class SglangTuner(BaseTuner):
 
     output_path = TUNING_CONTAINER_OUTPUT_PATH
     clone_script = "sglang_clone_benchmarks.sh"
+
+    def __init__(self, *args, mode="moe", shapes=(), block_shape=(128, 128), batch_sizes=(), **kwargs):
+        if mode not in {"moe", "fp8"}:
+            raise ValueError("Unknown SGLang tuning mode: " + mode)
+        if mode == "fp8" and not shapes:
+            raise ValueError("FP8 tuning requires explicit per-rank weight shapes")
+        self.mode, self.shapes = mode, tuple(shapes)
+        self.block_shape, self.batch_sizes = tuple(block_shape), tuple(batch_sizes)
+        if mode == "fp8":
+            kwargs["skip_clone"] = True  # Use kernels installed in the image.
+        super().__init__(*args, **kwargs)
+
+    def _pre_check_tp(self, tp_size, triton_version):
+        # An MoE filename cannot establish that dense shapes/batches are tuned.
+        return False if self.mode == "fp8" else super()._pre_check_tp(tp_size, triton_version)
+
+    def _run_tune_for_tp(self, tp_size, triton_version):
+        if self.mode == "moe":
+            return super()._run_tune_for_tp(tp_size, triton_version)
+        from sparkrun.orchestration.primitives import run_script_on_host_streaming
+        from sparkrun.scripts import read_script
+        from sparkrun.tuning._common import resolve_tuning_timeout
+
+        args = ["--output", self.output_path, "--block-shape", *map(str, self.block_shape)]
+        for shape in self.shapes:
+            args.extend(["--shape", *map(str, shape)])
+        for batch in self.batch_sizes:
+            args.extend(["--batch-size", str(batch)])
+        script = "docker exec -i -e PYTHONPATH= %s python3 -u - %s <<'SPARKRUN_FP8_PY'\n%s\nSPARKRUN_FP8_PY\n" % (
+            quote(self.container_name),
+            " ".join(quote(arg) for arg in args),
+            read_script("sglang_tune_fp8.py"),
+        )
+        result = run_script_on_host_streaming(
+            self.host, script, ssh_kwargs=self.ssh_kwargs, timeout=resolve_tuning_timeout(self.timeout), dry_run=self.dry_run
+        )
+        return 0 if self.dry_run else result.returncode
 
     def _default_output_dir(self) -> Path:
         return get_sglang_tuning_dir()

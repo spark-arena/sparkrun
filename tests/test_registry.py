@@ -2362,7 +2362,7 @@ class TestBackfillDefaultSubpaths:
         assert entries[0].tuning_subpath == official.tuning_subpath
         assert entries[0].benchmark_subpath == official.benchmark_subpath
         assert entries[1].mods_subpath == "experimental-mods"
-        assert entries[1].tuning_subpath == ""
+        assert entries[1].tuning_subpath == "experimental-tuning"
         assert entries[1].benchmark_subpath == ""
         assert mgr._backfill_default_subpaths(entries) is False
 
@@ -2375,8 +2375,10 @@ class TestBackfillDefaultSubpaths:
     def test_custom_experimental_mods_path_is_preserved(self, mgr):
         shipped = next(e for e in FALLBACK_DEFAULT_REGISTRIES if e.name == "experimental")
         entry = RegistryEntry(name=shipped.name, url=shipped.url, subpath=shipped.subpath, mods_subpath="my-mods")
-        assert mgr._backfill_default_subpaths([entry]) is False
+        assert mgr._backfill_default_subpaths([entry]) is True
         assert entry.mods_subpath == "my-mods"
+        assert entry.tuning_subpath == "experimental-tuning"
+        assert mgr._backfill_default_subpaths([entry]) is False
 
     def test_user_customised_subpath_is_preserved(self, mgr):
         shipped = next(e for e in FALLBACK_DEFAULT_REGISTRIES if e.name == "community")

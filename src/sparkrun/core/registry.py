@@ -426,6 +426,7 @@ FALLBACK_DEFAULT_REGISTRIES = [
         url="https://github.com/spark-arena/recipe-registry.git",
         subpath="experimental-recipes",
         description="Spark Arena registry for experimental recipes",
+        tuning_subpath="experimental-tuning",
         mods_subpath="experimental-mods",
         visible=False,
         trusted=True,

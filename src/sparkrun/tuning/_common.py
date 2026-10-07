@@ -12,6 +12,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from sparkrun.core.config import resolve_sparkrun_cache_dir
+from sparkrun.core.image_distribution import image_distribution_operation
 from sparkrun.utils import format_duration as _format_duration  # noqa: F401 — re-exported for local callers
 from sparkrun.utils.shell import quote, safe_remote_path
 
@@ -21,6 +22,21 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 DEFAULT_TP_SIZES = (1, 2, 4, 8)
+
+
+@image_distribution_operation
+def prepare_tuning_image(image, host, ssh_kwargs, dry_run=False):
+    """Use the image distribution seam, including provider-local image aliases."""
+    from sparkrun.containers.distribute import distribute_image_from_head
+    from sparkrun.core.image_distribution import resolve_distributed_image
+
+    if dry_run:
+        logger.info("[dry-run] Would prepare tuning image %s on %s", image, host)
+        return image
+    failed = distribute_image_from_head(image, [host], **ssh_kwargs)
+    if failed:
+        raise RuntimeError("Failed to prepare tuning image on " + ", ".join(failed))
+    return resolve_distributed_image(image, host, ssh_kwargs=ssh_kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -417,13 +433,15 @@ class BaseTuner:
         """Step 1: Launch a tuning container with sleep infinity."""
         import time
         from sparkrun.orchestration.primitives import build_volumes, run_script_on_host
-        from sparkrun.orchestration.executor import get_executor
+        from sparkrun.orchestration.executor import ExecutorConfig, get_executor
 
         # TODO: switch to being resolved executor instance?
         DockerExecutor = get_executor("docker")
 
         t0 = time.monotonic()
         logger.info("Step 1/5: Launching tuning container on %s...", self.host)
+
+        self.image = prepare_tuning_image(self.image, self.host, self.ssh_kwargs, self.dry_run)
 
         # Ensure output directory exists on the remote host (as the SSH user, not root)
         mkdir_script = '#!/bin/bash\nset -uo pipefail\nmkdir -p "%s"\n' % safe_remote_path(self.remote_output_dir)
@@ -446,7 +464,8 @@ class BaseTuner:
         # Mount tuning output directory (use remote path for volume mount)
         volumes[self.remote_output_dir] = self.output_path
 
-        launch_script = DockerExecutor().generate_launch_script(
+        # Tuning starts a sleeper, never the image's inference entrypoint.
+        launch_script = DockerExecutor(ExecutorConfig(entrypoint="")).generate_launch_script(
             image=self.image,
             container_name=self.container_name,
             command="sleep infinity",
