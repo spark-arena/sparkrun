@@ -17,7 +17,7 @@ from __future__ import annotations
 from sparkrun.core.application_profile import product_env
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 import os
 import subprocess
 import time
@@ -378,7 +378,7 @@ def _run_subprocess(
     cmd: list[str] | str,
     host: str,
     label: str,
-    timeout: int | None = None,
+    timeout: float | None = None,
     input_data: str | None = None,
     shell: bool = False,
     quiet: bool = False,
@@ -1226,6 +1226,7 @@ def _run_rsync_impl(
     rsync_options: list[str] | None = None,
     timeout: int | None = None,
     dry_run: bool = False,
+    vanished_retry_guard: Callable[[], bool] | None = None,
 ) -> RemoteResult:
     """Shared rsync implementation for both push and pull directions.
 
@@ -1264,6 +1265,7 @@ def _run_rsync_impl(
     logger.info("  Rsync %s %s%s", direction, host, f" [timeout={timeout}s]" if timeout else "")
     logger.debug("Rsync command: %s", " ".join(cmd))
 
+    started = time.monotonic()
     result = _run_subprocess(cmd, host, "Rsync", timeout=timeout, detail_limit=RSYNC_FAILURE_DETAIL_LIMIT)
     if result.success:
         logger.info("  Rsync %s %s OK", direction, host)
@@ -1278,7 +1280,7 @@ def _run_rsync_impl(
     #
     # Deferred import — transfer.py imports RemoteResult from this module, so
     # a module-level import here would be circular.
-    from sparkrun.orchestration.transfer import rsync_attribute_errors_only, rsync_has_attribute_permission_error
+    from sparkrun.orchestration.transfer import rsync_attribute_errors_only, rsync_has_attribute_permission_error, rsync_had_vanished_files
 
     if rsync_attribute_errors_only(result):
         # Every byte arrived and only attributes were refused.  The caller's
@@ -1286,6 +1288,22 @@ def _run_rsync_impl(
         # whole tree to reach a state we are in — and on a model cache that
         # walk is the expensive part, not the bytes.
         return result
+    # PR #308 (Aisoipheo) motivated this bounded retry. A vanished path may
+    # be required payload, so the caller must preserve and revalidate its
+    # expected inventory. A successful re-walk alone can hide deleted files.
+    if rsync_had_vanished_files(result) and not rsync_retry_disabled() and vanished_retry_guard is not None:
+        logger.warning(
+            "Rsync %s %s: source paths unavailable during transfer; revalidating before one retry: %s",
+            direction,
+            host,
+            result.stderr[-1500:],
+        )
+        if not vanished_retry_guard():
+            return result
+        remaining = max(0, timeout - (time.monotonic() - started)) if timeout is not None else None
+        if remaining is not None and remaining <= 0:
+            return result
+        return _run_subprocess(cmd, host, "Rsync", timeout=remaining, detail_limit=RSYNC_FAILURE_DETAIL_LIMIT)
     if rsync_options_are_relaxed(rsync_options) or rsync_retry_disabled():
         return result
     if not rsync_has_attribute_permission_error(result):
@@ -1302,7 +1320,10 @@ def _run_rsync_impl(
     retry_cmd = ["rsync"] + retry_options + ["-e", f"ssh {ssh_opts}", source, dest]
     logger.debug("Rsync retry command: %s", " ".join(retry_cmd))
 
-    retry = _run_subprocess(retry_cmd, host, "Rsync", timeout=timeout, detail_limit=RSYNC_FAILURE_DETAIL_LIMIT)
+    remaining = max(0, timeout - (time.monotonic() - started)) if timeout is not None else None
+    if remaining is not None and remaining <= 0:
+        return result
+    retry = _run_subprocess(retry_cmd, host, "Rsync", timeout=remaining, detail_limit=RSYNC_FAILURE_DETAIL_LIMIT)
     if retry.success:
         logger.info("  Rsync %s %s OK (after relaxing attribute preservation)", direction, host)
         return retry
@@ -1357,6 +1378,7 @@ def run_rsync(
     rsync_options: list[str] | None = None,
     timeout: int | None = None,
     dry_run: bool = False,
+    vanished_retry_guard: Callable[[], bool] | None = None,
 ) -> RemoteResult:
     """Rsync a local path to a remote host.
 
@@ -1367,6 +1389,19 @@ def run_rsync(
 
     Any ``--delete`` is gated by :func:`guard_rsync_delete`.
     """
+    # In particular, --copy-unsafe-links replaces a destination symlink with
+    # its payload. When source and destination are the same directory that
+    # unlinks the sender's own path (rc=24), and a retry can hide the damage.
+    # Compare directory identity, not hostname/path text: local aliases and
+    # symlinked cache roots are common. Different users still need SSH.
+    if not dry_run and should_run_locally(host, ssh_user):
+        try:
+            same = os.path.samefile(os.path.expandvars(os.path.expanduser(source_path)), os.path.expandvars(os.path.expanduser(dest_path)))
+        except OSError:
+            same = False
+        if same:
+            logger.info("  Rsync -> %s skipped: source and destination are the same directory", host)
+            return RemoteResult(host=host, returncode=0, stdout="same source and destination; copy skipped", stderr="")
     if rsync_options is not None:
         rsync_options = guard_rsync_delete(rsync_options, source_path)
     src = source_path.rstrip("/") + "/"
@@ -1383,6 +1418,7 @@ def run_rsync(
         rsync_options=rsync_options,
         timeout=timeout,
         dry_run=dry_run,
+        vanished_retry_guard=vanished_retry_guard,
     )
 
 
@@ -1464,6 +1500,7 @@ def run_rsync_from_remote(
     rsync_options: list[str] | None = None,
     timeout: int | None = None,
     dry_run: bool = False,
+    vanished_retry_guard: Callable[[], bool] | None = None,
 ) -> RemoteResult:
     """Rsync a remote path to the local machine.
 
@@ -1484,6 +1521,7 @@ def run_rsync_from_remote(
         rsync_options=rsync_options,
         timeout=timeout,
         dry_run=dry_run,
+        vanished_retry_guard=vanished_retry_guard,
     )
 
 

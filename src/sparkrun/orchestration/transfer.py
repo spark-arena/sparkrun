@@ -75,6 +75,11 @@ _RSYNC_FAILURE_PATTERNS: tuple[tuple[str, str], ...] = (
 )
 
 
+def rsync_had_vanished_files(result: RemoteResult) -> bool:
+    """A vanished-source diagnostic is evidence of ENOENT, not its cause."""
+    return result.returncode == 24 and "file has vanished" in ((result.stderr or "") + (result.stdout or "")).lower()
+
+
 def classify_rsync_failure(result: RemoteResult) -> str:
     """Return a short human-readable reason for an rsync failure.
 
@@ -87,6 +92,8 @@ def classify_rsync_failure(result: RemoteResult) -> str:
     for needle, reason in _RSYNC_FAILURE_PATTERNS:
         if needle in stderr:
             return reason
+    if rsync_had_vanished_files(result):
+        return "source paths unavailable during transfer"
     return "rsync failed (rc=%d)" % result.returncode
 
 
