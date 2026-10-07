@@ -1,6 +1,8 @@
 """Standalone same-host Docker-start readiness probe, fed over SSH stdin."""
 
 import datetime
+import errno
+from email.utils import parsedate_to_datetime
 import hashlib
 import json
 import os
@@ -15,6 +17,155 @@ import urllib.request
 OPENAI_CHAT_STREAM = "openai-chat-stream-v1"
 OPENAI_RESPONSES_STREAM = "openai-responses-stream-v1"
 ANTHROPIC_MESSAGES_STREAM = "anthropic-messages-stream-v1"
+INFERENCE_STARTED = "SPARKRUN_INFERENCE_STARTED"
+INFERENCE_RETRY = "SPARKRUN_INFERENCE_RETRY "
+RETRY_HTTP_CODES = frozenset({408, 429, 502, 503, 504})
+
+
+class InferenceBudget:
+    """One monotonic budget for discovery, inference attempts and backoff."""
+
+    def __init__(self, seconds):
+        self.started = time.monotonic()
+        self.deadline = self.started + seconds
+        self.attempts = 0
+        self.last_error = ""
+
+    def remaining(self):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            detail = "; last transient error: " + self.last_error if self.last_error else ""
+            raise TimeoutError("inference readiness timed out after %d attempt(s)%s" % (self.attempts, detail))
+        return remaining
+
+
+class InferenceHTTP:
+    """Clamp each HTTP open and observe reads against the shared deadline.
+
+    Socket timeouts alone are inactivity limits. The owning process supervisor
+    also enforces the inference deadline if a header/read call never returns.
+    """
+
+    def __init__(self, http, budget):
+        self.http, self.budget = http, budget
+
+    def open(self, request, *, timeout):
+        response = self.http.open(request, timeout=min(timeout, self.budget.remaining()))
+        try:
+            self.budget.remaining()
+        except TimeoutError:
+            response.close()
+            raise
+        return InferenceResponse(response, self.budget)
+
+
+class InferenceResponse:
+    def __init__(self, response, budget):
+        self.response, self.budget = response, budget
+
+    def __enter__(self):
+        self.response.__enter__()
+        return self
+
+    def __exit__(self, *args):
+        return self.response.__exit__(*args)
+
+    def read(self, *args):
+        self.budget.remaining()
+        data = self.response.read(*args)
+        self.budget.remaining()
+        return data
+
+    def readline(self, *args):
+        self.budget.remaining()
+        data = self.response.readline(*args)
+        self.budget.remaining()
+        return data
+
+
+def retry_after(error):
+    """Parse Retry-After seconds or an HTTP date; ignore invalid values."""
+    if not isinstance(error, urllib.error.HTTPError) or error.headers is None:
+        return 0.0
+    value = error.headers.get("Retry-After", "").strip()
+    if not value:
+        return 0.0
+    try:
+        if value.isascii() and value.isdecimal():
+            return float(value)
+        parsed = parsedate_to_datetime(value)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+        return max(0.0, parsed.timestamp() - time.time())
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+
+
+def transient_inference_error(error):
+    """Return a safe diagnostic only for explicitly retryable failures."""
+    if isinstance(error, urllib.error.HTTPError):
+        return "HTTP %d" % error.code if error.code in RETRY_HTTP_CODES else None
+    cause = error.reason if isinstance(error, urllib.error.URLError) else error
+    if isinstance(cause, ConnectionRefusedError) or (isinstance(cause, OSError) and cause.errno == errno.ECONNREFUSED):
+        return "connection refused"
+    if isinstance(cause, ConnectionResetError) or (isinstance(cause, OSError) and cause.errno == errno.ECONNRESET):
+        return "connection reset"
+    return None
+
+
+def wait_to_retry(config, result, budget, delay):
+    """Check the same container before and throughout a bounded backoff."""
+    wake = min(time.monotonic() + delay, budget.deadline)
+    while True:
+        budget.remaining()
+        if inspect_container(config["container"]) != (result["container_id"], result["container_started_unix_ns"]):
+            raise RuntimeError("head container changed during inference readiness retry")
+        remaining = min(wake - time.monotonic(), budget.remaining())
+        if remaining <= 0:
+            return
+        time.sleep(min(1.0, remaining))
+
+
+def observe_inference(config, http, base, result):
+    budget = InferenceBudget(config["inference_timeout_s"])
+    # stdout remains the single observation JSON. The supervisor watches this
+    # fixed stderr marker to bound blocking IO separately from port/health.
+    print(INFERENCE_STARTED, file=sys.stderr, flush=True)
+    client = InferenceHTTP(http, budget)
+    backoff = 2.0
+    while True:
+        remaining = budget.remaining()
+        budget.attempts += 1
+        attempt = dict(result)
+        try:
+            value = INFERENCE_PROBES[config.get("inference_style", OPENAI_CHAT_STREAM)](
+                {**config, "inference_timeout_s": remaining}, client, base, attempt
+            )
+            budget.remaining()
+            value.update(inference_attempts=budget.attempts, inference_wait_s=time.monotonic() - budget.started)
+            return value
+        except (OSError, urllib.error.URLError) as error:
+            reason = transient_inference_error(error)
+            delay = max(backoff, retry_after(error))
+            if isinstance(error, urllib.error.HTTPError):
+                error.close()
+            # In exact-response acceptance mode a token may already have been
+            # observed. Never replay or combine partial streams across attempts.
+            if attempt.get("inference_ready") or reason is None:
+                cause = error.reason if isinstance(error, urllib.error.URLError) else error
+                if isinstance(cause, TimeoutError):
+                    budget.remaining()  # Preserve the last retry reason at the deadline.
+                raise
+            budget.last_error = reason
+            remaining = budget.remaining()
+            print(
+                INFERENCE_RETRY
+                + "attempt %d: %s; backoff %.1fs; %.1fs remaining" % (budget.attempts, reason, min(delay, remaining), remaining),
+                file=sys.stderr,
+                flush=True,
+            )
+        wait_to_retry(config, result, budget, delay)
+        backoff = min(backoff * 2, 30.0)
 
 
 class ObservationUnavailable(RuntimeError):
@@ -127,7 +278,7 @@ def observe(config):
         if inspect_container(config["container"]) != (container_id, started):
             raise RuntimeError("head container changed during readiness observation")
         return result
-    return INFERENCE_PROBES[style](config, http, base, result)
+    return observe_inference(config, http, base, result)
 
 
 def observe_openai_chat_stream(config, http, base, result):

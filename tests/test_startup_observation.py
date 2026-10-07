@@ -432,7 +432,7 @@ def test_inference_configuration_defaults_and_overrides(tmp_path):
     path.write_text("{}")
     settings = SparkrunConfig(config_path=path)
     assert settings.readiness_inference_enabled
-    assert settings.readiness_inference_timeout_s == 120
+    assert settings.readiness_inference_timeout_s == 1200
     assert settings.readiness_inference_prompt == "Reply with exactly: sparkrun-ready"
     path.write_text('readiness:\n  inference: false\n  inference_timeout_s: 42\n  inference_prompt: "Reply OK"\n')
     settings = SparkrunConfig(config_path=path)

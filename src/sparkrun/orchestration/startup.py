@@ -83,6 +83,7 @@ def validate_observation(value, *, require_inference=False, expected_style=None,
 def run_probe(host, config, *, ssh_kwargs=None, cancel=None):
     """Run one head-local probe; cancellation terminates only this subprocess."""
     from sparkrun.orchestration.ssh import build_ssh_cmd, should_run_locally
+    from sparkrun.scripts.startup_probe import INFERENCE_STARTED, INFERENCE_RETRY
 
     if cancel is not None and cancel.is_set():
         raise InterruptedError("cancelled")
@@ -99,18 +100,47 @@ def run_probe(host, config, *, ssh_kwargs=None, cancel=None):
     process = subprocess.Popen(
         command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True
     )
+    inference_deadline = None
+    retry_messages_seen = 0
+    last_retry = None
+
+    def progress(stderr):
+        nonlocal inference_deadline, retry_messages_seen, last_retry
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode(errors="replace")
+        # communicate() timeout output is cumulative. Only consume complete
+        # lines and report each retry once, without logging request credentials.
+        lines = (stderr or "").split("\n")[:-1]
+        if inference_deadline is None and INFERENCE_STARTED in lines:
+            inference_deadline = time.monotonic() + config["inference_timeout_s"]
+        retries = [line.removeprefix(INFERENCE_RETRY) for line in lines if line.startswith(INFERENCE_RETRY)]
+        for detail in retries[retry_messages_seen:]:
+            if config.get("api_key"):
+                detail = detail.replace(config["api_key"], "[redacted]")
+            logger.info("Inference readiness retry: %s", detail)
+            last_retry = detail
+        retry_messages_seen = len(retries)
+
     try:
         pending = script
         while True:
             if cancel is not None and cancel.is_set():
                 raise InterruptedError("cancelled")
-            if time.monotonic() >= deadline:
+            now = time.monotonic()
+            if now >= deadline:
                 raise TimeoutError("startup observation exceeded its deadline")
+            if inference_deadline is not None and now >= inference_deadline:
+                raise TimeoutError("inference readiness exceeded its deadline" + ("; last retry: " + last_retry if last_retry else ""))
+            wait = min(0.2, deadline - now)
+            if inference_deadline is not None:
+                wait = min(wait, inference_deadline - now)
             try:
-                stdout, stderr = process.communicate(pending, timeout=0.2)
+                stdout, stderr = process.communicate(pending, timeout=wait)
+                progress(stderr)
                 break
-            except subprocess.TimeoutExpired:
+            except subprocess.TimeoutExpired as error:
                 pending = None
+                progress(error.stderr)
         if process.returncode:
             detail = stderr[-1000:]
             if config.get("api_key"):

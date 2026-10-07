@@ -51,7 +51,8 @@ class ReadinessSettings:
     health_timeout_s: float = DEFAULT_HEALTH_READY_TIMEOUT_S
     inference: bool = True
     inference_style: str = "auto"
-    inference_timeout_s: float = 120.0
+    # The first request can trigger compilation after HTTP health is ready.
+    inference_timeout_s: float = 1200.0
     inference_prompt: str = "Reply with exactly: sparkrun-ready"
 
 

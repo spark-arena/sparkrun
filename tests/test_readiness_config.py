@@ -51,7 +51,7 @@ def test_unbounded_port_health_and_invalid_global_fallbacks():
         recipe=recipe({"port_timeout_s": 0, "health_timeout_s": -1}),
     )
     assert math.isinf(resolved.port_timeout_s) and math.isinf(resolved.health_timeout_s)
-    assert resolved.inference_timeout_s == 120 and resolved.inference_prompt == ReadinessSettings().inference_prompt
+    assert resolved.inference_timeout_s == 1200 and resolved.inference_prompt == ReadinessSettings().inference_prompt
     assert settings({"port_timeout_s": "soon"}).readiness_port_timeout_s == 1800
 
 

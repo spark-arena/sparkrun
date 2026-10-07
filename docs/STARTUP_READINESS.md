@@ -112,7 +112,7 @@ readiness:
   health_timeout_s: 900
   inference: true
   inference_style: auto
-  inference_timeout_s: 120
+  inference_timeout_s: 1200
   inference_prompt: "Reply with exactly: sparkrun-ready"
 ```
 
@@ -138,7 +138,31 @@ readiness:
 ```
 
 The inference timeout is a separate finite, positive budget after port and HTTP
-health readiness. For port/health timeouts, zero or negative means wait until
+health readiness. Its 20-minute default allows first-request compilation or graph
+preparation after HTTP health succeeds; normal launch readiness completes as soon
+as the first non-empty text or reasoning token arrives.
+
+The built-in Docker host probe retries HTTP 408, 429, 502, 503, and 504, plus
+connection refusal or reset before any text arrives. Retries use exponential
+backoff (2, 4, 8, 16, then at most 30 seconds) and wait longer if the server's
+`Retry-After` header requests it. All attempts, optional model discovery, and
+backoff share the same `inference_timeout_s` budget; retrying never resets it.
+The budget also bounds stalled response headers and streams. A pending request
+can use the remaining budget without being interrupted to try another request.
+
+Authentication/invalid-request errors, generic HTTP 500s, malformed streams,
+explicit inference errors, and other transport failures fail immediately. A
+partial text response is never replayed, including in exact-response validation
+mode. During backoff the probe checks that the head container is still running
+with the same identity and start time. Cancellation stops the observer promptly
+without stopping the workload. Retry reasons and delays appear in the launch
+log; deadline errors retain the last transient failure when available.
+
+The raw startup observation includes `inference_attempts` and `inference_wait_s`
+for successful probes. Request TTFT measures the final successful request;
+Docker-start TTFT includes the time spent retrying.
+
+For port/health timeouts, zero or negative means wait until
 ready, the container fails, or the caller cancels. Unknown recipe fields,
 non-boolean inference settings, empty prompts, and invalid timeouts are rejected
 when loading the recipe. Omit a field to inherit it; `null` is not an override.
@@ -326,11 +350,11 @@ observe a fast/already-ready endpoint late. The observation retains
 first inference by much more than a second.
 
 For controlled qualification, `run_probe` can take an `expected` final response.
-It still issues one inference request and timestamps first text, but then
-requires the complete stream, finish reason, and exact final content before
-returning `response_validated: true`. ColdSnap's maintained harness uses this
-mode for normal-launch controls and reads ColdSnap acceptance for restore
-cases. Match prompts, token limits, topology, engine, and cache policy. Keep
+It timestamps first text, but then requires the complete stream, finish reason,
+and exact final content before returning `response_validated: true`. Transient
+failures before first text use the same bounded retry policy. ColdSnap's
+maintained harness uses this mode for normal-launch controls and reads ColdSnap
+acceptance for restore cases. Match prompts, token limits, topology, engine, and cache policy. Keep
 profile labels; do not mix rank-local samples with historical control-node
 observer measurements. This feature is measurement infrastructure, not new
 GPU qualification or published performance data.
