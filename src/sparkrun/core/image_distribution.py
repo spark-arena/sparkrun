@@ -118,13 +118,15 @@ def resolve_distributed_image(
     *,
     ssh_kwargs: dict | None = None,
     dry_run: bool = False,
+    session: Any = None,
 ) -> str:
     """Resolve a verified registry pin to a host's installed immutable image.
 
     Ordinary tags, disabled providers, and dry runs remain unchanged. Optional
     provider lookup allows a later offline operation to recover a prior import.
     Providers must validate both their pin receipt and the resident Docker ID;
-    a mutable alias by itself is not proof of a registry pin.
+    a mutable alias by itself is not proof of a registry pin. An explicitly
+    supplied session is borrowed and remains owned by the caller.
     """
     if dry_run or "@" not in image:
         return image
@@ -144,7 +146,9 @@ def resolve_distributed_image(
     from sparkrun.transports.session import SshHostSession
 
     ssh = ssh_kwargs or {}
-    session = SshHostSession(ssh_user=ssh.get("ssh_user"), ssh_key=ssh.get("ssh_key"), ssh_options=ssh.get("ssh_options"))
+    owns_session = session is None
+    if owns_session:
+        session = SshHostSession(ssh_user=ssh.get("ssh_user"), ssh_key=ssh.get("ssh_key"), ssh_options=ssh.get("ssh_options"))
     try:
         reference = resolve(
             ImageCopyRequest(
@@ -158,7 +162,8 @@ def resolve_distributed_image(
             )
         )
     finally:
-        session.close()
+        if owns_session and session is not None:
+            session.close()
     if reference is None:
         return image
     if not isinstance(reference, str) or not _IMAGE_ID.fullmatch(reference):
@@ -186,8 +191,12 @@ def try_image_copy(
     timeout: float | None,
     dry_run: bool,
     offline: bool,
+    session: Any = None,
 ) -> list[str] | None:
-    """Return failed management hosts, or None to use the built-in copy."""
+    """Return failed hosts, or None to use the builtin copy.
+
+    A supplied host session is borrowed; only internally created sessions close.
+    """
     config = _CONFIG.get()
     selected = config.get("container_distribution_provider", "auto") if config is not None else "auto"
     if selected == "builtin" or (selected == "auto" and not _PROVIDERS):
@@ -204,11 +213,12 @@ def try_image_copy(
     if len(addresses) != len(targets) or len(set(targets)) != len(targets):
         raise ValueError("Image copy requires unique targets and aligned transfer addresses")
 
-    # These leaf paths already represent SSH-connected hosts. Future callers may
-    # supply another transport's session through an extended operation context.
+    # Existing callers use SSH; integrations can reuse their prepared transport.
     from sparkrun.transports.session import SshHostSession
 
-    session = None if dry_run else SshHostSession(ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options)
+    owns_session = session is None and not dry_run
+    if owns_session:
+        session = SshHostSession(ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options)
     request = ImageCopyRequest(
         image=image,
         source_host=source_host,
@@ -233,7 +243,7 @@ def try_image_copy(
         logger.error("Image copy unsupported: %s", error)
         return list(targets)
     finally:
-        if session is not None:
+        if owns_session and session is not None:
             session.close()
 
     if not isinstance(result, ImageCopyResult) or set(result.outcomes) != set(targets):
@@ -263,6 +273,7 @@ def try_image_pull(
     dry_run: bool,
     offline: bool,
     force_pull: bool,
+    session: Any = None,
 ) -> list[str] | None:
     """Optional registry-to-target operation before the builtin source pull.
 
@@ -270,6 +281,7 @@ def try_image_pull(
     A provider lacking this additive capability continues through API v1 copy.
     Partial failure raises: an outer auto-delegated fallback must not select a
     different mutable-tag identity after some targets have already completed.
+    A supplied host session is borrowed, including on failure.
     """
     if not targets:
         return None
@@ -291,7 +303,9 @@ def try_image_pull(
         raise ValueError("Image pull requires unique targets and aligned transfer addresses")
     from sparkrun.transports.session import SshHostSession
 
-    session = None if dry_run else SshHostSession(ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options)
+    owns_session = session is None and not dry_run
+    if owns_session:
+        session = SshHostSession(ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options)
     request = ImagePullRequest(
         image=image,
         source_host=source_host,
@@ -319,7 +333,7 @@ def try_image_pull(
             return None
         raise ImageDistributionFailed("Image pre-pull provider unsupported: " + str(error)) from error
     finally:
-        if session is not None:
+        if owns_session and session is not None:
             session.close()
     if result is None:
         return None

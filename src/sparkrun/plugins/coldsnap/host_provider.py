@@ -17,11 +17,13 @@ import socketserver
 import tempfile
 import time
 from collections.abc import Mapping
+from copy import copy
 from pathlib import Path
 from threading import Lock, Thread
 from typing import Any, Self
 
 from sparkrun.core.config import resolve_hf_token
+from sparkrun.core.offline import resolve_offline
 from sparkrun.orchestration.primitives import build_ssh_kwargs
 from sparkrun.transports import open_cluster_host_session
 from sparkrun.transports.session import HostCommandResult, HostSessionError
@@ -151,19 +153,33 @@ class ColdSnapHostProvider:
         session_factory=None,
         capabilities=None,
         runtime_factory=None,
+        offline: bool | None = None,
     ):
         self.request_id = str(request.get("id") or "")
         units = request.get("launch", {}).get("units", [])
         self.hosts = frozenset(str(unit.get("host") or "") for unit in units if isinstance(unit, Mapping))
         if not self.request_id or not self.hosts or "" in self.hosts:
             raise RuntimeError("ColdSnap host-provider request identity is incomplete")
-        ssh_kwargs = build_ssh_kwargs(sctx.config)
-        if cluster is not None and getattr(cluster, "user", None):
-            ssh_kwargs = {**ssh_kwargs, "ssh_user": cluster.user}
+        config = sctx.config
+        if cluster is not None and callable(getattr(config, "for_cluster", None)):
+            config = config.for_cluster(cluster)
+        elif cluster is not None and getattr(cluster, "user", None):
+            config = copy(config)
+            config.ssh_user = cluster.user
+        ssh_kwargs = build_ssh_kwargs(config)
         factory = session_factory or open_cluster_host_session
         self.session = factory(cluster, ssh_kwargs=ssh_kwargs)
         try:
-            self.runtime = (runtime_factory or DockerManagerRuntime)(self.session)
+            self.runtime = (
+                runtime_factory(self.session)
+                if runtime_factory is not None
+                else DockerManagerRuntime(
+                    self.session,
+                    config=config,
+                    ssh_kwargs=ssh_kwargs,
+                    offline=resolve_offline(offline, cluster).offline,
+                )
+            )
         except BaseException:
             self.session.close()
             raise

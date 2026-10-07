@@ -302,3 +302,54 @@ def test_optional_staging_also_returns_locally_runnable_pins(monkeypatch):
     staged = stage_prepared_images(prepared, recipe, list(IDS), "/cache", config)
     assert staged.content_images_by_node == tuple(IDS.values())
     assert staged.prepared.images_by_node == (PIN, PIN)
+
+
+@pytest.mark.parametrize("operation", ["pull", "copy", "resolve"])
+@pytest.mark.parametrize("borrowed", [False, True])
+@pytest.mark.parametrize("fails", [False, True])
+def test_provider_session_ownership_on_success_and_failure(monkeypatch, operation, borrowed, fails):
+    from unittest.mock import Mock
+
+    session = SimpleNamespace(close=Mock())
+    factory = Mock(return_value=session)
+    monkeypatch.setattr("sparkrun.transports.session.SshHostSession", factory)
+    requests = []
+
+    def provider(request):
+        requests.append(request)
+        assert request.session is session
+        if fails:
+            raise RuntimeError("transfer failed")
+        if operation == "resolve":
+            return IDS["a"]
+        return api.ImageCopyResult({"a": "complete"}, runtime_images={"a": IDS["a"]})
+
+    api.register_image_distribution_provider("test", SimpleNamespace(copy=provider, pull=provider, local_image=provider))
+    kwargs = {"session": session} if borrowed else {}
+
+    def invoke():
+        if operation == "resolve":
+            return api.resolve_distributed_image(PIN, "a", **kwargs)
+        return getattr(api, "try_image_" + operation)(
+            image=PIN,
+            source_host=None,
+            targets=["a"],
+            transfer_hosts=None,
+            ssh_user=None,
+            ssh_key=None,
+            ssh_options=None,
+            timeout=30,
+            dry_run=False,
+            offline=False,
+            **({"force_pull": False} if operation == "pull" else {}),
+            **kwargs,
+        )
+
+    if fails:
+        with pytest.raises(RuntimeError, match="transfer failed"):
+            invoke()
+    else:
+        assert invoke() == (IDS["a"] if operation == "resolve" else [])
+    assert len(requests) == 1
+    assert factory.call_count == (0 if borrowed else 1)
+    assert session.close.call_count == (0 if borrowed else 1)

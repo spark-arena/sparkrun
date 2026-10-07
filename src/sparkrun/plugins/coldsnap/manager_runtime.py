@@ -12,6 +12,12 @@ import json
 from collections.abc import Mapping
 from typing import Any, Protocol
 
+from sparkrun.core.image_distribution import (
+    has_image_distribution_provider,
+    image_distribution_operation,
+    resolve_distributed_image,
+    try_image_pull,
+)
 from sparkrun.transports.session import HostCommandResult, HostSessionError
 
 from .runtime_contract import validate_runtime_request
@@ -30,12 +36,21 @@ class RuntimeOperationError(HostSessionError):
 class DockerManagerRuntime:
     """Realize ColdSnap workload and OCI requests with a host Docker engine."""
 
-    def __init__(self, session, *, command: str = "docker"):
+    def __init__(self, session, *, command: str = "docker", config=None, ssh_kwargs=None, offline: bool = False):
         self.session = session
         self.command = command
+        self.config = config
+        self.ssh_kwargs = dict(ssh_kwargs or {})
+        self.offline = offline
 
     def invoke(self, host: str, request: Mapping[str, Any]) -> dict[str, Any]:
         validate_runtime_request(request)
+        # Each external-controller callback runs on its own thread. Enter the
+        # operation's policy scope here instead of relying on ambient context.
+        return self._invoke(host, request, config=self.config)
+
+    @image_distribution_operation
+    def _invoke(self, host: str, request: Mapping[str, Any], *, config) -> dict[str, Any]:
         action = request["action"]
         if action == "image-inspect":
             result = self._execute(
@@ -44,7 +59,7 @@ class DockerManagerRuntime:
                     self.command,
                     "image",
                     "inspect",
-                    request["image"],
+                    self._runtime_image(host, request["image"]),
                     "--format",
                     '{"id":{{json .Id}},"repo_digests":{{json .RepoDigests}},"size":{{json .Size}}}',
                 ],
@@ -55,7 +70,12 @@ class DockerManagerRuntime:
             except (UnicodeDecodeError, json.JSONDecodeError) as error:
                 raise HostSessionError("Docker image inspection returned invalid JSON") from error
             return {"image": info}
-        if action in {"image-pull", "image-push"}:
+        if action == "image-pull":
+            self._pull_image(host, request["image"])
+            return {}
+        if action == "image-push":
+            if self.offline:
+                raise HostSessionError("ColdSnap image push is unavailable offline")
             self.session.docker_registry(
                 host,
                 action.removeprefix("image-"),
@@ -65,7 +85,7 @@ class DockerManagerRuntime:
         if action == "image-tag":
             self._execute(
                 host,
-                [self.command, "tag", request["source"], request["target"]],
+                [self.command, "tag", self._runtime_image(host, request["source"]), request["target"]],
                 "image tag",
             )
             return {}
@@ -122,9 +142,67 @@ class DockerManagerRuntime:
             return {}
         raise HostSessionError(f"unsupported manager runtime action {action!r}")
 
+    def _runtime_image(self, host: str, image: str) -> str:
+        if self.config is None:
+            return image
+        # Resolve afresh in every callback/activation: a prior operation's
+        # mapping is not evidence that the image is still resident on this host.
+        return resolve_distributed_image(image, host, ssh_kwargs=self.ssh_kwargs, session=self.session)
+
+    def _pull_image(self, host: str, image: str, *, force: bool = False) -> None:
+        if image.startswith("sha256:"):
+            raise HostSessionError("ColdSnap local-only image must already be resident: " + image)
+        if self.offline and force:
+            raise HostSessionError("ColdSnap cannot force an image pull offline")
+        handled = None
+        if self.config is not None:
+            handled = try_image_pull(
+                image=image,
+                source_host=None,
+                targets=[host],
+                transfer_hosts=[host],
+                ssh_user=self.ssh_kwargs.get("ssh_user"),
+                ssh_key=self.ssh_kwargs.get("ssh_key"),
+                ssh_options=self.ssh_kwargs.get("ssh_options"),
+                timeout=None,
+                dry_run=False,
+                offline=self.offline,
+                force_pull=force,
+                session=self.session,
+            )
+        if handled is None:
+            if self.offline:
+                raise HostSessionError("ColdSnap image is unavailable offline: " + image)
+            self.session.docker_registry(host, "pull", image)
+        elif handled:
+            raise HostSessionError("ColdSnap image distribution failed on: " + ", ".join(handled))
+
+    def _workload_image(self, host: str, workload: Mapping[str, Any]) -> tuple[str, str]:
+        image = workload["image"]
+        policy = workload.get("pull_policy") or "missing"
+        managed = self.config is not None and has_image_distribution_provider()
+        if policy == "always" and (managed or self.offline):
+            self._pull_image(host, image, force=True)
+        reference = self._runtime_image(host, image)
+        if managed and policy == "missing":
+            try:
+                self._execute(host, [self.command, "image", "inspect", reference], "image inspection")
+            except RuntimeOperationError as error:
+                if error.code != "not_found":
+                    raise
+                self._pull_image(host, image)
+                reference = self._runtime_image(host, image)
+        # Prevent Docker from independently fetching or interpreting an image
+        # ID as a registry reference after the provider verified it.
+        if reference != image or managed or self.offline:
+            policy = "never"
+        return reference, policy
+
     def _build(self, host: str, build: Mapping[str, Any]) -> dict[str, Any]:
         # invoke() is the validation boundary; these helpers only translate
         # admitted requirements, keeping the wire schema in runtime_contract.
+        if self.offline:
+            raise HostSessionError("ColdSnap image builds are unavailable offline")
         contexts = build.get("contexts") or {}
         arguments = [self.command, "build"]
         arguments.append("--pull=true" if build.get("pull") else "--pull=false")
@@ -145,6 +223,7 @@ class DockerManagerRuntime:
         return {}
 
     def _run(self, host: str, workload: Mapping[str, Any]) -> dict[str, Any]:
+        image, pull_policy = self._workload_image(host, workload)
         arguments = [self.command, "run"]
         if "input" in workload:
             arguments.append("-i")
@@ -155,7 +234,6 @@ class DockerManagerRuntime:
         name = workload.get("name")
         if name:
             arguments.extend(["--name", name])
-        pull_policy = workload.get("pull_policy")
         if pull_policy:
             arguments.extend(["--pull", pull_policy])
         network = workload.get("network")
@@ -194,7 +272,7 @@ class DockerManagerRuntime:
         entrypoint = workload.get("entrypoint")
         if entrypoint:
             arguments.extend(["--entrypoint", entrypoint])
-        arguments.append(workload["image"])
+        arguments.append(image)
         arguments.extend(workload.get("command") or [])
         input_data = _decode_optional_bytes(workload.get("input"))
         result = self._execute(

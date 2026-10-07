@@ -903,3 +903,13 @@ typed contract; the supervisor supplies no legacy model adapter.
 The bundled OCI Relay adapter defaults on for alpha and off for stable/beta.
 See [OCI Relay](OCI_RELAY.md) for enablement, platform support, and the
 commit-pinned vendoring workflow.
+
+
+Image-provider consumers can reuse a prepared transport by passing `session=` to
+`core.image_distribution.try_image_pull`, `try_image_copy`, and
+`resolve_distributed_image`. This session is borrowed and is never closed by
+those helpers, including on failure. Calls without a session retain their owned
+SSH-session lifecycle. Provider selection still uses `image_distribution_operation`
+with the operation's `config`; callers dispatching to separate threads must
+establish that scope in each thread. ColdSnap's Docker manager follows this
+contract for capsule pulls, inspections and launches.

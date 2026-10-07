@@ -409,6 +409,7 @@ class ColdSnapService:
             binary=str(_strategy_options(context).get("binary") or ""),
             sctx=context.sctx,
             cluster=context.plan.cluster,
+            offline=context.options.offline,
         )
         try:
             receipt = json.loads(completed.stdout)
@@ -459,6 +460,7 @@ class ColdSnapService:
             binary=str(_strategy_options(context.execution).get("binary") or ""),
             sctx=context.execution.sctx,
             cluster=context.execution.plan.cluster,
+            offline=context.execution.options.offline,
         )
         # Published 0.3.7 and older develop-next hosts lack this optional field.
         observation = getattr(completed, "startup_observation", {})
@@ -782,6 +784,7 @@ class ColdSnapService:
             binary=str(options.strategy_options.get("binary") or "") if isinstance(options.strategy_options, Mapping) else "",
             sctx=sctx,
             cluster=plan.cluster,
+            offline=options.offline,
         )
         try:
             report = json.loads(completed.stdout)
@@ -925,6 +928,7 @@ class ColdSnapService:
                 capture_output=False,
                 sctx=sctx,
                 cluster=plan.cluster,
+                offline=options.offline,
             )
             if operation == "publish":
                 publication = default_artifact_publish_reference(plan=plan, options=options, snapshot_driver=snapshot_driver)
@@ -1017,6 +1021,7 @@ class ColdSnapService:
         binary: str = "",
         sctx=None,
         cluster=None,
+        offline: bool | None = None,
     ):
         executable = binary or self.binary
         environment = None
@@ -1088,7 +1093,9 @@ class ColdSnapService:
             len(request["launch"]["units"]),
             len(request["launch"]["execution"]["workers"]),
         )
-        provider_context = self.host_provider_factory(request, sctx=sctx, cluster=cluster) if cluster is not None else nullcontext(None)
+        provider_context = (
+            self.host_provider_factory(request, sctx=sctx, cluster=cluster, offline=offline) if cluster is not None else nullcontext(None)
+        )
         with TemporaryDirectory(prefix="sparkrun-coldsnap-receipt-") as receipt_root:
             receipt_path = Path(receipt_root) / "operation.json"
             arguments.extend(["--receipt-json", str(receipt_path)])

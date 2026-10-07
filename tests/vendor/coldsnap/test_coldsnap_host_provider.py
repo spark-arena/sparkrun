@@ -42,7 +42,7 @@ def _request(operation="restore"):
 
 def _context():
     return SimpleNamespace(
-        config=SimpleNamespace(ssh_user=None, ssh_key=None, ssh_options=None),
+        config=SimpleNamespace(ssh_user=None, ssh_key=None, ssh_options=None, get=lambda _key, default=None: default),
     )
 
 

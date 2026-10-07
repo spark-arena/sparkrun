@@ -5,10 +5,10 @@ version = "0.1.12"
 module = "sparkrun.plugins.coldsnap"
 feature = "plugins.coldsnap"
 repository = "git@github.com:sparksq/sparkrun-coldsnap-plugin.git"
-commit = "e9271ae2d47f82bd3a00c752a71ab70093d5494c"
-tree = "7a1207a7b8ffdbe77234b3534488934763c897df"
+commit = "1e0a6908acde6f1ff339dd33c1c27762333f376c"
+tree = "5fa2ac63d27060ff6e6cb93ed744e44b82d0c5c8"
 sparkrun = ">=0.4.0,<0.5"
-content_sha256 = "f96a6b79b1d36747d700d51d16ab9448f717731c7d5a8a11383fc856f3958f12"
+content_sha256 = "1735c956426306d0516cd7e64d494e2de4b52e2548f5994986a027338e55b339"
 
 [[files]]
 path = "src/sparkrun/plugins/coldsnap/LICENSE"
@@ -72,7 +72,7 @@ sha256 = "71ec417ab05f74a11d4b02b106099fbe3c27280519592e838a6a86519fa2c140"
 
 [[files]]
 path = "src/sparkrun/plugins/coldsnap/host_provider.py"
-sha256 = "17154a2d90488b23c967da36ab35d8327e14e1a6b72c8c56a054697ffd91a20e"
+sha256 = "e6bb3118d81edf8f4e94c274bd6156eff539519e43e4be488b33b015aa960229"
 
 [[files]]
 path = "src/sparkrun/plugins/coldsnap/local_overlays.py"
@@ -80,7 +80,7 @@ sha256 = "3b099a766f4819c4b94fee09e1c23ef00ca454c61ec899b2b821cf074d405c26"
 
 [[files]]
 path = "src/sparkrun/plugins/coldsnap/manager_runtime.py"
-sha256 = "bd718977d15348cb69c0d29e2f8d08f298e285f0a61ca25c4de282c2b0d31645"
+sha256 = "9cbff782ec382f39d0f67576599edae4b741a83af16907e433d04f1677c07b01"
 
 [[files]]
 path = "src/sparkrun/plugins/coldsnap/oci_artifacts.py"
@@ -112,7 +112,7 @@ sha256 = "80f7928b9af7cb440c2f7f4cd0b105f4f31c43106935c6e73a9eebfc80d241ba"
 
 [[files]]
 path = "src/sparkrun/plugins/coldsnap/service.py"
-sha256 = "07160998f65ccefe7c52fdb548552e3e1fddc1498f83fecc7ff9857b481fe44b"
+sha256 = "5f69bd5da2644f7c5f5791ecebbff1c4612dc89c62e5e8083be7549530726b5a"
 
 [[files]]
 path = "src/sparkrun/plugins/coldsnap/target_tools.py"
@@ -152,7 +152,11 @@ sha256 = "1e21f295c6ac879226fc3b27a6221cebace8452ed6fb32a4b26a4630d272a859"
 
 [[files]]
 path = "tests/vendor/coldsnap/test_coldsnap_host_provider.py"
-sha256 = "293bd4936d2ef26b05efedd43a93f7039ad14efd8882600eee410fbb900ed73c"
+sha256 = "9ff43c8da283a228390612b5be5bf2c1bfa91d0dfba7b19005c9db8ac34d4289"
+
+[[files]]
+path = "tests/vendor/coldsnap/test_coldsnap_image_distribution.py"
+sha256 = "99c5d2f586396551e3f5869073bf6c045110982b475a2b86044072a58b4ce018"
 
 [[files]]
 path = "tests/vendor/coldsnap/test_coldsnap_local_overlays.py"
