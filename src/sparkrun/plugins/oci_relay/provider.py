@@ -141,6 +141,9 @@ def _source_address(request, settings, facts):
 
 class RelayProvider:
     supports_offline_pull = True
+    # Sparkrun honors this default only for pre-transfer unsupported requests in
+    # provider=auto mode. Explicit host configuration takes precedence.
+    fallback_on_unsupported = True
 
     def __init__(self):
         # Serialize image groups for now: a new group cannot multiply the host budgets.

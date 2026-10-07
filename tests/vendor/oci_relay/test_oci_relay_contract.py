@@ -6,6 +6,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 
 def test_oci_relay_release_pins_and_host_progress_level():
     from sparkrun.plugins import oci_relay
@@ -43,3 +45,45 @@ def test_oci_relay_digest_handoff_capability():
     RelayProvider._require_pin_api()
     assert RelayProvider.supports_offline_pull is True
     assert ImageCopyResult({'host': 'complete'}, runtime_images={'host': 'sha256:' + 'b' * 64}).runtime_images['host']
+
+
+@pytest.mark.parametrize('kind', ['copy', 'pull'])
+def test_oci_relay_unavailable_download_defaults_to_builtin(monkeypatch, kind):
+    from sparkrun.core import image_distribution as api
+    from sparkrun.plugins.oci_relay.provider import RelayProvider
+    from sparkrun.plugins.oci_relay.release import BinaryInvalid, BinaryUnavailable
+
+    provider = RelayProvider()
+    monkeypatch.setattr(provider, '_settings', lambda request: {})
+    monkeypatch.setattr(api, '_PROVIDERS', {'oci-relay': provider})
+    monkeypatch.setattr('sparkrun.plugins.oci_relay.provider.platform.system', lambda: 'Linux')
+
+    def unavailable(*args, **kwargs):
+        raise BinaryUnavailable('release download unavailable')
+
+    monkeypatch.setattr(provider, '_copy', unavailable)
+    arguments = dict(image='registry.test/image:tag', source_host=None, targets=['host'], transfer_hosts=None,
+                     ssh_user=None, ssh_key=None, ssh_options=None, timeout=30, dry_run=False,
+                     offline=False, session=object())
+    invoke = api.try_image_copy if kind == 'copy' else api.try_image_pull
+    if kind == 'pull':
+        arguments['force_pull'] = True
+    token = api._CONFIG.set({})
+    try:
+        assert invoke(**arguments) is None
+        api._CONFIG.set({'container_distribution_fallback': False})
+        if kind == 'copy':
+            assert invoke(**arguments) == ['host']
+        else:
+            with pytest.raises(api.ImageDistributionFailed):
+                invoke(**arguments)
+
+        def invalid(*args, **kwargs):
+            raise BinaryInvalid('release checksum mismatch')
+
+        monkeypatch.setattr(provider, '_copy', invalid)
+        api._CONFIG.set({'container_distribution_fallback': True})
+        with pytest.raises(BinaryInvalid, match='checksum'):
+            invoke(**arguments)
+    finally:
+        api._CONFIG.reset(token)

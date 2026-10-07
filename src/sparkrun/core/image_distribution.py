@@ -68,6 +68,12 @@ class ImageDistributionUnsupported(RuntimeError):
 
 
 class ImageDistributionProvider(Protocol):
+    """Optional fallback_on_unsupported=True opts into builtin fallback in auto.
+
+    The user can override this default with container_distribution_fallback.
+    Only ImageDistributionUnsupported (before transfer) is eligible.
+    """
+
     def copy(self, request: ImageCopyRequest) -> ImageCopyResult: ...
 
 
@@ -179,6 +185,15 @@ def has_image_distribution_provider() -> bool:
     return selected != "builtin" and (bool(_PROVIDERS) or selected != "auto")
 
 
+def _fallback_allowed(config: Any, provider: ImageDistributionProvider) -> bool:
+    default = getattr(provider, "fallback_on_unsupported", False) is True
+    if config is None:
+        return default
+    return (
+        config.get("container_distribution_provider", "auto") == "auto" and config.get("container_distribution_fallback", default) is True
+    )
+
+
 def try_image_copy(
     *,
     image: str,
@@ -236,9 +251,8 @@ def try_image_copy(
     try:
         result = _PROVIDERS[selected].copy(request)
     except ImageDistributionUnsupported as error:
-        fallback = config.get("container_distribution_fallback", False) if config is not None else False
-        if config is not None and fallback is True and config.get("container_distribution_provider", "auto") == "auto":
-            logger.warning("Image relay unavailable (%s); using configured Docker save/load fallback", error)
+        if _fallback_allowed(config, _PROVIDERS[selected]):
+            logger.warning("Image relay unavailable (%s); using Docker save/load fallback", error)
             return None
         logger.error("Image copy unsupported: %s", error)
         return list(targets)
@@ -324,12 +338,8 @@ def try_image_pull(
     try:
         result = pull(request)
     except ImageDistributionUnsupported as error:
-        if (
-            config is not None
-            and config.get("container_distribution_fallback", False) is True
-            and config.get("container_distribution_provider", "auto") == "auto"
-        ):
-            logger.warning("Image pre-pull provider unavailable (%s); using configured builtin fallback", error)
+        if _fallback_allowed(config, _PROVIDERS[selected]):
+            logger.warning("Image pre-pull provider unavailable (%s); using builtin fallback", error)
             return None
         raise ImageDistributionFailed("Image pre-pull provider unsupported: " + str(error)) from error
     finally:

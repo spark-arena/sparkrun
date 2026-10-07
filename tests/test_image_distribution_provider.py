@@ -222,3 +222,53 @@ def test_builtin_pull_announces_work_before_waiting_for_docker(monkeypatch, capl
     monkeypatch.setattr(registry.subprocess, "run", run)
     assert registry.pull_image("registry.test/image:latest") == 0
     assert "Docker image ready: registry.test/image:latest" in caplog.text
+
+
+@pytest.mark.parametrize("kind", ["copy", "pull"])
+@pytest.mark.parametrize(
+    "config,default,expected",
+    [
+        (None, True, True),
+        ({}, True, True),
+        ({}, False, False),
+        ({"container_distribution_provider": "auto"}, True, True),
+        ({"container_distribution_fallback": False}, True, False),
+        ({"container_distribution_fallback": True}, False, True),
+        ({"container_distribution_provider": "test"}, True, False),
+        ({"container_distribution_provider": "test", "container_distribution_fallback": True}, True, False),
+    ],
+)
+def test_provider_fallback_default_respects_user_policy(kind, config, default, expected):
+    def unavailable(request):
+        raise api.ImageDistributionUnsupported("binary download unavailable")
+
+    api.register_image_distribution_provider(
+        "test",
+        SimpleNamespace(copy=unavailable, pull=unavailable, fallback_on_unsupported=default),
+    )
+    api._CONFIG.set(config)
+    if kind == "copy":
+        assert invoke() == (None if expected else ["node-a", "node-b"])
+    elif expected:
+        assert invoke_pull() is None
+    else:
+        with pytest.raises(api.ImageDistributionFailed):
+            invoke_pull()
+
+
+@pytest.mark.parametrize("kind", ["copy", "pull"])
+def test_provider_default_does_not_retry_partial_transfers(kind):
+    def partial(request):
+        outcomes = dict.fromkeys(request.targets, "complete")
+        outcomes[request.targets[-1]] = "failed"
+        return api.ImageCopyResult(outcomes)
+
+    api.register_image_distribution_provider(
+        "test",
+        SimpleNamespace(copy=partial, pull=partial, fallback_on_unsupported=True),
+    )
+    if kind == "copy":
+        assert invoke() == ["node-b"]
+    else:
+        with pytest.raises(api.ImageDistributionFailed):
+            invoke_pull()

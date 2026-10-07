@@ -16,7 +16,13 @@ features:
 Then use `sparkrun run YOUR_RECIPE` normally. There is no separate plugin install
 or Go build: the controller downloads checksum-pinned v0.1.1 Linux binaries and
 stages them to the execution hosts. Targets need no internet access for binary
-installation. An initial online acquisition is required before offline use.
+installation. Verified cached releases work offline. In automatic provider mode,
+an unavailable release download (including offline mode without a cached bundle)
+logs a warning and falls back to builtin image distribution. Set
+`container_distribution_fallback: false` or explicitly select
+`container_distribution_provider: oci-relay` to require the relay. Integrity errors
+and failed transfers do not fall back; offline distribution still requires a
+resident source image.
 Native-store access and preparation reads default on; source and transport
 selection are automatic. Controller-local `:latest` refreshes stream from the
 registry through OCI Relay, including when the controller already has an older
