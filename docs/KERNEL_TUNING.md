@@ -68,7 +68,9 @@ cache; they do not automatically import configs from an unrelated registry.
 Before Docker SGLang serving begins, Sparkrun installs matching dense configs
 into the loaded kernel module's `configs` directory. This is needed for images
 whose dense FP8 loader has no configurable search path. It copies individual
-files and retains unrelated configs bundled in the image. It matches the kernel
+files and retains unrelated configs bundled in the image. Only this install
+command runs as container root to write the package directory; the serving
+process keeps its configured user. It matches the kernel
 source hash, Triton version, and GPU name; a different image/kernel or Triton
 build requires separate tuning. Installation failures warn and leave the
 runtime's normal fallback behavior in effect. Other executors do not perform

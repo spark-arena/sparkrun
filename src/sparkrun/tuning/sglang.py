@@ -89,7 +89,9 @@ def install_sglang_fp8_configs(hosts_containers, executor, ssh_kwargs, dry_run=F
     for host, container in hosts_containers:
         result = run_command_on_host(
             host,
-            executor.exec_cmd(container, command, env={"PYTHONPATH": ""}),
+            # Package files belong to root even when serving uses the SSH UID.
+            # Elevate only this installation, leaving the serving user intact.
+            executor.exec_cmd(container, command, env={"PYTHONPATH": ""}, user="0:0"),
             ssh_kwargs=ssh_kwargs,
             timeout=120,
             dry_run=dry_run,

@@ -99,6 +99,7 @@ def test_installation_uses_executor_and_skips_other_executors(tmp_path, monkeypa
     assert send.call_count == 2
     assert send.call_args.kwargs["ssh_kwargs"] == {"ssh_user": "tester"}
     assert executor.exec_cmd.call_args.kwargs["env"] == {"PYTHONPATH": ""}
+    assert executor.exec_cmd.call_args.kwargs["user"] == "0:0"
 
 
 def test_runtime_installs_after_recipe_preparation(monkeypatch):

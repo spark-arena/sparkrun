@@ -612,9 +612,13 @@ class DockerExecutor(Executor):
         command: str,
         detach: bool = False,
         env: dict[str, str] | None = None,
+        *,
+        user: str | None = None,
     ) -> str:
-        """Generate a ``docker exec`` command string."""
+        """Generate ``docker exec``; an explicit user applies only to this exec."""
         parts = ["docker", "exec"]
+        if user is not None:
+            parts.extend(["--user", user])
         if detach:
             parts.append("-d")
         if env:

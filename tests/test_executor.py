@@ -397,6 +397,18 @@ class TestDockerExecutorConfig:
         assert "-v '/host dir:/container dir'" in cmd
         assert "-v /tmp:/tmp" in cmd
 
+    def test_exec_user_override_preserves_nonroot_serving_user(self):
+        import shlex
+
+        executor = DockerExecutor(ExecutorConfig(user="1000:1000"))
+        install = shlex.split(executor.exec_cmd("serving", "install configs", env={"PYTHONPATH": ""}, user="0:0"))
+        assert install[:4] == ["docker", "exec", "--user", "0:0"]
+        assert "PYTHONPATH=" in install
+        assert executor.config.user == "1000:1000"
+        serving = shlex.split(executor.exec_cmd("serving", "start server"))
+        assert serving[:3] == ["docker", "exec", "serving"]
+        assert "--user" not in serving
+
     def test_exec_cmd_env_spaces(self):
         executor = DockerExecutor()
         env = {"MY_VAR": "hello world", "PATH": "/usr/bin:/bin"}
