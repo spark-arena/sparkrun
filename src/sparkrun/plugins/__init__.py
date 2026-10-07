@@ -19,6 +19,7 @@ from sparkrun.core.cli_registry import register_cli_command
 from sparkrun.core.image_distribution import (
     IMAGE_DISTRIBUTION_API_VERSION,
     IMAGE_PULL_API_VERSION,
+    IMAGE_RUNTIME_API_VERSION,
     ImagePullRequest,
     ImageDistributionFailed,
     ImageCopyRequest,
@@ -37,6 +38,7 @@ from sparkrun.core.registry_defaults import register_default_registry
 __all__ = [
     "IMAGE_DISTRIBUTION_API_VERSION",
     "IMAGE_PULL_API_VERSION",
+    "IMAGE_RUNTIME_API_VERSION",
     "ImagePullRequest",
     "ImageDistributionFailed",
     "ImageCopyRequest",

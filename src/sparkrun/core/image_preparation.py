@@ -14,6 +14,7 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
+from sparkrun.core.image_distribution import image_distribution_operation, resolve_distributed_image
 from sparkrun.core.images import (
     ImagePlan,
     ImagePlanError,
@@ -218,6 +219,7 @@ def prepare_images(
     return PreparedImageSet(source_image=source, image_plan=image_plan, builder=builder, container_distribution=container_distribution)
 
 
+@image_distribution_operation
 def stage_prepared_images(
     prepared: PreparedImageSet,
     recipe: Recipe,
@@ -294,6 +296,12 @@ def stage_prepared_images(
         timeline=timeline,
         offline=offline,
     )
+    if not require_content_ids:
+        content_images = tuple(
+            resolve_distributed_image(image, host, ssh_kwargs=connection, dry_run=dry_run)
+            for host, image in zip(host_list, prepared.images_by_node, strict=True)
+        )
+
     return StagedImageSet(
         prepared=prepared,
         content_images_by_node=content_images,
@@ -321,6 +329,7 @@ def resolve_content_images(
     pending: dict[Any, int] = {}
     with ThreadPoolExecutor(max_workers=min(max(len(host_list), 1), 16)) as pool:
         for index, (host, image) in enumerate(zip(host_list, images_by_node, strict=True)):
+            image = resolve_distributed_image(image, host, ssh_kwargs=ssh_kwargs)
             preserve = bool(_PINNED_IMAGE.fullmatch(image) or _IMAGE_ID.fullmatch(image))
             pending[pool.submit(_resolve_host_image_id, host, image, ssh_kwargs or {}, preserve)] = index
         for future in as_completed(pending):

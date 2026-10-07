@@ -378,6 +378,14 @@ class Executor(Plugin):
         """Attach launch-local resolved configurations without mutating defaults."""
         self._host_executors = dict(executors)
 
+    def bind_image_references(self, images: dict[str, str]) -> None:
+        """Bind this host's verified runtime IDs without changing recipe identity."""
+        import re
+
+        if any(not re.fullmatch(r"sha256:[0-9a-f]{64}", ref) for ref in images.values()):
+            raise ValueError("Runtime image bindings must be immutable Docker IDs")
+        self._image_references = dict(images)
+
     def for_host(self, host: str) -> Executor:
         return getattr(self, "_host_executors", {}).get(host, self)
 

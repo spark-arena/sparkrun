@@ -533,6 +533,12 @@ class DockerExecutor(Executor):
 
         if assigned_gpus and any(token == "--gpus" or token.startswith("--gpus=") for token in extra_tokens):
             raise ValueError("extra_docker_opts --gpus conflicts with scheduler-assigned GPUs")
+        runtime_image = getattr(self, "_image_references", {}).get(image)
+        if runtime_image is not None:
+            if any(token == "--pull" or token.startswith("--pull=") for token in extra_tokens):
+                raise ValueError("extra_docker_opts --pull conflicts with a verified runtime image binding")
+            parts.append("--pull=never")
+            image = runtime_image
         parts.extend(quote(token) for token in extra_tokens)
 
         parts.append(quote(image))

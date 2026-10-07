@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
+from sparkrun.core.image_distribution import image_distribution_operation, resolve_distributed_image
 from sparkrun.core.progress import PROGRESS
 from sparkrun.core.timing import ROOT as TIMELINE_ROOT, STATUS_ERROR, Timeline, timed
 from sparkrun.core.readiness import DEFAULT_PORT_READY_TIMEOUT_S, DEFAULT_HEALTH_READY_TIMEOUT_S, resolve_readiness_settings
@@ -687,6 +688,7 @@ def _referenced_placeholders(recipe: Recipe) -> set[str]:
     return found
 
 
+@image_distribution_operation
 def _offline_preflight(
     recipe: Recipe,
     runtime: RuntimePlugin,
@@ -739,20 +741,26 @@ def _offline_preflight(
     def image_present_on(image: str, hosts: list[str]) -> set[str]:
         from sparkrun.containers.distribute import _check_remote_image_identities
 
-        return set(
-            _check_remote_image_identities(
-                image,
-                hosts,
+        groups: dict[str, list[str]] = {}
+        for host in hosts:
+            resolved = resolve_distributed_image(image, host, ssh_kwargs=ssh_kwargs)
+            groups.setdefault(resolved, []).append(host)
+        return {
+            host
+            for reference, targets in groups.items()
+            for host in _check_remote_image_identities(
+                reference,
+                targets,
                 ssh_user=ssh_kwargs.get("ssh_user"),
                 ssh_key=ssh_kwargs.get("ssh_key"),
                 ssh_options=ssh_kwargs.get("ssh_options"),
             )
-        )
+        }
 
     def image_on_control(image: str) -> bool:
         from sparkrun.containers.registry import image_exists_locally
 
-        return image_exists_locally(image)
+        return image_exists_locally(resolve_distributed_image(image, None))
 
     def model_present_on(hosts: list[str]) -> set[str]:
         from sparkrun.models.revision import hosts_with_snapshot
@@ -961,6 +969,7 @@ def resolve_per_host_backends(
     return backends
 
 
+@image_distribution_operation
 def launch_inference(
     *,
     recipe: Recipe,
@@ -1534,14 +1543,24 @@ def launch_inference(
         # has not yet paid for the long, routinely-interrupted transfer.
         # Skipped on dry-run (no SSH) and for container-less executors.
         def _probe_image_entrypoint() -> None:
-            if dry_run or _skip_container or (asset_policy is not None and not asset_policy.probe_images):
+            if _skip_container:
+                return
+            # Bind before probing: every executor carries its own host's Docker
+            # ID, while the recipe/image plan retains the requested registry pin.
+            bound_images = {}
+            for image_host, requested in zip(host_list, prepared_images.images_by_node, strict=True):
+                resolved = resolve_distributed_image(requested, image_host, ssh_kwargs=ssh_kwargs, dry_run=dry_run)
+                bound_images[image_host, requested] = resolved
+                if resolved != requested:
+                    host_executors[image_host].bind_image_references({requested: resolved})
+            if dry_run or (asset_policy is not None and not asset_policy.probe_images):
                 return
 
             def _probe(img: str, hs: list[str]) -> None:
                 for probe_host in hs:
                     _verify_image_command_passthrough(
                         recipe,
-                        img,
+                        bound_images.get((probe_host, img), img),
                         [probe_host],
                         ssh_kwargs,
                         runtime=runtime,

@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from functools import wraps
 from inspect import signature
 import logging
+import re
 from typing import Any, Callable, Protocol
 
 from sparkrun.core.registration import enlist_registry_state, register_unique
@@ -17,9 +18,12 @@ from sparkrun.core.registration import enlist_registry_state, register_unique
 logger = logging.getLogger(__name__)
 IMAGE_DISTRIBUTION_API_VERSION = 1
 IMAGE_PULL_API_VERSION = 1
+IMAGE_RUNTIME_API_VERSION = 1
 _PROVIDERS: dict[str, ImageDistributionProvider] = {}
 enlist_registry_state(globals(), "_PROVIDERS")
 _CONFIG: ContextVar[Any] = ContextVar("image_distribution_config", default=None)
+_RUNTIME_IMAGES: ContextVar[dict[tuple[str | None, str], str] | None] = ContextVar("image_runtime_references", default=None)
+_IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}")
 
 
 @dataclass(frozen=True)
@@ -51,6 +55,12 @@ class ImageCopyResult:
 
     outcomes: dict[str, str]
     errors: dict[str, str] = field(default_factory=dict)
+    runtime_images: dict[str, str] = field(default_factory=dict)
+    """Verified, immutable Docker IDs keyed by management host.
+
+    Optional for providers whose imported images retain their requested name.
+    A registry pin may map to different IDs on different Docker stores.
+    """
 
 
 class ImageDistributionUnsupported(RuntimeError):
@@ -68,19 +78,94 @@ def register_image_distribution_provider(name: str, provider: ImageDistributionP
 
 
 def image_distribution_operation(function: Callable) -> Callable:
-    """Carry the caller's actual operation config without mutating recipe state."""
+    """Share config and verified runtime IDs across one launch/staging operation."""
     call_signature = signature(function)
 
     @wraps(function)
     def scoped(*args, **kwargs):
-        config = call_signature.bind(*args, **kwargs).arguments.get("config")
+        arguments = call_signature.bind(*args, **kwargs).arguments
+        config = arguments.get("config")
+        if config is None:
+            config = getattr(arguments.get("sctx"), "config", _CONFIG.get())
         token = _CONFIG.set(config)
+        bindings_token = _RUNTIME_IMAGES.set({}) if _RUNTIME_IMAGES.get() is None else None
         try:
             return function(*args, **kwargs)
         finally:
             _CONFIG.reset(token)
+            if bindings_token is not None:
+                _RUNTIME_IMAGES.reset(bindings_token)
 
     return scoped
+
+
+def _record_runtime_images(image: str, result: ImageCopyResult, *, dry_run: bool) -> None:
+    if set(result.runtime_images) - set(result.outcomes):
+        raise ValueError("Image provider returned a runtime image for an unrequested host")
+    for host, reference in result.runtime_images.items():
+        if not isinstance(reference, str) or not _IMAGE_ID.fullmatch(reference):
+            raise ValueError("Image provider runtime references must be full immutable Docker IDs")
+        if result.outcomes[host] not in {"complete", "already_present"} or host in result.errors:
+            raise ValueError("Image provider returned a runtime image for a failed host")
+    bindings = _RUNTIME_IMAGES.get()
+    if bindings is not None and not dry_run:
+        bindings.update({(host, image): ref for host, ref in result.runtime_images.items()})
+
+
+def resolve_distributed_image(
+    image: str,
+    host: str | None,
+    *,
+    ssh_kwargs: dict | None = None,
+    dry_run: bool = False,
+) -> str:
+    """Resolve a verified registry pin to a host's installed immutable image.
+
+    Ordinary tags, disabled providers, and dry runs remain unchanged. Optional
+    provider lookup allows a later offline operation to recover a prior import.
+    Providers must validate both their pin receipt and the resident Docker ID;
+    a mutable alias by itself is not proof of a registry pin.
+    """
+    if dry_run or "@" not in image:
+        return image
+    bindings = _RUNTIME_IMAGES.get()
+    if bindings is not None and (host, image) in bindings:
+        return bindings[host, image]
+    config = _CONFIG.get()
+    selected = config.get("container_distribution_provider", "auto") if config is not None else "auto"
+    if selected == "auto":
+        if len(_PROVIDERS) != 1:
+            return image
+        selected = next(iter(_PROVIDERS))
+    provider = _PROVIDERS.get(selected) if selected != "builtin" else None
+    resolve = getattr(provider, "local_image", None)
+    if not callable(resolve):
+        return image
+    from sparkrun.transports.session import SshHostSession
+
+    ssh = ssh_kwargs or {}
+    session = SshHostSession(ssh_user=ssh.get("ssh_user"), ssh_key=ssh.get("ssh_key"), ssh_options=ssh.get("ssh_options"))
+    try:
+        reference = resolve(
+            ImageCopyRequest(
+                image=image,
+                source_host=host,
+                targets=(),
+                transfer_hosts=(),
+                config=config,
+                session=session,
+                offline=True,
+            )
+        )
+    finally:
+        session.close()
+    if reference is None:
+        return image
+    if not isinstance(reference, str) or not _IMAGE_ID.fullmatch(reference):
+        raise ValueError("Image provider resolved a pin to a non-immutable runtime reference")
+    if bindings is not None:
+        bindings[host, image] = reference
+    return reference
 
 
 def has_image_distribution_provider() -> bool:
@@ -157,6 +242,7 @@ def try_image_copy(
         raise ValueError("Image-copy provider returned an invalid target state")
     if set(result.errors) - set(targets):
         raise ValueError("Image-copy provider reported errors for an unrequested target")
+    _record_runtime_images(image, result, dry_run=dry_run)
     return [host for host in targets if result.outcomes[host] in {"failed", "cancelled"} or host in result.errors]
 
 
@@ -185,7 +271,7 @@ def try_image_pull(
     Partial failure raises: an outer auto-delegated fallback must not select a
     different mutable-tag identity after some targets have already completed.
     """
-    if offline or not targets:
+    if not targets:
         return None
     config = _CONFIG.get()
     selected = config.get("container_distribution_provider", "auto") if config is not None else "auto"
@@ -198,7 +284,7 @@ def try_image_pull(
     if selected not in _PROVIDERS:
         raise ValueError(f"Image distribution provider {selected!r} is not enabled")
     pull = getattr(_PROVIDERS[selected], "pull", None)
-    if not callable(pull):
+    if not callable(pull) or (offline and not getattr(_PROVIDERS[selected], "supports_offline_pull", False)):
         return None
     addresses = targets if transfer_hosts is None else transfer_hosts
     if len(addresses) != len(targets) or len(set(targets)) != len(targets):
@@ -246,4 +332,5 @@ def try_image_pull(
     failed = [host for host in targets if result.outcomes[host] in {"failed", "cancelled"} or host in result.errors]
     if failed:
         raise ImageDistributionFailed("Registry image distribution failed on: " + ", ".join(failed))
+    _record_runtime_images(image, result, dry_run=dry_run)
     return []
