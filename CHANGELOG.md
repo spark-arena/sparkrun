@@ -27,6 +27,35 @@ first tagged release containing them, regardless of their original commit date.
   step as `ok` rather than "requires the frontend topology adapter" (based on
   #309 by @Aisoipheo).
 
+- Fixed indirect sudo (the wizard's "user with sudo access" path) killing a
+  setup step that printed nothing for two seconds, such as `netplan apply`, and
+  reporting it as a success. The su session now ends with the script, a killed
+  session reports 128 plus the signal, and a failing script's own error is
+  reported rather than the password prompts.
+- `sudo` and `su` now run under `LC_ALL=C`, so a rejected password reads the
+  same on every host whatever locale ssh forwards. Scripts still run in the
+  host's own locale.
+
+- Setup commands no longer assume every host shares one sudo password. A host
+  that rejects the shared password is asked for its own, once, and that
+  password is reused for the rest of the command, including under indirect
+  (`su`) sudo. Only an authentication failure re-asks. The shared password is
+  checked on every host that needs one, and hosts with passwordless sudo are
+  driven with `sudo -n` and never sent a password. This covers
+  `fix-permissions`, `clear-cache`, `earlyoom` and `cx7`, the wizard's host
+  steps and CX7 phase, and `run_setup_steps(host_credentials=...)`.
+  `--save-sudo` installs only that command's entry, and only where it is not
+  already in effect (`clear-cache` installs the drop-caches entry, not the
+  chown one); the wizard's sudoers step installs whichever are missing.
+  `--save-sudo` is held to the `sudoers` step's hardware plan and feature flag
+  like `setup earlyoom` and `setup cx7`, so it is refused on, for example,
+  generic NVIDIA hosts, whose plan does not select it. A chown
+  entry installed with `--cache-dir` counts as present, so the wizard does not
+  overwrite it. The sudoers readiness probe now reads scoped NOPASSWD rules on
+  hosts with password sudo. Before, it reported them as unverifiable, so the
+  wizard never installed the entries on exactly those hosts (based on #310 by
+  @Aisoipheo).
+
 - Reduce unit-test delays from DNS, Hub metadata, SSH diagnostics, hardware scans,
   and retry sleeps. Add per-test hang detection and explicit fixtures for tests
   exercising real locality logic (#307).

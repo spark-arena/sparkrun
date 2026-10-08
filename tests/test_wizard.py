@@ -714,3 +714,39 @@ def test_wizard_off_plan_prompt_names_the_reason(runner, v, patched_cluster_mgr)
     result, *_ = _invoke_topology_wizard(runner, _topology_probe({}, [], mtu=1500), input="\n" + "n\n" + "\n" * 20, mtu=1500)
     assert result.exit_code == 0, result.output
     assert "has MTU 1500, need 9000" in result.output
+
+
+def test_wizard_gathers_sudo_only_where_the_plan_acts_with_it(runner, v, patched_cluster_mgr):
+    """Mixed cluster on the local executor: the Spark's plan acts with sudo, the generic H100's does not."""
+    from sparkrun.core.hardware import AcceleratorSpec, HostHardware, default_dgx_spark_hardware
+    from sparkrun.core.setup_models import HostState
+    from sparkrun.core.setup_probe import resolve_setup_context
+
+    h100 = HostHardware(accelerators=[AcceleratorSpec("nvidia", "h100", count=8, memory_gb=80, capabilities=frozenset({"cuda"}))])
+    hardware = {"10.0.0.1": default_dgx_spark_hardware(), "10.0.0.2": h100}
+    patched_cluster_mgr.create("mixed", list(hardware), executor="local")
+
+    def probe(hosts, **kwargs):
+        facts = {
+            "CHECK_OS": "Linux",
+            "CHECK_APT": "1",
+            "CHECK_SYSTEMD": "1",
+            "CHECK_USER": "tester",
+            "CHECK_EARLYOOM_ACTIVE": "0",
+            "CHECK_SUDOERS_CHOWN": "0",
+            "CHECK_SUDOERS_DROPCACHES": "0",
+        }
+        states = {h: HostState(h, facts=dict(facts), hardware=hardware[h]) for h in hosts}
+        return states, resolve_setup_context(states, config=kwargs["config"], cluster=kwargs.get("cluster"), cluster_name="mixed")
+
+    with (
+        mock.patch("subprocess.run", return_value=mock.Mock(returncode=0, stdout="CX7_DETECTED=0\n", stderr="")),
+        mock.patch("sparkrun.core.setup_probe.probe_setup_hosts", side_effect=probe),
+        mock.patch("sparkrun.cli._setup._ssh._run_ssh_mesh", return_value=True),
+        mock.patch("sparkrun.cli._setup._sudo.ensure_sudo_password", return_value=("pw", None)) as ensure,
+        mock.patch("sparkrun.orchestration.sudo.dispatch_sudo_script", return_value=RemoteResult("x", 0, "OK", "")),
+    ):
+        result = runner.invoke(main, ["setup", "wizard", "--cluster", "mixed", "--yes"])
+    assert result.exit_code == 0, result.output
+    ensure.assert_called_once()
+    assert ensure.call_args.args[0] == ["10.0.0.1"]

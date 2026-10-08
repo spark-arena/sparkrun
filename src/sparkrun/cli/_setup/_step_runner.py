@@ -7,7 +7,9 @@ import click
 from sparkrun.core.setup_models import OK, FAIL
 
 
-def run_host_steps(states, context, action_context, *, yes, manifest_mgr, cluster_name, ensure_password, only_steps=None):
+def run_host_steps(
+    states, context, action_context, *, yes, manifest_mgr, cluster_name, ensure_password, host_password=None, only_steps=None
+):
     from ._check import _render_host
     from .._common import _get_cluster_manager
     from sparkrun.api.setup import run_setup_steps, SetupFailed
@@ -43,6 +45,7 @@ def run_host_steps(states, context, action_context, *, yes, manifest_mgr, cluste
             manifest_mgr=manifest_mgr,
             only_steps=only_steps,
             credentials=ensure_password,
+            host_credentials=host_password,
             approve=lambda step, hosts: yes or click.confirm("Apply this step to these hosts?", default=True),
             progress_callback=render,
         )
@@ -68,7 +71,7 @@ def run_setup_step_command(key, hosts, hosts_file, cluster_name, user, dry_run):
     from sparkrun.core.setup_probe import probe_setup_hosts, resolve_setup_context
     from sparkrun.core.setup_manifest import ManifestManager
     from .._common import _resolve_setup_context, _get_cluster_manager
-    from ._sudo import ensure_sudo_password
+    from ._sudo import ensure_sudo_password, host_password_prompt
 
     config = SparkrunConfig()
     from sparkrun.core.setup_steps import step_enabled
@@ -103,6 +106,7 @@ def run_setup_step_command(key, hosts, hosts_file, cluster_name, user, dry_run):
         manifest_mgr=None if dry_run or not name else ManifestManager(manager.clusters_dir),
         cluster_name=name,
         ensure_password=password,
+        host_password=None if dry_run else host_password_prompt(user),
         only_steps={key},
     )
     if not dry_run and results.get(key) == FAIL:

@@ -106,7 +106,7 @@ def probe_setup_hosts(
     control machine); every host's mesh probe also dials them, and they are
     kept on the returned context so reprobes measure the same mesh.
     """
-    from sparkrun.core.setup_steps import setup_selection, setup_probe_script
+    from sparkrun.core.setup_steps import all_setup_steps, setup_selection, setup_probe_script
     from sparkrun.orchestration.ssh import run_remote_script
     from sparkrun.scripts import read_script
     from sparkrun.utils.text import parse_kv_output
@@ -137,7 +137,12 @@ def probe_setup_hosts(
             if not selected[host]:
                 return
             peers = " ".join([h for h in hosts if h != host and "ssh_mesh" in selected[h]] + list(context.extra_mesh_peers))
-            script = read_script("setup_check.sh").format(steps=shlex.quote(" ".join(sorted(selected[host]))), peers=shlex.quote(peers))
+            # Only a step that *acts* with sudo makes passwordless sudo relevant;
+            # check-only steps keep requires_sudo's default but never act.
+            needs_sudo = int(any(s.requires_sudo and s.apply is not None for s in all_setup_steps() if s.key in selected[host]))
+            script = read_script("setup_check.sh").format(
+                steps=shlex.quote(" ".join(sorted(selected[host]))), peers=shlex.quote(peers), needs_sudo=needs_sudo
+            )
             script = "(\n" + script + "\n)\n" + setup_probe_script(state, context)
             try:
                 result = run_remote_script(host, script, timeout=60, quiet=True, **ssh_kwargs)
@@ -222,3 +227,28 @@ def _probe_fabric_mesh(states: dict[str, HostState], members: list[str], ssh_kwa
 
     with ThreadPoolExecutor(max_workers=min(len(targets), 16)) as pool:
         list(pool.map(dial, targets))
+
+
+def probe_sudoers_entries(hosts: Sequence[str], *, ssh_kwargs: dict[str, Any], cache_dir: str | None = None) -> dict[str, dict[str, str]]:
+    """Which scoped sudoers entries already work on each host, without prompting.
+
+    Runs the same fragment ``setup_check.sh`` includes for the ``sudoers``
+    step, so a standalone ``--save-sudo`` decides exactly as ``setup check``
+    reports. Returns ``CHECK_SUDOERS_*`` and ``CHECK_SUDO_NOPASSWD`` facts per
+    host for the SSH user; a
+    host whose probe failed maps to ``{}``, which reads as "not installed".
+    """
+    from sparkrun.orchestration.ssh import run_remote_scripts_parallel
+    from sparkrun.scripts import inject_shell_vars, read_script
+    from sparkrun.utils.text import parse_kv_output
+
+    body = 'WHO="$(id -un)"\n' + read_script("_sudo_nopasswd.sh") + read_script("_sudoers_probe.sh")
+    script = inject_shell_vars(body, SPARKRUN_SUDOERS_CACHE_DIR=cache_dir)
+    facts: dict[str, dict[str, str]] = {host: {} for host in hosts}
+    try:
+        for result in run_remote_scripts_parallel(list(hosts), script, timeout=30, quiet=True, **ssh_kwargs):
+            if result.success:
+                facts[result.host] = parse_kv_output(result.stdout)
+    except Exception:
+        logger.debug("Sudoers probe failed", exc_info=True)
+    return facts

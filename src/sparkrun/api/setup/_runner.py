@@ -26,6 +26,7 @@ def run_setup_steps(
     manifest_mgr: ManifestManager | None = None,
     approve: Callable[[SetupStep, tuple[str, ...]], bool] | None = None,
     credentials: Callable[[], str | None] | None = None,
+    host_credentials: Callable[[str], str | None] | None = None,
     progress_callback: Callable[[SetupEvent], None] | None = None,
     only_steps: set[str] | None = None,
 ) -> SetupRunResult:
@@ -45,6 +46,7 @@ def run_setup_steps(
             manifest_mgr=manifest_mgr,
             approve=approve,
             credentials=credentials,
+            host_credentials=host_credentials,
             progress_callback=progress_callback,
             only_steps=only_steps,
         )

@@ -110,7 +110,7 @@ def test_remote_host_accepts_none_password(mock_run):
     assert res.success
     assert res.host == "192.168.1.42"
     cmd = mock_run.call_args[0][0]
-    assert cmd[-4:] == ["sudo", "-n", "bash", "-s"]
+    assert cmd[-5:] == ["LC_ALL=C", "sudo", "-n", "bash", "-s"]
 
 
 @patch("sparkrun.orchestration.sudo.subprocess.run")
@@ -125,7 +125,8 @@ def test_local_host_accepts_none_password(mock_run):
     assert res.success
     assert res.host == "localhost"
     assert mock_run.call_args[0][0] == ["sudo", "-n", "bash", "-s"]
-    assert mock_run.call_args[1]["input"] == "apt update"
+    assert mock_run.call_args[1]["env"]["LC_ALL"] == "C"
+    assert mock_run.call_args[1]["input"] == "unset LC_ALL\napt update"
 
 
 def test_ownership_repair_can_use_manager_host_session():

@@ -64,7 +64,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
         distribute_host_keys,
     )
     from sparkrun.orchestration.primitives import build_ssh_kwargs
-    from sparkrun.orchestration.sudo import dispatch_sudo_script, run_sudo_script_on_host
+    from sparkrun.orchestration.sudo import dispatch_sudo_script
     from sparkrun.utils.net import local_ip_for
 
     from .._common import _get_cluster_manager
@@ -119,6 +119,8 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
         from sparkrun.core.setup_models import HostState
         from sparkrun.core.setup_actions import SetupActionContext
         from ._step_runner import run_host_steps
+        from ._sudo import ensure_sudo_password, host_password_prompt
+        from sparkrun.orchestration.sudo import SudoPasswords
 
         cx7_enabled = step_enabled("cx7", config)
 
@@ -648,13 +650,18 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
         _indirect_sudo_user: str | None = None
 
         def _run_sudo_on_host(host, script, password, timeout=300):
-            """Dispatch to direct or indirect sudo based on _indirect_sudo_user."""
+            """Dispatch to direct or indirect sudo based on _indirect_sudo_user.
+
+            No password means the host grants the cluster user passwordless
+            sudo, which needs no indirection.
+            """
+            indirect = _indirect_sudo_user if password is not None else None
             return dispatch_sudo_script(
                 host,
                 script,
                 password,
-                ssh_kwargs=ssh_kwargs if _indirect_sudo_user else sudo_ssh_kwargs,
-                indirect_sudo_user=_indirect_sudo_user,
+                ssh_kwargs=ssh_kwargs if indirect else sudo_ssh_kwargs,
+                indirect_sudo_user=indirect,
                 timeout=timeout,
                 dry_run=dry_run,
             )
@@ -681,75 +688,48 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
             click.echo()
 
         # ── Sudo password helper (deferred collection) ───────────────
+        def _host_password(host):
+            """Per-host prompt when sudo rejects the shared password (resolved lazily:
+            the indirect sudo user is only known once the password was collected)."""
+            return host_password_prompt(_indirect_sudo_user or sudo_ssh_kwargs.get("ssh_user", user))(host)
+
+        sudo_checked = False
+
+        def _sudo_targets():
+            """Hosts whose plan has a step acting with sudo (CX7 is applied by the wizard itself).
+
+            Credentials are gathered only there: a host whose plan acts with
+            nothing is neither probed nor sent a password.
+            """
+            if setup_context is None:
+                return list(host_list)
+            from sparkrun.core.setup_steps import all_setup_steps
+
+            acting = {s.key for s in all_setup_steps() if s.requires_sudo and (s.apply is not None or s.key == "cx7")}
+            return [h for h in host_list if any(e.selected and e.step.key in acting for e in build_setup_plan(states[h], setup_context))]
+
         def _ensure_sudo_password():
-            nonlocal sudo_password, sudo_ssh_kwargs
-            if sudo_password is not None:
+            nonlocal sudo_password, _indirect_sudo_user, sudo_checked
+            # Checked once: re-probing every host before each step costs a
+            # connect timeout per unreachable host and finds nothing new.
+            if sudo_password is not None or sudo_checked:
                 return sudo_password
-            if dry_run:
+            sudo_checked = True
+            targets = _sudo_targets()
+            if not targets:
                 return None
-
-            # Try NOPASSWD on all hosts using the current sudo user
-            from sparkrun.orchestration.primitives import run_local_script, should_run_locally
-            from sparkrun.orchestration.ssh import RemoteResult, run_remote_scripts_parallel
-
-            sudo_user = sudo_ssh_kwargs.get("ssh_user", user)
-            local_hosts = [h for h in host_list if should_run_locally(h, sudo_user)]
-            remote_hosts = [h for h in host_list if not should_run_locally(h, sudo_user)]
-            try:
-                test_results = []
-                for h in local_hosts:
-                    lr = run_local_script("sudo -n true", dry_run=False)
-                    test_results.append(RemoteResult(host=h, returncode=lr.returncode, stdout=lr.stdout, stderr=lr.stderr))
-                if remote_hosts:
-                    test_results.extend(
-                        run_remote_scripts_parallel(
-                            remote_hosts,
-                            "sudo -n true",
-                            quiet=True,
-                            timeout=10,
-                            **sudo_ssh_kwargs,
-                        )
-                    )
-                if all(r.success for r in test_results):
-                    return None
-            except Exception:
-                pass
-
-            # Prompt for sudo password
-            sudo_password = click.prompt("[sudo] password for %s" % sudo_user, hide_input=True)
-
-            # Verify sudo works with this password on at least one host
-            test_host = host_list[0]
-            if should_run_locally(test_host, sudo_user):
-                import subprocess as _sp
-
-                _proc = _sp.run(["sudo", "-S", "true"], input=sudo_password + "\n", capture_output=True, text=True, timeout=10)
-                test_r = RemoteResult(host=test_host, returncode=_proc.returncode, stdout=_proc.stdout, stderr=_proc.stderr)
-            else:
-                test_r = run_sudo_script_on_host(
-                    test_host,
-                    "true",
-                    sudo_password,
-                    ssh_kwargs=sudo_ssh_kwargs,
-                    timeout=10,
-                )
-            if not test_r.success:
-                # Sudo failed for cluster user — offer alternate user
-                alt_default = default_user if sudo_user != default_user else ""
-                click.echo("  Sudo failed for '%s'. Specify a user with sudo access." % sudo_user)
-                alt_user = click.prompt("Sudo user", default=alt_default)
-                try:
-                    from sparkrun.utils.shell import validate_unix_username
-
-                    validate_unix_username(alt_user)
-                except ValueError as exc:
-                    raise click.BadParameter(str(exc), param_hint="'Sudo user'") from exc
-                sudo_password = click.prompt("[sudo] password for %s" % alt_user, hide_input=True)
-
-                # Use indirect sudo: SSH as cluster user, su to alt_user
-                nonlocal _indirect_sudo_user
+            sudo_password, alt_user = ensure_sudo_password(
+                targets,
+                user,
+                ssh_kwargs,
+                sudo_ssh_kwargs=sudo_ssh_kwargs,
+                dry_run=dry_run,
+                allow_indirect=True,
+                default_user=default_user,
+            )
+            if alt_user:
+                # Indirect sudo: SSH as the cluster user, su to alt_user.
                 _indirect_sudo_user = alt_user
-
             return sudo_password
 
         # ── Phase 3: CX7 Configuration ───────────────────────────────
@@ -896,13 +876,19 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                             results["cx7"] = "dry-run"
                         else:
                             pw = _ensure_sudo_password()
-                            sudo_hosts = {hp.host for hp in plan.host_plans if hp.needs_change}
+                            # Hosts with passwordless sudo run the script's own
+                            # `sudo` calls; a password piped to `sudo -S` there
+                            # would reach bash as a command (as in `setup cx7`).
+                            sudo_hosts = {hp.host for hp in plan.host_plans if hp.needs_change and not detections[hp.host].sudo_ok}
                             apply_results = apply_cx7_plan(
                                 plan,
                                 ssh_kwargs=ssh_kwargs,
                                 dry_run=dry_run,
                                 sudo_password=pw,
                                 sudo_hosts=sudo_hosts if pw else set(),
+                                passwords=SudoPasswords(prompt_host=_host_password),
+                                # Indirect sudo is a different user: go through su, as other steps do.
+                                dispatch=_run_sudo_on_host if _indirect_sudo_user else None,
                             )
                             ok_count = sum(1 for r in apply_results if r.success)
 
@@ -1002,6 +988,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                 manifest_mgr=manifest_mgr,
                 cluster_name=cluster_name,
                 ensure_password=_ensure_sudo_password,
+                host_password=_host_password,
             )
         )
 

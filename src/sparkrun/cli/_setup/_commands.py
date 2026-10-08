@@ -32,7 +32,7 @@ from ._phases import (
     _earlyoom_summary,
 )
 from ._ssh import _run_ssh_mesh
-from ._sudo import _record_setup_phase
+from ._sudo import _record_setup_phase, host_password_prompt, interactive_sudo_passwords, run_sudo_action, save_sudoers_entry
 from sparkrun.orchestration.job_metadata import PRUNE_KEEP_PER_INTENT, PRUNE_MAX_AGE_DAYS
 
 
@@ -1212,7 +1212,6 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
         CX7_NETPLAN_FILE,
         CX7Topology,
         _group_interfaces_by_port,
-        configure_cx7_host,
         filter_cx7_interfaces,
         ring_ports_error,
         detect_cx7_for_hosts,
@@ -1239,6 +1238,7 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
 
     import os
 
+    from sparkrun.orchestration.sudo import SudoPasswords
     from ._sudo import ensure_sudo_password
 
     config = SparkrunConfig()
@@ -1508,32 +1508,9 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
         dry_run=dry_run,
         sudo_password=sudo_password,
         sudo_hosts=sudo_hosts_needing_pw,
+        passwords=SudoPasswords(prompt_host=host_password_prompt(sudo_ssh_kwargs.get("ssh_user", user))),
     )
-
-    # Build a map of host -> result for easy lookup
     result_map = {r.host: r for r in results}
-
-    # Check for sudo failures and retry with per-host passwords
-    if sudo_hosts_needing_pw and not dry_run:
-        failed_sudo_hosts = [r.host for r in results if not r.success and r.host in sudo_hosts_needing_pw]
-        if failed_sudo_hosts:
-            click.echo()
-            click.echo("Sudo authentication failed on %d host(s). Retrying individually..." % len(failed_sudo_hosts))
-            host_plan_map = {hp.host: hp for hp in plan.host_plans}
-            for fhost in failed_sudo_hosts:
-                hp = host_plan_map.get(fhost)
-                if not hp:
-                    continue
-                per_host_pw = click.prompt("[sudo] password for %s @ %s" % (user, fhost), hide_input=True)
-                retry_result = configure_cx7_host(
-                    hp,
-                    mtu=plan.mtu,
-                    prefix_len=plan.prefix_len,
-                    ssh_kwargs=sudo_ssh_kwargs,
-                    dry_run=dry_run,
-                    sudo_password=per_host_pw,
-                )
-                result_map[fhost] = retry_result
 
     # Collect final results in plan order
     final_results = [result_map[hp.host] for hp in plan.host_plans if hp.host in result_map]
@@ -1661,7 +1638,6 @@ def setup_fix_permissions(ctx, hosts, hosts_file, cluster_name, user, cache_dir,
       {app_command} setup fix-permissions --cluster mylab --dry-run
     """
     from sparkrun.core.config import SparkrunConfig
-    from sparkrun.orchestration.sudo import run_with_sudo_fallback, run_sudo_script_on_host
 
     config = SparkrunConfig()
     host_list, user, ssh_kwargs = _resolve_setup_context(hosts, hosts_file, cluster_name, config, user)
@@ -1674,115 +1650,30 @@ def setup_fix_permissions(ctx, hosts, hosts_file, cluster_name, user, cache_dir,
         click.echo("Cache directory: %s" % cache_path)
     click.echo()
 
-    sudo_password = None
-
     from sparkrun.scripts import read_script
 
-    # --save-sudo: install scoped sudoers entry on each host
-    if save_sudo:
-        click.echo("Installing sudoers entry for passwordless chown...")
-        from sparkrun.utils.shell import validate_sudoers_path, validate_unix_username
+    passwords = interactive_sudo_passwords(user)
 
-        validate_unix_username(user)
-        safe_cache_dir = cache_path or ""
-        # Empty means auto-detect inside the script; only non-empty values are
-        # interpolated into the sudoers rule and must be validated.
-        if safe_cache_dir:
-            try:
-                validate_sudoers_path(safe_cache_dir)
-            except ValueError as exc:
-                raise click.UsageError(str(exc)) from exc
-        sudoers_script = read_script("fix_permissions_sudoers.sh").format(
-            user=user,
-            cache_dir=safe_cache_dir,
+    # --save-sudo: install the scoped chown entry where it is not in effect yet
+    if save_sudo:
+        save_sudoers_entry(
+            "chown",
+            host_list,
+            user,
+            ssh_kwargs,
+            passwords,
+            config=config,
+            cluster_name=cluster_name,
+            explicit_hosts=bool(hosts or hosts_file),
+            dry_run=dry_run,
+            cache_dir=cache_path or "",
         )
 
-        if dry_run:
-            click.echo("  [dry-run] Would install sudoers entry on %d host(s):" % len(host_list))
-            for h in host_list:
-                click.echo("    %s: /etc/sudoers.d/sparkrun-chown-%s" % (h, user))
-            click.echo()
-        else:
-            sudo_password = click.prompt("[sudo] password for %s" % user, hide_input=True)
-            sudoers_ok = 0
-            sudoers_fail = 0
-            for h in host_list:
-                r = run_sudo_script_on_host(
-                    h,
-                    sudoers_script,
-                    sudo_password,
-                    ssh_kwargs=ssh_kwargs,
-                    timeout=300,
-                    dry_run=False,
-                )
-                if r.success:
-                    sudoers_ok += 1
-                    click.echo("  [OK]   %s: %s" % (h, r.stdout.strip()))
-                else:
-                    sudoers_fail += 1
-                    click.echo("  [FAIL] %s: %s" % (h, r.stderr.strip()[:200]), err=True)
-            click.echo("Sudoers install: %d OK, %d failed." % (sudoers_ok, sudoers_fail))
-            if sudoers_ok:
-                _record_setup_phase(
-                    cluster_name,
-                    user,
-                    host_list,
-                    "sudoers",
-                    files=["/etc/sudoers.d/%s-chown-%s" % (get_application_profile().resource_namespace, user)],
-                )
-            click.echo()
-
-    # Generate the chown script with sudo -n (non-interactive).
-    chown_script = read_script("fix_permissions.sh").format(
-        user=user,
-        cache_dir=cache_path or "",
-    )
-
-    # Password-based fallback script (no sudo prefix — run_remote_sudo_script runs as root)
-    fallback_script = read_script("fix_permissions_fallback.sh").format(
-        user=user,
-        cache_dir=cache_path or "",
-    )
-
-    # Try non-interactive sudo, then password-based fallback
-    result_map, still_failed = run_with_sudo_fallback(
-        host_list,
-        chown_script,
-        fallback_script,
-        ssh_kwargs,
-        dry_run=dry_run,
-        sudo_password=sudo_password,
-    )
-
-    # If hosts failed without a password, prompt and retry
-    if still_failed and not dry_run:
-        if sudo_password is None:
-            sudo_password = click.prompt("[sudo] password for %s" % user, hide_input=True)
-            # Re-run fallback with the password for failed hosts
-            result_map, still_failed = run_with_sudo_fallback(
-                still_failed,
-                chown_script,
-                fallback_script,
-                ssh_kwargs,
-                dry_run=dry_run,
-                sudo_password=sudo_password,
-            )
-
-        # Retry individually on per-host sudo failures
-        if still_failed and sudo_password:
-            click.echo()
-            click.echo("Sudo authentication failed on %d host(s). Retrying individually..." % len(still_failed))
-            for fhost in still_failed:
-                per_host_pw = click.prompt("[sudo] password for %s @ %s" % (user, fhost), hide_input=True)
-                retry_result = run_sudo_script_on_host(
-                    fhost,
-                    fallback_script,
-                    per_host_pw,
-                    ssh_kwargs=ssh_kwargs,
-                    timeout=300,
-                    dry_run=dry_run,
-                )
-                result_map[fhost] = retry_result
+    # sudo -n first (works once the entry is in place), then the password
+    # fallback; a host rejecting the shared password is asked for its own.
+    chown_script = read_script("fix_permissions.sh").format(user=user, cache_dir=cache_path or "")
+    fallback_script = read_script("fix_permissions_fallback.sh").format(user=user, cache_dir=cache_path or "")
+    result_map = run_sudo_action(host_list, chown_script, fallback_script, ssh_kwargs, passwords, dry_run=dry_run)
 
     # Report results
     ok_count = 0
@@ -1849,7 +1740,6 @@ def setup_clear_cache(ctx, hosts, hosts_file, cluster_name, user, save_sudo, dry
       {app_command} setup clear-cache --cluster mylab --dry-run
     """
     from sparkrun.core.config import SparkrunConfig
-    from sparkrun.orchestration.sudo import run_with_sudo_fallback, run_sudo_script_on_host
 
     config = SparkrunConfig()
     host_list, user, ssh_kwargs = _resolve_setup_context(hosts, hosts_file, cluster_name, config, user)
@@ -1857,97 +1747,27 @@ def setup_clear_cache(ctx, hosts, hosts_file, cluster_name, user, save_sudo, dry
     click.echo("Clearing page cache on %d host(s)..." % len(host_list))
     click.echo()
 
-    sudo_password = None
-
     from sparkrun.scripts import read_script
 
-    # --save-sudo: install scoped sudoers entry on each host
+    passwords = interactive_sudo_passwords(user)
+
+    # --save-sudo: install only the drop_caches entry, where not yet in effect
     if save_sudo:
-        click.echo("Installing sudoers entry for passwordless cache clearing...")
-        from sparkrun.utils.shell import validate_unix_username
+        save_sudoers_entry(
+            "dropcaches",
+            host_list,
+            user,
+            ssh_kwargs,
+            passwords,
+            config=config,
+            cluster_name=cluster_name,
+            explicit_hosts=bool(hosts or hosts_file),
+            dry_run=dry_run,
+        )
 
-        validate_unix_username(user)
-        sudoers_script = read_script("clear_cache_sudoers.sh").format(user=user)
-
-        if dry_run:
-            click.echo("  [dry-run] Would install sudoers entry on %d host(s):" % len(host_list))
-            for h in host_list:
-                click.echo("    %s: /etc/sudoers.d/sparkrun-dropcaches-%s" % (h, user))
-            click.echo()
-        else:
-            sudo_password = click.prompt("[sudo] password for %s" % user, hide_input=True)
-            sudoers_ok = 0
-            sudoers_fail = 0
-            for h in host_list:
-                r = run_sudo_script_on_host(
-                    h,
-                    sudoers_script,
-                    sudo_password,
-                    ssh_kwargs=ssh_kwargs,
-                    timeout=300,
-                    dry_run=False,
-                )
-                if r.success:
-                    sudoers_ok += 1
-                    click.echo("  [OK]   %s: %s" % (h, r.stdout.strip()))
-                else:
-                    sudoers_fail += 1
-                    click.echo("  [FAIL] %s: %s" % (h, r.stderr.strip()[:200]), err=True)
-            click.echo("Sudoers install: %d OK, %d failed." % (sudoers_ok, sudoers_fail))
-            if sudoers_ok:
-                _record_setup_phase(
-                    cluster_name,
-                    user,
-                    host_list,
-                    "sudoers",
-                    files=["/etc/sudoers.d/%s-dropcaches-%s" % (get_application_profile().resource_namespace, user)],
-                )
-            click.echo()
-
-    # Generate the drop_caches script with sudo -n (non-interactive).
-    drop_script = read_script("clear_cache.sh")
-
-    # Password-based fallback script (no sudo — run_remote_sudo_script runs as root)
-    fallback_script = read_script("clear_cache_fallback.sh")
-
-    # Try non-interactive sudo, then password-based fallback
-    result_map, still_failed = run_with_sudo_fallback(
-        host_list,
-        drop_script,
-        fallback_script,
-        ssh_kwargs,
-        dry_run=dry_run,
-        sudo_password=sudo_password,
+    result_map = run_sudo_action(
+        host_list, read_script("clear_cache.sh"), read_script("clear_cache_fallback.sh"), ssh_kwargs, passwords, dry_run=dry_run
     )
-
-    # If hosts failed without a password, prompt and retry
-    if still_failed and not dry_run:
-        if sudo_password is None:
-            sudo_password = click.prompt("[sudo] password for %s" % user, hide_input=True)
-            result_map, still_failed = run_with_sudo_fallback(
-                still_failed,
-                drop_script,
-                fallback_script,
-                ssh_kwargs,
-                dry_run=dry_run,
-                sudo_password=sudo_password,
-            )
-
-        # Retry individually on per-host sudo failures
-        if still_failed and sudo_password:
-            click.echo()
-            click.echo("Sudo authentication failed on %d host(s). Retrying individually..." % len(still_failed))
-            for fhost in still_failed:
-                per_host_pw = click.prompt("[sudo] password for %s @ %s" % (user, fhost), hide_input=True)
-                retry_result = run_sudo_script_on_host(
-                    fhost,
-                    fallback_script,
-                    per_host_pw,
-                    ssh_kwargs=ssh_kwargs,
-                    timeout=300,
-                    dry_run=dry_run,
-                )
-                result_map[fhost] = retry_result
 
     # Report results
     ok_count = 0
@@ -2008,7 +1828,6 @@ def setup_earlyoom(ctx, hosts, hosts_file, cluster_name, user, extra_prefer, ext
       {app_command} setup earlyoom --cluster mylab --dry-run
     """
     from sparkrun.core.config import SparkrunConfig
-    from sparkrun.orchestration.sudo import run_with_sudo_fallback, run_sudo_script_on_host
 
     config = SparkrunConfig()
     host_list, user, ssh_kwargs = _resolve_setup_context(hosts, hosts_file, cluster_name, config, user)
@@ -2055,66 +1874,19 @@ def setup_earlyoom(ctx, hosts, hosts_file, cluster_name, user, extra_prefer, ext
         avoid=avoid_regex,
     )
 
-    # Try non-interactive sudo, then password-based fallback
-    result_map, still_failed = run_with_sudo_fallback(
-        host_list,
-        install_script,
-        fallback_script,
-        ssh_kwargs,
-        dry_run=dry_run,
+    def report(host, result):
+        if result is None:
+            click.echo("  %s: configuring with sudo password..." % host)
+        elif result.success:
+            click.echo("  [OK]   %s: %s" % (host, _earlyoom_summary(result.stdout)))
+        else:
+            click.echo("  %s: FAILED (details below)" % host)
+
+    # sudo -n first; hosts that need a password are configured one at a time
+    # with progress, each re-asked for its own password if sudo rejects it.
+    result_map = run_sudo_action(
+        host_list, install_script, fallback_script, ssh_kwargs, interactive_sudo_passwords(user), dry_run=dry_run, progress=report
     )
-
-    # Report hosts that succeeded immediately
-    for h in host_list:
-        r = result_map.get(h)
-        if r and r.success:
-            click.echo("  [OK]   %s: %s" % (h, _earlyoom_summary(r.stdout)))
-
-    # If hosts failed without a password, prompt and retry
-    if still_failed and not dry_run:
-        sudo_password = click.prompt("[sudo] password for %s" % user, hide_input=True)
-
-        # Run fallback with progress — report each host as it completes
-        click.echo("Configuring %d host(s)..." % len(still_failed))
-        remaining = list(still_failed)
-        for h in remaining:
-            click.echo("  %-20s ..." % h, nl=False)
-            r = run_sudo_script_on_host(
-                h,
-                fallback_script,
-                sudo_password,
-                ssh_kwargs=ssh_kwargs,
-                timeout=300,
-                dry_run=dry_run,
-            )
-            result_map[h] = r
-            if r.success:
-                click.echo(" %s" % _earlyoom_summary(r.stdout))
-            else:
-                click.echo(" FAILED")
-
-        still_failed = [h for h in remaining if not result_map.get(h) or not result_map[h].success]
-
-        # Retry individually on per-host sudo failures
-        if still_failed and sudo_password:
-            click.echo()
-            click.echo("Sudo authentication failed on %d host(s). Retrying individually..." % len(still_failed))
-            for fhost in still_failed:
-                per_host_pw = click.prompt("[sudo] password for %s @ %s" % (user, fhost), hide_input=True)
-                click.echo("  %-20s ..." % fhost, nl=False)
-                retry_result = run_sudo_script_on_host(
-                    fhost,
-                    fallback_script,
-                    per_host_pw,
-                    ssh_kwargs=ssh_kwargs,
-                    timeout=300,
-                    dry_run=dry_run,
-                )
-                result_map[fhost] = retry_result
-                if retry_result.success:
-                    click.echo(" %s" % _earlyoom_summary(retry_result.stdout))
-                else:
-                    click.echo(" FAILED")
 
     # Final summary
     ok_count = sum(1 for h in host_list if result_map.get(h) and result_map[h].success)
