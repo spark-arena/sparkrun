@@ -373,3 +373,26 @@ def test_followup_probes_honor_per_host_constraints(v):
         probe_setup_hosts(["managed", "ordinary"], ssh_kwargs={}, config=SparkrunConfig())
     cx7.assert_called_once_with(["ordinary"], ssh_kwargs={})
     rdma.assert_called_once_with(["ordinary"], {}, dry_run=False)
+
+
+def test_extra_mesh_peers_are_probed_and_kept_on_context(v):
+    """A control machine joining the mesh is dialed by every host's mesh probe."""
+    from sparkrun.core.setup_probe import probe_setup_hosts
+
+    scripts = {}
+    stdout = "SPARKRUN_PROBE_ACCEL_END\n" + "\n".join(key + "=" + value for key, value in FACTS.items())
+
+    def run(host, script, *a, **kw):
+        scripts.setdefault(host, []).append(script)
+        return RemoteResult(host, 0, stdout, "")
+
+    with (
+        mock.patch("sparkrun.orchestration.ssh.run_remote_script", side_effect=run),
+        mock.patch("sparkrun.core.hardware_probe._parse_probe_result", return_value=default_dgx_spark_hardware()),
+        mock.patch("sparkrun.orchestration.networking.detect_cx7_for_hosts", return_value={}),
+        mock.patch("sparkrun.api.setup._rdma._run_probe", return_value={}),
+    ):
+        _states, context = probe_setup_hosts(["h1", "h2"], ssh_kwargs={}, config=SparkrunConfig(), extra_mesh_peers=["ctl", "h2", "ctl"])
+    assert context.extra_mesh_peers == ("ctl",)
+    readiness = [s for s in scripts["h1"] if "PEERS=" in s]
+    assert readiness and "PEERS='h2 ctl'" in readiness[0]

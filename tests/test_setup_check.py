@@ -502,3 +502,18 @@ def test_host_ipc_warns_when_lingering_cannot_be_confirmed():
     item = next(i for i in evaluate_host(_state(facts), _ipc_ctx()) if i.key == "host_ipc")
     assert item.status == WARN
     assert "could not be confirmed" in item.detail
+
+
+def test_mesh_probe_uses_real_known_hosts():
+    """The mesh probe connects the way distribution does, so OK means usable.
+
+    Head-to-worker transfers SSH with BatchMode and the default host-key
+    policy; a probe that discarded known_hosts reported a mesh OK that those
+    transfers would then fail on, and the wizard skips a mesh this check passes.
+    """
+    from sparkrun.scripts import read_script
+
+    probe = next(line for line in read_script("setup_check.sh").splitlines() if '"$peer" true' in line)
+    assert "BatchMode=yes" in probe
+    assert "UserKnownHostsFile" not in probe
+    assert "StrictHostKeyChecking" not in probe

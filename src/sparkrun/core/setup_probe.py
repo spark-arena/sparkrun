@@ -96,11 +96,15 @@ def probe_setup_hosts(
     cluster: ClusterDefinition | None = None,
     cluster_name: str | None = None,
     discovery_only: bool = False,
+    extra_mesh_peers: Sequence[str] = (),
 ) -> tuple[dict[str, HostState], CheckContext]:
     """Discover hardware, resolve owned plans, then probe only selected steps.
 
     ``discovery_only`` supports standalone action preflight without running
     readiness or topology probes before the requested step is approved.
+    ``extra_mesh_peers`` are SSH-mesh members outside *hosts* (the wizard's
+    control machine); every host's mesh probe also dials them, and they are
+    kept on the returned context so reprobes measure the same mesh.
     """
     from sparkrun.core.setup_steps import setup_selection, setup_probe_script
     from sparkrun.orchestration.ssh import run_remote_script
@@ -120,6 +124,7 @@ def probe_setup_hosts(
     with ThreadPoolExecutor(max_workers=min(len(hosts), 16)) as pool:
         states = dict(zip(hosts, pool.map(discover, hosts), strict=True))
         context = resolve_setup_context(states, config=config, cluster=cluster, cluster_name=cluster_name)
+        context.extra_mesh_peers = tuple(dict.fromkeys(p for p in extra_mesh_peers if p not in hosts))
         if discovery_only:
             return states, context
         selected = {
@@ -131,7 +136,7 @@ def probe_setup_hosts(
             state = states[host]
             if not selected[host]:
                 return
-            peers = " ".join(h for h in hosts if h != host and "ssh_mesh" in selected[h])
+            peers = " ".join([h for h in hosts if h != host and "ssh_mesh" in selected[h]] + list(context.extra_mesh_peers))
             script = read_script("setup_check.sh").format(steps=shlex.quote(" ".join(sorted(selected[host]))), peers=shlex.quote(peers))
             script = "(\n" + script + "\n)\n" + setup_probe_script(state, context)
             try:

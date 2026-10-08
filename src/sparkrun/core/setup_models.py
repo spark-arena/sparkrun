@@ -57,6 +57,13 @@ class CheckContext:
     :meth:`shares_host_ipc`.
     """
 
+    extra_mesh_peers: tuple[str, ...] = ()
+    """SSH-mesh members that are not setup targets (a control machine joining the mesh).
+
+    Probed as peers alongside the targets, so ``ssh_mesh`` reports the mesh a
+    frontend actually builds rather than only its host-to-host part.
+    """
+
     @property
     def cluster_flag(self) -> str:
         """`` --cluster <name>`` suffix for guidance commands (empty if unknown)."""

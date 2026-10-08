@@ -122,7 +122,10 @@ def run_setup_steps(
                     detail = entry.reason or "blocked by " + ", ".join(entry.blocked_by)
                     outcome = SetupActionResult(host, FAIL if only_steps is not None else SKIP, detail)
                 elif step.key in {"ssh_mesh", "cx7"}:
-                    outcome = SetupActionResult(host, SKIP, "requires the frontend topology adapter")
+                    if entry.satisfied:
+                        outcome = SetupActionResult(host, OK, "already satisfied")
+                    else:
+                        outcome = SetupActionResult(host, SKIP, "requires the frontend topology adapter")
                 elif entry.needs_action:
                     if not action_context.dry_run:
                         candidates.append(host)
@@ -180,6 +183,7 @@ def run_setup_steps(
                     config=config,
                     cluster=cluster,
                     cluster_name=cluster_name,
+                    extra_mesh_peers=context.extra_mesh_peers,
                 )
                 states.update(_validated_states(refreshed, expected_hosts=reprobe_hosts))
                 context = replace(new_context, multi_host=context.multi_host, cluster_name=cluster_name)

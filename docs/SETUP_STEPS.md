@@ -114,7 +114,12 @@ be included explicitly; they never expand a selection or import another plugin.
 Call `sparkrun.application.initialize()` first to load the selected integrations.
 
 `probe_setup_hosts(hosts, ssh_kwargs=..., config=..., cluster=...)` returns a host
-state mapping and a `CheckContext`. The hardware comes from the existing combined
+state mapping and a `CheckContext`. Pass `extra_mesh_peers=` for mesh members that are not
+setup targets (the wizard passes the control machine when it joins the mesh):
+each host's SSH-mesh probe also dials them, and the context keeps them so the
+runner's reprobes measure the same mesh. The mesh probe uses each host's own
+`known_hosts` and default host-key policy, as head-to-worker transfers do, so an
+unrecorded peer key is a gap rather than a pass. The hardware comes from the existing combined
 probe, including selected hardware-plugin enrichers. Probing runs in two stages:
 mandatory hardware/OS discovery first, then executor/plan resolution and only the
 selected readiness probes. Core shell probes, plugin fragments, and CX7/RDMA
@@ -216,7 +221,8 @@ eligibility. The returned `SetupRunResult` contains:
   blocked/inapplicable step reports `fail` for that host.
 - `outcomes`: step ID to host to `SetupActionResult`, retaining status, detail,
   `changed`, and recorded `extra` data. Declined actions report `skip` with a reason.
-  SSH-mesh/CX7 steps report `skip` and name the required frontend topology adapter.
+  SSH-mesh/CX7 steps report `ok` when every check already passes; otherwise
+  they report `skip` and name the required frontend topology adapter.
 - Refreshed host `states`, `context`, final `plans`, and the readiness `findings`
   count. Action status and final observed readiness remain distinct.
 

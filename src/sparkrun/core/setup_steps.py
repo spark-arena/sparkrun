@@ -46,6 +46,15 @@ class PlannedStep:
     platform: str | None = None
 
     @property
+    def satisfied(self) -> bool:
+        """Selected, unblocked, and every check reported OK.
+
+        Stricter than ``not needs_action``: a SKIP (could not verify) or a
+        check-only finding is not "already configured".
+        """
+        return self.selected and not self.blocked_by and bool(self.checks) and all(i.status == OK for i in self.checks)
+
+    @property
     def needs_action(self) -> bool:
         return (
             self.selected and not self.blocked_by and self.step.apply is not None and any(i.status in (FAIL, "warn") for i in self.checks)

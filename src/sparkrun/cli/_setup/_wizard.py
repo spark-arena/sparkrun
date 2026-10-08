@@ -472,6 +472,20 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
         if user:
             ssh_kwargs["ssh_user"] = user
 
+        def _mesh_members():
+            """The wizard's SSH mesh: cluster hosts plus, when it can join, this machine.
+
+            The control machine joins unless the SSH user differs from the
+            local one (cross-user key exchange is handled separately); an
+            explicitly listed control machine stays either way.
+            """
+            members = list(host_list)
+            self_ip = local_ip_for(host_list[0]) if host_list else None
+            cross_user = user != _default_ssh_user()
+            if self_ip and self_ip not in members and not cross_user:
+                members.append(self_ip)
+            return members, self_ip, cross_user
+
         def _refresh_plan():
             nonlocal states, setup_context
             try:
@@ -485,8 +499,15 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
             else:
                 # Never send setup probes to hosts that failed the SSH gate.
                 targets = [h for h in host_list if h in (ssh_access_hosts or [])]
+                # The control machine is probed as a mesh peer too, so an
+                # "already configured" mesh covers every leg the wizard builds.
                 states, setup_context = probe_setup_hosts(
-                    targets, ssh_kwargs=ssh_kwargs, config=config, cluster=cluster_def, cluster_name=cluster_name
+                    targets,
+                    ssh_kwargs=ssh_kwargs,
+                    config=config,
+                    cluster=cluster_def,
+                    cluster_name=cluster_name,
+                    extra_mesh_peers=[h for h in _mesh_members()[0] if h not in host_list],
                 )
                 for h in host_list:
                     if h not in states:
@@ -504,11 +525,25 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
         setup_context = None
         _refresh_plan()
 
-        def _selected(key, host):
+        def _plan_entry(key, host):
             if setup_context is None:
                 raise RuntimeError("Setup plan has not been probed")
-            entry = next(p for p in build_setup_plan(states[host], setup_context) if p.step.key == key)
+            return next(p for p in build_setup_plan(states[host], setup_context) if p.step.key == key)
+
+        def _selected(key, host):
+            entry = _plan_entry(key, host)
             return entry.selected and not entry.blocked_by
+
+        def _satisfied(key):
+            """Every host passes every check of *key* — the same verdict ``setup check`` renders.
+
+            Unknown (unprobed, dry-run, SKIP) is not satisfied: a false
+            "already configured" would skip real work, a false "needs setup"
+            only costs a prompt.
+            """
+            return bool(host_list) and all(_plan_entry(key, h).satisfied for h in host_list)
+
+        mesh_ready = False
 
         cx7_detected_any = any(state.cx7 and state.cx7.detected for state in states.values())
 
@@ -518,7 +553,17 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
             click.echo("-" * 30)
 
             run_mesh = True
-            if not yes:
+            if _satisfied("ssh_mesh"):
+                members = _mesh_members()[0]
+                click.echo(
+                    "  SSH mesh already working across %d host(s)%s — skipping."
+                    % (len(host_list), " + this machine" if len(members) > len(host_list) else "")
+                )
+                click.echo(render_identity_text("  (Run '{app_command} setup ssh' to re-key the mesh deliberately.)"))
+                results["ssh"] = "already configured"
+                mesh_ready = True
+                run_mesh = False
+            elif not yes:
                 run_mesh = click.confirm(
                     "Set up SSH mesh across %d host(s) + this machine?" % len(host_list),
                     default=True,
@@ -527,21 +572,15 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
             if run_mesh:
                 try:
                     # Prepare mesh list: cluster hosts + control machine
-                    mesh_hosts = list(host_list)
-                    seen = set(mesh_hosts)
-                    self_ip = local_ip_for(host_list[0]) if host_list else None
+                    mesh_hosts, self_ip, cross_user = _mesh_members()
                     local_user = _default_ssh_user()
-                    cross_user = user != local_user
-                    if self_ip and self_ip in seen and cross_user:
+                    if self_ip and self_ip in host_list and cross_user:
                         # Control machine was explicitly listed — keep it.
                         click.echo(
                             "Note: SSH user '%s' differs from local user '%s'. "
                             "The mesh script will handle cross-user key exchange for %s automatically." % (user, local_user, self_ip)
                         )
-                    elif self_ip and self_ip not in seen and not cross_user:
-                        mesh_hosts.append(self_ip)
-                        seen.add(self_ip)
-                    elif self_ip and self_ip not in seen and cross_user:
+                    elif self_ip and self_ip not in mesh_hosts:
                         click.echo(
                             "Note: Skipping control machine (%s) in mesh — user '%s' differs from "
                             "local user '%s'. Control→cluster SSH is handled automatically." % (self_ip, user, local_user)
@@ -554,8 +593,9 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                         ssh_key=config.ssh_key,
                         discover_ips=(len(host_list) >= 2),
                         dry_run=dry_run,
-                        control_is_member=(self_ip is not None and self_ip in seen),
+                        control_is_member=(self_ip is not None and self_ip in mesh_hosts),
                     )
+                    mesh_ready = bool(ok)
                     results["ssh"] = "OK" if ok else "failed"
                     if ok and not dry_run and cluster_name:
                         assert manifest_mgr is not None
@@ -572,7 +612,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                     click.echo("SSH mesh error: %s" % e, err=True)
                     if not yes and not click.confirm("Continue?", default=True):
                         return
-            else:
+            elif not mesh_ready:
                 results["ssh"] = "skipped"
             click.echo()
 
@@ -603,7 +643,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
         # ── Management IP normalization ──────────────────────────────
         # After SSH mesh, detect each host's management IP and update the
         # cluster definition if the user provided CX7 or other non-mgmt IPs.
-        if host_list and cluster_name and results.get("ssh") == "OK":
+        if host_list and cluster_name and mesh_ready:
             previous_hosts = list(host_list)
             prev_len = len(host_list)
             _detect_and_update_mgmt_ips(
@@ -706,7 +746,12 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
             click.echo("-" * 30)
             click.echo("Configures high-speed CX7 networking between hosts.")
 
-            run_cx7 = yes or click.confirm("Configure CX7 networking?", default=True)
+            cx7_done = _satisfied("cx7")
+            if cx7_done:
+                click.echo("  CX7 already configured and persisted on all host(s) — skipping.")
+                click.echo(render_identity_text("  (Run '{app_command} setup cx7' to re-plan addresses deliberately.)"))
+                results["cx7"] = "already configured"
+            run_cx7 = not cx7_done and (yes or click.confirm("Configure CX7 networking?", default=True))
 
             if run_cx7:
                 try:
@@ -864,7 +909,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                     click.echo("CX7 error: %s" % e, err=True)
                     if not yes and not click.confirm("Continue?", default=True):
                         return
-            else:
+            elif not cx7_done:
                 results["cx7"] = "skipped"
             click.echo()
 
@@ -872,7 +917,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
         # CX7 configuration may add new IPs that need to be in the SSH
         # mesh.  Re-run the mesh (discover-ips phase only) so inter-node
         # SSH works over the newly configured CX7 interfaces.
-        if cx7_changed_ips and host_list and len(host_list) >= 2 and results.get("ssh") == "OK":
+        if cx7_changed_ips and host_list and len(host_list) >= 2 and mesh_ready:
             click.echo("Phase 3b: Re-meshing SSH after CX7 IP changes")
             click.echo("-" * 30)
             click.echo("CX7 configuration changed network IPs. Re-running SSH mesh")
@@ -880,14 +925,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
             click.echo()
 
             try:
-                mesh_hosts = list(host_list)
-                seen_mesh = set(mesh_hosts)
-                self_ip = local_ip_for(host_list[0]) if host_list else None
-                local_user_remesh = _default_ssh_user()
-                cross_user_remesh = user != local_user_remesh
-                if self_ip and self_ip not in seen_mesh and not cross_user_remesh:
-                    mesh_hosts.append(self_ip)
-                    seen_mesh.add(self_ip)
+                mesh_hosts, self_ip, cross_user_remesh = _mesh_members()
 
                 ok = _run_ssh_mesh(
                     mesh_hosts,
@@ -896,7 +934,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                     ssh_key=config.ssh_key,
                     discover_ips=True,
                     dry_run=dry_run,
-                    control_is_member=(self_ip is not None and self_ip in seen_mesh),
+                    control_is_member=(self_ip is not None and self_ip in mesh_hosts),
                 )
                 results["ssh_remesh"] = "OK" if ok else "failed"
                 if ok and not dry_run and cluster_name:

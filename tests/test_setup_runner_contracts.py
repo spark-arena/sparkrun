@@ -246,3 +246,25 @@ def test_setup_without_config_fails_before_actions_or_approval(monkeypatch):
         run_setup_steps({state.host: state}, context, SetupActionContext("tester"), only_steps={"review"}, approve=approve)
     action.assert_not_called()
     approve.assert_not_called()
+
+
+@pytest.mark.parametrize(("reachable", "status", "detail"), [(1, OK, "already satisfied"), (0, SKIP, "topology adapter")])
+def test_topology_steps_report_satisfied_instead_of_needing_an_adapter(reachable, status, detail):
+    """A mesh every check already passes is `ok`, not "requires the frontend adapter"."""
+    state, context = state_context(CHECK_MESH_TOTAL="1", CHECK_MESH_OK=str(reachable))
+    context = replace(context, multi_host=True)
+    result = run_setup_steps({state.host: state}, context, SetupActionContext("tester", dry_run=True), only_steps={"ssh_mesh"})
+    outcome = result.outcomes["ssh_mesh"][state.host]
+    assert outcome.status == status
+    assert detail in outcome.detail
+
+
+def test_reprobe_keeps_extra_mesh_peers(monkeypatch):
+    """Reprobes after a change measure the same mesh, control machine included."""
+    state, context = state_context()
+    context = replace(context, extra_mesh_peers=("control",))
+    _step(monkeypatch, lambda s, *_: SetupActionResult(s.host, OK, "done", changed=True))
+    probe = Mock(return_value=({state.host: state}, context))
+    monkeypatch.setattr("sparkrun.core.setup_probe.probe_setup_hosts", probe)
+    run_setup_steps({state.host: state}, context, SetupActionContext("tester"), only_steps={"review"})
+    assert probe.call_args.kwargs["extra_mesh_peers"] == ("control",)
