@@ -642,3 +642,19 @@ def test_cx7_apply_leaves_passwordless_hosts_to_their_own_sudo_and_routes_indire
         apply_cx7_plan(plan, sudo_password="pw", sudo_hosts={"10.0.0.2"}, passwords=SudoPasswords(), dispatch=dispatch)
     assert configured == {"10.0.0.1": None}  # passwordless host: its own sudo, no password
     assert dispatched == {"10.0.0.2": "pw"}
+
+
+def test_a_localized_sudo_message_still_means_a_password_is_needed():
+    """sudo's text follows the host's locale (ssh forwards LANG); the exit code does not."""
+    from sparkrun.cli._setup._sudo import ensure_sudo_password
+
+    def parallel(hosts, script, **kwargs):
+        return [RemoteResult(h, 1, "", "sudo: Ein Passwort ist notwendig") for h in hosts]
+
+    with (
+        mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel", side_effect=parallel),
+        mock.patch("sparkrun.orchestration.ssh.run_remote_sudo_script", side_effect=lambda host, *a, **k: _ok(host)),
+        mock.patch("click.prompt", return_value="pw") as prompt,
+    ):
+        assert ensure_sudo_password(HOSTS, "dgxuser", {"ssh_user": "dgxuser"}) == ("pw", None)
+    prompt.assert_called_once()
