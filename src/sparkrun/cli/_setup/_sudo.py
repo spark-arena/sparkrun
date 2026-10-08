@@ -64,6 +64,7 @@ def ensure_sudo_password(
 
     # Try NOPASSWD on all hosts using the current sudo user
     from sparkrun.orchestration.primitives import run_local_script, should_run_locally
+    from sparkrun.orchestration.sudo import is_sudo_auth_failure
     from sparkrun.orchestration.ssh import RemoteResult, run_remote_scripts_parallel
 
     sudo_user = sudo_ssh_kwargs.get("ssh_user", user)
@@ -86,10 +87,14 @@ def ensure_sudo_password(
             )
         if all(r.success for r in test_results):
             return None, None
-        needs_password = [r.host for r in test_results if not r.success]
+        # Verify only where sudo asked for a password: an unreachable host says
+        # nothing about the password, and a NOPASSWD host must never be sent one.
+        needs_password = [r.host for r in test_results if is_sudo_auth_failure(r)]
     except Exception:
-        logger.debug("Passwordless sudo probe failed; verifying on every host", exc_info=True)
-        needs_password = list(host_list)
+        logger.debug("Passwordless sudo probe failed; collecting the password unverified", exc_info=True)
+        return click.prompt("[sudo] password for %s" % sudo_user, hide_input=True), None
+    if not needs_password:
+        return None, None  # the rest are unreachable: no password helps there
 
     # Prompt, then verify on every host that needs a password. Hosts need
     # not share one: if any accepts it, keep it — the rest are asked for their
@@ -97,7 +102,7 @@ def ensure_sudo_password(
     # host rejects is re-asked here, like sudo's own retries.
     from concurrent.futures import ThreadPoolExecutor
 
-    from sparkrun.orchestration.sudo import is_sudo_auth_failure, run_sudo_script_on_host
+    from sparkrun.orchestration.sudo import run_sudo_script_on_host
 
     def verify(host):
         return run_sudo_script_on_host(host, "true", sudo_password, ssh_kwargs=sudo_ssh_kwargs, timeout=10)

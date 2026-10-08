@@ -1754,6 +1754,7 @@ def apply_cx7_plan(
     sudo_password: str | None = None,
     sudo_hosts: set[str] | None = None,
     passwords: SudoPasswords | None = None,
+    dispatch=None,
 ) -> list:
     """Apply CX7 configuration to all hosts that need changes.
 
@@ -1767,6 +1768,9 @@ def apply_cx7_plan(
             path where the script's internal ``sudo`` calls rely on NOPASSWD.
         passwords: Per-host credentials for *sudo_hosts*: a host whose sudo
             rejects *sudo_password* is re-asked through it (interactive only).
+        dispatch: ``(host, script, password, timeout=)`` runner for *sudo_hosts*
+            when sudo goes through another user (the wizard's indirect sudo);
+            the script then runs as root through it instead of ``sudo -S``.
 
     Returns:
         List of RemoteResult for hosts that were configured.
@@ -1784,6 +1788,8 @@ def apply_cx7_plan(
     for hp in hosts_to_configure:
 
         def attempt(password, hp=hp):
+            if dispatch is not None and password is not None and not dry_run:
+                return dispatch(hp.host, generate_cx7_configure_script(hp, plan.mtu, plan.prefix_len), password, timeout=60)
             return configure_cx7_host(hp, plan.mtu, plan.prefix_len, ssh_kwargs=kw, dry_run=dry_run, sudo_password=password)
 
         if hp.host not in sudo_hosts:

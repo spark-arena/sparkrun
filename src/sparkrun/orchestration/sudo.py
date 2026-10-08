@@ -30,13 +30,11 @@ _SUDO_AUTH_FAILURE_MARKERS = (
 def is_sudo_auth_failure(result: RemoteResult) -> bool:
     """Whether *result* failed because sudo rejected (or lacked) a password.
 
-    Reads stdout too: indirect sudo runs ``su`` under a pty, so its
-    "Authentication failure" arrives on stdout, not stderr.
+    Reads stderr only: stdout is the script's, and may mention a password
+    for its own reasons. Indirect sudo puts its su/sudo transcript there too.
     """
-    if result.success:
-        return False
-    text = ((result.stderr or "") + "\n" + (result.stdout or "")).lower()
-    return any(marker in text for marker in _SUDO_AUTH_FAILURE_MARKERS)
+    stderr = (result.stderr or "").lower()
+    return not result.success and any(marker in stderr for marker in _SUDO_AUTH_FAILURE_MARKERS)
 
 
 @dataclass
@@ -241,6 +239,7 @@ def run_indirect_sudo_script(
         "        os.execlp('su', 'su', '-', sudo_user, '-c', 'sudo -S bash -s')\n"
         "    else:\n"
         "        buf = b''\n"
+        "        seen = b''\n"
         "        deadline = time.time() + 10\n"
         "        fed_su = False\n"
         "        while time.time() < deadline:\n"
@@ -251,6 +250,7 @@ def run_indirect_sudo_script(
         "                except OSError:\n"
         "                    break\n"
         "                buf += data\n"
+        "                seen += data\n"
         "                low = buf.lower()\n"
         "                if not fed_su and (b'password' in low or b'passwort' in low):\n"
         "                    os.write(fd, (password + '\\n').encode())\n"
@@ -281,7 +281,13 @@ def run_indirect_sudo_script(
         "        os.close(fd)\n"
         "        _, status = os.waitpid(pid, 0)\n"
         "        sys.stdout.buffer.write(out)\n"
-        "        sys.exit(os.WEXITSTATUS(status))\n"
+        "        rc = os.WEXITSTATUS(status)\n"
+        "        if rc:\n"
+        "            # su/sudo report a rejected password on the pty, before the\n"
+        "            # script runs; surface that transcript (password masked) on\n"
+        "            # stderr so callers can tell it from a failing script.\n"
+        "            sys.stderr.buffer.write(seen.replace(password.encode(), b'***'))\n"
+        "        sys.exit(rc)\n"
         "except Exception as e:\n"
         "    sys.stderr.write('indirect-sudo wrapper error: ' + str(e) + '\\n')\n"
         "    sys.exit(1)\n"

@@ -772,7 +772,10 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                             results["cx7"] = "dry-run"
                         else:
                             pw = _ensure_sudo_password()
-                            sudo_hosts = {hp.host for hp in plan.host_plans if hp.needs_change}
+                            # Hosts with passwordless sudo run the script's own
+                            # `sudo` calls; a password piped to `sudo -S` there
+                            # would reach bash as a command (as in `setup cx7`).
+                            sudo_hosts = {hp.host for hp in plan.host_plans if hp.needs_change and not detections[hp.host].sudo_ok}
                             apply_results = apply_cx7_plan(
                                 plan,
                                 ssh_kwargs=ssh_kwargs,
@@ -780,6 +783,8 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                                 sudo_password=pw,
                                 sudo_hosts=sudo_hosts if pw else set(),
                                 passwords=SudoPasswords(prompt_host=_host_password),
+                                # Indirect sudo is a different user: go through su, as other steps do.
+                                dispatch=_run_sudo_on_host if _indirect_sudo_user else None,
                             )
                             ok_count = sum(1 for r in apply_results if r.success)
 

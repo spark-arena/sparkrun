@@ -374,9 +374,9 @@ def test_cx7_apply_asks_a_rejecting_host_for_its_own_password():
 # ---------------------------------------------------------------------------
 
 
-def test_indirect_su_rejection_is_an_auth_failure():
-    """Indirect sudo runs su under a pty, so its rejection arrives on stdout."""
-    assert is_sudo_auth_failure(RemoteResult("h", 1, "Password: \r\nsu: Authentication failure\r\n", ""))
+def test_script_output_mentioning_passwords_is_not_an_auth_failure():
+    """stdout belongs to the script; only sudo/su's stderr decides."""
+    assert not is_sudo_auth_failure(RemoteResult("h", 1, "pam: Authentication failure while reading x", ""))
 
 
 def test_nopasswd_hosts_get_sudo_n_never_a_password():
@@ -554,3 +554,91 @@ def test_nopasswd_probe_runs_only_for_selected_sudo_steps(v, exclude_sudo_steps)
         probe_setup_hosts(["h1"], ssh_kwargs={}, config=SparkrunConfig())
     readiness = next(s for s in scripts if "SETUP_STEPS=" in s)
     assert ("if [ 0 = 1 ]" if exclude_sudo_steps else "if [ 1 = 1 ]") in readiness
+
+
+def test_indirect_wrapper_reports_a_rejected_su_password(tmp_path, monkeypatch):
+    """Run the real pty wrapper against a fake su: the rejection must be detectable."""
+    from sparkrun.orchestration import ssh as ssh_mod
+    from sparkrun.orchestration.sudo import run_indirect_sudo_script
+
+    fake_su = tmp_path / "su"
+    # Echoes what it read, as a pty would if the password arrived before echo was off.
+    fake_su.write_text('#!/bin/bash\nprintf "Password: "\nread -r pw\necho "$pw"\necho "su: Authentication failure"\nexit 1\n')
+    fake_su.chmod(0o755)
+    monkeypatch.setenv("PATH", "%s:%s" % (tmp_path, os.environ["PATH"]))
+    # Run the wrapper here instead of over SSH: the "ssh command" is a local shell.
+    monkeypatch.setattr(ssh_mod, "build_ssh_cmd", lambda host, **kw: ["bash", "-c"])
+
+    result = run_indirect_sudo_script("h1", "true", sudo_user="admin", sudo_password="wrong-pw", timeout=30)
+    assert not result.success
+    assert is_sudo_auth_failure(result), (result.stdout, result.stderr)
+    assert "wrong-pw" not in result.stdout + result.stderr
+
+
+def test_unreachable_host_does_not_turn_a_typo_into_indirect_sudo():
+    """Only hosts that asked for a password vote on whether the password was wrong."""
+    from sparkrun.cli._setup._sudo import ensure_sudo_password
+
+    def parallel(hosts, script, **kwargs):
+        return [
+            RemoteResult(h, 255, "", "ssh: connect to host %s: No route to host" % h)
+            if h == "10.0.0.2"
+            else RemoteResult(h, 1, "", "sudo: a password is required")
+            for h in hosts
+        ]
+
+    verified = []
+
+    def sudo(host, script, password, **kwargs):
+        verified.append(host)
+        return _ok(host) if password == "right" else _rejected(host)
+
+    answers = iter(["typo", "right"])
+    with (
+        mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel", side_effect=parallel),
+        mock.patch("sparkrun.orchestration.ssh.run_remote_sudo_script", side_effect=sudo),
+        mock.patch("click.prompt", side_effect=lambda *a, **k: next(answers)),
+    ):
+        result = ensure_sudo_password(HOSTS, "dgxuser", {"ssh_user": "dgxuser"}, allow_indirect=True, default_user="admin")
+    assert result == ("right", None)
+    assert set(verified) == {"10.0.0.1"}
+
+
+def test_no_prompt_when_every_host_is_passwordless_or_unreachable():
+    from sparkrun.cli._setup._sudo import ensure_sudo_password
+
+    def parallel(hosts, script, **kwargs):
+        return [_ok(h) if h == "10.0.0.1" else RemoteResult(h, 255, "", "ssh: No route to host") for h in hosts]
+
+    with (
+        mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel", side_effect=parallel),
+        mock.patch("click.prompt") as prompt,
+    ):
+        assert ensure_sudo_password(HOSTS, "dgxuser", {"ssh_user": "dgxuser"}) == (None, None)
+    prompt.assert_not_called()
+
+
+def test_cx7_apply_leaves_passwordless_hosts_to_their_own_sudo_and_routes_indirect():
+    """Only sudo_hosts get a password; with a dispatcher (indirect sudo) they go through it."""
+    from sparkrun.orchestration.networking import CX7ClusterPlan, CX7HostPlan, CX7InterfaceAssignment, apply_cx7_plan
+
+    def plan_for(host):
+        assignments = [CX7InterfaceAssignment("if%d" % n, "192.168.1%d.%s" % (n, host[-1]), "192.168.1%d.0/24" % n) for n in range(2)]
+        return CX7HostPlan(host=host, assignments=assignments, needs_change=True)
+
+    plan = CX7ClusterPlan(host_plans=[plan_for(h) for h in HOSTS])
+    configured = {}
+    dispatched = {}
+
+    def configure(hp, mtu, prefix_len, ssh_kwargs=None, dry_run=False, sudo_password=None):
+        configured[hp.host] = sudo_password
+        return _ok(hp.host)
+
+    def dispatch(host, script, password, timeout=60):
+        dispatched[host] = password
+        return _ok(host)
+
+    with mock.patch("sparkrun.orchestration.networking.configure_cx7_host", side_effect=configure):
+        apply_cx7_plan(plan, sudo_password="pw", sudo_hosts={"10.0.0.2"}, passwords=SudoPasswords(), dispatch=dispatch)
+    assert configured == {"10.0.0.1": None}  # passwordless host: its own sudo, no password
+    assert dispatched == {"10.0.0.2": "pw"}
