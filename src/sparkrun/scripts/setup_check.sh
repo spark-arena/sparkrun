@@ -129,24 +129,7 @@ fi
 ;; esac
 
 case " $SETUP_STEPS " in *" sudoers "*)
-# --- Sudoers entries (best-effort) ---
-# Only inspect when passwordless sudo is available so the probe never blocks
-# on a password prompt; otherwise report "unknown".
-if sudo -n true 2>/dev/null; then
-    if sudo -n test -e "/etc/sudoers.d/@RESOURCE_NAMESPACE@-chown-$WHO" 2>/dev/null; then
-        echo "CHECK_SUDOERS_CHOWN=1"
-    else
-        echo "CHECK_SUDOERS_CHOWN=0"
-    fi
-    if sudo -n test -e "/etc/sudoers.d/@RESOURCE_NAMESPACE@-dropcaches-$WHO" 2>/dev/null; then
-        echo "CHECK_SUDOERS_DROPCACHES=1"
-    else
-        echo "CHECK_SUDOERS_DROPCACHES=0"
-    fi
-else
-    echo "CHECK_SUDOERS_CHOWN=unknown"
-    echo "CHECK_SUDOERS_DROPCACHES=unknown"
-fi
+# sparkrun:include _sudoers_probe.sh
 ;; esac
 
 case " $SETUP_STEPS " in *" ssh_mesh "*)

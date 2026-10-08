@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Callable, Any
+from typing import TYPE_CHECKING, Callable, Any
 from sparkrun.core.setup_models import OK, FAIL, WARN, SKIP
+
+if TYPE_CHECKING:
+    from sparkrun.orchestration.sudo import SudoPasswords
 
 _DOCKER_GROUP_SCRIPT = """\
 #!/bin/bash
@@ -115,15 +118,24 @@ class SetupActionContext:
     dry_run: bool = False
     sudo_password: str | None = None
     dispatch: Callable | None = None
+    passwords: SudoPasswords | None = field(default=None, repr=False)
+    """Per-host credentials: a host rejecting *sudo_password* is re-asked once
+    (interactive frontends) and its own password reused for later actions."""
 
     def run(self, host: str, script: str, timeout: int = 300):
         if self.dry_run:
             raise RuntimeError("A setup preview cannot execute a host action")
-        if self.dispatch:
-            return self.dispatch(host, script, self.sudo_password or "", timeout=timeout)
-        from sparkrun.orchestration.sudo import run_sudo_script_on_host
 
-        return run_sudo_script_on_host(host, script, self.sudo_password or "", ssh_kwargs=self.ssh_kwargs, timeout=timeout)
+        def attempt(password):
+            if self.dispatch:
+                return self.dispatch(host, script, password or "", timeout=timeout)
+            from sparkrun.orchestration.sudo import run_sudo_script_on_host
+
+            return run_sudo_script_on_host(host, script, password or "", ssh_kwargs=self.ssh_kwargs, timeout=timeout)
+
+        if self.passwords is None:
+            return attempt(self.sudo_password)
+        return self.passwords.run(host, attempt, default=self.sudo_password)
 
 
 @dataclass
@@ -195,31 +207,57 @@ def nvidia_cdi(state, ctx, action):
     )
 
 
+#: Scoped sudoers entries: label -> (install script, readiness fact).  The
+#: ``sudoers`` step installs whichever are missing; ``setup fix-permissions`` /
+#: ``setup clear-cache --save-sudo`` install only their own.
+SUDOERS_ENTRIES = {
+    "chown": ("fix_permissions_sudoers.sh", "CHECK_SUDOERS_CHOWN"),
+    "dropcaches": ("clear_cache_sudoers.sh", "CHECK_SUDOERS_DROPCACHES"),
+}
+
+
+def sudoers_entry_path(label: str, user: str) -> str:
+    from sparkrun.core.application_profile import get_application_profile
+
+    return "/etc/sudoers.d/%s-%s-%s" % (get_application_profile().resource_namespace, label, user)
+
+
+def install_sudoers_entries(host: str, action: SetupActionContext, labels, *, cache_dir: str = "") -> SetupActionResult:
+    """Install the named scoped sudoers entries on *host* for ``action.user``.
+
+    *cache_dir* is the directory the ``chown`` entry permits (empty: the
+    user's ``~/.cache/huggingface``, resolved on the host).  Raises
+    ``ValueError`` for a user or path that cannot be interpolated safely.
+    """
+    from sparkrun.scripts import read_script
+    from sparkrun.utils.shell import validate_sudoers_path, validate_unix_username
+
+    validate_unix_username(action.user)
+    if cache_dir:
+        validate_sudoers_path(cache_dir)
+    outputs = []
+    files = []
+    failed = False
+    for label in labels:
+        script = read_script(SUDOERS_ENTRIES[label][0]).format(user=action.user, cache_dir=cache_dir)
+        result = action.run(host, script)
+        outputs.append((result.stdout if result.success else result.stderr).strip()[:300])
+        if result.success:
+            files.append(sudoers_entry_path(label, action.user))
+        else:
+            failed = True
+    return SetupActionResult(host, FAIL if failed else OK, "; ".join(outputs), bool(files), {"files": files})
+
+
 def sudoers(state, ctx, action):
     from sparkrun.core.setup_steps import setup_step_reason
 
     if reason := setup_step_reason("sudoers", state, ctx):
         return SetupActionResult(state.host, SKIP, reason)
-    from sparkrun.scripts import read_script
-    from sparkrun.utils.shell import validate_unix_username
-    from sparkrun.core.application_profile import get_application_profile
-
-    validate_unix_username(action.user)
-    namespace = get_application_profile().resource_namespace
-    outputs = []
-    files = []
-    failed = False
-    for name, label, args in (
-        ("fix_permissions_sudoers.sh", "chown", {"user": action.user, "cache_dir": ""}),
-        ("clear_cache_sudoers.sh", "dropcaches", {"user": action.user}),
-    ):
-        result = action.run(state.host, read_script(name).format(**args))
-        outputs.append((result.stdout if result.success else result.stderr).strip()[:300])
-        if result.success:
-            files.append("/etc/sudoers.d/%s-%s-%s" % (namespace, label, action.user))
-        else:
-            failed = True
-    return SetupActionResult(state.host, FAIL if failed else OK, "; ".join(outputs), bool(files), {"files": files})
+    missing = [label for label, (_script, fact) in SUDOERS_ENTRIES.items() if state.facts.get(fact) != "1"]
+    if not missing:
+        return SetupActionResult(state.host, OK, "already installed")
+    return install_sudoers_entries(state.host, action, missing)
 
 
 def earlyoom(state, ctx, action):

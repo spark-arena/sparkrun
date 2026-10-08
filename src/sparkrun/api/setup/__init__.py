@@ -17,6 +17,7 @@ from ._runner import SetupEvent, SetupRunResult, SetupUndoResult, run_setup_step
 # Caller-facing planning/action models are aliases of the core types. Plugin
 # registration remains in core.setup_steps; frontends need only this facade.
 from sparkrun.core.setup_actions import SetupActionContext, SetupActionResult
+from sparkrun.orchestration.sudo import SudoPasswords
 from sparkrun.core.setup_manifest import ManifestManager, SetupManifest, PhaseRecord
 from sparkrun.core.setup_plans import SetupPlan
 from sparkrun.core.setup_models import CheckContext, CheckItem, HostState, OK, WARN, FAIL, SKIP
@@ -60,6 +61,7 @@ from ._ssh_access import (
 
 __all__ = [
     "SetupActionContext",
+    "SudoPasswords",
     "SetupActionResult",
     "ManifestManager",
     "SetupManifest",

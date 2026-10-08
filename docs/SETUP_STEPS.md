@@ -144,6 +144,13 @@ records changed hosts and their details, including partially successful changes,
 and refreshes readiness before dependent actions through the shared runner.
 Results and manifests must not contain passwords or other credentials.
 
+Hosts need not share a sudo password. `SetupActionContext.passwords` (a
+`SudoPasswords`, exported by `sparkrun.api.setup`) holds per-host credentials:
+when sudo rejects the shared password on a host, `run()` asks its `prompt_host`
+callback once for that host and reuses an accepted password for the host's later
+actions. Only an authentication failure re-asks; a failing script does not. A
+headless caller omits the prompt and the rejected host simply fails.
+
 Undo callbacks receive the details for the specific changed host. They run only
 for selected uninstall phases recorded in the application's own manifest. Step
 feature settings or removal from a current hardware plan do not prevent undoing earlier changes while the plugin is
@@ -238,6 +245,9 @@ Optional callbacks are synchronous on the invoking thread:
 - `approve(step, hosts) -> bool`: allow eligible actions. Omitted means apply.
 - `credentials() -> str | None`: obtain an ephemeral sudo password when needed.
   Alternatively, supply it in `SetupActionContext`.
+- `host_credentials(host) -> str | None`: interactive frontends only. Asked when
+  sudo rejects the shared password on *host*. The answer is reused for that
+  host's later actions in the same run. Return `None` to leave the host failed.
 - `progress_callback(SetupEvent)`: receive `preview`, `selected`, `result`, or
   `error` events with step/label/hosts/status/detail, never credentials.
 

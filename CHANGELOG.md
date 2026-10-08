@@ -12,6 +12,18 @@ first tagged release containing them, regardless of their original commit date.
 
 ### 0.4.0 application and API changes
 
+- Setup commands no longer assume every host shares one sudo password. A host
+  that rejects the shared password is asked for its own, once, and that
+  password is reused for the rest of the command. This applies to
+  `fix-permissions`, `clear-cache` and `earlyoom`, the wizard's host steps, and
+  `run_setup_steps(host_credentials=...)`. Only an authentication failure
+  re-asks. `--save-sudo` installs only that command's entry, and only where it
+  is not already in effect (`clear-cache` installs the drop-caches entry, not
+  the chown one); the wizard's sudoers step installs whichever are missing.
+  The sudoers readiness probe now reads scoped NOPASSWD rules on hosts with
+  password sudo. Before, it reported them as unverifiable, so the wizard never
+  installed the entries on exactly those hosts (based on #310 by @Aisoipheo).
+
 - Reduce unit-test delays from DNS, Hub metadata, SSH diagnostics, hardware scans,
   and retry sleeps. Add per-test hang detection and explicit fixtures for tests
   exercising real locality logic (#307).

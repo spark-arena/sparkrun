@@ -128,3 +128,112 @@ def ensure_sudo_password(
         return sudo_password, alt_user
 
     return sudo_password, None
+
+
+def interactive_sudo_passwords(user):
+    """Terminal prompts for :class:`~sparkrun.orchestration.sudo.SudoPasswords`.
+
+    The shared password is asked once, the first time a host needs one; a
+    host that rejects it gets its own prompt, and that password is reused for
+    the rest of the command.
+    """
+    from sparkrun.orchestration.sudo import SudoPasswords
+
+    def shared():
+        return click.prompt("[sudo] password for %s" % user, hide_input=True)
+
+    return SudoPasswords(prompt_shared=shared, prompt_host=host_password_prompt(user))
+
+
+def host_password_prompt(user):
+    """``host -> password`` prompt for a host whose sudo rejected the shared password."""
+
+    def prompt(host):
+        click.echo("Sudo rejected the password on %s." % host, err=True)
+        return click.prompt("[sudo] password for %s @ %s" % (user, host), hide_input=True)
+
+    return prompt
+
+
+def run_sudo_action(host_list, script, fallback_script, ssh_kwargs, passwords, *, dry_run=False, progress=None):
+    """Run a root action: ``sudo -n`` everywhere, then a password per failing host.
+
+    *script* runs non-interactively on every host in parallel; each host where
+    that fails runs *fallback_script* (as root) with the password *passwords*
+    holds for it, re-asking a host whose sudo rejects it.  *progress(host,
+    result)* reports each ``sudo -n`` success, then each password run before
+    (``result=None``) and after it.
+
+    Returns:
+        ``{host: RemoteResult}`` for every host that ran.
+    """
+    from sparkrun.orchestration.sudo import run_sudo_script_on_host, run_with_sudo_fallback
+
+    result_map, failed = run_with_sudo_fallback(host_list, script, fallback_script, ssh_kwargs, dry_run=dry_run)
+    if dry_run:
+        return result_map
+    if progress:
+        for host in host_list:
+            if host not in failed and host in result_map:
+                progress(host, result_map[host])
+    for host in failed:
+        if progress:
+            progress(host, None)
+        result_map[host] = passwords.run(
+            host,
+            lambda password, host=host: run_sudo_script_on_host(host, fallback_script, password, ssh_kwargs=ssh_kwargs, timeout=300),
+        )
+        if progress:
+            progress(host, result_map[host])
+    return result_map
+
+
+def save_sudoers_entry(label, host_list, user, ssh_kwargs, passwords, *, cluster_name, dry_run, cache_dir=""):
+    """``--save-sudo``: install one scoped sudoers entry where it is not already in effect.
+
+    Uses the ``sudoers`` setup step's installer and readiness probe, so the
+    entry, the skip decision and ``setup check`` agree.  Only *label*'s entry
+    is installed — the wizard's ``sudoers`` step is what installs them all.
+    """
+    from sparkrun.core.setup_actions import SUDOERS_ENTRIES, SetupActionContext, install_sudoers_entries, sudoers_entry_path
+    from sparkrun.core.setup_models import OK
+    from sparkrun.core.setup_probe import probe_sudoers_entries
+
+    from sparkrun.utils.shell import validate_sudoers_path, validate_unix_username
+
+    # Both are interpolated into a sudoers rule; refuse before any prompt.
+    try:
+        validate_unix_username(user)
+        if cache_dir:
+            validate_sudoers_path(cache_dir)
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+    path = sudoers_entry_path(label, user)
+    if dry_run:
+        click.echo("  [dry-run] Would install sudoers entry on %d host(s):" % len(host_list))
+        for h in host_list:
+            click.echo("    %s: %s" % (h, path))
+        click.echo()
+        return
+    # Setup commands connect as *user*, so the probe answers for that user.
+    fact = SUDOERS_ENTRIES[label][1]
+    present = probe_sudoers_entries(host_list, ssh_kwargs=ssh_kwargs, cache_dir=cache_dir or None)
+    targets = [h for h in host_list if present.get(h, {}).get(fact) != "1"]
+    if not targets:
+        click.echo("Sudoers entry %s already in effect on every host." % path)
+        click.echo()
+        return
+    click.echo("Installing sudoers entry %s on %d host(s)..." % (path, len(targets)))
+    action = SetupActionContext(user, ssh_kwargs, passwords=passwords)
+    installed = []
+    for h in targets:
+        result = install_sudoers_entries(h, action, (label,), cache_dir=cache_dir)
+        if result.status == OK:
+            installed.append(h)
+            click.echo("  [OK]   %s: %s" % (h, result.detail))
+        else:
+            click.echo("  [FAIL] %s: %s" % (h, result.detail[:200]), err=True)
+    click.echo("Sudoers install: %d OK, %d failed." % (len(installed), len(targets) - len(installed)))
+    if installed:
+        _record_setup_phase(cluster_name, user, installed, "sudoers", files=[path])
+    click.echo()

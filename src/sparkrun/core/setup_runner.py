@@ -70,6 +70,7 @@ def run_setup_steps(
     manifest_mgr: ManifestManager | None = None,
     approve: Callable[[SetupStep, tuple[str, ...]], bool] | None = None,
     credentials: Callable[[], str | None] | None = None,
+    host_credentials: Callable[[str], str | None] | None = None,
     progress_callback: Callable[[SetupEvent], None] | None = None,
     only_steps: set[str] | None = None,
 ) -> SetupRunResult:
@@ -80,6 +81,9 @@ def run_setup_steps(
     holds a validated manifest lock across changes and reprobes. Dry runs invoke
     no actions, credentials, approvals, manifest writes/locks, or reprobes.
     SSH-mesh/CX7 topology interaction remains frontend-owned and reports skip.
+    host_credentials(host) is asked, once per host per action, when sudo
+    rejects the shared password there; a password it supplies is reused for
+    that host's later actions. Omit it for non-interactive callers.
     """
     from sparkrun.core.setup_probe import probe_setup_hosts
 
@@ -96,6 +100,11 @@ def run_setup_steps(
         raise ValueError("Unknown setup steps: " + ", ".join(sorted(unknown)))
     results: dict[str, str] = {}
     outcomes: dict[str, dict[str, SetupActionResult]] = {}
+    passwords = action_context.passwords
+    if passwords is None and host_credentials is not None:
+        from sparkrun.orchestration.sudo import SudoPasswords
+
+        passwords = SudoPasswords(prompt_host=host_credentials)
 
     def emit(event: SetupEvent) -> None:
         if progress_callback is not None:
@@ -147,6 +156,7 @@ def run_setup_steps(
             action = replace(
                 action_context,
                 sudo_password=(credentials() if credentials else action_context.sudo_password) if step.requires_sudo else None,
+                passwords=passwords if step.requires_sudo else None,
             )
             changed = False
             for host in candidates:

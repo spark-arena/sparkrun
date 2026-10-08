@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import subprocess
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 from sparkrun.orchestration import ssh as _ssh
@@ -11,6 +13,71 @@ from sparkrun.orchestration.ssh import RemoteResult
 from sparkrun.utils.shell import b64_encode_cmd, b64_wrap_python, validate_unix_username
 
 logger = logging.getLogger(__name__)
+
+# stderr fragments meaning sudo (or su, for indirect sudo) refused the
+# credentials, as opposed to the script itself failing.  Only these earn a
+# per-host password prompt: re-asking for a password after, say, a visudo
+# validation error sends the user after the wrong problem.
+_SUDO_AUTH_FAILURE_MARKERS = (
+    "incorrect password",
+    "sorry, try again",
+    "a password is required",
+    "no password was provided",
+    "authentication failure",
+)
+
+
+def is_sudo_auth_failure(result: RemoteResult) -> bool:
+    """Whether *result* failed because sudo rejected (or lacked) a password."""
+    stderr = (result.stderr or "").lower()
+    return not result.success and any(marker in stderr for marker in _SUDO_AUTH_FAILURE_MARKERS)
+
+
+@dataclass
+class SudoPasswords:
+    """Sudo credentials for hosts that need not share one password.
+
+    A cluster's hosts are often installed separately, so the password typed
+    once at a shared prompt can be wrong on some of them.  ``run`` retries such
+    a host once with a password from *prompt_host* and remembers it for every
+    later action on that host in the same operation.
+
+    Console-free: an interactive frontend supplies the prompts; a headless
+    caller leaves them unset and a rejected host simply fails.  Passwords live
+    only in memory and stay out of ``repr``.
+    """
+
+    shared: str | None = field(default=None, repr=False)
+    prompt_shared: Callable[[], str | None] | None = field(default=None, repr=False)
+    """Collects *shared* lazily, the first time a host needs a password."""
+    prompt_host: Callable[[str], str | None] | None = field(default=None, repr=False)
+    """Asked once per rejected host per ``run``; ``None``/empty declines."""
+    overrides: dict[str, str] = field(default_factory=dict, repr=False)
+    _shared_asked: bool = field(default=False, init=False, repr=False)
+
+    def password_for(self, host: str, default: str | None = None) -> str | None:
+        """The password to try first: a proven per-host one, else *default*, else the shared one."""
+        if host in self.overrides:
+            return self.overrides[host]
+        if default is not None:
+            return default
+        if self.shared is None and self.prompt_shared is not None and not self._shared_asked:
+            self._shared_asked = True
+            self.shared = self.prompt_shared()
+        return self.shared
+
+    def run(self, host: str, attempt: Callable[[str | None], RemoteResult], default: str | None = None) -> RemoteResult:
+        """Run ``attempt(password)``, re-asking for *host*'s own password if sudo rejects it."""
+        result = attempt(self.password_for(host, default))
+        if self.prompt_host is None or not is_sudo_auth_failure(result):
+            return result
+        password = self.prompt_host(host)
+        if not password:
+            return result
+        retry = attempt(password)
+        if not is_sudo_auth_failure(retry):
+            self.overrides[host] = password
+        return retry
 
 
 def _run_local_sudo_script(

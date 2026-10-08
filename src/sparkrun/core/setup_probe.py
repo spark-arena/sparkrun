@@ -166,3 +166,26 @@ def probe_setup_hosts(
         except Exception:
             logger.debug("Setup RDMA probe failed", exc_info=True)
     return states, context
+
+
+def probe_sudoers_entries(hosts: Sequence[str], *, ssh_kwargs: dict[str, Any], cache_dir: str | None = None) -> dict[str, dict[str, str]]:
+    """Which scoped sudoers entries already work on each host, without prompting.
+
+    Runs the same fragment ``setup_check.sh`` includes for the ``sudoers``
+    step, so a standalone ``--save-sudo`` decides exactly as ``setup check``
+    reports. Returns ``CHECK_SUDOERS_*`` facts per host for the SSH user; a
+    host whose probe failed maps to ``{}``, which reads as "not installed".
+    """
+    from sparkrun.orchestration.ssh import run_remote_scripts_parallel
+    from sparkrun.scripts import inject_shell_vars, read_script
+    from sparkrun.utils.text import parse_kv_output
+
+    script = inject_shell_vars('WHO="$(id -un)"\n' + read_script("_sudoers_probe.sh"), SPARKRUN_SUDOERS_CACHE_DIR=cache_dir)
+    facts: dict[str, dict[str, str]] = {host: {} for host in hosts}
+    try:
+        for result in run_remote_scripts_parallel(list(hosts), script, timeout=30, quiet=True, **ssh_kwargs):
+            if result.success:
+                facts[result.host] = parse_kv_output(result.stdout)
+    except Exception:
+        logger.debug("Sudoers probe failed", exc_info=True)
+    return facts

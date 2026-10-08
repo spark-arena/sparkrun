@@ -119,6 +119,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
         from sparkrun.core.setup_models import HostState
         from sparkrun.core.setup_actions import SetupActionContext
         from ._step_runner import run_host_steps
+        from ._sudo import host_password_prompt
 
         cx7_enabled = step_enabled("cx7", config)
 
@@ -926,6 +927,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                 manifest_mgr=manifest_mgr,
                 cluster_name=cluster_name,
                 ensure_password=_ensure_sudo_password,
+                host_password=lambda host: host_password_prompt(_indirect_sudo_user or sudo_ssh_kwargs.get("ssh_user", user))(host),
             )
         )
 
