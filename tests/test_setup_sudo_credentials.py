@@ -316,3 +316,21 @@ def test_install_failure_that_is_not_auth_does_not_reprompt(cluster):
     assert "@ 10.0.0.2" not in result.output
     assert "Sudoers install: 1 OK, 1 failed." in result.output
     assert "2 cleared" in result.output
+
+
+def test_cx7_apply_asks_a_rejecting_host_for_its_own_password():
+    """setup cx7 and the wizard's CX7 phase share apply_cx7_plan's per-host retry."""
+    from sparkrun.orchestration.networking import CX7ClusterPlan, CX7HostPlan, apply_cx7_plan
+
+    host_plans = [CX7HostPlan(host=h, assignments=[mock.Mock(), mock.Mock()], needs_change=True) for h in HOSTS]
+    plan = CX7ClusterPlan(host_plans=host_plans)
+    host_pw = {"10.0.0.1": "pw-one", "10.0.0.2": "pw-two"}
+
+    def configure(hp, mtu, prefix_len, ssh_kwargs=None, dry_run=False, sudo_password=None):
+        return _ok(hp.host) if sudo_password == host_pw[hp.host] else _rejected(hp.host)
+
+    prompt = mock.Mock(return_value="pw-two")
+    with mock.patch("sparkrun.orchestration.networking.configure_cx7_host", side_effect=configure):
+        results = apply_cx7_plan(plan, sudo_password="pw-one", sudo_hosts=set(HOSTS), passwords=SudoPasswords(prompt_host=prompt))
+    assert all(r.success for r in results)
+    prompt.assert_called_once_with("10.0.0.2")

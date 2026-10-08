@@ -32,7 +32,7 @@ from ._phases import (
     _earlyoom_summary,
 )
 from ._ssh import _run_ssh_mesh
-from ._sudo import _record_setup_phase, interactive_sudo_passwords, run_sudo_action, save_sudoers_entry
+from ._sudo import _record_setup_phase, host_password_prompt, interactive_sudo_passwords, run_sudo_action, save_sudoers_entry
 from sparkrun.orchestration.job_metadata import PRUNE_KEEP_PER_INTENT, PRUNE_MAX_AGE_DAYS
 
 
@@ -1212,7 +1212,6 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
         CX7_NETPLAN_FILE,
         CX7Topology,
         _group_interfaces_by_port,
-        configure_cx7_host,
         filter_cx7_interfaces,
         ring_ports_error,
         detect_cx7_for_hosts,
@@ -1239,6 +1238,7 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
 
     import os
 
+    from sparkrun.orchestration.sudo import SudoPasswords
     from ._sudo import ensure_sudo_password
 
     config = SparkrunConfig()
@@ -1508,32 +1508,9 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
         dry_run=dry_run,
         sudo_password=sudo_password,
         sudo_hosts=sudo_hosts_needing_pw,
+        passwords=SudoPasswords(prompt_host=host_password_prompt(sudo_ssh_kwargs.get("ssh_user", user))),
     )
-
-    # Build a map of host -> result for easy lookup
     result_map = {r.host: r for r in results}
-
-    # Check for sudo failures and retry with per-host passwords
-    if sudo_hosts_needing_pw and not dry_run:
-        failed_sudo_hosts = [r.host for r in results if not r.success and r.host in sudo_hosts_needing_pw]
-        if failed_sudo_hosts:
-            click.echo()
-            click.echo("Sudo authentication failed on %d host(s). Retrying individually..." % len(failed_sudo_hosts))
-            host_plan_map = {hp.host: hp for hp in plan.host_plans}
-            for fhost in failed_sudo_hosts:
-                hp = host_plan_map.get(fhost)
-                if not hp:
-                    continue
-                per_host_pw = click.prompt("[sudo] password for %s @ %s" % (user, fhost), hide_input=True)
-                retry_result = configure_cx7_host(
-                    hp,
-                    mtu=plan.mtu,
-                    prefix_len=plan.prefix_len,
-                    ssh_kwargs=sudo_ssh_kwargs,
-                    dry_run=dry_run,
-                    sudo_password=per_host_pw,
-                )
-                result_map[fhost] = retry_result
 
     # Collect final results in plan order
     final_results = [result_map[hp.host] for hp in plan.host_plans if hp.host in result_map]

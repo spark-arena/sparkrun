@@ -120,6 +120,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
         from sparkrun.core.setup_actions import SetupActionContext
         from ._step_runner import run_host_steps
         from ._sudo import host_password_prompt
+        from sparkrun.orchestration.sudo import SudoPasswords
 
         cx7_enabled = step_enabled("cx7", config)
 
@@ -623,6 +624,11 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
             click.echo()
 
         # ── Sudo password helper (deferred collection) ───────────────
+        def _host_password(host):
+            """Per-host prompt when sudo rejects the shared password (resolved lazily:
+            the indirect sudo user is only known once the password was collected)."""
+            return host_password_prompt(_indirect_sudo_user or sudo_ssh_kwargs.get("ssh_user", user))(host)
+
         def _ensure_sudo_password():
             nonlocal sudo_password, sudo_ssh_kwargs
             if sudo_password is not None:
@@ -821,6 +827,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                                 dry_run=dry_run,
                                 sudo_password=pw,
                                 sudo_hosts=sudo_hosts if pw else set(),
+                                passwords=SudoPasswords(prompt_host=_host_password),
                             )
                             ok_count = sum(1 for r in apply_results if r.success)
 
@@ -927,7 +934,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                 manifest_mgr=manifest_mgr,
                 cluster_name=cluster_name,
                 ensure_password=_ensure_sudo_password,
-                host_password=lambda host: host_password_prompt(_indirect_sudo_user or sudo_ssh_kwargs.get("ssh_user", user))(host),
+                host_password=_host_password,
             )
         )
 

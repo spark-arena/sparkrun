@@ -15,8 +15,8 @@ first tagged release containing them, regardless of their original commit date.
 - Setup commands no longer assume every host shares one sudo password. A host
   that rejects the shared password is asked for its own, once, and that
   password is reused for the rest of the command. This applies to
-  `fix-permissions`, `clear-cache` and `earlyoom`, the wizard's host steps, and
-  `run_setup_steps(host_credentials=...)`. Only an authentication failure
+  `fix-permissions`, `clear-cache`, `earlyoom` and `cx7`, the wizard's host
+  steps and CX7 phase, and `run_setup_steps(host_credentials=...)`. Only an authentication failure
   re-asks. `--save-sudo` installs only that command's entry, and only where it
   is not already in effect (`clear-cache` installs the drop-caches entry, not
   the chown one); the wizard's sudoers step installs whichever are missing.

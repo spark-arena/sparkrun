@@ -11,10 +11,14 @@ import logging
 import re
 from dataclasses import dataclass, field, replace
 from enum import Enum
+from typing import TYPE_CHECKING
 
 from sparkrun.orchestration.infiniband import parse_kv_output
 from sparkrun.scripts import inject_shell_vars, read_script
 from sparkrun.utils.shell import quote
+
+if TYPE_CHECKING:
+    from sparkrun.orchestration.sudo import SudoPasswords
 
 logger = logging.getLogger(__name__)
 
@@ -1749,6 +1753,7 @@ def apply_cx7_plan(
     dry_run: bool = False,
     sudo_password: str | None = None,
     sudo_hosts: set[str] | None = None,
+    passwords: SudoPasswords | None = None,
 ) -> list:
     """Apply CX7 configuration to all hosts that need changes.
 
@@ -1760,6 +1765,8 @@ def apply_cx7_plan(
         sudo_hosts: Set of hostnames that need ``sudo -S`` (no NOPASSWD).
             Hosts not in this set use the normal ``run_remote_script``
             path where the script's internal ``sudo`` calls rely on NOPASSWD.
+        passwords: Per-host credentials for *sudo_hosts*: a host whose sudo
+            rejects *sudo_password* is re-asked through it (interactive only).
 
     Returns:
         List of RemoteResult for hosts that were configured.
@@ -1775,15 +1782,16 @@ def apply_cx7_plan(
 
     logger.info("Applying CX7 configuration to %d host(s)...", len(hosts_to_configure))
     for hp in hosts_to_configure:
-        host_pw = sudo_password if hp.host in sudo_hosts else None
-        result = configure_cx7_host(
-            hp,
-            plan.mtu,
-            plan.prefix_len,
-            ssh_kwargs=kw,
-            dry_run=dry_run,
-            sudo_password=host_pw,
-        )
+
+        def attempt(password, hp=hp):
+            return configure_cx7_host(hp, plan.mtu, plan.prefix_len, ssh_kwargs=kw, dry_run=dry_run, sudo_password=password)
+
+        if hp.host not in sudo_hosts:
+            result = attempt(None)
+        elif passwords is not None and not dry_run:
+            result = passwords.run(hp.host, attempt, default=sudo_password)
+        else:
+            result = attempt(sudo_password)
         results.append(result)
         if result.success:
             logger.info("  [OK] %s: configured", hp.host)
