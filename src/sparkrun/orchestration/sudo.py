@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -30,11 +31,19 @@ _SUDO_AUTH_FAILURE_MARKERS = (
 def is_sudo_auth_failure(result: RemoteResult) -> bool:
     """Whether *result* failed because sudo rejected (or lacked) a password.
 
-    Reads stderr only: stdout is the script's, and may mention a password
-    for its own reasons. Indirect sudo puts its su/sudo transcript there too.
+    Only sudo's and su's own lines count (``sudo: …`` / ``su: …``, and sudo's
+    "Sorry, try again"), never the script's: a script may print the same words
+    for its own reasons. sudo and su run under LC_ALL=C, so these are English.
+    Indirect sudo puts its su/sudo transcript on stderr too.
     """
-    stderr = (result.stderr or "").lower()
-    return not result.success and any(marker in stderr for marker in _SUDO_AUTH_FAILURE_MARKERS)
+    if result.success:
+        return False
+    for line in (result.stderr or "").lower().replace("\r", "\n").splitlines():
+        if "sorry, try again" in line:
+            return True
+        if line.lstrip().startswith(("sudo:", "su:")) and any(marker in line for marker in _SUDO_AUTH_FAILURE_MARKERS):
+            return True
+    return False
 
 
 @dataclass
@@ -115,12 +124,13 @@ def _run_local_sudo_script(
         logger.info("[dry-run] Would execute locally with sudo (%d bytes)", len(script))
         return RemoteResult(host="localhost", returncode=0, stdout="[dry-run]", stderr="")
 
+    # As remotely: sudo's own messages in C, the script in the caller's locale.
     if password is not None:
         cmd = ["sudo", "-S", "bash", "-s"]
-        full_input = password + "\n" + script
+        full_input = password + "\n" + _ssh.SUDO_SCRIPT_PRELUDE + script
     else:
         cmd = ["sudo", "-n", "bash", "-s"]
-        full_input = script
+        full_input = _ssh.SUDO_SCRIPT_PRELUDE + script
 
     try:
         proc = subprocess.run(
@@ -129,6 +139,7 @@ def _run_local_sudo_script(
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=dict(os.environ, LC_ALL="C"),
         )
         return RemoteResult(
             host="localhost",
@@ -229,19 +240,25 @@ def run_indirect_sudo_script(
     b64_script = b64_encode_cmd(script)
 
     wrapper = (
-        "import base64, os, pty, select, sys, time\n"
+        "import base64, os, pty, select, signal, sys, time\n"
         "try:\n"
         "    password = base64.b64decode('%s').decode('utf-8')\n"
         "    script = base64.b64decode('%s').decode('utf-8')\n"
         "    sudo_user = %r\n"
+        "    drain_seconds = %d\n"
+        "    secret = password.encode()\n"
         "    pid, fd = pty.fork()\n"
         "    if pid == 0:\n"
-        "        os.execlp('su', 'su', '-', sudo_user, '-c', 'sudo -S bash -s')\n"
+        "        # C locale for su and sudo only, so their prompts and failures read\n"
+        "        # the same on every host; the script gets its locale back below.\n"
+        "        os.environ['LC_ALL'] = 'C'\n"
+        "        os.execlp('su', 'su', '-', sudo_user, '-c', 'LC_ALL=C sudo -S bash -s')\n"
         "    else:\n"
         "        buf = b''\n"
         "        seen = b''\n"
         "        deadline = time.time() + 10\n"
         "        fed_su = False\n"
+        "        sent = False\n"
         "        while time.time() < deadline:\n"
         "            r, _, _ = select.select([fd], [], [], 0.5)\n"
         "            if r:\n"
@@ -259,39 +276,53 @@ def run_indirect_sudo_script(
         "                elif fed_su and (b'password' in low or b'passwort' in low):\n"
         "                    os.write(fd, (password + '\\n').encode())\n"
         "                    time.sleep(0.2)\n"
-        "                    os.write(fd, script.encode())\n"
+        "                    # bash reads the pty until told to stop: end with an\n"
+        "                    # explicit exit so the session ends when the script does.\n"
+        "                    os.write(fd, ('unset LC_ALL\\n' + script + '\\nexit $?\\n').encode())\n"
+        "                    sent = True\n"
         "                    break\n"
         "        else:\n"
         "            os.close(fd)\n"
         "            sys.stderr.write('Timeout waiting for su/sudo prompts\\n')\n"
         "            sys.exit(1)\n"
-        "        # Drain remaining output\n"
+        "        # Drain until the session ends. Never stop on a quiet spell: closing\n"
+        "        # the pty hangs up the session, killing a silent step (netplan apply).\n"
         "        out = b''\n"
-        "        while True:\n"
-        "            r, _, _ = select.select([fd], [], [], 2)\n"
+        "        stop = time.time() + drain_seconds\n"
+        "        finished = False\n"
+        "        while time.time() < stop:\n"
+        "            r, _, _ = select.select([fd], [], [], 1)\n"
         "            if not r:\n"
-        "                break\n"
+        "                continue\n"
         "            try:\n"
         "                chunk = os.read(fd, 4096)\n"
-        "                if not chunk:\n"
-        "                    break\n"
-        "                out += chunk\n"
         "            except OSError:\n"
+        "                finished = True\n"
         "                break\n"
+        "            if not chunk:\n"
+        "                finished = True\n"
+        "                break\n"
+        "            out += chunk\n"
         "        os.close(fd)\n"
         "        _, status = os.waitpid(pid, 0)\n"
+        "        # A hung-up or killed session has no exit status; never read it as 0.\n"
+        "        rc = os.WEXITSTATUS(status) if os.WIFEXITED(status) else 128 + os.WTERMSIG(status)\n"
+        "        out = out.replace(secret, b'***')\n"
         "        sys.stdout.buffer.write(out)\n"
-        "        rc = os.WEXITSTATUS(status)\n"
-        "        if rc:\n"
-        "            # su/sudo report a rejected password on the pty, before the\n"
-        "            # script runs; surface that transcript (password masked) on\n"
-        "            # stderr so callers can tell it from a failing script.\n"
-        "            sys.stderr.buffer.write(seen.replace(password.encode(), b'***'))\n"
+        "        if not finished:\n"
+        "            sys.stderr.write('indirect sudo: no end of output after %%ds\\n' %% drain_seconds)\n"
+        "            rc = rc or 124\n"
+        "        if rc and not sent:\n"
+        "            # Rejected before the script ran: su/sudo's transcript is the error.\n"
+        "            sys.stderr.buffer.write(seen.replace(secret, b'***'))\n"
+        "        elif rc:\n"
+        "            # The pty merges the script's streams: its tail is the error.\n"
+        "            sys.stderr.buffer.write(out[-2000:])\n"
         "        sys.exit(rc)\n"
         "except Exception as e:\n"
         "    sys.stderr.write('indirect-sudo wrapper error: ' + str(e) + '\\n')\n"
         "    sys.exit(1)\n"
-    ) % (b64_password, b64_script, sudo_user)
+    ) % (b64_password, b64_script, sudo_user, max(timeout - 10, 30))
 
     # Deliver the wrapper via a base64 pipeline (avoids shell escaping issues
     # that occur with python3 -c when SSH joins args for the remote shell).

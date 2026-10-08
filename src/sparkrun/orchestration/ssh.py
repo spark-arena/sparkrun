@@ -1032,6 +1032,11 @@ def verify_host_paths(
     return missing_by_host
 
 
+#: Prepended to every script run under sudo: sudo itself runs with LC_ALL=C
+#: (its prompts and failures are then locale-independent), the script must not.
+SUDO_SCRIPT_PRELUDE = "unset LC_ALL\n"
+
+
 def run_remote_sudo_script(
     host: str,
     script: str,
@@ -1073,12 +1078,14 @@ def run_remote_sudo_script(
         return RemoteResult(host=host, returncode=0, stdout="[dry-run]", stderr="")
 
     cmd = build_ssh_cmd(host, ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options)
+    # sudo's own messages in C, whatever locale ssh forwarded, so a rejected
+    # password reads the same on every host; the script gets its locale back.
     if password is None:
-        cmd.extend(["sudo", "-n", "bash", "-s"])
-        full_input = script
+        cmd.extend(["LC_ALL=C", "sudo", "-n", "bash", "-s"])
+        full_input = SUDO_SCRIPT_PRELUDE + script
     else:
-        cmd.extend(["sudo", "-S", "bash", "-s"])
-        full_input = password + "\n" + script
+        cmd.extend(["LC_ALL=C", "sudo", "-S", "bash", "-s"])
+        full_input = password + "\n" + SUDO_SCRIPT_PRELUDE + script
 
     logger.debug("  SSH sudo script -> %s (%d bytes)", host, len(script))
 

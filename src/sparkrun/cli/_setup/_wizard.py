@@ -634,12 +634,33 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
             the indirect sudo user is only known once the password was collected)."""
             return host_password_prompt(_indirect_sudo_user or sudo_ssh_kwargs.get("ssh_user", user))(host)
 
+        sudo_checked = False
+
+        def _sudo_targets():
+            """Hosts whose plan has a step acting with sudo (CX7 is applied by the wizard itself).
+
+            Credentials are gathered only there: a host whose plan acts with
+            nothing is neither probed nor sent a password.
+            """
+            if setup_context is None:
+                return list(host_list)
+            from sparkrun.core.setup_steps import all_setup_steps
+
+            acting = {s.key for s in all_setup_steps() if s.requires_sudo and (s.apply is not None or s.key == "cx7")}
+            return [h for h in host_list if any(e.selected and e.step.key in acting for e in build_setup_plan(states[h], setup_context))]
+
         def _ensure_sudo_password():
-            nonlocal sudo_password, _indirect_sudo_user
-            if sudo_password is not None:
+            nonlocal sudo_password, _indirect_sudo_user, sudo_checked
+            # Checked once: re-probing every host before each step costs a
+            # connect timeout per unreachable host and finds nothing new.
+            if sudo_password is not None or sudo_checked:
                 return sudo_password
+            sudo_checked = True
+            targets = _sudo_targets()
+            if not targets:
+                return None
             sudo_password, alt_user = ensure_sudo_password(
-                host_list,
+                targets,
                 user,
                 ssh_kwargs,
                 sudo_ssh_kwargs=sudo_ssh_kwargs,

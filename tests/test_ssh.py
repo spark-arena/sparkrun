@@ -293,7 +293,8 @@ def test_run_remote_sudo_script_mocks_subprocess(mock_run):
     # Password + script are piped as bytes; the separator must stay a bare LF,
     # since a CR would become part of the password `sudo -S` reads.
     full_input = call_args[1]["input"]
-    assert full_input.startswith((password + "\n").encode())
+    assert cmd[-5:] == ["LC_ALL=C", "sudo", "-S", "bash", "-s"]
+    assert full_input.startswith((password + "\nunset LC_ALL\n").encode())
     assert script.encode() in full_input
     assert b"\r" not in full_input
 
@@ -321,11 +322,12 @@ def test_run_remote_sudo_script_nopasswd(mock_run):
 
     cmd = mock_run.call_args[0][0]
     assert cmd[0] == "ssh"
-    assert cmd[-4:] == ["sudo", "-n", "bash", "-s"]
+    assert cmd[-5:] == ["LC_ALL=C", "sudo", "-n", "bash", "-s"]
     assert "-S" not in cmd
 
-    # Only the script — no leading blank line for bash to read as a command.
-    assert mock_run.call_args[1]["input"] == script.encode()
+    # Only the script (after the locale restore) — no leading blank line for
+    # bash to read as a command.
+    assert mock_run.call_args[1]["input"] == ("unset LC_ALL\n" + script).encode()
 
     assert result.success
 

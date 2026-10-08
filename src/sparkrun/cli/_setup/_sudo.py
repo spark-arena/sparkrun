@@ -88,8 +88,9 @@ def ensure_sudo_password(
             return None, None
         # Verify only where sudo asked for a password: an unreachable host says
         # nothing about the password, and a NOPASSWD host must never be sent one.
-        # ssh's own failures exit 255; read the code, not sudo's (localized) text.
-        needs_password = [r.host for r in test_results if not r.success and r.returncode != 255]
+        # ssh's own failures exit 255 and a timed-out probe -1: neither host
+        # said anything about a password.
+        needs_password = [r.host for r in test_results if not r.success and r.returncode not in (255, -1)]
     except Exception:
         logger.debug("Passwordless sudo probe failed; collecting the password unverified", exc_info=True)
         return click.prompt("[sudo] password for %s" % sudo_user, hide_input=True), None
@@ -115,7 +116,10 @@ def ensure_sudo_password(
             verdicts = list(pool.map(verify, needs_password))
         if any(r.success for r in verdicts):
             return sudo_password, None
-        if not all(is_sudo_auth_failure(r) for r in verdicts):
+        # Keep asking where the password itself was rejected; hosts that failed
+        # otherwise (dropped connection, not a sudoer) do not decide for them.
+        needs_password = [r.host for r in verdicts if is_sudo_auth_failure(r)]
+        if not needs_password:
             break  # not a wrong password: this user cannot sudo there
 
     if allow_indirect:

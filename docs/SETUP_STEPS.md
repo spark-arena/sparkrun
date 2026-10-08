@@ -160,6 +160,11 @@ and an `apply`); like every readiness probe, it follows the host's plan.
 through the `sudoers` step's installer and are held to that step's plan and
 feature flag before any prompt, the boundary `setup cx7` and `setup earlyoom`
 already use. The commands themselves are not setup steps and run anywhere.
+As with those commands, the gate covers every target: one host whose plan omits
+`sudoers` refuses the whole invocation (drop `--save-sudo` to run the action
+alone), and `--dry-run` needs saved target hardware because it does not probe.
+The wizard gathers sudo credentials only from hosts whose plan selects a step
+acting with sudo (plus its own CX7 apply).
 
 Undo callbacks receive the details for the specific changed host. They run only
 for selected uninstall phases recorded in the application's own manifest. Step

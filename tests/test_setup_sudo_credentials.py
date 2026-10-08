@@ -658,3 +658,77 @@ def test_a_localized_sudo_message_still_means_a_password_is_needed():
     ):
         assert ensure_sudo_password(HOSTS, "dgxuser", {"ssh_user": "dgxuser"}) == ("pw", None)
     prompt.assert_called_once()
+
+
+def _fake_su_then_bash(tmp_path, monkeypatch, password="right-pw"):
+    """A fake su that checks the password, mimics sudo's prompt, then runs `bash -s` on the pty."""
+    from sparkrun.orchestration import ssh as ssh_mod
+
+    fake_su = tmp_path / "su"
+    fake_su.write_text(
+        "#!/bin/bash\n"
+        'printf "Password: "\n'
+        "read -r pw\n"
+        'if [ "$pw" != "%s" ]; then echo; echo "su: Authentication failure"; exit 1; fi\n'
+        "echo\n"
+        'printf "[sudo] password for admin: "\n'
+        "read -r pw2\n"
+        "echo\n"
+        "exec bash --norc --noprofile -s\n" % password
+    )
+    fake_su.chmod(0o755)
+    monkeypatch.setenv("PATH", "%s:%s" % (tmp_path, os.environ["PATH"]))
+    monkeypatch.setattr(ssh_mod, "build_ssh_cmd", lambda host, **kw: ["bash", "-c"])
+
+
+def test_indirect_wrapper_waits_out_a_silent_step(tmp_path, monkeypatch):
+    """A step quiet for longer than the old 2s idle window (netplan apply) must run to completion."""
+    from sparkrun.orchestration.sudo import run_indirect_sudo_script
+
+    _fake_su_then_bash(tmp_path, monkeypatch)
+    result = run_indirect_sudo_script("h1", "sleep 3\necho DONE-$((40+2))\n", sudo_user="admin", sudo_password="right-pw", timeout=60)
+    assert "DONE-42" in result.stdout, (result.returncode, result.stdout, result.stderr)
+    assert result.success
+
+
+def test_indirect_wrapper_reports_the_scripts_failure_not_the_prompts(tmp_path, monkeypatch):
+    """Authentication worked; the script failed — stderr carries its error, not the su/sudo prompts."""
+    from sparkrun.orchestration.sudo import run_indirect_sudo_script
+
+    _fake_su_then_bash(tmp_path, monkeypatch)
+    result = run_indirect_sudo_script("h1", "echo ERR-$((1+1)) >&2\nexit 3\n", sudo_user="admin", sudo_password="right-pw", timeout=60)
+    assert result.returncode == 3
+    assert "ERR-2" in result.stderr and "Password:" not in result.stderr
+    assert not is_sudo_auth_failure(result)
+
+
+def test_auth_markers_count_only_on_sudo_and_su_lines():
+    assert is_sudo_auth_failure(RemoteResult("h", 1, "", "[sudo] password for u: Sorry, try again.\nsudo: 1 incorrect password attempt"))
+    assert is_sudo_auth_failure(RemoteResult("h", 1, "", "Password: ***\r\nsu: Authentication failure\r\n"))
+    assert not is_sudo_auth_failure(RemoteResult("h", 1, "", "docker login: authentication failure for registry"))
+
+
+def test_a_host_that_times_out_does_not_decide_for_the_others():
+    """A dropped host (rc -1) neither needs nor judges the password; the typo is simply re-asked."""
+    from sparkrun.cli._setup._sudo import ensure_sudo_password
+
+    def parallel(hosts, script, **kwargs):
+        return [
+            RemoteResult(h, -1, "", "Execution timed out") if h == "10.0.0.2" else RemoteResult(h, 1, "", "sudo: a password is required")
+            for h in hosts
+        ]
+
+    verified = []
+
+    def sudo(host, script, password, **kwargs):
+        verified.append(host)
+        return _ok(host) if password == "right" else _rejected(host)
+
+    answers = iter(["typo", "right"])
+    with (
+        mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel", side_effect=parallel),
+        mock.patch("sparkrun.orchestration.ssh.run_remote_sudo_script", side_effect=sudo),
+        mock.patch("click.prompt", side_effect=lambda *a, **k: next(answers)),
+    ):
+        assert ensure_sudo_password(HOSTS, "dgxuser", {"ssh_user": "dgxuser"}, allow_indirect=True, default_user="admin") == ("right", None)
+    assert set(verified) == {"10.0.0.1"}

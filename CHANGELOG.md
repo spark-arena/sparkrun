@@ -12,6 +12,15 @@ first tagged release containing them, regardless of their original commit date.
 
 ### 0.4.0 application and API changes
 
+- Fixed indirect sudo (the wizard's "user with sudo access" path) killing a
+  setup step that printed nothing for two seconds, such as `netplan apply`, and
+  reporting it as a success. The su session now ends with the script, a killed
+  session reports 128 plus the signal, and a failing script's own error is
+  reported rather than the password prompts.
+- `sudo` and `su` now run under `LC_ALL=C`, so a rejected password reads the
+  same on every host whatever locale ssh forwards. Scripts still run in the
+  host's own locale.
+
 - Setup commands no longer assume every host shares one sudo password. A host
   that rejects the shared password is asked for its own, once, and that
   password is reused for the rest of the command, including under indirect
