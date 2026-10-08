@@ -173,14 +173,16 @@ def probe_sudoers_entries(hosts: Sequence[str], *, ssh_kwargs: dict[str, Any], c
 
     Runs the same fragment ``setup_check.sh`` includes for the ``sudoers``
     step, so a standalone ``--save-sudo`` decides exactly as ``setup check``
-    reports. Returns ``CHECK_SUDOERS_*`` facts per host for the SSH user; a
+    reports. Returns ``CHECK_SUDOERS_*`` and ``CHECK_SUDO_NOPASSWD`` facts per
+    host for the SSH user; a
     host whose probe failed maps to ``{}``, which reads as "not installed".
     """
     from sparkrun.orchestration.ssh import run_remote_scripts_parallel
     from sparkrun.scripts import inject_shell_vars, read_script
     from sparkrun.utils.text import parse_kv_output
 
-    script = inject_shell_vars('WHO="$(id -un)"\n' + read_script("_sudoers_probe.sh"), SPARKRUN_SUDOERS_CACHE_DIR=cache_dir)
+    body = 'WHO="$(id -un)"\n' + read_script("_sudo_nopasswd.sh") + read_script("_sudoers_probe.sh")
+    script = inject_shell_vars(body, SPARKRUN_SUDOERS_CACHE_DIR=cache_dir)
     facts: dict[str, dict[str, str]] = {host: {} for host in hosts}
     try:
         for result in run_remote_scripts_parallel(list(hosts), script, timeout=30, quiet=True, **ssh_kwargs):

@@ -101,10 +101,12 @@ def run_setup_steps(
     results: dict[str, str] = {}
     outcomes: dict[str, dict[str, SetupActionResult]] = {}
     passwords = action_context.passwords
-    if passwords is None and host_credentials is not None:
+    if passwords is None:
         from sparkrun.orchestration.sudo import SudoPasswords
 
         passwords = SudoPasswords(prompt_host=host_credentials)
+    # Probed NOPASSWD hosts run `sudo -n`; a password must never reach them.
+    passwords.nopasswd.update(host for host, state in states.items() if state.facts.get("CHECK_SUDO_NOPASSWD") == "1")
 
     def emit(event: SetupEvent) -> None:
         if progress_callback is not None:

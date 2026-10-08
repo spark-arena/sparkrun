@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import logging
+
 import click
 
 from .._common import _get_cluster_manager
+
+logger = logging.getLogger(__name__)
 
 
 def _record_setup_phase(cluster_name, user, host_list, phase, **extra):
@@ -22,9 +26,7 @@ def _record_setup_phase(cluster_name, user, host_list, phase, **extra):
         manifest_mgr = ManifestManager(mgr.clusters_dir)
         manifest_mgr.record_phase(resolved, user, host_list, phase, **extra)
     except Exception:
-        import logging
-
-        logging.getLogger(__name__).debug("Failed to record manifest phase '%s'", phase, exc_info=True)
+        logger.debug("Failed to record manifest phase '%s'", phase, exc_info=True)
 
 
 def ensure_sudo_password(
@@ -84,36 +86,34 @@ def ensure_sudo_password(
             )
         if all(r.success for r in test_results):
             return None, None
+        needs_password = [r.host for r in test_results if not r.success]
     except Exception:
-        pass
+        logger.debug("Passwordless sudo probe failed; verifying on every host", exc_info=True)
+        needs_password = list(host_list)
 
-    # Prompt for sudo password
-    sudo_password = click.prompt("[sudo] password for %s" % sudo_user, hide_input=True)
+    # Prompt, then verify on every host that needs a password. Hosts need
+    # not share one: if any accepts it, keep it — the rest are asked for their
+    # own when an action reaches them (SudoPasswords). Only a password every
+    # host rejects is re-asked here, like sudo's own retries.
+    from concurrent.futures import ThreadPoolExecutor
 
-    # Verify sudo works with this password on at least one host
-    from sparkrun.orchestration.sudo import run_sudo_script_on_host
+    from sparkrun.orchestration.sudo import is_sudo_auth_failure, run_sudo_script_on_host
 
-    test_host = host_list[0]
-    if should_run_locally(test_host, sudo_user):
-        import subprocess
+    def verify(host):
+        return run_sudo_script_on_host(host, "true", sudo_password, ssh_kwargs=sudo_ssh_kwargs, timeout=10)
 
-        proc = subprocess.run(
-            ["sudo", "-S", "true"],
-            input=sudo_password + "\n",
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        test_r = RemoteResult(host=test_host, returncode=proc.returncode, stdout=proc.stdout, stderr=proc.stderr)
-    else:
-        test_r = run_sudo_script_on_host(
-            test_host,
-            "true",
-            sudo_password,
-            ssh_kwargs=sudo_ssh_kwargs,
-            timeout=10,
-        )
-    if not test_r.success and allow_indirect:
+    for attempt in range(3):
+        if attempt:
+            click.echo("Sorry, try again.")
+        sudo_password = click.prompt("[sudo] password for %s" % sudo_user, hide_input=True)
+        with ThreadPoolExecutor(max_workers=min(len(needs_password), 16)) as pool:
+            verdicts = list(pool.map(verify, needs_password))
+        if any(r.success for r in verdicts):
+            return sudo_password, None
+        if not all(is_sudo_auth_failure(r) for r in verdicts):
+            break  # not a wrong password: this user cannot sudo there
+
+    if allow_indirect:
         # Sudo failed for cluster user — offer alternate user
         alt_default = default_user if sudo_user != default_user else ""
         click.echo("  Sudo failed for '%s'. Specify a user with sudo access." % sudo_user)
@@ -172,6 +172,11 @@ def run_sudo_action(host_list, script, fallback_script, ssh_kwargs, passwords, *
     result_map, failed = run_with_sudo_fallback(host_list, script, fallback_script, ssh_kwargs, dry_run=dry_run)
     if dry_run:
         return result_map
+    if failed:
+        # A host whose sudo needs no password failed for another reason; its
+        # retry runs as root via `sudo -n`, never with a password on stdin.
+        _probe, needs_password = run_with_sudo_fallback(failed, "sudo -n true", "true", ssh_kwargs)
+        passwords.nopasswd.update(h for h in failed if h not in needs_password)
     if progress:
         for host in host_list:
             if host not in failed and host in result_map:
@@ -218,6 +223,7 @@ def save_sudoers_entry(label, host_list, user, ssh_kwargs, passwords, *, cluster
     # Setup commands connect as *user*, so the probe answers for that user.
     fact = SUDOERS_ENTRIES[label][1]
     present = probe_sudoers_entries(host_list, ssh_kwargs=ssh_kwargs, cache_dir=cache_dir or None)
+    passwords.nopasswd.update(h for h in host_list if present.get(h, {}).get("CHECK_SUDO_NOPASSWD") == "1")
     targets = [h for h in host_list if present.get(h, {}).get(fact) != "1"]
     if not targets:
         click.echo("Sudoers entry %s already in effect on every host." % path)

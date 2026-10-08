@@ -160,11 +160,13 @@ def _probe(tmp_path, **env):
     (bin_dir / "getent").write_text("#!/bin/bash\necho 'tester:x:1000:1000::/home/tester:/bin/bash'\n")
     for name in ("sudo", "getent"):
         (bin_dir / name).chmod(0o755)
-    script = "WHO=tester\n" + read_script("_sudoers_probe.sh")
+    script = "WHO=tester\n" + read_script("_sudo_nopasswd.sh") + read_script("_sudoers_probe.sh")
     full_env = {**os.environ, "PATH": "%s:%s" % (bin_dir, os.environ["PATH"]), "FAKE_SUDO_ALL": "1", "FAKE_LISTING": "", "FAKE_FILES": ""}
     full_env.update(env)
     out = subprocess.run(["bash", "-s"], input=script, capture_output=True, text=True, env=full_env, check=True).stdout
-    return dict(line.split("=", 1) for line in out.split())
+    facts = dict(line.split("=", 1) for line in out.split())
+    assert facts.pop("CHECK_SUDO_NOPASSWD") == ("1" if full_env["FAKE_SUDO_ALL"] == "0" else "0")
+    return facts
 
 
 def test_probe_reads_scoped_entries_on_password_sudo_hosts(tmp_path):
@@ -213,11 +215,13 @@ def cluster(tmp_path, monkeypatch):
     return "lab"
 
 
-def _fake_hosts(entries, passwords, nopasswd_action=False):
+def _fake_hosts(entries, passwords, nopasswd_action=False, nopasswd_hosts=()):
     """SSH-layer fakes: per-host sudo passwords and installed sudoers entries.
 
     *entries* maps host -> set of installed labels; installs mutate it, so a
     later ``sudo -n`` action succeeds where the entry now exists.
+    *nopasswd_hosts* grant unrestricted passwordless sudo and must never be
+    sent a password.
     """
 
     def parallel(hosts, script, **kwargs):
@@ -225,8 +229,14 @@ def _fake_hosts(entries, passwords, nopasswd_action=False):
         for host in hosts:
             if "CHECK_SUDOERS" in script:
                 have = entries[host]
-                out = "CHECK_SUDOERS_CHOWN=%d\nCHECK_SUDOERS_DROPCACHES=%d\n" % ("chown" in have, "dropcaches" in have)
+                out = "CHECK_SUDO_NOPASSWD=%d\nCHECK_SUDOERS_CHOWN=%d\nCHECK_SUDOERS_DROPCACHES=%d\n" % (
+                    host in nopasswd_hosts,
+                    "chown" in have,
+                    "dropcaches" in have,
+                )
                 results.append(_ok(host, out))
+            elif script == "sudo -n true":
+                results.append(_ok(host) if host in nopasswd_hosts else RemoteResult(host, 1, "", "sudo: a password is required"))
             else:
                 label = "dropcaches" if "drop_caches" in script else "chown"
                 works = nopasswd_action or label in entries[host]
@@ -234,7 +244,9 @@ def _fake_hosts(entries, passwords, nopasswd_action=False):
         return results
 
     def sudo(host, script, password, **kwargs):
-        if password != passwords[host]:
+        if host in nopasswd_hosts:
+            assert password is None, "a password was sent to a NOPASSWD host"
+        elif password != passwords[host]:
             return _rejected(host)
         if "visudo" in script:
             label = "dropcaches" if "dropcaches" in script else "chown"
@@ -334,3 +346,114 @@ def test_cx7_apply_asks_a_rejecting_host_for_its_own_password():
         results = apply_cx7_plan(plan, sudo_password="pw-one", sudo_hosts=set(HOSTS), passwords=SudoPasswords(prompt_host=prompt))
     assert all(r.success for r in results)
     prompt.assert_called_once_with("10.0.0.2")
+
+
+# ---------------------------------------------------------------------------
+# Review follow-ups: indirect su, NOPASSWD hosts, shared-password verification
+# ---------------------------------------------------------------------------
+
+
+def test_indirect_su_rejection_is_an_auth_failure():
+    """Indirect sudo runs su under a pty, so its rejection arrives on stdout."""
+    assert is_sudo_auth_failure(RemoteResult("h", 1, "Password: \r\nsu: Authentication failure\r\n", ""))
+
+
+def test_nopasswd_hosts_get_sudo_n_never_a_password():
+    passwords = SudoPasswords(shared="pw", nopasswd={"h1"})
+    seen = []
+    passwords.run("h1", lambda pw: seen.append(pw) or _ok("h1"))
+    assert seen == [None]
+
+
+def test_runner_never_sends_a_password_to_a_probed_nopasswd_host(monkeypatch):
+    from sparkrun.api.setup import run_setup_steps
+
+    state, context = state_context(CHECK_SUDO_NOPASSWD="1")
+    approve_test_steps(monkeypatch, "needs_root")
+    register_feature(FeatureFlag("setup.steps.needs_root", "needs_root", default=True))
+    register_setup_step(
+        SetupStep(
+            "needs_root",
+            "needs_root",
+            checks=(lambda *_: CheckItem("needs_root", "needs_root", WARN),),
+            apply=lambda s, ctx, action: SetupActionResult(s.host, OK if action.run(s.host, "true").success else "fail", "ran"),
+            feature_flag="setup.steps.needs_root",
+        )
+    )
+    dispatch = mock.Mock(return_value=_ok(state.host))
+    run_setup_steps(
+        {state.host: state}, context, SetupActionContext("tester", dispatch=dispatch), credentials=lambda: "pw", only_steps={"needs_root"}
+    )
+    assert [c.args[2] for c in dispatch.call_args_list] == [None]
+
+
+def test_save_sudo_installs_on_a_nopasswd_host_without_a_password(cluster):
+    """Mixed cluster: the NOPASSWD host must not have a password piped to sudo -S."""
+    entries = {h: set() for h in HOSTS}
+    patches = _fake_hosts(entries, dict.fromkeys(HOSTS, "pw"), nopasswd_hosts={"10.0.0.1"})
+    result, sudo = _invoke(["clear-cache", "--save-sudo"], patches, "pw\n")
+    assert result.exit_code == 0, result.output
+    assert entries == {h: {"dropcaches"} for h in HOSTS}
+    assert {c.args[0]: c.args[2] for c in sudo.call_args_list if "visudo" in c.args[1]} == {"10.0.0.1": None, "10.0.0.2": "pw"}
+
+
+def test_action_failing_on_a_nopasswd_host_retries_as_root_without_asking(cluster):
+    """A NOPASSWD host whose sudo -n action failed is retried via sudo -n, not with a prompt."""
+    entries = {h: set() for h in HOSTS}
+    result, sudo = _invoke(["clear-cache"], _fake_hosts(entries, {}, nopasswd_hosts=set(HOSTS)), "")
+    assert result.exit_code == 0, result.output
+    assert "[sudo] password" not in result.output
+    assert {c.args[2] for c in sudo.call_args_list} == {None}
+
+
+def _verify_patches(accepting, rejection="Sorry, try again.\nsudo: 1 incorrect password attempt"):
+    """sudo -n fails everywhere; *accepting* maps host -> the password its sudo -S takes."""
+
+    def parallel(hosts, script, **kwargs):
+        return [RemoteResult(h, 1, "", "sudo: a password is required") for h in hosts]
+
+    def sudo(host, script, password, **kwargs):
+        return _ok(host) if accepting.get(host) == password else RemoteResult(host, 1, "", rejection)
+
+    return (
+        mock.patch("sparkrun.orchestration.ssh.run_remote_scripts_parallel", side_effect=parallel),
+        mock.patch("sparkrun.orchestration.ssh.run_remote_sudo_script", side_effect=sudo),
+    )
+
+
+def _ensure(accepting, answers, **kwargs):
+    from sparkrun.cli._setup._sudo import ensure_sudo_password
+
+    patches = _verify_patches(accepting, **kwargs.pop("verify", {}))
+    prompts = iter(answers)
+    with patches[0], patches[1], mock.patch("click.prompt", side_effect=lambda *a, **k: next(prompts)) as prompt:
+        result = ensure_sudo_password(HOSTS, "dgxuser", {"ssh_user": "dgxuser"}, allow_indirect=True, default_user="admin")
+    return result, prompt
+
+
+def test_shared_password_accepted_by_some_host_is_kept():
+    """Host 0 differs — not a reason to abandon direct sudo for an indirect user."""
+    (password, alt_user), prompt = _ensure({"10.0.0.2": "pw"}, ["pw"])
+    assert (password, alt_user) == ("pw", None)
+    assert prompt.call_count == 1
+
+
+def test_password_every_host_rejects_is_asked_again():
+    (password, alt_user), prompt = _ensure(dict.fromkeys(HOSTS, "right"), ["typo", "right"])
+    assert (password, alt_user) == ("right", None)
+    assert prompt.call_count == 2
+
+
+def test_user_without_sudo_rights_is_offered_indirect_sudo():
+    not_sudoer = {"rejection": "dgxuser is not in the sudoers file."}
+    (password, alt_user), _prompt = _ensure({}, ["pw", "admin", "admin-pw"], verify=not_sudoer)
+    assert (password, alt_user) == ("admin-pw", "admin")
+
+
+def test_probe_default_accepts_a_chown_entry_for_any_cache_dir(tmp_path):
+    """Without a requested dir, a --cache-dir entry is in effect: the wizard must not overwrite it."""
+    listing = "    (root) NOPASSWD: /usr/bin/chown -R tester /data/hf"
+    assert _probe(tmp_path, FAKE_LISTING=listing)["CHECK_SUDOERS_CHOWN"] == "1"
+    # A requested dir must match exactly, not as a prefix.
+    listing = "    (root) NOPASSWD: /usr/bin/chown -R tester /data/hf-old"
+    assert _probe(tmp_path, FAKE_LISTING=listing, SPARKRUN_SUDOERS_CACHE_DIR="/data/hf")["CHECK_SUDOERS_CHOWN"] == "0"

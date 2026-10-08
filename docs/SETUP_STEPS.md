@@ -149,7 +149,10 @@ Hosts need not share a sudo password. `SetupActionContext.passwords` (a
 when sudo rejects the shared password on a host, `run()` asks its `prompt_host`
 callback once for that host and reuses an accepted password for the host's later
 actions. Only an authentication failure re-asks; a failing script does not. A
-headless caller omits the prompt and the rejected host simply fails.
+headless caller omits the prompt and the rejected host simply fails. Hosts whose
+readiness probe reported `CHECK_SUDO_NOPASSWD=1` (or listed in
+`SudoPasswords.nopasswd`) receive no password at all: `run()` uses `sudo -n`,
+because a password piped to `sudo -S` on such a host reaches bash as a command.
 
 Undo callbacks receive the details for the specific changed host. They run only
 for selected uninstall phases recorded in the application's own manifest. Step

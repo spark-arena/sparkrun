@@ -116,7 +116,7 @@ class SetupActionContext:
     user: str
     ssh_kwargs: dict[str, Any] = field(default_factory=dict)
     dry_run: bool = False
-    sudo_password: str | None = None
+    sudo_password: str | None = field(default=None, repr=False)
     dispatch: Callable | None = None
     passwords: SudoPasswords | None = field(default=None, repr=False)
     """Per-host credentials: a host rejecting *sudo_password* is re-asked once
@@ -127,11 +127,13 @@ class SetupActionContext:
             raise RuntimeError("A setup preview cannot execute a host action")
 
         def attempt(password):
+            # None means `sudo -n`: never collapse it to an (empty) password,
+            # which would send `sudo -S` input to a host that does not read it.
             if self.dispatch:
-                return self.dispatch(host, script, password or "", timeout=timeout)
+                return self.dispatch(host, script, password, timeout=timeout)
             from sparkrun.orchestration.sudo import run_sudo_script_on_host
 
-            return run_sudo_script_on_host(host, script, password or "", ssh_kwargs=self.ssh_kwargs, timeout=timeout)
+            return run_sudo_script_on_host(host, script, password, ssh_kwargs=self.ssh_kwargs, timeout=timeout)
 
         if self.passwords is None:
             return attempt(self.sudo_password)

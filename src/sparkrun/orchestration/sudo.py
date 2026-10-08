@@ -28,9 +28,15 @@ _SUDO_AUTH_FAILURE_MARKERS = (
 
 
 def is_sudo_auth_failure(result: RemoteResult) -> bool:
-    """Whether *result* failed because sudo rejected (or lacked) a password."""
-    stderr = (result.stderr or "").lower()
-    return not result.success and any(marker in stderr for marker in _SUDO_AUTH_FAILURE_MARKERS)
+    """Whether *result* failed because sudo rejected (or lacked) a password.
+
+    Reads stdout too: indirect sudo runs ``su`` under a pty, so its
+    "Authentication failure" arrives on stdout, not stderr.
+    """
+    if result.success:
+        return False
+    text = ((result.stderr or "") + "\n" + (result.stdout or "")).lower()
+    return any(marker in text for marker in _SUDO_AUTH_FAILURE_MARKERS)
 
 
 @dataclass
@@ -53,10 +59,17 @@ class SudoPasswords:
     prompt_host: Callable[[str], str | None] | None = field(default=None, repr=False)
     """Asked once per rejected host per ``run``; ``None``/empty declines."""
     overrides: dict[str, str] = field(default_factory=dict, repr=False)
+    nopasswd: set[str] = field(default_factory=set)
+    """Hosts known to grant passwordless sudo. They get ``None`` (``sudo -n``):
+    a password fed to ``sudo -S`` on such a host is not consumed by sudo and
+    reaches the script's bash as a command line."""
     _shared_asked: bool = field(default=False, init=False, repr=False)
 
     def password_for(self, host: str, default: str | None = None) -> str | None:
-        """The password to try first: a proven per-host one, else *default*, else the shared one."""
+        """The password to try first: none for a NOPASSWD host, a proven per-host
+        one, else *default*, else the shared one."""
+        if host in self.nopasswd:
+            return None
         if host in self.overrides:
             return self.overrides[host]
         if default is not None:

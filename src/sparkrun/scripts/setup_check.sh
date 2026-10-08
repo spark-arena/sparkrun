@@ -10,6 +10,7 @@ SETUP_STEPS={steps}
 WHO=$(id -un 2>/dev/null || echo unknown)
 echo "CHECK_USER=$WHO"
 echo "CHECK_UID=$(id -u 2>/dev/null || echo unknown)"
+# sparkrun:include _sudo_nopasswd.sh
 
 case " $SETUP_STEPS " in *" host_ipc "*)
 # --- systemd-logind IPC reaping ---

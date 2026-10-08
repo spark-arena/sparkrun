@@ -14,15 +14,20 @@ first tagged release containing them, regardless of their original commit date.
 
 - Setup commands no longer assume every host shares one sudo password. A host
   that rejects the shared password is asked for its own, once, and that
-  password is reused for the rest of the command. This applies to
+  password is reused for the rest of the command, including under indirect
+  (`su`) sudo. Only an authentication failure re-asks. The shared password is
+  checked on every host that needs one, and hosts with passwordless sudo are
+  driven with `sudo -n` and never sent a password. This covers
   `fix-permissions`, `clear-cache`, `earlyoom` and `cx7`, the wizard's host
-  steps and CX7 phase, and `run_setup_steps(host_credentials=...)`. Only an authentication failure
-  re-asks. `--save-sudo` installs only that command's entry, and only where it
-  is not already in effect (`clear-cache` installs the drop-caches entry, not
-  the chown one); the wizard's sudoers step installs whichever are missing.
-  The sudoers readiness probe now reads scoped NOPASSWD rules on hosts with
-  password sudo. Before, it reported them as unverifiable, so the wizard never
-  installed the entries on exactly those hosts (based on #310 by @Aisoipheo).
+  steps and CX7 phase, and `run_setup_steps(host_credentials=...)`.
+  `--save-sudo` installs only that command's entry, and only where it is not
+  already in effect (`clear-cache` installs the drop-caches entry, not the
+  chown one); the wizard's sudoers step installs whichever are missing. A chown
+  entry installed with `--cache-dir` counts as present, so the wizard does not
+  overwrite it. The sudoers readiness probe now reads scoped NOPASSWD rules on
+  hosts with password sudo. Before, it reported them as unverifiable, so the
+  wizard never installed the entries on exactly those hosts (based on #310 by
+  @Aisoipheo).
 
 - Reduce unit-test delays from DNS, Hub metadata, SSH diagnostics, hardware scans,
   and retry sleeps. Add per-test hang detection and explicit fixtures for tests

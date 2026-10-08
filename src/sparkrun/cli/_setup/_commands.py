@@ -1860,6 +1860,8 @@ def setup_earlyoom(ctx, hosts, hosts_file, cluster_name, user, extra_prefer, ext
             click.echo("  %s: configuring with sudo password..." % host)
         elif result.success:
             click.echo("  [OK]   %s: %s" % (host, _earlyoom_summary(result.stdout)))
+        else:
+            click.echo("  %s: FAILED (details below)" % host)
 
     # sudo -n first; hosts that need a password are configured one at a time
     # with progress, each re-asked for its own password if sudo rejects it.
