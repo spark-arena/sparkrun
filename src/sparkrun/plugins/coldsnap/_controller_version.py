@@ -5,4 +5,4 @@
 
 """ColdSnap controller version generated from the repository version catalog."""
 
-__version__ = "0.3.31"
+__version__ = "0.3.32"

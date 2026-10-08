@@ -72,6 +72,7 @@ COLDSNAP_OWNED_RUNTIME_ENV = frozenset(
 class NativeWeights:
     repository: str = ""
     revision: str = ""
+    requires_model_files: bool = False
 
 
 @dataclass(frozen=True)
@@ -128,7 +129,7 @@ class ColdSnapRecipeHandler:
         _reject_unknown(weights, {"mode", "native", "recovery"}, "weights")
         native = _mapping(weights.get("native"), "weights.native")
         recovery = _mapping(weights.get("recovery"), "weights.recovery")
-        _reject_unknown(native, {"repository", "revision"}, "weights.native")
+        _reject_unknown(native, {"repository", "revision", "requires_model_files"}, "weights.native")
         _reject_unknown(recovery, {"loader_backend"}, "weights.recovery")
         _reject_unknown(process, {"backend", "kv_discard", "async_graphs", "graph_policy", "shape_calibration"}, "process")
         _reject_unknown(cache, {"seed", "paths"}, "cache")
@@ -147,6 +148,7 @@ class ColdSnapRecipeHandler:
             native=NativeWeights(
                 repository=_optional_string(native.get("repository"), "", "weights.native.repository"),
                 revision=_optional_string(native.get("revision"), "", "weights.native.revision"),
+                requires_model_files=_boolean(native.get("requires_model_files", False), "weights.native.requires_model_files"),
             ),
             recovery=RecoveryWeights(
                 loader_backend=(
@@ -268,6 +270,8 @@ class ColdSnapRecipeHandler:
                 "repository": value.native.repository,
                 "revision": value.native.revision,
             }
+        if value.native.requires_model_files:
+            result["weights"].setdefault("native", {})["requires_model_files"] = True
         if value.artifact.reference:
             result["artifact"] = {"reference": value.artifact.reference}
         if value.shape_calibration is not None:

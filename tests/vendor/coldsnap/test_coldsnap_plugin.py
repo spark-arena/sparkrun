@@ -3160,8 +3160,13 @@ def test_strategy_native_staging_uses_explicit_controller_adapter(tmp_path, monk
 
 @pytest.mark.parametrize(("selected", "prepare_model"), [("native", False), ("recovery", True)])
 @pytest.mark.parametrize("driver", ["n580", "n610"])
-def test_coldsnap_strategy_selects_capsules_before_conditional_model_preparation(tmp_path, monkeypatch, selected, prepare_model, driver):
+@pytest.mark.parametrize("requires_model_files", [False, True])
+def test_coldsnap_strategy_selects_capsules_before_conditional_model_preparation(
+    tmp_path, monkeypatch, selected, prepare_model, driver, requires_model_files
+):
     _recipe, options, plan, sctx = _setup()
+    config = _recipe.plugin_item("coldsnap")
+    _recipe.plugin_items["coldsnap"] = replace(config, native=replace(config.native, requires_model_files=requires_model_files))
     sctx.config.cache_dir = str(tmp_path)
     store = resolve_artifact_store(plan=plan, options=options, sctx=sctx, snapshot_driver=driver)
     artifact = _write_strategy_artifact(store.current)
@@ -3213,7 +3218,7 @@ def test_coldsnap_strategy_selects_capsules_before_conditional_model_preparation
     unverified_receipts = {**receipts, "coldsnap.hardware": replace(hardware_receipt, verified=False)}
     assert strategy.finalize_preparation(context, unverified_receipts).host_hardware == {}
     assert strategy.name == "coldsnap"
-    assert prepared.assets.prepare_model is prepare_model
+    assert prepared.assets.prepare_model is (prepare_model or requires_model_files)
     assert prepared.assets.run_builder is False
     assert prepared.assets.prepare_runtime is True
     assert prepared.assets.probe_images is False
@@ -3489,3 +3494,18 @@ def test_cli_reports_planning_errors_without_traceback(monkeypatch, operation):
     assert "Error: " + message in result.output
     assert "Traceback" not in result.output
     assert finished == [STATUS_ERROR]
+
+
+def test_native_model_file_requirement_roundtrips_without_changing_default_fingerprint():
+    from sparkrun.plugins.coldsnap.config import ColdSnapRecipeHandler
+
+    handler = ColdSnapRecipeHandler()
+    default = handler.parse({}, None)
+    assert "native" not in handler.export(default, None)["weights"]
+    declared = {"weights": {"native": {"requires_model_files": True}}}
+    parsed = handler.parse(declared, None)
+    exported = handler.export(parsed, None)
+    assert exported["weights"]["native"] == {"requires_model_files": True}
+    assert handler.parse(exported, None).native.requires_model_files is True
+    with pytest.raises(ValueError, match="must be a boolean"):
+        handler.parse({"weights": {"native": {"requires_model_files": "true"}}}, None)

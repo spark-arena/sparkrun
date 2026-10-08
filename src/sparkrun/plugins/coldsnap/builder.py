@@ -335,7 +335,7 @@ sync_source() {
 COLDSNAP_SOURCE_COLDSNAP_DIR="$(sync_source coldsnap "$COLDSNAP_SOURCE_COLDSNAP_URL" "$COLDSNAP_SOURCE_COLDSNAP_REF" "$COLDSNAP_SOURCE_COLDSNAP_REVISION")"
 COLDSNAP_SOURCE_GO_CRIU_DIR="$(sync_source go-criu "$COLDSNAP_SOURCE_GO_CRIU_URL" "$COLDSNAP_SOURCE_GO_CRIU_REF" "$COLDSNAP_SOURCE_GO_CRIU_REVISION")"
 COLDSNAP_SOURCE_CUDA_CHECKPOINT_DIR="$(sync_source cuda-checkpoint "$COLDSNAP_SOURCE_CUDA_CHECKPOINT_URL" "$COLDSNAP_SOURCE_CUDA_CHECKPOINT_REF" "$COLDSNAP_SOURCE_CUDA_CHECKPOINT_REVISION")"
-COLDSNAP_BASE_NCCL_RELEASE="$("$COLDSNAP_DOCKER" run --rm --platform "$COLDSNAP_DOCKER_PLATFORM" --gpus all --entrypoint python3 "$COLDSNAP_INPUT_IMAGE" -c \
+COLDSNAP_BASE_NCCL_RELEASE="$("$COLDSNAP_DOCKER" run --rm --network none --platform "$COLDSNAP_DOCKER_PLATFORM" --gpus all --entrypoint python3 "$COLDSNAP_INPUT_IMAGE" -c \
   'import ctypes; v=ctypes.c_int(); n=ctypes.CDLL("libnccl.so.2"); r=n.ncclGetVersion(ctypes.byref(v)); assert r == 0 and v.value > 0; print(f"{v.value // 10000}.{(v.value // 100) %% 100}.{v.value %% 100}")')"
 COLDSNAP_NCCL_SELECTION_FILE="$COLDSNAP_BUILD_ROOT/nccl-selection.txt"
 python3 - "$COLDSNAP_SOURCE_COLDSNAP_DIR/native/nccl/releases" "$COLDSNAP_BASE_NCCL_RELEASE" "$COLDSNAP_NCCL_POLICY" >"$COLDSNAP_NCCL_SELECTION_FILE" <<'PY'
@@ -429,6 +429,7 @@ esac
 COLDSNAP_NCCL_VERSION_CODE="$(python3 -c 'import sys; a,b,c=(int(v) for v in sys.argv[1].split(".")); print(a*10000+b*100+c)' "$COLDSNAP_NCCL_RELEASE")"
 COLDSNAP_NCCL_REPRODUCIBLE_NVCC="$(python3 -c 'import json,sys; v=json.load(open(sys.argv[1], encoding="utf-8"))["build"]["use_reproducible_nvcc"]; assert isinstance(v, bool); print(int(v))' "$COLDSNAP_NCCL_RECIPE")"
 COLDSNAP_NCCL_STRIP_OUTPUTS="$(python3 -c 'import json,sys; v=json.load(open(sys.argv[1], encoding="utf-8"))["build"]["strip_unneeded"]; assert isinstance(v, bool); print(int(v))' "$COLDSNAP_NCCL_RECIPE")"
+COLDSNAP_NCCL_TLS_BACKEND="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["build"].get("tls_backend", ""))' "$COLDSNAP_NCCL_RECIPE")"
 COLDSNAP_NCCL_PAYLOAD_IMAGE=""
 COLDSNAP_NCCL_PAYLOAD_FALLBACK_REASON="published NCCL payload unavailable"
 COLDSNAP_ALLOW_LOCAL_NCCL_PAYLOAD=0
@@ -482,6 +483,7 @@ if [ -z "$COLDSNAP_NCCL_PAYLOAD_IMAGE" ]; then
       --build-arg "NCCL_BUILD_IMAGE=$COLDSNAP_NCCL_BUILD_IMAGE" \
       --build-arg "NCCL_LIBRARY_RELEASE=$COLDSNAP_NCCL_RELEASE" \
       --build-arg "NCCL_VERSION_CODE=$COLDSNAP_NCCL_VERSION_CODE" \
+      --build-arg "NCCL_TLS_BACKEND=$COLDSNAP_NCCL_TLS_BACKEND" \
       --build-arg "NCCL_REPRODUCIBLE_NVCC=$COLDSNAP_NCCL_REPRODUCIBLE_NVCC" \
       --build-arg "NCCL_STRIP_OUTPUTS=$COLDSNAP_NCCL_STRIP_OUTPUTS" \
       --build-arg "NCCL_BUILD_JOBS=$COLDSNAP_BUILD_JOBS" \
@@ -537,7 +539,7 @@ if [ "$COLDSNAP_RUNTIME_LABEL" != %(runtime_label)s ]; then
   echo "[coldsnap-builder] derived image has incompatible ColdSnap runtime label: $COLDSNAP_RUNTIME_LABEL" >&2
   exit 1
 fi
-"$COLDSNAP_DOCKER" run --rm --platform "$COLDSNAP_DOCKER_PLATFORM" --entrypoint python3 "$COLDSNAP_OUTPUT_IMAGE" -c \
+"$COLDSNAP_DOCKER" run --rm --network none --platform "$COLDSNAP_DOCKER_PLATFORM" %(validation_gpu)s--entrypoint python3 "$COLDSNAP_OUTPUT_IMAGE" -c \
   %(plugin_validation)s
 echo "[coldsnap-builder] ready: $COLDSNAP_OUTPUT_IMAGE"
 """ % {
@@ -549,9 +551,12 @@ echo "[coldsnap-builder] ready: $COLDSNAP_OUTPUT_IMAGE"
         "base_image_arg": "SGLANG_IMAGE" if plan.engine == "sglang" else "VLLM_IMAGE",
         "snapshot_drivers": "n580,n610",
         "runtime_label": quote("%s-cuda-criu-v1" % plan.engine),
+        "validation_gpu": "--gpus all -e EP_SUPPRESS_NCCL_CHECK=0 " if plan.engine == "sglang" else "",
         "plugin_validation": quote(
             "import coldsnap_sglang; from importlib.metadata import entry_points; "
             'assert any(ep.name == "coldsnap" for ep in entry_points(group="sglang.srt.plugins"))'
+            "; "
+            'import deep_ep; from pathlib import Path; import json; active=json.load(open("/opt/coldsnap/nccl/active.json", encoding="utf-8")); assert Path(active["files"]["nccl-runtime"]["path"]).samefile(next(Path(deep_ep.find_nccl_root(), "lib").glob("libnccl.so*")))'
             if plan.engine == "sglang"
             else "import coldsnap_plugin; from importlib.metadata import entry_points; "
             'assert any(ep.name == "coldsnap" for ep in entry_points(group="vllm.general_plugins"))'
@@ -770,7 +775,7 @@ test "$(%(docker)s image inspect --format '{{.Os}}/{{.Architecture}}' %(image)s)
     ) -> str:
         if settings.cuda_arch:
             return settings.cuda_arch
-        script = "%s run --rm --platform %s --gpus all --entrypoint python3 %s -c %s" % (
+        script = "%s run --rm --network none --platform %s --gpus all --entrypoint python3 %s -c %s" % (
             quote(settings.docker_command),
             quote(docker_platform),
             quote(image),
@@ -796,15 +801,20 @@ test "$(%(docker)s image inspect --format '{{.Os}}/{{.Architecture}}' %(image)s)
         docker_platform: str,
     ) -> bool:
         script = 'test "$(%s image inspect --format %s %s 2>/dev/null)" = %s' % (
-            quote(settings.docker_command), quote("{{.Os}}/{{.Architecture}}"), quote(image), quote(docker_platform),
+            quote(settings.docker_command),
+            quote("{{.Os}}/{{.Architecture}}"),
+            quote(image),
+            quote(docker_platform),
         )
         result = self._run(host, script, ssh_kwargs=ssh_kwargs, timeout=30)
         return bool(getattr(result, "success", False))
 
     def _detect_docker_platform(self, host, settings, ssh_kwargs) -> str:
         result = self._run(
-            host, "%s info --format '{{.OSType}}/{{.Architecture}}'" % quote(settings.docker_command),
-            ssh_kwargs=ssh_kwargs, timeout=30,
+            host,
+            "%s info --format '{{.OSType}}/{{.Architecture}}'" % quote(settings.docker_command),
+            ssh_kwargs=ssh_kwargs,
+            timeout=30,
         )
         value = str(getattr(result, "stdout", "") or "").strip()
         aliases = {"linux/aarch64": "linux/arm64", "linux/x86_64": "linux/amd64"}
@@ -828,8 +838,10 @@ test "$(%(docker)s image inspect --format '{{.Os}}/{{.Architecture}}' %(image)s)
                 yield str(root)
                 return
             created = self._run(
-                host, 'mktemp -d /tmp/sparkrun-coldsnap-sources.XXXXXXXXXX',
-                ssh_kwargs=ssh_kwargs, timeout=30,
+                host,
+                "mktemp -d /tmp/sparkrun-coldsnap-sources.XXXXXXXXXX",
+                ssh_kwargs=ssh_kwargs,
+                timeout=30,
             )
             destination = str(getattr(created, "stdout", "") or "").strip()
             if not getattr(created, "success", False) or not re.fullmatch(r"/tmp/sparkrun-coldsnap-sources\.[A-Za-z0-9]{10}", destination):

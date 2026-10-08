@@ -155,6 +155,8 @@ def test_rendered_build_uses_canonical_coldsnap_dockerfiles_and_pins():
     assert "libnccl.so.2" in script
     assert "use_reproducible_nvcc" in script
     assert "NCCL_REPRODUCIBLE_NVCC=$COLDSNAP_NCCL_REPRODUCIBLE_NVCC" in script
+    assert '["build"].get("tls_backend", "")' in script
+    assert '--build-arg "NCCL_TLS_BACKEND=$COLDSNAP_NCCL_TLS_BACKEND"' in script
     assert "strip_unneeded" in script
     assert "NCCL_STRIP_OUTPUTS=$COLDSNAP_NCCL_STRIP_OUTPUTS" in script
     assert "COLDSNAP_NCCL_POLICY=match-or-latest-qualified" in script
@@ -460,3 +462,21 @@ def test_builder_command_diagnostics_are_debug_only(caplog, monkeypatch):
         )
 
     assert any("ColdSnap builder command" in record.getMessage() for record in caplog.records)
+
+
+def test_builder_metadata_probes_do_not_require_container_network():
+    settings = _resolve_settings(_recipe(), None, "sglang")
+    plan = _build_plan(PINNED_IMAGE, settings, "121", "n580", "sglang", docker_platform="linux/arm64")
+    script = render_build_script(plan)
+    probes = [line for line in script.splitlines() if '"$COLDSNAP_DOCKER" run ' in line]
+    assert len(probes) == 2
+    assert all("--network none" in line for line in probes)
+
+
+def test_sglang_deepep_provider_check_runs_with_gpu_after_build():
+    settings = _resolve_settings(_recipe(), None, "sglang")
+    plan = _build_plan(PINNED_IMAGE, settings, "121", "n580", "sglang", docker_platform="linux/arm64")
+    script = render_build_script(plan)
+    assert '--gpus all -e EP_SUPPRESS_NCCL_CHECK=0 --entrypoint python3 "$COLDSNAP_OUTPUT_IMAGE"' in script
+    assert "import deep_ep" in script
+    assert "samefile" in script

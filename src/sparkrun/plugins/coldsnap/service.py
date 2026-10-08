@@ -39,6 +39,7 @@ from sparkrun.plugins.coldsnap.compatibility import (
     ColdSnapHardwareReceipt,
     verify_coldsnap_hosts,
 )
+from sparkrun.plugins.coldsnap.config import ColdSnapRecipe
 from sparkrun.plugins.coldsnap.controller_process import ControllerResult, run_controller
 from sparkrun.plugins.coldsnap.host_provider import ColdSnapHostProvider
 from sparkrun.plugins.coldsnap.target_tools import prepare_target_tools
@@ -368,6 +369,8 @@ class ColdSnapService:
             prepared.request["launch"]["units"],
             context.plan.host_list,
         )
+        config = context.plan.recipe.plugin_item("coldsnap")
+        requires_model_files = isinstance(config, ColdSnapRecipe) and config.native.requires_model_files
         return PreparedExecution(
             strategy="coldsnap",
             assets=LaunchAssetPolicy(
@@ -376,7 +379,7 @@ class ColdSnapService:
                 # capsule on its assigned host. Local-only image IDs do not
                 # exist on the controller and must not enter normal fan-out.
                 distribute_images=False,
-                prepare_model=prepared.selected_mode != "native",
+                prepare_model=prepared.selected_mode != "native" or requires_model_files,
                 run_builder=False,
                 # Runtime preparation declares auxiliary launch assets such as
                 # speculative draft models. Image conversion remains disabled
