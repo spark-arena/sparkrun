@@ -45,6 +45,7 @@ def _stub_recipe():
     rt = MagicMock()
     rt.build_config_chain.return_value = {"tensor_parallel": 4}
     rt.layout = None
+    rt.env_templates = {}  # Recipe's real default; a MagicMock attribute reads as templates
     return rt
 
 

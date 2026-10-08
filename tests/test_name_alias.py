@@ -30,6 +30,8 @@ def test_run_with_name_override(monkeypatch):
     # while resolving placement; pin them so the orthogonal-constraint
     # short-circuit doesn't crash on MagicMock attribute access.
     mock_recipe.max_nodes = None
+    # A real Recipe defaults this to None; a MagicMock attribute is not a version.
+    mock_recipe.min_sparkrun_version = None
     mock_recipe.layout = None
     mock_recipe.scheduler = None
     mock_recipe.pre_exec = None

@@ -1516,6 +1516,9 @@ class TestLaunchInferenceAutoPort:
         mock_recipe.builder = None
         mock_recipe.mode = "solo"
         mock_recipe.max_nodes = None
+        # A real Recipe defaults this to None; a MagicMock attribute is not a version.
+        mock_recipe.min_sparkrun_version = None
+        mock_recipe.env_templates = {}  # likewise: a MagicMock attribute reads as templates
 
         mock_runtime = MagicMock()
         mock_runtime.native_apis.return_value = []
