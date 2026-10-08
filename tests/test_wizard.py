@@ -556,7 +556,7 @@ def _good_cx7(host, mtu=9000):
     return CX7HostDetection(host=host, interfaces=ifaces, netplan_exists=True, detected=True)
 
 
-def _topology_probe(mesh_ok_by_host, calls, mtu=9000):
+def _topology_probe(mesh_ok_by_host, calls, mtu=9000, hardware=None):
     """A probe_setup_hosts stand-in: configured CX7, mesh results per host."""
 
     def probe(hosts, **kwargs):
@@ -576,7 +576,7 @@ def _topology_probe(mesh_ok_by_host, calls, mtu=9000):
                     "CHECK_MESH_TOTAL": str(peers),
                     "CHECK_MESH_OK": str(peers if mesh_ok_by_host.get(h, True) else peers - 1),
                 },
-                hardware=default_dgx_spark_hardware(),
+                hardware=hardware or default_dgx_spark_hardware(),
                 cx7=_good_cx7(h, mtu),
             )
             for h in hosts
@@ -686,3 +686,16 @@ def test_wizard_dry_run_never_claims_configured(runner, v, patched_cluster_mgr):
     assert result.exit_code == 0, result.output
     assert "already working" not in result.output
     assert "already configured" not in result.output
+
+
+def test_wizard_on_a_platform_without_cx7_in_its_plan(runner, v, patched_cluster_mgr):
+    """Generic NVIDIA hosts: the plan selects ssh_mesh but not cx7, so Phase 3 never runs."""
+    from sparkrun.core.hardware import AcceleratorSpec, HostHardware
+
+    h100 = HostHardware(accelerators=[AcceleratorSpec("nvidia", "h100", count=8, memory_gb=80, capabilities=frozenset({"cuda"}))])
+    result, mesh, _mgmt, cx7_apply = _invoke_topology_wizard(runner, _topology_probe({}, [], hardware=h100), "--yes")
+    assert result.exit_code == 0, result.output
+    assert "SSH mesh already working" in result.output
+    assert "Phase 3" not in result.output
+    mesh.assert_not_called()
+    cx7_apply.assert_not_called()

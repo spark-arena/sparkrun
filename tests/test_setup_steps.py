@@ -434,3 +434,38 @@ def test_mesh_also_dials_peers_cx7_addresses_on_shared_subnets(v):
     assert followups == {"h1": "PEERS=192.168.10.2", "h2": "PEERS=192.168.10.1"}
     assert states["h1"].facts["CHECK_MESH_FABRIC_HOSTKEY"] == "1"
     assert "CHECK_MESH_FABRIC_TOTAL" not in states["h3"].facts
+
+
+def test_fabric_mesh_legs_follow_each_hosts_plan(v):
+    """Per-host exclusions hold for the CX7 follow-up: no cx7 → no addresses, no ssh_mesh → no legs."""
+    from sparkrun.core.setup_probe import probe_setup_hosts
+    from sparkrun.core.setup_steps import register_setup_constraint
+    from sparkrun.orchestration.networking import CX7HostDetection, CX7Interface
+
+    excluded = {("cx7", "h2"), ("ssh_mesh", "h3")}
+    register_setup_constraint("partial", lambda key, state, context: "excluded" if (key, state.host) in excluded else "")
+
+    def cx7(host):
+        iface = CX7Interface(name="if0", ip="192.168.10.%s" % host[-1], prefix=24, subnet="192.168.10.0/24", mtu=9000, state="up", hca="")
+        return CX7HostDetection(host=host, interfaces=[iface], detected=True)
+
+    readiness = "SPARKRUN_PROBE_ACCEL_END\n" + "\n".join(key + "=" + value for key, value in FACTS.items())
+    followups = {}
+
+    def run(host, script, *a, **kw):
+        if "MESH_HOSTKEY" in script and "SETUP_STEPS" not in script:
+            followups[host] = next(line for line in script.splitlines() if line.startswith("PEERS="))
+        return RemoteResult(host, 0, readiness, "")
+
+    with (
+        mock.patch("sparkrun.orchestration.ssh.run_remote_script", side_effect=run),
+        mock.patch("sparkrun.core.hardware_probe._parse_probe_result", return_value=default_dgx_spark_hardware()),
+        # Detection only ever sees hosts whose plan selects cx7.
+        mock.patch(
+            "sparkrun.orchestration.networking.detect_cx7_for_hosts", side_effect=lambda targets, **kw: {h: cx7(h) for h in targets}
+        ),
+        mock.patch("sparkrun.api.setup._rdma._run_probe", return_value={}),
+    ):
+        probe_setup_hosts(["h1", "h2", "h3", "h4"], ssh_kwargs={}, config=SparkrunConfig())
+    # h2 has no cx7 (no address to dial), h3 is outside the mesh (neither dials nor is dialed).
+    assert followups == {"h1": "PEERS=192.168.10.4", "h4": "PEERS=192.168.10.1"}
