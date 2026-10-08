@@ -239,7 +239,8 @@ def _check_ssh_mesh(state: HostState, ctx: CheckContext) -> CheckItem | None:
     if not ctx.multi_host:
         return None  # SSH mesh is only meaningful with peers
     facts = state.facts
-    fabric = _as_int(facts.get("CHECK_MESH_FABRIC_TOTAL"))
+    unknown = _as_int(facts.get("CHECK_MESH_FABRIC_UNKNOWN"))
+    fabric = _as_int(facts.get("CHECK_MESH_FABRIC_TOTAL")) + unknown
     total = _as_int(facts.get("CHECK_MESH_TOTAL")) + fabric
     reachable = _as_int(facts.get("CHECK_MESH_OK")) + _as_int(facts.get("CHECK_MESH_FABRIC_OK"))
     if total == 0:
@@ -251,6 +252,10 @@ def _check_ssh_mesh(state: HostState, ctx: CheckContext) -> CheckItem | None:
     hostkey = _as_int(facts.get("CHECK_MESH_HOSTKEY")) + _as_int(facts.get("CHECK_MESH_FABRIC_HOSTKEY"))
     if hostkey:
         detail += "; %d without a recorded host key" % hostkey
+    if unknown:
+        # Unverified is not "reachable": a probe that timed out must not let
+        # the wizard skip a mesh it never confirmed.
+        detail += "; %d CX7 address(es) could not be checked" % unknown
     return CheckItem("ssh_mesh", "SSH mesh to peers", WARN, detail, "sparkrun setup ssh%s" % ctx.cluster_flag)
 
 

@@ -191,8 +191,9 @@ def fabric_mesh_peers(host: str, states: Mapping[str, HostState], members: Seque
 def _probe_fabric_mesh(states: dict[str, HostState], members: list[str], ssh_kwargs: dict[str, Any]) -> None:
     """Dial each mesh member's CX7 peers; record ``CHECK_MESH_FABRIC_*`` facts.
 
-    Runs after CX7 detection because the addresses come from it. Best-effort:
-    a host whose follow-up fails keeps only its management-name facts.
+    Runs after CX7 detection because the addresses come from it. A host whose
+    follow-up fails records its legs as unknown (``CHECK_MESH_FABRIC_UNKNOWN``),
+    never as absent: the wizard skips a mesh this check passes.
     """
     from sparkrun.orchestration.ssh import run_remote_script
     from sparkrun.scripts import inject_shell_vars, read_script
@@ -205,14 +206,19 @@ def _probe_fabric_mesh(states: dict[str, HostState], members: list[str], ssh_kwa
 
     def dial(host):
         script = inject_shell_vars(read_script("_mesh_probe.sh"), PEERS=" ".join(peers[host]))
+        # Legs are dialed one at a time, each bounded by ConnectTimeout=5.
+        timeout = 15 + 6 * len(peers[host])
         try:
-            result = run_remote_script(host, script, timeout=60, quiet=True, **ssh_kwargs)
+            result = run_remote_script(host, script, timeout=timeout, quiet=True, **ssh_kwargs)
+            facts = parse_kv_output(result.stdout) if result.success else {}
         except Exception:
             logger.debug("Fabric mesh probe failed on %s", host, exc_info=True)
+            facts = {}
+        if "CHECK_MESH_TOTAL" not in facts:
+            states[host].facts["CHECK_MESH_FABRIC_UNKNOWN"] = str(len(peers[host]))
             return
-        if result.success:
-            for key, value in parse_kv_output(result.stdout).items():
-                states[host].facts[key.replace("CHECK_MESH_", "CHECK_MESH_FABRIC_", 1)] = value
+        for key, value in facts.items():
+            states[host].facts[key.replace("CHECK_MESH_", "CHECK_MESH_FABRIC_", 1)] = value
 
     with ThreadPoolExecutor(max_workers=min(len(targets), 16)) as pool:
         list(pool.map(dial, targets))

@@ -537,6 +537,14 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
         setup_context = None
         _refresh_plan()
 
+        def _confirm_off_plan(plan, count):
+            """CX7 works per host but not as planned: show why, then ask."""
+            click.echo("  CX7 interfaces are up, but %d host(s) differ from the cluster plan:" % count)
+            for hp in plan.host_plans:
+                if hp.needs_change:
+                    click.echo("    %s: %s" % (hp.host, hp.reason or "differs from plan"))
+            return click.confirm("  Reconfigure them?", default=True)
+
         def _plan_entry(key, host):
             if setup_context is None:
                 raise RuntimeError("Setup plan has not been probed")
@@ -785,7 +793,19 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                     effective_topology = CX7Topology.SWITCH
                     topology_result = None
 
-                    if ring_eligible and not auto_cx7:
+                    # A configured cluster keeps the topology it was saved with:
+                    # re-detecting on every clean rerun could save a misread over
+                    # a deliberate `setup cx7 --topology` choice.
+                    saved_topology = None
+                    if cx7_checked and cluster_name:
+                        try:
+                            saved_topology = cluster_mgr.get(cluster_name).topology
+                        except Exception:
+                            logger.debug("Could not read saved topology for %s", cluster_name, exc_info=True)
+                    if saved_topology in {t.value for t in CX7Topology} - {CX7Topology.UNKNOWN.value}:
+                        effective_topology = CX7Topology(saved_topology)
+                        click.echo("  Using saved topology: %s" % effective_topology.value)
+                    elif ring_eligible and not auto_cx7:
                         topo_choice = click.prompt(
                             "  Topology (3 hosts with 2 ports detected)",
                             type=click.Choice(["auto", "switch", "ring"]),
@@ -869,16 +889,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                             click.echo("  All hosts already configured.")
                             click.echo(render_identity_text("  (Run '{app_command} setup cx7 --force' to re-plan addresses deliberately.)"))
                             results["cx7"] = "already configured (%s)" % effective_topology.value
-                        elif (
-                            cx7_checked
-                            and not yes
-                            and not dry_run
-                            and not click.confirm(
-                                "  CX7 interfaces are up, but %d host(s) differ from the cluster plan (subnet/MTU). Reconfigure them?"
-                                % needs_config,
-                                default=True,
-                            )
-                        ):
+                        elif cx7_checked and not yes and not dry_run and not _confirm_off_plan(plan, needs_config):
                             results["cx7"] = "skipped"
                         elif dry_run:
                             click.echo("  [dry-run] Would configure %d host(s)." % needs_config)

@@ -469,3 +469,30 @@ def test_fabric_mesh_legs_follow_each_hosts_plan(v):
         probe_setup_hosts(["h1", "h2", "h3", "h4"], ssh_kwargs={}, config=SparkrunConfig())
     # h2 has no cx7 (no address to dial), h3 is outside the mesh (neither dials nor is dialed).
     assert followups == {"h1": "PEERS=192.168.10.4", "h4": "PEERS=192.168.10.1"}
+
+
+def test_failed_fabric_probe_reads_as_unknown_never_as_reachable(v):
+    """A follow-up that times out must not let ssh_mesh pass on management names alone."""
+    from sparkrun.core.setup_probe import _probe_fabric_mesh
+    from sparkrun.core.setup_steps import evaluate_host
+    from sparkrun.orchestration.networking import CX7HostDetection, CX7Interface
+
+    def cx7(host):
+        iface = CX7Interface(name="if0", ip="192.168.10.%s" % host[-1], prefix=24, subnet="192.168.10.0/24", mtu=9000, state="up", hca="")
+        return CX7HostDetection(host=host, interfaces=[iface], detected=True)
+
+    facts = dict(FACTS, CHECK_MESH_TOTAL="1", CHECK_MESH_OK="1")
+    states = {h: HostState(h, facts=dict(facts), hardware=default_dgx_spark_hardware(), cx7=cx7(h)) for h in ("h1", "h2")}
+    timeouts = []
+
+    def timed_out(host, script, *a, timeout=None, **kw):
+        timeouts.append(timeout)
+        return RemoteResult(host, 124, "", "Command timed out")
+
+    with mock.patch("sparkrun.orchestration.ssh.run_remote_script", side_effect=timed_out):
+        _probe_fabric_mesh(states, ["h1", "h2"], {})
+    assert states["h1"].facts["CHECK_MESH_FABRIC_UNKNOWN"] == "1"
+    assert timeouts == [21, 21]  # scales with the legs dialed (one each here)
+    ctx = CheckContext("lab", True, config=SparkrunConfig(), executor_names={"h1": "docker"}, strict=True)
+    item = next(i for i in evaluate_host(states["h1"], ctx) if i.key == "ssh_mesh")
+    assert item.status == WARN and "1 CX7 address(es) could not be checked" in item.detail

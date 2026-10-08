@@ -699,3 +699,18 @@ def test_wizard_on_a_platform_without_cx7_in_its_plan(runner, v, patched_cluster
     assert "Phase 3" not in result.output
     mesh.assert_not_called()
     cx7_apply.assert_not_called()
+
+
+def test_wizard_keeps_a_saved_topology_on_a_clean_rerun(runner, v, patched_cluster_mgr):
+    """A deliberate `setup cx7 --topology direct` is not re-detected and overwritten."""
+    patched_cluster_mgr.create("topo", HOSTS, topology="direct")
+    result, *_ = _invoke_topology_wizard(runner, _topology_probe({}, []), "--yes")
+    assert result.exit_code == 0, result.output
+    assert "Using saved topology: direct" in result.output
+    assert patched_cluster_mgr.get("topo").topology == "direct"
+
+
+def test_wizard_off_plan_prompt_names_the_reason(runner, v, patched_cluster_mgr):
+    result, *_ = _invoke_topology_wizard(runner, _topology_probe({}, [], mtu=1500), input="\n" + "n\n" + "\n" * 20, mtu=1500)
+    assert result.exit_code == 0, result.output
+    assert "has MTU 1500, need 9000" in result.output
