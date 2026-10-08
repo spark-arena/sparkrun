@@ -16,7 +16,9 @@ first tagged release containing them, regardless of their original commit date.
   configuration that already work. A mesh every leg of which passes is skipped.
   A CX7 phase whose checks pass runs the read-only cluster plan without asking:
   it reports "already configured" and still saves the topology, or asks before
-  changing hosts whose subnet or MTU differ from the plan.
+  changing hosts whose subnet or MTU differ from the plan (each host's reason
+  is shown). A rerun keeps the cluster's saved topology rather than
+  re-detecting it; after re-cabling, use `setup cx7 --topology` or `--force`.
   The `ssh_mesh` check now covers every leg transfers use: peers' management
   names, peers' CX7 addresses on shared subnets, and the control machine when
   the wizard meshes it and it runs an SSH server. It dials with each host's real
