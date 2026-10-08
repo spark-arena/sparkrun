@@ -1726,7 +1726,12 @@ class RegistryManager:
 
         # Read the file's revision BEFORE anything writes, since a write stamps
         # the marker and would make the file look already-migrated.
-        pending_migrations = self._read_config_version() < CONFIG_VERSION
+        file_version = self._read_config_version()
+        pending_migrations = file_version < CONFIG_VERSION
+        # A newer sparkrun's file is applied in memory but never rewritten: a
+        # save stamps *this* CONFIG_VERSION, which would downgrade its marker
+        # and make that sparkrun re-run its one-shot migrations.
+        writable = file_version <= CONFIG_VERSION
 
         try:
             entries = self._load_registries_from_file()
@@ -1758,7 +1763,7 @@ class RegistryManager:
             # --- One-shot migrations: version-gated, run at most once ever. ---
             migrated = self._run_one_shot_migrations(filtered) if pending_migrations else False
 
-            if migrated or urls_migrated or subpaths_backfilled:
+            if (migrated or urls_migrated or subpaths_backfilled) and writable:
                 self._save_registries(filtered)
             pending = self._pending_bootstrap_urls()
             if allow_discovery and pending and not self._manifest_discovery_attempted:
@@ -1768,7 +1773,8 @@ class RegistryManager:
                 # retry only fills missing names and respects removal tombstones.
                 known = {entry.name for entry in filtered} | set(self._load_suppressed())
                 filtered.extend(entry for entry in discovered if entry.name not in known)
-                self._save_registries(filtered, pending_bootstrap_urls=list(self._bootstrap_failures))
+                if writable:
+                    self._save_registries(filtered, pending_bootstrap_urls=list(self._bootstrap_failures))
             # Overlay last: declared entries must not reach the rewrite or save
             # path above, or a plugin's registry would be persisted into the
             # user's file and outlive the plugin.
