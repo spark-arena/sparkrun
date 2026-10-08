@@ -676,6 +676,16 @@ renders those as `[WARN]`. `CX7_NETPLAN_FILE` is the one Python spelling of
 the path, drift-guarded against the two bash scripts by a test (they include
 brace-using helpers, so they cannot take it as a `.format()` placeholder).
 
+**CX7 apply order** (`networking.apply_cx7_plan`, issue #311): the control
+node's own host is configured **last**. Its `netplan apply` can briefly drop
+the management routes, and every SSH attempt in that window fails in 0.0s
+with "Network is unreachable", which reads like the remote hosts being down.
+After a local apply the function waits (bounded, `utils.net.wait_for_routes`)
+for routes to the plan's other hosts, because both callers SSH again
+immediately (verification, the wizard's host-key distribution). A remote
+attempt that still hits ssh's rc-255 no-route error is retried once. Neither
+`setup cx7` nor the wizard saves the cluster `topology` after a partial apply.
+
 **Session guard** (`ssh.py:wrap_with_session_guard` + `scripts/session_guard.sh`):
 remote payloads run via `ssh <host> bash -s`, i.e. **without a PTY**, so on
 disconnect sshd's session process exits without signalling its child (the

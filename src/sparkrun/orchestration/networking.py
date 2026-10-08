@@ -9,6 +9,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import re
+import time
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import TYPE_CHECKING
@@ -1747,6 +1748,24 @@ def configure_cx7_host(
         return run_remote_script(host_plan.host, script, timeout=60, dry_run=dry_run, **kw)
 
 
+# ssh's own wording (rc 255) for a connection that never opened for want of a
+# route.  A route bounce on the control node reads exactly like this.  Only the
+# connect-time line counts: a session that died mid-script ran some of it, and
+# re-running is safe only when nothing ran.
+_ROUTE_FAILURE_RE = re.compile(r"^ssh: connect to host \S+ port \d+: (Network is unreachable|No route to host)\s*$", re.MULTILINE)
+
+ROUTE_RECOVERY_TIMEOUT_S = 30.0
+"""How long to wait for the control node's routes after a local ``netplan apply``."""
+
+ROUTE_RETRY_DELAY_S = 2.0
+"""Pause before retrying a no-route failure even once routes look present:
+"No route to host" is a neighbour (ARP) failure the route table cannot show."""
+
+
+def _is_route_failure(result) -> bool:
+    return result.returncode == 255 and bool(_ROUTE_FAILURE_RE.search(result.stderr or ""))
+
+
 def apply_cx7_plan(
     plan: CX7ClusterPlan,
     ssh_kwargs: dict | None = None,
@@ -1755,8 +1774,18 @@ def apply_cx7_plan(
     sudo_hosts: set[str] | None = None,
     passwords: SudoPasswords | None = None,
     dispatch=None,
+    route_timeout_s: float = ROUTE_RECOVERY_TIMEOUT_S,
 ) -> list:
     """Apply CX7 configuration to all hosts that need changes.
+
+    The control node's own host, when it is in the plan, is configured
+    **last**: its ``netplan apply`` can briefly drop the management
+    interface's routes, and an SSH attempt made in that window fails with
+    "Network is unreachable" (issue #311).  After it, this waits (bounded by
+    *route_timeout_s*) for routes to the plan's other hosts to return, so a
+    caller's next step (verification, host-key distribution) does not land
+    in the same window.  A remote attempt that still fails for want of a
+    route is retried once after the same wait.
 
     Args:
         plan: The cluster plan to apply.
@@ -1771,10 +1800,13 @@ def apply_cx7_plan(
         dispatch: ``(host, script, password, timeout=)`` runner for *sudo_hosts*
             when sudo goes through another user (the wizard's indirect sudo);
             the script then runs as root through it instead of ``sudo -S``.
+        route_timeout_s: Upper bound on each wait for routes to recover.
 
     Returns:
         List of RemoteResult for hosts that were configured.
     """
+    from sparkrun.utils.net import is_local_host, wait_for_routes
+
     kw = ssh_kwargs or {}
     results = []
     sudo_hosts = sudo_hosts or set()
@@ -1784,13 +1816,35 @@ def apply_cx7_plan(
         logger.info("No hosts need CX7 configuration changes")
         return results
 
+    local = {hp.host for hp in plan.host_plans if is_local_host(hp.host)}
+    remote_hosts = [hp.host for hp in plan.host_plans if hp.host not in local]
+    # Stable partition: remote hosts in plan order, then the local one(s).
+    hosts_to_configure.sort(key=lambda hp: hp.host in local)
+
+    def await_routes(hosts: list[str]) -> None:
+        if dry_run or not hosts:
+            return
+        missing = wait_for_routes(hosts, timeout_s=route_timeout_s)
+        if missing:
+            logger.warning("No route to %s %.0fs after reconfiguring the network", ", ".join(missing), route_timeout_s)
+
     logger.info("Applying CX7 configuration to %d host(s)...", len(hosts_to_configure))
     for hp in hosts_to_configure:
+        is_local = hp.host in local
 
-        def attempt(password, hp=hp):
+        def attempt_once(password, hp=hp):
             if dispatch is not None and password is not None and not dry_run:
                 return dispatch(hp.host, generate_cx7_configure_script(hp, plan.mtu, plan.prefix_len), password, timeout=60)
             return configure_cx7_host(hp, plan.mtu, plan.prefix_len, ssh_kwargs=kw, dry_run=dry_run, sudo_password=password)
+
+        def attempt(password, hp=hp, is_local=is_local, attempt_once=attempt_once):
+            result = attempt_once(password)
+            if not is_local and not dry_run and _is_route_failure(result):
+                logger.info("  %s: no route, retrying once the route returns", hp.host)
+                await_routes([hp.host])
+                time.sleep(ROUTE_RETRY_DELAY_S)
+                result = attempt_once(password)
+            return result
 
         if hp.host not in sudo_hosts:
             result = attempt(None)
@@ -1802,7 +1856,11 @@ def apply_cx7_plan(
         if result.success:
             logger.info("  [OK] %s: configured", hp.host)
         else:
-            logger.error("  [FAIL] %s: %s", hp.host, result.stderr[:200])
+            # Callers render failures; logging them too printed each one twice.
+            logger.debug("  [FAIL] %s: %s", hp.host, result.stderr[:200])
+
+        if is_local:
+            await_routes(remote_hosts)
 
     return results
 

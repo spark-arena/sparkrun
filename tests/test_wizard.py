@@ -593,7 +593,7 @@ def _topology_probe(mesh_ok_by_host, calls, mtu=9000, hardware=None):
 HOSTS = ["10.0.0.1", "10.0.0.2"]
 
 
-def _invoke_topology_wizard(runner, probe, *extra_args, input=None, mtu=9000, control_sshd=True, sudo_ok_hosts=()):
+def _invoke_topology_wizard(runner, probe, *extra_args, input=None, mtu=9000, control_sshd=True, sudo_ok_hosts=(), apply_results=()):
     detections = {h: _good_cx7(h, mtu) for h in HOSTS}
     for host in sudo_ok_hosts:
         detections[host].sudo_ok = True
@@ -605,7 +605,7 @@ def _invoke_topology_wizard(runner, probe, *extra_args, input=None, mtu=9000, co
         mock.patch("sparkrun.cli._setup._ssh._run_ssh_mesh", return_value=True) as mesh,
         mock.patch("sparkrun.cli._setup._ssh._detect_and_update_mgmt_ips") as mgmt,
         mock.patch("sparkrun.orchestration.networking.detect_cx7_for_hosts", return_value=detections),
-        mock.patch("sparkrun.orchestration.networking.apply_cx7_plan", return_value=[]) as cx7_apply,
+        mock.patch("sparkrun.orchestration.networking.apply_cx7_plan", return_value=list(apply_results)) as cx7_apply,
         mock.patch(
             "sparkrun.orchestration.ssh.run_remote_scripts_parallel",
             side_effect=lambda hs, *a, **k: [RemoteResult(h, 0, "", "") for h in hs],
@@ -768,3 +768,17 @@ def test_wizard_cx7_apply_sends_passwords_only_where_needed(runner, v, patched_c
     assert kwargs["sudo_hosts"] == {"10.0.0.2"}
     assert kwargs["sudo_password"] == "pw"
     assert (kwargs["dispatch"] is not None) is indirect
+
+
+def test_wizard_does_not_save_topology_after_a_partial_cx7_apply(runner, v, patched_cluster_mgr):
+    """Issue #311: one host failed, so the fabric is not configured and must not be recorded as such."""
+    applied = [RemoteResult("10.0.0.1", 0, "CX7_CONFIGURED=1", ""), RemoteResult("10.0.0.2", 255, "", "ssh: Network is unreachable")]
+    with mock.patch("sparkrun.cli._setup._sudo.ensure_sudo_password", return_value=(None, None)):
+        result, _mesh, _mgmt, cx7_apply = _invoke_topology_wizard(
+            runner, _topology_probe({}, [], mtu=1500), "--yes", mtu=1500, apply_results=applied
+        )
+    assert result.exit_code == 0, result.output
+    cx7_apply.assert_called_once()
+    assert "[FAIL] 10.0.0.2: ssh: Network is unreachable" in result.output
+    assert "Topology not saved: 1 host(s) failed." in result.output
+    assert patched_cluster_mgr.get("topo").topology is None

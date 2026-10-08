@@ -18,6 +18,8 @@ import logging
 import re
 import socket
 import subprocess
+import time
+from collections.abc import Callable, Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -121,3 +123,50 @@ def accepts_tcp(address: str, port: int, timeout: float = 1.0) -> bool:
             return True
     except OSError:
         return False
+
+
+def has_route_to(host: str) -> bool | None:
+    """Whether this machine currently has a route to *host*.
+
+    A UDP connect performs the kernel's route lookup without sending
+    anything, and fails with ``ENETUNREACH`` while no route exists.
+
+    ``None`` means *cannot tell*: the name does not resolve here, which is
+    normal for an ``~/.ssh/config`` alias (ssh resolves ``HostName`` itself)
+    and says nothing about routes.
+    """
+    try:
+        infos = socket.getaddrinfo(host, 22, type=socket.SOCK_DGRAM)
+    except OSError:
+        return None
+    for family, socktype, proto, _canon, sockaddr in infos:
+        try:
+            with socket.socket(family, socktype, proto) as s:
+                s.connect(sockaddr)
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def wait_for_routes(
+    hosts: Iterable[str],
+    timeout_s: float = 30.0,
+    interval_s: float = 1.0,
+    sleep: Callable[[float], None] = time.sleep,
+) -> list[str]:
+    """Wait until this machine has a route to every host in *hosts*.
+
+    For use after reconfiguring local networking (``netplan apply``), which
+    can briefly drop the management interface's routes.  Returns the hosts
+    still unroutable when *timeout_s* ran out (empty when all recovered).
+    A host whose route cannot be checked (:func:`has_route_to` ``None``) is
+    not waited for.
+    """
+    pending = list(dict.fromkeys(hosts))
+    deadline = time.monotonic() + timeout_s
+    while True:
+        pending = [h for h in pending if has_route_to(h) is False]
+        if not pending or time.monotonic() >= deadline:
+            return pending
+        sleep(interval_s)

@@ -1541,7 +1541,14 @@ def setup_cx7(ctx, hosts, hosts_file, cluster_name, user, dry_run, force, mtu, s
             effective_cluster = mgr.get_default() if mgr else None
         except Exception:
             pass
-    if effective_cluster and effective_topology != CX7Topology.UNKNOWN:
+    # A partial apply is not a topology: saving it would report the fabric
+    # as configured to everything that reads the cluster afterwards.
+    if effective_cluster and effective_topology != CX7Topology.UNKNOWN and failed:
+        click.echo(
+            "Topology not saved to cluster '%s': %d host(s) failed. Re-run once they are fixed." % (effective_cluster, failed),
+            err=True,
+        )
+    elif effective_cluster and effective_topology != CX7Topology.UNKNOWN:
         try:
             mgr = _get_cluster_manager()
             if mgr:

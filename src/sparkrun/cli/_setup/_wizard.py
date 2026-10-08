@@ -857,6 +857,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                         click.echo("  Subnets: %s, %s" % (s1, s2))
                         plan = plan_cluster_cx7(detections, s1, s2, interfaces=cx7_interfaces)
 
+                    cx7_failed = 0
                     # Check for plan-level errors (e.g. insufficient ports)
                     if plan.errors and not plan.host_plans:
                         for e in plan.errors:
@@ -891,6 +892,10 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                                 dispatch=_run_sudo_on_host if _indirect_sudo_user else None,
                             )
                             ok_count = sum(1 for r in apply_results if r.success)
+                            for r in apply_results:
+                                if not r.success:
+                                    cx7_failed += 1
+                                    click.echo("  [FAIL] %s: %s" % (r.host, r.stderr.strip()[:100]), err=True)
 
                             # Distribute host keys for CX7 IPs
                             all_cx7_ips = [a.ip for hp in plan.host_plans for a in hp.assignments if a.ip]
@@ -921,12 +926,15 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                                     topology=effective_topology.value,
                                 )
 
-                    # Save topology to cluster definition
-                    if not dry_run and cluster_name and effective_topology != CX7Topology.UNKNOWN:
+                    # Save topology to cluster definition -- not after a partial
+                    # apply, which would report the fabric as configured.
+                    if cx7_failed and cluster_name:
+                        click.echo("  Topology not saved: %d host(s) failed." % cx7_failed, err=True)
+                    elif not dry_run and cluster_name and effective_topology != CX7Topology.UNKNOWN:
                         try:
                             cluster_mgr.update(cluster_name, topology=effective_topology.value)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            click.echo("  Warning: could not save topology to cluster: %s" % e, err=True)
 
                 except Exception as e:
                     results["cx7"] = "failed"

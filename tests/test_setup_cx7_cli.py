@@ -109,3 +109,39 @@ def test_saved_fabric_interfaces_used_when_no_flag():
     assert r.exit_code == 0, r.output
     assert "Interface filter: *np1" in r.output
     assert _assigned(r.output) == ["enp1s0f1np1", "enP2p1s0f1np1"]
+
+
+def _apply_run(apply_results, cluster_mgr):
+    dets = {h: _det(h) for h in ("h1", "h2")}
+    with (
+        mock.patch("sparkrun.orchestration.networking.apply_cx7_plan", return_value=apply_results),
+        mock.patch("sparkrun.cli._setup._sudo.ensure_sudo_password", return_value=(None, None)),
+        mock.patch("sparkrun.cli._setup._commands._record_setup_phase"),
+    ):
+        return _run(["--hosts", "h1,h2", "--cluster", "lab", "--force"], dets, cluster_mgr=cluster_mgr)
+
+
+def test_partial_apply_does_not_save_topology():
+    """Issue #311: 1 configured, 1 failed is not a configured fabric."""
+    from sparkrun.orchestration.ssh import RemoteResult
+
+    mgr = mock.Mock()
+    mgr.get.return_value.fabric_interfaces = None
+    r = _apply_run([RemoteResult("h1", 0, "", ""), RemoteResult("h2", 255, "", "Network is unreachable")], mgr)
+
+    assert r.exit_code == 1, r.output
+    assert "Topology not saved to cluster 'lab': 1 host(s) failed." in r.output
+    assert not any("topology" in c.kwargs for c in mgr.update.call_args_list)
+    # Printed once by the CLI (apply_cx7_plan no longer logs it as well).
+    assert r.output.count("[FAIL] h2") == 1
+
+
+def test_full_apply_saves_topology():
+    from sparkrun.orchestration.ssh import RemoteResult
+
+    mgr = mock.Mock()
+    mgr.get.return_value.fabric_interfaces = None
+    r = _apply_run([RemoteResult("h1", 0, "", ""), RemoteResult("h2", 0, "", "")], mgr)
+
+    assert r.exit_code == 0, r.output
+    mgr.update.assert_any_call("lab", topology="switch")
