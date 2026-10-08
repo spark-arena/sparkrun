@@ -593,7 +593,10 @@ def _topology_probe(mesh_ok_by_host, calls, mtu=9000, hardware=None):
 HOSTS = ["10.0.0.1", "10.0.0.2"]
 
 
-def _invoke_topology_wizard(runner, probe, *extra_args, input=None, mtu=9000, control_sshd=True):
+def _invoke_topology_wizard(runner, probe, *extra_args, input=None, mtu=9000, control_sshd=True, sudo_ok_hosts=()):
+    detections = {h: _good_cx7(h, mtu) for h in HOSTS}
+    for host in sudo_ok_hosts:
+        detections[host].sudo_ok = True
     with (
         mock.patch("subprocess.run", return_value=mock.Mock(returncode=0, stdout="CX7_DETECTED=0\n", stderr="")),
         mock.patch("sparkrun.core.setup_probe.probe_setup_hosts", side_effect=probe),
@@ -601,7 +604,7 @@ def _invoke_topology_wizard(runner, probe, *extra_args, input=None, mtu=9000, co
         mock.patch("sparkrun.utils.net.accepts_tcp", return_value=control_sshd),
         mock.patch("sparkrun.cli._setup._ssh._run_ssh_mesh", return_value=True) as mesh,
         mock.patch("sparkrun.cli._setup._ssh._detect_and_update_mgmt_ips") as mgmt,
-        mock.patch("sparkrun.orchestration.networking.detect_cx7_for_hosts", return_value={h: _good_cx7(h, mtu) for h in HOSTS}),
+        mock.patch("sparkrun.orchestration.networking.detect_cx7_for_hosts", return_value=detections),
         mock.patch("sparkrun.orchestration.networking.apply_cx7_plan", return_value=[]) as cx7_apply,
         mock.patch(
             "sparkrun.orchestration.ssh.run_remote_scripts_parallel",
@@ -750,3 +753,18 @@ def test_wizard_gathers_sudo_only_where_the_plan_acts_with_it(runner, v, patched
     assert result.exit_code == 0, result.output
     ensure.assert_called_once()
     assert ensure.call_args.args[0] == ["10.0.0.1"]
+
+
+@pytest.mark.parametrize("indirect", [False, True])
+def test_wizard_cx7_apply_sends_passwords_only_where_needed(runner, v, patched_cluster_mgr, indirect):
+    """Passwordless hosts run CX7 changes with their own sudo; under indirect sudo the rest go through su."""
+    credentials = ("pw", "admin") if indirect else ("pw", None)
+    with mock.patch("sparkrun.cli._setup._sudo.ensure_sudo_password", return_value=credentials):
+        result, _mesh, _mgmt, cx7_apply = _invoke_topology_wizard(
+            runner, _topology_probe({}, [], mtu=1500), "--yes", mtu=1500, sudo_ok_hosts=("10.0.0.1",)
+        )
+    assert result.exit_code == 0, result.output
+    kwargs = cx7_apply.call_args.kwargs
+    assert kwargs["sudo_hosts"] == {"10.0.0.2"}
+    assert kwargs["sudo_password"] == "pw"
+    assert (kwargs["dispatch"] is not None) is indirect
