@@ -504,16 +504,60 @@ def test_host_ipc_warns_when_lingering_cannot_be_confirmed():
     assert "could not be confirmed" in item.detail
 
 
-def test_mesh_probe_uses_real_known_hosts():
-    """The mesh probe connects the way distribution does, so OK means usable.
+_FAKE_SSH = """#!/bin/bash
+# Records argv; "hostkey-*" peers fail as an unrecorded key would, "down-*" as unreachable.
+echo "$*" >> "$FAKE_SSH_LOG"
+peer=$(printf '%s' "$*" | awk '{print $(NF-1)}')
+case "$peer" in
+    hostkey-*) echo "Host key verification failed." >&2; exit 255 ;;
+    down-*) echo "ssh: connect to host $peer port 22: No route to host" >&2; exit 255 ;;
+esac
+exit 0
+"""
+
+
+def _run_mesh_probe(tmp_path, peers):
+    import os
+    import subprocess
+
+    from sparkrun.scripts import inject_shell_vars, read_script
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "ssh").write_text(_FAKE_SSH)
+    (bin_dir / "ssh").chmod(0o755)
+    log = tmp_path / "ssh.log"
+    env = {**os.environ, "PATH": "%s:%s" % (bin_dir, os.environ["PATH"]), "FAKE_SSH_LOG": str(log)}
+    script = inject_shell_vars(read_script("_mesh_probe.sh"), PEERS=" ".join(peers))
+    out = subprocess.run(["bash", "-s"], input=script, capture_output=True, text=True, env=env, check=True).stdout
+    return dict(line.split("=", 1) for line in out.split()), log.read_text().splitlines()
+
+
+def test_mesh_probe_dials_like_distribution_and_counts_host_key_gaps(tmp_path):
+    """BatchMode with the host's own known_hosts: an unrecorded key is a gap, and named as one.
 
     Head-to-worker transfers SSH with BatchMode and the default host-key
     policy; a probe that discarded known_hosts reported a mesh OK that those
     transfers would then fail on, and the wizard skips a mesh this check passes.
     """
-    from sparkrun.scripts import read_script
+    facts, calls = _run_mesh_probe(tmp_path, ["ok-1", "hostkey-2", "down-3"])
+    assert facts == {"CHECK_MESH_TOTAL": "3", "CHECK_MESH_OK": "1", "CHECK_MESH_HOSTKEY": "1"}
+    assert all("BatchMode=yes" in c and "UserKnownHostsFile" not in c and "StrictHostKeyChecking" not in c for c in calls)
 
-    probe = next(line for line in read_script("setup_check.sh").splitlines() if '"$peer" true' in line)
-    assert "BatchMode=yes" in probe
-    assert "UserKnownHostsFile" not in probe
-    assert "StrictHostKeyChecking" not in probe
+
+def test_ssh_mesh_check_counts_cx7_legs_and_names_host_key_gaps():
+    ctx = _context("lab", True)
+    facts = dict(
+        _FACTS_ALL_GOOD,
+        CHECK_MESH_TOTAL="1",
+        CHECK_MESH_OK="1",
+        CHECK_MESH_FABRIC_TOTAL="2",
+        CHECK_MESH_FABRIC_OK="1",
+        CHECK_MESH_FABRIC_HOSTKEY="1",
+    )
+    item = next(i for i in evaluate_host(_state(facts), ctx) if i.key == "ssh_mesh")
+    assert item.status == WARN
+    assert item.detail == "2/3 peer address(es) reachable over SSH (incl. 2 CX7 address(es)); 1 without a recorded host key"
+    facts.update(CHECK_MESH_FABRIC_OK="2", CHECK_MESH_FABRIC_HOSTKEY="0")
+    item = next(i for i in evaluate_host(_state(facts), ctx) if i.key == "ssh_mesh")
+    assert item.status == OK

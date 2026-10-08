@@ -150,27 +150,8 @@ fi
 ;; esac
 
 case " $SETUP_STEPS " in *" ssh_mesh "*)
-# --- SSH mesh (non-destructive) ---
-# Attempt a BatchMode SSH to each peer with the host's own known_hosts and the
-# default host-key policy -- the way head-to-worker distribution connects
-# (build_ssh_opts_string), so a peer whose key was never recorded fails here
-# exactly as it would fail a transfer. BatchMode never adds a known_hosts entry.
-# NOTE: `ssh -n` (stdin from /dev/null) is REQUIRED here. This whole script
-# is delivered to the host via `ssh <host> bash -s`, so the script body IS the
-# remote bash's stdin. Without -n the inner ssh would slurp the rest of that
-# stdin (the remainder of this script), truncating execution so CHECK_COMPLETE
-# never prints and the host is falsely reported unreachable.
 PEERS={peers}
-MESH_TOTAL=0
-MESH_OK=0
-for peer in $PEERS; do
-    MESH_TOTAL=$((MESH_TOTAL + 1))
-    if ssh -n -o BatchMode=yes -o ConnectTimeout=5 "$peer" true 2>/dev/null; then
-        MESH_OK=$((MESH_OK + 1))
-    fi
-done
-echo "CHECK_MESH_TOTAL=$MESH_TOTAL"
-echo "CHECK_MESH_OK=$MESH_OK"
+# sparkrun:include _mesh_probe.sh
 ;; esac
 
 echo "CHECK_COMPLETE=1"

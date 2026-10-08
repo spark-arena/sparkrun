@@ -396,3 +396,41 @@ def test_extra_mesh_peers_are_probed_and_kept_on_context(v):
     assert context.extra_mesh_peers == ("ctl",)
     readiness = [s for s in scripts["h1"] if "PEERS=" in s]
     assert readiness and "PEERS='h2 ctl'" in readiness[0]
+
+
+def test_mesh_also_dials_peers_cx7_addresses_on_shared_subnets(v):
+    """Transfers go to CX7 addresses, so those are mesh legs too — but only reachable ones."""
+    from sparkrun.core.setup_probe import probe_setup_hosts
+    from sparkrun.orchestration.networking import CX7HostDetection, CX7Interface
+
+    def cx7(host, subnets):
+        last = host[-1]
+        ifaces = [
+            CX7Interface(
+                name="if%d" % n, ip="192.168.%d.%s" % (n, last), prefix=24, subnet="192.168.%d.0/24" % n, mtu=9000, state="up", hca=""
+            )
+            for n in subnets
+        ]
+        return CX7HostDetection(host=host, interfaces=ifaces, detected=True)
+
+    readiness = "SPARKRUN_PROBE_ACCEL_END\n" + "\n".join(key + "=" + value for key, value in FACTS.items())
+    followups = {}
+
+    def run(host, script, *a, **kw):
+        if "MESH_HOSTKEY" in script and "SETUP_STEPS" not in script:
+            followups[host] = next(line for line in script.splitlines() if line.startswith("PEERS="))
+            return RemoteResult(host, 0, "CHECK_MESH_TOTAL=1\nCHECK_MESH_OK=0\nCHECK_MESH_HOSTKEY=1\n", "")
+        return RemoteResult(host, 0, readiness, "")
+
+    detections = {"h1": cx7("h1", [10, 11]), "h2": cx7("h2", [10]), "h3": cx7("h3", [12])}
+    with (
+        mock.patch("sparkrun.orchestration.ssh.run_remote_script", side_effect=run),
+        mock.patch("sparkrun.core.hardware_probe._parse_probe_result", return_value=default_dgx_spark_hardware()),
+        mock.patch("sparkrun.orchestration.networking.detect_cx7_for_hosts", return_value=detections),
+        mock.patch("sparkrun.api.setup._rdma._run_probe", return_value={}),
+    ):
+        states, _context = probe_setup_hosts(["h1", "h2", "h3"], ssh_kwargs={}, config=SparkrunConfig())
+    # h1 and h2 share 192.168.10.0/24; h3 shares nothing, so it dials nobody.
+    assert followups == {"h1": "PEERS=192.168.10.2", "h2": "PEERS=192.168.10.1"}
+    assert states["h1"].facts["CHECK_MESH_FABRIC_HOSTKEY"] == "1"
+    assert "CHECK_MESH_FABRIC_TOTAL" not in states["h3"].facts

@@ -233,21 +233,25 @@ def _check_sudoers(state: HostState, ctx: CheckContext) -> CheckItem:
 
 
 def _check_ssh_mesh(state: HostState, ctx: CheckContext) -> CheckItem | None:
+    """Every mesh leg from this host: peers' management names, the control
+    machine when it joins the mesh, and peers' CX7 addresses on shared subnets.
+    """
     if not ctx.multi_host:
         return None  # SSH mesh is only meaningful with peers
-    total = _as_int(state.facts.get("CHECK_MESH_TOTAL"))
-    reachable = _as_int(state.facts.get("CHECK_MESH_OK"))
+    facts = state.facts
+    fabric = _as_int(facts.get("CHECK_MESH_FABRIC_TOTAL"))
+    total = _as_int(facts.get("CHECK_MESH_TOTAL")) + fabric
+    reachable = _as_int(facts.get("CHECK_MESH_OK")) + _as_int(facts.get("CHECK_MESH_FABRIC_OK"))
     if total == 0:
         return None
+    scope = " (incl. %d CX7 address(es))" % fabric if fabric else ""
     if reachable >= total:
-        return CheckItem("ssh_mesh", "SSH mesh to peers", OK, "all %d peer(s) reachable" % total)
-    return CheckItem(
-        "ssh_mesh",
-        "SSH mesh to peers",
-        WARN,
-        "%d/%d peer(s) reachable over SSH" % (reachable, total),
-        "sparkrun setup ssh%s" % ctx.cluster_flag,
-    )
+        return CheckItem("ssh_mesh", "SSH mesh to peers", OK, "all %d peer address(es) reachable%s" % (total, scope))
+    detail = "%d/%d peer address(es) reachable over SSH%s" % (reachable, total, scope)
+    hostkey = _as_int(facts.get("CHECK_MESH_HOSTKEY")) + _as_int(facts.get("CHECK_MESH_FABRIC_HOSTKEY"))
+    if hostkey:
+        detail += "; %d without a recorded host key" % hostkey
+    return CheckItem("ssh_mesh", "SSH mesh to peers", WARN, detail, "sparkrun setup ssh%s" % ctx.cluster_flag)
 
 
 def _check_cx7(state: HostState, ctx: CheckContext) -> CheckItem | None:

@@ -162,6 +162,7 @@ def probe_setup_hosts(
                 states[host].cx7 = detection
         except Exception:
             logger.debug("Setup CX7 probe failed", exc_info=True)
+        _probe_fabric_mesh(states, candidates("ssh_mesh"), ssh_kwargs)
     if targets := candidates("rdma"):
         from sparkrun.api.setup._rdma import _run_probe
 
@@ -171,3 +172,47 @@ def probe_setup_hosts(
         except Exception:
             logger.debug("Setup RDMA probe failed", exc_info=True)
     return states, context
+
+
+def fabric_mesh_peers(host: str, states: Mapping[str, HostState], members: Sequence[str]) -> list[str]:
+    """CX7 addresses of the other *members* that *host* shares a subnet with.
+
+    Head-to-worker transfers go to these addresses, so they are mesh legs as
+    much as the management names are. Only up, addressed interfaces count.
+    """
+
+    def addressed(state):
+        return [i for i in (state.cx7.interfaces if state.cx7 else []) if i.ip and i.subnet and i.state.lower() == "up"]
+
+    own = {i.subnet for i in addressed(states[host])}
+    return [i.ip for peer in members if peer != host for i in addressed(states[peer]) if i.subnet in own]
+
+
+def _probe_fabric_mesh(states: dict[str, HostState], members: list[str], ssh_kwargs: dict[str, Any]) -> None:
+    """Dial each mesh member's CX7 peers; record ``CHECK_MESH_FABRIC_*`` facts.
+
+    Runs after CX7 detection because the addresses come from it. Best-effort:
+    a host whose follow-up fails keeps only its management-name facts.
+    """
+    from sparkrun.orchestration.ssh import run_remote_script
+    from sparkrun.scripts import inject_shell_vars, read_script
+    from sparkrun.utils.text import parse_kv_output
+
+    peers = {host: fabric_mesh_peers(host, states, members) for host in members}
+    targets = [host for host in members if peers[host]]
+    if not targets:
+        return
+
+    def dial(host):
+        script = inject_shell_vars(read_script("_mesh_probe.sh"), PEERS=" ".join(peers[host]))
+        try:
+            result = run_remote_script(host, script, timeout=60, quiet=True, **ssh_kwargs)
+        except Exception:
+            logger.debug("Fabric mesh probe failed on %s", host, exc_info=True)
+            return
+        if result.success:
+            for key, value in parse_kv_output(result.stdout).items():
+                states[host].facts[key.replace("CHECK_MESH_", "CHECK_MESH_FABRIC_", 1)] = value
+
+    with ThreadPoolExecutor(max_workers=min(len(targets), 16)) as pool:
+        list(pool.map(dial, targets))

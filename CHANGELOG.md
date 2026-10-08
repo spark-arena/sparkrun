@@ -12,13 +12,18 @@ first tagged release containing them, regardless of their original commit date.
 
 ### 0.4.0 application and API changes
 
-- `sparkrun setup wizard` skips the SSH mesh and CX7 phases when `setup check`
-  already passes them on every host, instead of prompting and re-applying them.
-  The mesh check now includes the control machine whenever the wizard's mesh
-  would, and dials peers with each host's real `known_hosts`, so a peer key
-  that head-to-worker transfers would reject is no longer reported as OK.
-  `run_setup_steps` reports a satisfied mesh/CX7 step as `ok` rather than
-  "requires the frontend topology adapter" (based on #309 by @Aisoipheo).
+- `sparkrun setup wizard` no longer re-prompts for an SSH mesh and CX7
+  configuration that already work. A mesh every leg of which passes is skipped.
+  A CX7 phase whose checks pass runs the read-only cluster plan without asking:
+  it reports "already configured" and still saves the topology, or asks before
+  changing hosts whose subnet or MTU differ from the plan.
+  The `ssh_mesh` check now covers every leg transfers use: peers' management
+  names, peers' CX7 addresses on shared subnets, and the control machine when
+  the wizard meshes it and it runs an SSH server. It dials with each host's real
+  `known_hosts`, so `setup check` can newly warn about a peer whose host key was
+  never recorded, and it says so. `run_setup_steps` reports a satisfied mesh/CX7
+  step as `ok` rather than "requires the frontend topology adapter" (based on
+  #309 by @Aisoipheo).
 
 - Reduce unit-test delays from DNS, Hub metadata, SSH diagnostics, hardware scans,
   and retry sleeps. Add per-test hang detection and explicit fixtures for tests

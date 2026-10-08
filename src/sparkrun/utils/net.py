@@ -112,3 +112,12 @@ def local_ip_for(target_host: str) -> str | None:
         # is not resolvable from the control machine itself).
         logger.debug("routing lookup failed in local_ip_for(%r)", target_host, exc_info=True)
         return socket.gethostname() or None
+
+
+def accepts_tcp(address: str, port: int, timeout: float = 1.0) -> bool:
+    """Whether something on this machine accepts TCP connections at *address*:*port*."""
+    try:
+        with socket.create_connection((address, port), timeout=timeout):
+            return True
+    except OSError:
+        return False

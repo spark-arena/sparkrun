@@ -486,6 +486,18 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                 members.append(self_ip)
             return members, self_ip, cross_user
 
+        def _control_mesh_peer():
+            """The control machine, as a peer every host must reach, when it can be one.
+
+            Without an SSH server here the host-to-control leg cannot exist
+            (a Windows or laptop control node), and requiring it would make an
+            already-meshed cluster ask to re-mesh on every run.
+            """
+            from sparkrun.utils.net import accepts_tcp
+
+            extra = [h for h in _mesh_members()[0] if h not in host_list]
+            return [h for h in extra if accepts_tcp(h, 22)]
+
         def _refresh_plan():
             nonlocal states, setup_context
             try:
@@ -507,7 +519,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                     config=config,
                     cluster=cluster_def,
                     cluster_name=cluster_name,
-                    extra_mesh_peers=[h for h in _mesh_members()[0] if h not in host_list],
+                    extra_mesh_peers=_control_mesh_peer(),
                 )
                 for h in host_list:
                     if h not in states:
@@ -554,10 +566,9 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
 
             run_mesh = True
             if _satisfied("ssh_mesh"):
-                members = _mesh_members()[0]
                 click.echo(
                     "  SSH mesh already working across %d host(s)%s — skipping."
-                    % (len(host_list), " + this machine" if len(members) > len(host_list) else "")
+                    % (len(host_list), " + this machine" if setup_context and setup_context.extra_mesh_peers else "")
                 )
                 click.echo(render_identity_text("  (Run '{app_command} setup ssh' to re-key the mesh deliberately.)"))
                 results["ssh"] = "already configured"
@@ -746,12 +757,16 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
             click.echo("-" * 30)
             click.echo("Configures high-speed CX7 networking between hosts.")
 
-            cx7_done = _satisfied("cx7")
-            if cx7_done:
-                click.echo("  CX7 already configured and persisted on all host(s) — skipping.")
-                click.echo(render_identity_text("  (Run '{app_command} setup cx7' to re-plan addresses deliberately.)"))
-                results["cx7"] = "already configured"
-            run_cx7 = not cx7_done and (yes or click.confirm("Configure CX7 networking?", default=True))
+            # Per-host checks passing is not the whole answer: subnet agreement
+            # across hosts, MTU and the cluster's saved topology belong to the
+            # planner. So a passing phase skips only the question; the
+            # read-only plan still runs and decides whether anything changes.
+            cx7_checked = _satisfied("cx7")
+            if cx7_checked:
+                click.echo("  CX7 checks pass on all host(s); verifying the cluster plan...")
+            run_cx7 = cx7_checked or yes or click.confirm("Configure CX7 networking?", default=True)
+            # Ask nothing on an already-configured cluster: detect, don't prompt.
+            auto_cx7 = yes or cx7_checked
 
             if run_cx7:
                 try:
@@ -770,7 +785,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                     effective_topology = CX7Topology.SWITCH
                     topology_result = None
 
-                    if ring_eligible and not yes:
+                    if ring_eligible and not auto_cx7:
                         topo_choice = click.prompt(
                             "  Topology (3 hosts with 2 ports detected)",
                             type=click.Choice(["auto", "switch", "ring"]),
@@ -788,8 +803,8 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                             )
                             effective_topology = topology_result.topology
                             click.echo("  Detected topology: %s" % effective_topology.value)
-                    elif ring_eligible and yes:
-                        # --yes with ring-eligible: auto-detect
+                    elif ring_eligible and auto_cx7:
+                        # --yes / already configured with ring-eligible: auto-detect
                         click.echo("  Detecting topology via neighbor discovery...")
                         topology_result = detect_topology(
                             detections,
@@ -852,7 +867,19 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
 
                         if plan.all_valid:
                             click.echo("  All hosts already configured.")
-                            results["cx7"] = "configured (%s)" % effective_topology.value
+                            click.echo(render_identity_text("  (Run '{app_command} setup cx7 --force' to re-plan addresses deliberately.)"))
+                            results["cx7"] = "already configured (%s)" % effective_topology.value
+                        elif (
+                            cx7_checked
+                            and not yes
+                            and not dry_run
+                            and not click.confirm(
+                                "  CX7 interfaces are up, but %d host(s) differ from the cluster plan (subnet/MTU). Reconfigure them?"
+                                % needs_config,
+                                default=True,
+                            )
+                        ):
+                            results["cx7"] = "skipped"
                         elif dry_run:
                             click.echo("  [dry-run] Would configure %d host(s)." % needs_config)
                             results["cx7"] = "dry-run"
@@ -909,7 +936,7 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                     click.echo("CX7 error: %s" % e, err=True)
                     if not yes and not click.confirm("Continue?", default=True):
                         return
-            elif not cx7_done:
+            else:
                 results["cx7"] = "skipped"
             click.echo()
 

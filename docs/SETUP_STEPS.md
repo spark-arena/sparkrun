@@ -117,9 +117,11 @@ Call `sparkrun.application.initialize()` first to load the selected integrations
 state mapping and a `CheckContext`. Pass `extra_mesh_peers=` for mesh members that are not
 setup targets (the wizard passes the control machine when it joins the mesh):
 each host's SSH-mesh probe also dials them, and the context keeps them so the
-runner's reprobes measure the same mesh. The mesh probe uses each host's own
+runner's reprobes measure the same mesh. After CX7 detection each host also
+dials its peers' CX7 addresses on subnets it shares (`CHECK_MESH_FABRIC_*`), since
+transfers go there. The mesh probe (`scripts/_mesh_probe.sh`) uses each host's own
 `known_hosts` and default host-key policy, as head-to-worker transfers do, so an
-unrecorded peer key is a gap rather than a pass. The hardware comes from the existing combined
+unrecorded peer key is a gap rather than a pass, and is reported as one. The hardware comes from the existing combined
 probe, including selected hardware-plugin enrichers. Probing runs in two stages:
 mandatory hardware/OS discovery first, then executor/plan resolution and only the
 selected readiness probes. Core shell probes, plugin fragments, and CX7/RDMA

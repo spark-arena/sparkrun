@@ -536,16 +536,16 @@ def test_wizard_sudo_password_reuse(runner, v, patched_cluster_mgr):
 # ---------------------------------------------------------------------------
 
 
-def _good_cx7(host):
+def _good_cx7(host, mtu=9000):
     from sparkrun.orchestration.networking import CX7HostDetection, CX7Interface, CX7Persistence
 
     ifaces = [
         CX7Interface(
-            name="enp%d" % idx,
+            name="enp1s0f%dnp%d" % (idx, idx),
             ip="192.168.1%d.%s" % (idx, host.rsplit(".", 1)[-1]),
             prefix=24,
             subnet="192.168.1%d.0/24" % idx,
-            mtu=9000,
+            mtu=mtu,
             state="up",
             hca="mlx5_%d" % idx,
             persistence=CX7Persistence.PERSISTENT,
@@ -556,7 +556,7 @@ def _good_cx7(host):
     return CX7HostDetection(host=host, interfaces=ifaces, netplan_exists=True, detected=True)
 
 
-def _topology_probe(mesh_ok_by_host, calls):
+def _topology_probe(mesh_ok_by_host, calls, mtu=9000):
     """A probe_setup_hosts stand-in: configured CX7, mesh results per host."""
 
     def probe(hosts, **kwargs):
@@ -577,7 +577,7 @@ def _topology_probe(mesh_ok_by_host, calls):
                     "CHECK_MESH_OK": str(peers if mesh_ok_by_host.get(h, True) else peers - 1),
                 },
                 hardware=default_dgx_spark_hardware(),
-                cx7=_good_cx7(h),
+                cx7=_good_cx7(h, mtu),
             )
             for h in hosts
         }
@@ -590,54 +590,93 @@ def _topology_probe(mesh_ok_by_host, calls):
     return probe
 
 
-def _invoke_topology_wizard(runner, probe, *extra_args, input=None):
-    hosts = ["10.0.0.1", "10.0.0.2"]
+HOSTS = ["10.0.0.1", "10.0.0.2"]
+
+
+def _invoke_topology_wizard(runner, probe, *extra_args, input=None, mtu=9000, control_sshd=True):
     with (
         mock.patch("subprocess.run", return_value=mock.Mock(returncode=0, stdout="CX7_DETECTED=0\n", stderr="")),
         mock.patch("sparkrun.core.setup_probe.probe_setup_hosts", side_effect=probe),
         mock.patch("sparkrun.utils.net.local_ip_for", return_value="10.0.0.9"),
+        mock.patch("sparkrun.utils.net.accepts_tcp", return_value=control_sshd),
         mock.patch("sparkrun.cli._setup._ssh._run_ssh_mesh", return_value=True) as mesh,
         mock.patch("sparkrun.cli._setup._ssh._detect_and_update_mgmt_ips") as mgmt,
-        mock.patch("sparkrun.orchestration.networking.detect_cx7_for_hosts") as cx7_detect,
+        mock.patch("sparkrun.orchestration.networking.detect_cx7_for_hosts", return_value={h: _good_cx7(h, mtu) for h in HOSTS}),
+        mock.patch("sparkrun.orchestration.networking.apply_cx7_plan", return_value=[]) as cx7_apply,
         mock.patch(
             "sparkrun.orchestration.ssh.run_remote_scripts_parallel",
             side_effect=lambda hs, *a, **k: [RemoteResult(h, 0, "", "") for h in hs],
         ),
         mock.patch("sparkrun.orchestration.sudo.dispatch_sudo_script", return_value=RemoteResult("x", 0, "OK", "")),
     ):
-        result = runner.invoke(main, ["setup", "wizard", "--hosts", ",".join(hosts), "--cluster", "topo", *extra_args], input=input)
-    return result, mesh, mgmt, cx7_detect
+        result = runner.invoke(main, ["setup", "wizard", "--hosts", ",".join(HOSTS), "--cluster", "topo", *extra_args], input=input)
+    return result, mesh, mgmt, cx7_apply
 
 
 def test_wizard_skips_configured_mesh_and_cx7(runner, v, patched_cluster_mgr):
-    """All mesh legs + CX7 already pass → reported and skipped, never re-applied."""
+    """Every mesh leg and the CX7 plan already hold → nothing asked, nothing applied."""
     calls = []
-    # No --yes: unrelated prompts take their defaults, and a skipped phase
-    # must not ask its own question at all.
-    result, mesh, mgmt, cx7_detect = _invoke_topology_wizard(runner, _topology_probe({}, calls), input="\n" * 20)
+    # No --yes: unrelated prompts take their defaults; these phases must not ask.
+    result, mesh, mgmt, cx7_apply = _invoke_topology_wizard(runner, _topology_probe({}, calls), input="\n" * 20)
 
     assert result.exit_code == 0, result.output
     assert "SSH mesh already working across 2 host(s) + this machine" in result.output
-    assert "CX7 already configured and persisted" in result.output
+    assert "All hosts already configured." in result.output
     assert "Set up SSH mesh" not in result.output
     assert "Configure CX7 networking?" not in result.output
     mesh.assert_not_called()
-    cx7_detect.assert_not_called()
+    cx7_apply.assert_not_called()
     # The skipped mesh still counts as working for management-IP normalization.
     mgmt.assert_called_once()
     # The control machine is probed as a mesh peer, not just host <-> host.
     assert calls and all(list(c["extra_mesh_peers"]) == ["10.0.0.9"] for c in calls)
 
 
+def test_wizard_saves_topology_for_an_already_configured_cx7(runner, v, patched_cluster_mgr):
+    """The planner still runs, so the cluster records its topology (NCCL reads it)."""
+    result, *_ = _invoke_topology_wizard(runner, _topology_probe({}, []), "--yes")
+    assert result.exit_code == 0, result.output
+    assert patched_cluster_mgr.get("topo").topology == "switch"
+
+
+def test_wizard_cx7_checks_passing_but_mtu_off_plan_asks_first(runner, v, patched_cluster_mgr):
+    """Per-host checks pass at MTU 1500; the planner disagrees, so the user decides."""
+    result, _mesh, _mgmt, cx7_apply = _invoke_topology_wizard(
+        runner, _topology_probe({}, [], mtu=1500), input="\n" + "n\n" + "\n" * 20, mtu=1500
+    )
+    assert result.exit_code == 0, result.output
+    assert "differ from the cluster plan" in result.output
+    assert "All hosts already configured." not in result.output
+    cx7_apply.assert_not_called()
+
+
 def test_wizard_meshes_when_control_leg_missing(runner, v, patched_cluster_mgr):
     """One host cannot reach a peer (here: the control machine) → the mesh runs."""
-    calls = []
-    result, mesh, _mgmt, _cx7 = _invoke_topology_wizard(runner, _topology_probe({"10.0.0.2": False}, calls), "--yes")
+    result, mesh, _mgmt, _cx7 = _invoke_topology_wizard(runner, _topology_probe({"10.0.0.2": False}, []), "--yes")
 
     assert result.exit_code == 0, result.output
     assert "SSH mesh already working" not in result.output
     mesh.assert_called_once()
     assert "10.0.0.9" in mesh.call_args.args[0]
+
+
+def test_wizard_without_control_sshd_does_not_require_the_control_leg(runner, v, patched_cluster_mgr):
+    """No SSH server here: the host→control leg cannot exist, so it is not demanded."""
+    calls = []
+    result, mesh, _mgmt, _cx7 = _invoke_topology_wizard(runner, _topology_probe({}, calls), "--yes", control_sshd=False)
+    assert result.exit_code == 0, result.output
+    assert "SSH mesh already working across 2 host(s) — skipping." in result.output
+    assert all(list(c["extra_mesh_peers"]) == [] for c in calls)
+    mesh.assert_not_called()
+
+
+def test_wizard_cross_user_never_probes_the_control_leg(runner, v, patched_cluster_mgr):
+    """A different SSH user does not join the control machine to the mesh."""
+    calls = []
+    with mock.patch("sparkrun.cli._setup._ssh._default_ssh_user", return_value="localperson"):
+        result, *_ = _invoke_topology_wizard(runner, _topology_probe({}, calls), "--yes", "--user", "clusteruser")
+    assert result.exit_code == 0, result.output
+    assert calls and all(list(c["extra_mesh_peers"]) == [] for c in calls)
 
 
 def test_wizard_dry_run_never_claims_configured(runner, v, patched_cluster_mgr):
