@@ -22,7 +22,10 @@ first tagged release containing them, regardless of their original commit date.
   steps and CX7 phase, and `run_setup_steps(host_credentials=...)`.
   `--save-sudo` installs only that command's entry, and only where it is not
   already in effect (`clear-cache` installs the drop-caches entry, not the
-  chown one); the wizard's sudoers step installs whichever are missing. A chown
+  chown one); the wizard's sudoers step installs whichever are missing.
+  `--save-sudo` is held to the `sudoers` step's hardware plan and feature flag
+  like `setup earlyoom` and `setup cx7`, so it is refused on, for example,
+  generic NVIDIA hosts, whose plan does not select it. A chown
   entry installed with `--cache-dir` counts as present, so the wizard does not
   overwrite it. The sudoers readiness probe now reads scoped NOPASSWD rules on
   hosts with password sudo. Before, it reported them as unverifiable, so the

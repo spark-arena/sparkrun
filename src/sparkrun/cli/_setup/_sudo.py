@@ -193,12 +193,15 @@ def run_sudo_action(host_list, script, fallback_script, ssh_kwargs, passwords, *
     return result_map
 
 
-def save_sudoers_entry(label, host_list, user, ssh_kwargs, passwords, *, cluster_name, dry_run, cache_dir=""):
+def save_sudoers_entry(label, host_list, user, ssh_kwargs, passwords, *, config, cluster_name, explicit_hosts, dry_run, cache_dir=""):
     """``--save-sudo``: install one scoped sudoers entry where it is not already in effect.
 
     Uses the ``sudoers`` setup step's installer and readiness probe, so the
     entry, the skip decision and ``setup check`` agree.  Only *label*'s entry
     is installed — the wizard's ``sudoers`` step is what installs them all.
+    It is also held to that step's boundary: a target whose hardware plan
+    omits ``sudoers`` (or where the step is disabled) is refused before any
+    prompt, as ``setup earlyoom`` / ``setup cx7`` refuse theirs.
     """
     from sparkrun.core.setup_actions import SUDOERS_ENTRIES, SetupActionContext, install_sudoers_entries, sudoers_entry_path
     from sparkrun.core.setup_models import OK
@@ -213,6 +216,11 @@ def save_sudoers_entry(label, host_list, user, ssh_kwargs, passwords, *, cluster
             validate_sudoers_path(cache_dir)
     except ValueError as exc:
         raise click.UsageError(str(exc)) from exc
+    from ._step_runner import require_setup_step_targets
+
+    require_setup_step_targets(
+        "sudoers", host_list, ssh_kwargs, config, cluster_name=cluster_name, explicit_hosts=explicit_hosts, dry_run=dry_run
+    )
     path = sudoers_entry_path(label, user)
     if dry_run:
         click.echo("  [dry-run] Would install sudoers entry on %d host(s):" % len(host_list))

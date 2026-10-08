@@ -102,7 +102,7 @@ def probe_setup_hosts(
     ``discovery_only`` supports standalone action preflight without running
     readiness or topology probes before the requested step is approved.
     """
-    from sparkrun.core.setup_steps import setup_selection, setup_probe_script
+    from sparkrun.core.setup_steps import all_setup_steps, setup_selection, setup_probe_script
     from sparkrun.orchestration.ssh import run_remote_script
     from sparkrun.scripts import read_script
     from sparkrun.utils.text import parse_kv_output
@@ -132,7 +132,12 @@ def probe_setup_hosts(
             if not selected[host]:
                 return
             peers = " ".join(h for h in hosts if h != host and "ssh_mesh" in selected[h])
-            script = read_script("setup_check.sh").format(steps=shlex.quote(" ".join(sorted(selected[host]))), peers=shlex.quote(peers))
+            # Only a step that *acts* with sudo makes passwordless sudo relevant;
+            # check-only steps keep requires_sudo's default but never act.
+            needs_sudo = int(any(s.requires_sudo and s.apply is not None for s in all_setup_steps() if s.key in selected[host]))
+            script = read_script("setup_check.sh").format(
+                steps=shlex.quote(" ".join(sorted(selected[host]))), peers=shlex.quote(peers), needs_sudo=needs_sudo
+            )
             script = "(\n" + script + "\n)\n" + setup_probe_script(state, context)
             try:
                 result = run_remote_script(host, script, timeout=60, quiet=True, **ssh_kwargs)

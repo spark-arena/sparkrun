@@ -203,6 +203,27 @@ def test_probe_with_unrestricted_sudo_checks_the_files(tmp_path):
 HOSTS = ["10.0.0.1", "10.0.0.2"]
 
 
+def create_discoverable_cluster(monkeypatch, manager, name, hosts, hardware=None):
+    """A saved cluster whose setup discovery reports *hardware* (default DGX Spark).
+
+    ``--save-sudo`` is held to the ``sudoers`` step's hardware plan, so tests
+    that install entries need targets whose platform selects that step.
+    """
+    from sparkrun.core.hardware import default_dgx_spark_hardware
+    from sparkrun.core.setup_models import HostState
+    from sparkrun.core.setup_probe import resolve_setup_context
+
+    inventory = {host: hardware or default_dgx_spark_hardware() for host in hosts}
+    manager.create(name, hosts, user="dgxuser", hosts_hardware=inventory)
+
+    def discover(targets, **kwargs):
+        assert kwargs["discovery_only"]
+        states = {host: HostState(host, facts={"CHECK_OS": "Linux"}, hardware=inventory[host]) for host in targets}
+        return states, resolve_setup_context(states, config=kwargs["config"], cluster=kwargs.get("cluster"), cluster_name=name)
+
+    monkeypatch.setattr("sparkrun.core.setup_probe.probe_setup_hosts", discover)
+
+
 @pytest.fixture
 def cluster(tmp_path, monkeypatch):
     import sparkrun.core.config
@@ -211,7 +232,7 @@ def cluster(tmp_path, monkeypatch):
     config_root = tmp_path / "config"
     config_root.mkdir()
     monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
-    ClusterManager(config_root).create("lab", HOSTS, user="dgxuser")
+    create_discoverable_cluster(monkeypatch, ClusterManager(config_root), "lab", HOSTS)
     return "lab"
 
 
@@ -457,3 +478,79 @@ def test_probe_default_accepts_a_chown_entry_for_any_cache_dir(tmp_path):
     # A requested dir must match exactly, not as a prefix.
     listing = "    (root) NOPASSWD: /usr/bin/chown -R tester /data/hf-old"
     assert _probe(tmp_path, FAKE_LISTING=listing, SPARKRUN_SUDOERS_CACHE_DIR="/data/hf")["CHECK_SUDOERS_CHOWN"] == "0"
+
+
+# ---------------------------------------------------------------------------
+# --save-sudo honors the sudoers step's platform plan and feature flag
+# ---------------------------------------------------------------------------
+
+
+def _generic_nvidia_cluster(tmp_path, monkeypatch):
+    import sparkrun.core.config
+    from sparkrun.core.cluster_manager import ClusterManager
+    from sparkrun.core.hardware import AcceleratorSpec, HostHardware
+
+    config_root = tmp_path / "config"
+    config_root.mkdir()
+    monkeypatch.setattr(sparkrun.core.config, "DEFAULT_CONFIG_DIR", config_root)
+    h100 = HostHardware(accelerators=[AcceleratorSpec("nvidia", "h100", count=8, memory_gb=80, capabilities=frozenset({"cuda"}))])
+    create_discoverable_cluster(monkeypatch, ClusterManager(config_root), "lab", HOSTS, hardware=h100)
+
+
+def test_save_sudo_refused_where_the_platform_plan_omits_sudoers(tmp_path, monkeypatch):
+    """Generic NVIDIA recognition does not qualify OS changes such as sudoers entries."""
+    _generic_nvidia_cluster(tmp_path, monkeypatch)
+    entries = {h: set() for h in HOSTS}
+    result, sudo = _invoke(["clear-cache", "--save-sudo"], _fake_hosts(entries, dict.fromkeys(HOSTS, "pw")), "pw\n")
+    assert result.exit_code != 0
+    assert "Setup step sudoers is unavailable" in result.output
+    assert "[sudo] password" not in result.output
+    sudo.assert_not_called()
+
+
+def test_clear_cache_itself_is_not_a_setup_step(tmp_path, monkeypatch):
+    """Without --save-sudo the command runs on any platform, as before."""
+    _generic_nvidia_cluster(tmp_path, monkeypatch)
+    entries = {h: {"dropcaches"} for h in HOSTS}
+    result, _sudo = _invoke(["clear-cache"], _fake_hosts(entries, dict.fromkeys(HOSTS, "pw")), "")
+    assert result.exit_code == 0, result.output
+    assert "2 cleared" in result.output
+
+
+def test_save_sudo_refused_when_the_sudoers_step_is_disabled(cluster, monkeypatch):
+    monkeypatch.setenv("SPARKRUN_FEATURE_SETUP_STEPS_SUDOERS", "0")
+    entries = {h: set() for h in HOSTS}
+    result, sudo = _invoke(["clear-cache", "--save-sudo"], _fake_hosts(entries, dict.fromkeys(HOSTS, "pw")), "pw\n")
+    assert result.exit_code != 0
+    assert "disabled by application or user policy" in result.output
+    sudo.assert_not_called()
+
+
+@pytest.mark.parametrize("exclude_sudo_steps", [False, True])
+def test_nopasswd_probe_runs_only_for_selected_sudo_steps(v, exclude_sudo_steps):
+    """Probes follow the host's plan: no step acting with sudo, no sudo probe."""
+    from sparkrun.core.config import SparkrunConfig
+    from sparkrun.core.hardware import default_dgx_spark_hardware
+    from sparkrun.core.setup_probe import probe_setup_hosts
+    from sparkrun.core.setup_steps import all_setup_steps, register_setup_constraint
+    from test_setup_steps import FACTS
+
+    if exclude_sudo_steps:
+        sudo_steps = {step.key for step in all_setup_steps() if step.requires_sudo and step.apply is not None}
+        register_setup_constraint("no-sudo", lambda key, state, context: "test" if key in sudo_steps else "")
+    scripts = []
+    stdout = "SPARKRUN_PROBE_ACCEL_END\n" + "\n".join(key + "=" + value for key, value in FACTS.items())
+
+    def run(host, script, *a, **kw):
+        scripts.append(script)
+        return RemoteResult(host, 0, stdout, "")
+
+    with (
+        mock.patch("sparkrun.orchestration.ssh.run_remote_script", side_effect=run),
+        mock.patch("sparkrun.core.hardware_probe._parse_probe_result", return_value=default_dgx_spark_hardware()),
+        mock.patch("sparkrun.orchestration.networking.detect_cx7_for_hosts", return_value={}),
+        mock.patch("sparkrun.api.setup._rdma._run_probe", return_value={}),
+    ):
+        probe_setup_hosts(["h1"], ssh_kwargs={}, config=SparkrunConfig())
+    readiness = next(s for s in scripts if "SETUP_STEPS=" in s)
+    assert ("if [ 0 = 1 ]" if exclude_sudo_steps else "if [ 1 = 1 ]") in readiness

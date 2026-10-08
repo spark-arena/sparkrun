@@ -3602,7 +3602,9 @@ class TestSetupFixPermissions:
         from sparkrun.core.cluster_manager import ClusterManager
 
         mgr = ClusterManager(config_root)
-        mgr.create("fix-cluster", ["10.0.0.1", "10.0.0.2"], user="dgxuser")
+        from test_setup_sudo_credentials import create_discoverable_cluster
+
+        create_discoverable_cluster(monkeypatch, mgr, "fix-cluster", ["10.0.0.1", "10.0.0.2"])
         return config_root
 
     def test_fix_permissions_help(self, runner):
@@ -3991,7 +3993,9 @@ class TestSetupClearCache:
         from sparkrun.core.cluster_manager import ClusterManager
 
         mgr = ClusterManager(config_root)
-        mgr.create("cache-cluster", ["10.0.0.1", "10.0.0.2"], user="dgxuser")
+        from test_setup_sudo_credentials import create_discoverable_cluster
+
+        create_discoverable_cluster(monkeypatch, mgr, "cache-cluster", ["10.0.0.1", "10.0.0.2"])
         return config_root
 
     def test_clear_cache_help(self, runner):

@@ -223,12 +223,13 @@ def test_disabled_shell_blocks_execute_no_optional_commands(tmp_path):
     # Replace command discovery with a failing recorder. Baseline user identity
     # is allowed; no Docker/toolkit/systemd/sudo/peer command may be consulted.
     log = tmp_path / "optional-commands"
-    prelude = f'command() {{ echo "$*" >> {str(log)!r}; return 1; }}\n'
-    script = read_script("setup_check.sh").format(steps="''", peers="''")
+    prelude = f'command() {{ echo "$*" >> {str(log)!r}; return 1; }}\nsudo() {{ echo "sudo $*" >> {str(log)!r}; return 1; }}\n'
+    script = read_script("setup_check.sh").format(steps="''", peers="''", needs_sudo=0)
     result = subprocess.run(["bash", "-s"], input=prelude + script, text=True, capture_output=True)
     assert result.returncode == 0, result.stderr
     assert "CHECK_COMPLETE=1" in result.stdout
     assert "CHECK_DOCKER" not in result.stdout and "CHECK_EARLYOOM" not in result.stdout
+    assert "CHECK_SUDO_NOPASSWD" not in result.stdout
     assert not log.exists()
 
 

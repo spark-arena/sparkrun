@@ -1657,7 +1657,16 @@ def setup_fix_permissions(ctx, hosts, hosts_file, cluster_name, user, cache_dir,
     # --save-sudo: install the scoped chown entry where it is not in effect yet
     if save_sudo:
         save_sudoers_entry(
-            "chown", host_list, user, ssh_kwargs, passwords, cluster_name=cluster_name, dry_run=dry_run, cache_dir=cache_path or ""
+            "chown",
+            host_list,
+            user,
+            ssh_kwargs,
+            passwords,
+            config=config,
+            cluster_name=cluster_name,
+            explicit_hosts=bool(hosts or hosts_file),
+            dry_run=dry_run,
+            cache_dir=cache_path or "",
         )
 
     # sudo -n first (works once the entry is in place), then the password
@@ -1744,7 +1753,17 @@ def setup_clear_cache(ctx, hosts, hosts_file, cluster_name, user, save_sudo, dry
 
     # --save-sudo: install only the drop_caches entry, where not yet in effect
     if save_sudo:
-        save_sudoers_entry("dropcaches", host_list, user, ssh_kwargs, passwords, cluster_name=cluster_name, dry_run=dry_run)
+        save_sudoers_entry(
+            "dropcaches",
+            host_list,
+            user,
+            ssh_kwargs,
+            passwords,
+            config=config,
+            cluster_name=cluster_name,
+            explicit_hosts=bool(hosts or hosts_file),
+            dry_run=dry_run,
+        )
 
     result_map = run_sudo_action(
         host_list, read_script("clear_cache.sh"), read_script("clear_cache_fallback.sh"), ssh_kwargs, passwords, dry_run=dry_run
