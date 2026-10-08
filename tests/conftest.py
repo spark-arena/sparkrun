@@ -238,6 +238,22 @@ def real_locality_probes(fast_locality_probes, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolated_distribution_providers(monkeypatch):
+    """Each test starts with no image/model distribution providers registered.
+
+    Only plugins register them, into process-wide registries; a test that
+    loaded one (OCI Relay, ColdSnap) otherwise reroutes every later test's
+    pulls through it. The registries read through their module namespace, so
+    replacing the container is the supported isolation.
+    """
+    import sparkrun.core.image_distribution as image_distribution
+    import sparkrun.core.model_distribution as model_distribution
+
+    monkeypatch.setattr(image_distribution, "_PROVIDERS", {})
+    monkeypatch.setattr(model_distribution, "_PROVIDERS", {})
+
+
+@pytest.fixture(autouse=True)
 def offline_hub_metadata(monkeypatch):
     """Advisory Hub reads have no data unless a test supplies a response.
 
