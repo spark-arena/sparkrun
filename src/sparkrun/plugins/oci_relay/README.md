@@ -17,8 +17,8 @@ resource limits, and reports progress.
 
 Native access supports qualified rootful Linux Docker 29+ stores. Real-engine
 qualification currently covers Linux arm64. Linux amd64, Linux arm64 and macOS
-arm64 bundles are built and tested on native runners. See [platform support](https://github.com/scitrera/oci-relay/blob/a28bb123ed1fb89dfd079876ff0452c7affd1814/docs/platforms.md), [storage compatibility](https://github.com/scitrera/oci-relay/blob/a28bb123ed1fb89dfd079876ff0452c7affd1814/docs/storage-compatibility.md) and
-[validation](https://github.com/scitrera/oci-relay/blob/a28bb123ed1fb89dfd079876ff0452c7affd1814/docs/validation.md). Published binaries are available from [GitHub releases](https://github.com/scitrera/oci-relay/releases).
+arm64 bundles are built and tested on native runners. See [platform support](https://github.com/spark-arena/oci-relay/blob/406e3eb3f380944c9dbe7e15f630df9c2fcbc243/docs/platforms.md), [storage compatibility](https://github.com/spark-arena/oci-relay/blob/406e3eb3f380944c9dbe7e15f630df9c2fcbc243/docs/storage-compatibility.md) and
+[validation](https://github.com/spark-arena/oci-relay/blob/406e3eb3f380944c9dbe7e15f630df9c2fcbc243/docs/validation.md). Published binaries are available from [GitHub releases](https://github.com/spark-arena/oci-relay/releases).
 
 ## Quick start with Sparkrun
 
@@ -36,8 +36,8 @@ The setup builds the relay and native decoder, installs both projects editably, 
 plugin in a private development configuration. It preserves normal user
 configuration and keeps the plugin outside Sparkrun's source tree. Image-transfer
 progress is visible by default. The bundled plugin defaults on for alpha and
-off for other channels; this setup explicitly selects the editable adapter. See [development setup](https://github.com/scitrera/oci-relay/blob/a28bb123ed1fb89dfd079876ff0452c7affd1814/docs/development.md)
-for details or [plugin configuration](https://github.com/scitrera/oci-relay/blob/a28bb123ed1fb89dfd079876ff0452c7affd1814/docs/sparkrun-plugin.md) for manual setup.
+off for other channels; this setup explicitly selects the editable adapter. See [development setup](https://github.com/spark-arena/oci-relay/blob/406e3eb3f380944c9dbe7e15f630df9c2fcbc243/docs/development.md)
+for details or [plugin configuration](https://github.com/spark-arena/oci-relay/blob/406e3eb3f380944c9dbe7e15f630df9c2fcbc243/docs/sparkrun-plugin.md) for manual setup.
 
 To build the standalone executable:
 
@@ -47,24 +47,24 @@ CGO_ENABLED=0 go build -trimpath -o bin/oci-relay ./cmd/oci-relay
 
 ## Documentation
 
-- [Sparkrun plugin](https://github.com/scitrera/oci-relay/blob/a28bb123ed1fb89dfd079876ff0452c7affd1814/docs/sparkrun-plugin.md): configuration, transports, multiple
+- [Sparkrun plugin](https://github.com/spark-arena/oci-relay/blob/406e3eb3f380944c9dbe7e15f630df9c2fcbc243/docs/sparkrun-plugin.md): configuration, transports, multiple
   links, adaptive limits, progress, and optional tuning.
-- [Source modes and manifests](https://github.com/scitrera/oci-relay/blob/a28bb123ed1fb89dfd079876ff0452c7affd1814/docs/source-modes.md) and
-  [automatic selection](https://github.com/scitrera/oci-relay/blob/a28bb123ed1fb89dfd079876ff0452c7affd1814/docs/source-selection.md).
-- [Registry sources](https://github.com/scitrera/oci-relay/blob/a28bb123ed1fb89dfd079876ff0452c7affd1814/docs/registry-source.md): authentication, caching, and limits.
-- [Bundled receiver decoding](https://github.com/scitrera/oci-relay/blob/a28bb123ed1fb89dfd079876ff0452c7affd1814/docs/bundled-decoder.md): helper installation, disk budgets, and fallback.
-- [Storage compatibility](https://github.com/scitrera/oci-relay/blob/a28bb123ed1fb89dfd079876ff0452c7affd1814/docs/storage-compatibility.md): native access, layer
+- [Source modes and manifests](https://github.com/spark-arena/oci-relay/blob/406e3eb3f380944c9dbe7e15f630df9c2fcbc243/docs/source-modes.md) and
+  [automatic selection](https://github.com/spark-arena/oci-relay/blob/406e3eb3f380944c9dbe7e15f630df9c2fcbc243/docs/source-selection.md).
+- [Registry sources](https://github.com/spark-arena/oci-relay/blob/406e3eb3f380944c9dbe7e15f630df9c2fcbc243/docs/registry-source.md): authentication, caching, and limits.
+- [Bundled receiver decoding](https://github.com/spark-arena/oci-relay/blob/406e3eb3f380944c9dbe7e15f630df9c2fcbc243/docs/bundled-decoder.md): helper installation, disk budgets, and fallback.
+- [Storage compatibility](https://github.com/spark-arena/oci-relay/blob/406e3eb3f380944c9dbe7e15f630df9c2fcbc243/docs/storage-compatibility.md): native access, layer
   discovery, mixed stores, and hash identities.
-- [Standalone commands](https://github.com/scitrera/oci-relay/blob/a28bb123ed1fb89dfd079876ff0452c7affd1814/docs/standalone.md): sessions, events, and transfer-only validation.
-- [Development](https://github.com/scitrera/oci-relay/blob/a28bb123ed1fb89dfd079876ff0452c7affd1814/docs/development.md): tests, CI, versions, and vendoring;
-  [release procedure](https://github.com/scitrera/oci-relay/blob/a28bb123ed1fb89dfd079876ff0452c7affd1814/docs/releasing.md).
-- [Validation and limitations](https://github.com/scitrera/oci-relay/blob/a28bb123ed1fb89dfd079876ff0452c7affd1814/docs/validation.md).
+- [Standalone commands](https://github.com/spark-arena/oci-relay/blob/406e3eb3f380944c9dbe7e15f630df9c2fcbc243/docs/standalone.md): sessions, events, and transfer-only validation.
+- [Development](https://github.com/spark-arena/oci-relay/blob/406e3eb3f380944c9dbe7e15f630df9c2fcbc243/docs/development.md): tests, CI, versions, and vendoring;
+  [release procedure](https://github.com/spark-arena/oci-relay/blob/406e3eb3f380944c9dbe7e15f630df9c2fcbc243/docs/releasing.md).
+- [Validation and limitations](https://github.com/spark-arena/oci-relay/blob/406e3eb3f380944c9dbe7e15f630df9c2fcbc243/docs/validation.md).
 
 ## License and contributions
 
 Copyright 2026 Scitrera LLC. OCI Relay and its Sparkrun plugin are licensed
-under [Apache-2.0](https://github.com/scitrera/oci-relay/blob/a28bb123ed1fb89dfd079876ff0452c7affd1814/LICENSE). No Sparkrun-specific license exception is needed.
+under [Apache-2.0](https://github.com/spark-arena/oci-relay/blob/406e3eb3f380944c9dbe7e15f630df9c2fcbc243/LICENSE).
 
-See [third-party notices](https://github.com/scitrera/oci-relay/blob/a28bb123ed1fb89dfd079876ff0452c7affd1814/THIRD_PARTY_NOTICES.md) and
-[dependency licenses](https://github.com/scitrera/oci-relay/blob/a28bb123ed1fb89dfd079876ff0452c7affd1814/THIRD_PARTY_LICENSES.txt). Contributions require the
-[CLA](https://github.com/scitrera/oci-relay/blob/a28bb123ed1fb89dfd079876ff0452c7affd1814/CLA.md); see [CONTRIBUTING.md](https://github.com/scitrera/oci-relay/blob/a28bb123ed1fb89dfd079876ff0452c7affd1814/CONTRIBUTING.md).
+See [third-party notices](https://github.com/spark-arena/oci-relay/blob/406e3eb3f380944c9dbe7e15f630df9c2fcbc243/THIRD_PARTY_NOTICES.md) and
+[dependency licenses](https://github.com/spark-arena/oci-relay/blob/406e3eb3f380944c9dbe7e15f630df9c2fcbc243/THIRD_PARTY_LICENSES.txt). See
+[CONTRIBUTING.md](https://github.com/spark-arena/oci-relay/blob/406e3eb3f380944c9dbe7e15f630df9c2fcbc243/CONTRIBUTING.md) for contribution guidelines.

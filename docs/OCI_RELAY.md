@@ -1,6 +1,6 @@
 # OCI Relay image distribution
 
-Sparkrun `develop-next` / 0.4.0 bundles the [OCI Relay](https://github.com/scitrera/oci-relay)
+Sparkrun `develop-next` / 0.4.0 bundles the [OCI Relay](https://github.com/spark-arena/oci-relay)
 image-distribution adapter. It streams registry pulls or existing local images
 to Docker hosts, reuses compatible layers across storage backends, and reports
 transfer progress. The `plugins.oci_relay` feature defaults **on for alpha** and
@@ -31,15 +31,15 @@ progress updates use a 30-second cadence, with phase changes and completion
 reported immediately. INFO logs identify each execution host's verified relay
 version, commit, and protocol; DEBUG also includes its checksum and capabilities.
 Large upstream registry blobs can now use bounded parallel HTTP ranges; see the
-[range download settings](https://github.com/scitrera/oci-relay/blob/main/docs/registry-source.md#parallel-upstream-ranges).
+[range download settings](https://github.com/spark-arena/oci-relay/blob/main/docs/registry-source.md#parallel-upstream-ranges).
 To opt out on alpha, set the feature to `false`, or use
 `container_distribution_provider: builtin` for the built-in copy path.
 
 Mac controllers should use `transfer_mode: delegated` so that the relay runs
 on Linux cluster nodes. The separate macOS ARM64 binary is a standalone build;
 the adapter's execution-host setup currently supports Linux amd64/arm64 only.
-See upstream [platform support](https://github.com/scitrera/oci-relay/blob/main/docs/platforms.md)
-and [plugin configuration](https://github.com/scitrera/oci-relay/blob/main/docs/sparkrun-plugin.md)
+See upstream [platform support](https://github.com/spark-arena/oci-relay/blob/main/docs/platforms.md)
+and [plugin configuration](https://github.com/spark-arena/oci-relay/blob/main/docs/sparkrun-plugin.md)
 for transport, authentication, cache, and tuning settings. Avoid enabling both
 the bundled copy and an independently installed OCI Relay plugin.
 

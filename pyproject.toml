@@ -54,7 +54,7 @@ sparkrun = "sparkrun.application:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"sparkrun.plugins.oci_relay" = ["LICENSE", "COPYRIGHT", "CLA.md", "README.md", "VENDORED.toml", "releases.json"]
+"sparkrun.plugins.oci_relay" = ["LICENSE", "COPYRIGHT", "README.md", "VENDORED.toml", "releases.json"]
 "sparkrun" = ["py.typed"]
 "sparkrun.scripts" = ["*.sh"]
 "sparkrun.orchestration.executors" = ["seccomp/*.json", "seccomp/LICENSE", "seccomp/README.md"]

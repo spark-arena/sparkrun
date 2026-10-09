@@ -38,7 +38,7 @@ def _manifest_text(*, duplicate_version: bool = False) -> str:
         "schema = 1\n"
         'name = "oci-relay"\n' + version + 'module = "sparkrun.plugins.oci_relay"\n'
         'feature = "plugins.oci_relay"\n'
-        'repository = "https://github.com/scitrera/oci-relay.git"\n'
+        'repository = "https://github.com/spark-arena/oci-relay.git"\n'
         'sparkrun = ">=0.3.7,<0.5"\n'
         'source = "plugin/src/sparkrun_oci_relay"\n'
         'tests = "plugin/vendor_tests/test_oci_relay_*.py"\n'
@@ -95,7 +95,7 @@ def upstream(tmp_path):
     (package / "LICENSE").write_text("test license material\n")
     (repository / "plugin/vendor_tests").mkdir(parents=True)
     (repository / "plugin/vendor_tests/test_oci_relay_fixture.py").write_text("def test_fixture(): pass\n")
-    for name in ("LICENSE", "COPYRIGHT", "CLA.md", "README.md"):
+    for name in ("LICENSE", "COPYRIGHT", "README.md"):
         (repository / name).write_text("test material\n")
     (package / "releases.json").write_text(
         json.dumps(
@@ -103,7 +103,7 @@ def upstream(tmp_path):
                 "0.1.0": {
                     platform: {
                         "sha256": "a" * 64,
-                        "url": f"https://github.com/scitrera/oci-relay/releases/download/v0.1.0/oci-relay_0.1.0_{platform.replace('/', '_')}.tar.gz",
+                        "url": f"https://github.com/spark-arena/oci-relay/releases/download/v0.1.0/oci-relay_0.1.0_{platform.replace('/', '_')}.tar.gz",
                     }
                     for platform in ("linux/amd64", "linux/arm64", "darwin/arm64")
                 }
@@ -235,7 +235,7 @@ def test_latest_rejects_unpublished_or_invalid_releases(vendor_module, monkeypat
 
 def test_latest_queries_the_canonical_plugin_repository(vendor_module, monkeypatch):
     def query(args, **kwargs):
-        assert args == ["gh", "api", "repos/scitrera/oci-relay/releases/latest"]
+        assert args == ["gh", "api", "repos/spark-arena/oci-relay/releases/latest"]
         assert kwargs["timeout"] == 60
         return subprocess.CompletedProcess(args, 0, json.dumps({"tag_name": "v0.1.0", "draft": False, "prerelease": False}))
 
@@ -408,7 +408,7 @@ def test_latest_adapter_descriptor_resolves_only_published_commit(vendor_module,
             "download",
             "v0.1.0",
             "--repo",
-            "scitrera/oci-relay",
+            "spark-arena/oci-relay",
             "--pattern",
             "plugin-release.json",
             "--output",
@@ -486,8 +486,8 @@ def test_vendored_readme_links_pin_upstream_documents(vendor_module):
     text = "[guide](docs/platforms.md#platforms) [license](LICENSE) [web](https://example.com) [anchor](#setup)"
     observed = vendor_module._portable_readme(text, commit)
     assert observed == (
-        f"[guide](https://github.com/scitrera/oci-relay/blob/{commit}/docs/platforms.md#platforms) "
-        f"[license](https://github.com/scitrera/oci-relay/blob/{commit}/LICENSE) "
+        f"[guide](https://github.com/spark-arena/oci-relay/blob/{commit}/docs/platforms.md#platforms) "
+        f"[license](https://github.com/spark-arena/oci-relay/blob/{commit}/LICENSE) "
         "[web](https://example.com) [anchor](#setup)"
     )
 

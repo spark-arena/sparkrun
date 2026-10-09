@@ -31,8 +31,8 @@ PROVENANCE_PATH = SOURCE_DESTINATION / "VENDORED.toml"
 _IGNORED_PARTS = {"__pycache__", ".pytest_cache", ".ruff_cache"}
 _UPSTREAM_SOURCE = "plugin/src/sparkrun_oci_relay"
 _UPSTREAM_TESTS = "plugin/vendor_tests/test_oci_relay_*.py"
-UPSTREAM_REPOSITORY = "https://github.com/scitrera/oci-relay.git"
-UPSTREAM_SLUG = "scitrera/oci-relay"
+UPSTREAM_REPOSITORY = "https://github.com/spark-arena/oci-relay.git"
+UPSTREAM_SLUG = "spark-arena/oci-relay"
 
 
 def latest_release_tag() -> str:
@@ -216,7 +216,6 @@ def _archive(repository: Path, commit: str, manifest: PluginManifest, destinatio
         test_root,
         "LICENSE",
         "COPYRIGHT",
-        "CLA.md",
         "README.md",
         text=False,
     )
@@ -401,7 +400,7 @@ def _validate_host_contract(manifest: PluginManifest, source: Path) -> None:
     if set(pins) != {"linux/amd64", "linux/arm64", "darwin/arm64"}:
         raise VendorError("all three release platforms must have committed checksum pins")
     for arch, pin in pins.items():
-        url = "https://github.com/scitrera/oci-relay/releases/download/v%s/oci-relay_%s_%s.tar.gz" % (
+        url = "https://github.com/spark-arena/oci-relay/releases/download/v%s/oci-relay_%s_%s.tar.gz" % (
             manifest.version,
             manifest.version,
             arch.replace("/", "_"),
@@ -502,7 +501,7 @@ def _portable_readme(text: str, commit: str) -> str:
         target = match[2]
         if urlsplit(target).scheme or target.startswith(("//", "#")):
             return match[0]
-        return match[1] + "https://github.com/scitrera/oci-relay/blob/" + commit + "/" + target + match[3]
+        return match[1] + "https://github.com/spark-arena/oci-relay/blob/" + commit + "/" + target + match[3]
 
     return re.sub(r"(\[[^\]\n]*\]\()([^\s)]+)(\))", link, text)
 
@@ -547,7 +546,7 @@ def update(*, source: str, revision: str, initial: bool, force: bool, release_ta
             if not source_files:
                 raise VendorError("upstream source export is empty")
             source_mapping = {path.relative_to(upstream_source): path for path in source_files}
-            for name in ("LICENSE", "COPYRIGHT", "CLA.md", "README.md"):
+            for name in ("LICENSE", "COPYRIGHT", "README.md"):
                 material = extracted / name
                 if material.is_symlink() or not material.is_file() or not material.stat().st_size:
                     raise VendorError("invalid required package material: %s" % name)
