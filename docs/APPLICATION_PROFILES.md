@@ -442,23 +442,14 @@ checks and per-host step selection/reasons.
 Plugin registration and help/completion do not perform target probes. See
 [Setup steps](SETUP_STEPS.md) for the console-free extension API.
 
-## Pinned SparkRoute integration
+## Optional gateway integrations
 
-The bundled SparkRoute plugin declares `application_profile_api = 1` in its source
-manifest. The vendor importer preserves the declaration in the lock and packaged
-provenance; startup checks it before importing the integration for an alternate
-profile. Old or incompatible snapshots are rejected with an inventory failure
-and gateway error. The verified companion snapshot supports both Sparkrun and
-alternate profiles without changing the gateway protocol or release pins.
-
-Binary acquisition uses the active cache resolver. `SPARKROUTE_BINARY` is the only
-binary override for every application profile. Profile-prefixed and historical
-override names are not supported. Alternate gateway callbacks require
-the selected application's console in the current Python environment.
-Same-controller gateway and operation children retain the profile and an explicit
-config file, including its feature gates before plugin registration. Installed
-wheel tests exercise the alternate console's real bridge against an empty registry
-catalog without downloading or starting a gateway.
+SparkRoute is installed and updated separately; it is not included in the
+Sparkrun wheel. Alternate applications must select a plugin release that supports
+their application profile API and install the application's console in the same
+Python environment for gateway callbacks. Consult the
+[SparkRoute plugin documentation](https://github.com/sparksq/sparkrun-sparkroute-plugin)
+for supported profiles and configuration.
 
 ## Validation
 

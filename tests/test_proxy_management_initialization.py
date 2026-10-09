@@ -14,7 +14,7 @@ from sparkrun.proxy._supervisor import GatewayState, GatewaySupervisor
 from sparkrun.proxy.contracts import ProxyModel
 
 
-def prepare_application(tmp_path, monkeypatch, *, alternate=False, enabled=True):
+def prepare_application(tmp_path, monkeypatch, *, alternate=False, enabled=True, provider="sparkroute"):
     from sparkrun.application import ApplicationProfile
     from sparkrun.proxy import gateway
 
@@ -37,10 +37,10 @@ def prepare_application(tmp_path, monkeypatch, *, alternate=False, enabled=True)
     monkeypatch.setenv("SPARKRUN_APPLICATION_CONFIG", str(config))
     monkeypatch.setenv(prefix + "_CACHE_DIR", str(tmp_path / "cache"))
     monkeypatch.delenv(prefix + "_FEATURE_GATEWAY_SPARKROUTE", raising=False)
-    monkeypatch.delitem(gateway._GATEWAY_LOADERS, "sparkroute", raising=False)
+    monkeypatch.delitem(gateway._GATEWAY_LOADERS, provider, raising=False)
     state = tmp_path / "cache" / "proxy" / "state.yaml"
     state.parent.mkdir(parents=True)
-    state.write_text(yaml.safe_dump({"gateway": "sparkroute", "distribution": identity, "pid": 12345, "port": 8000}))
+    state.write_text(yaml.safe_dump({"gateway": provider, "distribution": identity, "pid": 12345, "port": 8000}))
     monkeypatch.setattr(GatewaySupervisor, "is_running", lambda self: True)
     return config, identity
 
@@ -48,10 +48,11 @@ def prepare_application(tmp_path, monkeypatch, *, alternate=False, enabled=True)
 @pytest.mark.parametrize("alternate", [False, True])
 @pytest.mark.parametrize("first_call", ["status", "models"])
 def test_first_management_call_initializes_profile_config_and_plugins(tmp_path, monkeypatch, alternate, first_call):
-    from sparkrun.plugins.sparkroute.engine import SparkrouteEngine
+    from sparkrun.proxy import gateway
+    from sparkrun.proxy.gateway import register_gateway
     from sparkrun.proxy.engine import ProxyEngine
 
-    config, identity = prepare_application(tmp_path, monkeypatch, alternate=alternate)
+    config, identity = prepare_application(tmp_path, monkeypatch, alternate=alternate, provider="fixture")
     observed = []
     expected = (ProxyModel("served-model", "http://fixture/v1"),)
 
@@ -62,7 +63,25 @@ def test_first_management_call_initializes_profile_config_and_plugins(tmp_path, 
         assert engine.proxy_config.gateway == "litellm"  # Recorded gateway wins.
         return expected
 
-    monkeypatch.setattr(SparkrouteEngine, "query_models", query)
+    class FixtureGateway(GatewaySupervisor):
+        gateway_name = "fixture"
+        wants_proxy_config = True
+        query_models = query
+
+        def __init__(self, *, proxy_config, sctx, **kwargs):
+            super().__init__(**kwargs)
+            self.proxy_config = proxy_config
+            self.sctx = sctx
+
+    register_plugins = bootstrap._register_plugins
+
+    def register(v, *, config=None):
+        register_plugins(v, config=config)
+        register_gateway("fixture", feature_flag="gateway.sparkroute", loader=lambda: FixtureGateway)
+
+    monkeypatch.setattr(gateway, "_GATEWAY_LOADERS", dict(gateway._GATEWAY_LOADERS))
+    monkeypatch.setattr(gateway, "GATEWAY_FEATURE_FLAGS", dict(gateway.GATEWAY_FEATURE_FLAGS))
+    monkeypatch.setattr(bootstrap, "_register_plugins", register)
     monkeypatch.setattr(ProxyEngine, "__init__", Mock(side_effect=AssertionError("management constructed LiteLLM")))
     assert bootstrap._variables is None
     result = getattr(api.proxy, first_call)()

@@ -12,33 +12,39 @@ from sparkrun.proxy.contracts import GatewayOperationError
 from sparkrun.proxy.discovery import DiscoveredEndpoint
 
 
-@pytest.fixture(params=["litellm", "sparkroute"])
+@pytest.fixture(params=["litellm", "fixture"])
 def gateway(request, tmp_path, monkeypatch):
-    from sparkrun.plugins.sparkroute.engine import SparkrouteEngine
+    from sparkrun.proxy import gateway as gateway_registry
+    from sparkrun.proxy.gateway import register_gateway
     from sparkrun.proxy.engine import ProxyEngine
 
     name = request.param
-    monkeypatch.setenv("SPARKRUN_FEATURE_GATEWAY_SPARKROUTE", "1")
     context = api.default_sctx()
-    base = ProxyEngine if name == "litellm" else SparkrouteEngine
     root = tmp_path / "gateway"
     events = []
 
-    class LocalEngine(base):
+    class LocalEngine(ProxyEngine):
+        gateway_name = name
+
         def __init__(self, **kwargs):
             super().__init__(state_dir=root, **kwargs)
 
         def prepare_config(self, endpoints, aliases, *, write=True):
             events.append("write" if write else "preview")
-            return super().prepare_config(endpoints, aliases, write=write)
+            path, applied, pending = super().prepare_config(endpoints, aliases, write=write)
+            # A provider may manage configuration without returning a path.
+            return (path if name == "litellm" else None), applied, pending
 
         def start(self, **kwargs):
             events.append("start")
             assert kwargs["config_path"] == (self.config_path if name == "litellm" else None)
             return 0
 
-    kwargs = {"proxy_config": context.proxy_config, "sctx": context} if name == "sparkroute" else {}
-    engine = LocalEngine(**kwargs)
+    if name == "fixture":
+        monkeypatch.setattr(gateway_registry, "_GATEWAY_LOADERS", dict(gateway_registry._GATEWAY_LOADERS))
+        monkeypatch.setattr(gateway_registry, "GATEWAY_FEATURE_FLAGS", dict(gateway_registry.GATEWAY_FEATURE_FLAGS))
+        register_gateway(name, feature_flag="gateway.litellm", loader=lambda: LocalEngine)
+    engine = LocalEngine()
     engine.claim_state_directory()
     engine.prepare_config(
         [

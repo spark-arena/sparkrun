@@ -75,8 +75,6 @@ def test_unexpected_failures_propagate(tmp_path, monkeypatch, error):
 
 
 def test_gateway_contract_has_no_legacy_model_hooks():
-    from sparkrun.plugins.sparkroute.engine import SparkrouteEngine
-
-    for cls in (GatewaySupervisor, ProxyEngine, SparkrouteEngine):
+    for cls in (GatewaySupervisor, ProxyEngine):
         assert not hasattr(cls, "list_models_via_api")
         assert not hasattr(cls, "model_query_error")

@@ -57,19 +57,17 @@ def test_start_error_boundary_preserves_error_kind_and_cause(monkeypatch, phase,
         assert caught.value is error
 
 
-def test_malformed_binding_is_a_public_error_and_a_readable_cli_failure(monkeypatch):
+def test_provider_refusal_is_a_public_error_and_a_readable_cli_failure(monkeypatch):
     from sparkrun.cli import main
-    from sparkrun.plugins.sparkroute.engine import SparkrouteConfigError
 
-    monkeypatch.setenv("SPARKRUN_FEATURE_GATEWAY_SPARKROUTE", "1")
     context = api.default_sctx()
-    context.proxy_config.set_bindings([{}])
-    context.proxy_config.save()
+    error = GatewayOperationError("provider configuration is invalid")
     monkeypatch.setattr(_ops, "_discover", lambda **kwargs: [])
-    with pytest.raises(api.proxy.ProxyStartFailed, match="has no 'recipe'") as caught:
-        api.proxy.start(api.proxy.ProxyStartOptions(gateway="sparkroute", dry_run=True), sctx=context)
-    assert isinstance(caught.value.__cause__, SparkrouteConfigError)
-    result = CliRunner().invoke(main, ["proxy", "start", "--gateway", "sparkroute", "--dry-run"], obj={"sparkrun_ctx": context})
+    monkeypatch.setattr(ProxyEngine, "prepare_config", Mock(side_effect=error))
+    with pytest.raises(api.proxy.ProxyStartFailed, match="configuration is invalid") as caught:
+        api.proxy.start(api.proxy.ProxyStartOptions(gateway="litellm", dry_run=True), sctx=context)
+    assert caught.value.__cause__ is error
+    result = CliRunner().invoke(main, ["proxy", "start", "--gateway", "litellm", "--dry-run"], obj={"sparkrun_ctx": context})
     assert result.exit_code == 1
-    assert "Error: bindings[0] has no 'recipe'" in result.stderr
+    assert "Error: provider configuration is invalid" in result.stderr
     assert isinstance(result.exception, SystemExit)

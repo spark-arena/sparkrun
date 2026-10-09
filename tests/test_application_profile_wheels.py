@@ -75,6 +75,32 @@ def wheels(tmp_path_factory):
     return root, environment, python
 
 
+def test_distributions_are_apache_and_keep_only_oci_relay_vendor_snapshot(wheels):
+    from email.parser import BytesParser
+    import tarfile
+    import zipfile
+
+    root, _, _ = wheels
+    with zipfile.ZipFile(next((root / "wheels").glob("sparkrun-*.whl"))) as archive:
+        names = archive.namelist()
+        metadata = BytesParser().parsebytes(archive.read(next(n for n in names if n.endswith(".dist-info/METADATA"))))
+        assert metadata["License-Expression"] == "Apache-2.0"
+        assert "sparkrun/plugins/oci_relay/__init__.py" in names
+        assert "sparkrun/plugins/oci_relay/LICENSE" in names
+        assert "sparkrun/plugins/oci_relay/VENDORED.toml" in names
+    with tarfile.open(next((root / "wheels").glob("sparkrun-*.tar.gz"))) as archive:
+        source_names = archive.getnames()
+        assert any(n.endswith("/vendor/oci-relay.lock") for n in source_names)
+        assert any(n.endswith("/scripts/vendor-oci-relay.py") for n in source_names)
+        metadata = BytesParser().parsebytes(archive.extractfile(next(n for n in source_names if n.endswith("/PKG-INFO"))).read())
+        assert metadata["License-Expression"] == "Apache-2.0"
+    for name in [*names, *source_names]:
+        assert "plugins/sparkroute/" not in name
+        assert "plugins/coldsnap/" not in name
+        assert "vendor/sparkroute" not in name and "vendor/coldsnap" not in name
+        assert not name.endswith("LICENSE_EXCEPTION")
+
+
 def invoke(wheels, tmp_path, *args, env_extra=None):
     _, environment, _ = wheels
     env = {
@@ -169,44 +195,7 @@ def test_child_api_profile_is_reconstructed_from_installed_package(wheels, tmp_p
     assert result.returncode == 0 and result.stdout.startswith("sparkrun, version"), result.stderr
 
 
-def test_sparkroute_bridge_uses_installed_alternate_console_and_config(wheels, tmp_path):
-    config = tmp_path / "custom-config.yaml"
-    config.write_text("features:\n  gateway.sparkroute: true\n")
-    code = """
-import json, subprocess, sys
-from sparkrun.application import initialize
-from sparkrun.plugins.sparkroute.release import resolve_sparkrun_executable
-from sparkrun.plugins.sparkroute._application_profile import child_environment
-c = initialize()
-assert 'click' not in sys.modules
-console = resolve_sparkrun_executable()
-assert console.endswith('/profile-test-app')
-request = {'schema_version': 4, 'request_id': 'wheel-test', 'operation': 'catalog_registries'}
-child = subprocess.run([console, 'gateway-bridge'], input=json.dumps(request), env=child_environment(c.config.config_path), capture_output=True, text=True, timeout=30)
-assert child.returncode == 0, child.stderr
-response = json.loads(child.stdout)
-assert response['ok'], response
-assert response['result']['registries'] == [], response
-print(json.dumps({'distribution': c.application_profile.id, 'config': str(c.config.config_path), 'response': response}))
-"""
-    result = invoke(
-        wheels,
-        tmp_path,
-        "python",
-        "-c",
-        code,
-        env_extra={
-            "SPARKRUN_APPLICATION_PROFILE": "profile_test_app.profile:PROFILE_TEST_APP",
-            "SPARKRUN_APPLICATION_CONFIG": str(config),
-        },
-    )
-    assert result.returncode == 0, result.stderr
-    data = json.loads(result.stdout)
-    assert data["distribution"] == "profile-test-app"
-    assert data["config"] == str(config)
-
-
-def test_sparkroute_inventory_recognizes_verified_profile_support(wheels, tmp_path):
+def test_inventory_keeps_oci_relay_without_removed_plugins(wheels, tmp_path):
     result = invoke(
         wheels,
         tmp_path,
@@ -217,12 +206,15 @@ def test_sparkroute_inventory_recognizes_verified_profile_support(wheels, tmp_pa
         "--json",
         env_extra={
             "PROFILE_TEST_APP_FEATURE_GATEWAY_SPARKROUTE": "1",
+            "PROFILE_TEST_APP_FEATURE_PLUGINS_COLDSNAP": "1",
+            "PROFILE_TEST_APP_FEATURE_PLUGINS_OCI_RELAY": "1",
         },
     )
     assert result.returncode == 0, result.stderr
     data = json.loads(result.stdout)
     rows = data if isinstance(data, list) else data["plugins"]
-    row = next(item for item in rows if item["name"] == "sparkroute")
+    assert {"sparkroute", "coldsnap"}.isdisjoint(item["name"] for item in rows)
+    row = next(item for item in rows if item["name"] == "oci_relay")
     assert row["loaded"] and row["enabled"] and row["failure"] is None
 
 
@@ -698,48 +690,6 @@ assert state.read_bytes() == before
         code,
         application,
         command,
-        env_extra={"SPARKRUN_APPLICATION_PROFILE": profile_ref, "SPARKRUN_APPLICATION_CONFIG": str(config)},
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-
-
-@pytest.mark.parametrize("application", ["sparkrun", "profile-test-app"])
-def test_installed_sparkroute_operational_contract(wheels, tmp_path, application):
-    config = tmp_path / "custom-config" / "config.yaml"
-    config.parent.mkdir()
-    config.write_text("features:\n  gateway.sparkroute: true\n")
-    code = """
-import json, os, sys
-from pathlib import Path
-from unittest.mock import patch
-from urllib.error import URLError
-from sparkrun import api
-from sparkrun.proxy.contracts import GatewayOperationError
-from sparkrun.plugins.sparkroute.admin import AdminError
-context = api.default_sctx()
-state = Path.home() / '.cache' / sys.argv[1] / 'proxy' / 'state.yaml'
-state.parent.mkdir(parents=True)
-state.write_text(json.dumps({'gateway': 'sparkroute', 'pid': os.getpid(), 'distribution': sys.argv[1]}))
-with patch('urllib.request.urlopen', side_effect=URLError('fixture failure')):
-    try:
-        api.proxy.sync(endpoints=[], require_running=True, sctx=context)
-    except api.proxy.ProxyUpdateFailed as error:
-        assert isinstance(error.__cause__, GatewayOperationError)
-        assert isinstance(error.__cause__, AdminError)
-        assert isinstance(error.__cause__.__cause__, URLError)
-    else:
-        raise AssertionError('provider failure was not translated')
-    assert api.proxy.status(sctx=context).model_query_error
-assert 'click' not in sys.modules and 'sparkrun.cli' not in sys.modules
-"""
-    profile_ref = "sparkrun.core.application_profile:SPARKRUN" if application == "sparkrun" else "profile_test_app.profile:PROFILE_TEST_APP"
-    result = invoke(
-        wheels,
-        tmp_path,
-        "python",
-        "-c",
-        code,
-        application,
         env_extra={"SPARKRUN_APPLICATION_PROFILE": profile_ref, "SPARKRUN_APPLICATION_CONFIG": str(config)},
     )
     assert result.returncode == 0, result.stdout + result.stderr

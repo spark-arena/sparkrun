@@ -21,7 +21,8 @@ Two mechanisms, deliberately separate:
 
 - **Availability** — each gateway declares a feature flag
   (``gateway.<name>``, see :mod:`sparkrun.core.features`).  ``gateway.litellm``
-  defaults on for stable/beta; ``gateway.sparkroute`` defaults on for alpha.
+  defaults on for every channel. Separately installed plugins declare their
+  own availability; enabling a flag does not install an implementation.
 - **Selection** — exactly one gateway is used at a time.  That is arbitrated
   *here*, at resolution: an explicit name (``proxy.gateway`` in ``proxy.yaml``,
   or a caller argument) must be known and enabled; with no name, the default

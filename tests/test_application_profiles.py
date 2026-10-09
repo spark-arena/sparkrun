@@ -468,8 +468,8 @@ def test_pinned_legacy_gateway_cannot_run_under_an_alternate_profile(monkeypatch
         patch.setattr(loader.importlib, "import_module", imports)
         assert load_in_tree_plugins(Variables()) == []
         imports.assert_not_called()
-    row = next(p for p in list_plugins() if p.name == "sparkroute")
-    assert row.enabled and row.failure and not row.loaded
+        row = next(p for p in list_plugins() if p.name == "sparkroute")
+        assert row.enabled and row.failure and not row.loaded
     with pytest.raises(GatewayUnavailableError, match="pinned SparkRoute"):
         gateway_class("sparkroute")
     with pytest.raises(GatewayUnavailableError, match="pinned SparkRoute"):

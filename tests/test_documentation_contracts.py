@@ -14,7 +14,6 @@ import pytest
 from click.testing import CliRunner
 
 ROOT = Path(__file__).resolve().parents[1]
-VENDOR = "src/sparkrun/plugins/sparkroute/"
 HISTORICAL = {"CHANGELOG.md", "docs/RELEASE_NOTES_0.3.0.md"}
 
 
@@ -34,14 +33,7 @@ def _documents(root=ROOT):
         "src/sparkrun/orchestration/executors/seccomp/README.md",
         "tests/fixtures/application_profiles/*.md",
     )
-    return sorted(
-        {
-            path
-            for pattern in patterns
-            for path in root.glob(pattern)
-            if path.is_file() and not path.relative_to(root).as_posix().startswith(VENDOR)
-        }
-    )
+    return sorted({path for pattern in patterns for path in root.glob(pattern) if path.is_file()})
 
 
 def _without_fences(text):
@@ -141,7 +133,6 @@ def test_document_inventory_without_git_metadata(tmp_path):
         ".slop/report.md",
         "build/README.md",
         ".venv/README.md",
-        "src/sparkrun/plugins/sparkroute/README.md",
         "node_modules/README.md",
     ]
     # An enclosing repository must not change the inventory of an archive.

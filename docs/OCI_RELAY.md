@@ -3,8 +3,8 @@
 Sparkrun `develop-next` / 0.4.0 bundles the [OCI Relay](https://github.com/spark-arena/oci-relay)
 image-distribution adapter. It streams registry pulls or existing local images
 to Docker hosts, reuses compatible layers across storage backends, and reports
-transfer progress. The `plugins.oci_relay` feature defaults **on for alpha** and
-**off for stable/beta**. Explicit config or environment overrides take precedence.
+transfer progress. The `plugins.oci_relay` feature defaults **on for beta and alpha** and
+**off for stable**. Explicit config or environment overrides take precedence.
 
 To test on any channel, add to your Sparkrun configuration:
 
@@ -89,5 +89,5 @@ and licensing. README links are rewritten to the pinned upstream commit so
 they remain usable in the imported package. CI verifies the snapshot offline. Upstream owns the adapter and
 its exported contract tests; make changes there and re-vendor. OCI Relay and its
 plugin use Apache-2.0. The vendored package includes the license, copyright notice,
-CLA, and provenance. The importer requires Apache-2.0 source; older OCI Relay
+and provenance. The importer requires Apache-2.0 source; older OCI Relay
 releases are not supported by this alpha integration.

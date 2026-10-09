@@ -141,26 +141,6 @@ def test_admin_failure_uses_public_error(tmp_path, monkeypatch):
         api.proxy.ui(issue_token=True)
 
 
-def test_vendored_sparkroute_implements_typed_models_and_capabilities(tmp_path, monkeypatch):
-    from sparkrun.plugins.sparkroute.engine import SparkrouteEngine
-
-    engine = SparkrouteEngine(state_dir=tmp_path)
-    monkeypatch.setattr(engine, "get_state", lambda: {"gateway": "sparkroute", "pid": 123})
-    monkeypatch.setattr(engine, "is_running", lambda: True)
-
-    class Admin:
-        def status(self):
-            return {"served_model_names": ["example", "alias"]}
-
-    monkeypatch.setattr(engine, "admin_client", lambda: Admin())
-    monkeypatch.setattr(_ops, "_running_engine", lambda sctx=None: engine)
-    result = api.proxy.models()
-    assert [model.model_name for model in result] == ["example", "alias"]
-    assert all(model.api_base == "http://%s/v1" % engine.data_address for model in result)
-    assert isinstance(engine, GatewayConsole) and isinstance(engine, GatewayAdminToken)
-    assert api.proxy.ui().url == engine.ui_url
-
-
 def test_token_management_does_not_require_a_console(tmp_path, monkeypatch):
     class TokenOnly(TypedGateway):
         token = None
@@ -178,12 +158,10 @@ def test_token_management_does_not_require_a_console(tmp_path, monkeypatch):
 
 def test_public_gateway_contracts_preserve_legacy_class_identity():
     from sparkrun.proxy import _supervisor
-    from sparkrun.plugins.sparkroute.engine import SparkrouteConfigError
 
     assert GatewaySupervisor is _supervisor.GatewaySupervisor
     assert GatewayOperationError is _supervisor.GatewayOperationError
     assert issubclass(GatewayQueryError, GatewayOperationError)
-    assert issubclass(SparkrouteConfigError, GatewayOperationError)
 
 
 @pytest.mark.parametrize("operation", ["token", "credential", "console"])
@@ -209,13 +187,3 @@ def test_optional_management_distinguishes_operational_and_programming_errors(tm
         else:
             api.proxy.ui(issue_token=operation == "credential")
     assert (caught.value.__cause__ if error_type is GatewayOperationError else caught.value) is cause
-
-
-def test_vendor_credential_refusal_keeps_public_error(tmp_path, monkeypatch):
-    from sparkrun.plugins.sparkroute.engine import SparkrouteEngine, SparkrouteConfigError
-
-    engine = SparkrouteEngine(state_dir=tmp_path, master_key="fixture-key")
-    monkeypatch.setattr(_ops, "_running_engine", lambda sctx=None: engine)
-    with pytest.raises(api.proxy.ProxyUpdateFailed, match="master key") as caught:
-        api.proxy.admin_token(clear=True)
-    assert isinstance(caught.value.__cause__, SparkrouteConfigError)

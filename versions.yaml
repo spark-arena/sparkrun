@@ -43,12 +43,6 @@ ci:
     lint: ruff
     format_check: true
     setup_steps:
-      - name: Verify SparkRoute vendor snapshot
-        run: python scripts/vendor-sparkroute.py verify
-        working_directory: .
-      - name: Verify optional ColdSnap vendor snapshot
-        run: python scripts/vendor-coldsnap.py verify --allow-absent
-        working_directory: .
       - name: Verify optional OCI Relay vendor snapshot
         run: python scripts/vendor-oci-relay.py verify --allow-absent
         working_directory: .

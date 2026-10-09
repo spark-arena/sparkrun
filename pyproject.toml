@@ -7,10 +7,8 @@ name = "sparkrun"
 version = "0.4.0"
 description = "Launch and manage Docker-based inference workloads on NVIDIA DGX Spark systems"
 readme = "README.md"
-# Distribution metadata covers host and plugin; their individual terms remain
-# in the retained license files, including the sparkrun combination permission.
-license = "Apache-2.0 AND AGPL-3.0-only"
-license-files = ["LICENSE", "src/sparkrun/plugins/*/LICENSE", "src/sparkrun/plugins/*/LICENSE_EXCEPTION", "src/sparkrun/orchestration/executors/seccomp/LICENSE"]
+license = "Apache-2.0"
+license-files = ["LICENSE", "src/sparkrun/plugins/*/LICENSE", "src/sparkrun/orchestration/executors/seccomp/LICENSE"]
 requires-python = ">=3.12"
 authors = [
     { name = "scitrera.ai", email = "open-source-team@scitrera.com" },
@@ -58,8 +56,6 @@ where = ["src"]
 "sparkrun" = ["py.typed"]
 "sparkrun.scripts" = ["*.sh"]
 "sparkrun.orchestration.executors" = ["seccomp/*.json", "seccomp/LICENSE", "seccomp/README.md"]
-"sparkrun.plugins.sparkroute" = ["LICENSE", "LICENSE_EXCEPTION", "README.md", "VENDORED.toml"]
-"sparkrun.plugins.coldsnap" = ["LICENSE", "LICENSE_EXCEPTION", "README.md", "VENDORED.toml"]
 "sparkrun.plugins.lil" = ["LICENSE", "bases.yaml"]
 "sparkrun.bin" = ["nv-monitor-*", "prom2json-*"]
 
@@ -80,7 +76,7 @@ line-length = 140
 target-version = "py312"
 required-version = "==0.16.6"
 # Vendor snapshots are immutable, including when hooks pass explicit filenames.
-extend-exclude = ["src/sparkrun/plugins/sparkroute", "tests/vendor/sparkroute", "src/sparkrun/plugins/coldsnap", "tests/vendor/coldsnap", "src/sparkrun/plugins/oci_relay", "tests/vendor/oci_relay"]
+extend-exclude = ["src/sparkrun/plugins/oci_relay", "tests/vendor/oci_relay"]
 force-exclude = true
 
 [tool.ruff.format]

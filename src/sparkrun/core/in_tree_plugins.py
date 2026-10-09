@@ -70,6 +70,8 @@ IN_TREE_PLUGIN_PACKAGE = "sparkrun.plugins"
 #: off the plugin because the flag must resolve *before* the import — a plugin
 #: that declared its own gate could only be consulted by importing it, which is
 #: exactly what the gate is meant to avoid.
+# SparkRoute and ColdSnap are not bundled, but keep their pre-import gates for
+# users who install their packages separately into this plugin namespace.
 IN_TREE_PLUGIN_FEATURES: dict[str, str] = {
     "sparkroute": "gateway.sparkroute",
     "coldsnap": "plugins.coldsnap",

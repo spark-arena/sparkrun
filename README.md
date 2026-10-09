@@ -107,9 +107,10 @@ and stage model assets before launch. Set `SPARKRUN_ADVANCED=1` to show
 publication integrations. [Plugin authors](docs/PLUGINS.md) register installed
 integrations through `sparkrun.plugins`.
 
-The [proxy CLI](docs/PROXY.md) supports pluggable gateways, including LiteLLM and
-SparkRoute. Docker now stages a custom seccomp profile allowing io_uring on each
-launch node; see [executor configuration](docs/EXECUTORS.md#docker-seccomp-profiles-04).
+The [proxy CLI](docs/PROXY.md) uses LiteLLM by default on every channel.
+[SparkRoute](docs/SPARKROUTE.md) is available as a separately installed plugin.
+Docker now stages a custom seccomp profile allowing io_uring on each launch node;
+see [executor configuration](docs/EXECUTORS.md#docker-seccomp-profiles-04).
 vLLM no longer sets `OMP_NUM_THREADS` by default; recipes can set it explicitly.
 
 ## Spark Arena
@@ -129,15 +130,7 @@ vLLM no longer sets `OMP_NUM_THREADS` by default; recipes can set it explicitly.
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE) for details.
-
-The bundled [SparkRoute integration](src/sparkrun/plugins/sparkroute/README.md)
-is AGPL-3.0-only with an [additional permission](src/sparkrun/plugins/sparkroute/LICENSE_EXCEPTION)
-for combining and distributing it with SparkRun. Its notices and immutable
-source provenance ship in the installed plugin package. The independently
-acquired SparkRoute executable is AGPL-3.0-only.
-SparkRoute defaults on for alpha; LiteLLM defaults on for stable and beta.
-See [channel defaults and managed plugin updates](docs/SPARKROUTE.md).
+sparkrun is licensed under the Apache License 2.0 — see [LICENSE](LICENSE).
 
 ## Anonymous Telemetry
 

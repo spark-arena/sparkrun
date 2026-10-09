@@ -297,7 +297,7 @@ outcomes. Benchmark result-bearing failures are described above. Interrupts and
 `SystemExit` propagate unchanged.
 
 Core and bundled K8s/Arena declarations share the owning `sparkrun` distribution
-version. Independently released plugins, including vendored SparkRoute, retain
+version. Independently released plugins, including bundled OCI Relay, retain
 their own versions. Downstream applications should declare a compatible core
 range or exact pin rather than infer compatibility from their own version.
 

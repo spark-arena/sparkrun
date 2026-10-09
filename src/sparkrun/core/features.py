@@ -336,14 +336,12 @@ FEATURE_CLI_SETUP_RDMA_TEST_NCCL = register_feature(
     )
 )
 
-# Stable and beta use LiteLLM; alpha exercises the bundled SparkRoute plugin.
-# These remain ordinary feature defaults, so explicit config/env overrides win.
-# Gateway selection uses the existing resolver after applying these gates.
+# LiteLLM is bundled and available on every channel. Separately installed
+# gateway plugins remain selectable through explicit config/env overrides.
 FEATURE_GATEWAY_LITELLM = register_feature(
     FeatureFlag(
         name="gateway.litellm",
-        description="LiteLLM gateway behind 'sparkrun proxy' (enabled by default on stable and beta)",
-        channel_defaults={CHANNEL_ALPHA: False},
+        description="LiteLLM gateway behind 'sparkrun proxy' (enabled by default on all channels)",
         default=True,
     )
 )
@@ -373,12 +371,11 @@ FEATURE_CLI_SETUP_FEATURES = register_feature(
 )
 
 
-# The binding is ready for an optional vendored snapshot. Inclusion and channel
-# defaults are separate release decisions; source is not fetched by this flag.
+# Keep the gates for separately installed plugins. A flag never installs code.
 FEATURE_PLUGIN_COLDSNAP = register_feature(
     FeatureFlag(
         name="plugins.coldsnap",
-        description="ColdSnap capture, restore, and materialization (requires the optional bundled plugin)",
+        description="ColdSnap capture, restore, and materialization (requires the separately installed plugin)",
         default=False,
     )
 )
@@ -397,7 +394,7 @@ FEATURE_REGISTRY_LIL = register_feature(
 FEATURE_GATEWAY_SPARKROUTE = register_feature(
     FeatureFlag(
         name="gateway.sparkroute",
-        description="SparkRoute gateway and workload bridge (enabled by default on alpha)",
+        description="SparkRoute gateway and workload bridge (requires the separately installed plugin; enabled on alpha)",
         channel_defaults={CHANNEL_ALPHA: True},
         default=False,
     )
@@ -425,7 +422,7 @@ FEATURE_PLUGIN_OCI_RELAY = register_feature(
     FeatureFlag(
         name="plugins.oci_relay",
         description="OCI Relay image distribution",
-        channel_defaults={CHANNEL_ALPHA: True},
+        channel_defaults={CHANNEL_BETA: True, CHANNEL_ALPHA: True},
         default=False,
     )
 )

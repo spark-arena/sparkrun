@@ -42,16 +42,6 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v9.0.0
 
-      - name: Verify SparkRoute vendor snapshot
-        run: |
-          python scripts/vendor-sparkroute.py verify
-        working-directory: .
-
-      - name: Verify optional ColdSnap vendor snapshot
-        run: |
-          python scripts/vendor-coldsnap.py verify --allow-absent
-        working-directory: .
-
       - name: Verify optional OCI Relay vendor snapshot
         run: |
           python scripts/vendor-oci-relay.py verify --allow-absent

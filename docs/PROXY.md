@@ -1,8 +1,8 @@
 # sparkrun proxy
 
 `sparkrun proxy` manages an OpenAI-compatible inference gateway. Gateway
-implementations are pluggable: Sparkrun includes LiteLLM and the SparkRoute
-integration, and installed plugins can register others. The selected gateway
+implementations are pluggable: Sparkrun includes LiteLLM, and separately
+installed plugins such as SparkRoute can register others. The selected gateway
 owns its model configuration, update mechanism, and supported management features.
 
 ## Choose a gateway
@@ -11,16 +11,17 @@ For built-in Sparkrun, the channel defaults are:
 
 | Feature channel | Default gateway |
 | --- | --- |
-| stable / beta | LiteLLM |
-| alpha | SparkRoute |
+| stable / beta / alpha | LiteLLM |
 
-An existing `proxy.gateway` pin takes precedence over channel defaults. Enable a
-gateway before selecting it; enabling a second gateway alone does not switch the
-selection. When both bundled gateways are enabled and there is no pin, LiteLLM
-wins. Alternate application profiles can supply their own feature defaults.
+An existing `proxy.gateway` pin takes precedence over channel defaults. Install a
+gateway plugin before selecting it, then enable its feature flag; enabling a second
+gateway alone does not switch the selection. When LiteLLM and another gateway
+are enabled and there is no pin, LiteLLM wins. Alternate application profiles can
+supply their own feature defaults.
 
 ```bash
 sparkrun setup features list
+# After installing the optional SparkRoute plugin:
 sparkrun setup features enable gateway.sparkroute
 sparkrun proxy start --gateway sparkroute --host 127.0.0.1
 ```
@@ -29,7 +30,7 @@ sparkrun proxy start --gateway sparkroute --host 127.0.0.1
 replace a running gateway with new settings or another enabled implementation.
 Management commands bind to the gateway recorded in running state, so editing
 the pin or disabling a feature does not redirect `stop`, `status`, or updates to
-a different implementation. See [SparkRoute channel and update details](SPARKROUTE.md).
+a different implementation. See [SparkRoute installation and selection](SPARKROUTE.md).
 
 ## Quick start
 
@@ -159,7 +160,7 @@ Sparkrun's LiteLLM integration does not provision the database required for its
 admin UI. Its master key provides stateless authentication. SparkRoute has its
 own admin listener and credential policy; a master key also requires admin
 authentication there. Consult the
-[SparkRoute integration reference](../src/sparkrun/plugins/sparkroute/README.md)
+[SparkRoute integration reference](https://github.com/sparksq/sparkrun-sparkroute-plugin#readme)
 for implementation-specific configuration. Unsupported capabilities report an
 error instead of pretending a console or token exists.
 
@@ -332,7 +333,6 @@ Select installed plugins through [the plugin contract](PLUGINS.md).
 | `proxy/discovery.py` | Job/status discovery, health checks and deduplication |
 | `proxy/config.py` | Persistent settings and aliases |
 | `proxy/engine.py` | LiteLLM implementation |
-| `plugins/sparkroute/` | Vendored SparkRoute integration |
 | `proxy/autodiscover.py` | Optional reconciliation sidecar |
 
 `sparkrun.proxy.supervisor.GatewaySupervisor` is the supported lifecycle base.
@@ -424,12 +424,10 @@ Diagnostics must not include secrets. Other exceptions, including a bare
 `RuntimeError` or provider-thrown `NotImplementedError`, propagate as provider
 bugs. Stop hooks also use `GatewayOperationError` and become `ProxyUpdateFailed`.
 
-The bundled SparkRoute plugin implements these contracts directly in its upstream
-source. Registry resolution returns that same class; no host adapter changes its
-errors or behavior. Transport/authentication/retry failures retain their upstream
-metadata and causes. Applications should use `api.proxy`; providers import the
-supported `supervisor` and `contracts` modules. Legacy `_supervisor` imports remain
-aliases for the shared classes.
+Registry resolution returns the provider's registered class directly. Providers
+implement these contracts in their own packages. Applications should use
+`api.proxy`; providers import the supported `supervisor` and `contracts` modules.
+Legacy `_supervisor` imports remain aliases for the shared classes.
 
 Passing both `rotate=True` and `clear=True` is invalid and raises `ValueError`
 before dispatch. Admin-token operations do not rotate the inference API key.

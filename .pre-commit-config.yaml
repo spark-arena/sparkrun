@@ -11,15 +11,9 @@ repos:
       - id: ruff-format
   - repo: local
     hooks:
-      - id: verify-sparkroute-vendor
-        name: Verify SparkRoute vendor snapshot
-        entry: python scripts/vendor-sparkroute.py verify
-        language: python
-        pass_filenames: false
-        always_run: true
-      - id: verify-coldsnap-vendor
-        name: Verify optional ColdSnap vendor snapshot
-        entry: python scripts/vendor-coldsnap.py verify --allow-absent
+      - id: verify-oci-relay-vendor
+        name: Verify OCI Relay vendor snapshot
+        entry: python scripts/vendor-oci-relay.py verify
         language: python
         pass_filenames: false
         always_run: true

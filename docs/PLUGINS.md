@@ -361,7 +361,7 @@ state:
 
 ```
 NAME              VERSION  SOURCE    STATE  FLAG
-sparkroute        0.1.0    in-tree   on     gateway.sparkroute
+oci_relay         0.1.3    in-tree   on     plugins.oci_relay
 sparkrun_thunder  0.2.0    external  off    core.external_plugins
 ```
 

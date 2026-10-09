@@ -265,7 +265,7 @@ ColdSnap plugins that support this handoff supply already-validated full
 acceptance response timing. Older compatible ColdSnap controllers can mark
 `runtime_info.inference_readiness` as `accepted` without supplying timestamps;
 this suppresses a duplicate inference but does not invent TTFT. Updating this
-upstream code does not itself update the vendored ColdSnap plugin or controller.
+host code does not itself update the separately installed ColdSnap plugin or controller.
 
 Recipe readiness settings control Sparkrun's probes, not a strategy's own
 acceptance contract. Disabling the Sparkrun inference probe does not disable

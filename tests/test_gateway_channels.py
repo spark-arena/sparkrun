@@ -16,9 +16,9 @@ import yaml
     [
         ("stable", {}, {}, "litellm"),
         ("beta", {}, {}, "litellm"),
-        ("alpha", {}, {}, "sparkroute"),
+        ("alpha", {}, {}, "litellm"),
         ("alpha", {"gateway.sparkroute": False, "gateway.litellm": True}, {}, "litellm"),
-        ("stable", {"gateway.sparkroute": True, "gateway.litellm": False}, {}, "sparkroute"),
+        ("stable", {"gateway.sparkroute": True, "plugins.coldsnap": True}, {}, "litellm"),
         ("alpha", {}, {"SPARKRUN_FEATURE_GATEWAY_SPARKROUTE": "0", "SPARKRUN_FEATURE_GATEWAY_LITELLM": "1"}, "litellm"),
     ],
 )
@@ -67,14 +67,14 @@ print(json.dumps({
     assert observed == {
         "available": [expected],
         "selected": expected,
-        "plugin_loaded": expected == "sparkroute",
-        "bridge_registered": expected == "sparkroute",
+        "plugin_loaded": False,
+        "bridge_registered": False,
     }
 
 
 @pytest.mark.parametrize("first_call", ["list", "resolve"])
 @pytest.mark.parametrize(
-    "channel,pin,expected", [("alpha", None, "sparkroute"), ("stable", "sparkroute", "sparkroute"), ("stable", None, "litellm")]
+    "channel,pin,expected", [("alpha", None, "litellm"), ("stable", "litellm", "litellm"), ("stable", None, "litellm")]
 )
 def test_public_selection_initializes_and_uses_saved_pin(tmp_path, channel, pin, expected, first_call):
     config_dir = tmp_path / ".config" / "sparkrun"
@@ -111,6 +111,16 @@ except api.proxy.GatewayUnavailable:
     pass
 else:
     raise AssertionError('Unknown provider accepted')
+context.proxy_config.set_proxy(gateway='sparkroute')
+context.proxy_config.save()
+try:
+    api.proxy.resolve_gateway(sctx=context)
+except api.proxy.GatewayUnavailable as error:
+    assert error.gateway == 'sparkroute'
+else:
+    raise AssertionError('Missing pinned provider silently replaced')
+context.proxy_config.set_proxy(gateway='litellm')
+context.proxy_config.save()
 assert 'click' not in sys.modules and 'sparkrun.cli' not in sys.modules
 print(json.dumps({'first': first, 'selected': api.proxy.resolve_gateway()}))
 """

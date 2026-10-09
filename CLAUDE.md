@@ -305,7 +305,7 @@ rendered as such. Three rules are load-bearing:
 - **The distribution fallback is out-of-tree only.** Every in-tree plugin's
   package maps to the `sparkrun` distribution, so applying it there reports
   sparkrun's version as the plugin's — wrong exactly where it matters, since
-  `sparkroute` is vendored from its own repo at its own version. The honest
+  `oci_relay` is vendored from its own repo at its own version. The honest
   answer is "the plugin did not say", the same `exists=None` / `CX7Persistence.UNKNOWN`
   rule.
 - **`sys.modules` is not the record.** `load_plugin_module` — the one point
@@ -1926,10 +1926,10 @@ Three mechanisms, deliberately separate:
   litellm registers in core, not from a plugin: `proxy` must resolve to
   *something* with every plugin absent.
 - **Availability** — `gateway.<name>` feature flag. `gateway.litellm` defaults
-  on for stable/beta and off for alpha; the bundled `gateway.sparkroute` plugin
-  defaults on only for alpha. Explicit config/env overrides take precedence.
-  Update its immutable source through `scripts/vendor-sparkroute.py update
-  --latest`, then `verify`; see `docs/SPARKROUTE.md`.
+  on for all channels. SparkRoute and ColdSnap are separately installed plugins;
+  enabling a flag does not install their code. Explicit config/env overrides
+  take precedence; see `docs/SPARKROUTE.md`. OCI Relay remains bundled and its
+  `plugins.oci_relay` flag defaults on for beta and alpha, off for stable.
 - **Selection** — exactly one gateway is used at a time, arbitrated in
   `resolve_gateway()`: an explicit name (`proxy.gateway:` in `proxy.yaml`, or
   `--gateway`) must be known *and* enabled; with no name, the default wins when
