@@ -253,7 +253,7 @@ def test_gateway_api_checks_ownership_before_plugin_config_writes(tmp_path, monk
     engine = Mock()
     engine.claim_state_directory.side_effect = GatewayState(tmp_path).claim_state_directory
     monkeypatch.setattr(_ops, "_engine_class", lambda *_: Mock(return_value=engine))
-    monkeypatch.setattr(_ops, "_discovery_args", lambda *_: ([], {}))
+    monkeypatch.setattr(_ops, "_discovery_args", lambda *_: (_ops.DiscoveryScope("none"), None, None, None, None, []))
     monkeypatch.setattr(_ops, "_discover", lambda **_: [])
     with pytest.raises(ProxyStartFailed, match="another application"):
         _ops.start(ProxyStartOptions(persist=False, auto_discover=False), sctx=context)

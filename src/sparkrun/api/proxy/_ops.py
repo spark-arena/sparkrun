@@ -40,6 +40,7 @@ from ._errors import GatewayUnavailable, ProxyAlreadyRunning, ProxyStartFailed, 
 from ._recovery import require_implementation
 
 if TYPE_CHECKING:
+    from sparkrun.core.cluster_manager import ClusterDefinition
     from sparkrun.core.context import SparkrunContext
     from sparkrun.proxy._supervisor import GatewaySupervisor
     from sparkrun.proxy.discovery import DiscoveredEndpoint
@@ -131,8 +132,11 @@ class ProxyStartOptions:
     master_key: str | None = None
     #: Restrict discovery to these hosts (already parsed; no CLI syntax here).
     host_filter: list[str] | None = None
-    #: Named cluster, used for the SSH user during live discovery.
+    #: Named cluster scoping discovery (hosts + SSH user).  Saved to
+    #: ``proxy.yaml`` as ``proxy.cluster`` when ``persist`` is set.
     cluster: str | None = None
+    #: Remove a saved ``proxy.cluster`` so discovery follows the default cluster.
+    clear_cluster: bool = False
     ssh_kwargs: dict | None = None
     auto_discover: bool | None = None
     discover_interval: int | None = None
@@ -170,6 +174,28 @@ class ProxyStartResult:
     persisted: tuple[str, ...] = ()
     #: Non-fatal observations (e.g. an obsolete config key).
     warnings: tuple[str, ...] = ()
+    #: Which layer decided the discovery scope (see :func:`resolve_discovery_scope`).
+    discovery: "DiscoveryScope | None" = None
+
+
+@dataclass(frozen=True)
+class DiscoveryScope:
+    """Where endpoint discovery looks, and which layer decided it.
+
+    ``source`` is one of ``"--hosts"``, ``"--cluster"``, ``"proxy.yaml"``,
+    ``"default cluster"``, ``"default hosts"`` or ``"none"`` (metadata-only).
+    """
+
+    source: str
+    cluster: str | None = None
+    hosts: tuple[str, ...] = ()
+
+    def describe(self) -> str:
+        if self.cluster:
+            return "cluster %s (from %s)" % (self.cluster, self.source)
+        if self.hosts:
+            return "hosts %s (from %s)" % (", ".join(self.hosts), self.source)
+        return "job metadata only (no cluster or hosts configured)"
 
 
 @dataclass(frozen=True)
@@ -391,14 +417,22 @@ def _start(options: ProxyStartOptions, *, sctx: "SparkrunContext") -> ProxyStart
             "provisions. Remove the key to silence this."
         )
 
+    if options.cluster and options.clear_cluster:
+        raise ProxyStartFailed("--cluster and --clear-cluster are mutually exclusive.")
+    # An explicit cluster is saved, so a typo must fail here rather than be
+    # persisted and then warned about on every later start.
+    if options.cluster and _load_cluster(options.cluster, sctx) is None:
+        raise ProxyStartFailed("Unknown cluster %r." % options.cluster)
+
     # Persist explicit overrides before anything can fail, so intent sticks
     # regardless of whether the proxy actually gets (re)started now.
     persisted: tuple[str, ...] = ()
     if options.persist and not options.dry_run:
         persisted = tuple(_persist_overrides(proxy_cfg, options))
 
-    live_hosts, ssh_kwargs = _discovery_args(options, sctx)
-    endpoints = _discover(host_filter=options.host_filter, host_list=live_hosts, ssh_kwargs=ssh_kwargs, sctx=sctx)
+    scope, host_filter, live_hosts, ssh_kwargs, cluster_def, scope_warnings = _discovery_args(options, sctx)
+    warnings.extend(scope_warnings)
+    endpoints = _discover(host_filter=host_filter, host_list=live_hosts, ssh_kwargs=ssh_kwargs, cluster_def=cluster_def, sctx=sctx)
     healthy = [ep for ep in endpoints if ep.healthy]
 
     aliases = proxy_cfg.aliases
@@ -463,6 +497,7 @@ def _start(options: ProxyStartOptions, *, sctx: "SparkrunContext") -> ProxyStart
         "discover_removal_grace_sweeps": removal_grace_sweeps,
         "persisted": persisted,
         "warnings": tuple(warnings),
+        "discovery": scope,
         "config_path": str(config_path) if config_path is not None and not options.dry_run else None,
     }
 
@@ -476,6 +511,7 @@ def _start(options: ProxyStartOptions, *, sctx: "SparkrunContext") -> ProxyStart
             "removal_grace_sweeps": removal_grace_sweeps,
             "host_list": live_hosts,
             "ssh_kwargs": ssh_kwargs,
+            "cluster": scope.cluster,
             "application_config_path": sctx.config.config_path,
         }
 
@@ -737,46 +773,109 @@ def _discover(
     host_filter: list[str] | None = None,
     host_list: list[str] | None = None,
     ssh_kwargs: dict | None = None,
+    cluster_def: "ClusterDefinition | None" = None,
     sctx: "SparkrunContext | None" = None,
 ) -> "list[DiscoveredEndpoint]":
     """Run one endpoint-discovery sweep (deferred import: circular otherwise)."""
     from sparkrun.proxy.discovery import discover_endpoints
 
-    return discover_endpoints(host_filter=host_filter, host_list=host_list, ssh_kwargs=ssh_kwargs, sctx=sctx)
+    return discover_endpoints(host_filter=host_filter, host_list=host_list, ssh_kwargs=ssh_kwargs, cluster_def=cluster_def, sctx=sctx)
 
 
-def _discovery_args(options: ProxyStartOptions, sctx: "SparkrunContext") -> tuple[list[str] | None, dict | None]:
-    """Resolve (hosts, ssh_kwargs) for live container discovery.
+def _load_cluster(name: str, sctx: "SparkrunContext") -> "ClusterDefinition | None":
+    """Load a named cluster, or ``None`` when it does not exist or cannot be read."""
+    try:
+        return sctx.cluster_manager.get(name)
+    except Exception:
+        logger.debug("Could not load cluster %r", name, exc_info=True)
+        return None
 
-    ``(None, None)`` means "no host context" — discovery falls back to
-    metadata-only mode.  Best-effort: a config/cluster read that fails
-    degrades to metadata-only rather than failing the start.
+
+def resolve_discovery_scope(
+    options: ProxyStartOptions, sctx: "SparkrunContext"
+) -> "tuple[DiscoveryScope, ClusterDefinition | None, list[str]]":
+    """Decide where discovery looks.  First hit wins:
+
+    1. ``--hosts`` / ``--hosts-file`` (this run only; never saved);
+    2. ``--cluster`` (saved as ``proxy.cluster``);
+    3. ``proxy.cluster`` from ``proxy.yaml`` (skipped by ``--clear-cluster``);
+    4. the default cluster (``sparkrun cluster set-default``), resolved now so
+       a later change is followed rather than frozen;
+    5. ``config.default_hosts``;
+    6. nothing: metadata-only discovery.
+
+    The default cluster used to be skipped entirely, so a user whose only host
+    source was ``cluster set-default`` got metadata-only discovery as the
+    control node's own login.  A chosen cluster contributes its whole
+    definition (SSH user, executor, transport), not just its hosts.
+
+    Returns:
+        ``(scope, cluster_def, warnings)``.  A saved ``proxy.cluster`` that no
+        longer exists is a warning, not an error: a proxy starting at boot
+        should come up, and discovery is best-effort anyway.
     """
-    if options.ssh_kwargs is not None:
-        return (options.host_filter or None), options.ssh_kwargs
+    warnings: list[str] = []
+    proxy_cfg = sctx.proxy_config
+    named = options.cluster
+    if options.host_filter:
+        cluster_def = _load_cluster(named, sctx) if named else None
+        return DiscoveryScope("--hosts", hosts=tuple(options.host_filter)), cluster_def, warnings
 
+    candidates: list[tuple[str, str]] = []
+    if named:
+        candidates.append((named, "--cluster"))
+    elif proxy_cfg.cluster and not options.clear_cluster:
+        candidates.append((proxy_cfg.cluster, "proxy.yaml"))
+    for name, source in candidates:
+        cluster_def = _load_cluster(name, sctx)
+        if cluster_def is not None:
+            return DiscoveryScope(source, cluster=name, hosts=tuple(cluster_def.hosts or ())), cluster_def, warnings
+        warnings.append(
+            "proxy.yaml names discovery cluster %r, which no longer exists; using the default instead "
+            "(run 'proxy start --cluster <name>' or '--clear-cluster' to fix)." % name
+        )
+
+    from sparkrun.api._resolve import _default_cluster
+
+    default = _default_cluster(sctx, None)
+    if default is not None and default.name:
+        return DiscoveryScope("default cluster", cluster=default.name, hosts=tuple(default.hosts or ())), default, warnings
+
+    default_hosts = list(sctx.config.default_hosts or ())
+    if default_hosts:
+        return DiscoveryScope("default hosts", hosts=tuple(default_hosts)), None, warnings
+    return DiscoveryScope("none"), None, warnings
+
+
+def _discovery_args(options: ProxyStartOptions, sctx: "SparkrunContext"):
+    """Resolve the scope plus what :func:`_discover` needs to act on it.
+
+    Returns ``(scope, host_filter, live_hosts, ssh_kwargs, cluster_def,
+    warnings)``.  ``live_hosts is None`` means metadata-only discovery.  An
+    explicit host list or cluster also filters endpoints to those hosts, as
+    ``--cluster`` always has; the ``default hosts`` fallback keeps its old
+    liveness-only role.
+    """
+    scope, cluster_def, warnings = resolve_discovery_scope(options, sctx)
+    live_hosts = list(scope.hosts) or None
+    host_filter = list(scope.hosts) if scope.source not in ("default hosts", "none") else None
+    if live_hosts is None:
+        return scope, host_filter, None, None, None, warnings
+    if options.ssh_kwargs is not None:
+        return scope, host_filter, live_hosts, options.ssh_kwargs, cluster_def, warnings
     try:
         from sparkrun.orchestration.primitives import build_ssh_kwargs
 
-        config = sctx.config
-        live_hosts = options.host_filter or config.default_hosts or None
-        if not live_hosts:
-            return None, None
-
-        ssh_kwargs = build_ssh_kwargs(config)
-
-        # Apply the cluster's SSH user without mutating the shared config
-        # (sctx.config is reused by every other call in this session).
-        if options.cluster:
-            cluster_def = sctx.cluster_manager.get(options.cluster)
-            cluster_user = getattr(cluster_def, "user", None) if cluster_def else None
-            if cluster_user:
-                ssh_kwargs = dict(ssh_kwargs, ssh_user=cluster_user)
-
-        return list(live_hosts), ssh_kwargs
+        ssh_kwargs = build_ssh_kwargs(sctx.config)
     except Exception:
-        logger.debug("Could not resolve live discovery args; falling back to metadata-only", exc_info=True)
-        return None, None
+        logger.debug("Could not build SSH settings; falling back to metadata-only", exc_info=True)
+        return scope, host_filter, None, None, None, warnings
+    # Apply the cluster's SSH user without mutating the shared config
+    # (sctx.config is reused by every other call in this session).
+    cluster_user = getattr(cluster_def, "user", None) if cluster_def is not None else None
+    if cluster_user:
+        ssh_kwargs = dict(ssh_kwargs, ssh_user=cluster_user)
+    return scope, host_filter, live_hosts, ssh_kwargs, cluster_def, warnings
 
 
 def _persist_overrides(proxy_cfg, options: ProxyStartOptions) -> list[str]:
@@ -799,6 +898,7 @@ def _persist_overrides(proxy_cfg, options: ProxyStartOptions) -> list[str]:
         ),
         ("discover_interval", options.discover_interval, proxy_cfg.discover_interval),
         ("gateway", options.gateway, proxy_cfg.gateway),
+        ("cluster", options.cluster, proxy_cfg.cluster),
     ]
 
     updates: dict[str, object] = {}
@@ -809,8 +909,13 @@ def _persist_overrides(proxy_cfg, options: ProxyStartOptions) -> list[str]:
         updates[key] = supplied
         changed.append(key)
 
-    if updates:
-        proxy_cfg.set_proxy(**updates)
+    if options.clear_cluster and proxy_cfg.cluster is not None:
+        proxy_cfg.unset_proxy("cluster")
+        changed.append("cluster (cleared)")
+
+    if updates or options.clear_cluster:
+        if updates:
+            proxy_cfg.set_proxy(**updates)
         proxy_cfg.save()
 
     return changed

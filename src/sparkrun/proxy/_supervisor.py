@@ -664,6 +664,7 @@ class GatewaySupervisor(GatewayState):
         ssh_kwargs: dict | None = None,
         cache_dir: str | None = None,
         application_config_path: str | Path | None = None,
+        cluster: str | None = None,
     ) -> int | None:
         """Spawn the gateway-neutral endpoint-discovery sidecar.
 
@@ -694,6 +695,10 @@ class GatewaySupervisor(GatewayState):
             cfg["ssh_kwargs"] = ssh_kwargs
         if cache_dir:
             cfg["cache_dir"] = cache_dir
+        if cluster:
+            # Re-resolved by the daemon so its sweeps reach the hosts through
+            # the cluster's executor/transport, not just its SSH user.
+            cfg["cluster"] = cluster
 
         self.state_dir.mkdir(parents=True, exist_ok=True)
         _restrict_dir_permissions(self.state_dir)

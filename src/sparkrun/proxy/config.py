@@ -161,7 +161,12 @@ class ProxyConfig:
             latest = self._read() if has_pending else copy.deepcopy(self._data)
 
             if self._pending_proxy:
-                latest.setdefault("proxy", {}).update(copy.deepcopy(self._pending_proxy))
+                proxy = latest.setdefault("proxy", {})
+                for key, value in self._pending_proxy.items():
+                    if value is _DELETE:
+                        proxy.pop(key, None)
+                    else:
+                        proxy[key] = copy.deepcopy(value)
 
             if self._pending_aliases:
                 aliases = latest.setdefault("aliases", {})
@@ -221,6 +226,17 @@ class ProxyConfig:
         return str(val) if val else None
 
     @property
+    def cluster(self) -> str | None:
+        """Discovery cluster saved by an explicit ``--cluster``, or ``None``.
+
+        ``None`` means "follow the default cluster", resolved at every start so
+        a later ``sparkrun cluster set-default`` is picked up rather than
+        frozen.  Written only when a cluster is named explicitly.
+        """
+        val = self._data.get("proxy", {}).get("cluster")
+        return str(val) if val else None
+
+    @property
     def master_key(self) -> str | None:
         val = self._data.get("proxy", {}).get("master_key", DEFAULT_MASTER_KEY)
         return str(val) if val is not None else None
@@ -269,6 +285,17 @@ class ProxyConfig:
         proxy = self._data.setdefault("proxy", {})
         proxy.update(kwargs)
         self._pending_proxy.update(copy.deepcopy(kwargs))
+
+    def unset_proxy(self, *keys: str) -> None:
+        """Remove proxy settings, recorded as explicit deletions for :meth:`save`.
+
+        "Absent from my copy" is not an instruction to delete a key another
+        writer saved, so a removal has to be pending like any other change.
+        """
+        proxy = self._data.get("proxy", {})
+        for key in keys:
+            proxy.pop(key, None)
+            self._pending_proxy[key] = _DELETE
 
     # -- Alias management --
 

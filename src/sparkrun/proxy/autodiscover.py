@@ -146,6 +146,7 @@ def run_autodiscover(config_path: str) -> None:
     host_list = cfg.get("host_list")
     ssh_kwargs = cfg.get("ssh_kwargs")
     cache_dir = cfg.get("cache_dir")
+    cluster_name = cfg.get("cluster")
 
     from sparkrun import api
     from sparkrun.api._context import default_sctx
@@ -158,6 +159,12 @@ def run_autodiscover(config_path: str) -> None:
     state_probe = GatewayState(state_dir=state_dir)
     sctx = default_sctx()
     removal_grace = _EndpointRemovalGrace(removal_grace_sweeps)
+    cluster_def = None
+    if cluster_name:
+        try:
+            cluster_def = sctx.cluster_manager.get(cluster_name)
+        except Exception:
+            logger.warning("Could not load discovery cluster %r; sweeping its hosts without it", cluster_name, exc_info=True)
 
     logger.info(
         "Auto-discover started: gateway=%s, interval=%ds, removal_grace=%d sweep(s), proxy_pid=%d, hosts=%s",
@@ -195,6 +202,7 @@ def run_autodiscover(config_path: str) -> None:
                 host_list=host_list,
                 ssh_kwargs=ssh_kwargs,
                 cache_dir=cache_dir,
+                cluster_def=cluster_def,
             )
             healthy = [ep for ep in endpoints if ep.healthy]
             effective, deferred_removals = removal_grace.reconcile(healthy)

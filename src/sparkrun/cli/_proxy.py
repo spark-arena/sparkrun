@@ -77,6 +77,12 @@ def proxy():
     default=False,
     help="If the proxy is already running, stop it and start fresh with the new settings.",
 )
+@click.option(
+    "--clear-cluster",
+    is_flag=True,
+    default=False,
+    help="Forget a discovery cluster saved by an earlier --cluster; discovery then follows the default cluster.",
+)
 @dry_run_option
 def start(
     port,
@@ -91,12 +97,17 @@ def start(
     discover_removal_grace_sweeps,
     gateway_name,
     restart,
+    clear_cluster,
     dry_run,
 ):
     """Start the inference proxy.
 
     Discovers running endpoints, prepares the selected gateway, and launches
     its proxy process. Model updates and auto-discovery depend on the gateway.
+
+    Discovery scope: --hosts / --hosts-file for this run; else --cluster (saved
+    to proxy.yaml); else the saved cluster; else the default cluster
+    ('{app_command} cluster set-default'); else configured default hosts.
 
     Examples:
 
@@ -117,8 +128,9 @@ def start(
         port=port,
         host=bind_host,
         master_key=master_key,
-        host_filter=_resolve_host_filter(cluster_name, hosts, hosts_file),
+        host_filter=_resolve_host_filter(hosts, hosts_file),
         cluster=cluster_name,
+        clear_cluster=clear_cluster,
         # --no-auto-discover forces off; absent, proxy.yaml decides.
         auto_discover=False if no_auto_discover else None,
         discover_interval=discover_interval,
@@ -163,6 +175,8 @@ def start(
         click.echo("Warning: %s" % warning, err=True)
     if result.persisted:
         click.echo("Saved proxy.yaml: %s" % ", ".join(result.persisted))
+    if result.discovery is not None:
+        click.echo("Discovery: %s" % result.discovery.describe())
 
     healthy = [ep for ep in result.endpoints if ep.healthy]
     if not healthy:
@@ -806,14 +820,15 @@ def unload_cmd(ctx, recipe_name, hosts, hosts_file, cluster_name, dry_run):
 
 
 def _resolve_host_filter(
-    cluster_name: str | None,
     hosts: str | None,
     hosts_file: str | None,
 ) -> list[str] | None:
-    """Resolve host filter from CLI args without exiting on empty.
+    """Resolve an explicit one-off host list from ``--hosts`` / ``--hosts-file``.
 
-    Unlike ``_resolve_hosts_or_exit``, returns None (no filter) when
-    no host source is specified — discovery will scan all job metadata.
+    Returns None when neither is given; the API then resolves the discovery
+    scope (``--cluster``, the saved cluster, the default cluster, …).  A
+    cluster is deliberately not flattened to hosts here: the API needs the
+    whole definition (SSH user, executor, transport) and must save the name.
     """
     if hosts:
         return [h.strip() for h in hosts.split(",") if h.strip()]
@@ -826,17 +841,6 @@ def _resolve_host_filter(
             return [line.strip() for line in text.splitlines() if line.strip() and not line.strip().startswith("#")]
         except OSError:
             click.echo("Warning: could not read hosts file: %s" % hosts_file, err=True)
-            return None
-
-    if cluster_name:
-        try:
-            from sparkrun.cli._common import _get_cluster_manager
-
-            cluster_mgr = _get_cluster_manager()
-            cluster_def = cluster_mgr.get(cluster_name)
-            return cluster_def.hosts if cluster_def else None
-        except Exception:
-            click.echo("Warning: could not resolve cluster '%s'" % cluster_name, err=True)
             return None
 
     return None

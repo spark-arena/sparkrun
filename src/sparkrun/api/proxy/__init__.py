@@ -41,6 +41,7 @@ from ._ops import (
     admin_token,
     ProxyEndpoint,
     ProxyModel,
+    DiscoveryScope,
     ProxyStartOptions,
     ProxyStartResult,
     ProxyStatus,
@@ -78,6 +79,7 @@ __all__ = [
     "resolve_gateway",
     "list_gateways",
     # Data models
+    "DiscoveryScope",
     "ProxyStartOptions",
     "ProxyStartResult",
     "ProxyStopResult",
