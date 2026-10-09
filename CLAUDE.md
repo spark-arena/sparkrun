@@ -129,6 +129,7 @@ The CLI was split from a single `cli.py` into a package for maintainability. The
 | `_wizard.py`      | `setup wizard` command — guided cluster setup                                                                                                                                                                                                                     |
 | `_check.py`       | `setup check` command — non-destructive readiness probe of a cluster's hosts against the wizard's setup steps (ordered `SETUP_CHECKS` registry; seed of a future per-platform step system with paired check/apply stages)                                          |
 | `_proxy.py`       | `proxy` command group — thin renderer over `api.proxy` (see Inference Gateway below)                                                                                                                                                                              |
+| `_proxy_systemd.py` | `proxy systemd` group: install/status/remove the proxy's systemd unit (see Inference Gateway below)                                                                                                                                                               |
 | `_monitor_tui.py` | Textual TUI for `cluster monitor`                                                                                                                                                                                                                                 |
 | `ext.py`          | Plugin CLI-command extension point — `register_cli_command(cmd, parent=…)` + `PluggableGroup` (see below)                                                                                                                                                          |
 
@@ -2004,6 +2005,78 @@ remove-on-first-miss) — one timed-out probe is not evidence a workload is gone
 and evicting it costs a restart plus a window of 404s for a model that is
 serving fine. Identity is `cluster_id` when present, since an address is not
 stable across a relaunch.
+
+**`--foreground` follows the gateway, not its child**
+(`GatewaySupervisor.supervise_foreground`). LiteLLM applies a model change by
+being *replaced*: the daemon's `_restart_proxy` SIGTERMs the gateway and spawns
+a new one as the daemon's own child. A foreground parent that `wait()`ed on its
+child returned at the first change, and its cleanup stopped the daemon and
+erased the replacement's state, leaving a gateway nothing could see or stop.
+Under systemd it would restart the whole service on every model change. When
+the watched process exits, the state file decides: a replacement recorded,
+follow it; `stop_requested`, exit 0; anything else is a crash and exits
+non-zero, so `Restart=on-failure` fires. The state alone cannot tell these
+apart. `stop()` deliberately keeps the state of a non-child gateway (it does not
+block), and `_restart_proxy` has a window where the old PID is dead and the new
+one is not yet recorded. So **both write their intent into `state.yaml` before
+signalling** (`_mark_state(stop_requested=True)` / `restarting=True`), and the
+supervisor waits out a `restarting` window (`REPLACEMENT_WAIT_TIMEOUT`) rather
+than reading it as a crash. Only state naming a PID the loop supervised is
+cleared. A replacement is followed only when the loop saw `restarting` or the
+new record carries the same `supervisor`; otherwise someone else started a
+proxy after stopping ours. SparkRoute (vendored) never restarts its process
+(it reconciles over its admin API), so it keeps its own `proc.wait()`;
+`api.proxy._foreground_exit_status` maps its `-SIGTERM` to 0, because a crash is
+never SIGTERM.
+
+**Discovery scope** (`api.proxy.resolve_discovery_scope`, first hit wins):
+`--hosts`/`--hosts-file` (one invocation) → `--cluster` (saved as
+`proxy.cluster`) → saved `proxy.cluster` → the default cluster → `config.yaml`
+`cluster.hosts` → metadata-only. `proxy.cluster` is written **only** for an
+explicit `--cluster`. The default is resolved at every start so `cluster
+set-default` is followed, which is what keeps a systemd unit flagless. Before
+this, discovery skipped the default cluster entirely and applied a cluster's SSH
+user only for an explicit `--cluster`. A chosen cluster contributes its whole
+definition (`cluster_def` reaches `api.status`, and the daemon re-resolves it
+by name). A dangling saved cluster warns and falls through rather than failing,
+because a proxy starting at boot should come up. An unknown *explicit*
+`--cluster` fails before anything is saved. `ProxyStartResult.discovery`
+carries the deciding layer for the `Discovery:` line.
+
+**`proxy systemd`** (`proxy/_systemd.py` primitives → `api/proxy/_service.py` →
+`cli/_proxy_systemd.py`). The unit runs `proxy start --foreground` with no
+flags, so it serves whatever `proxy.yaml` says at each start and is never
+rewritten for a setting change.
+
+- **Scopes.** System (default) is `/etc/systemd/system`, `User=<you>`, and starts
+  at boot regardless of logins. `--user` starts at boot only while logind
+  lingering is on, which can be switched off later.
+- **Naming.** `sparkrun-proxy.service`, or `sparkrun-proxy-<user>.service` when
+  the plain name belongs to another user. Nothing records which was chosen:
+  lookup checks exactly those two and takes the first whose `User=` is the
+  caller and whose profile marker matches, so no record can drift. A unit
+  named for you but owned by someone else is never yours.
+- **Sudoers grant.** It allows exactly `start` / `stop` / `restart` of that one
+  unit, with an absolute `systemctl` path and no wildcards, checked with
+  `visudo -cf` before the move. With it, `proxy start` / `stop` /
+  `start --restart` route through the unit without a prompt, so systemd's
+  state stays truthful. The sudoers file is named after the unit *stem*: sudo
+  silently skips `sudoers.d` names containing `.`.
+- **Hooking `proxy start` / `stop`.** `proxy start` delegates when a unit is
+  installed. It never delegates for `--foreground` or inside the supervised
+  process (`SPARKRUN_PROXY_SUPERVISOR` is set): that is what the unit itself
+  runs, and delegating there would recurse. Settings given to a delegated
+  start are saved first, which is how the unit picks them up. `proxy stop`
+  goes through the unit named in the state's `supervisor` record, falling back
+  to SIGTERM, which the supervisor reads as a clean stop.
+- **Probing the grant.** `/etc/sudoers.d` is root-only, so `status` asks
+  `sudo -n -l <exact argv>` whether the grant works instead of stat'ing it.
+- **The unit's binary.** `ExecStart` is the sparkrun the user actually ran
+  (`sys.argv[0]`), not the first on PATH, which can be an older install
+  without the supervision above.
+- **Tests.** conftest points `SYSTEM_UNIT_DIR` / `user_unit_dir` at sandbox
+  dirs. Otherwise a developer with the real unit installed would have the
+  suite start and stop it.
 
 **`proxy.yaml` has two writers** — the daemon and any `sparkrun proxy` command
 — so `ProxyConfig.save()` locks a stable sidecar, re-reads, and merges only the

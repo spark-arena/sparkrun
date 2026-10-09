@@ -44,7 +44,8 @@ curl http://localhost:4000/v1/models
 
 You can also start the gateway after launching workloads with `sparkrun run`;
 discovery finds healthy endpoints. By default the gateway runs in the background.
-Use `--foreground` to keep its process attached to the terminal.
+Use `--foreground` to keep its process attached to the terminal. To start it at
+boot, [run it as a systemd service](#run-as-a-systemd-service).
 
 ## Commands
 
@@ -58,6 +59,8 @@ sparkrun proxy start --master-key sk-mykey
 sparkrun proxy start --no-auto-discover
 sparkrun proxy start --discover-interval 60
 sparkrun proxy start --discover-removal-grace-sweeps 1
+sparkrun proxy start --cluster mylab        # saved as the discovery cluster
+sparkrun proxy start --clear-cluster        # forget it; follow the default cluster
 sparkrun proxy start --dry-run
 sparkrun proxy stop
 ```
@@ -73,7 +76,13 @@ send `Authorization: Bearer <key>`. See [authentication](#authentication-and-adm
 
 The unconfigured legacy bind is `0.0.0.0` and emits a warning. Set the bind address
 explicitly for the intended access scope. Stop sends SIGTERM to the recorded
-proxy and auto-discover processes.
+proxy and auto-discover processes; when the proxy runs as a systemd unit, start
+and stop go through the unit instead.
+
+`--foreground` follows the gateway across the restarts auto-discovery performs
+when the model list changes (LiteLLM reloads its config by restarting). It exits
+0 when the proxy is stopped on request (`proxy stop`, Ctrl-C, SIGTERM) and
+non-zero when the gateway dies on its own, so a supervisor can restart it.
 
 ### Status, models, and sync
 
@@ -156,6 +165,21 @@ error instead of pretending a console or token exists.
 
 ## Discovery
 
+Start prints which hosts discovery covers and which setting decided it, for
+example `Discovery: cluster mylab (from default cluster)`. The first match wins:
+
+1. `--hosts` / `--hosts-file`, for this invocation only.
+2. `--cluster NAME`, saved to `proxy.yaml` as `proxy.cluster`.
+3. `proxy.cluster` from `proxy.yaml`. If that cluster was deleted, start warns
+   and continues with the next source.
+4. The default cluster (`sparkrun cluster set-default`), read at every start, so
+   changing the default takes effect on the next start.
+5. `cluster.hosts` from `config.yaml`.
+6. None: metadata-only discovery.
+
+A cluster brings its SSH user and the rest of its definition, not only its
+hosts. `--clear-cluster` removes a saved `proxy.cluster`.
+
 Discovery reads saved jobs through `api.list_jobs`, obtains live cross-executor
 status through `api.status` when hosts are available, normalizes endpoint
 addresses, and checks `/v1/models`. Healthy native workloads can participate
@@ -177,6 +201,48 @@ A plugin can declare `supports_autodiscover = False` if it manages desired state
 itself. Start then warns and disables this sidecar. Both currently bundled
 implementations support Sparkrun auto-discovery.
 
+## Run as a systemd service
+
+On a Linux control machine with systemd, install the proxy as a service so it
+starts at boot:
+
+```bash
+sparkrun proxy systemd install --now          # system unit (sudo once)
+sparkrun proxy systemd install --user --now   # user unit (no sudo)
+sparkrun proxy systemd status
+sparkrun proxy systemd remove
+```
+
+The unit runs `sparkrun proxy start --foreground` with no other options, so it
+serves whatever `proxy.yaml` says each time it starts. Change settings with
+`sparkrun proxy start --port 4100 --restart` (the setting is saved and the unit
+restarted) or by editing `proxy.yaml` and restarting. `install --cluster NAME`
+saves the discovery cluster; without it the default cluster is used at each start.
+
+- **System unit (default).** `/etc/systemd/system/sparkrun-proxy.service`, run
+  as you (`User=`). It starts at boot whether or not anyone is logged in.
+  Installing needs sudo once and also writes `/etc/sudoers.d/sparkrun-proxy`,
+  which lets you start, stop, and restart exactly that unit without a password.
+  If another user already owns `sparkrun-proxy.service` on the machine, yours
+  is `sparkrun-proxy-<user>.service`. `status` shows the name in use.
+- **User unit (`--user`).** `~/.config/systemd/user/sparkrun-proxy.service`. No
+  sudo, but it starts at boot only while logind lingering is enabled; `install`
+  tries `loginctl enable-linger` and reports whether it is on.
+
+Once a unit is installed, `proxy start` starts it (or restarts it with
+`--restart`) instead of launching a separate process, `proxy stop` stops it, and
+`proxy status` shows `Managed by: systemd (<unit>)`. Stopping does not disable
+the unit: it starts again at the next boot. Use `proxy systemd remove` to remove it.
+`install --now` replaces a proxy that was started outside the unit.
+
+The service runs without an `ssh-agent`, so discovery needs a key that loads
+without a passphrase. Set `ssh.key` in `config.yaml` if your default key is not
+usable that way. Logs go to the journal (`journalctl -u sparkrun-proxy`, or
+`journalctl --user-unit sparkrun-proxy` for a user unit).
+
+With the SparkRoute gateway, routes are not reconciled when the unit starts the
+gateway; they are applied at the first discovery sweep.
+
 ## Configuration and state
 
 For built-in Sparkrun, settings live in `~/.config/sparkrun/proxy.yaml`:
@@ -187,6 +253,7 @@ proxy:
   host: 127.0.0.1
   master_key: null
   # gateway: sparkroute  # optional pin; the named gateway must be enabled
+  # cluster: mylab        # saved by an explicit --cluster; otherwise the default cluster
   auto_discover: true
   discover_interval: 30
   discover_removal_grace_sweeps: 2
@@ -205,7 +272,7 @@ profiles and cache settings change the root.
 
 | Path | Purpose |
 | --- | --- |
-| `proxy/state.yaml` | Process identity, gateway selector, listener and discovery state |
+| `proxy/state.yaml` | Process identity, gateway selector, listener and discovery state, and the supervising systemd unit (if any) |
 | `proxy/.distribution` | Application ownership of the gateway state directory |
 | `proxy/litellm.log` | LiteLLM process output |
 | `proxy/litellm_config.yaml` | Generated LiteLLM model configuration |

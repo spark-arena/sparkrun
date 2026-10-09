@@ -239,7 +239,17 @@ sparkrun proxy alias list
 
 # Stop the proxy
 sparkrun proxy stop
+
+# Run the proxy as a systemd service that starts at boot
+# (system unit needs sudo once: have the user run it with `! ...`)
+sparkrun proxy systemd install --now
+sparkrun proxy systemd status
+sparkrun proxy systemd remove
 ```
+
+`proxy start` discovers on `--cluster` (saved), else the saved cluster, else the
+default cluster. Once a systemd unit is installed, `proxy start` / `stop` go
+through it.
 
 </Steps>
 
