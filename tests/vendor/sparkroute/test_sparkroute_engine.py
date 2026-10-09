@@ -20,6 +20,7 @@ public ``docs/SPARKRUN_ON_DEMAND.md`` guide. These tests cover:
 
 from __future__ import annotations
 
+import contextlib
 import stat
 from types import SimpleNamespace
 from unittest import mock
@@ -293,6 +294,74 @@ def test_start_launches_autodiscover_after_initial_reconcile(engine, binary):
         ssh_kwargs={"ssh_user": "drew"},
     )
     assert engine.get_state()["autodiscover_pid"] == 4343
+
+
+@contextlib.contextmanager
+def _foreground_start(engine, binary, order, popen, **overrides):
+    """Patch a foreground start down to the process boundary; *overrides* replace named patches."""
+    patches = {
+        "ensure_binary": mock.patch.object(engine_mod, "ensure_binary", return_value=binary),
+        "executable": mock.patch.object(engine_mod, "resolve_sparkrun_executable", return_value="sparkrun"),
+        "credential": mock.patch.object(engine.credential, "ensure", return_value="sk"),
+        "admin_credential": mock.patch.object(engine.credential, "ensure_admin", return_value="admin"),
+        "popen": mock.patch.object(engine_mod.subprocess, "Popen", return_value=popen),
+        "ready": mock.patch.object(engine, "_await_admin_ready", side_effect=lambda: order.append("ready")),
+        "reconcile": mock.patch.object(engine, "reconcile", side_effect=lambda **_kwargs: order.append("reconcile") or (1, 0)),
+        "autodiscover": mock.patch.object(engine, "start_autodiscover", side_effect=lambda **_kwargs: order.append("autodiscover") or 4343),
+    }
+    patches.update(overrides)
+    with contextlib.ExitStack() as stack:
+        for patch in patches.values():
+            stack.enter_context(patch)
+        yield
+
+
+def _foreground_proc(pid=5151, rc=0):
+    proc = mock.Mock(pid=pid)
+    proc.wait.return_value = rc
+    return proc
+
+
+def test_foreground_start_reconciles_then_hands_off_to_the_supervisor(engine, binary):
+    """A service manager can only run foreground mode, so it must reconcile too."""
+    order = []
+    proc = _foreground_proc()
+    engine.supervise_foreground = lambda child: order.append(("supervise", child.pid)) or 0
+    with _foreground_start(engine, binary, order, proc):
+        assert engine.start(foreground=True, autodiscover_kwargs={"interval": 30}) == 0
+    assert order == ["ready", "reconcile", "autodiscover", ("supervise", 5151)]
+    assert engine.get_state()["pid"] == 5151
+    assert engine.get_state()["autodiscover_pid"] == 4343
+
+
+def test_foreground_reconcile_failure_does_not_fail_the_start(engine, binary):
+    order = []
+    engine.supervise_foreground = lambda child: 0
+    failing = mock.patch.object(engine, "reconcile", side_effect=SparkrouteConfigError("bad recipe"))
+    with _foreground_start(engine, binary, order, _foreground_proc(), reconcile=failing):
+        assert engine.start(foreground=True) == 0
+
+
+def test_foreground_falls_back_on_hosts_without_supervision(engine, binary):
+    """Older 0.4 hosts lack supervise_foreground: wait on the child, then clean up."""
+    order = []
+    engine.supervise_foreground = None
+    proc = _foreground_proc(rc=3)
+    with _foreground_start(engine, binary, order, proc):
+        assert engine.start(foreground=True) == 3
+    assert order == ["ready", "reconcile"]
+    assert engine.get_state() is None
+
+
+def test_foreground_interrupted_during_startup_takes_the_gateway_down(engine, binary):
+    order = []
+    proc = _foreground_proc()
+    engine.supervise_foreground = lambda child: pytest.fail("must not supervise after an interrupted start")
+    interrupted = mock.patch.object(engine, "_await_admin_ready", side_effect=KeyboardInterrupt)
+    with _foreground_start(engine, binary, order, proc, ready=interrupted):
+        assert engine.start(foreground=True) == 0
+    proc.terminate.assert_called_once()
+    assert engine.get_state() is None
 
 
 def test_a_wide_data_bind_warns_even_though_the_admin_port_is_safe(tmp_path, binary, caplog):

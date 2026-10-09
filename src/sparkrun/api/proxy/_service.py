@@ -280,11 +280,6 @@ def _unit_inputs(sctx: "SparkrunContext", warnings: list[str]):
         path_dirs.append(os.path.dirname(os.path.abspath(uvx)))
     elif gateway == "litellm":
         raise _systemd.SystemdError("The litellm gateway runs through uvx, which was not found on PATH. Install uv first.")
-    if gateway == "sparkroute":
-        warnings.append(
-            "With the sparkroute gateway, routes are not reconciled when the unit starts the gateway; "
-            "they are applied at the first discovery sweep."
-        )
     path_dirs += ["/usr/local/bin", "/usr/bin", "/bin"]
     path_env = ":".join(dict.fromkeys(_systemd.validate_path(d, "PATH entry") for d in path_dirs))
 

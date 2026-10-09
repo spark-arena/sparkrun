@@ -2029,7 +2029,13 @@ and terminates the replacement if a stop arrived. The lock is required
 because an unlocked mark could rewrite the old PID over the new one. Only
 state naming a PID the loop supervised is cleared, and cleanup runs with
 SIGINT/SIGTERM ignored (`_signals_deferred`) so a second Ctrl-C cannot abort
-it halfway.
+it halfway. A replacement is followed only when the loop saw `restarting` or
+the new record carries the same `supervisor`; otherwise someone else started a
+proxy after stopping ours. SparkRoute never restarts its process (it reconciles
+over its admin API). From plugin 0.2.1 its foreground start reconciles once the
+admin API answers and then calls `supervise_foreground` when the host has it.
+`api.proxy._foreground_exit_status` still maps a raw `-SIGTERM` to 0 for
+gateways that return `proc.wait()` themselves, because a crash is never SIGTERM.
 
 **State from a previous boot names no process** (`_from_previous_boot`).
 `state.yaml` is on disk, so it survives a crash. After a reboot its PID is
@@ -2043,12 +2049,7 @@ shell. Spawning the replacement there would put it outside the unit's cgroup
 and drop the record. So when the state names a unit and the current process
 is not the supervised one, the restart is `systemctl restart` plus a wait
 (`UNIT_RESTART_TIMEOUT`) for the new PID. Inside the unit, the daemon spawns
-directly and carries the record over. A replacement is followed only when the loop saw `restarting` or the
-new record carries the same `supervisor`; otherwise someone else started a
-proxy after stopping ours. SparkRoute (vendored) never restarts its process
-(it reconciles over its admin API), so it keeps its own `proc.wait()`;
-`api.proxy._foreground_exit_status` maps its `-SIGTERM` to 0, because a crash is
-never SIGTERM.
+directly and carries the record over.
 
 **Discovery scope** (`api.proxy.resolve_discovery_scope`, first hit wins):
 `--hosts`/`--hosts-file` (one invocation) → `--cluster` (saved as

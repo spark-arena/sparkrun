@@ -240,9 +240,6 @@ without a passphrase. Set `ssh.key` in `config.yaml` if your default key is not
 usable that way. Logs go to the journal (`journalctl -u sparkrun-proxy`, or
 `journalctl --user-unit sparkrun-proxy` for a user unit).
 
-With the SparkRoute gateway, routes are not reconciled when the unit starts the
-gateway; they are applied at the first discovery sweep.
-
 ## Configuration and state
 
 For built-in Sparkrun, settings live in `~/.config/sparkrun/proxy.yaml`:

@@ -417,8 +417,10 @@ class SparkrouteEngine(GatewaySupervisor):
         Args:
             config_path: Ignored — configuration lives in the gateway's
                 database. Accepted for signature parity with ``ProxyEngine``.
-            foreground: Run blocking rather than detached. No reconcile happens
-                in this mode; the caller owns the process's lifetime.
+            foreground: Run blocking rather than detached (what a service
+                manager runs). The configuration is reconciled once the admin
+                API answers, as in background mode; the call then blocks until
+                the gateway stops.
             dry_run: Report what would happen and change nothing.
             autodiscover_kwargs: Shared discovery-sidecar settings. Periodic
                 sweeps reconcile only warm discovered routes.
@@ -477,23 +479,7 @@ class SparkrouteEngine(GatewaySupervisor):
         env = child_environment(self.sctx.config.config_path if self.sctx is not None else None)
 
         if foreground:
-            proc = subprocess.Popen(cmd, env=env)
-            self._save_state(proc.pid)
-            if autodiscover_kwargs:
-                autodiscover_pid = self.start_autodiscover(
-                    proxy_pid=proc.pid,
-                    **autodiscover_kwargs,
-                )
-                if autodiscover_pid:
-                    self.update_autodiscover_pid(autodiscover_pid)
-            try:
-                return proc.wait()
-            except KeyboardInterrupt:
-                proc.terminate()
-                return 130
-            finally:
-                self.stop_autodiscover()
-                self._clear_state()
+            return self._run_foreground(cmd, env, autodiscover_kwargs)
 
         pid = self._launch_background(cmd, env)
         if pid is None:
@@ -502,16 +488,7 @@ class SparkrouteEngine(GatewaySupervisor):
         logger.info("Gateway started (PID %d) on %s (admin %s)", pid, self.data_address, self.admin_address)
         logger.info("Log: %s", self.log_path)
 
-        try:
-            self._await_admin_ready()
-            added, removed = self.reconcile(reason="gateway start")
-            if added or removed:
-                logger.info("Reconciled gateway configuration: +%d, -%d", added, removed)
-        except (AdminError, SparkrouteConfigError) as exc:
-            # The process is up and serving whatever the database already held.
-            # A failed reconcile is not a failed start, and reporting it as one
-            # would leave a running gateway behind a non-zero exit code.
-            logger.error("Gateway started but its configuration could not be reconciled: %s", exc)
+        self._reconcile_after_start()
         if autodiscover_kwargs:
             autodiscover_pid = self.start_autodiscover(
                 proxy_pid=pid,
@@ -520,6 +497,68 @@ class SparkrouteEngine(GatewaySupervisor):
             if autodiscover_pid:
                 self.update_autodiscover_pid(autodiscover_pid)
         return 0
+
+    def _reconcile_after_start(self) -> None:
+        """Wait for the admin API, then apply the desired configuration.
+
+        Best-effort: a failure leaves the gateway serving whatever its database
+        already held, which is not a failed start. Reporting it as one would
+        leave a running gateway behind a non-zero exit code.
+        """
+        try:
+            self._await_admin_ready()
+            added, removed = self.reconcile(reason="gateway start")
+            if added or removed:
+                logger.info("Reconciled gateway configuration: +%d, -%d", added, removed)
+        except (AdminError, SparkrouteConfigError) as exc:
+            logger.error("Gateway started but its configuration could not be reconciled: %s", exc)
+
+    def _run_foreground(self, cmd: list[str], env: dict[str, str], autodiscover_kwargs: dict | None) -> int:
+        """Run the gateway attached, reconciled like a background start.
+
+        Without the reconcile, a gateway started by a service manager (which
+        can only run foreground mode) served whatever its database held until
+        the first discovery sweep, and never applied explicit bindings.
+        """
+        proc = subprocess.Popen(cmd, env=env)
+        self._save_state(proc.pid)
+        logger.info("Gateway started (PID %d) on %s (admin %s)", proc.pid, self.data_address, self.admin_address)
+        try:
+            self._reconcile_after_start()
+        except KeyboardInterrupt:
+            # Stopped while still starting up: take the gateway down with us.
+            proc.terminate()
+            try:
+                proc.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            self._clear_state()
+            return 0
+        if autodiscover_kwargs:
+            autodiscover_pid = self.start_autodiscover(
+                proxy_pid=proc.pid,
+                **autodiscover_kwargs,
+            )
+            if autodiscover_pid:
+                self.update_autodiscover_pid(autodiscover_pid)
+
+        supervise = getattr(self, "supervise_foreground", None)
+        if supervise is not None:
+            # Hosts that supervise foreground gateways decide the exit status
+            # from the state file (0 for a requested stop, non-zero for a
+            # crash, so a service manager restarts only a crash) and shut down
+            # in order: discovery sidecar first, then the gateway.
+            return supervise(proc)
+        # Older 0.4 hosts: wait on the child directly.
+        try:
+            return proc.wait()
+        except KeyboardInterrupt:
+            proc.terminate()
+            return 130
+        finally:
+            self.stop_autodiscover()
+            self._clear_state()
 
     def _prepare_live_tokens(self) -> None:
         """Apply master-key auth without exposing secrets in process argv."""
