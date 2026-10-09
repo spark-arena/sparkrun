@@ -136,7 +136,8 @@ def find_service(scope: str | None = None) -> "UnitSpec | None":
     found = [spec for spec in (_systemd.find_installed(s, user) for s in scopes) if spec is not None]
     if len(found) > 1:
         raise ProxyServiceError(
-            "Both a system and a user proxy unit are installed (%s); pass --system or --user." % ", ".join(str(s.path) for s in found)
+            "Both a system and a user proxy unit are installed (%s). Remove one with "
+            "'proxy systemd remove --system' or 'proxy systemd remove --user'." % ", ".join(str(s.path) for s in found)
         )
     return found[0] if found else None
 
@@ -145,17 +146,7 @@ def spec_from_record(record: Any) -> "UnitSpec | None":
     """The unit a running proxy's state names, when it is still ours."""
     from sparkrun.proxy import _systemd
 
-    if not isinstance(record, dict) or record.get("kind") != "systemd":
-        return None
-    scope, unit = record.get("scope"), record.get("unit")
-    try:
-        user = _systemd.current_user()
-    except _systemd.SystemdError:
-        return None
-    for spec in _systemd.candidates(str(scope), user):
-        if spec.name == unit and _systemd.is_ours(spec):
-            return spec
-    return None
+    return _systemd.unit_for_record(record)
 
 
 # -- Install -----------------------------------------------------------------------
@@ -184,6 +175,14 @@ def install_service(options: ProxyServiceOptions | None = None, *, sctx: "Sparkr
     warnings: list[str] = []
     try:
         user = _systemd.current_user()
+        other_scope = _systemd.SCOPE_USER if options.scope == _systemd.SCOPE_SYSTEM else _systemd.SCOPE_SYSTEM
+        other = _systemd.find_installed(other_scope, user)
+        if other is not None:
+            # Two units would both start a proxy on the same port at boot.
+            raise _systemd.SystemdError(
+                "A %s proxy unit is already installed (%s); remove it first with 'proxy systemd remove --%s'."
+                % (other_scope, other.path, other_scope)
+            )
         spec = _systemd.choose_install_target(options.scope, user)
         inputs = _unit_inputs(sctx, warnings)
         unit_text = _systemd.render_unit(spec, inputs)

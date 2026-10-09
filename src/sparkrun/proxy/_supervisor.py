@@ -35,6 +35,12 @@ from typing import Any
 
 import yaml
 
+try:  # POSIX only; without it the state lock degrades to none (see _state_lock).
+    import fcntl
+except ImportError:  # pragma: no cover - Windows control node
+    fcntl = None  # type: ignore[assignment]
+from contextlib import contextmanager
+
 from sparkrun.proxy.contracts import ProxyModel, GatewayOperationError, GatewayQueryError
 from sparkrun.utils.fs import open_private_write, atomic_private_write
 from sparkrun.core.application_profile import get_application_profile
@@ -78,6 +84,11 @@ def supervisor_from_env(environ: dict[str, str] | None = None) -> dict[str, str]
         return None
     kind, scope, unit = parts
     return {"kind": kind, "scope": scope, "unit": unit}
+
+
+def supervisor_value(record: dict) -> str:
+    """The :data:`SUPERVISOR_ENV` value a state-file record was parsed from."""
+    return "%s:%s:%s" % (record.get("kind"), record.get("scope"), record.get("unit"))
 
 
 def exit_status(rc: int | None) -> int:
@@ -156,6 +167,50 @@ def _wait_for_exit(pid: int, timeout: float) -> bool:
         if time.monotonic() >= deadline:
             return False
         time.sleep(0.2)
+
+
+@contextmanager
+def _signals_deferred():
+    """Ignore SIGINT/SIGTERM while the foreground shuts down in order.
+
+    Stopping the gateway can take :data:`RESTART_EXIT_TIMEOUT` plus a SIGKILL
+    grace; a second Ctrl-C (or a repeated SIGTERM) used to abort the cleanup
+    halfway, leaving state behind and possibly the daemon running.  Only the
+    main thread may change handlers, so elsewhere this is a no-op.
+    """
+    import threading
+
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous = {sig: signal.signal(sig, signal.SIG_IGN) for sig in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        yield
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
+def _boot_id() -> str | None:
+    """This boot's identity (Linux), or None where unavailable."""
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text().strip() or None
+    except OSError:
+        return None
+
+
+def _from_previous_boot(state: dict) -> bool:
+    """True when *state* was written before the current boot.
+
+    ``state.yaml`` lives on disk, so it survives a power loss or kernel crash.
+    After a reboot its PID is routinely reused by an unrelated process, which
+    ``kill(pid, 0)`` reports as alive: the boot-started proxy unit would then
+    refuse to start ("already running") and ``proxy stop`` would signal a
+    stranger.  A record from another boot names no process of ours.
+    """
+    recorded = state.get("boot_id")
+    current = _boot_id()
+    return bool(recorded and current and recorded != current)
 
 
 def _alive(pid: int | None) -> bool:
@@ -243,14 +298,16 @@ class GatewayState:
             return None
         try:
             state = self.get_state()
-            return int(state["pid"]) if state and "pid" in state else None
+            if not state or "pid" not in state or _from_previous_boot(state):
+                return None
+            return int(state["pid"])
         except Exception:
             return None
 
     def _read_autodiscover_pid(self) -> int | None:
         """Read the auto-discover PID from the state file."""
         state = self.get_state()
-        if state and "autodiscover_pid" in state:
+        if state and "autodiscover_pid" in state and not _from_previous_boot(state):
             return int(state["autodiscover_pid"])
         return None
 
@@ -263,6 +320,27 @@ class GatewayState:
         state = self.get_state() or {}
         name = state.get("gateway")
         return str(name) if name else None
+
+    @contextmanager
+    def _state_lock(self):
+        """Serialize read-modify-write of ``state.yaml`` across processes.
+
+        A stop records its intent while the auto-discover daemon may be
+        recording a replacement; unlocked, the stop could rewrite the old PID
+        over the new one and leave a live gateway nothing can see.  A stable
+        sidecar is locked because the state file is replaced by rename.
+        Degrades to no locking without ``fcntl`` (the daemon is POSIX-only).
+        """
+        if fcntl is None:
+            yield
+            return
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self.state_dir / ".state.lock", os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            os.close(fd)
 
 
 class GatewaySupervisor(GatewayState):
@@ -579,7 +657,8 @@ class GatewaySupervisor(GatewayState):
             interrupted = True
             status = 0
         finally:
-            self._finish_foreground(supervised, watched, child, terminate=interrupted)
+            with _signals_deferred():
+                self._finish_foreground(supervised, watched, child, terminate=interrupted)
         return status
 
     def _classify_exit(self, pid: int, our_supervisor: dict | None) -> tuple[str, int | None]:
@@ -588,9 +667,9 @@ class GatewaySupervisor(GatewayState):
         while True:
             state = self.get_state()
             if state is None:
-                # Cleared by a stop that saw the exit, or by a restart that
-                # failed after we had seen it begin.
-                return ("crashed" if deadline is not None else "stopped"), None
+                # Cleared by a stop (a failed restart records restart_failed
+                # instead, so this is never a crash).
+                return "stopped", None
             try:
                 recorded = int(state.get("pid"))
             except (TypeError, ValueError):
@@ -600,7 +679,10 @@ class GatewaySupervisor(GatewayState):
                 # start someone else made after stopping us.
                 if (deadline is not None or state.get("supervisor") == our_supervisor) and _alive(recorded):
                     return "follow", recorded
-                return "stopped", None
+                # Our own restart's replacement died as soon as it was recorded.
+                return ("crashed" if deadline is not None else "stopped"), None
+            if state.get("restart_failed"):
+                return "crashed", None
             if state.get("restarting"):
                 now = time.monotonic()
                 if deadline is None:
@@ -797,6 +879,9 @@ class GatewaySupervisor(GatewayState):
             return False
         except PermissionError:
             logger.error("Permission denied sending signal to PID %d", pid)
+            # Nothing was stopped: a stale intent would make a later crash
+            # read as a requested stop.
+            self._mark_state(stop_requested=False)
             return False
 
     def is_running(self) -> bool:
@@ -812,13 +897,39 @@ class GatewaySupervisor(GatewayState):
         """Implementation-specific state fields (host, port, master key, …)."""
         return {}
 
-    def _save_state(self, pid: int, autodiscover_pid: int | None = None) -> None:
+    def _save_state(self, pid: int, autodiscover_pid: int | None = None, *, supervisor: Any = "env") -> None:
         """Save gateway state to disk.
 
         The state file can contain the master key, so it is written with
         owner-only (0o600) permissions and its parent dir is restricted to
         0o700 — mirroring ``arena.auth.save_refresh_token``.
+
+        *supervisor* is the record to store; the default derives it from
+        :data:`SUPERVISOR_ENV`.  A restart passes the previous record instead,
+        because the process doing it (a CLI ``proxy alias add``) may not be
+        the supervised one.
         """
+        state = self._build_state(pid, autodiscover_pid, supervisor)
+        with self._state_lock():
+            atomic_private_write(self.state_file, yaml.safe_dump(state, default_flow_style=False))
+
+    def _commit_replacement(self, pid: int, autodiscover_pid: int | None, supervisor: Any) -> bool:
+        """Record a restart's replacement unless a stop arrived meanwhile.
+
+        Checked under the state lock, so a ``proxy stop`` (which records
+        ``stop_requested``, or clears a record whose process already exited)
+        either lands before this and wins, or lands after and stops *this*
+        process.  Returns False when the replacement must not be kept.
+        """
+        state = self._build_state(pid, autodiscover_pid, supervisor)
+        with self._state_lock():
+            current = self.get_state()
+            if current is None or current.get("stop_requested"):
+                return False
+            atomic_private_write(self.state_file, yaml.safe_dump(state, default_flow_style=False))
+            return True
+
+    def _build_state(self, pid: int, autodiscover_pid: int | None, supervisor: Any) -> dict[str, Any]:
         import datetime
 
         self.claim_state_directory()
@@ -834,10 +945,14 @@ class GatewaySupervisor(GatewayState):
         state["started_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
         if autodiscover_pid is not None:
             state["autodiscover_pid"] = autodiscover_pid
-        supervisor = supervisor_from_env()
-        if supervisor is not None:
+        if supervisor == "env":
+            supervisor = supervisor_from_env()
+        if supervisor:
             state["supervisor"] = supervisor
-        atomic_private_write(self.state_file, yaml.safe_dump(state, default_flow_style=False))
+        boot = _boot_id()
+        if boot:
+            state["boot_id"] = boot
+        return state
 
     def _mark_state(self, **fields: Any) -> None:
         """Merge *fields* into the existing state record (no-op without one).
@@ -847,22 +962,25 @@ class GatewaySupervisor(GatewayState):
         deliberate stop) versus ``restarting`` (a managed restart that will
         record a replacement).  An exit with neither is a crash.
         """
-        state = self.get_state()
-        if state is None:
-            return
-        state.update(fields)
-        atomic_private_write(self.state_file, yaml.safe_dump(state, default_flow_style=False))
+        with self._state_lock():
+            state = self.get_state()
+            if state is None:
+                return
+            state.update(fields)
+            atomic_private_write(self.state_file, yaml.safe_dump(state, default_flow_style=False))
 
     def update_autodiscover_pid(self, autodiscover_pid: int) -> None:
         """Record the auto-discover PID in state (call after start)."""
         pid = self._read_pid()
         if pid is not None:
-            self._save_state(pid, autodiscover_pid=autodiscover_pid)
+            supervisor = (self.get_state() or {}).get("supervisor")
+            self._save_state(pid, autodiscover_pid=autodiscover_pid, supervisor=supervisor or "env")
 
     def _clear_state(self) -> None:
         """Remove state file."""
-        if self.get_state() is not None:
-            self.state_file.unlink(missing_ok=True)
+        with self._state_lock():
+            if self.get_state() is not None:
+                self.state_file.unlink(missing_ok=True)
 
 
 __all__ = [

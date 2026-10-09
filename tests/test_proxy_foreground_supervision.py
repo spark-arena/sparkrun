@@ -121,7 +121,23 @@ def test_restart_window_is_not_a_crash(engine, procs):
 
 
 def test_failed_restart_is_a_crash(engine, procs):
-    """``_restart_proxy`` clears state when the replacement fails to start."""
+    """``_restart_proxy`` records ``restart_failed`` when the replacement fails to start."""
+    first = _sleeper()
+    procs.append(first)
+    engine._save_state(first.pid)
+    sup = _Supervised(engine, first)
+
+    other = ProxyEngine(state_dir=engine.state_dir)
+    other._mark_state(restarting=True)
+    first.send_signal(signal.SIGTERM)
+    time.sleep(0.5)
+    other._mark_state(restarting=False, restart_failed=True)
+    # A crash, carrying the old child's own status (it died of the SIGTERM).
+    assert sup.join() == 128 + signal.SIGTERM
+
+
+def test_stop_during_restart_is_a_stop(engine, procs):
+    """A stop that clears the record mid-restart wins: exit 0, no crash."""
     first = _sleeper()
     procs.append(first)
     engine._save_state(first.pid)
@@ -132,8 +148,7 @@ def test_failed_restart_is_a_crash(engine, procs):
     first.send_signal(signal.SIGTERM)
     time.sleep(0.5)
     other._clear_state()
-    # A crash, carrying the old child's own status (it died of the SIGTERM).
-    assert sup.join() == 128 + signal.SIGTERM
+    assert sup.join() == 0
 
 
 def test_stop_of_own_child_returns_zero(engine, procs):
@@ -292,3 +307,155 @@ def test_exit_status(rc, expected):
 @pytest.mark.parametrize("rc, expected", [(-signal.SIGTERM, 0), (-signal.SIGKILL, 137), (0, 0), (2, 2)])
 def test_foreground_exit_status_treats_sigterm_as_requested(rc, expected):
     assert _foreground_exit_status(rc) == expected
+
+
+# -- Review follow-ups: stale boots, stop/restart races, signal deferral -------
+
+
+def test_record_from_a_previous_boot_names_no_process(engine, procs, monkeypatch):
+    """A reused PID after a reboot must not read as our running proxy."""
+    alive = _sleeper()
+    procs.append(alive)
+    engine._save_state(alive.pid)
+    assert engine.is_running()
+    monkeypatch.setattr("sparkrun.proxy._supervisor._boot_id", lambda: "another-boot")
+    assert engine.current_pid() is None
+    assert not engine.is_running()
+    assert engine.stop() is False  # nothing to signal: the stranger is left alone
+    assert alive.poll() is None
+
+
+def test_record_without_boot_id_is_still_honoured(engine, procs, monkeypatch):
+    """Records written before boot_id existed keep their old meaning."""
+    alive = _sleeper()
+    procs.append(alive)
+    monkeypatch.setattr("sparkrun.proxy._supervisor._boot_id", lambda: None)
+    engine._save_state(alive.pid)
+    monkeypatch.setattr("sparkrun.proxy._supervisor._boot_id", lambda: "now")
+    assert engine.is_running()
+
+
+def _restart_harness(engine, procs, monkeypatch, *, during_launch=None):
+    old = _sleeper()
+    procs.append(old)
+    engine._save_state(old.pid)
+    spawned = []
+
+    def launch(cmd, env):
+        if during_launch:
+            during_launch()
+        new = _sleeper()
+        procs.append(new)
+        spawned.append(new)
+        return new.pid
+
+    monkeypatch.setattr(engine, "_build_command", lambda config_path=None: ["true"])
+    monkeypatch.setattr(engine, "_launch_background", launch)
+    return old, spawned
+
+
+def test_stop_during_launch_terminates_the_replacement(engine, procs, monkeypatch):
+    other = ProxyEngine(state_dir=engine.state_dir)
+    old, spawned = _restart_harness(engine, procs, monkeypatch, during_launch=lambda: other._mark_state(stop_requested=True))
+    assert engine._restart_proxy() is None
+    (new,) = spawned
+    new.wait(timeout=10)
+    assert engine.get_state()["pid"] == old.pid  # never replaced by the stopped one
+
+
+def test_stop_before_launch_spawns_nothing(engine, procs, monkeypatch):
+    old, spawned = _restart_harness(engine, procs, monkeypatch)
+    real_await = engine._await_exit
+
+    def await_then_stop(pid, timeout):
+        ok = real_await(pid, timeout)
+        ProxyEngine(state_dir=engine.state_dir)._clear_state()
+        return ok
+
+    monkeypatch.setattr(engine, "_await_exit", await_then_stop)
+    assert engine._restart_proxy() is None
+    assert spawned == []
+
+
+def test_failed_launch_records_restart_failed(engine, procs, monkeypatch):
+    old, _ = _restart_harness(engine, procs, monkeypatch)
+    monkeypatch.setattr(engine, "_launch_background", lambda cmd, env: None)
+    assert engine._restart_proxy() is None
+    state = engine.get_state()
+    assert state["restart_failed"] is True and state["restarting"] is False
+    assert not engine.is_running()
+
+
+def test_restart_keeps_the_supervisor_record(engine, procs, monkeypatch):
+    """A restart from a shell (no supervisor env) must not drop the unit's record."""
+    record = {"kind": "systemd", "scope": "system", "unit": "sparkrun-proxy.service"}
+    monkeypatch.setenv(SUPERVISOR_ENV, "systemd:system:sparkrun-proxy.service")
+    old, _ = _restart_harness(engine, procs, monkeypatch)
+    monkeypatch.delenv(SUPERVISOR_ENV)
+    # No such unit is installed for us, so the direct path runs.
+    new_pid = engine._restart_proxy()
+    assert engine.get_state()["pid"] == new_pid
+    assert engine.get_state()["supervisor"] == record
+
+
+def test_restart_outside_the_unit_goes_through_it(engine, procs, monkeypatch):
+    from sparkrun.proxy import _systemd
+
+    monkeypatch.setenv(SUPERVISOR_ENV, "systemd:system:sparkrun-proxy.service")
+    old, spawned = _restart_harness(engine, procs, monkeypatch)
+    monkeypatch.delenv(SUPERVISOR_ENV)
+    spec = _systemd.UnitSpec("system", "sparkrun-proxy.service", _systemd.SYSTEM_UNIT_DIR / "sparkrun-proxy.service", "alice")
+    monkeypatch.setattr(_systemd, "unit_for_record", lambda record: spec)
+    replacement = _sleeper()
+    procs.append(replacement)
+
+    def control(unit, action):
+        assert (unit, action) == (spec, "restart")
+        old.terminate()
+        ProxyEngine(state_dir=engine.state_dir)._save_state(replacement.pid)
+        return subprocess.CompletedProcess([], 0, "", "")
+
+    monkeypatch.setattr(_systemd, "control", control)
+    assert engine._restart_proxy() == replacement.pid
+    assert spawned == []
+
+
+def test_replacement_dying_on_arrival_is_a_crash(engine, procs):
+    first = _sleeper()
+    procs.append(first)
+    engine._save_state(first.pid)
+    sup = _Supervised(engine, first)
+    other = ProxyEngine(state_dir=engine.state_dir)
+    other._mark_state(restarting=True)
+    first.send_signal(signal.SIGTERM)
+    dead = _exiter(0)
+    procs.append(dead)
+    dead.wait()
+    other._save_state(dead.pid)
+    assert sup.join() != 0
+
+
+def test_failed_stop_signal_clears_intent(engine, procs, monkeypatch):
+    gateway = _sleeper()
+    procs.append(gateway)
+    engine._save_state(gateway.pid)
+    real_kill = os.kill
+
+    def deny(pid, sig):
+        if pid == gateway.pid and sig == signal.SIGTERM:
+            raise PermissionError
+        return real_kill(pid, sig)
+
+    monkeypatch.setattr(os, "kill", deny)
+    assert engine.stop() is False
+    assert engine.get_state()["stop_requested"] is False
+
+
+def test_cleanup_ignores_repeated_signals():
+    from sparkrun.proxy._supervisor import _signals_deferred
+
+    before = signal.getsignal(signal.SIGINT)
+    with _signals_deferred():
+        os.kill(os.getpid(), signal.SIGINT)  # would raise KeyboardInterrupt otherwise
+        time.sleep(0.05)
+    assert signal.getsignal(signal.SIGINT) is before

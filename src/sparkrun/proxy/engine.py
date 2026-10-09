@@ -17,6 +17,7 @@ import os
 import signal
 import shutil
 import subprocess
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -31,6 +32,8 @@ from sparkrun.proxy import (
     DEFAULT_PROXY_PORT,
 )
 from sparkrun.proxy._supervisor import (
+    SUPERVISOR_ENV,
+    supervisor_value as _supervisor_value,
     RESTART_EXIT_TIMEOUT as _RESTART_EXIT_TIMEOUT,
     RESTART_STARTUP_GRACE as _RESTART_STARTUP_GRACE,
     GatewayOperationError,
@@ -53,6 +56,10 @@ logger = logging.getLogger(__name__)
 # tests have always imported them from this module.
 RESTART_EXIT_TIMEOUT = _RESTART_EXIT_TIMEOUT
 RESTART_STARTUP_GRACE = _RESTART_STARTUP_GRACE
+
+#: How long a restart routed through a systemd unit waits for the unit's new
+#: foreground process to record its gateway (it runs a discovery sweep first).
+UNIT_RESTART_TIMEOUT = 120.0
 
 
 class ProxyRestartError(GatewayOperationError):
@@ -611,9 +618,25 @@ class ProxyEngine(GatewaySupervisor):
         so it follows the restart.  Spawning a second one here would leave
         two daemons racing to rewrite the same config.
 
+        A gateway supervised by a systemd unit is restarted **through the
+        unit** when this runs outside it (``proxy alias add`` in a shell):
+        spawning the replacement here would put it in the shell's session,
+        outside the unit's cgroup and beyond its stop.  Inside the unit (the
+        daemon inherits its environment) the replacement is spawned directly
+        and keeps the unit's record.
+
         Returns:
-            The new proxy PID, or None on failure.
+            The new proxy PID, or None on failure (including a stop that
+            arrived mid-restart, which wins).
         """
+        state = self.get_state() or {}
+        supervisor = state.get("supervisor") or None
+        if supervisor and os.environ.get(SUPERVISOR_ENV) != _supervisor_value(supervisor):
+            pid = self._restart_through_unit(supervisor)
+            if pid is not None:
+                return pid
+            logger.warning("Could not restart through systemd unit %s; restarting the gateway directly", supervisor.get("unit"))
+
         cmd = self._build_command()
         if cmd is None:
             return None
@@ -652,16 +675,55 @@ class ProxyEngine(GatewaySupervisor):
 
         self._proc = None
 
-        pid = self._launch_background(cmd, self._build_env())
-        if pid is None:
-            # The old proxy is already gone; clear state so callers and the
-            # auto-discover daemon see "not running" rather than a stale PID.
-            self._clear_state()
+        if self._stop_requested():
+            logger.info("Proxy stop requested during restart; not starting a replacement")
             return None
 
-        self._save_state(pid, autodiscover_pid=ad_pid)
+        pid = self._launch_background(cmd, self._build_env())
+        if pid is None:
+            # The old proxy is already gone. Keep its (dead) record but say
+            # the restart failed, so a foreground supervisor reports a crash
+            # rather than a requested stop; everyone else reads a dead PID as
+            # "not running".
+            self._mark_state(restarting=False, restart_failed=True)
+            return None
+
+        if not self._commit_replacement(pid, ad_pid, supervisor or "env"):
+            logger.info("Proxy stop requested during restart; stopping replacement PID %d", pid)
+            self._terminate_gateway(pid, self._proc)
+            self._proc = None
+            return None
         logger.info("Proxy restarted (PID %d) on %s:%d", pid, self.host, self.port)
         return pid
+
+    def _stop_requested(self) -> bool:
+        """A stop recorded (or the record cleared) since this restart began."""
+        state = self.get_state()
+        return state is None or bool(state.get("stop_requested"))
+
+    def _restart_through_unit(self, supervisor: dict) -> int | None:
+        """``systemctl restart`` the supervising unit; return the new gateway PID."""
+        from sparkrun.proxy import _systemd
+
+        spec = _systemd.unit_for_record(supervisor)
+        if spec is None:
+            return None
+        old_pid = self._read_pid()
+        result = _systemd.control(spec, "restart")
+        if result.returncode != 0:
+            logger.warning("systemctl restart %s failed: %s", spec.name, (result.stderr or result.stdout).strip())
+            return None
+        # The unit's new foreground process runs discovery before recording
+        # its gateway, so allow for an SSH sweep.
+        deadline = time.monotonic() + UNIT_RESTART_TIMEOUT
+        while time.monotonic() < deadline:
+            pid = self._read_pid()
+            if pid is not None and pid != old_pid and self.is_running():
+                logger.info("Proxy restarted through %s (PID %d)", spec.name, pid)
+                return pid
+            time.sleep(0.5)
+        logger.error("%s restarted but recorded no gateway within %.0fs", spec.name, UNIT_RESTART_TIMEOUT)
+        return None
 
     def _adopt_running_identity(self) -> None:
         """Take host/port/master_key from the running proxy's state file.

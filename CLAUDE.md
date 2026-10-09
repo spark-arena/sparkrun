@@ -2021,8 +2021,29 @@ block), and `_restart_proxy` has a window where the old PID is dead and the new
 one is not yet recorded. So **both write their intent into `state.yaml` before
 signalling** (`_mark_state(stop_requested=True)` / `restarting=True`), and the
 supervisor waits out a `restarting` window (`REPLACEMENT_WAIT_TIMEOUT`) rather
-than reading it as a crash. Only state naming a PID the loop supervised is
-cleared. A replacement is followed only when the loop saw `restarting` or the
+than reading it as a crash. A failed restart records `restart_failed` (it no
+longer clears the state, which now always means a stop). A stop that lands
+mid-restart wins. The restart checks before spawning, and
+`_commit_replacement` re-checks under `_state_lock` (an flock on a sidecar)
+and terminates the replacement if a stop arrived. The lock is required
+because an unlocked mark could rewrite the old PID over the new one. Only
+state naming a PID the loop supervised is cleared, and cleanup runs with
+SIGINT/SIGTERM ignored (`_signals_deferred`) so a second Ctrl-C cannot abort
+it halfway.
+
+**State from a previous boot names no process** (`_from_previous_boot`).
+`state.yaml` is on disk, so it survives a crash. After a reboot its PID is
+easily reused, and `kill(pid, 0)` would make the boot-started unit refuse to
+start and `proxy stop` signal a stranger. Records carry `boot_id`; one from
+another boot reads as not running. Records without it keep their old meaning.
+
+**Restarts from outside the unit go through it** (`ProxyEngine._restart_proxy`).
+`proxy alias add`, `sync` and load/unload restart LiteLLM from the user's
+shell. Spawning the replacement there would put it outside the unit's cgroup
+and drop the record. So when the state names a unit and the current process
+is not the supervised one, the restart is `systemctl restart` plus a wait
+(`UNIT_RESTART_TIMEOUT`) for the new PID. Inside the unit, the daemon spawns
+directly and carries the record over. A replacement is followed only when the loop saw `restarting` or the
 new record carries the same `supervisor`; otherwise someone else started a
 proxy after stopping ours. SparkRoute (vendored) never restarts its process
 (it reconciles over its admin API), so it keeps its own `proc.wait()`;

@@ -935,7 +935,9 @@ def _persist_overrides(proxy_cfg, options: ProxyStartOptions) -> list[str]:
         ),
         ("discover_interval", options.discover_interval, proxy_cfg.discover_interval),
         ("gateway", options.gateway, proxy_cfg.gateway),
-        ("cluster", options.cluster, proxy_cfg.cluster),
+        # With --hosts the cluster only supplies the SSH user for that one-off
+        # scope, so it is not made the saved discovery cluster.
+        ("cluster", None if options.host_filter else options.cluster, proxy_cfg.cluster),
     ]
 
     updates: dict[str, object] = {}
@@ -985,10 +987,29 @@ def _start_via_unit(unit, options, gateway, host, port, persisted, warnings, sct
     """
     from sparkrun.proxy import _systemd
 
-    from ._service import ProxyServiceError, control_service
+    from ._service import ProxyServiceError, control_service, spec_from_record
 
     if options.host_filter:
         warnings.append("--hosts/--hosts-file apply to one invocation and are ignored by systemd unit %s; use --cluster." % unit.name)
+
+    # A proxy running outside the unit holds the port: starting the unit now
+    # would fail with "already running" every RestartSec, forever, while this
+    # command reported success.  --restart replaces it, as it would replace
+    # any running proxy.
+    engine = _running_engine(sctx)
+    restarted = False
+    if engine.is_running() and spec_from_record((engine.get_state() or {}).get("supervisor")) != unit:
+        if not options.restart:
+            raise ProxyAlreadyRunning(
+                "A proxy is already running outside systemd unit %s (PID %s)." % (unit.name, engine.current_pid()),
+                pid=engine.current_pid(),
+                port=port,
+                persisted=persisted,
+            )
+        if not options.dry_run and not _stop_and_wait(engine):
+            raise ProxyStartFailed("Proxy did not stop cleanly within %.0fs; aborting restart." % RESTART_WAIT_SECONDS)
+        restarted = True
+
     active = _systemd.query(unit, "is-active") == "active"
     if active and not options.restart:
         raise ProxyAlreadyRunning(
@@ -1008,7 +1029,7 @@ def _start_via_unit(unit, options, gateway, host, port, persisted, warnings, sct
         port=port,
         started=not options.dry_run,
         dry_run=options.dry_run,
-        restarted=active,
+        restarted=active or restarted,
         persisted=persisted,
         warnings=tuple(warnings),
         unit=unit.name,

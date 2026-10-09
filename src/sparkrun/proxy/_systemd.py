@@ -195,6 +195,24 @@ def find_installed(scope: str, user: str) -> UnitSpec | None:
     return None
 
 
+def unit_for_record(record: object) -> UnitSpec | None:
+    """The unit a state-file ``supervisor`` record names, when it is still ours.
+
+    The record is history; the files are current.  So it is honoured only
+    when the named unit exists for this user and profile.
+    """
+    if not isinstance(record, dict) or record.get("kind") != "systemd":
+        return None
+    try:
+        user = current_user()
+    except SystemdError:
+        return None
+    for spec in candidates(str(record.get("scope")), user):
+        if spec.name == record.get("unit") and is_ours(spec):
+            return spec
+    return None
+
+
 def choose_install_target(scope: str, user: str) -> UnitSpec:
     """Where an install for *user* goes: an existing unit of ours, else the first free name."""
     existing = find_installed(scope, user)
@@ -434,6 +452,7 @@ __all__ = [
     "render_unit",
     "systemctl_path",
     "systemd_unavailable_reason",
+    "unit_for_record",
     "user_command",
     "user_unit_dir",
     "validate_path",

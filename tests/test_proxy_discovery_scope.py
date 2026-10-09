@@ -232,3 +232,10 @@ def test_cli_prints_discovery_line(context, clusters, stub_engine, monkeypatch):
     result = CliRunner().invoke(proxy, ["start", "--dry-run"])
     assert result.exit_code == 0, result.output
     assert "Discovery: cluster lab (from default cluster)" in result.output
+
+
+def test_cluster_with_explicit_hosts_is_not_saved(context, clusters, stub_engine):
+    """With --hosts the cluster only lends its SSH user to a one-off scope."""
+    result = _ops.start(ProxyStartOptions(host_filter=["x1"], cluster="lab", auto_discover=False), sctx=context)
+    assert "cluster" not in result.persisted
+    assert _saved_cluster(context) is None

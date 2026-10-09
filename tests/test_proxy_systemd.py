@@ -417,7 +417,7 @@ def test_install_user_scope_reports_linger_failure(host, context, monkeypatch):
 def test_find_service_refuses_two_scopes(host):
     _unit_file(_systemd.SYSTEM_UNIT_DIR / "sparkrun-proxy.service")
     _unit_file(_systemd.user_unit_dir() / "sparkrun-proxy.service", user=None)
-    with pytest.raises(ProxyServiceError, match="--system or --user"):
+    with pytest.raises(ProxyServiceError, match="proxy systemd remove --system"):
         _service.find_service()
     assert _service.find_service("user").scope == "user"
 
@@ -604,3 +604,41 @@ def test_cli_scope_flags_conflict(host, context):
 
     result = CliRunner().invoke(proxy_systemd, ["status", "--system", "--user"], obj={"sparkrun_ctx": context})
     assert result.exit_code != 0 and "mutually exclusive" in result.output
+
+
+# -- Review follow-ups ------------------------------------------------------------
+
+
+ADHOC = {"pid": 55}
+
+
+def test_start_refuses_while_an_adhoc_proxy_holds_the_port(installed, context, no_discovery, monkeypatch):
+    """Starting the unit then would fail every RestartSec while the CLI said 'started'."""
+    _running_engine_with(monkeypatch, ADHOC)
+    with pytest.raises(ProxyAlreadyRunning, match="outside systemd unit"):
+        _ops.start(ProxyStartOptions(), sctx=context)
+    assert installed.controls == []
+
+
+def test_start_restart_replaces_an_adhoc_proxy_with_the_unit(installed, context, no_discovery, monkeypatch):
+    engine = _running_engine_with(monkeypatch, ADHOC)
+    stopped = []
+    monkeypatch.setattr(_ops, "_stop_and_wait", lambda e: stopped.append(e) or True)
+    result = _ops.start(ProxyStartOptions(restart=True), sctx=context)
+    assert stopped == [engine]
+    assert installed.controls == [("sparkrun-proxy.service", "start")]
+    assert result.restarted
+
+
+def test_start_with_the_unit_already_running_it_is_not_adhoc(installed, context, no_discovery, monkeypatch):
+    installed.active = "active"
+    _running_engine_with(monkeypatch, SUPERVISED)
+    with pytest.raises(ProxyAlreadyRunning, match="running as systemd unit"):
+        _ops.start(ProxyStartOptions(), sctx=context)
+
+
+def test_install_refuses_a_second_scope(host, context):
+    _unit_file(_systemd.user_unit_dir() / "sparkrun-proxy.service", user=None)
+    with pytest.raises(ProxyServiceError, match="proxy systemd remove --user"):
+        _service.install_service(ProxyServiceOptions(), sctx=context)
+    assert host.sudo_calls == []
