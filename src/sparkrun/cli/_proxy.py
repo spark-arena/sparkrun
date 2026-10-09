@@ -178,6 +178,17 @@ def start(
     if result.discovery is not None:
         click.echo("Discovery: %s" % result.discovery.describe())
 
+    if result.unit:
+        # Delegated to the installed unit: the gateway starts there, reading
+        # proxy.yaml (where any settings given here were just saved).
+        verb = "restart" if result.restarted else "start"
+        if result.dry_run:
+            click.echo("[dry-run] Would %s systemd unit %s." % (verb, result.unit))
+        else:
+            click.echo("Proxy %sed via systemd unit %s." % (verb, result.unit))
+            click.echo(render_identity_text("  Status: {app_command} proxy systemd status"))
+        return
+
     healthy = [ep for ep in result.endpoints if ep.healthy]
     if not healthy:
         if result.endpoints:
@@ -249,7 +260,12 @@ def stop(dry_run):
         click.echo("No proxy is currently running.")
         return
 
-    if result.stopped:
+    if result.stopped and result.unit:
+        click.echo("Proxy stopped (systemd unit %s)." % result.unit)
+        click.echo(
+            render_identity_text("The unit stays enabled and starts again at boot; remove it with: {app_command} proxy systemd remove")
+        )
+    elif result.stopped:
         click.echo("Proxy stopped.")
     else:
         click.echo("Failed to stop proxy.", err=True)
@@ -290,6 +306,8 @@ def status(output_json):
     click.echo("  Host:    %s" % (result.host or "?"))
     click.echo("  Port:    %s" % (result.port if result.port is not None else "?"))
     click.echo("  Start:   %s" % (result.started_at or "?"))
+    if result.managed_by:
+        click.echo("  Managed by: systemd (%s)" % result.managed_by)
 
     if result.autodiscover_pid:
         if result.autodiscover_running:

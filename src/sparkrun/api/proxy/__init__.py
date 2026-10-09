@@ -60,6 +60,17 @@ from ._ops import (
     sync,
     unregister_loaded_model,
 )
+from ._service import (
+    ProxyServiceError,
+    ProxyServiceInstallResult,
+    ProxyServiceOptions,
+    ProxyServiceRemoveResult,
+    ProxyServiceStatus,
+    SudoPasswordRequired,
+    install_service,
+    remove_service,
+    service_status,
+)
 
 __all__ = [
     # Functions
@@ -78,6 +89,9 @@ __all__ = [
     "list_aliases",
     "resolve_gateway",
     "list_gateways",
+    "install_service",
+    "remove_service",
+    "service_status",
     # Data models
     "DiscoveryScope",
     "ProxyStartOptions",
@@ -88,6 +102,10 @@ __all__ = [
     "ProxyEndpoint",
     "ProxySyncResult",
     "ProxyAliasResult",
+    "ProxyServiceOptions",
+    "ProxyServiceInstallResult",
+    "ProxyServiceRemoveResult",
+    "ProxyServiceStatus",
     # Errors
     "GatewayUnavailable",
     "ProxyAlreadyRunning",
@@ -95,4 +113,6 @@ __all__ = [
     "ProxyUnsupported",
     "ProxyUpdateFailed",
     "ProxyQueryFailed",
+    "ProxyServiceError",
+    "SudoPasswordRequired",
 ]

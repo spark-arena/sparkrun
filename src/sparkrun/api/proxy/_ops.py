@@ -19,6 +19,7 @@ requires a loaded implementation; process recovery cannot reconcile models.
 from __future__ import annotations
 
 import logging
+import os
 import signal
 from contextlib import contextmanager
 from copy import deepcopy
@@ -94,6 +95,8 @@ class ProxyStatus:
     model_query_error: str = ""
     #: False when no state file exists at all (never started / cleaned up).
     known: bool = True
+    #: systemd unit supervising the running gateway, when there is one.
+    managed_by: str | None = None
 
     def require_models(self) -> tuple[ProxyModel, ...]:
         """Return observed models, raising instead of treating failed queries as empty."""
@@ -115,6 +118,8 @@ class ProxyStatus:
             data["autodiscover"] = {"pid": self.autodiscover_pid, "running": self.autodiscover_running}
         if self.model_query_error:
             data["model_query_error"] = self.model_query_error
+        if self.managed_by:
+            data["managed_by"] = self.managed_by
         return data
 
 
@@ -176,6 +181,8 @@ class ProxyStartResult:
     warnings: tuple[str, ...] = ()
     #: Which layer decided the discovery scope (see :func:`resolve_discovery_scope`).
     discovery: "DiscoveryScope | None" = None
+    #: systemd unit the start was delegated to (no process started here).
+    unit: str | None = None
 
 
 @dataclass(frozen=True)
@@ -206,6 +213,8 @@ class ProxyStopResult:
     was_running: bool
     pid: int | None = None
     dry_run: bool = False
+    #: systemd unit the stop went through (it stays enabled for the next boot).
+    unit: str | None = None
 
 
 @dataclass(frozen=True)
@@ -430,6 +439,10 @@ def _start(options: ProxyStartOptions, *, sctx: "SparkrunContext") -> ProxyStart
     if options.persist and not options.dry_run:
         persisted = tuple(_persist_overrides(proxy_cfg, options))
 
+    unit = _unit_to_delegate(options)
+    if unit is not None:
+        return _start_via_unit(unit, options, gateway, effective_host, effective_port, persisted, warnings, sctx)
+
     scope, host_filter, live_hosts, ssh_kwargs, cluster_def, scope_warnings = _discovery_args(options, sctx)
     warnings.extend(scope_warnings)
     endpoints = _discover(host_filter=host_filter, host_list=live_hosts, ssh_kwargs=ssh_kwargs, cluster_def=cluster_def, sctx=sctx)
@@ -540,6 +553,22 @@ def stop(*, dry_run: bool = False, sctx: "SparkrunContext | None" = None) -> Pro
         if not engine.is_running():
             return ProxyStopResult(stopped=False, was_running=False, pid=pid, dry_run=dry_run)
 
+        # A unit-supervised proxy is stopped through the unit, so systemd
+        # records "inactive" instead of a process killed behind its back.  The
+        # signal path below remains the fallback: the foreground supervisor
+        # reads a requested stop as a clean exit, so the unit does not restart.
+        from ._service import ProxyServiceError, control_service, spec_from_record
+
+        unit = spec_from_record((engine.get_state() or {}).get("supervisor"))
+        if unit is not None:
+            if dry_run:
+                return ProxyStopResult(stopped=True, was_running=True, pid=pid, dry_run=True, unit=unit.name)
+            try:
+                control_service(unit, "stop")
+                return ProxyStopResult(stopped=True, was_running=True, pid=pid, unit=unit.name)
+            except ProxyServiceError as exc:
+                logger.warning("Could not stop %s through systemd (%s); signalling the gateway instead", unit.name, exc)
+
         stopped = engine.stop(dry_run=dry_run)
         return ProxyStopResult(stopped=bool(stopped), was_running=True, pid=pid, dry_run=dry_run)
 
@@ -579,7 +608,15 @@ def status(*, sctx: "SparkrunContext | None" = None) -> ProxyStatus:
         autodiscover_running=_pid_alive(ad_pid),
         models=served_models,
         model_query_error=model_query_error,
+        managed_by=_managed_by(state),
     )
+
+
+def _managed_by(state: dict) -> str | None:
+    record = state.get("supervisor")
+    if isinstance(record, dict) and record.get("unit"):
+        return str(record["unit"])
+    return None
 
 
 def models(*, sctx: "SparkrunContext | None" = None) -> tuple[ProxyModel, ...]:
@@ -919,6 +956,63 @@ def _persist_overrides(proxy_cfg, options: ProxyStartOptions) -> list[str]:
         proxy_cfg.save()
 
     return changed
+
+
+def _unit_to_delegate(options: ProxyStartOptions):
+    """The caller's installed proxy unit, when this start should go through it.
+
+    Never for ``--foreground`` (that is what the unit itself runs, and an
+    explicit request to run here) or inside a supervised process.
+    """
+    from sparkrun.proxy._supervisor import SUPERVISOR_ENV
+
+    from ._service import ProxyServiceError, find_service
+
+    if options.foreground or os.environ.get(SUPERVISOR_ENV):
+        return None
+    try:
+        return find_service()
+    except ProxyServiceError as exc:
+        raise ProxyStartFailed(str(exc)) from exc
+
+
+def _start_via_unit(unit, options, gateway, host, port, persisted, warnings, sctx) -> ProxyStartResult:
+    """Start (or restart) the installed unit instead of an ad-hoc process.
+
+    An ad-hoc proxy would collide with the unit at the next boot.  Settings
+    supplied this run were already saved to ``proxy.yaml``, which is what the
+    unit reads when it starts.
+    """
+    from sparkrun.proxy import _systemd
+
+    from ._service import ProxyServiceError, control_service
+
+    if options.host_filter:
+        warnings.append("--hosts/--hosts-file apply to one invocation and are ignored by systemd unit %s; use --cluster." % unit.name)
+    active = _systemd.query(unit, "is-active") == "active"
+    if active and not options.restart:
+        raise ProxyAlreadyRunning(
+            "Proxy is running as systemd unit %s." % unit.name,
+            pid=_running_engine(sctx).current_pid(),
+            port=port,
+            persisted=persisted,
+        )
+    if not options.dry_run:
+        try:
+            control_service(unit, "restart" if active else "start")
+        except ProxyServiceError as exc:
+            raise ProxyStartFailed(str(exc)) from exc
+    return ProxyStartResult(
+        gateway=gateway,
+        host=host,
+        port=port,
+        started=not options.dry_run,
+        dry_run=options.dry_run,
+        restarted=active,
+        persisted=persisted,
+        warnings=tuple(warnings),
+        unit=unit.name,
+    )
 
 
 def _foreground_exit_status(rc: int | None) -> int:

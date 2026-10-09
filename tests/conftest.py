@@ -87,6 +87,14 @@ def isolate_stateful(tmp_path: Path, monkeypatch):
     # core.external_plugins would otherwise load their real plugins mid-suite.
     # Loader tests pass explicit paths (which bypass this) or delenv it.
     monkeypatch.setenv("SPARKRUN_NO_EXTERNAL_PLUGINS", "1")
+    # `proxy start` / `stop` route through an installed proxy systemd unit, so
+    # point unit lookup at empty sandbox dirs: a developer who installed the
+    # real unit must not have the suite start or stop it.
+    from sparkrun.proxy import _systemd
+
+    monkeypatch.setattr(_systemd, "SYSTEM_UNIT_DIR", tmp_path / "systemd-system")
+    monkeypatch.setattr(_systemd, "user_unit_dir", lambda: tmp_path / "systemd-user")
+    monkeypatch.delenv("SPARKRUN_PROXY_SUPERVISOR", raising=False)
     # The experimental local/k8s executors gate themselves off by default on
     # the stable channel (via is_multi_extension). Most of the suite exercises
     # their behavior directly and predates the feature-flag gating, so enable

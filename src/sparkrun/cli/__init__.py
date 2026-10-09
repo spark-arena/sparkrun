@@ -26,6 +26,7 @@ from ._benchmark import benchmark
 from ._cluster import cluster, cluster_status
 from ._export import export
 from ._proxy import proxy
+from . import _proxy_systemd as _proxy_systemd  # noqa: E402, F401  — registers `proxy systemd`
 from ._recipe import recipe, recipe_list, recipe_search, recipe_show
 from ._registry import registry, registry_update
 from ._run import run
