@@ -24,6 +24,7 @@ mirroring ``arena.auth.save_refresh_token``.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import signal
 import subprocess
@@ -46,6 +47,51 @@ RESTART_EXIT_TIMEOUT = 15.0
 
 #: Grace period after spawn before deciding the process survived startup.
 RESTART_STARTUP_GRACE = 2.0
+
+#: How long a foreground supervisor waits for a managed restart to record its
+#: replacement.  The restarter waits up to :data:`RESTART_EXIT_TIMEOUT` for the
+#: old process (plus a SIGKILL grace) and then :data:`RESTART_STARTUP_GRACE`
+#: for the new one, so anything shorter would misreport a slow restart as a
+#: crash.
+REPLACEMENT_WAIT_TIMEOUT = RESTART_EXIT_TIMEOUT + 5.0 + RESTART_STARTUP_GRACE + 10.0
+
+#: Set by a service manager on ``proxy start --foreground`` as
+#: ``<kind>:<scope>:<unit>`` (e.g. ``systemd:system:sparkrun-proxy.service``).
+#: Recorded in the state file so management commands can route through the
+#: unit instead of signalling a process the service manager owns.  Inherited by
+#: the auto-discover daemon, so a managed restart records it too.
+SUPERVISOR_ENV = "SPARKRUN_PROXY_SUPERVISOR"
+
+
+def supervisor_from_env(environ: dict[str, str] | None = None) -> dict[str, str] | None:
+    """Parse :data:`SUPERVISOR_ENV` into a state-file record, or None.
+
+    A malformed value is ignored rather than recorded: a wrong record would
+    send ``proxy stop`` to a unit that does not exist.
+    """
+    value = (os.environ if environ is None else environ).get(SUPERVISOR_ENV, "").strip()
+    if not value:
+        return None
+    parts = value.split(":", 2)
+    if len(parts) != 3 or not all(parts):
+        logger.warning("Ignoring malformed %s=%r (expected <kind>:<scope>:<unit>)", SUPERVISOR_ENV, value)
+        return None
+    kind, scope, unit = parts
+    return {"kind": kind, "scope": scope, "unit": unit}
+
+
+def exit_status(rc: int | None) -> int:
+    """Map a ``Popen.returncode`` to a process exit status.
+
+    Death by signal *n* is reported by ``Popen`` as ``-n``; a shell (and
+    systemd) reports it as ``128 + n``.  Returning the negative value from a
+    CLI would turn into ``256 - n``, which names nothing.
+    """
+    if rc is None:
+        return 1
+    if rc < 0:
+        return 128 - rc
+    return rc
 
 
 def _restrict_file_permissions(path: Path) -> None:
@@ -110,6 +156,18 @@ def _wait_for_exit(pid: int, timeout: float) -> bool:
         if time.monotonic() >= deadline:
             return False
         time.sleep(0.2)
+
+
+def _alive(pid: int | None) -> bool:
+    """True for a running (not merely unreaped) process."""
+    return pid is not None and process_exists(pid) and not _is_zombie(pid)
+
+
+def _state_pid(state: dict) -> int | None:
+    try:
+        return int(state.get("pid"))
+    except (TypeError, ValueError):
+        return None
 
 
 class GatewayState:
@@ -462,6 +520,139 @@ class GatewaySupervisor(GatewayState):
             return True
         return _wait_for_exit(pid, timeout)
 
+    # -- Foreground supervision ---------------------------------------------
+
+    def supervise_foreground(self, proc: subprocess.Popen) -> int:
+        """Block while the gateway runs, following it across managed restarts.
+
+        The gateway is not always our child for its whole life: a gateway
+        whose config changes is replaced by the auto-discover daemon
+        (``ProxyEngine._restart_proxy``), and the replacement is the daemon's
+        child.  Waiting on *proc* alone returned at the first such restart,
+        and the cleanup that followed stopped the daemon and erased the
+        replacement's state — leaving a gateway nothing could see or stop, or,
+        under a service manager, restarting the whole service on every model
+        change.  So when the watched process exits, the state file decides:
+
+        - a replacement was (or is being) recorded: follow it;
+        - ``stop_requested``: a deliberate stop, exit 0;
+        - anything else: a crash, exit non-zero (so ``Restart=on-failure``
+          fires).
+
+        ``KeyboardInterrupt`` (Ctrl-C, or SIGTERM via the CLI's termination
+        handlers — what ``systemctl stop`` sends) shuts down in order: the
+        daemon first, so it cannot respawn the gateway, then the gateway.
+
+        Returns:
+            The exit status for the foreground command.
+        """
+        supervised = {proc.pid}
+        watched = proc.pid
+        child: subprocess.Popen | None = proc
+        our_supervisor = supervisor_from_env()
+        rc: int | None = None
+        status = 1
+        interrupted = False
+        try:
+            while True:
+                if child is not None:
+                    rc = child.wait()
+                    child = None
+                else:
+                    # Not our child (the daemon spawned it): poll.
+                    _wait_for_exit(watched, math.inf)
+                    rc = None
+                outcome, replacement = self._classify_exit(watched, our_supervisor)
+                if outcome == "follow" and replacement is not None:
+                    logger.info("Gateway restarted (PID %d -> %d); following", watched, replacement)
+                    watched = replacement
+                    supervised.add(replacement)
+                    continue
+                if outcome == "stopped":
+                    logger.info("Gateway stopped on request")
+                    status = 0
+                else:
+                    status = exit_status(rc) or 1
+                    logger.error("Gateway PID %d exited unexpectedly (status %d)", watched, status)
+                break
+        except KeyboardInterrupt:
+            interrupted = True
+            status = 0
+        finally:
+            self._finish_foreground(supervised, watched, child, terminate=interrupted)
+        return status
+
+    def _classify_exit(self, pid: int, our_supervisor: dict | None) -> tuple[str, int | None]:
+        """Decide why watched *pid* exited: ``follow`` / ``stopped`` / ``crashed``."""
+        deadline: float | None = None
+        while True:
+            state = self.get_state()
+            if state is None:
+                # Cleared by a stop that saw the exit, or by a restart that
+                # failed after we had seen it begin.
+                return ("crashed" if deadline is not None else "stopped"), None
+            try:
+                recorded = int(state.get("pid"))
+            except (TypeError, ValueError):
+                recorded = None
+            if recorded is not None and recorded != pid:
+                # A new record. Follow it when it is our managed restart, not a
+                # start someone else made after stopping us.
+                if (deadline is not None or state.get("supervisor") == our_supervisor) and _alive(recorded):
+                    return "follow", recorded
+                return "stopped", None
+            if state.get("restarting"):
+                now = time.monotonic()
+                if deadline is None:
+                    deadline = now + REPLACEMENT_WAIT_TIMEOUT
+                elif now >= deadline:
+                    logger.error("Managed restart of PID %d recorded no replacement within %.0fs", pid, REPLACEMENT_WAIT_TIMEOUT)
+                    return "crashed", None
+                time.sleep(0.2)
+                continue
+            if state.get("stop_requested"):
+                return "stopped", None
+            return "crashed", None
+
+    def _finish_foreground(self, supervised: set[int], watched: int, child: subprocess.Popen | None, *, terminate: bool) -> None:
+        """Stop the sidecar, optionally the gateway, and clear state we own.
+
+        State naming a PID we never supervised belongs to whoever started it
+        after us and is left alone (the ``_stop_and_wait`` rule).
+        """
+        state = self.get_state()
+        ours = state is not None and _state_pid(state) in supervised
+        if ours:
+            self.stop_autodiscover()
+        if terminate and _alive(watched):
+            self._terminate_gateway(watched, child)
+        if ours and _state_pid(self.get_state() or {}) in supervised:
+            self._clear_state()
+
+    def _terminate_gateway(self, pid: int, child: subprocess.Popen | None) -> None:
+        """SIGTERM *pid*, escalating to SIGKILL after :data:`RESTART_EXIT_TIMEOUT`."""
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        if child is not None and child.pid == pid:
+            try:
+                child.wait(timeout=RESTART_EXIT_TIMEOUT)
+                return
+            except subprocess.TimeoutExpired:
+                pass
+        elif _wait_for_exit(pid, RESTART_EXIT_TIMEOUT):
+            return
+        logger.warning("Gateway PID %d did not exit within %.0fs; sending SIGKILL", pid, RESTART_EXIT_TIMEOUT)
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        if child is not None and child.pid == pid:
+            child.wait()
+        else:
+            _wait_for_exit(pid, 5.0)
+
     # -- Auto-discovery sidecar --------------------------------------------
 
     def start_autodiscover(
@@ -576,6 +767,10 @@ class GatewaySupervisor(GatewayState):
             logger.info("[dry-run] Would send SIGTERM to PID %d", pid)
             return True
 
+        # Record intent first: a foreground supervisor watching this PID reads
+        # it to report a deliberate stop rather than a crash (which a service
+        # manager would answer by restarting the gateway).
+        self._mark_state(stop_requested=True)
         self._before_stop()
 
         try:
@@ -634,6 +829,23 @@ class GatewaySupervisor(GatewayState):
         state["started_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
         if autodiscover_pid is not None:
             state["autodiscover_pid"] = autodiscover_pid
+        supervisor = supervisor_from_env()
+        if supervisor is not None:
+            state["supervisor"] = supervisor
+        atomic_private_write(self.state_file, yaml.safe_dump(state, default_flow_style=False))
+
+    def _mark_state(self, **fields: Any) -> None:
+        """Merge *fields* into the existing state record (no-op without one).
+
+        Used to record *intent* before a gateway is signalled, so whoever is
+        watching the process can tell why it exited: ``stop_requested`` (a
+        deliberate stop) versus ``restarting`` (a managed restart that will
+        record a replacement).  An exit with neither is a crash.
+        """
+        state = self.get_state()
+        if state is None:
+            return
+        state.update(fields)
         atomic_private_write(self.state_file, yaml.safe_dump(state, default_flow_style=False))
 
     def update_autodiscover_pid(self, autodiscover_pid: int) -> None:

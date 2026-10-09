@@ -402,14 +402,9 @@ class ProxyEngine(GatewaySupervisor):
                 )
                 if ad_pid:
                     self.update_autodiscover_pid(ad_pid)
-            try:
-                return proc.wait()
-            except KeyboardInterrupt:
-                proc.terminate()
-                return 130
-            finally:
-                self.stop_autodiscover()
-                self._clear_state()
+            # Follows the gateway across the daemon's managed restarts and
+            # owns the cleanup (see GatewaySupervisor.supervise_foreground).
+            return self.supervise_foreground(proc)
         else:
             pid = self._launch_background(cmd, env)
             if pid is None:
@@ -627,6 +622,9 @@ class ProxyEngine(GatewaySupervisor):
         ad_pid = self._read_autodiscover_pid()
 
         if old_pid is not None:
+            # Record intent first, so a foreground supervisor watching this
+            # PID waits for the replacement instead of reporting a crash.
+            self._mark_state(restarting=True)
             try:
                 os.kill(old_pid, signal.SIGTERM)
                 logger.info("Restarting proxy: SIGTERM to PID %d", old_pid)
@@ -634,6 +632,7 @@ class ProxyEngine(GatewaySupervisor):
                 old_pid = None
             except PermissionError:
                 logger.error("Permission denied signalling proxy PID %d", old_pid)
+                self._mark_state(restarting=False)
                 return None
 
         if old_pid is not None and not self._await_exit(old_pid, RESTART_EXIT_TIMEOUT):
@@ -648,6 +647,7 @@ class ProxyEngine(GatewaySupervisor):
                 pass
             if not self._await_exit(old_pid, 5.0):
                 logger.error("Proxy PID %d survived SIGKILL; not starting a replacement", old_pid)
+                self._mark_state(restarting=False)
                 return None
 
         self._proc = None

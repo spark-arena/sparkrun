@@ -19,6 +19,7 @@ requires a loaded implementation; process recovery cannot reconcile models.
 from __future__ import annotations
 
 import logging
+import signal
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -482,7 +483,7 @@ def _start(options: ProxyStartOptions, *, sctx: "SparkrunContext") -> ProxyStart
 
     if options.foreground:
         # Blocking mode: start() returns the proxy's own exit code.
-        return ProxyStartResult(started=True, foreground_rc=rc, restarted=restarted, **common)
+        return ProxyStartResult(started=True, foreground_rc=_foreground_exit_status(rc), restarted=restarted, **common)
 
     if rc != 0:
         raise ProxyStartFailed("Gateway %s failed to start (exit code %d)." % (gateway, rc), exit_code=rc)
@@ -813,6 +814,22 @@ def _persist_overrides(proxy_cfg, options: ProxyStartOptions) -> list[str]:
         proxy_cfg.save()
 
     return changed
+
+
+def _foreground_exit_status(rc: int | None) -> int:
+    """Exit status for a foreground gateway that has returned.
+
+    ``ProxyEngine`` already supervises and returns a status. A gateway whose
+    foreground path still returns the raw ``Popen.returncode`` reports a
+    ``proxy stop`` as ``-SIGTERM``; that is a requested stop, not a failure a
+    service manager should answer with a restart. A crash is never SIGTERM
+    (Python errors exit 1, the OOM killer sends SIGKILL, faults SIGSEGV).
+    """
+    from sparkrun.proxy._supervisor import exit_status
+
+    if rc == -signal.SIGTERM:
+        return 0
+    return exit_status(rc)
 
 
 def _stop_and_wait(engine) -> bool:
