@@ -183,3 +183,30 @@ def test_a_closed_session_starts_nothing_further(_local):
 
     with pytest.raises(HostSessionError, match="closed"):
         session.execute("h1", ["mytool"])
+
+
+def test_windows_cancellation_uses_owned_process_tree():
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    import sparkrun.transports.session as module
+
+    process = Mock(pid=1234)
+    process.poll.side_effect = [None, 0]
+    with patch.object(module, "os", SimpleNamespace(name="nt")), patch.object(module.subprocess, "run") as run:
+        SshHostSession._terminate(process)
+    assert run.call_args.args[0] == ["taskkill", "/PID", "1234", "/T", "/F"]
+    process.kill.assert_not_called()
+    process.wait.assert_called_once_with(timeout=5)
+
+
+def test_windows_cancellation_falls_back_if_taskkill_unavailable():
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    import sparkrun.transports.session as module
+
+    process = Mock(pid=4321)
+    process.poll.return_value = None
+    with patch.object(module, "os", SimpleNamespace(name="nt")), patch.object(module.subprocess, "run", side_effect=OSError):
+        SshHostSession._terminate(process)
+    process.kill.assert_called_once()
+    process.wait.assert_called_once_with(timeout=5)

@@ -188,7 +188,8 @@ class SshHostSession:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                start_new_session=True,
+                start_new_session=os.name != "nt",
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
                 bufsize=0,
             )
         except OSError as error:
@@ -295,7 +296,8 @@ class SshHostSession:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT if combined else subprocess.PIPE,
                 env=environment,
-                start_new_session=True,
+                start_new_session=os.name != "nt",
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
             )
         except OSError as error:
             raise HostSessionError(f"start host command on {host}: {error}") from error
@@ -319,6 +321,23 @@ class SshHostSession:
     @staticmethod
     def _terminate(process: subprocess.Popen) -> None:
         if process.poll() is not None:
+            return
+        if os.name == "nt":
+            # Kill the owned tree (ssh and its local children), never unrelated
+            # sessions by executable name. Windows has no POSIX process groups.
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)
             return
         try:
             os.killpg(process.pid, signal.SIGTERM)
