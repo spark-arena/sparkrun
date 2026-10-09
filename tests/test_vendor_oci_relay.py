@@ -48,7 +48,7 @@ def _manifest_text(*, duplicate_version: bool = False) -> str:
 
 def test_importer_uses_the_generated_project_version(vendor_module, monkeypatch):
     def show(_repository, *arguments, **_kwargs):
-        return '[project]\nversion = "0.1.0"\n' if arguments[-1].endswith(":pyproject.toml") else _manifest_text()
+        return '[project]\nversion = "0.1.0"\nlicense = "Apache-2.0"\n' if arguments[-1].endswith(":pyproject.toml") else _manifest_text()
 
     monkeypatch.setattr(vendor_module, "_run_git", show)
     manifest = vendor_module._manifest(Path("unused"), "a" * 40)
@@ -58,7 +58,11 @@ def test_importer_uses_the_generated_project_version(vendor_module, monkeypatch)
 
 def test_importer_rejects_a_duplicate_manifest_version(vendor_module, monkeypatch):
     def show(_repository, *arguments, **_kwargs):
-        return '[project]\nversion = "0.1.0"\n' if arguments[-1].endswith(":pyproject.toml") else _manifest_text(duplicate_version=True)
+        return (
+            '[project]\nversion = "0.1.0"\nlicense = "Apache-2.0"\n'
+            if arguments[-1].endswith(":pyproject.toml")
+            else _manifest_text(duplicate_version=True)
+        )
 
     monkeypatch.setattr(vendor_module, "_run_git", show)
 
@@ -84,15 +88,14 @@ def upstream(tmp_path):
     repository.mkdir()
     subprocess.run(["git", "init", "--quiet", str(repository)], check=True)
     (repository / "plugin.toml").write_text(_manifest_text())
-    (repository / "pyproject.toml").write_text('[project]\nversion = "0.1.0"\n')
+    (repository / "pyproject.toml").write_text('[project]\nversion = "0.1.0"\nlicense = "Apache-2.0"\n')
     package = repository / "plugin/src/sparkrun_oci_relay"
     package.mkdir(parents=True)
     (package / "__init__.py").write_text('__version__ = "0.1.0"\nSPARKRUN_PLUGIN_API_VERSION = 1\n')
     (package / "LICENSE").write_text("test license material\n")
-    (package / "LICENSE_EXCEPTION").write_text("test permission material\n")
     (repository / "plugin/vendor_tests").mkdir(parents=True)
     (repository / "plugin/vendor_tests/test_oci_relay_fixture.py").write_text("def test_fixture(): pass\n")
-    for name in ("LICENSE", "LICENSE_EXCEPTION", "COPYRIGHT", "CLA.md", "README.md"):
+    for name in ("LICENSE", "COPYRIGHT", "CLA.md", "README.md"):
         (repository / name).write_text("test material\n")
     (package / "releases.json").write_text(
         json.dumps(
@@ -164,7 +167,8 @@ def test_latest_import_pins_the_release_tag_not_newer_branch_content(import_targ
     assert lock["commit"] == released
     assert lock["release_tag"] == "v0.1.0"
     assert not (import_target.SOURCE_DESTINATION / "unreleased.py").exists()
-    assert (import_target.SOURCE_DESTINATION / "LICENSE_EXCEPTION").read_bytes() == (upstream / "LICENSE_EXCEPTION").read_bytes()
+    assert (import_target.SOURCE_DESTINATION / "LICENSE").read_bytes() == (upstream / "LICENSE").read_bytes()
+    assert not (import_target.SOURCE_DESTINATION / "LICENSE_EXCEPTION").exists()
     # Verify and repeat entirely from the pinned source; builds need no release lookup.
     import_target.verify()
     before = import_target.LOCK_PATH.read_bytes()
@@ -192,7 +196,7 @@ def test_bad_release_does_not_replace_the_existing_snapshot(import_target, upstr
     import_target.verify()
 
 
-def test_missing_permission_is_rejected_before_replacement(import_target, upstream):
+def test_missing_license_is_rejected_before_replacement(import_target, upstream):
     import_target.update(
         source=str(upstream),
         revision=subprocess.check_output(["git", "-C", str(upstream), "rev-parse", "HEAD"], text=True).strip(),
@@ -200,9 +204,9 @@ def test_missing_permission_is_rejected_before_replacement(import_target, upstre
         force=False,
     )
     before = import_target.LOCK_PATH.read_bytes()
-    (upstream / "LICENSE_EXCEPTION").unlink()
+    (upstream / "LICENSE").unlink()
     _commit(upstream)
-    with pytest.raises(import_target.VendorError, match="LICENSE_EXCEPTION"):
+    with pytest.raises(import_target.VendorError, match="LICENSE"):
         import_target.update(
             source=str(upstream),
             revision=subprocess.check_output(["git", "-C", str(upstream), "rev-parse", "HEAD"], text=True).strip(),
@@ -252,7 +256,7 @@ def test_no_published_release_does_not_fall_back_or_modify_the_host(import_targe
 def test_importer_rejects_invalid_image_distribution_api(vendor_module, monkeypatch, value):
     def show(_repository, *arguments, **_kwargs):
         return (
-            '[project]\nversion = "0.1.0"\n'
+            '[project]\nversion = "0.1.0"\nlicense = "Apache-2.0"\n'
             if arguments[-1].endswith(":pyproject.toml")
             else _manifest_text().replace("image_distribution_api = 1", "image_distribution_api = " + value)
         )
@@ -264,7 +268,7 @@ def test_importer_rejects_invalid_image_distribution_api(vendor_module, monkeypa
 
 def test_importer_preserves_image_distribution_api_without_importing_code(vendor_module, monkeypatch):
     def show(_repository, *arguments, **_kwargs):
-        return '[project]\nversion = "0.1.0"\n' if arguments[-1].endswith(":pyproject.toml") else _manifest_text()
+        return '[project]\nversion = "0.1.0"\nlicense = "Apache-2.0"\n' if arguments[-1].endswith(":pyproject.toml") else _manifest_text()
 
     monkeypatch.setattr(vendor_module, "_run_git", show)
     manifest = vendor_module._manifest(Path("unused"), "a" * 40)
@@ -325,7 +329,7 @@ def test_verify_and_update_reject_damaged_snapshots(import_target, upstream, mut
     assert import_target.LOCK_PATH.read_bytes() == before
 
 
-@pytest.mark.parametrize("mutation", ["missing-api", "unsupported-api", "incompatible-host", "permission", "symlink"])
+@pytest.mark.parametrize("mutation", ["missing-api", "unsupported-api", "incompatible-host", "license", "symlink"])
 def test_incompatible_upstream_fails_before_replacement(import_target, upstream, mutation):
     import_target.update(source=str(upstream), revision=_head(upstream), initial=True, force=False)
     before = import_target.LOCK_PATH.read_bytes()
@@ -337,8 +341,8 @@ def test_incompatible_upstream_fails_before_replacement(import_target, upstream,
     elif mutation == "incompatible-host":
         manifest = upstream / "plugin.toml"
         manifest.write_text(manifest.read_text().replace(">=0.3.7,<0.5", ">=0.3.7,<0.4"))
-    elif mutation == "permission":
-        (upstream / "LICENSE_EXCEPTION").unlink()
+    elif mutation == "license":
+        (upstream / "LICENSE").unlink()
     else:
         (package / "redirect.py").symlink_to("__init__.py")
     _commit(upstream)
@@ -357,7 +361,8 @@ def test_local_dirty_source_is_not_imported(import_target, upstream):
     provenance = tomllib.loads(import_target.PROVENANCE_PATH.read_text())
     assert lock["commit"] == revision
     assert lock["commit"] == provenance["commit"]
-    assert (import_target.SOURCE_DESTINATION / "LICENSE_EXCEPTION").read_bytes() == (upstream / "LICENSE_EXCEPTION").read_bytes()
+    assert (import_target.SOURCE_DESTINATION / "LICENSE").read_bytes() == (upstream / "LICENSE").read_bytes()
+    assert not (import_target.SOURCE_DESTINATION / "LICENSE_EXCEPTION").exists()
 
 
 def test_destination_symlink_is_rejected_before_replacement(import_target, upstream, tmp_path):
@@ -485,3 +490,18 @@ def test_vendored_readme_links_pin_upstream_documents(vendor_module):
         f"[license](https://github.com/scitrera/oci-relay/blob/{commit}/LICENSE) "
         "[web](https://example.com) [anchor](#setup)"
     )
+
+
+@pytest.mark.parametrize("license_id", [None, "AGPL-3.0-only", "MIT", ""])
+def test_non_apache_source_does_not_replace_snapshot(import_target, upstream, license_id):
+    import_target.update(source=str(upstream), revision=_head(upstream), initial=True, force=False)
+    before = import_target.LOCK_PATH.read_bytes()
+    text = '[project]\nversion = "0.1.0"\n'
+    if license_id is not None:
+        text += "license = " + json.dumps(license_id) + "\n"
+    (upstream / "pyproject.toml").write_text(text)
+    _commit(upstream)
+    with pytest.raises(import_target.VendorError, match="must be Apache-2.0"):
+        import_target.update(source=str(upstream), revision=_head(upstream), initial=False, force=False)
+    assert import_target.LOCK_PATH.read_bytes() == before
+    import_target.verify()

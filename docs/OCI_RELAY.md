@@ -14,7 +14,7 @@ features:
 ```
 
 Then use `sparkrun run YOUR_RECIPE` normally. There is no separate plugin install
-or Go build: the controller downloads checksum-pinned v0.1.2 Linux binaries and
+or Go build: the controller downloads checksum-pinned v0.1.3 Linux binaries and
 stages them to the execution hosts. Targets need no internet access for binary
 installation. Verified cached releases work offline. In automatic provider mode,
 an unavailable release download (including offline mode without a cached bundle)
@@ -87,6 +87,7 @@ and full commit SHA can be supplied with `--source PATH_OR_URL --rev FULL_SHA`.
 `vendor/oci-relay.lock` records file hashes, upstream revision, host API versions,
 and licensing. README links are rewritten to the pinned upstream commit so
 they remain usable in the imported package. CI verifies the snapshot offline. Upstream owns the adapter and
-its exported contract tests; make changes there and re-vendor. OCI Relay remains
-AGPL-3.0-only with its Sparkrun license exception; Sparkrun's own code remains
-Apache-2.0. The vendored package includes both license documents and provenance.
+its exported contract tests; make changes there and re-vendor. OCI Relay and its
+plugin use Apache-2.0. The vendored package includes the license, copyright notice,
+CLA, and provenance. The importer requires Apache-2.0 source; older OCI Relay
+releases are not supported by this alpha integration.

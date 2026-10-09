@@ -1,44 +1,16 @@
 {
-  "0.1.0": {
+  "0.1.3": {
     "linux/amd64": {
-      "url": "https://github.com/scitrera/oci-relay/releases/download/v0.1.0/oci-relay_0.1.0_linux_amd64.tar.gz",
-      "sha256": "dc9c14db307b5ba235191d53340b026a5feb9cb1e8c97e1c6a1699a4f9137ce1"
+      "url": "https://github.com/scitrera/oci-relay/releases/download/v0.1.3/oci-relay_0.1.3_linux_amd64.tar.gz",
+      "sha256": "8424bb2fd4aaf1a6ddacc787512402d09179483be130a5421add9984e2f4839c"
     },
     "linux/arm64": {
-      "url": "https://github.com/scitrera/oci-relay/releases/download/v0.1.0/oci-relay_0.1.0_linux_arm64.tar.gz",
-      "sha256": "944c92aa787ea72310a33106483c3365c48f6c640f711d863552416654b1506f"
+      "url": "https://github.com/scitrera/oci-relay/releases/download/v0.1.3/oci-relay_0.1.3_linux_arm64.tar.gz",
+      "sha256": "7edf8729b1edd4a8e0d60db8b563868ed148dff1654fdc6c6bbbb660d4777b00"
     },
     "darwin/arm64": {
-      "url": "https://github.com/scitrera/oci-relay/releases/download/v0.1.0/oci-relay_0.1.0_darwin_arm64.tar.gz",
-      "sha256": "e720c7eda1299181c7a9f241d3bb3d987aba5938b104aab9db7e4b88c83724e6"
-    }
-  },
-  "0.1.1": {
-    "linux/amd64": {
-      "url": "https://github.com/scitrera/oci-relay/releases/download/v0.1.1/oci-relay_0.1.1_linux_amd64.tar.gz",
-      "sha256": "63cf22263926ad4fbe35472c037933582b039c4e87b9395f984858d70d4e29a2"
-    },
-    "linux/arm64": {
-      "url": "https://github.com/scitrera/oci-relay/releases/download/v0.1.1/oci-relay_0.1.1_linux_arm64.tar.gz",
-      "sha256": "645da9bd0ad5c914dfe45e0f19dff876afc632a49688940cb7242a390cc211f2"
-    },
-    "darwin/arm64": {
-      "url": "https://github.com/scitrera/oci-relay/releases/download/v0.1.1/oci-relay_0.1.1_darwin_arm64.tar.gz",
-      "sha256": "22e17369e0ea2f6d76dca74c1876bcb40e19003c9b4b64ac284c356f9f156a19"
-    }
-  },
-  "0.1.2": {
-    "linux/amd64": {
-      "url": "https://github.com/scitrera/oci-relay/releases/download/v0.1.2/oci-relay_0.1.2_linux_amd64.tar.gz",
-      "sha256": "d699cf8b53601a1aa4c5ce2deed656c91b252d70eed5e0bf4e2f7ea672e11133"
-    },
-    "linux/arm64": {
-      "url": "https://github.com/scitrera/oci-relay/releases/download/v0.1.2/oci-relay_0.1.2_linux_arm64.tar.gz",
-      "sha256": "d8b666649eca61d3a8059b99f5eec33212748b46420589c61cb30ffdf206dcb7"
-    },
-    "darwin/arm64": {
-      "url": "https://github.com/scitrera/oci-relay/releases/download/v0.1.2/oci-relay_0.1.2_darwin_arm64.tar.gz",
-      "sha256": "88ba75456888c9174c3a428f561100407f249a1d72ff03d5c95f7a548337e754"
+      "url": "https://github.com/scitrera/oci-relay/releases/download/v0.1.3/oci-relay_0.1.3_darwin_arm64.tar.gz",
+      "sha256": "587e81c21bf019a9c4528e55d587f305866567de24bfb13662a851b79185365d"
     }
   }
 }

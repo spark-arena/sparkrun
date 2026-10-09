@@ -176,6 +176,8 @@ def _manifest(repository: Path, commit: str) -> PluginManifest:
     version = project.get("version") if isinstance(project, dict) else None
     if not isinstance(version, str) or not version:
         raise VendorError("upstream pyproject.toml must declare project.version")
+    if project.get("license") != "Apache-2.0":
+        raise VendorError("upstream project.license must be Apache-2.0")
     if "version" in values:
         raise VendorError("upstream plugin.toml must not duplicate the version managed by versions.yaml")
     if values["name"] != "oci-relay" or values["module"] != "sparkrun.plugins.oci_relay":
@@ -213,7 +215,6 @@ def _archive(repository: Path, commit: str, manifest: PluginManifest, destinatio
         manifest.source,
         test_root,
         "LICENSE",
-        "LICENSE_EXCEPTION",
         "COPYRIGHT",
         "CLA.md",
         "README.md",
@@ -546,14 +547,14 @@ def update(*, source: str, revision: str, initial: bool, force: bool, release_ta
             if not source_files:
                 raise VendorError("upstream source export is empty")
             source_mapping = {path.relative_to(upstream_source): path for path in source_files}
-            for name in ("LICENSE", "LICENSE_EXCEPTION", "COPYRIGHT", "CLA.md", "README.md"):
+            for name in ("LICENSE", "COPYRIGHT", "CLA.md", "README.md"):
                 material = extracted / name
                 if material.is_symlink() or not material.is_file() or not material.stat().st_size:
                     raise VendorError("invalid required package material: %s" % name)
                 if name == "README.md":
                     material.write_text(_portable_readme(material.read_text(encoding="utf-8"), commit), encoding="utf-8")
                 source_mapping[Path(name)] = material
-            for name in ("__init__.py", "LICENSE", "LICENSE_EXCEPTION"):
+            for name in ("__init__.py", "LICENSE"):
                 if Path(name) not in source_mapping or not source_mapping[Path(name)].stat().st_size:
                     raise VendorError("upstream plugin is missing required package material: %s" % name)
 

@@ -5,7 +5,7 @@ SPDX-License-Identifier: LicenseRef-OCI-Relay-CLA-text
 
 # OCI RELAY CONTRIBUTOR LICENSE AGREEMENT
 
-**Version 1.0**
+**Version 1.1**
 
 This Contributor License Agreement (the **“Agreement”**) governs contributions to the **OCI Relay** software project (the **“Project”**).
 
@@ -27,7 +27,7 @@ General discussion, feature requests, bug reports, and ideas that are not intend
 
 **“Submit”** means intentionally transmitting a Contribution to the Project Owner or the Project for consideration for inclusion in the Project.
 
-**“Project License”** means the open-source license or licenses under which the applicable portion of the publicly available Project is distributed at the time a Contribution is Submitted. As of the initial adoption of this Agreement, the principal Project License is the **GNU Affero General Public License, version 3 only (AGPL-3.0-only)**, together with the additional permission for sparkrun in [LICENSE_EXCEPTION](LICENSE_EXCEPTION).
+**“Project License”** means the open-source license or licenses under which the applicable portion of the publicly available Project is distributed at the time a Contribution is Submitted. As of Version 1.1 of this Agreement, the principal Project License is the **Apache License, Version 2.0 (Apache-2.0)**, as provided in [LICENSE](LICENSE).
 
 ## 2. Ownership of Contributions
 
@@ -61,7 +61,7 @@ This license includes the right to exercise these rights directly or through aff
 
 The Project Owner may license or sublicense a Contribution, alone or as part of the Project or another work, under **any license terms**, including:
 
-* the GNU Affero General Public License;
+* the Apache License, Version 2.0;
 * another copyleft or open-source license;
 * a permissive open-source license;
 * a source-available license;
@@ -71,7 +71,7 @@ The Project Owner may license or sublicense a Contribution, alone or as part of 
 
 Accordingly, You expressly acknowledge that Your Contribution may be incorporated into, among other things:
 
-* the AGPL-licensed community edition of OCI Relay;
+* the Apache-2.0-licensed community edition of OCI Relay;
 * commercially licensed versions of OCI Relay;
 * proprietary or closed-source editions of OCI Relay;
 * enterprise editions or enterprise features;
@@ -211,7 +211,7 @@ By signing below or using an electronic CLA acceptance mechanism designated by t
 
 ---
 
-**OCI RELAY CONTRIBUTOR LICENSE AGREEMENT — VERSION 1.0**
+**OCI RELAY CONTRIBUTOR LICENSE AGREEMENT — VERSION 1.1**
 
 Copyright © 2026 Scitrera LLC.
 The text of this Contributor License Agreement may be reproduced for use in connection with the OCI Relay project.
