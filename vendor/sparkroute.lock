@@ -10,6 +10,7 @@ tree = "81be043b76e6b8545bd7dbbf3495a742d15be43f"
 sparkrun = ">=0.4,<0.5"
 content_sha256 = "9601928c934f4819bdbc9748435cb74a661489dddbd0e66cc3a8e1365f701ff6"
 application_profile_api = 1
+release_tag = "v0.2.1"
 
 [[files]]
 path = "src/sparkrun/plugins/sparkroute/LICENSE"
