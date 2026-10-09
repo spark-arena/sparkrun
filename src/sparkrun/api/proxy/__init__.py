@@ -64,11 +64,11 @@ from ._service import (
     ProxyServiceError,
     ProxyServiceInstallResult,
     ProxyServiceOptions,
-    ProxyServiceRemoveResult,
+    ProxyServiceUninstallResult,
     ProxyServiceStatus,
     SudoPasswordRequired,
     install_service,
-    remove_service,
+    uninstall_service,
     service_status,
 )
 
@@ -90,7 +90,7 @@ __all__ = [
     "resolve_gateway",
     "list_gateways",
     "install_service",
-    "remove_service",
+    "uninstall_service",
     "service_status",
     # Data models
     "DiscoveryScope",
@@ -104,7 +104,7 @@ __all__ = [
     "ProxyAliasResult",
     "ProxyServiceOptions",
     "ProxyServiceInstallResult",
-    "ProxyServiceRemoveResult",
+    "ProxyServiceUninstallResult",
     "ProxyServiceStatus",
     # Errors
     "GatewayUnavailable",

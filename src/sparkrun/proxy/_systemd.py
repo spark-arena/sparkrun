@@ -343,7 +343,7 @@ def render_system_install(spec: UnitSpec, unit_text: str, sudoers_text: str) -> 
     )
 
 
-def render_system_remove(spec: UnitSpec) -> str:
+def render_system_uninstall(spec: UnitSpec) -> str:
     """Privileged script: stop + disable, then delete unit and grant (owner-guarded)."""
     from sparkrun.utils.shell import quote
 
@@ -358,7 +358,7 @@ def render_system_remove(spec: UnitSpec) -> str:
             "rm -f %s %s" % (quote(str(spec.path)), quote(str(sudoers))),
             "systemctl daemon-reload",
             "systemctl reset-failed %s 2>/dev/null || true" % quote(spec.name),
-            'echo "Removed %s"' % spec.name,
+            'echo "Uninstalled %s"' % spec.name,
         ]
     )
 
@@ -448,7 +448,7 @@ __all__ = [
     "query",
     "render_sudoers",
     "render_system_install",
-    "render_system_remove",
+    "render_system_uninstall",
     "render_unit",
     "systemctl_path",
     "systemd_unavailable_reason",

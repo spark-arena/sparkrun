@@ -243,19 +243,19 @@ def test_install_script_aborts_when_visudo_rejects(shims):
     assert not list(spec.sudoers_path.parent.iterdir())
 
 
-def test_remove_script_deletes_unit_and_grant(shims):
+def test_uninstall_script_deletes_unit_and_grant(shims):
     spec, _unit, _sudoers, script = _install_script()
     assert shims(script).returncode == 0
-    result = shims(_systemd.render_system_remove(spec))
+    result = shims(_systemd.render_system_uninstall(spec))
     assert result.returncode == 0, result.stderr
     assert not spec.path.exists() and not spec.sudoers_path.exists()
     assert "systemctl disable --now sparkrun-proxy.service" in shims.log.read_text()
 
 
-def test_remove_script_refuses_another_users_unit(shims):
+def test_uninstall_script_refuses_another_users_unit(shims):
     spec = _systemd.candidates("system", "alice")[0]
     _unit_file(spec.path, user="bob")
-    result = shims(_systemd.render_system_remove(spec))
+    result = shims(_systemd.render_system_uninstall(spec))
     assert result.returncode != 0
     assert spec.path.exists()
 
@@ -417,22 +417,22 @@ def test_install_user_scope_reports_linger_failure(host, context, monkeypatch):
 def test_find_service_refuses_two_scopes(host):
     _unit_file(_systemd.SYSTEM_UNIT_DIR / "sparkrun-proxy.service")
     _unit_file(_systemd.user_unit_dir() / "sparkrun-proxy.service", user=None)
-    with pytest.raises(ProxyServiceError, match="proxy systemd remove --system"):
+    with pytest.raises(ProxyServiceError, match="proxy systemd uninstall --system"):
         _service.find_service()
     assert _service.find_service("user").scope == "user"
 
 
-def test_remove_system_unit(host, context):
+def test_uninstall_system_unit(host, context):
     _unit_file(_systemd.SYSTEM_UNIT_DIR / "sparkrun-proxy.service")
-    result = _service.remove_service(sctx=context)
-    assert result.removed
+    result = _service.uninstall_service(sctx=context)
+    assert result.uninstalled
     ((script, _pw),) = host.sudo_calls
     assert "systemctl disable --now sparkrun-proxy.service" in script
 
 
-def test_remove_without_unit(host, context):
+def test_uninstall_without_unit(host, context):
     with pytest.raises(ProxyServiceError, match="No proxy unit"):
-        _service.remove_service(sctx=context)
+        _service.uninstall_service(sctx=context)
 
 
 def test_status_reports_unit(host, context, monkeypatch):
@@ -576,19 +576,20 @@ def test_cli_remove_prompts_for_sudo_password(host, context):
         if password == "secret"
         else RemoteResult(host="localhost", returncode=1, stdout="", stderr="sudo: a password is required\n")
     )
-    result = CliRunner().invoke(proxy_systemd, ["remove"], input="secret\n", obj={"sparkrun_ctx": context})
+    result = CliRunner().invoke(proxy_systemd, ["uninstall"], input="secret\n", obj={"sparkrun_ctx": context})
     assert result.exit_code == 0, result.output
-    assert "Removed sparkrun-proxy.service." in result.output
+    assert "Uninstalled sparkrun-proxy.service." in result.output
     assert [pw for _s, pw in host.sudo_calls] == [None, "secret"]
 
 
-def test_cli_uninstall_alias_is_hidden(host, context):
+def test_cli_uninstall_is_the_opposite_of_install(host, context):
     from sparkrun.cli._proxy_systemd import proxy_systemd
 
-    assert "uninstall" not in CliRunner().invoke(proxy_systemd, ["--help"]).output
+    help_text = CliRunner().invoke(proxy_systemd, ["--help"]).output
+    assert "install" in help_text and "uninstall" in help_text and "remove" not in help_text
     _unit_file(_systemd.SYSTEM_UNIT_DIR / "sparkrun-proxy.service")
     result = CliRunner().invoke(proxy_systemd, ["uninstall", "--dry-run"], obj={"sparkrun_ctx": context})
-    assert result.exit_code == 0 and "Would stop, disable and remove" in result.output
+    assert result.exit_code == 0 and "Would stop, disable and uninstall" in result.output
 
 
 def test_cli_status_without_unit(host, context):
@@ -639,6 +640,6 @@ def test_start_with_the_unit_already_running_it_is_not_adhoc(installed, context,
 
 def test_install_refuses_a_second_scope(host, context):
     _unit_file(_systemd.user_unit_dir() / "sparkrun-proxy.service", user=None)
-    with pytest.raises(ProxyServiceError, match="proxy systemd remove --user"):
+    with pytest.raises(ProxyServiceError, match="proxy systemd uninstall --user"):
         _service.install_service(ProxyServiceOptions(), sctx=context)
     assert host.sudo_calls == []

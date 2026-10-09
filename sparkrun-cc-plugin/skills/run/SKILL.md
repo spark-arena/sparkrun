@@ -244,7 +244,7 @@ sparkrun proxy stop
 # (system unit needs sudo once: have the user run it with `! ...`)
 sparkrun proxy systemd install --now
 sparkrun proxy systemd status
-sparkrun proxy systemd remove
+sparkrun proxy systemd uninstall
 ```
 
 `proxy start` discovers on `--cluster` (saved), else the saved cluster, else the

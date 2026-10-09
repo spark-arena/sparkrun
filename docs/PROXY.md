@@ -210,7 +210,7 @@ starts at boot:
 sparkrun proxy systemd install --now          # system unit (sudo once)
 sparkrun proxy systemd install --user --now   # user unit (no sudo)
 sparkrun proxy systemd status
-sparkrun proxy systemd remove
+sparkrun proxy systemd uninstall
 ```
 
 The unit runs `sparkrun proxy start --foreground` with no other options, so it
@@ -232,7 +232,7 @@ saves the discovery cluster; without it the default cluster is used at each star
 Once a unit is installed, `proxy start` starts it (or restarts it with
 `--restart`) instead of launching a separate process, `proxy stop` stops it, and
 `proxy status` shows `Managed by: systemd (<unit>)`. Stopping does not disable
-the unit: it starts again at the next boot. Use `proxy systemd remove` to remove it.
+the unit: it starts again at the next boot. Use `proxy systemd uninstall` to uninstall it.
 `install --now` replaces a proxy that was started outside the unit.
 
 The service runs without an `ssh-agent`, so discovery needs a key that loads

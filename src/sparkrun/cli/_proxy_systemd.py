@@ -171,47 +171,30 @@ def status_cmd(system_scope, user_scope, lines, output_json):
         click.echo(result.journal)
 
 
-def _remove(system_scope, user_scope, dry_run):
+@proxy_systemd.command("uninstall")
+@click.option("--system", "system_scope", is_flag=True, help="Uninstall the system unit.")
+@click.option("--user", "user_scope", is_flag=True, help="Uninstall the user unit.")
+@dry_run_option
+def uninstall_cmd(system_scope, user_scope, dry_run):
+    """Stop, disable and delete the proxy unit (and its sudoers grant).
+
+    Stopping alone is '{app_command} proxy stop'; the unit then stays
+    enabled and starts again at the next boot.
+    """
     from sparkrun import api
 
     sctx = click.get_current_context().ensure_object(dict).get("sparkrun_ctx")
     scope = _scope_from_flags(system_scope, user_scope)
     try:
-        result = _with_sudo(lambda password: api.proxy.remove_service(scope, dry_run=dry_run, sudo_password=password, sctx=sctx))
+        result = _with_sudo(lambda password: api.proxy.uninstall_service(scope, dry_run=dry_run, sudo_password=password, sctx=sctx))
     except api.SparkrunError as exc:
         raise click.ClickException(str(exc)) from exc
     if result.dry_run:
-        click.echo("[dry-run] Would stop, disable and remove %s (%s scope)." % (result.unit, result.scope))
-    elif result.removed:
-        click.echo("Removed %s." % result.unit)
+        click.echo("[dry-run] Would stop, disable and uninstall %s (%s scope)." % (result.unit, result.scope))
+    elif result.uninstalled:
+        click.echo("Uninstalled %s." % result.unit)
     else:
-        click.echo("Nothing removed.", err=True)
+        click.echo("Nothing uninstalled.", err=True)
         sys.exit(1)
     for note in result.notes:
         click.echo(note)
-
-
-_REMOVE_OPTIONS = (
-    click.option("--system", "system_scope", is_flag=True, help="Remove the system unit."),
-    click.option("--user", "user_scope", is_flag=True, help="Remove the user unit."),
-    dry_run_option,
-)
-
-
-def _remove_command(name: str, hidden: bool = False) -> click.Command:
-    def callback(system_scope, user_scope, dry_run):
-        """Stop, disable and delete the proxy unit (and its sudoers grant).
-
-        Stopping alone is '{app_command} proxy stop'; the unit then stays
-        enabled and starts again at the next boot.
-        """
-        _remove(system_scope, user_scope, dry_run)
-
-    for option in reversed(_REMOVE_OPTIONS):
-        callback = option(callback)
-    return click.command(name, hidden=hidden)(callback)
-
-
-proxy_systemd.add_command(_remove_command("remove"))
-# `export systemd` spells it --uninstall; accept the word here too.
-proxy_systemd.add_command(_remove_command("uninstall", hidden=True))

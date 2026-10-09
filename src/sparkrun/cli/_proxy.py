@@ -263,7 +263,9 @@ def stop(dry_run):
     if result.stopped and result.unit:
         click.echo("Proxy stopped (systemd unit %s)." % result.unit)
         click.echo(
-            render_identity_text("The unit stays enabled and starts again at boot; remove it with: {app_command} proxy systemd remove")
+            render_identity_text(
+                "The unit stays enabled and starts again at boot; uninstall it with: {app_command} proxy systemd uninstall"
+            )
         )
     elif result.stopped:
         click.echo("Proxy stopped.")

@@ -77,7 +77,7 @@ sparkrun proxy alias list
 sparkrun proxy systemd install --now          # system unit, starts at boot (sudo once)
 sparkrun proxy systemd install --user --now   # user unit, no sudo (needs lingering for boot start)
 sparkrun proxy systemd status
-sparkrun proxy systemd remove
+sparkrun proxy systemd uninstall
 ```
 
 The unit runs `proxy start --foreground` and reads `proxy.yaml` each time it starts. Once installed, `proxy start` / `proxy stop` go through the unit. Installing a system unit prompts for a sudo password, so ask the user to run it themselves (`! sparkrun proxy systemd install --now`).

@@ -107,10 +107,10 @@ class ProxyServiceStatus:
 
 
 @dataclass(frozen=True)
-class ProxyServiceRemoveResult:
+class ProxyServiceUninstallResult:
     unit: str
     scope: str
-    removed: bool
+    uninstalled: bool
     dry_run: bool = False
     notes: tuple[str, ...] = ()
 
@@ -136,8 +136,8 @@ def find_service(scope: str | None = None) -> "UnitSpec | None":
     found = [spec for spec in (_systemd.find_installed(s, user) for s in scopes) if spec is not None]
     if len(found) > 1:
         raise ProxyServiceError(
-            "Both a system and a user proxy unit are installed (%s). Remove one with "
-            "'proxy systemd remove --system' or 'proxy systemd remove --user'." % ", ".join(str(s.path) for s in found)
+            "Both a system and a user proxy unit are installed (%s). Uninstall one with "
+            "'proxy systemd uninstall --system' or 'proxy systemd uninstall --user'." % ", ".join(str(s.path) for s in found)
         )
     return found[0] if found else None
 
@@ -180,7 +180,7 @@ def install_service(options: ProxyServiceOptions | None = None, *, sctx: "Sparkr
         if other is not None:
             # Two units would both start a proxy on the same port at boot.
             raise _systemd.SystemdError(
-                "A %s proxy unit is already installed (%s); remove it first with 'proxy systemd remove --%s'."
+                "A %s proxy unit is already installed (%s); uninstall it first with 'proxy systemd uninstall --%s'."
                 % (other_scope, other.path, other_scope)
             )
         spec = _systemd.choose_install_target(options.scope, user)
@@ -384,7 +384,7 @@ def _wait_listening(sctx: "SparkrunContext", timeout: float = LISTEN_WAIT_S) -> 
     return False
 
 
-# -- Status / remove -------------------------------------------------------------------
+# -- Status / uninstall ------------------------------------------------------------------
 
 
 def service_status(scope: str | None = None, *, journal_lines: int = 20, sctx: "SparkrunContext | None" = None) -> ProxyServiceStatus:
@@ -442,9 +442,9 @@ def _grant_works(spec: "UnitSpec") -> bool | None:
     return result.returncode == 0
 
 
-def remove_service(
+def uninstall_service(
     scope: str | None = None, *, dry_run: bool = False, sudo_password: str | None = None, sctx: "SparkrunContext | None" = None
-) -> ProxyServiceRemoveResult:
+) -> ProxyServiceUninstallResult:
     """Stop, disable and delete the caller's unit (and its sudoers grant)."""
     from sparkrun.proxy import _systemd
 
@@ -458,27 +458,27 @@ def remove_service(
     if spec.scope == _systemd.SCOPE_USER:
         notes.append("Lingering was left as it is; other user services may rely on it.")
     if dry_run:
-        return ProxyServiceRemoveResult(unit=spec.name, scope=spec.scope, removed=False, dry_run=True, notes=tuple(notes))
+        return ProxyServiceUninstallResult(unit=spec.name, scope=spec.scope, uninstalled=False, dry_run=True, notes=tuple(notes))
     if spec.scope == _systemd.SCOPE_SYSTEM:
-        _run_privileged(_systemd.render_system_remove(spec), sudo_password, "remove the proxy unit")
+        _run_privileged(_systemd.render_system_uninstall(spec), sudo_password, "uninstall the proxy unit")
     else:
         _systemd.user_command(spec, "disable", "--now", spec.name)
         spec.path.unlink(missing_ok=True)
         _systemd.user_command(spec, "daemon-reload")
-    return ProxyServiceRemoveResult(unit=spec.name, scope=spec.scope, removed=True, notes=tuple(notes))
+    return ProxyServiceUninstallResult(unit=spec.name, scope=spec.scope, uninstalled=True, notes=tuple(notes))
 
 
 __all__ = [
     "ProxyServiceError",
     "ProxyServiceInstallResult",
     "ProxyServiceOptions",
-    "ProxyServiceRemoveResult",
+    "ProxyServiceUninstallResult",
     "ProxyServiceStatus",
     "SudoPasswordRequired",
     "control_service",
     "find_service",
     "install_service",
-    "remove_service",
+    "uninstall_service",
     "service_status",
     "spec_from_record",
 ]
