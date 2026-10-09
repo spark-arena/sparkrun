@@ -3,17 +3,9 @@
 Sparkrun `develop-next` / 0.4.0 bundles the [OCI Relay](https://github.com/spark-arena/oci-relay)
 image-distribution adapter. It streams registry pulls or existing local images
 to Docker hosts, reuses compatible layers across storage backends, and reports
-transfer progress. The `plugins.oci_relay` feature defaults **on for beta and alpha** and
-**off for stable**. Explicit config or environment overrides take precedence.
+transfer progress. The `plugins.oci_relay` feature defaults **on for every channel**. Explicit config or environment overrides take precedence.
 
-To test on any channel, add to your Sparkrun configuration:
-
-```yaml
-features:
-  plugins.oci_relay: true
-```
-
-Then use `sparkrun run YOUR_RECIPE` normally. There is no separate plugin install
+Use `sparkrun run YOUR_RECIPE` normally. There is no separate plugin install
 or Go build: the controller downloads checksum-pinned v0.1.3 Linux binaries and
 stages them to the execution hosts. Targets need no internet access for binary
 installation. Verified cached releases work offline. In automatic provider mode,
@@ -32,7 +24,7 @@ reported immediately. INFO logs identify each execution host's verified relay
 version, commit, and protocol; DEBUG also includes its checksum and capabilities.
 Large upstream registry blobs can now use bounded parallel HTTP ranges; see the
 [range download settings](https://github.com/spark-arena/oci-relay/blob/main/docs/registry-source.md#parallel-upstream-ranges).
-To opt out on alpha, set the feature to `false`, or use
+To opt out on any channel, set the feature to `false`, or use
 `container_distribution_provider: builtin` for the built-in copy path.
 
 Mac controllers should use `transfer_mode: delegated` so that the relay runs
@@ -90,4 +82,4 @@ they remain usable in the imported package. CI verifies the snapshot offline. Up
 its exported contract tests; make changes there and re-vendor. OCI Relay and its
 plugin use Apache-2.0. The vendored package includes the license, copyright notice,
 and provenance. The importer requires Apache-2.0 source; older OCI Relay
-releases are not supported by this alpha integration.
+releases are not supported by this integration.

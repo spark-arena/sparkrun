@@ -379,15 +379,15 @@ def test_destination_symlink_is_rejected_before_replacement(import_target, upstr
         import_target.verify(allow_absent=True)
 
 
-def test_oci_relay_binding_is_enabled_on_beta_and_alpha():
+def test_oci_relay_binding_is_enabled_on_every_channel():
     from sparkrun.core.features import get_feature
     from sparkrun.core.in_tree_plugins import plugin_feature_flag
 
     assert plugin_feature_flag("oci_relay") == "plugins.oci_relay"
     feature = get_feature("plugins.oci_relay")
     assert feature is not None
-    assert feature.default_for_channel("stable") is False
-    assert all(feature.default_for_channel(channel) for channel in ("beta", "alpha"))
+    assert feature.default is True
+    assert all(feature.default_for_channel(channel) for channel in ("stable", "beta", "alpha"))
 
 
 @pytest.mark.parametrize("change", [{"version": "9.9.9"}, {"repository": "https://example.invalid"}, {"commit": "main"}, {"schema": 2}])
@@ -445,9 +445,10 @@ def test_post_release_adapter_pin_requires_unchanged_engine(import_target, upstr
     [
         ("alpha", None, True),
         ("beta", None, True),
-        ("stable", None, False),
+        ("stable", None, True),
         ("alpha", False, False),
         ("beta", False, False),
+        ("stable", False, False),
         ("stable", True, True),
     ],
 )

@@ -87,6 +87,10 @@ def isolate_stateful(tmp_path: Path, monkeypatch):
     # core.external_plugins would otherwise load their real plugins mid-suite.
     # Loader tests pass explicit paths (which bypass this) or delenv it.
     monkeypatch.setenv("SPARKRUN_NO_EXTERNAL_PLUGINS", "1")
+    # Host transfer tests exercise the built-in provider without acquiring
+    # binaries or opening relay connections. OCI Relay's default-on bootstrap
+    # tests run in fresh processes that clear these feature overrides.
+    monkeypatch.setenv("SPARKRUN_FEATURE_PLUGINS_OCI_RELAY", "0")
     # `proxy start` / `stop` route through an installed proxy systemd unit, so
     # point unit lookup at empty sandbox dirs: a developer who installed the
     # real unit must not have the suite start or stop it.

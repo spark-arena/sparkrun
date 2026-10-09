@@ -122,12 +122,6 @@ vLLM no longer sets `OMP_NUM_THREADS` by default; recipes can set it explicitly.
 ## Community Recipes
 [Community Recipes](https://github.com/spark-arena/community-recipe-registry) are contributed by the community and hosted on GitHub.
 
-
-
-## Sponsored by
-
-<a href="https://scitrera.ai"><img src="https://scitrera.com/logo2.png" alt="scitrera.ai" height="40" /></a>
-
 ## License
 
 sparkrun is licensed under the Apache License 2.0 — see [LICENSE](LICENSE).

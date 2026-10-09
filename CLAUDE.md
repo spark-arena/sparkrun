@@ -1929,7 +1929,7 @@ Three mechanisms, deliberately separate:
   on for all channels. SparkRoute and ColdSnap are separately installed plugins;
   enabling a flag does not install their code. Explicit config/env overrides
   take precedence; see `docs/SPARKROUTE.md`. OCI Relay remains bundled and its
-  `plugins.oci_relay` flag defaults on for beta and alpha, off for stable.
+  `plugins.oci_relay` flag defaults on for every channel; explicit overrides win.
 - **Selection** — exactly one gateway is used at a time, arbitrated in
   `resolve_gateway()`: an explicit name (`proxy.gateway:` in `proxy.yaml`, or
   `--gateway`) must be known *and* enabled; with no name, the default wins when

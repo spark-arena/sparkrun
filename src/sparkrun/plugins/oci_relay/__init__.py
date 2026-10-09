@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 Scitrera LLC
+# SPDX-FileCopyrightText: 2026 Spark Arena
 # SPDX-License-Identifier: Apache-2.0
 
 """Sparkrun image-copy provider. Registration has no deployment side effects."""

@@ -422,7 +422,6 @@ FEATURE_PLUGIN_OCI_RELAY = register_feature(
     FeatureFlag(
         name="plugins.oci_relay",
         description="OCI Relay image distribution",
-        channel_defaults={CHANNEL_BETA: True, CHANNEL_ALPHA: True},
-        default=False,
+        default=True,
     )
 )
