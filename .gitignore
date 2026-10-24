@@ -7,11 +7,14 @@ __pycache__/
 *.env
 .env
 # Build pins, not secrets. The blanket *.env rule above is for dotenv files
-# holding credentials; this one records the NCCL/CUDA versions the RDMA test
-# image is built from and MUST be tracked — build.sh and the CI workflow both
-# `source` it, and tests/test_rdma_image.py skips (rather than fails) when it
-# is missing, so leaving it untracked would silently disarm that guard.
+# holding credentials; these record the engine/CUDA versions the TensorFold
+# images are built from and MUST be tracked — build.sh and the CI workflows
+# both `source` them, and tests/test_tensorfold_image.py skips (rather than
+# fails) when they are missing, so leaving them untracked would silently
+# disarm that guard.
 !docker/rdma-test/image.env
+!docker/tensorfold/image.env
+!docker/tensorfold-dsv41/image.env
 # uv.lock is tracked because the type-check workflow uses uv sync --locked.
 reference_materials/
 .coverage

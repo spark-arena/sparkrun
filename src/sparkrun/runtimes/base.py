@@ -558,6 +558,46 @@ class RuntimePlugin(Plugin, ABC):
         """
         return init_port
 
+    def native_rendezvous_port_span(self, recipe: Recipe | None = None, overrides: dict[str, Any] | None = None) -> int:
+        """How many consecutive head ports the rendezvous reserves.
+
+        The native orchestrator finds a free start port with
+        :meth:`native_rendezvous_port`; most engines need exactly one.  A
+        runtime whose bootstrap protocol also opens the next port(s) — e.g. a
+        side-band control channel at ``port + 1`` — returns the span here so
+        the orchestrator picks a *contiguous* free range instead of leaving
+        the second port to chance.
+
+        *recipe*/*overrides* are available for a family- or topology-dependent
+        answer (TensorFold only reserves the second port when it is actually
+        launching ranks).  The base default is ``1``: byte-identical behaviour
+        for every existing runtime, and an out-of-tree runtime built against an
+        older base class keeps working (the hook is read with a safe default).
+        """
+        return 1
+
+    def native_start_order(self, recipe: Recipe | None = None, overrides: dict[str, Any] | None = None) -> str:
+        """Order in which the native cluster path starts rank 0 and workers.
+
+        ``"head_first"`` (the default) starts rank 0, waits for the
+        rendezvous port, then starts the workers — the historical SGLang /
+        vLLM-distributed contract, and correct for every engine whose head
+        opens the shared store the workers join.
+
+        ``"workers_first"`` starts every worker rank first and rank 0 last,
+        and does *not* wait for the rendezvous port.  It exists for engines
+        whose non-head ranks must already be listening before the serving
+        rank starts (TensorFold's follower ranks are one example), where the
+        head-first gate would deadlock: rank 0 would block waiting for the
+        followers the orchestrator has not started yet.
+
+        *recipe*/*overrides* let a runtime decide from the effective launch
+        configuration (e.g. only TP launches are worker-first).  Endpoint
+        readiness is unaffected either way: the launcher's budgeted watcher
+        still owns the serve port after ``run()`` returns.
+        """
+        return "head_first"
+
     def managed_rendezvous_flags(self) -> tuple[str, ...]:
         """Serve flags this runtime computes per launch and appends itself.
 

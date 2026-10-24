@@ -1,0 +1,677 @@
+From 5cfdda27513fa47996e9d76b1246ccb2bbcbf269 Mon Sep 17 00:00:00 2001
+From: bertholomus <311723197+bertholomus@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 17:21:13 +0000
+Subject: [PATCH 1/3] feat(dsv41): each node's weight file and token map from
+ the checkpoint; the kit's packer and generators
+
+tf-dsv41-rank-cache writes one rank's weight file (the lane's rank cache) from the EXL3 checkpoint alone, no GPU and no
+Python: plan.wants' entries in the loader's order, each sliced by checkpoint.readFrom from its source tensor read whole,
+then the index as weights.py writes it (rank_cache.writeRow). --parity takes the four-node balanced experts split;
+--index-only prints the index. tf-dsv41-check gains --parity.
+
+tools/dsv41-zig/inputs/node_inputs.sh makes one node's inputs, the weight file and the token map, in one command.
+tools/dsv41-zig/kit/ packs a lane's kit with MANIFEST and SHA256SUMS (pack_kit.py), makes its RoPE tables and image
+bias (make_rope.py, make_bias_vl.py) and checks it (verify_kit.sh).
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
+---
+ tools/dsv41-zig/inputs/README.md           |  16 +++
+ tools/dsv41-zig/inputs/make_token_map.py   |  57 ++++++++
+ tools/dsv41-zig/inputs/node_inputs.sh      |  48 +++++++
+ tools/dsv41-zig/kit/README.md              |  15 +++
+ tools/dsv41-zig/kit/pack_kit.py            | 105 +++++++++++++++
+ zig/build/cuda.zig                         |   4 +
+ zig/src/families/dsv41/check_main.zig      |  13 +-
+ zig/src/families/dsv41/checkpoint.zig      |  33 ++++-
+ zig/src/families/dsv41/rank_cache.zig      |  69 +++++++++-
+ zig/src/families/dsv41/rank_cache_main.zig | 149 +++++++++++++++++++++
+ 10 files changed, 502 insertions(+), 7 deletions(-)
+ create mode 100644 tools/dsv41-zig/inputs/README.md
+ create mode 100755 tools/dsv41-zig/inputs/make_token_map.py
+ create mode 100755 tools/dsv41-zig/inputs/node_inputs.sh
+ create mode 100644 tools/dsv41-zig/kit/README.md
+ create mode 100755 tools/dsv41-zig/kit/pack_kit.py
+ create mode 100644 zig/src/families/dsv41/rank_cache_main.zig
+
+diff --git a/tools/dsv41-zig/inputs/README.md b/tools/dsv41-zig/inputs/README.md
+new file mode 100644
+index 0000000..00456c8
+--- /dev/null
++++ b/tools/dsv41-zig/inputs/README.md
+@@ -0,0 +1,16 @@
++# A node's run-time inputs for the `dsv41` lane
++
++Each node of the lane reads a weight file (`TF_DS_RANK_CACHE`: its slices of the checkpoint in the loader's order) and
++Engram's compressed token map (`TF_DS_TOKEN_MAP`). Both are made from the EXL3 checkpoint
++([Mia-AiLab/DeepSeek-V4.1-Flash-EXL3-2.9bpw](https://huggingface.co/Mia-AiLab/DeepSeek-V4.1-Flash-EXL3-2.9bpw)), no GPU:
++
++```sh
++tools/dsv41-zig/inputs/node_inputs.sh MODEL_DIR CACHE_DIR RANK [WORLD]
++```
++
++writes `CACHE_DIR/rank-cache/rank<RANK>of<WORLD>-<hash>.bin` with `tf-dsv41-rank-cache` (`zig build` on Linux installs
++it; on four nodes it takes the balanced experts split, `--parity`) and `CACHE_DIR/dsv41_token_map.json` with
++`make_token_map.py` (the `tokenizers` package; in the serving container with docker when the host has none).
++`tf-dsv41-rank-cache --index-only` prints the index a node's file will hold without writing it, and
++`tf-dsv41-check MODEL_DIR CACHE_DIR/rank-cache RANK WORLD --parity --bytes N` checks a written file against the split
++plan and the checkpoint.
+diff --git a/tools/dsv41-zig/inputs/make_token_map.py b/tools/dsv41-zig/inputs/make_token_map.py
+new file mode 100755
+index 0000000..af4379f
+--- /dev/null
++++ b/tools/dsv41-zig/inputs/make_token_map.py
+@@ -0,0 +1,57 @@
++#!/usr/bin/env python3
++"""make_token_map.py MODEL_DIR OUT_JSON: Engram's compressed token map (TF_DS_TOKEN_MAP), standalone.
++
++Token id -> compressed id, where tokens whose text normalizes alike share one, as DeepSeek's engram.py builds it (the
++DeepSeek-V4.1 Python family's ops.compressed_token_map, branch deepseek-v41-tp2, copied here): NFKC, NFD, accents
++stripped, lower case, whitespace runs to one space, stripped; a token whose decoded text holds U+FFFD keys by its own
++token string. MODEL_DIR holds tokenizer.json and config.json (the EXL3 checkpoint); the number of compressed ids must
++equal the config's engram compressed vocabulary. Needs the `tokenizers` package (in nvcr.io/nvidia/pytorch:26.07-py3).
++The file is the JSON list the Python family writes (json.dumps of the list)."""
++import json
++import os
++import sys
++
++from tokenizers import Regex, Tokenizer, normalizers
++
++
++def compressed_token_map(tokenizer_json):
++    tok = Tokenizer.from_file(str(tokenizer_json))
++    sentinel = ""
++    norm = normalizers.Sequence([
++        normalizers.NFKC(), normalizers.NFD(), normalizers.StripAccents(), normalizers.Lowercase(),
++        normalizers.Replace(Regex(r"[ \t\r\n]+"), " "), normalizers.Replace(Regex(r"^ $"), sentinel),
++        normalizers.Strip(), normalizers.Replace(sentinel, " ")])
++    n = tok.get_vocab_size(with_added_tokens=True)
++    key_to_new = {}
++    lookup = [0] * n
++    for tid in range(n):
++        text = tok.decode([tid], skip_special_tokens=False)
++        if "�" in text:
++            key = tok.id_to_token(tid)
++        else:
++            nt = norm.normalize_str(text)
++            key = nt if nt else text
++        new = key_to_new.get(key)
++        if new is None:
++            new = len(key_to_new)
++            key_to_new[key] = new
++        lookup[tid] = new
++    return lookup, len(key_to_new)
++
++
++def main():
++    model, out = sys.argv[1:3]
++    raw = json.load(open(os.path.join(model, "config.json")))
++    t = raw.get("text_config", raw)
++    lookup, n = compressed_token_map(os.path.join(model, "tokenizer.json"))
++    want = t.get("engram_compressed_vocab_size")
++    if want is not None and n != want:
++        sys.exit(f"compressed ids {n} != the config's {want}")
++    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
++    with open(out, "w") as f:
++        f.write(json.dumps(lookup))
++    print(f"{out}: {len(lookup)} token ids -> {n} compressed ids")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/tools/dsv41-zig/inputs/node_inputs.sh b/tools/dsv41-zig/inputs/node_inputs.sh
+new file mode 100755
+index 0000000..962a924
+--- /dev/null
++++ b/tools/dsv41-zig/inputs/node_inputs.sh
+@@ -0,0 +1,48 @@
++#!/bin/bash
++# node_inputs.sh MODEL_DIR CACHE_DIR RANK [WORLD]: one node's run-time inputs for the DeepSeek-V4.1-Flash lane, built
++# from the EXL3 checkpoint alone (Mia-AiLab/DeepSeek-V4.1-Flash-EXL3-2.9bpw), no GPU:
++#   CACHE_DIR/rank-cache/rank<RANK>of<WORLD>-<hash>.bin  the node's weight file (TF_DS_RANK_CACHE): its slices of the
++#       checkpoint in the loader's order, by tf-dsv41-rank-cache; on four nodes the split with the balanced experts
++#       (TF_DS_2D_GU=parity) that the served launch runs;
++#   CACHE_DIR/dsv41_token_map.json  Engram's compressed token map (TF_DS_TOKEN_MAP), by make_token_map.py.
++# WORLD is 4 unless given (RANK 0-3, in the order of the recipe's NODES). CACHE_DIR/rank-cache must not hold another
++# file of this rank. On four nodes the weight file is about 56 GB a node; the checkpoint is read a tensor at a time.
++#
++# Environment:
++#   RANK_CACHE_BIN  tf-dsv41-rank-cache; default: the one next to this script, else this checkout's zig-out/bin (zig
++#                   build on Linux installs it; it needs no CUDA)
++#   PYTHON          a Python with the `tokenizers` package (default python3); without one the token map is made with
++#   IMAGE           docker in this image (default nvcr.io/nvidia/pytorch:26.07-py3, the serving container)
++set -euo pipefail
++usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 2; }
++[ $# -ge 3 ] && [ $# -le 4 ] || usage
++HERE=$(cd "$(dirname "$0")" && pwd)
++MODEL_DIR=$(cd "$1" && pwd); CACHE_DIR=$2; RANK=$3; WORLD=${4:-4}
++BIN=${RANK_CACHE_BIN:-}
++if [ -z "$BIN" ]; then
++  BIN=$HERE/tf-dsv41-rank-cache
++  [ -x "$BIN" ] || BIN=$HERE/../../../zig-out/bin/tf-dsv41-rank-cache
++fi
++PYTHON=${PYTHON:-python3}
++IMAGE=${IMAGE:-nvcr.io/nvidia/pytorch:26.07-py3}
++if [ ! -x "$BIN" ]; then
++  echo "no tf-dsv41-rank-cache next to $0 or in zig-out/bin: zig build, or set RANK_CACHE_BIN" >&2; exit 1
++fi
++for f in config.json tokenizer.json; do
++  [ -f "$MODEL_DIR/$f" ] || { echo "$MODEL_DIR has no $f: MODEL_DIR is the EXL3 checkpoint" >&2; exit 1; }
++done
++mkdir -p "$CACHE_DIR/rank-cache"
++CACHE_DIR=$(cd "$CACHE_DIR" && pwd)
++PARITY=; [ "$WORLD" = 4 ] && PARITY=--parity
++
++echo "rank $RANK of $WORLD: the weight file into $CACHE_DIR/rank-cache" >&2
++"$BIN" "$MODEL_DIR" "$CACHE_DIR/rank-cache" "$RANK" "$WORLD" $PARITY
++
++echo "the token map into $CACHE_DIR/dsv41_token_map.json" >&2
++if "$PYTHON" -c 'import tokenizers' 2>/dev/null; then
++  "$PYTHON" "$HERE/make_token_map.py" "$MODEL_DIR" "$CACHE_DIR/dsv41_token_map.json"
++else
++  docker run --rm --network none --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$MODEL_DIR:/model:ro" \
++    -v "$CACHE_DIR:/cache" -v "$HERE:/tools:ro" --entrypoint python3 "$IMAGE" \
++    /tools/make_token_map.py /model /cache/dsv41_token_map.json
++fi
+diff --git a/tools/dsv41-zig/kit/README.md b/tools/dsv41-zig/kit/README.md
+new file mode 100644
+index 0000000..4cde5ec
+--- /dev/null
++++ b/tools/dsv41-zig/kit/README.md
+@@ -0,0 +1,15 @@
++# The `dsv41` kernel kit: pack it, make its generated files, check it
++
++The four-node lane loads a kernel kit (`TF_DS_KIT`): the family's Triton kernels as binaries (`aot/`), the EXL3
++kernels (`cubins/`), `engram.json`, the RoPE tables with `rope.json`, and `vision/`. The recipe
++([bertholomus/deepseek-v4.1-tensorfold-tp4-4xgb10](https://github.com/bertholomus/deepseek-v4.1-tensorfold-tp4-4xgb10),
++folder `kit/`) holds the released kit; these tools made it and remake its generated part.
++
++- `pack_kit.py SRC_KIT OUT_KIT [--same-as SUMS] [--title TEXT]`: copies a lane's kit and writes `MANIFEST` (sha256,
++  bytes, origin, the two-node flag, path) and `SHA256SUMS`. The RoPE tables and the image bias are marked as made, not
++  committed; any other file over 50 MB stops it.
++- `make_rope.py MODEL KIT_DIR [--check]`: the four RoPE tables on the CPU (PyTorch), checked against `rope.json`.
++- `make_bias_vl.py ORIGINAL_DIR OUT`: `vision/gate_bias_vl.safetensors`, the 43 `ffn.gate.bias_vl` tensors copied out of
++  DeepSeek's original checkpoint (standard library only).
++- `verify_kit.sh [--kit DIR] [--remake] MODEL [ORIGINAL_DIR]`: makes what is missing with the two scripts above, then
++  checks every file against `MANIFEST`.
+diff --git a/tools/dsv41-zig/kit/pack_kit.py b/tools/dsv41-zig/kit/pack_kit.py
+new file mode 100755
+index 0000000..80dea33
+--- /dev/null
++++ b/tools/dsv41-zig/kit/pack_kit.py
+@@ -0,0 +1,105 @@
++#!/usr/bin/env python3
++"""pack_kit.py SRC_KIT OUT_KIT [--same-as SUMS] [--title TEXT]: the release copy of a lane's kernel kit, with its
++MANIFEST and SHA256SUMS. Standard library only.
++
++SRC_KIT is the kit folder a lane loads (TF_DS_KIT: aot/, cubins/, engram.json, the RoPE tables and rope.json, vision/).
++Every file is copied to OUT_KIT (an empty or new folder) and listed in OUT_KIT/MANIFEST (sha256, bytes, origin, the
++two-node flag, path) and OUT_KIT/SHA256SUMS (for `sha256sum -c`). Origin says how a cloner gets the file: `git`, kept in
++the recipe repository; `rope`, made by make_rope.py from the checkpoint's config (the four 136 MB tables); `bias`, made
++by make_bias_vl.py from DeepSeek's original checkpoint (model weights, never committed). Any other file over 50 MB stops
++the pack: a file that big is generated, not committed. --same-as: a SHA256SUMS-style list of another kit (paths with or
++without a leading `./` or `kit/`); a file with the same path and digest there is marked `tp2` in MANIFEST."""
++import hashlib
++import os
++import shutil
++import sys
++
++GENERATED = {
++    "rope-plain-cos.f32": "rope", "rope-plain-sin.f32": "rope",
++    "rope-compressed-cos.f32": "rope", "rope-compressed-sin.f32": "rope",
++    "vision/gate_bias_vl.safetensors": "bias",
++}
++LIMIT = 50 * 1000 * 1000
++OWN = {"MANIFEST", "SHA256SUMS"}
++
++
++def digest(path):
++    h = hashlib.sha256()
++    with open(path, "rb") as f:
++        for block in iter(lambda: f.read(1 << 22), b""):
++            h.update(block)
++    return h.hexdigest()
++
++
++def sums(path):
++    out = {}
++    for line in open(path):
++        if not line.strip():
++            continue
++        sha, name = line.split(None, 1)
++        name = name.strip().lstrip("*")
++        for p in ("./", "kit/"):
++            if name.startswith(p):
++                name = name[len(p):]
++        out[name] = sha
++    return out
++
++
++def main():
++    args, opts, i = [], {}, 1
++    while i < len(sys.argv):
++        a = sys.argv[i]
++        if a in ("--same-as", "--title"):
++            opts[a] = sys.argv[i + 1]
++            i += 2
++            continue
++        args.append(a)
++        i += 1
++    if len(args) != 2:
++        sys.exit(__doc__)
++    src, out = args
++    same = sums(opts["--same-as"]) if "--same-as" in opts else {}
++    files = sorted(os.path.relpath(os.path.join(d, f), src) for d, _, fs in os.walk(src) for f in fs)
++    files = [f for f in files if f not in OWN]
++    os.makedirs(out, exist_ok=True)
++    if any(os.scandir(out)):
++        sys.exit(f"{out} is not empty")
++    rows, big = [], []
++    for f in files:
++        size = os.path.getsize(os.path.join(src, f))
++        origin = GENERATED.get(f, "git")
++        if origin == "git" and size > LIMIT:
++            big.append(f"{f} ({size} bytes)")
++        sha = digest(os.path.join(src, f))
++        rows.append((sha, size, origin, "tp2" if same.get(f) == sha else "-", f))
++    if big:
++        sys.exit("files over 50 MB that no script makes: " + ", ".join(big))
++    for sha, _, _, _, f in rows:
++        dst = os.path.join(out, f)
++        os.makedirs(os.path.dirname(dst), exist_ok=True)
++        shutil.copyfile(os.path.join(src, f), dst)
++        if digest(dst) != sha:
++            sys.exit(f"{f}: the copy differs")
++    title = opts.get("--title", "the kernel kit")
++    n = {o: sum(1 for r in rows if r[2] == o) for o in ("git", "rope", "bias")}
++    with open(os.path.join(out, "MANIFEST"), "w") as m:
++        m.write(f"# {title}\n")
++        m.write(f"# {len(rows)} files, {sum(r[1] for r in rows)} bytes: every file the lane loads from its kit folder.\n")
++        m.write("# Columns: sha256, bytes, origin, two-node, path. Origin: git = in the recipe repository "
++                f"({n['git']} files); rope = made by tools/make_rope.py ({n['rope']}); bias = made by "
++                f"tools/make_bias_vl.py from DeepSeek's original checkpoint ({n['bias']}). verify_kit.sh makes and checks "
++                "them all.\n")
++        m.write(f"# Two-node: tp2 = byte for byte the same file in our two-node kit v0.6.0 "
++                f"({sum(1 for r in rows if r[3] == 'tp2')} files); - = this lane's own.\n")
++        for sha, size, origin, tp2, f in rows:
++            m.write(f"{sha}  {size:>10}  {origin:<4}  {tp2:<3}  {f}\n")
++    with open(os.path.join(out, "SHA256SUMS"), "w") as s:
++        for sha, _, _, _, f in rows:
++            s.write(f"{sha}  {f}\n")
++    print(f"{out}: {len(rows)} files, {sum(r[1] for r in rows)} bytes; git {n['git']} "
++          f"({sum(r[1] for r in rows if r[2] == 'git')} bytes), rope {n['rope']}, bias {n['bias']}; "
++          f"tp2 {sum(1 for r in rows if r[3] == 'tp2')}")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/zig/build/cuda.zig b/zig/build/cuda.zig
+index 2ba004c..7c3ea13 100644
+--- a/zig/build/cuda.zig
++++ b/zig/build/cuda.zig
+@@ -110,6 +110,10 @@ pub fn targets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
+     const ds_check = b.createModule(.{ .root_source_file = b.path("zig/src/families/dsv41/check_main.zig"), .target = target, .optimize = optimize, .link_libc = true });
+     ds_check.addImport("dsv41", engines(b, target, optimize, cuda, mods.lanes, mods.nemotron, mods.core).dsv41);
+     b.installArtifact(b.addExecutable(.{ .name = "tf-dsv41-check", .root_module = ds_check }));
++    // each rank's weight file (the lane's rank cache) from the checkpoint alone, no GPU and no Python
++    const ds_rank_cache = b.createModule(.{ .root_source_file = b.path("zig/src/families/dsv41/rank_cache_main.zig"), .target = target, .optimize = optimize, .link_libc = true });
++    ds_rank_cache.addImport("dsv41", ds_check.import_table.get("dsv41").?);
++    b.installArtifact(b.addExecutable(.{ .name = "tf-dsv41-rank-cache", .root_module = ds_rank_cache }));
+     const ds_load = b.createModule(.{ .root_source_file = b.path("zig/src/families/dsv41/load_main.zig"), .target = target, .optimize = optimize, .link_libc = true });
+     ds_load.addImport("dsv41", ds_check.import_table.get("dsv41").?);
+     ds_load.addImport("cuda", cuda);
+diff --git a/zig/src/families/dsv41/check_main.zig b/zig/src/families/dsv41/check_main.zig
+index 1f9c131..6ac51fa 100644
+--- a/zig/src/families/dsv41/check_main.zig
++++ b/zig/src/families/dsv41/check_main.zig
+@@ -1,10 +1,11 @@
+-//! tf-dsv41-check MODEL_DIR CACHE_DIR RANK WORLD [--no-dspark] [--bytes EVERY]: the TP split plan against the lane's
+-//! rank cache, entry by entry: key, order, dtype and trellis tiles; the checkpoint reader's layout of every entry; with
+-//! --bytes, the bytes of every EVERY-th entry and of every entry outside the routed experts, read both ways. No GPU.
++//! tf-dsv41-check MODEL_DIR CACHE_DIR RANK WORLD [--no-dspark] [--parity] [--bytes EVERY]: the TP split plan against
++//! the lane's rank cache, entry by entry: key, order, dtype and trellis tiles; the checkpoint reader's layout of every
++//! entry; with --bytes, the bytes of every EVERY-th entry and of every entry outside the routed experts, read both ways.
++//! --parity: the four-node split's balanced experts (TF_DS_2D_GU=parity). No GPU.
+ const std = @import("std");
+ const dsv41 = @import("dsv41");
+ 
+-const usage = "usage: tf-dsv41-check MODEL_DIR CACHE_DIR RANK WORLD [--no-dspark] [--bytes EVERY]\n";
++const usage = "usage: tf-dsv41-check MODEL_DIR CACHE_DIR RANK WORLD [--no-dspark] [--parity] [--bytes EVERY]\n";
+ 
+ pub fn main(init: std.process.Init) !u8 {
+     const a = init.arena.allocator();
+@@ -17,10 +18,12 @@ pub fn main(init: std.process.Init) !u8 {
+     const rank = try std.fmt.parseInt(u32, args[3], 10);
+     const world = try std.fmt.parseInt(u32, args[4], 10);
+     var dspark = true;
++    var parity = false;
+     var every: usize = 0;
+     var ai: usize = 5;
+     while (ai < args.len) : (ai += 1) {
+         if (std.mem.eql(u8, args[ai], "--no-dspark")) dspark = false;
++        if (std.mem.eql(u8, args[ai], "--parity")) parity = true;
+         if (std.mem.eql(u8, args[ai], "--bytes") and ai + 1 < args.len) {
+             every = try std.fmt.parseInt(usize, args[ai + 1], 10);
+             ai += 1;
+@@ -33,7 +36,7 @@ pub fn main(init: std.process.Init) !u8 {
+     var ix = try dsv41.rank_cache.open(init.gpa, io, dir, name);
+     defer ix.deinit();
+     // four ranks: the exact 2D split (node g = TP2 rank g % 2 of pair g / 2); the cache file is still rank g of 4
+-    const split: dsv41.plan.Split = if (world == 4) .{ .rank = rank % 2, .world = 2, .pair = rank / 2 } else .{ .rank = rank, .world = world };
++    const split: dsv41.plan.Split = if (world == 4) .{ .rank = rank % 2, .world = 2, .pair = rank / 2, .parity = parity } else .{ .rank = rank, .world = world };
+     const want = try dsv41.plan.wants(a, cfg, split, dspark);
+     var out_buf: [4096]u8 = undefined;
+     var out = std.Io.File.stdout().writer(io, &out_buf);
+diff --git a/zig/src/families/dsv41/checkpoint.zig b/zig/src/families/dsv41/checkpoint.zig
+index 05045c8..d236aa4 100644
+--- a/zig/src/families/dsv41/checkpoint.zig
++++ b/zig/src/families/dsv41/checkpoint.zig
+@@ -146,12 +146,33 @@ pub fn describe(sh: *const Shards, key: []const u8) !Slice {
+     return out;
+ }
+ 
++/// Where `key`'s source tensor lies in its shard (a reader that takes the whole tensor in one read, then readFrom).
++pub const Span = struct { file: *const st.File, offset: usize, len: usize };
++
++pub fn span(sh: *const Shards, key: []const u8) !Span {
++    const k = try Key.parse(key);
++    var buf: [256]u8 = undefined;
++    const s = try source(sh, k, &buf);
++    const f = &sh.files[sh.names.get(s.name).?];
++    return .{ .file = f, .offset = @intFromPtr(s.t.bytes.ptr) - @intFromPtr(f.map.memory.ptr), .len = s.t.bytes.len };
++}
++
+ /// `key`'s bytes into `out` (describe(key).bytes long).
+ pub fn read(sh: *const Shards, key: []const u8, out: []u8) !void {
++    return readFrom(sh, key, null, out);
++}
++
++/// read, the source tensor's bytes taken from `bytes` (its span, read by the caller) instead of the mapped shard: a
++/// column slice touches every row of its tensor, which through the map is a disk read a row.
++pub fn readFrom(sh: *const Shards, key: []const u8, bytes: ?[]const u8, out: []u8) !void {
+     const k = try Key.parse(key);
+     var buf: [256]u8 = undefined;
+     const s = try source(sh, k, &buf);
+-    const t = s.t;
++    var t = s.t;
++    if (bytes) |b| {
++        if (b.len != t.bytes.len) return error.BadSize;
++        t.bytes = b;
++    }
+     const want = try describe(sh, key);
+     if (out.len != want.bytes) return error.BadSize;
+     if (!k.exl3) {
+@@ -244,6 +265,16 @@ test "column, row and whole slices of a toy trellis and its scales" {
+     var svh: [64]u8 = undefined;
+     try read(&sh, "w|(32, 64)|None|svh", &svh);
+     try std.testing.expectEqualSlices(u8, body[96 + 64 .. 224], &svh);
++    // the same from a copy of the tensor's span, as tf-dsv41-rank-cache reads it
++    const sp = try span(&sh, "w|(32, 64)|(16, 32)|tr");
++    try std.testing.expectEqual(@as(usize, 8 + json.len), sp.offset);
++    try std.testing.expectEqual(@as(usize, 32), sp.len);
++    var copy: [32]u8 = undefined;
++    @memcpy(&copy, file.items[sp.offset..][0..sp.len]);
++    var both2: [8]u8 = undefined;
++    try readFrom(&sh, "w|(32, 64)|(16, 32)|tr", &copy, &both2);
++    try std.testing.expectEqualSlices(u8, &both, &both2);
++    try std.testing.expectError(error.BadSize, readFrom(&sh, "w|(32, 64)|(16, 32)|tr", copy[0..16], &both2));
+     var wide: [16]u8 = undefined;
+     try read(&sh, "g.bias|torch.float32", &wide);
+     const h0: f16 = @bitCast(std.mem.readInt(u16, body[224..226], .little));
+diff --git a/zig/src/families/dsv41/rank_cache.zig b/zig/src/families/dsv41/rank_cache.zig
+index 4936dfe..7c5883f 100644
+--- a/zig/src/families/dsv41/rank_cache.zig
++++ b/zig/src/families/dsv41/rank_cache.zig
+@@ -1,6 +1,6 @@
+ //! The Python lane's per-rank weight file (TF_DS_RANK_CACHE, weights.py RankCache): this rank's slices of the checkpoint
+ //! in the loader's order and dtypes, a JSON index after them, then the index's offset and a magic word. Both engines load
+-//! from the one file.
++//! from the one file; tf-dsv41-rank-cache (rank_cache_main.zig) writes it from the checkpoint alone.
+ const std = @import("std");
+ const Io = std.Io;
+ 
+@@ -32,6 +32,20 @@ pub const DType = enum {
+         inline for (names) |n| if (std.mem.eql(u8, text, n[0])) return n[1];
+         return null;
+     }
++
++    /// The name parse takes (torch's: str(dtype).split(".")[1]).
++    pub fn name(self: DType) []const u8 {
++        return switch (self) {
++            .bf16 => "bfloat16",
++            .f16 => "float16",
++            .f32 => "float32",
++            .i16 => "int16",
++            .i32 => "int32",
++            .i64 => "int64",
++            .u8 => "uint8",
++            .f8e4m3 => "float8_e4m3fn",
++        };
++    }
+ };
+ 
+ /// One tensor in the file: its bytes are [offset, offset + bytes).
+@@ -142,6 +156,36 @@ pub fn find(gpa: std.mem.Allocator, io: Io, dir: Io.Dir, rank: u32, world: u32)
+     return found orelse error.NoRankCache;
+ }
+ 
++/// One index row as weights.py RankCache writes it (json.dumps of [key, dtype, shape, offset, bytes]); the index is the
++/// rows in file order, ", " between them, in one list (tf-dsv41-rank-cache writes the file).
++pub fn writeRow(w: *Io.Writer, key: []const u8, dtype: DType, shape: []const usize, offset: u64, bytes: u64) !void {
++    try w.writeByte('[');
++    try jsonString(w, key);
++    try w.print(", \"{s}\", [", .{dtype.name()});
++    for (shape, 0..) |d, i| try w.print("{s}{d}", .{ if (i > 0) ", " else "", d });
++    try w.print("], {d}, {d}]", .{ offset, bytes });
++}
++
++/// An ASCII string as json.dumps writes it: quotes, backslashes and control characters escaped.
++fn jsonString(w: *Io.Writer, s: []const u8) !void {
++    try w.writeByte('"');
++    for (s) |ch| switch (ch) {
++        '"', '\\' => {
++            try w.writeByte('\\');
++            try w.writeByte(ch);
++        },
++        '\n' => try w.writeAll("\\n"),
++        '\r' => try w.writeAll("\\r"),
++        '\t' => try w.writeAll("\\t"),
++        0x08 => try w.writeAll("\\b"),
++        0x0c => try w.writeAll("\\f"),
++        0x00...0x07, 0x0b, 0x0e...0x1f, 0x7f => try w.print("\\u{x:0>4}", .{ch}),
++        0x80...0xff => return error.NonAsciiKey,
++        else => try w.writeByte(ch),
++    };
++    try w.writeByte('"');
++}
++
+ /// A cache file as weights.py writes one, for the tests: each tensor's bytes, then the index, offset and magic.
+ pub fn writeFake(a: std.mem.Allocator, io: Io, dir: Io.Dir, name: []const u8, rows: []const struct { key: []const u8, dtype: []const u8, shape: []const usize, fill: u8 }) !void {
+     var body: std.ArrayList(u8) = .empty;
+@@ -194,6 +238,29 @@ test "a rank cache's index reads back in order, and its file is found by rank" {
+     try std.testing.expectEqualStrings("embed.weight|None", ix.entries.keys()[0]);
+ }
+ 
++test "index rows as json.dumps writes them, read back" {
++    var buf: [512]u8 = undefined;
++    var w: Io.Writer = .fixed(&buf);
++    try w.writeByte('[');
++    try writeRow(&w, "embed.weight|None", .bf16, &.{ 4, 8 }, 0, 64);
++    try w.writeAll(", ");
++    try writeRow(&w, "layers.0.attn.wq_b|(0, 16384)|None|tr", .i16, &.{ 2, 3, 48 }, 64, 576);
++    try w.writeAll(", ");
++    try writeRow(&w, "layers.0.attn.attn_sink|torch.float32", .f32, &.{64}, 640, 256);
++    try w.writeByte(']');
++    try std.testing.expectEqualStrings("[[\"embed.weight|None\", \"bfloat16\", [4, 8], 0, 64], " ++
++        "[\"layers.0.attn.wq_b|(0, 16384)|None|tr\", \"int16\", [2, 3, 48], 64, 576], " ++
++        "[\"layers.0.attn.attn_sink|torch.float32\", \"float32\", [64], 640, 256]]", w.buffered());
++    var ix = try parseIndex(std.testing.allocator, w.buffered(), 896);
++    defer ix.deinit();
++    try std.testing.expectEqual(@as(u64, 64), ix.get("layers.0.attn.wq_b|(0, 16384)|None|tr").?.offset);
++    w = .fixed(&buf);
++    try jsonString(&w, "a\"b\\c\x01\x08\x7f");
++    try std.testing.expectEqualStrings("\"a\\\"b\\\\c\\u0001\\b\\u007f\"", w.buffered());
++    try std.testing.expectError(error.NonAsciiKey, jsonString(&w, "\xc3\xa9"));
++    inline for (comptime std.enums.values(DType)) |d| try std.testing.expectEqual(d, DType.parse(d.name()).?);
++}
++
+ test "an index whose entries overlap, leave gaps or disagree with their shapes is refused" {
+     const bad = [_][]const u8{
+         "[[\"a\", \"float32\", [2], 0, 8], [\"b\", \"float32\", [2], 4, 8]]",
+diff --git a/zig/src/families/dsv41/rank_cache_main.zig b/zig/src/families/dsv41/rank_cache_main.zig
+new file mode 100644
+index 0000000..879be3c
+--- /dev/null
++++ b/zig/src/families/dsv41/rank_cache_main.zig
+@@ -0,0 +1,149 @@
++//! tf-dsv41-rank-cache MODEL_DIR OUT_DIR RANK WORLD [--parity] [--no-dspark] [--index-only]: one rank's weight file
++//! (the lane's rank cache, TF_DS_RANK_CACHE) from the checkpoint alone, no GPU and no Python. The entries are
++//! plan.wants' (the Python loader's keys and order for the split: TP over 1 or 2 nodes, the exact 2D split over 4;
++//! --parity: the balanced experts split, TF_DS_2D_GU=parity), each sliced by the checkpoint reader from its source
++//! tensor read whole (checkpoint.readFrom: the bytes the loader keeps); then the index as weights.py RankCache writes it
++//! (rank_cache.writeRow), its offset (u64 little-endian) and the magic. The file is OUT_DIR/rank{RANK}of{WORLD}-<the
++//! index's sha256, 20 hex digits>.bin, written as a dot file and renamed when whole; OUT_DIR must not hold another file
++//! of this rank and world (the lane refuses a folder with two). --index-only: print the index the file would hold to
++//! stdout and write nothing.
++const std = @import("std");
++const dsv41 = @import("dsv41");
++
++const usage = "usage: tf-dsv41-rank-cache MODEL_DIR OUT_DIR RANK WORLD [--parity] [--no-dspark] [--index-only]\n";
++
++fn dim(s: dsv41.checkpoint.Slice, i: usize) usize {
++    return if (i < s.rank) s.shape[i] else 1;
++}
++
++pub fn main(init: std.process.Init) !u8 {
++    const a = init.arena.allocator();
++    const gpa = init.gpa;
++    const io = init.io;
++    const args = try init.minimal.args.toSlice(a);
++    if (args.len < 5) {
++        std.debug.print("{s}", .{usage});
++        return 2;
++    }
++    const rank = try std.fmt.parseInt(u32, args[3], 10);
++    const world = try std.fmt.parseInt(u32, args[4], 10);
++    var dspark = true;
++    var parity = false;
++    var index_only = false;
++    for (args[5..]) |x| {
++        if (std.mem.eql(u8, x, "--no-dspark")) {
++            dspark = false;
++        } else if (std.mem.eql(u8, x, "--parity")) {
++            parity = true;
++        } else if (std.mem.eql(u8, x, "--index-only")) {
++            index_only = true;
++        } else {
++            std.debug.print("{s}", .{usage});
++            return 2;
++        }
++    }
++    if (!(world == 1 or world == 2 or world == 4) or rank >= world or (parity and world != 4)) {
++        std.debug.print("WORLD is 1, 2 or 4, RANK below it; --parity needs WORLD 4\n{s}", .{usage});
++        return 2;
++    }
++    // four ranks: the exact 2D split (node g = TP2 rank g % 2 of pair g / 2); the file is still rank g of 4
++    const split: dsv41.plan.Split = if (world == 4) .{ .rank = rank % 2, .world = 2, .pair = rank / 2, .parity = parity } else .{ .rank = rank, .world = world };
++    const cfg = try dsv41.Config.read(a, io, args[1]);
++    const want = try dsv41.plan.wants(a, cfg, split, dspark);
++    var sh = try dsv41.checkpoint.Shards.open(gpa, io, args[1]);
++    defer sh.close(io);
++
++    // every entry's layout first, and from the layouts the index: a missing tensor or a layout the split does not
++    // expect stops before a byte is written
++    const slices = try a.alloc(dsv41.checkpoint.Slice, want.len);
++    var index: std.Io.Writer.Allocating = .init(gpa);
++    defer index.deinit();
++    const iw = &index.writer;
++    try iw.writeByte('[');
++    var total: u64 = 0;
++    for (want, slices, 0..) |x, *s, i| {
++        s.* = dsv41.checkpoint.describe(&sh, x.key) catch |err| {
++            std.debug.print("{s}: {t}\n", .{ x.key, err });
++            return 1;
++        };
++        var bad = false;
++        if (x.dtype) |d| bad = bad or d != s.dtype;
++        if (x.k16) |k| bad = bad or dim(s.*, 0) != k;
++        if (x.n16) |n| bad = bad or dim(s.*, 1) != n;
++        if (bad) {
++            std.debug.print("{s}: the checkpoint's {t} {any} is not the split's\n", .{ x.key, s.dtype, s.shape[0..s.rank] });
++            return 1;
++        }
++        if (i > 0) try iw.writeAll(", ");
++        try dsv41.rank_cache.writeRow(iw, x.key, s.dtype, s.shape[0..s.rank], total, s.bytes);
++        total += s.bytes;
++    }
++    try iw.writeByte(']');
++    const body = index.written();
++    var out_buf: [1 << 16]u8 = undefined;
++    var out = std.Io.File.stdout().writer(io, &out_buf);
++    if (index_only) {
++        try out.interface.writeAll(body);
++        try out.interface.flush();
++        return 0;
++    }
++
++    var dir = try std.Io.Dir.cwd().createDirPathOpen(io, args[2], .{ .open_options = .{ .iterate = true } });
++    defer dir.close(io);
++    if (dsv41.rank_cache.find(a, io, dir, rank, world)) |old| {
++        std.debug.print("{s} already holds {s}: remove it or name an empty OUT_DIR\n", .{ args[2], old });
++        return 1;
++    } else |err| if (err != error.NoRankCache) return err;
++    const partial = try std.fmt.allocPrint(a, ".rank{d}of{d}.partial", .{ rank, world });
++    var file = try dir.createFile(io, partial, .{});
++    var file_open = true;
++    defer if (file_open) file.close(io);
++    errdefer dir.deleteFile(io, partial) catch {};
++    var wbuf: [1 << 20]u8 = undefined;
++    var fw = file.writer(io, &wbuf);
++    const w = &fw.interface;
++
++    var buf: std.ArrayList(u8) = .empty;
++    defer buf.deinit(gpa);
++    var whole: std.ArrayList(u8) = .empty;
++    defer whole.deinit(gpa);
++    var last: ?dsv41.checkpoint.Span = null;
++    var at: u64 = 0;
++    var report: u64 = 8 << 30;
++    for (want, slices) |x, s| {
++        // each source tensor in one read (its parts' keys follow one another): slicing it through the map would read
++        // the disk a row at a time
++        const sp = try dsv41.checkpoint.span(&sh, x.key);
++        if (last == null or last.?.file != sp.file or last.?.offset != sp.offset) {
++            try whole.resize(gpa, sp.len);
++            if (try sp.file.file.readPositionalAll(io, whole.items, sp.offset) != sp.len) return error.ShortRead;
++            last = sp;
++        }
++        try buf.resize(gpa, s.bytes);
++        try dsv41.checkpoint.readFrom(&sh, x.key, whole.items, buf.items);
++        try w.writeAll(buf.items);
++        at += s.bytes;
++        if (at >= report) {
++            std.debug.print("rank {d} of {d}: {d} of {d} MiB\n", .{ rank, world, at >> 20, total >> 20 });
++            report += 8 << 30;
++        }
++    }
++    try w.writeAll(body);
++    var tail: [16]u8 = undefined;
++    std.mem.writeInt(u64, tail[0..8], at, .little);
++    @memcpy(tail[8..], dsv41.rank_cache.magic);
++    try w.writeAll(&tail);
++    try w.flush();
++    try file.sync(io);
++    file.close(io);
++    file_open = false;
++
++    var digest: [32]u8 = undefined;
++    std.crypto.hash.sha2.Sha256.hash(body, &digest, .{});
++    const hex = std.fmt.bytesToHex(digest, .lower);
++    const name = try std.fmt.allocPrint(a, "rank{d}of{d}-{s}.bin", .{ rank, world, hex[0..20] });
++    try dir.rename(partial, dir, name, io);
++    try out.interface.print("{{\"file\": \"{s}\", \"entries\": {d}, \"data_bytes\": {d}, \"index_bytes\": {d}, \"rank\": {d}, \"world\": {d}, \"parity\": {}, \"dspark\": {}}}\n", .{ name, want.len, at, body.len, rank, world, parity, dspark });
++    try out.interface.flush();
++    return 0;
++}
+-- 
+2.43.0
+

@@ -1,0 +1,88 @@
+From 25bbb77fd8274099004ef4145699295e97f866d3 Mon Sep 17 00:00:00 2001
+From: tonyd2wild-run <noreply@example.invalid>
+Date: Sat, 17 Oct 2026 23:50:30 -0400
+Subject: [PATCH 2/3] server: opt-in random sampling seed per request and top_k
+ handling (TF_SEED_RANDOM, TF_TOP_K_MAX)
+
+TF_SEED_RANDOM=1: a request that names no seed gets a seed mixed from a per-request counter and the wall clock, so identical
+requests sample differently. A request that sends a seed keeps it exactly. Unset: the seed stays keyed to the prompt.
+
+TF_TOP_K_MAX=N (DeepSeek-V4.1's exact sampler takes 1 to 56): a request top_k of 0 or below, which other servers use for
+"off", takes the server default top_k (20 when the server names none), and one above N is cut to N with a warning at most
+once a minute. Unset: top_k is passed as before.
+---
+ zig/src/server/server.zig | 41 +++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 39 insertions(+), 2 deletions(-)
+
+diff --git a/zig/src/server/server.zig b/zig/src/server/server.zig
+index 29a5382..8d93c8c 100644
+--- a/zig/src/server/server.zig
++++ b/zig/src/server/server.zig
+@@ -22,6 +22,10 @@ const Value = json.Value;
+ const Cx = errors.Cx;
+ const Allocator = std.mem.Allocator;
+ 
++/// Requests so far that drew a random seed (TF_SEED_RANDOM), and the second of the last top_k warning.
++var seed_counter: std.atomic.Value(u64) = .init(0);
++var clamp_warned_s: std.atomic.Value(i64) = .init(-60);
++
+ /// auto compacts near the window. fraction compacts past that share of it.
+ pub const CompactAt = union(enum) { auto, fraction: f64 };
+ 
+@@ -135,6 +139,39 @@ pub const Server = struct {
+         return null;
+     }
+ 
++    /// TF_SEED_RANDOM=1: the value mixed into the salt of a request that names no seed, so identical requests sample
++    /// differently (off: the seed is keyed to the prompt alone, as before). A request that sends `seed` keeps it exactly.
++    fn seedMix(srv: *const Server) i64 {
++        const v = std.c.getenv("TF_SEED_RANDOM") orelse return 0;
++        if (!std.mem.eql(u8, std.mem.span(v), "1")) return 0;
++        const ns: u64 = @truncate(@as(u96, @bitCast(std.Io.Clock.real.now(srv.io).toNanoseconds())));
++        const n = seed_counter.fetchAdd(1, .monotonic);
++        return @bitCast((ns ^ (n *% 0x9E3779B97F4A7C15)) *% 0xBF58476D1CE4E5B9);
++    }
++
++    /// TF_TOP_K_MAX=N: the largest top_k the engine's sampler takes (DeepSeek-V4.1: 56). A request top_k of 0 or below
++    /// (vLLM's "off") means the server default, and one above N is cut to N, with a warning at most once a minute.
++    fn topKFor(srv: *const Server, asked: i64) i64 {
++        const v = std.c.getenv("TF_TOP_K_MAX") orelse return asked;
++        const max = std.fmt.parseInt(i64, std.mem.span(v), 10) catch return asked;
++        if (max <= 0) return asked;
++        var k = asked;
++        if (k <= 0) {
++            k = 20;
++            if (srv.config.default_sampling) |d| if (d.get("top_k")) |dk| if (dk.int64()) |n| if (n > 0) {
++                k = n;
++            };
++        }
++        if (k > max) {
++            const now_s: i64 = @intCast(@divFloor(clock.nowNs(srv.io), std.time.ns_per_s));
++            const last = clamp_warned_s.load(.monotonic);
++            if (now_s - last >= 60 and clamp_warned_s.cmpxchgStrong(last, now_s, .monotonic, .monotonic) == null)
++                log.line("warning: top_k {d} is above this engine's sampler limit; using {d} (at most one warning a minute)", .{ k, max });
++            k = max;
++        }
++        return k;
++    }
++
+     /// ``_resolve_sampling``: omitted or null fields keep the defaults; an omitted seed is keyed to the prompt.
+     pub fn resolveSampling(srv: *Server, cx: *Cx, f: Value, temperature: f64, prompt_ids: []const u32) errors.Refused!?api.Sampling {
+         _ = temperature; // the request's own temperature field decides, as in the Python server
+@@ -143,11 +180,11 @@ pub const Server = struct {
+         try merge(options, cx, try fields.parseNumbers(cx, f));
+         const temp = number(options.get("temperature")) orelse 0;
+         if (temp <= 0) return null;
+-        const seed: u64 = if (options.get("seed")) |s| seedBits(s) else api.seedFor(prompt_ids, srv.config.seed_salt);
++        const seed: u64 = if (options.get("seed")) |s| seedBits(s) else api.seedFor(prompt_ids, srv.config.seed_salt +% srv.seedMix());
+         return .{
+             .seed = seed,
+             .temperature = @floatCast(temp),
+-            .top_k = @intCast(@min(@max(0, (if (options.get("top_k")) |k| k.int64() else null) orelse 0), std.math.maxInt(u32))),
++            .top_k = @intCast(@min(@max(0, srv.topKFor((if (options.get("top_k")) |k| k.int64() else null) orelse 0)), std.math.maxInt(u32))),
+             .top_p = @floatCast(number(options.get("top_p")) orelse 1.0),
+             .min_p = @floatCast(number(options.get("min_p")) orelse 0.0),
+         };
+-- 
+2.43.0
+

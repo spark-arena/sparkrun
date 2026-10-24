@@ -1,0 +1,22 @@
+recipe_version: "2"
+name: tensorfold-nemotron-3.5-super-vl-tp2
+description: >-
+  NVIDIA Nemotron 3.5 Super VL 120B-A12B (NVFP4) across two DGX Sparks with
+  TensorFold's native CUDA TP (TF_NEMOTRON_RANK/TF_NEMOTRON_WORLD). Rank 0 holds
+  the whole model and serves; rank 1 holds its expert shares and starts first.
+  This is the released two-rank qualification; >2 ranks must divide the expert
+  shares and is experimental. The checkpoint revision is pinned because rank 0
+  and rank 1 compare checkpoint layout and hashes before serving.
+model: nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4
+model_revision: 82d93699acd3be9e4617c53360fe5b3f5dbeb1b3
+runtime: tensorfold
+min_nodes: 2
+max_nodes: 2
+defaults:
+  tensor_parallel: 2
+  tf_family: nemotron
+  port: 8000
+  max_model_len: 16384
+  max_num_seqs: 4
+  vision: true
+  thinking: false

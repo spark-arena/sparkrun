@@ -1,0 +1,42 @@
+From fae457a70900cab196bd2669c89ce58f7778dfee Mon Sep 17 00:00:00 2001
+From: tonyd2wild-run <noreply@example.invalid>
+Date: Sun, 18 Oct 2026 23:16:20 +0000
+Subject: [PATCH 3/3] dsv41: tf-dsv41-rank-cache and tf-dsv41-check on this
+ branch take one or two ranks (the four-node parity split is not here)
+
+---
+ zig/src/families/dsv41/check_main.zig      | 3 ++-
+ zig/src/families/dsv41/rank_cache_main.zig | 3 ++-
+ 2 files changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/zig/src/families/dsv41/check_main.zig b/zig/src/families/dsv41/check_main.zig
+index 6ac51fa..32ed095 100644
+--- a/zig/src/families/dsv41/check_main.zig
++++ b/zig/src/families/dsv41/check_main.zig
+@@ -36,7 +36,8 @@ pub fn main(init: std.process.Init) !u8 {
+     var ix = try dsv41.rank_cache.open(init.gpa, io, dir, name);
+     defer ix.deinit();
+     // four ranks: the exact 2D split (node g = TP2 rank g % 2 of pair g / 2); the cache file is still rank g of 4
+-    const split: dsv41.plan.Split = if (world == 4) .{ .rank = rank % 2, .world = 2, .pair = rank / 2, .parity = parity } else .{ .rank = rank, .world = world };
++    if (world == 4 or parity) { std.debug.print("this engine branch splits over one or two ranks only\n", .{}); return 2; }
++    const split: dsv41.plan.Split = .{ .rank = rank, .world = world };
+     const want = try dsv41.plan.wants(a, cfg, split, dspark);
+     var out_buf: [4096]u8 = undefined;
+     var out = std.Io.File.stdout().writer(io, &out_buf);
+diff --git a/zig/src/families/dsv41/rank_cache_main.zig b/zig/src/families/dsv41/rank_cache_main.zig
+index 879be3c..417e888 100644
+--- a/zig/src/families/dsv41/rank_cache_main.zig
++++ b/zig/src/families/dsv41/rank_cache_main.zig
+@@ -47,7 +47,8 @@ pub fn main(init: std.process.Init) !u8 {
+         return 2;
+     }
+     // four ranks: the exact 2D split (node g = TP2 rank g % 2 of pair g / 2); the file is still rank g of 4
+-    const split: dsv41.plan.Split = if (world == 4) .{ .rank = rank % 2, .world = 2, .pair = rank / 2, .parity = parity } else .{ .rank = rank, .world = world };
++    if (world == 4 or parity) { std.debug.print("this engine branch splits over one or two ranks only\n", .{}); return 2; }
++    const split: dsv41.plan.Split = .{ .rank = rank, .world = world };
+     const cfg = try dsv41.Config.read(a, io, args[1]);
+     const want = try dsv41.plan.wants(a, cfg, split, dspark);
+     var sh = try dsv41.checkpoint.Shards.open(gpa, io, args[1]);
+-- 
+2.43.0
+

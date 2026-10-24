@@ -87,6 +87,8 @@ def test_dgx_spark_default_images():
     assert p.default_image("atlas") == "azeezish/atlas-gb10:latest"
     assert p.default_image("vllm-distributed") == "ghcr.io/spark-arena/dgx-vllm-eugr-nightly-tf5:latest"
     assert p.default_image("sglang") == "scitrera/dgx-spark-sglang:latest"
+    assert p.default_image("tensorfold") == "ghcr.io/spark-arena/tensorfold:1.1.3"
+    assert p.default_image("tensorfold-dsv41") == "ghcr.io/spark-arena/tensorfold-dsv41:3ff3b2a"
     assert p.default_image("nonexistent-runtime") is None
 
 

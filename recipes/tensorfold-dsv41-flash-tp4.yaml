@@ -1,0 +1,30 @@
+recipe_version: "2"
+name: tensorfold-dsv41-flash-tp4
+description: >-
+  EXPERIMENTAL: DeepSeek-V4.1-Flash-1017 (EXL3 3.5 bpw) on four DGX Sparks using
+  the community TensorFold fork (bertholomus/TensorFold @ 3ff3b2a + tonyd2wild
+  TP4 patches), 2D TP split. Not upstream. Build the pinned image with
+  docker/tensorfold-dsv41/build.sh --load and prepare the bundle with
+  scripts/tensorfold-dsv41-prepare.sh --world 4. `model:` MUST be the absolute
+  prepared bundle path, identical on all four hosts.
+model: /mnt/sparkrun/models/tensorfold-dsv41-flash-tp4
+runtime: tensorfold-dsv41
+min_nodes: 4
+max_nodes: 4
+defaults:
+  tensor_parallel: 4
+  port: 8000
+  max_model_len: 1048576
+  max_num_seqs: 16
+  streams: 16
+  pool: 2097152
+  window: 2097152
+  round_rows: 48
+  served_model_name: deepseek-v4.1-flash
+  thinking: false
+  max_tokens: 32768
+  temperature: 1.0
+  top_p: 1.0
+  top_k: 20
+  rdma_hca: rocep1s0f0,roceP2p1s0f0
+  net_if: enp1s0f0np0

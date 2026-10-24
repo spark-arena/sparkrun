@@ -10,6 +10,30 @@ first tagged release containing them, regardless of their original commit date.
 
 ## [Unreleased]
 
+### Added
+
+- `tensorfold` runtime: TensorFold's Zig/CUDA native server. Solo on one GB10,
+  NFS/pre-placed checkpoints through the existing absolute `model:` mechanism,
+  and native TP2 for the engine families that place their own ranks (`glm`,
+  `nemotron`) with `NCCL_COMM_ID`.  Ships a pinned image definition
+  (`docker/tensorfold`) and example recipes under `recipes/`.
+- `tensorfold-dsv41` runtime: experimental DeepSeek-V4.1-Flash TP2/TP4 via the
+  community TensorFold fork, with a prepared per-rank-cache bundle layout, a
+  one-time preparation script (`scripts/tensorfold-dsv41-prepare.sh`), a
+  pinned image definition (`docker/tensorfold-dsv41`) and example recipes.
+- Native cluster orchestration can start worker ranks before rank 0
+  (`RuntimePlugin.native_start_order()`) and reserve a contiguous rendezvous
+  port range (`native_rendezvous_port_span()`), for engines whose followers
+  must be listening before the serving rank starts.
+- Docs: `docs/TENSORFOLD.md` covers the runtimes, NFS weights, TP limits,
+  DeepSeek bundle preparation and the hardware validation checklist.
+
+### Changed
+
+- The `tensorfold` monitor log colorizer is now wired to the new in-tree
+  runtime (and the `tensorfold-dsv41` alias) instead of only an out-of-tree
+  expectation.
+
 ## [0.4.1] — 2026-10-19
 
 ### Added

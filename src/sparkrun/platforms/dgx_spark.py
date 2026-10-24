@@ -29,6 +29,8 @@ _DGX_SPARK_DEFAULTS: dict[str, str | None] = {
     "modular-max": "modular/max-nvidia-full:latest",
     "atlas": "azeezish/atlas-gb10:latest",
     "tokenary": "scitrera/tokenary:latest",
+    "tensorfold": "ghcr.io/spark-arena/tensorfold:1.1.3",
+    "tensorfold-dsv41": "ghcr.io/spark-arena/tensorfold-dsv41:3ff3b2a",
 }
 
 

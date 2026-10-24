@@ -1,0 +1,71 @@
+# TensorFold native server image — build on PR, publish manually.
+#
+# Small and emulation-tolerant (apt + a release tarball, no compilation), so a
+# single QEMU build produces the multi-arch manifest.  Compare the RDMA image
+# workflow: that one compiles NCCL and must run on native runners.
+#
+# Publishing is explicit (workflow_dispatch + push=true); the tag is the engine
+# version from docker/tensorfold/image.env, and tests/test_tensorfold_image.py
+# keeps the platform default in step with it.
+
+name: TensorFold Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      push:
+        description: "Publish to GHCR (otherwise build only)"
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - 'docker/tensorfold/**'
+      - '.github/workflows/tensorfold-image.yml'
+      - 'tests/test_tensorfold_image.py'
+
+permissions:
+  contents: read
+
+env:
+  PUSH: ${{ github.event_name == 'workflow_dispatch' && inputs.push }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load pinned inputs
+        run: |
+          set -a; . ./docker/tensorfold/image.env; set +a
+          for key in IMAGE_REPO IMAGE_TAG TF_VERSION CUDA_TAG NCCL_APT_VERSION; do
+            printf '%s=%s\n' "$key" "${!key}" >> "$GITHUB_ENV"
+          done
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: env.PUSH == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build (and optionally publish)
+        uses: docker/build-push-action@v6
+        with:
+          context: docker/tensorfold
+          platforms: linux/amd64,linux/arm64
+          push: ${{ env.PUSH == 'true' }}
+          tags: ${{ env.IMAGE_REPO }}:${{ env.IMAGE_TAG }}
+          build-args: |
+            TF_VERSION=${{ env.TF_VERSION }}
+            CUDA_TAG=${{ env.CUDA_TAG }}
+            NCCL_APT_VERSION=${{ env.NCCL_APT_VERSION }}
+          cache-from: type=gha,scope=tensorfold
+          cache-to: type=gha,mode=max,scope=tensorfold

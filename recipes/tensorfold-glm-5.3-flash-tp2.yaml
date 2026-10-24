@@ -1,0 +1,22 @@
+recipe_version: "2"
+name: tensorfold-glm-5.3-flash-tp2
+description: >-
+  GLM-5.3-Flash EXL3/TR3 across two DGX Sparks with TensorFold's native CUDA
+  tensor parallelism (TF_GLM_RANK/TF_GLM_WORLD). Rank 1 starts first and rank 0
+  serves. The released lane is qualified for two ranks; >2 ranks is
+  experimental. The EXL3 checkpoint is experimental too; see the model card.
+  For NFS/pre-placed weights replace `model:` with an absolute directory that
+  already exists on both hosts (trusted recipe required) — sparkrun then skips
+  download and distribution.
+model: Mia-AiLab/GLM-5.3-Flash-EXL3-TR3-4bpw
+runtime: tensorfold
+min_nodes: 2
+max_nodes: 2
+defaults:
+  tensor_parallel: 2
+  tf_family: glm
+  port: 8000
+  max_model_len: 8192
+  max_num_seqs: 1
+  thinking: false
+  max_tokens: 32768

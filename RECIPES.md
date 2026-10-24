@@ -773,6 +773,14 @@ Explicit `runtime` always wins. Command-hint detection only fires when `runtime`
 | `eugr-vllm`        | Ray (inherits vllm-ray)                             | eugr container builds + Ray cluster            |
 | `atlas`            | Native (`--rank`, `--world-size`, `--master-addr`)  | Atlas Spark (azeezish/atlas-gb10) — pure-Rust LLM inference; each rank runs `atlas serve`, rank 0 only HTTP |
 | `modular-max`      | None — single-node only                             | Modular MAX (`max serve`); tensor parallelism uses local GPUs via `--devices` (never multi-node) |
+| `tensorfold`       | Solo; native TP2 for `tf_family: glm` / `nemotron`  | TensorFold Zig/CUDA server (OpenAI Chat/Responses/Messages). Rank families place their ranks with `TF_GLM_*` / `TF_NEMOTRON_*` + `NCCL_COMM_ID`; followers start **before** rank 0. See [docs/TENSORFOLD.md](docs/TENSORFOLD.md). |
+| `tensorfold-dsv41` | Native TP2/TP4 community fork (`TF_TP_*`, follower binary) | **Experimental.** DeepSeek-V4.1 EXL3 from a prepared per-rank-cache bundle; not the upstream release. See [docs/TENSORFOLD.md](docs/TENSORFOLD.md). |
+
+TensorFold does not use the generic `Common Defaults Keys` column mapping below
+for TP: `max_num_seqs` maps to the engine's `--parallel` (request concurrency,
+**not** tensor parallelism), `max_model_len` maps to `--context`, and
+`served_model_name` maps to `--name`.  Multi-node TP is selected by
+`tensor_parallel` plus a family key, never by a bare `--tp`.
 
 ### Common Defaults Keys
 

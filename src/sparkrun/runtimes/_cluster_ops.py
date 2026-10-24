@@ -617,6 +617,109 @@ def find_port(ctx: ClusterContext, host: str, preferred: int) -> int:
     return find_available_port(host, preferred, ssh_kwargs=ctx.ssh_kwargs, dry_run=ctx.dry_run)
 
 
+def find_port_range(ctx: ClusterContext, host: str, preferred: int, count: int) -> int:
+    """Find *count* consecutive available TCP ports, starting at *preferred*.
+
+    The rendezvous start port comes from :func:`find_port`; an engine whose
+    bootstrap protocol opens ``port + 1`` as well (TensorFold's follower
+    control channel is one) needs the whole range free, or it starts on a
+    pair whose second half another workload already owns.  A single-port
+    check would report the launch healthy and let the engine fail later.
+
+    Returns *preferred* on dry-run (nothing is probed) or after the scan
+    gives up, matching :func:`find_available_port`'s last-resort contract.
+    """
+    if count <= 1:
+        return find_port(ctx, host, preferred)
+    if ctx.dry_run:
+        return preferred
+
+    from sparkrun.orchestration.primitives import find_available_port, run_command_on_host
+
+    start = preferred
+    # The port scanner already walks forward on a collision; this loop only
+    # re-runs it when the *tail* of the span is occupied, so the bound is
+    # generous rather than binding.
+    for _ in range(16):
+        candidate = find_available_port(host, start, ssh_kwargs=ctx.ssh_kwargs, dry_run=ctx.dry_run)
+        span_free = True
+        for offset in range(1, count):
+            probe = run_command_on_host(
+                host,
+                "nc -z localhost %d" % (candidate + offset),
+                ssh_kwargs=ctx.ssh_kwargs,
+                timeout=5,
+                quiet=True,
+            )
+            if probe.success:
+                span_free = False
+                start = candidate + 1
+                break
+        if span_free:
+            if candidate != preferred:
+                logger.info("Port range %d..%d in use on %s; using %d", preferred, preferred + count - 1, host, candidate)
+            return candidate
+
+    logger.warning(
+        "No free %d-port range from %d on %s; using %d anyway",
+        count,
+        preferred,
+        host,
+        preferred,
+    )
+    return preferred
+
+
+def _call_native_hook(hook, recipe, overrides):
+    """Call a native-cluster hook with launch context, or without it.
+
+    Hooks gained ``recipe``/``overrides`` so a runtime can answer per launch
+    (TensorFold is worker-first only when it is actually launching ranks), but
+    an out-of-tree runtime built against the older zero-argument signature and
+    the test doubles must keep working.  Inspect rather than catch
+    ``TypeError``: a real runtime raising from inside the hook must not be
+    silently retried as an argument error.
+    """
+    import inspect
+
+    try:
+        parameters = inspect.signature(hook).parameters
+    except (TypeError, ValueError):
+        return hook()
+    if len(parameters) >= 2 or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+        return hook(recipe=recipe, overrides=overrides)
+    return hook()
+
+
+def _native_start_order(runtime: "RuntimePlugin", recipe=None, overrides=None) -> str:
+    """Read :meth:`RuntimePlugin.native_start_order` safely.
+
+    Tests and older out-of-tree plugins build runtimes from ``MagicMock`` (or
+    from a base class predating the hook); a non-string answer must mean the
+    historical head-first contract rather than an accidental truthy branch.
+    """
+    hook = getattr(runtime, "native_start_order", None)
+    if callable(hook):
+        value = _call_native_hook(hook, recipe, overrides)
+        if isinstance(value, str) and value in ("head_first", "workers_first"):
+            return value
+        if value is not None and not hasattr(value, "assert_called"):
+            logger.warning("Ignoring unknown native start order %r; using head_first", value)
+    return "head_first"
+
+
+def _native_rendezvous_port_span(runtime: "RuntimePlugin", recipe=None, overrides=None) -> int:
+    """Read :meth:`RuntimePlugin.native_rendezvous_port_span` safely."""
+    hook = getattr(runtime, "native_rendezvous_port_span", None)
+    if callable(hook):
+        value = _call_native_hook(hook, recipe, overrides)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+        if value is not None and not hasattr(value, "assert_called"):
+            logger.warning("Ignoring invalid rendezvous port span %r; using 1", value)
+    return 1
+
+
 # ---------------------------------------------------------------------------
 # Container launch
 # ---------------------------------------------------------------------------
@@ -972,9 +1075,14 @@ def run_native_cluster(
         init_port=init_port,
     )
 
-    # Auto-detect available init port
+    # Auto-detect available init port(s)
+    start_order = _native_start_order(runtime, recipe, overrides)
     if gate_port is not None:
-        init_port = find_port(ctx, ctx.head_host, init_port)
+        port_span = _native_rendezvous_port_span(runtime, recipe, overrides)
+        if port_span > 1:
+            init_port = find_port_range(ctx, ctx.head_host, init_port, port_span)
+        else:
+            init_port = find_port(ctx, ctx.head_host, init_port)
         gate_port = init_port
 
     # Print banner after finalizing ports
@@ -1042,54 +1150,73 @@ def run_native_cluster(
     run_pre_serve_hooks(runtime, ctx, hosts_containers, recipe, overrides, trust=trust, cache_dir=cache_dir)
     logger.info("Step 5/7: Pre-serve hooks done (%.1fs)", time.monotonic() - t0)
 
-    # Step 6: Exec head serve command and wait for init port
-    t0 = time.monotonic()
+    # Steps 6-7: start rank 0 and the workers in the runtime's declared order.
+    #
+    # The historical contract is head-first: rank 0 opens the rendezvous
+    # store, the gate waits for it, then the workers join.  A runtime may
+    # declare "workers_first" instead (TensorFold's follower ranks must be
+    # listening before the serving rank starts); in that order the head-port
+    # gate is deliberately not probed — the engine owns the join — and the
+    # launcher's budgeted endpoint watcher owns readiness afterwards.
     head_container = all_nodes[0][2]
-    if progress:
-        progress.step("Starting head node serve")
-    else:
-        logger.info("Step 6/7: Executing serve command on head node (rank 0) %s...", ctx.head_host)
-    head_sparkrun_labels = executor.workload_labels_for_cluster(
-        cluster_id=ctx.cluster_id,
-        recipe=recipe,
-        runtime=runtime,
-        rank=0,
-        placement=ctx.placement,
-        host=ctx.head_host,
-    )
-    head_exec_script = executor.generate_exec_serve_script(
-        container_name=head_container,
-        serve_command=head_command,
-        env=ctx.env_for_host(ctx.head_host),
-        detached=True,
-        sparkrun_labels=head_sparkrun_labels or None,
-    )
-    head_result = run_remote_script(
-        ctx.head_host,
-        head_exec_script,
-        timeout=60,
-        dry_run=ctx.dry_run,
-        **ctx.ssh_kwargs,
-    )
-    if not head_result.success and not ctx.dry_run:
-        logger.error("Failed to exec serve on head node %s (rc=%d):", ctx.head_host, head_result.returncode)
-        for line in (head_result.stderr or "").rstrip().splitlines():
-            logger.error("  %s", line)
-        if head_result.stdout:
-            logger.error("Head node stdout:")
-            for line in head_result.stdout.rstrip().splitlines():
-                logger.error("  %s", line)
-        cleanup_after_failure(ctx, executor, reason="head serve exec failed")
-        return 1
+    workers_first = start_order == "workers_first"
+    head_step = "Step 7/7" if workers_first else "Step 6/7"
+    worker_step = "Step 6/7" if workers_first else "Step 7/7"
 
-    # Wait for head init port
-    if gate_port is None:
-        logger.info(
-            "Step 6/7: Head %s started; no rendezvous to wait for (independent replicas) (%.1fs)",
-            node_label,
-            time.monotonic() - t0,
+    def _exec_head() -> int:
+        t0 = time.monotonic()
+        if progress:
+            progress.step("Starting head node serve")
+        else:
+            logger.info("%s: Executing serve command on head node (rank 0) %s...", head_step, ctx.head_host)
+        head_sparkrun_labels = executor.workload_labels_for_cluster(
+            cluster_id=ctx.cluster_id,
+            recipe=recipe,
+            runtime=runtime,
+            rank=0,
+            placement=ctx.placement,
+            host=ctx.head_host,
         )
-    elif not ctx.dry_run:
+        head_exec_script = executor.generate_exec_serve_script(
+            container_name=head_container,
+            serve_command=head_command,
+            env=ctx.env_for_host(ctx.head_host),
+            detached=True,
+            sparkrun_labels=head_sparkrun_labels or None,
+        )
+        head_result = run_remote_script(
+            ctx.head_host,
+            head_exec_script,
+            timeout=60,
+            dry_run=ctx.dry_run,
+            **ctx.ssh_kwargs,
+        )
+        if not head_result.success and not ctx.dry_run:
+            logger.error("Failed to exec serve on head node %s (rc=%d):", ctx.head_host, head_result.returncode)
+            for line in (head_result.stderr or "").rstrip().splitlines():
+                logger.error("  %s", line)
+            if head_result.stdout:
+                logger.error("Head node stdout:")
+                for line in head_result.stdout.rstrip().splitlines():
+                    logger.error("  %s", line)
+            cleanup_after_failure(ctx, executor, reason="head serve exec failed")
+            return 1
+        logger.info("%s: Head serve command started (%.1fs)", head_step, time.monotonic() - t0)
+        return 0
+
+    def _wait_for_head_gate() -> int:
+        t0 = time.monotonic()
+        if gate_port is None:
+            logger.info(
+                "%s: Head %s started; no rendezvous to wait for (independent replicas) (%.1fs)",
+                head_step,
+                node_label,
+                time.monotonic() - t0,
+            )
+            return 0
+        if ctx.dry_run:
+            logger.info("%s: [dry-run] Would wait for %s %d", head_step, port_label.lower(), init_port)
+            return 0
         logger.info("  Waiting for head node %s %s:%d...", port_label.lower(), ctx.head_host, gate_port)
 
         log_proc = start_log_capture(ctx.head_host, head_container, ctx.ssh_kwargs)
@@ -1118,97 +1245,118 @@ def run_native_cluster(
             dump_serve_log(ctx.head_host, head_container, ctx.ssh_kwargs, dry_run=ctx.dry_run)
             cleanup_after_failure(ctx, executor, reason="head node did not become ready")
             return 1
-        logger.info("Step 6/7: Head node ready (%.1fs)", time.monotonic() - t0)
-    else:
-        logger.info("Step 6/7: [dry-run] Would wait for %s %d", port_label.lower(), init_port)
+        logger.info("%s: Head node ready (%.1fs)", head_step, time.monotonic() - t0)
+        return 0
 
-    # Step 7: Exec worker serve commands in parallel
-    t0 = time.monotonic()
-    if ctx.worker_hosts:
-        if progress:
-            progress.step("Starting worker nodes")
-        else:
-            logger.info(
-                "Step 7/7: Executing serve on %d worker node(s) on %s...",
-                len(ctx.worker_hosts),
-                ", ".join(ctx.worker_hosts),
-            )
-        from sparkrun.orchestration.ssh import resolve_parallel_cap
+    def _exec_workers() -> int:
+        t0 = time.monotonic()
+        if ctx.worker_hosts:
+            if progress:
+                progress.step("Starting worker nodes")
+            else:
+                logger.info(
+                    "%s: Executing serve on %d worker node(s) on %s...",
+                    worker_step,
+                    len(ctx.worker_hosts),
+                    ", ".join(ctx.worker_hosts),
+                )
+            from sparkrun.orchestration.ssh import resolve_parallel_cap
 
-        with ThreadPoolExecutor(max_workers=resolve_parallel_cap(len(ctx.worker_hosts), _config_ssh_cap(ctx.config))) as pool:
-            futures = {}
-            for i, host in enumerate(ctx.worker_hosts):
-                rank = i + 1
-                worker_command = runtime.generate_node_command(
-                    recipe=recipe,
-                    overrides=overrides,
-                    head_ip=head_ip,
-                    num_nodes=ctx.num_nodes,
-                    node_rank=rank,
-                    init_port=init_port,
-                    skip_keys=skip_keys,
-                    hosts=resolved_hosts,
-                    placement=init_placement,
-                )
-                worker_container = all_nodes[rank][2]
-                worker_sparkrun_labels = executor.workload_labels_for_cluster(
-                    cluster_id=ctx.cluster_id,
-                    recipe=recipe,
-                    runtime=runtime,
-                    rank=rank,
-                    placement=ctx.placement,
-                    host=host,
-                )
-                worker_exec_script = executor.for_host(host).generate_exec_serve_script(
-                    container_name=worker_container,
-                    serve_command=worker_command,
-                    env=ctx.env_for_host(host),
-                    detached=True,
-                    sparkrun_labels=worker_sparkrun_labels or None,
-                )
-                future = _operation_submit(
-                    pool,
-                    run_remote_script,
-                    host,
-                    worker_exec_script,
-                    timeout=60,
-                    dry_run=ctx.dry_run,
-                    **ctx.ssh_kwargs,
-                )
-                futures[future] = (host, rank)
-
-            worker_failures: list[tuple[str, int, Any]] = []
-            for future in as_completed(futures):
-                host, rank = futures[future]
-                result = future.result()
-                if not result.success and not ctx.dry_run:
-                    worker_failures.append((host, rank, result))
-
-            if worker_failures:
-                for host, rank, result in worker_failures:
-                    logger.error(
-                        "Worker rank %d on %s failed to exec serve (rc=%d):",
-                        rank,
-                        host,
-                        result.returncode,
+            with ThreadPoolExecutor(max_workers=resolve_parallel_cap(len(ctx.worker_hosts), _config_ssh_cap(ctx.config))) as pool:
+                futures = {}
+                for i, host in enumerate(ctx.worker_hosts):
+                    rank = i + 1
+                    worker_command = runtime.generate_node_command(
+                        recipe=recipe,
+                        overrides=overrides,
+                        head_ip=head_ip,
+                        num_nodes=ctx.num_nodes,
+                        node_rank=rank,
+                        init_port=init_port,
+                        skip_keys=skip_keys,
+                        hosts=resolved_hosts,
+                        placement=init_placement,
                     )
-                    for line in (result.stderr or "").rstrip().splitlines():
-                        logger.error("  %s", line)
-                cleanup_after_failure(
-                    ctx,
-                    executor,
-                    reason=f"{len(worker_failures)} worker(s) failed serve exec",
-                )
-                return 1
+                    worker_container = all_nodes[rank][2]
+                    worker_sparkrun_labels = executor.workload_labels_for_cluster(
+                        cluster_id=ctx.cluster_id,
+                        recipe=recipe,
+                        runtime=runtime,
+                        rank=rank,
+                        placement=ctx.placement,
+                        host=host,
+                    )
+                    worker_exec_script = executor.for_host(host).generate_exec_serve_script(
+                        container_name=worker_container,
+                        serve_command=worker_command,
+                        env=ctx.env_for_host(host),
+                        detached=True,
+                        sparkrun_labels=worker_sparkrun_labels or None,
+                    )
+                    future = _operation_submit(
+                        pool,
+                        run_remote_script,
+                        host,
+                        worker_exec_script,
+                        timeout=60,
+                        dry_run=ctx.dry_run,
+                        **ctx.ssh_kwargs,
+                    )
+                    futures[future] = (host, rank)
 
-        if not progress:
-            logger.info("Step 7/7: Workers launched (%.1fs)", time.monotonic() - t0)
-    else:
-        if progress:
-            progress.step("Starting worker nodes")
-            progress.detail("  No worker hosts, skipping")
+                worker_failures: list[tuple[str, int, Any]] = []
+                for future in as_completed(futures):
+                    host, rank = futures[future]
+                    result = future.result()
+                    if not result.success and not ctx.dry_run:
+                        worker_failures.append((host, rank, result))
+
+                if worker_failures:
+                    for host, rank, result in worker_failures:
+                        logger.error(
+                            "Worker rank %d on %s failed to exec serve (rc=%d):",
+                            rank,
+                            host,
+                            result.returncode,
+                        )
+                        for line in (result.stderr or "").rstrip().splitlines():
+                            logger.error("  %s", line)
+                    cleanup_after_failure(
+                        ctx,
+                        executor,
+                        reason=f"{len(worker_failures)} worker(s) failed serve exec",
+                    )
+                    return 1
+
+            if not progress:
+                logger.info("%s: Workers launched (%.1fs)", worker_step, time.monotonic() - t0)
         else:
-            logger.info("Step 7/7: No worker hosts, skipping")
+            if progress:
+                progress.step("Starting worker nodes")
+                progress.detail("  No worker hosts, skipping")
+            else:
+                logger.info("%s: No worker hosts, skipping", worker_step)
+        return 0
+
+    if workers_first:
+        logger.info("Native start order: workers-first (rank 0 starts last; the head-port gate is not used)")
+        rc = _exec_workers()
+        if rc != 0:
+            return rc
+        rc = _exec_head()
+        if rc != 0:
+            return rc
+        logger.info("Workers started before rank 0; the launcher watches the serve endpoint for readiness")
+    else:
+        rc = _exec_head()
+        if rc != 0:
+            return rc
+        rc = _wait_for_head_gate()
+        if rc != 0:
+            return rc
+        rc = _exec_workers()
+        if rc != 0:
+            return rc
 
     runtime._print_connection_info(ctx.hosts, ctx.cluster_id, per_node_logs=True)
 
