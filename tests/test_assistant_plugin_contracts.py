@@ -14,18 +14,36 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 DOCUMENTS = sorted(
     path
-    for package in ("sparkrun-cc-plugin", "sparkrun-openclaw-plugin")
+    for package in ("sparkrun-cc-plugin", "sparkrun-openclaw-plugin", "sparkrun-omp-plugin")
     for pattern in ("*.md", "commands/*.md", "skills/*/SKILL.md")
     for path in (ROOT / package).glob(pattern)
 )
 
 
-def test_generated_openclaw_skills_match_source():
-    generator = runpy.run_path(str(ROOT / "scripts/sync-assistant-skills.py"))
-    pairs = list(generator["rendered_skills"]())
-    assert len(pairs) == 3
-    for target, expected in pairs:
-        assert target.read_text() == expected, f"Regenerate {target} with scripts/sync-assistant-skills.py"
+def test_generated_assistant_references_match_source():
+    generator = runpy.run_path(str(ROOT / "scripts/sync-assistant-plugins.py"))
+    skill_pairs = list(generator["rendered_skills"]())
+    skills = {path.parent.name for path in (ROOT / "sparkrun-cc-plugin/skills").glob("*/SKILL.md")}
+    packages = {"sparkrun-openclaw-plugin", "sparkrun-omp-plugin"}
+    assert {(target.relative_to(ROOT).parts[0], target.parent.name) for target, _ in skill_pairs} == {
+        (package, name) for package in packages for name in skills
+    }
+    for target, expected in skill_pairs:
+        assert target.read_text() == expected, f"Regenerate {target} with scripts/sync-assistant-plugins.py"
+
+    command_pairs = list(generator["rendered_commands"]())
+    commands = {path.name for path in (ROOT / "sparkrun-cc-plugin/commands").glob("*.md")}
+    assert {target.name for target, _ in command_pairs} == commands
+    command_dir = ROOT / "sparkrun-omp-plugin/commands"
+    for target, expected in command_pairs:
+        assert target.parent == command_dir, target
+        assert target.read_text() == expected, f"Regenerate {target} with scripts/sync-assistant-plugins.py"
+        assert "sparkrun_exec" not in expected, target
+
+    for target, expected in skill_pairs:
+        if target.relative_to(ROOT).parts[0] == "sparkrun-omp-plugin":
+            assert "`bash`" in expected
+            assert "sparkrun_exec" not in expected
 
 
 def test_skill_names_do_not_shadow_claude_action_commands():
@@ -40,6 +58,20 @@ def test_skill_names_do_not_shadow_claude_action_commands():
         names.add(metadata["name"])
     manifest = json.loads((ROOT / "sparkrun-openclaw-plugin/openclaw.plugin.json").read_text())
     assert set(manifest["skills"]) == {f"skills/{name}" for name in names}
+    omp_skills = {path.parent.name for path in (ROOT / "sparkrun-omp-plugin/skills").glob("*/SKILL.md")}
+    assert omp_skills == names
+
+
+def test_omp_marketplace_catalog_matches_plugin():
+    catalog = json.loads((ROOT / ".omp-plugin/marketplace.json").read_text())
+    assert catalog["name"] == "sparkrun"
+    assert len(catalog["plugins"]) == 1
+    entry = catalog["plugins"][0]
+    assert entry["name"] == "sparkrun"
+    assert entry["source"] == "./sparkrun-omp-plugin"
+    manifest = json.loads((ROOT / "sparkrun-omp-plugin/.claude-plugin/plugin.json").read_text())
+    assert entry["name"] == manifest["name"]
+    assert entry["version"] == manifest["version"]
 
 
 @pytest.mark.parametrize("path", DOCUMENTS, ids=lambda path: str(path.relative_to(ROOT)))

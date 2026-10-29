@@ -3,8 +3,9 @@
 # Run: python scripts/update-versions.py --check     to verify (CI-friendly)
 
 sparkrun: 0.4.3
-sparkrun-cc-plugin: 0.0.5
-sparkrun-openclaw-plugin: 0.0.2
+sparkrun-cc-plugin: 0.0.6
+sparkrun-openclaw-plugin: 0.0.3
+sparkrun-omp-plugin: 0.0.6
 
 # Prefer pinned versions to avoid supply chain attacks.
 preferred_versions:
@@ -93,3 +94,6 @@ project_rules:
   sparkrun-openclaw-plugin:
     - { type: package, path: sparkrun-openclaw-plugin/package.json }
     - { type: plugin,  path: sparkrun-openclaw-plugin/openclaw.plugin.json }
+  sparkrun-omp-plugin:
+    - { type: plugin,      path: sparkrun-omp-plugin/.claude-plugin/plugin.json }
+    - { type: marketplace, path: .omp-plugin/marketplace.json, args: [ sparkrun-omp-plugin ] }

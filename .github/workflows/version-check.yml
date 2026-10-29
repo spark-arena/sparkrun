@@ -8,8 +8,10 @@ on:
   pull_request:
     paths:
       - '.claude-plugin/marketplace.json'
+      - '.omp-plugin/marketplace.json'
       - 'pyproject.toml'
       - 'sparkrun-cc-plugin/.claude-plugin/plugin.json'
+      - 'sparkrun-omp-plugin/.claude-plugin/plugin.json'
       - 'sparkrun-openclaw-plugin/openclaw.plugin.json'
       - 'sparkrun-openclaw-plugin/package.json'
       - 'versions.yaml'

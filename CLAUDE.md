@@ -37,7 +37,7 @@ ruff format src/ tests/
 .venv/bin/sparkrun --help
 .venv/bin/sparkrun run --dry-run qwen3-1.7b-vllm
 
-# Sync versions across packages (pyproject.toml + sparkrun-cc-plugin)
+# Sync versions across packages (pyproject.toml + the three assistant plugins)
 python scripts/update-versions.py
 python scripts/update-versions.py --check   # CI-friendly verify
 ```
@@ -3520,8 +3520,8 @@ embedded scripts, SSH execution, kernel tuning, and VRAM estimation.
 
 ### Companion Packages
 
-- **`sparkrun-cc-plugin/`** — Claude Code commands for run/stop/status/list, benchmark, monitor, proxy, and setup; shared CLI reference skills are `workloads`, `configuration`, and `registry`. Run `python3 scripts/sync-assistant-skills.py` after editing skills to regenerate the OpenClaw references with their tool-specific guidance. `tests/test_assistant_plugin_contracts.py` checks parity and parses examples without dispatching operations.
-- **`website/`** — Documentation site built with Astro (Starlight theme), deployed to Cloudflare Pages.
+- **`sparkrun-cc-plugin/`** — Claude Code commands for run/stop/status/list, benchmark, monitor, proxy, and setup; shared CLI reference skills are `workloads`, `configuration`, `registry`, `recipes`, and `plugins`. Run `python3 scripts/sync-assistant-plugins.py` after editing skills or commands to regenerate the OpenClaw and oh-my-pi references with their tool-specific guidance. `tests/test_assistant_plugin_contracts.py` checks parity and parses examples without dispatching operations.
+- **`sparkrun-omp-plugin/`** — oh-my-pi plugin: the same commands plus skills, generated from the Claude Code source by `scripts/sync-assistant-plugins.py` and installed through `.omp-plugin/marketplace.json`. It has no `package.json`; omp's `bash` tool runs the CLI directly.
 
 ## Key Dependencies
 
