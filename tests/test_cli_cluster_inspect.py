@@ -128,3 +128,16 @@ def test_inspect_dry_run_skips_hardware_probe(runner, v):
     assert result.exit_code == 0
     assert "[dry-run] Would probe head node hardware on 10.0.0.1" in result.output
     assert "Head Node Hardware" not in result.output
+
+
+def test_inspect_unreachable_head_is_an_error_not_a_traceback(runner, v):
+    """A head that does not answer the HF-cache probe exits 1 with the reason."""
+    probe = RemoteResult(host="10.0.0.1", returncode=-1, stdout="", stderr="Execution timed out")
+    with mock.patch("sparkrun.orchestration.primitives.run_remote_command", return_value=probe):
+        result = runner.invoke(main, ["cluster", "inspect", "--hosts", "10.0.0.1"])
+
+    assert result.exit_code == 1
+    assert not isinstance(result.exception, RuntimeError)
+    assert "Could not resolve remote HF cache on 10.0.0.1" in result.output
+    assert "Execution timed out" in result.output
+    assert "Traceback" not in result.output

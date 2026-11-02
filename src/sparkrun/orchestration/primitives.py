@@ -114,6 +114,24 @@ def resolved_model_volume(recipe) -> dict[str, str]:
     return {path: path}
 
 
+class RemoteProbeError(RuntimeError):
+    """A target host could not be asked for a path sparkrun needs from it.
+
+    Raised when the SSH probe fails, times out or prints nothing.  It is an
+    environment problem (host unreachable, broken login shell), not a sparkrun
+    defect, so the CLI renders it as a plain error rather than a traceback.
+    """
+
+
+def _raise_probe_failure(what: str, host: str, result) -> None:
+    """Raise :class:`RemoteProbeError` for a failed ``probe_*`` SSH call."""
+    raise RemoteProbeError(
+        "Could not resolve %s on %s (rc=%d): %s. Check that %s is reachable over SSH, "
+        "or set cache_dir on the cluster so it does not need probing."
+        % (what, host, result.returncode, result.stderr.strip() or "no output", host)
+    )
+
+
 def probe_remote_path(
     host: str,
     expr: str,
@@ -146,9 +164,7 @@ def probe_remote_path(
         timeout=timeout,
     )
     if not result.success or not result.stdout.strip():
-        raise RuntimeError(
-            "Could not resolve remote path on %s (rc=%d): %s" % (host, result.returncode, result.stderr.strip() or "no output")
-        )
+        _raise_probe_failure("remote path", host, result)
     return assert_safe_path(result.stdout.strip())
 
 
@@ -211,7 +227,8 @@ def probe_remote_hf_cache(
         Concrete absolute path on the remote host.
 
     Raises:
-        RuntimeError: If the probe fails or returns a path with unsafe characters.
+        RemoteProbeError: If the probe fails, times out or prints nothing.
+        ShellSafetyError: If the probe returns a path with unsafe characters.
     """
     if dry_run:
         return resolve_hf_cache_home(None)
@@ -226,9 +243,7 @@ def probe_remote_hf_cache(
         timeout=timeout,
     )
     if not result.success or not result.stdout.strip():
-        raise RuntimeError(
-            "Could not resolve remote HF cache on %s (rc=%d): %s" % (host, result.returncode, result.stderr.strip() or "no output")
-        )
+        _raise_probe_failure("remote HF cache", host, result)
 
     from sparkrun.utils.shell import assert_safe_path
 

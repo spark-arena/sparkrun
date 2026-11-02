@@ -357,7 +357,8 @@ def validate_ib_connectivity(
     Accepts the per-host candidate lists from
     :attr:`IBDetectionResult.ib_candidates`.
     Returns an empty dict — signalling management-network fallback —
-    only when *every* host has zero reachable candidates.
+    when *any* host has zero reachable candidates: control-machine
+    transfers use one network for all hosts.
 
     Args:
         ib_candidates: Mapping of management host → candidate IB IP(s).
@@ -367,7 +368,7 @@ def validate_ib_connectivity(
 
     Returns:
         Mapping of host → verified-reachable IB IP, or an empty dict
-        when no host has any reachable IB IP.
+        when some host has no reachable IB IP.
     """
     if not ib_candidates:
         return {}
@@ -406,7 +407,9 @@ def validate_ib_connectivity(
 
         def _probe(host_ip: tuple[str, str]) -> tuple[tuple[str, str], bool]:
             _host, _ip = host_ip
-            result = run_remote_command(_ip, "true", connect_timeout=5, timeout=10, **kw)
+            # quiet: an IB IP the control machine has no route to is the
+            # normal case off-fabric, not a failure worth a warning per IP.
+            result = run_remote_command(_ip, "true", connect_timeout=5, timeout=10, quiet=True, **kw)
             return host_ip, result.success
 
         from sparkrun.orchestration.ssh import resolve_parallel_cap
@@ -442,16 +445,16 @@ def validate_ib_connectivity(
             )
 
     if unreachable:
+        # Not a failure: a control machine off the fabric (or cabled to only
+        # some hosts) simply selects the management network, and the caller
+        # logs the resulting transfer-mode decision.  Per-host detail stays at
+        # DEBUG so default output carries no error-looking lines.
         for host, tried in unreachable.items():
             if tried:
-                logger.warning(
-                    "  Control machine cannot reach any IB IP for host %s (tried %s)",
-                    host,
-                    ", ".join(tried),
-                )
+                logger.debug("  Control machine cannot reach any IB IP for host %s (tried %s)", host, ", ".join(tried))
             else:
-                logger.warning("  No IB candidates available for host %s", host)
-        logger.warning("  Falling back to management network for transfers")
+                logger.debug("  No IB candidates available for host %s", host)
+        logger.info("  IB network not reachable from control machine for every host; using management network for transfers")
         return {}
 
     logger.info("  IB network reachable — will use IB IPs for transfers")

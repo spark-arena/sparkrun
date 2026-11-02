@@ -184,6 +184,15 @@ class PluggableGroup(click.Group):
             # Contention is an answer (who holds what, and what to do), not a
             # crash: no command renders it, and a traceback buried the holder.
             raise click.ClickException(str(exc)) from exc
+        except RuntimeError as exc:
+            # Imported only on failure: every command passes through here.
+            from sparkrun.orchestration.primitives import RemoteProbeError
+
+            if isinstance(exc, RemoteProbeError):
+                # An unreachable host is an answer about the cluster, not a
+                # crash; several commands probe the head before doing anything.
+                raise click.ClickException(str(exc)) from exc
+            raise
 
     def _main_shell_completion(self, *args, **kwargs):
         # Click owns the completion flag and enters this hook before building
