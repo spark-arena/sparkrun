@@ -691,8 +691,21 @@ def detect_host_ip(
     host: str,
     ssh_kwargs: dict | None = None,
     dry_run: bool = False,
+    *,
+    mgmt_interface: str | None = None,
+    peers: list[str] | None = None,
 ) -> str:
     """Detect the management IP of a remote host.
+
+    Args:
+        host: Host to probe.
+        ssh_kwargs: SSH connection parameters.
+        dry_run: Return a placeholder without SSH.
+        mgmt_interface: The cluster's pinned management interface, if any.
+            Without it the head address could disagree with the ``NODE_IP``
+            the IB probe derived from the same pin.
+        peers: The cluster's hosts, against which the host finds its
+            management interface (see :func:`sparkrun.scripts.inject_mgmt_vars`).
 
     Returns:
         The detected IPv4 address string.
@@ -703,7 +716,7 @@ def detect_host_ip(
     from sparkrun.orchestration.scripts import generate_ip_detect_script
 
     kw = ssh_kwargs or {}
-    ip_script = generate_ip_detect_script()
+    ip_script = generate_ip_detect_script(mgmt_interface, peers=peers)
     result = run_remote_script(host, ip_script, timeout=15, dry_run=dry_run, **kw)
 
     if dry_run:

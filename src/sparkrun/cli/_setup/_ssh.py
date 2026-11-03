@@ -245,7 +245,7 @@ def _detect_and_update_mgmt_ips(host_list, cluster_name, cluster_mgr, ssh_kwargs
         return host_list
 
     click.echo("Detecting management IPs on cluster hosts...")
-    script = generate_ip_detect_script()
+    script = generate_ip_detect_script(peers=host_list)
     results = run_remote_scripts_parallel(
         host_list,
         script,

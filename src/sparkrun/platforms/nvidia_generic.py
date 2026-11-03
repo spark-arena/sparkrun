@@ -95,8 +95,8 @@ class GenericNvidiaPlatform(HardwarePlatformPlugin):
     # Vendor recognition alone does not qualify driver/CDI, OS tuning, or
     # fabric changes. A more specific platform can opt into those steps.
     setup_plans = (
-        SetupPlan("docker", ("docker", "docker_group", "host_ipc", "ssh_identity", "ssh_mesh")),
-        SetupPlan("local", ("host_ipc", "ssh_identity", "ssh_mesh")),
+        SetupPlan("docker", ("docker", "docker_group", "host_ipc", "ssh_identity", "ssh_mesh", "mgmt_interface")),
+        SetupPlan("local", ("host_ipc", "ssh_identity", "ssh_mesh", "mgmt_interface")),
     )
 
     def matches(self, host_hardware: HostHardware) -> bool:

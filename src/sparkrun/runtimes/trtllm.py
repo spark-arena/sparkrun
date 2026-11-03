@@ -604,7 +604,7 @@ class TrtllmRuntime(RuntimePlugin):
         host_ips: list[str] = []  # ordered by rank
         for rank, host in enumerate(hosts):
             try:
-                ip = detect_host_ip(host, ssh_kwargs=ctx.ssh_kwargs, dry_run=dry_run)
+                ip = detect_host_ip(host, ssh_kwargs=ctx.ssh_kwargs, dry_run=dry_run, mgmt_interface=ctx.mgmt_interface, peers=hosts)
             except RuntimeError as e:
                 logger.error("%s", e)
                 return 1

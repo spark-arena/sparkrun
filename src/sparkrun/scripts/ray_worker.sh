@@ -9,7 +9,7 @@ if [ -z "$DEFAULT_IF" ]; then
     echo "ERROR: Could not identify a management interface" >&2
     exit 1
 fi
-NODE_IP=$(ip -4 addr show "$DEFAULT_IF" | grep -oP '(?<=inet\s)\d+(\.\d+){{3}}' | head -n1)
+NODE_IP=$(sparkrun_mgmt_ip "$DEFAULT_IF")
 if [ -z "$NODE_IP" ]; then
     echo "ERROR: Could not detect management IP" >&2
     exit 1

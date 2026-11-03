@@ -584,7 +584,7 @@ def detect_head_ip(ctx: ClusterContext) -> str:
     """
     from sparkrun.orchestration.primitives import detect_host_ip
 
-    return detect_host_ip(ctx.head_host, ssh_kwargs=ctx.ssh_kwargs, dry_run=ctx.dry_run)
+    return detect_host_ip(ctx.head_host, ssh_kwargs=ctx.ssh_kwargs, dry_run=ctx.dry_run, mgmt_interface=ctx.mgmt_interface, peers=ctx.hosts)
 
 
 def resolve_hosts_for_init(ctx: ClusterContext, head_ip: str) -> list[str]:
@@ -606,7 +606,9 @@ def resolve_hosts_for_init(ctx: ClusterContext, head_ip: str) -> list[str]:
         if h == ctx.head_host:
             resolved.append(head_ip)
         else:
-            resolved.append(detect_host_ip(h, ssh_kwargs=ctx.ssh_kwargs, dry_run=ctx.dry_run))
+            resolved.append(
+                detect_host_ip(h, ssh_kwargs=ctx.ssh_kwargs, dry_run=ctx.dry_run, mgmt_interface=ctx.mgmt_interface, peers=ctx.hosts)
+            )
     return resolved
 
 

@@ -463,6 +463,7 @@ for _setup_step, _setup_description in {
     "sudoers": "Configure scoped sudoers rules",
     "ssh_identity": "Check for duplicate SSH host keys and machine IDs",
     "ssh_mesh": "Configure peer SSH access",
+    "mgmt_interface": "Report the management interface each host will use",
     "cx7": "Configure Spark CX7 networking",
     "rdma": "Check RDMA fabric readiness",
 }.items():

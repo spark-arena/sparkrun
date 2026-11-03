@@ -120,11 +120,12 @@ class DgxSparkPlatform(HardwarePlatformPlugin):
                 "sudoers",
                 "ssh_identity",
                 "ssh_mesh",
+                "mgmt_interface",
                 "cx7",
                 "rdma",
             ),
         ),
-        SetupPlan("local", ("host_ipc", "earlyoom", "sudoers", "ssh_identity", "ssh_mesh", "cx7", "rdma")),
+        SetupPlan("local", ("host_ipc", "earlyoom", "sudoers", "ssh_identity", "ssh_mesh", "mgmt_interface", "cx7", "rdma")),
     )
 
     def matches(self, host_hardware: HostHardware) -> bool:

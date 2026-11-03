@@ -20,7 +20,7 @@ from scitrera_app_framework import Plugin, Variables, ext_parse_bool, get_extens
 
 from sparkrun.orchestration.teardown import TEARDOWN_REMOVED_MARKER
 from sparkrun.core.readiness import ReadinessObserver
-from sparkrun.scripts import read_script
+from sparkrun.scripts import inject_mgmt_vars, read_script
 from sparkrun.utils import merge_env
 from sparkrun.utils.shell import b64_encode_cmd, quote
 
@@ -1138,8 +1138,14 @@ class Executor(Plugin):
         extra_docker_opts: list[str] | None = None,
         *,
         sparkrun_labels: dict[str, str] | None = None,
+        mgmt_interface: str | None = None,
+        peers: list[str] | None = None,
     ) -> str:
-        """Generate a script that starts a Ray head node in a container."""
+        """Generate a script that starts a Ray head node in a container.
+
+        *mgmt_interface* and *peers* decide which address the script detects
+        as ``NODE_IP`` (see :func:`sparkrun.scripts.inject_mgmt_vars`).
+        """
 
         all_env = merge_env({"RAY_memory_monitor_refresh_ms": "0"}, nccl_env, env)
 
@@ -1164,10 +1170,11 @@ class Executor(Plugin):
         )
 
         template = read_script("ray_head.sh")
-        return template.format(
+        script = template.format(
             cleanup_cmd=cleanup,
             run_cmd=run,
         )
+        return inject_mgmt_vars(script, mgmt_interface=mgmt_interface, peers=peers)
 
     def generate_ray_worker_script(
         self,
@@ -1181,8 +1188,14 @@ class Executor(Plugin):
         extra_docker_opts: list[str] | None = None,
         *,
         sparkrun_labels: dict[str, str] | None = None,
+        mgmt_interface: str | None = None,
+        peers: list[str] | None = None,
     ) -> str:
-        """Generate a script that starts a Ray worker node."""
+        """Generate a script that starts a Ray worker node.
+
+        *mgmt_interface* and *peers* decide which address the script detects
+        as ``NODE_IP`` (see :func:`sparkrun.scripts.inject_mgmt_vars`).
+        """
 
         all_env = merge_env({"RAY_memory_monitor_refresh_ms": "0"}, nccl_env, env)
 
@@ -1199,12 +1212,13 @@ class Executor(Plugin):
         )
 
         template = read_script("ray_worker.sh")
-        return template.format(
+        script = template.format(
             cleanup_cmd=cleanup,
             run_cmd=run,
             head_ip=head_ip,
             ray_port=ray_port,
         )
+        return inject_mgmt_vars(script, mgmt_interface=mgmt_interface, peers=peers)
 
     def generate_node_script(
         self,

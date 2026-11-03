@@ -143,10 +143,7 @@ echo "DIAG_NET_COUNT=$NET_IDX"
 
 # --- Management interface ---
 DIAG_DEFAULT_IFACE=$(sparkrun_mgmt_iface "")
-DIAG_MGMT_IP=""
-if [ -n "$DIAG_DEFAULT_IFACE" ]; then
-    DIAG_MGMT_IP=$(ip -4 addr show "$DIAG_DEFAULT_IFACE" 2>/dev/null | grep -oP 'inet \K[0-9.]+' | head -1 || echo "")
-fi
+DIAG_MGMT_IP=$(sparkrun_mgmt_ip "$DIAG_DEFAULT_IFACE")
 echo "DIAG_DEFAULT_IFACE=$DIAG_DEFAULT_IFACE"
 echo "DIAG_MGMT_IP=$DIAG_MGMT_IP"
 

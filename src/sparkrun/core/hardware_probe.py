@@ -21,7 +21,7 @@ import logging
 from typing import Any
 
 from sparkrun.core.hardware import HostHardware
-from sparkrun.scripts import inject_shell_vars, read_script
+from sparkrun.scripts import inject_mgmt_vars, read_script
 from sparkrun.utils.text import excerpt
 
 logger = logging.getLogger(__name__)
@@ -157,6 +157,7 @@ echo "Running InfiniBand detection..." >&2
 
 if ! [ -d /sys/class/infiniband ]; then
     echo "IB_DETECTED=0"
+    sparkrun_mgmt_report ""
     echo "{ib_end}"
     exit 0
 fi
@@ -196,6 +197,7 @@ done
 if [ ${{#ACTIVE_HCAS[@]}} -eq 0 ]; then
     echo "No active RDMA devices found." >&2
     echo "IB_DETECTED=0"
+    sparkrun_mgmt_report ""
     echo "{ib_end}"
     exit 0
 fi
@@ -206,11 +208,8 @@ UCX_LIST=$(IFS=,; echo "${{UCX_DEVS[*]}}")
 
 # Management interface, resolved after NET_LIST so the fabric adapters are
 # excluded from the heuristic scan.  May be empty -- see _mgmt_iface.sh.
-DEFAULT_IF=$(sparkrun_mgmt_iface "$NET_LIST")
-MGMT_IP=""
-if [ -n "$DEFAULT_IF" ]; then
-    MGMT_IP=$(ip -4 addr show "$DEFAULT_IF" 2>/dev/null | grep -oP 'inet \K[0-9.]+' | head -1)
-fi
+MGMT_REPORT=$(sparkrun_mgmt_report "$NET_LIST")
+DEFAULT_IF=$(printf '%s\n' "$MGMT_REPORT" | sed -n 's/^DETECTED_MGMT_IFACE=//p')
 
 IB_IPS=()
 for net_if in "${{ACTIVE_NETIFS[@]}}"; do
@@ -228,7 +227,7 @@ echo "DETECTED_SOCKET_IFNAME=$DEFAULT_IF"
 echo "DETECTED_NET_LIST=$NET_LIST"
 echo "DETECTED_UCX_LIST=$UCX_LIST"
 echo "DETECTED_IB_IPS=$IB_IP_LIST"
-echo "DETECTED_MGMT_IP=$MGMT_IP"
+printf '%s\n' "$MGMT_REPORT"
 
 echo "{ib_end}"
 """.format(
@@ -244,7 +243,7 @@ echo "{ib_end}"
 )
 
 
-def generate_combined_probe_script(mgmt_interface: str | None = None) -> str:
+def generate_combined_probe_script(mgmt_interface: str | None = None, peers: list[str] | None = None) -> str:
     """Return the combined accelerator + IB probe script.
 
     Run over SSH and parse stdout with :func:`split_probe_output`.
@@ -253,11 +252,13 @@ def generate_combined_probe_script(mgmt_interface: str | None = None) -> str:
         mgmt_interface: Optional management interface to pin, overriding
             detection on the host (see
             :attr:`~sparkrun.core.cluster_manager.ClusterDefinition.mgmt_interface`).
+        peers: The cluster's hosts, against which each host finds its
+            management interface (see :func:`sparkrun.scripts.inject_mgmt_vars`).
     """
     from sparkrun.core.hardware_probe_extensions import hardware_probe_script
 
     script = _COMBINED_PROBE_SCRIPT.replace('echo "%s"' % _ACCEL_END, hardware_probe_script() + '\necho "%s"' % _ACCEL_END, 1)
-    return inject_shell_vars(script, SPARKRUN_MGMT_IFACE=mgmt_interface)
+    return inject_mgmt_vars(script, mgmt_interface=mgmt_interface, peers=peers)
 
 
 # ---------------------------------------------------------------------------
@@ -389,7 +390,7 @@ def probe_hosts(
     logger.info("Probing hardware on %d host(s): %s", len(hosts), ", ".join(hosts))
     results = run_remote_scripts_parallel(
         hosts,
-        generate_combined_probe_script(mgmt_interface),
+        generate_combined_probe_script(mgmt_interface, peers=hosts),
         timeout=30,
         allow_local=True,
         **kw,

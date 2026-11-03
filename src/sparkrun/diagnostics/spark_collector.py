@@ -12,7 +12,7 @@ from typing import Any, Mapping
 
 from sparkrun.diagnostics.ndjson_writer import NDJSONWriter
 from sparkrun.orchestration.ssh import run_remote_scripts_parallel
-from sparkrun.scripts import read_script
+from sparkrun.scripts import inject_mgmt_vars, read_script
 from sparkrun.utils import parse_kv_output
 from sparkrun.utils.text import excerpt
 
@@ -317,7 +317,7 @@ def collect_spark_diagnostics(
         ``{host: parsed_kv_dict}`` for programmatic use.  Failed hosts
         have an empty dict.
     """
-    script = read_script("spark_diagnose.sh")
+    script = inject_mgmt_vars(read_script("spark_diagnose.sh"), peers=hosts)
     t0 = time.monotonic()
 
     results = run_remote_scripts_parallel(

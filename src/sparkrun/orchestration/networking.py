@@ -15,7 +15,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 from sparkrun.orchestration.infiniband import parse_kv_output
-from sparkrun.scripts import inject_shell_vars, read_script
+from sparkrun.scripts import inject_mgmt_vars, inject_shell_vars, read_script
 from sparkrun.utils.shell import quote
 from sparkrun.utils.text import excerpt
 
@@ -192,7 +192,7 @@ class CX7ClusterPlan:
 # ---------------------------------------------------------------------------
 
 
-def generate_cx7_detect_script(mgmt_interface: str | None = None) -> str:
+def generate_cx7_detect_script(mgmt_interface: str | None = None, peers: list[str] | None = None) -> str:
     """Load the CX7 detection bash script.
 
     Args:
@@ -200,8 +200,11 @@ def generate_cx7_detect_script(mgmt_interface: str | None = None) -> str:
             detection on the host.  The script uses it only to exclude the
             management NIC from the CX7 interface list (see
             :attr:`~sparkrun.core.cluster_manager.ClusterDefinition.mgmt_interface`).
+        peers: The cluster's hosts, which the host measures its interfaces'
+            routes against to find the management network (see
+            :func:`sparkrun.scripts.inject_mgmt_vars`).
     """
-    return inject_shell_vars(read_script("cx7_detect.sh"), SPARKRUN_MGMT_IFACE=mgmt_interface)
+    return inject_mgmt_vars(read_script("cx7_detect.sh"), mgmt_interface=mgmt_interface, peers=peers)
 
 
 def parse_cx7_detect_output(output: str) -> dict[str, str]:
@@ -280,6 +283,9 @@ def detect_cx7_for_hosts(
 
     kw = ssh_kwargs or {}
     logger.info("Detecting CX7 interfaces on %d host(s)...", len(hosts))
+    # No peers: this probe uses the management interface only to leave that
+    # NIC out of the CX7 list (the link to not reconfigure), and peer coverage
+    # may legitimately choose a CX7 port -- which would hide a real one.
     script = generate_cx7_detect_script()
 
     # Split local vs remote hosts
@@ -1914,7 +1920,7 @@ def discover_host_network_ips(
     kw = ssh_kwargs or {}
 
     logger.info("Discovering additional network IPs on %d host(s)...", len(hosts))
-    ib_script = generate_ib_detect_script()
+    ib_script = generate_ib_detect_script(peers=hosts)
 
     local_hosts = [h for h in hosts if is_local_host(h)]
     remote_hosts = [h for h in hosts if not is_local_host(h)]

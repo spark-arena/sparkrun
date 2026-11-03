@@ -398,6 +398,8 @@ class VllmRayRuntime(VllmRuntimeBase):
             nccl_env=head_nccl_env,
             extra_docker_opts=combined_docker_opts or None,
             sparkrun_labels=head_labels or None,
+            mgmt_interface=ctx.mgmt_interface,
+            peers=ctx.hosts,
         )
         head_result = run_remote_script(
             ctx.head_host,
@@ -498,6 +500,8 @@ class VllmRayRuntime(VllmRuntimeBase):
                         nccl_env=_whost_env,
                         extra_docker_opts=combined_docker_opts or None,
                         sparkrun_labels=_worker_labels or None,
+                        mgmt_interface=ctx.mgmt_interface,
+                        peers=ctx.hosts,
                     )
                     _wfutures[
                         _operation_submit(

@@ -12,7 +12,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from sparkrun.orchestration.comm_env import ClusterCommEnv
-from sparkrun.scripts import inject_shell_vars, read_script
+from sparkrun.orchestration.mgmt_iface import PIN_GUIDANCE, ManagementInterface, management_findings
+from sparkrun.orchestration.mgmt_iface import from_probe as mgmt_from_probe
+from sparkrun.scripts import inject_mgmt_vars, read_script
 from sparkrun.utils import parse_kv_output
 
 if TYPE_CHECKING:
@@ -59,6 +61,10 @@ class IBDetectionResult:
     from specific peers, so :func:`validate_ib_connectivity` probes each
     candidate rather than assuming the first one works.
     """
+    mgmt_interfaces: "dict[str, ManagementInterface]" = field(default_factory=dict)
+    """Mapping of queried host → its management interface, address, kind and
+    the rule that chose it (hosts whose probe reported one; see
+    :mod:`sparkrun.orchestration.mgmt_iface`)."""
     mgmt_ip_map: dict[str, str] = field(default_factory=dict)
     """Mapping of queried host → management interface IP.
 
@@ -76,7 +82,7 @@ class IBDetectionResult:
     """
 
 
-def generate_ib_detect_script(mgmt_interface: str | None = None) -> str:
+def generate_ib_detect_script(mgmt_interface: str | None = None, peers: list[str] | None = None) -> str:
     """Generate a bash script that detects InfiniBand interfaces.
 
     The script outputs key=value pairs on stdout that can be parsed
@@ -106,11 +112,14 @@ def generate_ib_detect_script(mgmt_interface: str | None = None) -> str:
         mgmt_interface: Optional management interface to pin, overriding
             detection on the host (see
             :attr:`~sparkrun.core.cluster_manager.ClusterDefinition.mgmt_interface`).
+        peers: The cluster's hosts, which the host measures its interfaces'
+            routes against to find the management network (see
+            :func:`sparkrun.scripts.inject_mgmt_vars`).
 
     Returns:
         Bash script content as a string.
     """
-    return inject_shell_vars(read_script("ib_detect.sh"), SPARKRUN_MGMT_IFACE=mgmt_interface)
+    return inject_mgmt_vars(read_script("ib_detect.sh"), mgmt_interface=mgmt_interface, peers=peers)
 
 
 def parse_ib_detect_output(output: str) -> dict[str, str]:
@@ -468,6 +477,8 @@ def detect_ib_for_hosts(
     topology: str | None = None,
     backends: "dict[str, BackendBundle] | None" = None,
     mgmt_interface: str | None = None,
+    *,
+    log_findings: bool = True,
 ) -> IBDetectionResult:
     """Run IB detection on all hosts and return aggregated results.
 
@@ -499,7 +510,7 @@ def detect_ib_for_hosts(
 
     kw = ssh_kwargs or {}
     logger.info("Detecting InfiniBand on %d host(s)...", len(hosts))
-    ib_script = generate_ib_detect_script(mgmt_interface)
+    ib_script = generate_ib_detect_script(mgmt_interface, peers=hosts)
     ib_results = run_remote_scripts_parallel(
         hosts,
         ib_script,
@@ -509,7 +520,7 @@ def detect_ib_for_hosts(
     )
 
     observations = {result.host: parse_ib_detect_output(result.stdout) for result in ib_results if result.success}
-    return ib_detection_from_observations(hosts, observations, topology=topology, backends=backends)
+    return ib_detection_from_observations(hosts, observations, topology=topology, backends=backends, log_findings=log_findings)
 
 
 def ib_detection_from_observations(
@@ -518,8 +529,12 @@ def ib_detection_from_observations(
     *,
     topology: str | None = None,
     backends: "dict[str, BackendBundle] | None" = None,
+    log_findings: bool = True,
 ) -> IBDetectionResult:
     """Derive communication settings from this operation's combined probe.
+
+    *log_findings* logs management-interface findings (a wireless choice, a
+    fallback rule) as warnings; a caller that renders them itself turns it off.
 
     This is interface discovery, not a connectivity verdict. Callers retain
     the same SSH principal, management-interface pin and target host set.
@@ -532,11 +547,15 @@ def ib_detection_from_observations(
     ib_iface_map: dict[str, str] = {}
     ib_candidates: dict[str, list[str]] = {}
     mgmt_ip_map: dict[str, str] = {}
+    mgmt_interfaces: dict[str, ManagementInterface] = {}
 
     for host in hosts:
         if host not in observations:
             continue
         ib_info = observations[host]
+        reported = mgmt_from_probe(host, ib_info)
+        if reported is not None:
+            mgmt_interfaces[host] = reported
 
         # Detection degraded to "no management interface".  Not fatal — the
         # socket-interface env falls back to the fabric adapters below — but
@@ -595,6 +614,10 @@ def ib_detection_from_observations(
     if comm_env.is_empty():
         logger.info("  No InfiniBand detected, using default networking")
 
+    for host, notes in (management_findings(mgmt_interfaces, multi_host=len(hosts) > 1) if log_findings else {}).items():
+        for note in notes:
+            logger.warning("  %s: %s; %s", host, note, PIN_GUIDANCE)
+
     if ib_ip_map:
         logger.info("  IB transfer IPs resolved for %d/%d host(s)", len(ib_ip_map), len(hosts))
     else:
@@ -606,4 +629,5 @@ def ib_detection_from_observations(
         ib_candidates=ib_candidates,
         mgmt_ip_map=mgmt_ip_map,
         ib_iface_map=ib_iface_map,
+        mgmt_interfaces=mgmt_interfaces,
     )

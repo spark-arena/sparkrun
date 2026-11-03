@@ -710,24 +710,84 @@ needs to know which NIC is the *management* interface — it becomes
 mode) emitted an interface that does not exist on the hardware and killed the
 launch at gloo init (issue #275).
 
-They now share one helper with a four-step chain — operator pin
-(`SPARKRUN_MGMT_IFACE`) → default route → the interface holding the local end
-of our own `SSH_CONNECTION` → first physical NIC that is up with a global IPv4
-— and **print nothing when none of them resolves**. Empty is the load-bearing
-part: `generate_nccl_env` already falls back to `DETECTED_NET_LIST` (the
-fabric adapters, which exist), whereas a guessed name is unrecoverable. Every
-candidate is checked against sysfs first, so a pin naming an absent device
-warns and falls through rather than being passed along.
+They now share one helper, and it **prints nothing when no rule resolves**.
+Empty is the load-bearing part: `generate_nccl_env` already falls back to
+`DETECTED_NET_LIST` (the fabric adapters, which exist), whereas a guessed name
+is unrecoverable. Every candidate is checked against sysfs first, so a pin
+naming an absent device warns and falls through rather than being passed along.
+
+The chain, first hit wins: operator pin (`SPARKRUN_MGMT_IFACE`) → **peer
+coverage** → the `SSH_CONNECTION` arrival interface if it is a physical NIC →
+the default route → the arrival interface even if virtual → first physical NIC
+that is up with a global IPv4, wired before wireless. The management network is
+the one the hosts reach *each other* on, so that is measured first; where the
+default route points answers a different question. With the default route
+first, a host whose wired NIC reached its peers but had no gateway, and whose
+WiFi held the only default route, rendezvoused over the WiFi. The default route
+is now only a fallback, which also makes an offline cluster resolve exactly like
+a connected one.
+
+Peer coverage needs the cluster's hosts, injected as `SPARKRUN_MGMT_PEERS` by
+`scripts.inject_mgmt_vars` (the one way to pass both inputs; every generator
+takes `mgmt_interface=` and `peers=`). The helper skips its own addresses, so
+the full host list is passed. Each interface carrying a route to a peer is
+ranked lexicographically: peers on its own subnet → peers via a specific route
+→ peers only via its default route → physical over virtual (a VPN wins only by
+reaching peers no NIC reaches, as when hosts are listed by Tailscale address) →
+wired over wireless → is the SSH arrival interface (below wired: on local
+dispatch `SSH_CONNECTION` is the operator's own login, which must not pull the
+cluster onto WiFi) → not a CX7 port → how many peers the kernel routes through
+it. Reach is read from routes alone (`ip -4 route show table all
+to match <peer>`, one call per peer, no packets, works offline). **Not `ip route
+get … oif`**: given an interface without a route it assumes on-link and answers
+anyway, so every interface "reaches" every peer. `table all` is what finds
+Tailscale's table-52 routes. Without peers (solo, single host, the control-side
+readiness/benchmark lookups) the chain starts at the SSH arrival interface, which
+is the address the control machine can reach.
+
+**The address is chosen too, not just the interface** (`sparkrun_mgmt_ip`):
+the source address of the most direct route to a peer through it → the SSH
+arrival address if on it → its first address. One NIC can hold a DHCP address
+and a static cluster address, and "first" used to be what `NODE_IP` and the
+native head address got. Multipath (ECMP) routes need care: a header line
+without a device, then `nexthop` lines that inherit its default-ness and source.
+
+**The choice is reported, not just made.** `sparkrun_mgmt_report` emits
+`DETECTED_MGMT_IFACE` / `_IP` / `_RULE` (`pinned`, `peers`, `ssh`,
+`default-route`, `ssh-virtual`, `scan`) / `_KIND` (`wired`, `wireless`,
+`virtual`, `fabric`) from `ib_detect.sh` and the combined probe, on every exit
+path including hosts without IB. `orchestration/mgmt_iface.py` is the one
+reader (`from_probe`, `management_findings`, `PIN_GUIDANCE`), so the three
+surfaces word it identically: the launch log (`ib_detection_from_observations`,
+a warning per finding), `cluster inspect` (a Management Network table; it passes
+`log_findings=False` so findings are not printed twice) and `setup check` (the
+check-only `mgmt_interface` step). Findings are a wireless choice and, on a
+multi-host cluster, a fallback rule (nothing routed to the peers, usually a host
+address that does not resolve on that host). A new built-in setup step needs
+its `setup.steps.<key>` feature flag, an entry in `_BUILTIN_KEYS` and a place in
+each platform's `SetupPlan`s, or it is silently never selected (unknown flags
+fail closed).
+
+The pin used to reach only `ib_detect.sh`, `cx7_detect.sh` and the combined
+probe: `ip_detect.sh` (`detect_host_ip`, the native head address) and
+`ray_head.sh` / `ray_worker.sh` (`NODE_IP`) re-detected without it, so a pinned
+cluster could still advertise the head on the interface the pin excluded.
 
 Two details are easy to break. The `<sysfs>/<if>/device` test is what
 separates real NICs from `docker0` / `br-*` / `veth*` / `tailscale0` (several
 hold a global IPv4 and sort *ahead* of the mgmt NIC), and `device/infiniband`
 is what stops the scan claiming a CX7 port as "management" — pinning the
-fabric is a deliberate act (`pin_comm_env_to_ib`), never a fallback. The
-helper is also written **brace-free, including its comments**: `ray_head.sh` /
+fabric is a deliberate act (`pin_comm_env_to_ib`), never a fallback. (Peer
+coverage may still choose a CX7 port, but only by reaching peers nothing else
+reaches, as when a cluster is listed by fabric addresses; so does the SSH
+arrival rule when the control machine connects over the fabric. That is why
+`detect_cx7_for_hosts` passes no peers: `cx7_detect.sh` drops its management
+interface from the CX7 list, and there it means "the link not to touch".) The helper is also
+written **brace-free, including its comments**: `ray_head.sh` /
 `ray_worker.sh` / the combined probe run it through `str.format()`, so one
-brace raises `KeyError` inside a Ray launch. `tests/test_mgmt_iface.py` runs
-the helper under real bash against a fixture sysfs tree and guards both.
+brace raises `KeyError` inside a Ray launch. That rules out arrays too, whose
+expansion needs braces. `tests/test_mgmt_iface.py` runs the helper under real
+bash against a fixture sysfs tree and routing table, and guards both.
 
 **GID-index selection** (`scripts/_gid_index.sh`, shared by `ib_detect.sh` and
 the combined probe) is the same rule applied to `NCCL_IB_GID_INDEX`: `show_gids`'

@@ -18,14 +18,14 @@ fi
 # --- Detect management interface and IP ---
 # No exclude list here: MGMT_IFACE is needed to skip the management NIC during
 # the scan below, so it must be resolved before the CX7 interfaces are known.
-# The helper declines to select an RDMA-backed NIC on its own, which is what
-# keeps a CX7 port from being mistaken for the management interface.  An empty
+# Here "management" means the link not to reconfigure.  sparkrun therefore
+# runs this probe without SPARKRUN_MGMT_PEERS: peer coverage could choose a
+# CX7 port (a cluster listed by fabric addresses) and hide it from this list.
+# A CX7 port is still skipped when it is the one the control machine's SSH
+# session arrived on, which is the link this probe must not cut.  An empty
 # answer is harmless -- it simply matches no interface in the skip test.
 MGMT_IFACE=$(sparkrun_mgmt_iface "")
-MGMT_IP=""
-if [ -n "$MGMT_IFACE" ]; then
-    MGMT_IP=$(ip -4 addr show "$MGMT_IFACE" 2>/dev/null | grep -oP 'inet \K[0-9.]+' | head -1)
-fi
+MGMT_IP=$(sparkrun_mgmt_ip "$MGMT_IFACE")
 echo "Management interface: $MGMT_IFACE ($MGMT_IP)" >&2
 
 # --- Find active CX7/RoCE interfaces ---
