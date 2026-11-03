@@ -608,6 +608,18 @@ through `_cluster_ops.resolve_comm_env(ctx, comm_env, backends)`. When
 `backends` is `None`, `resolve_comm_env` falls back to the legacy NCCL
 generator (byte-identical for NVIDIA hosts).
 
+**IB is detected once per launch.** `api.plan`'s combined probe already holds
+every placed host's IB facts, so `launch_inference` derives the comm env from
+those observations and threads it through transfer-mode resolution and
+distribution to `run()`. Two details keep that true. Backends are resolved
+**before** that comm env is built: a comm env built without them falls back to
+the NCCL generator, and once "pre-detected" nothing later applies the backends,
+so a non-NVIDIA host would get NCCL settings. And when distribution returns no
+comm env (a solo launch on the control machine, or a delegating runtime that
+skips it), the observed one is handed on instead of letting the runtime probe
+again. A placed host whose plan probe failed still makes the launch re-detect
+every host; that is wasteful, not wrong.
+
 ### Environment Builders (`builders/uv_venv.py`)
 
 A builder's canonical hook is `prepare()`, and it does not have to prepare an

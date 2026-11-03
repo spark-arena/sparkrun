@@ -1431,6 +1431,22 @@ def launch_inference(
     # ``None`` for host-list-only launches, which detect per host.
     mgmt_interface = cluster.mgmt_interface if cluster is not None else None
 
+    # Collective backends per host, resolved before the comm env is derived
+    # from this launch's observations: a comm env built without them falls
+    # back to the NCCL generator, and once it is "pre-detected" no later step
+    # applies the backends -- a non-NVIDIA host would get NCCL settings.
+    from sparkrun.core.hardware import resolve_host_hardware
+    from sparkrun.core.parallelism import extract_parallelism
+
+    config_chain = recipe.build_config_chain(overrides)
+    launch_hardware = resolve_host_hardware(host_list, cluster, placement)
+    parallelism = extract_parallelism(config_chain)
+    backends = resolve_per_host_backends(
+        host_list,
+        host_hardware=launch_hardware,
+        require_collectives=not is_solo or parallelism.world_size() > 1,
+    )
+
     launch_observations = dict(hardware_observations or {})
     if prepared_execution is not None:
         launch_observations.update(prepared_execution.host_hardware)
@@ -1440,7 +1456,7 @@ def launch_inference(
 
         observations = {host: hw.ib_info for host, hw in launch_observations.items() if hw.ib_info is not None}
         if set(observations) == set(host_list):
-            observed_ib = ib_detection_from_observations(host_list, observations, topology=topology)
+            observed_ib = ib_detection_from_observations(host_list, observations, topology=topology, backends=backends)
     transfer_result = resolve_auto_transfer_mode(
         transfer_mode or "auto",
         host_list,
@@ -1471,7 +1487,6 @@ def launch_inference(
     # -- Port resolution --
     from sparkrun.utils.data import integer_setting
 
-    config_chain = recipe.build_config_chain(overrides)
     desired_port = integer_setting(config_chain.get("port") or 8000, key="port")
     if auto_port:
         from sparkrun.orchestration.primitives import find_available_port
@@ -1487,17 +1502,8 @@ def launch_inference(
     else:
         serve_port = desired_port
 
-    from sparkrun.core.hardware import resolve_host_hardware
     from sparkrun.orchestration.executor import resolve_executor
-    from sparkrun.core.parallelism import extract_parallelism
 
-    launch_hardware = resolve_host_hardware(host_list, cluster, placement)
-    parallelism = extract_parallelism(config_chain)
-    backends = resolve_per_host_backends(
-        host_list,
-        host_hardware=launch_hardware,
-        require_collectives=not is_solo or parallelism.world_size() > 1,
-    )
     host_executors = {
         host: resolve_executor(
             recipe=recipe,
@@ -1824,6 +1830,17 @@ def launch_inference(
     else:
         if p:
             p.phase_skip(3, "delegating runtime")
+
+    # Distribution yields no comm env when it had nothing to distribute (a solo
+    # launch on this machine) or was skipped (delegating runtime).  The
+    # observations already describe these hosts, so hand them on rather than
+    # letting the runtime run IB detection a second time.  Address maps
+    # distribution did return win: they carry its reachability decisions.
+    if comm_env is None and observed_ib is not None:
+        comm_env = observed_ib.comm_env
+        ib_ip_map = ib_ip_map or dict(observed_ib.ib_ip_map)
+        mgmt_ip_map = mgmt_ip_map or dict(observed_ib.mgmt_ip_map)
+        ib_iface_map = ib_iface_map or dict(observed_ib.ib_iface_map)
 
     # -- Phase 4: Tuning --
     _strategy_tuning = asset_policy is None or asset_policy.sync_tuning
