@@ -92,6 +92,19 @@ sparkrun update --yolo     # alias for --alpha
 - **Model & container distribution** — syncs models and images to cluster nodes over SSH automatically
 - **Manifest model caches** — automatic [expected-file validation, selective weight downloads and pluggable model transfer](docs/MODEL_CACHE.md)
 
+## AI assistant plugins
+
+Slash commands and reference skills for Claude Code, oh-my-pi, and OpenClaw:
+
+```bash
+claude plugin marketplace add spark-arena/sparkrun && claude plugin install sparkrun@sparkrun
+omp plugin marketplace add spark-arena/sparkrun && omp plugin install sparkrun@sparkrun
+openclaw plugins install @sparkarena/sparkrun-openclaw
+```
+
+Each package needs the `sparkrun` CLI on the host's `PATH`; these are assistant
+plugins, separate from Python extensions installed with `sparkrun plugins add`.
+
 ## Python API and applications (0.4.0)
 
 The 0.4.0 branch introduces breaking Python API changes. Start with the

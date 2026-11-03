@@ -1,6 +1,6 @@
 ---
 name: registry
-description: Browse Sparkrun 0.4.0 recipe registries and benchmark profiles; inspect, export, validate, or author recipes.
+description: Browse Sparkrun 0.4.0 recipe registries and benchmark profiles; inspect, export, or validate recipes.
 ---
 
 # Recipes and registries
@@ -73,43 +73,11 @@ Match profile/framework to the performance or tools category. An Arena profile
 does not publish: use `sparkrun benchmark <recipe> --arena` for explicit submission.
 Prefer current registered profiles over old hard-coded `spark-arena-v1` examples.
 
-## Author from working examples
+## Authoring recipes
 
-Export a similar recipe, then consult the current
-[recipe specification](https://github.com/spark-arena/sparkrun/blob/main/RECIPES.md).
-A minimal Docker/vLLM shape is:
-
-```yaml
-model: org/model-name
-runtime: vllm
-container: registry/image:tag
-min_nodes: 1
-metadata:
-  description: Example inference service
-defaults:
-  tensor_parallel: 1
-  port: 8000
-  gpu_memory_utilization: 0.8
-  max_model_len: 32768
-```
-
-Replace the illustrative model/image with verified ones before use. Docker recipes
-need an image; native/local executors have other builder/runtime requirements.
-Consult the specification for revision pins, `command`, `env`, readiness, hooks,
-model file-selection, and executor schemas. On one-GPU Sparks TP × PP generally
-sets host demand; runtime capabilities and placement determine the actual topology.
-
-```bash
-sparkrun recipe validate recipe.yaml
-sparkrun recipe show recipe.yaml
-sparkrun run recipe.yaml --cluster <name> --dry-run
-```
-
-Command placeholders use effective defaults and overrides. Environment values can
-reference controller variables. Hooks run after the configured readiness policy
-and may execute locally or in a container. GGUF/tokenizer, speculative model,
-runtime, and executor requirements vary: copy a verified matching example rather
-than inventing fields or assuming Docker defaults apply everywhere.
+The recipe schema, runtime `defaults`, hooks, includes/overrides, validation, and
+publishing workflow live in the `recipes` skill. This skill owns catalog
+discovery, recipe export, benchmark profiles, and registry trust.
 
 <Tool_Usage>
 Use `sparkrun_exec` for finite Sparkrun commands. Pass `args` as an array of CLI
