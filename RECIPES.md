@@ -783,6 +783,15 @@ Explicit `runtime` always wins. Command-hint detection only fires when `runtime`
 | `eugr-vllm`        | Ray (inherits vllm-ray)                             | eugr container builds + Ray cluster            |
 | `atlas`            | Native (`--rank`, `--world-size`, `--master-addr`)  | Atlas Spark (azeezish/atlas-gb10) — pure-Rust LLM inference; each rank runs `atlas serve`, rank 0 only HTTP |
 | `modular-max`      | None — single-node only                             | Modular MAX (`max serve`); tensor parallelism uses local GPUs via `--devices` (never multi-node) |
+| `tensorfold`       | Solo; native TP for `tf_family: glm` / `nemotron` / `dsv41` | TensorFold Zig/CUDA server (OpenAI Chat/Responses/Messages). Families place their own ranks (`TF_GLM_*` / `TF_NEMOTRON_*` / `TF_TP_*` for the DeepSeek fork) and followers start **before** rank 0. See [docs/TENSORFOLD.md](docs/TENSORFOLD.md). |
+
+TensorFold does not use the generic `Common Defaults Keys` column mapping below
+for TP: `max_num_seqs` maps to the engine's `--parallel` (request concurrency,
+**not** tensor parallelism), `max_model_len` maps to `--context`, and
+`served_model_name` maps to `--name`.  Multi-node TP is selected by
+`tensor_parallel` plus a family key, never by a bare `--tp`.  The DeepSeek
+`dsv41` family is experimental, requires an explicitly built container image,
+and serves a prepared per-rank-cache bundle rather than a raw checkpoint.
 
 ### Common Defaults Keys
 
