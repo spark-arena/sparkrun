@@ -3650,6 +3650,27 @@ passing. `tests/test_features.py` unit-tests the gate directly
 clean subprocess (SAF exposes `is_multi_extension` once at registration and the
 registry is process-global, so a plugin can't be re-hidden mid-process).
 
+**`sparkrun daemon help` renders the operation catalog**
+(`cli/_daemon_help.py`). There is one catalog,
+`core.daemon_registry.operation_catalog`, which `GET /v1/ops` also serves, so the
+reference can never list an operation the daemon lacks. Without `--url`/`--socket`
+it initializes the application and `register_core_ops()` exactly as the server's
+lifespan does. Text comes from the library rather than a second copy
+(`daemon/op_docs.py`):
+- an op's description is `DESCRIPTIONS` → its `sparkrun.api` target's docstring
+  summary → the generic fallback;
+- field notes come from the target's `Args:` section and, for options-model ops
+  (`workloads.run` takes `RunOptions`), the model's attribute docstrings across
+  its MRO, plus `ADAPTER_FIELD_DOCS` for fields the daemon adapter adds;
+- `core_targets()` maps every core op to its target (`SPECS`, `OPTION_SPECS`,
+  `special_ops.SPECIAL_TARGETS`, model-cache bindings, `workloads.workload_target`);
+  a new op family belongs there.
+
+`_describe` is `lru_cache`d because a description is part of an op's definition:
+an equal re-registration must stay equal after a test double replaces the library
+attribute. `test_daemon_help` fails on any core op with a generic or duplicate
+description, which is what makes a reference worth reading.
+
 **`api` never imports `sparkrun.daemon` for shared types**: the job-store
 `Conflict` lives in `core.coordination` (re-exported by `daemon.jobs`);
 `tests/test_api_daemon_layering.py` guards it.

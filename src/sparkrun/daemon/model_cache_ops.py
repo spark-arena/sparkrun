@@ -211,6 +211,8 @@ def _load(binding):
 
 
 def register_model_cache_ops():
+    from sparkrun.daemon.ops import _describe
+
     for binding in BINDINGS:
         register_daemon_op(
             DaemonOp(
@@ -220,6 +222,6 @@ def register_model_cache_ops():
                 result_schema=RESULT_SCHEMAS[binding.name],
                 kind="job",
                 scope=binding.scope,
-                description=binding.name.replace(".", " ").replace("_", " ").capitalize() + ".",
+                description=_describe(binding.name, binding.target, binding.name.replace(".", " ").replace("_", " ").capitalize() + "."),
             )
         )

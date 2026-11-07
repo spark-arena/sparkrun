@@ -315,13 +315,21 @@ def find_changed_host_keys(
     timeout: int = 5,
     max_workers: int | None = None,
 ) -> list[HostKeyChange]:
-    """Hosts whose presented host key differs from this machine's ``known_hosts``.
+    """Report hosts whose SSH host key no longer matches this machine's ``known_hosts``.
 
     Read-only: scans each host (no authentication) and compares, per key type,
     with what ssh would check. A host that does not answer, or that has no
     recorded key of a presented type, is not reported: there is nothing to
     replace. Advisory: a host that cannot be checked is skipped (ssh reports it
     on the next connection), so this never fails setup on its own.
+
+    Args:
+        hosts: Hosts to check, as sparkrun connects to them.
+        user: SSH user (it can change which ssh config block applies).
+        key: Identity file, as ``ssh.key``.
+        options: Extra ssh options, as ``ssh.options``.
+        timeout: Per-host scan timeout in seconds.
+        max_workers: Hosts scanned at once.
 
     Raises:
         OpenSshUnavailable: ``ssh`` / ``ssh-keyscan`` are missing.
@@ -353,9 +361,9 @@ def replace_host_key(
     timeout: int = 5,
     backup: bool = True,
 ) -> HostKeyReplacement:
-    """Trust the key *host* presents with *fingerprint*, and nothing else.
+    """Trust the host key a host presents now, only if it has the approved fingerprint.
 
-    Re-scans first, and writes only if the host still presents a key with the
+    Nothing else in ``known_hosts`` changes. Re-scans first, and writes only if the host still presents a key with the
     approved *fingerprint* (``SHA256:...``, as :func:`find_changed_host_keys`
     reported it). Then, under the lock ``known_hosts_refresh.sh`` uses, the
     recorded keys of that one type under that one name are dropped (a line
@@ -363,6 +371,16 @@ def replace_host_key(
     when ``HashKnownHosts`` says so. The previous file is kept as ``.old``
     unless *backup* is False (a caller replacing several types of one host
     keeps the original by backing up only the first).
+
+    Args:
+        host: The host whose key changed.
+        fingerprint: The approved ``SHA256:...`` fingerprint, as reported by
+            find_changed_host_keys.
+        user: SSH user (it can change which ssh config block applies).
+        key: Identity file, as ``ssh.key``.
+        options: Extra ssh options, as ``ssh.options``.
+        timeout: Scan timeout in seconds.
+        backup: Save the previous file as ``.old`` first.
 
     Raises:
         SshAccessError: The host did not answer or no longer presents the

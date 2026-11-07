@@ -247,6 +247,8 @@ def wait_gateway(sctx):
 
 
 def register_proxy_ops():
+    from sparkrun.daemon.ops import DESCRIPTIONS
+
     from sparkrun.api._wire import object_schema
     from sparkrun.core.daemon_registry import DaemonOp, register_daemon_op
 
@@ -269,7 +271,7 @@ def register_proxy_ops():
                 visibility="internal" if name in {"proxy.watch", "proxy.serve"} else "public",
                 resources="none",
                 feature_flag="gateway" if name in {"proxy.discovery.ensure", "proxy.watch", "proxy.serve"} else None,
-                description="Manage the proxy's dedicated gateway or discovery service.",
+                description=DESCRIPTIONS.get(name, "Manage the proxy's dedicated gateway or discovery service."),
             )
         )
 

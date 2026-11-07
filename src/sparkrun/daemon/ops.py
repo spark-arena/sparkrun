@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from functools import partial
+from functools import lru_cache, partial
 import inspect
 from typing import Any
 
@@ -108,6 +108,15 @@ OPTION_SPECS = [
 
 
 DESCRIPTIONS = {
+    "proxy.discovery.ensure": "Start (or adopt) the daemon-run discovery job for the current proxy session generation.",
+    "proxy.discovery.status": "Report the proxy discovery session and its job, flagging one that needs recovery.",
+    "proxy.discovery.stop": "Stop the proxy discovery session and cancel its job.",
+    "setup.plan": "Resolve the setup context and plan the setup steps for the selected hosts.",
+    "workloads.stop": "Stop an exact persisted workload through its owning lifecycle.",
+    "workloads.status": "Report the live state of an exact persisted workload.",
+    "workloads.sleep": "Put an exact persisted workload to sleep, releasing its accelerators where the runtime supports it.",
+    "workloads.wake": "Wake a sleeping workload and wait for it to serve again.",
+    "model_cache.inspect": "Validate one model revision's cached files and bindings on the selected hosts.",
     "workloads.list": "List saved workload metadata without probing live health.",
     "workloads.run": "Plan and launch a workload, with optional readiness and post-launch hooks.",
     "workloads.plan": "Resolve placement and launch settings without launching a workload.",
@@ -248,6 +257,19 @@ def _request_schema(properties, required):
     return schema
 
 
+@lru_cache(maxsize=None)
+def _describe(name, target, generic):
+    """The hand-written description, else the library function's own summary, else *generic*.
+
+    Computed once per process: a description is part of the operation's
+    definition, and an equal re-registration must stay equal even if the
+    library attribute was since replaced (a test double, a wrapping plugin).
+    """
+    from sparkrun.daemon.op_docs import api_target, summary
+
+    return DESCRIPTIONS.get(name) or summary(api_target(target)) or generic
+
+
 @core_registration()
 def register_core_ops():
     for name, target, kind, scope, names, required in SPECS:
@@ -272,7 +294,7 @@ def register_core_ops():
                 if name.startswith("proxy.")
                 and name not in {"proxy.status", "proxy.stop", "proxy.service_status", "proxy.uninstall_service"}
                 else None,
-                description=DESCRIPTIONS.get(name, f"{target.replace('_', ' ').capitalize()} through the library API."),
+                description=_describe(name, target, f"{target.replace('_', ' ').capitalize()} through the library API."),
             )
         )
     for name, target, model, scope in OPTION_SPECS:
@@ -296,7 +318,7 @@ def register_core_ops():
                 if name.startswith("proxy.")
                 and name not in {"proxy.status", "proxy.stop", "proxy.service_status", "proxy.uninstall_service"}
                 else None,
-                description=DESCRIPTIONS.get(name, f"{name.replace('_', ' ').capitalize()} with an operation-local context."),
+                description=_describe(name, target, f"{name.replace('_', ' ').capitalize()} with an operation-local context."),
             )
         )
     from sparkrun.daemon.registry_ops import register_registry_ops

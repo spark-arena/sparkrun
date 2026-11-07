@@ -160,7 +160,7 @@ def test_protocol_mismatch_stops_before_operation(command, incompatible_server, 
         (["--url", "http://host", "--config", "config.yaml"], ["status"], "Choose either --config"),
         (["--token", "dummy"], ["status"], "require --url"),
         *[
-            (["--url", "http://host"], command, "apply only to call, status, and jobs")
+            (["--url", "http://host"], command, "apply only to call, status, jobs, and help")
             for command in (
                 ["start"],
                 ["stop"],
