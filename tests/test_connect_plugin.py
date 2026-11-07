@@ -483,11 +483,18 @@ def test_hand_over_execs_on_posix_and_passes_status_on_windows(monkeypatch):
     cli_mod._hand_over(["ssh", "h"])
     assert execs == [("ssh", ["ssh", "h"])]
 
+    import signal
+
+    # Recorded, not applied: ignoring SIGINT in the pytest process would make
+    # every later test that interrupts something hang.
+    handlers = []
+    monkeypatch.setattr(signal, "signal", lambda sig, handler: handlers.append((sig, handler)))
     monkeypatch.setattr(os, "name", "nt")
     monkeypatch.setattr(subprocess, "call", lambda argv: 5)
     with pytest.raises(SystemExit) as exit_info:
         cli_mod._hand_over(["ssh", "h"])
     assert exit_info.value.code == 5
+    assert handlers == [(signal.SIGINT, signal.SIG_IGN)]  # the child, not Popen's unwinding, owns Ctrl-C
 
 
 def test_completion_offers_clusters_and_nodes_but_not_after_double_dash(clusters):
