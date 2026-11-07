@@ -471,6 +471,7 @@ def build_ssh_cmd(
     ssh_key: str | None = None,
     ssh_options: list[str] | None = None,
     connect_timeout: int = 10,
+    batch_mode: bool = True,
 ) -> list[str]:
     """Build the base SSH command with standard options.
 
@@ -481,12 +482,76 @@ def build_ssh_cmd(
         ssh_key: Optional path to SSH private key file.
         ssh_options: Additional SSH command-line options.
         connect_timeout: SSH connection timeout in seconds.
+        batch_mode: Emit ``BatchMode=yes``. Only an interactive session a
+            person is typing into turns it off, so password and host-key
+            prompts can reach them.
 
     Returns:
         List of command parts suitable for subprocess.
     """
-    target = f"{ssh_user}@{host}" if ssh_user else host
-    return ["ssh", *_ssh_option_args(ssh_user, ssh_key, ssh_options, connect_timeout), target]
+    return [
+        "ssh",
+        *_ssh_option_args(ssh_user, ssh_key, ssh_options, connect_timeout, batch_mode=batch_mode),
+        ssh_destination(host, ssh_user),
+    ]
+
+
+def ssh_destination(host: str, ssh_user: str | None = None) -> str:
+    """``[user@]host`` for an ssh/rsync destination, refusing option-shaped parts.
+
+    Hosts come from cluster files, job metadata and plugin imports, and land in
+    argv positionally. A host such as ``-oProxyCommand=...`` would be parsed as
+    an ssh option and run on the control machine. A user prefix happens to
+    defuse that, but only for clusters that set one, so the check never relies
+    on it.
+
+    Raises:
+        ValueError: *host* or *ssh_user* is empty, starts with ``-`` or
+            contains control characters, or *host* contains whitespace. A
+            user may contain a space (directory-service accounts do).
+    """
+
+    def _bad(value: str, *, spaces_ok: bool) -> bool:
+        return (
+            not value
+            or value.startswith("-")
+            or any(ord(c) < 32 or ord(c) == 127 or (c.isspace() and not (spaces_ok and c == " ")) for c in value)
+        )
+
+    ssh_user = ssh_user or None  # "" has always meant "the client's default"
+    if _bad(host, spaces_ok=False):
+        raise ValueError("Refusing host %r: not a valid ssh destination" % host)
+    if ssh_user is not None and _bad(ssh_user, spaces_ok=True):
+        raise ValueError("Refusing ssh user %r: not a valid ssh login" % ssh_user)
+    return f"{ssh_user}@{host}" if ssh_user else host
+
+
+def interactive_ssh_argv(
+    host: str,
+    remote_command: str | None = None,
+    *,
+    ssh_user: str | None = None,
+    ssh_key: str | None = None,
+    ssh_options: list[str] | None = None,
+    tty: bool = False,
+) -> list[str]:
+    """ssh argv for a session a person is typing into.
+
+    The one builder behind ``sparkrun ssh`` and every executor's
+    :meth:`~sparkrun.orchestration.executors._base.Executor.interactive_exec_argv`,
+    so a login shell and a container shell connect identically. Connection
+    settings are the shared ones minus ``BatchMode``, so password and host-key
+    prompts reach the person. *remote_command* is one shell string (the remote
+    shell parses it); ``None`` opens a login shell. *tty* forces ``-t``, which
+    a remote command needs for anything interactive; a login shell gets a PTY
+    without it.
+    """
+    argv = build_ssh_cmd(host, ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options, batch_mode=False)
+    if tty:
+        argv.insert(1, "-t")
+    if remote_command is not None:
+        argv.append(remote_command)
+    return argv
 
 
 def effective_ssh_config(
@@ -546,9 +611,10 @@ def offered_identities(
     return identities
 
 
-def _ssh_option_args(ssh_user, ssh_key, ssh_options, connect_timeout):
+def _ssh_option_args(ssh_user, ssh_key, ssh_options, connect_timeout, *, batch_mode=True):
     """One precedence rule for direct SSH, transfer pipelines and rsync."""
-    parts = ["-o", "BatchMode=yes", "-o", f"ConnectTimeout={connect_timeout}"]
+    parts = ["-o", "BatchMode=yes"] if batch_mode else []
+    parts.extend(["-o", f"ConnectTimeout={connect_timeout}"])
     # OpenSSH uses the first user option. A user@host target alone loses to
     # -o User=... / -l ... in ssh_options, which can redirect saved jobs.
     if ssh_user:
@@ -1284,7 +1350,7 @@ def run_pipeline_to_remote(
         ssh_options=ssh_options,
         connect_timeout=connect_timeout,
     )
-    target = f"{ssh_user}@{host}" if ssh_user else host
+    target = ssh_destination(host, ssh_user)
     pipeline = f"{local_cmd} | ssh {ssh_opts} {quote(target)} {quote(remote_cmd)}"
 
     if dry_run:
@@ -1491,7 +1557,7 @@ def run_rsync(
     if rsync_options is not None:
         rsync_options = guard_rsync_delete(rsync_options, source_path)
     src = source_path.rstrip("/") + "/"
-    target = f"{ssh_user}@{host}:{dest_path}" if ssh_user else f"{host}:{dest_path}"
+    target = "%s:%s" % (ssh_destination(host, ssh_user), dest_path)
     return _run_rsync_impl(
         src,
         target,
@@ -1595,7 +1661,7 @@ def run_rsync_from_remote(
     *dest_path*.
     """
     remote_src = source_path.rstrip("/") + "/"
-    remote = f"{ssh_user}@{host}:{remote_src}" if ssh_user else f"{host}:{remote_src}"
+    remote = "%s:%s" % (ssh_destination(host, ssh_user), remote_src)
     return _run_rsync_impl(
         remote,
         dest_path,

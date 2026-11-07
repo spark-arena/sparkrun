@@ -89,6 +89,13 @@ Clusters hold candidate hosts; actual placement may select a subset/different
 head. Incremental changes use `--add-host`/`--remove-host` (repeatable, comma lists).
 `SPARKRUN_CLUSTER=<name>` overrides the default cluster for one shell (ignored with a
 warning if it names no saved cluster); explicit `--cluster`/`--hosts` still win.
+`sparkrun ssh [N | <cluster>[/N]] [-- <cmd>]` opens SSH on a node (index into the saved
+host list; default node 0 of the default cluster). `sparkrun exec [N | <workload>[/N]] [-- <cmd>]`
+opens a shell in a running workload's container (node = container, head first; no target =
+the only running workload). `-n` prints the command. One word after `--` is shell syntax
+(`-- 'ps | grep x'`). On for beta/alpha; on stable, `sparkrun setup features enable cli.ssh`
+(or `cli.exec`). Shells are interactive: the user runs them (`! sparkrun ssh ...`); only
+`-- <cmd>` or `-n` fit here.
 SSH and shared sudo fallback can prompt: use a user terminal. `fix-permissions`
 and `clear-cache` offer `--save-sudo` for scoped sudoers entries. `clear-cache`
 drops Linux **page cache**, not model files. Diagnostics are NDJSON;

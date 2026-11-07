@@ -18,7 +18,7 @@ party automation, the CLI itself) depend on.  Surfaces:
   :class:`NoResumableState`, :class:`CategoryNotFound`,
   :class:`AmbiguousCategoryError`,
   :class:`FrameworkCategoryMismatch`).
-- **Functions** — ``plan``, ``run``, ``stop``, ``logs``, ``open_log_target``, ``status``,
+- **Functions** — ``plan``, ``run``, ``stop``, ``logs``, ``open_log_target``, ``open_exec_target``, ``status``,
   ``schedule``, ``list_jobs``, ``search_recipes``, ``benchmark``, and
   ``resume_benchmark``.
 - **Diagnostics** — ``collect_diagnostics`` for standalone bundles and
@@ -110,6 +110,7 @@ from sparkrun.api._errors import (
 from sparkrun.core.context import SparkrunContext
 from sparkrun.api._intent import IntentMatch, find_running_intent
 from sparkrun.api._jobs import list_jobs
+from sparkrun.api._exec import ExecTarget, open_exec_target
 from sparkrun.api._logs import LogTarget, logs, open_log_target
 from sparkrun.core.log_source import LogResource, LogSourceChanged
 from sparkrun.api._materialize import materialize
@@ -215,6 +216,7 @@ __all__ = [
     "LogResource",
     "LogSourceChanged",
     "LogTarget",
+    "ExecTarget",
     "JobInfo",
     "IntentMatch",
     "RecipeSummary",
@@ -263,6 +265,7 @@ __all__ = [
     "stop_all",
     "logs",
     "open_log_target",
+    "open_exec_target",
     "schedule",
     "status",
     "status_report",

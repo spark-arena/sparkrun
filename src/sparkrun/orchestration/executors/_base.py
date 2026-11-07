@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from sparkrun.containers.entrypoint import EntrypointProbe
     from sparkrun.core.cluster_status import ClusterStatus, TerminationInfo
     from sparkrun.core.hardware import HostHardware
-    from sparkrun.core.log_source import LogSource
+    from sparkrun.core.log_source import LogResource, LogSource
     from sparkrun.core.runtime_cache import RuntimeCacheMounts
 
 logger = logging.getLogger(__name__)
@@ -545,6 +545,43 @@ class Executor(Plugin):
     ) -> str:
         """Generate a container exec command string."""
         ...
+
+    def interactive_exec_argv(
+        self,
+        host: str,
+        container_name: str,
+        command: str | None = None,
+        *,
+        tty: bool = False,
+        ssh_kwargs: dict | None = None,
+        resource: "LogResource | None" = None,
+    ) -> list[str]:
+        """Control-machine argv that opens a shell, or runs *command*, where a workload runs.
+
+        The interactive peer of :meth:`exec_cmd`: that one generates a script
+        fragment to pipe somewhere, this one returns what a person's terminal
+        is handed to, so stdin, the TTY and the exit status pass straight
+        through. It runs in the workload's own environment (a container's, or
+        for a native process the process's), which is what makes "a shell in
+        the workload" mean the same thing on every substrate.
+
+        Host-substrate executors wrap a host-side command in
+        :func:`~sparkrun.orchestration.ssh.interactive_ssh_argv`, the builder
+        ``sparkrun ssh`` uses too; a provider executor returns its own control
+        plane's argv and ignores *host* / *ssh_kwargs*.
+
+        Args:
+            host: Host the container or process lives on.
+            container_name: The container (or process / pod) to enter.
+            command: One shell string to run instead of an interactive shell.
+            tty: Allocate a terminal (the caller decides from its own stdio).
+            ssh_kwargs: Connection settings for host-substrate executors.
+            resource: Native resource identity, for controller-native workloads.
+
+        Raises:
+            NotImplementedError: The executor has no interactive exec.
+        """
+        raise NotImplementedError("The %s executor does not support interactive exec" % self.executor_name)
 
     @abstractmethod
     def stop_cmd(self, container_name: str, force: bool = True) -> str:
@@ -1273,6 +1310,18 @@ class Executor(Plugin):
             "run_cmd": run,
             "label": quote(label),
         }
+
+
+def interactive_shell_command(command: str | None) -> str:
+    """The POSIX-sh command an interactive exec runs inside a container.
+
+    *command* as given, or the best shell the image has: bash when present,
+    else ``sh`` (slim and Alpine images ship no bash). Kept POSIX because it is
+    parsed by the container's ``sh``, not by the host's shell.
+    """
+    if command is not None:
+        return command
+    return "if command -v bash >/dev/null 2>&1; then exec bash; fi; exec sh"
 
 
 def _intent_id_from_cluster_id(cluster_id: str) -> str | None:

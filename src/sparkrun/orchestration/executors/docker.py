@@ -22,6 +22,7 @@ from sparkrun.orchestration.executors._base import (
     LABEL_RECIPE,
     LABEL_RUNTIME,
     Executor,
+    interactive_shell_command,
 )
 from sparkrun.orchestration.executors._seccomp import IO_URING_PROFILE, profile_option, split_options
 from sparkrun.core.application_profile import get_application_profile
@@ -626,6 +627,18 @@ class DockerExecutor(Executor):
                 parts.extend(["-e", "%s=%s" % (key, value)])
         parts.extend([container_name, "bash", "-c", b64_wrap_bash(command)])
         return args_list_to_shell_str(parts)
+
+    def interactive_exec_argv(self, host, container_name, command=None, *, tty=False, ssh_kwargs=None, resource=None):
+        """``ssh [-t] host docker exec -i [-t] <container> sh -c ...``.
+
+        No ``--user``: ``docker run --user`` sets the container's configured
+        user, which ``docker exec`` already defaults to, so the shell runs as
+        the workload does (hooks pass ``--user root`` because they install).
+        """
+        from sparkrun.orchestration.ssh import interactive_ssh_argv
+
+        parts = ["docker", "exec", "-i"] + (["-t"] if tty else []) + [container_name, "sh", "-c", interactive_shell_command(command)]
+        return interactive_ssh_argv(host, args_list_to_shell_str(parts), tty=tty, **(ssh_kwargs or {}))
 
     def stop_cmd(self, container_name: str, force: bool = True) -> str:
         """Generate a docker stop/rm command string."""

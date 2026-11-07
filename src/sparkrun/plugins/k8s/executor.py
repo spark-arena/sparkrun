@@ -49,7 +49,7 @@ import json
 import re
 from typing import TYPE_CHECKING
 
-from sparkrun.orchestration.executors._base import Executor, ExecutorConfig, ExecutorTarget
+from sparkrun.orchestration.executors._base import Executor, ExecutorConfig, ExecutorTarget, interactive_shell_command
 from sparkrun.core.application_profile import get_application_profile, resource_name
 from sparkrun.core.ownership import OWNER_LABEL, assert_resource_namespace
 from sparkrun.plugins.k8s.orchestration.client import KubectlClient
@@ -375,6 +375,21 @@ class K8sExecutor(Executor):
             flags = "-i"
             return "%s exec %s %s -- bash -c %s" % (prefix, flags, quote(container_name), b64_wrap_bash(full))
         return "%s exec %s %s -- bash -c %s" % (prefix, flags, quote(container_name), b64_wrap_bash(full))
+
+    def interactive_exec_argv(self, host, container_name, command=None, *, tty=False, ssh_kwargs=None, resource=None):
+        """``kubectl exec -i [-t] <pod> [-c <container>] -- sh -c ...``, run on the control machine.
+
+        The control plane is reached from here, so *host* and *ssh_kwargs* are
+        unused. A native resource names its pod and container separately (and
+        its namespace, which overrides the configured one: pflag keeps the last
+        ``-n``); otherwise *container_name* is the pod, as in :meth:`exec_cmd`.
+        """
+        argv = self._client().base_args()
+        if resource is not None:
+            argv += ["-n", resource.namespace, "exec", "-i"] + (["-t"] if tty else []) + [resource.name, "-c", container_name]
+        else:
+            argv += ["exec", "-i"] + (["-t"] if tty else []) + [container_name]
+        return argv + ["--", "sh", "-c", interactive_shell_command(command)]
 
     def stop_cmd(self, container_name: str, force: bool = True) -> str:
         """Delete the Pod; ``--ignore-not-found`` so it's idempotent."""

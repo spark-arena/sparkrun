@@ -526,6 +526,7 @@ def install_public_key_interactive(
         raise OpenSshUnavailable(
             "ssh not found on PATH. Install the OpenSSH client (Windows: Settings > Apps > Optional Features > OpenSSH Client)."
         )
+    from sparkrun.orchestration.ssh import ssh_destination
 
     cmd = [
         ssh,
@@ -539,7 +540,7 @@ def install_public_key_interactive(
         "-o",
         "NumberOfPasswordPrompts=%d" % password_prompts,
         *(options or []),
-        "%s@%s" % (user, host) if user else host,
+        ssh_destination(host, user),
         "bash",
         "-s",
     ]

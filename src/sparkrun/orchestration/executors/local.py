@@ -361,6 +361,70 @@ class LocalExecutor(Executor):
             return "( %sbash -c %s )" % (prelude, _bash_safe_command(command))
         return "bash -c %s" % _bash_safe_command(command)
 
+    def interactive_exec_argv(self, host, container_name, command=None, *, tty=False, ssh_kwargs=None, resource=None):
+        """``ssh [-t] host bash -c <script>`` that enters the native workload's environment.
+
+        There is no container to step into, so the equivalent of ``docker exec``
+        is the workload process's own environment: the script verifies the PID
+        record (and its owner, as stop does), then imports ``/proc/<pid>/environ``
+        and the cwd from a live member of the process group. That is exactly
+        what the serve command got, including an environment builder's venv
+        activation (``uv-venv``'s ``env_file``) and the launch env. When no
+        member is readable it falls back to this executor's own setup
+        (working_dir, env_file, GPU visibility) and says so, since that lacks
+        the launch env. The terminal's own ``TERM`` / ``SSH_*`` are kept. As
+        with ``docker exec``, this is the environment the process was *started*
+        with: a variable the serve command exports inside itself is not seen.
+
+        The script travels base64-encoded and is decoded by the remote shell,
+        so it is not re-parsed by whatever login shell the host user has.
+        """
+        from sparkrun.orchestration.ssh import interactive_ssh_argv
+        from sparkrun.utils.shell import b64_encode_cmd
+
+        assert_resource_namespace(container_name)
+        pid_file = _shell_path(self._resolve_pid_file(container_name))
+        if command is None:
+            # ~/.bashrc may prepend to PATH, which would put another python
+            # ahead of the workload's venv. Re-assert the workload's PATH after it.
+            final = (
+                "_SR_WORKLOAD_PATH=$PATH exec bash --rcfile <(printf '%s\\n' "
+                "'[ -f ~/.bashrc ] && . ~/.bashrc' 'PATH=$_SR_WORKLOAD_PATH; unset _SR_WORKLOAD_PATH') -i"
+            )
+        else:
+            final = "exec bash -c %s" % quote(command)
+        script = (
+            "%(helpers)s\n"
+            "_sr_local_state %(pid)s || exit $?\n"
+            "%(guard)s\n"
+            'if _sr_local_alive "$_sr_pid"; then :; else\n'
+            '    _rc=$?; [ "$_rc" -eq 1 ] && echo "Native workload "%(name)s" is not running" >&2; exit "$_rc"\n'
+            "fi\n"
+            "_sr_env_pid=$_sr_pid\n"
+            '[ -r "/proc/$_sr_env_pid/environ" ] || _sr_env_pid=$(ps -e -o pid=,pgid=,stat= | awk -v g="$_sr_pid" \'$2 == g && $3 !~ /^[ZX]/ {print $1; exit}\')\n'
+            'if [ -n "$_sr_env_pid" ] && [ -r "/proc/$_sr_env_pid/environ" ] && _sr_cwd=$(readlink -- "/proc/$_sr_env_pid/cwd"); then\n'
+            "    while IFS= read -r -d '' _sr_kv; do\n"
+            "        [[ $_sr_kv =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue\n"
+            "        case ${_sr_kv%%%%=*} in TERM|SHLVL|_|PWD|OLDPWD|COLUMNS|LINES|SSH_*) continue ;; esac\n"
+            '        export -- "$_sr_kv"\n'
+            '    done < "/proc/$_sr_env_pid/environ"\n'
+            '    cd -- "$_sr_cwd" 2>/dev/null || echo "The workload\'s working directory is gone ($_sr_cwd); staying in $PWD" >&2\n'
+            "else\n"
+            '    echo "Cannot read the workload process environment; using the executor setup (no launch env)" >&2\n'
+            "%(prelude)s"
+            "fi\n"
+            "%(final)s\n"
+        ) % {
+            "helpers": _state_helpers(),
+            "pid": pid_file,
+            "guard": self._owner_guard(container_name, verb="enter"),
+            "name": quote(container_name),
+            "prelude": self._env_prelude() or ":\n",
+            "final": final,
+        }
+        remote = 'bash --noprofile --norc -c "$(printf %%s %s | base64 -d)"' % b64_encode_cmd(script)
+        return interactive_ssh_argv(host, remote, tty=tty, **(ssh_kwargs or {}))
+
     def stop_cmd(self, container_name: str, force: bool = True) -> str:
         """Stop a verified workload group; retain records on an unknown outcome."""
         return self._stop_command(container_name)
@@ -403,15 +467,16 @@ class LocalExecutor(Executor):
         # Keep the inode stable, and close fd 9 in the workload child.
         return 'mkdir -p -- "$(dirname -- %s)" && exec 9>%s.lock && flock -x 9 || exit 1' % (pid_file, pid_file)
 
-    def _owner_guard(self, name):
+    def _owner_guard(self, name, verb="modify"):
         # _sr_local_state has already distinguished missing and invalid markers.
         condition = '[ "$_sr_owner_present" -eq 1 ] && [ "$_sr_owner" = %s ]' % quote(get_application_profile().id)
         absent_owner = '[ "$_sr_owner_present" -eq 0 ]'
         if not owns_resource(name):
             absent_owner += ' && [ "$_sr_pid_present" -eq 0 ]'
-        return ('{ { %s; } || { %s; }; } || { echo "Refusing to modify a native workload owned by another application" >&2; exit 1; };') % (
+        return ('{ { %s; } || { %s; }; } || { echo "Refusing to %s a native workload owned by another application" >&2; exit 1; };') % (
             condition,
             absent_owner,
+            verb,
         )
 
     def logs_cmd(

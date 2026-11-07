@@ -3032,6 +3032,72 @@ nothing lil-specific.
   (`VllmRuntimeBase.structured_revision_args`; not for GGUF `repo:quant` or pre-placed weights). This was a general gap, found by the parity run: without it a
   command-less pinned recipe dies offline with `LocalEntryNotFoundError`.
 
+### ssh / exec (`plugins/connect/`, flags `cli.ssh` / `cli.exec`, beta/alpha)
+
+The `connect` plugin is on by default and owns two commands, each behind its own
+manifest-declared flag (named for the command path, the `cli.setup.k8s` rule, not
+for the plugin, whose own switch is `plugins.enabled.connect`). Stable opts in with
+`setup features enable cli.ssh` / `cli.exec`. `register()` checks each flag, so an
+off command is not registered at all. `connect` is a hidden alias of `ssh`.
+
+- **`sparkrun ssh [N | CLUSTER[/N]] [-- CMD]`**: `N` indexes the cluster's
+  **saved host list** (not a running job's head, which a load-aware scheduler may
+  place elsewhere). No target means node 0 of the default cluster (so it follows
+  `SPARKRUN_CLUSTER`). Naming the cluster both ways is refused.
+- **`sparkrun exec [N | WORKLOAD[/N]] [-- CMD]`**: `WORKLOAD` is a recipe or a
+  workload id, `N` indexes its containers head first (`runtime.log_sources`
+  order). No workload means the only one running on the host context, or an
+  error listing them. The node suffix comes off the **last** `/` only when it is
+  digits, so `@registry/recipe/1` works. All digits alone is always a node.
+
+Seams, so nothing here is CLI-only:
+
+- **`Executor.interactive_exec_argv(host, container, command, *, tty, ssh_kwargs,
+  resource)`** returns the control-machine argv. Docker: `docker exec -i [-t] ctr
+  sh -c ...` (bash when the image has it, else `sh`), no `--user` (exec inherits
+  `docker run --user`). k8s: local `kubectl exec`, honoring a native resource's
+  pod / container / namespace. **local**: no container, so the equivalent of
+  `docker exec` is the workload process's own environment. The script checks the
+  PID record and owner as `stop` does, then imports `/proc/<pid>/environ` and the
+  cwd of a live group member: exactly what the serve command got, including
+  `uv-venv`'s `env_file` activation and the launch env. A login shell re-asserts
+  that `PATH` after `~/.bashrc`, which may prepend another python. When no member
+  is readable it falls back to the executor prelude and says it lacks the launch
+  env. The script travels base64, so the host user's login shell never parses it.
+- **`interactive_ssh_argv`** (`orchestration/ssh.py`) is the one interactive ssh
+  builder: `ssh` and both host-substrate executors use it. It is the only caller
+  of `build_ssh_cmd(batch_mode=False)`; a person is at the keyboard, so password
+  and host-key prompts must reach them.
+- **`ssh_destination(host, user)`** builds every `[user@]host` (ssh, the stdin
+  pipeline, both rsync directions, `SshHostSession.upload`, the setup key
+  install). A host starting with `-` (`-oProxyCommand=...`) would be an ssh
+  option executed on the control machine, and a user prefix only hides that for
+  clusters that set one. Hosts may not contain whitespace; users may contain a
+  space (directory accounts), never a leading `-` or control characters.
+- **`api.open_exec_target`** resolves through `api._workload.open_workload`, the
+  front half `open_log_target` now shares, so logs and exec cannot disagree about
+  which container, executor or connection. Liveness reuses
+  `_verify_log_source_alive` on the one selected container. It is a daemon
+  **exclusion** (`daemon/coverage.py`): it hands a local terminal to a shell in a
+  workload, which over the wire would be remote command execution.
+- **Containers are addressed over the *placed* hosts.** Rank i lives on the i-th
+  host the job was placed on (job metadata `hosts`), not the i-th cluster host:
+  under an occupancy scheduler a tp1 job on host 3 is `<cid>_solo` there.
+  `resolve_workload_target`'s recipe form returns the discovery range (right for
+  `stop`, which sweeps everything), so `open_workload` swaps in the recorded hosts
+  unless the caller named hosts. This also fixed `logs <recipe>` on a subset
+  placement. `exec` passes hosts to the API only when the user typed them, so
+  `--cluster` names the connection and the job's record still decides the topology.
+
+CLI details: `--` is split off in `parse_args` before Click binds `TARGET`
+(otherwise `ssh -- uptime` targets `uptime`), which also stops completion
+offering targets after it. One word after `--` passes through as shell syntax
+(ssh's convention: `-- 'ps | grep x'`); several are quoted one argument each.
+`-t` for a command only when stdin *and* stdout are terminals (a forced PTY on
+redirected output writes CRLF). POSIX `execvp`s the tool; Windows runs it as a
+child and passes the status. A missing `ssh`/`kubectl` is a clean error, checked
+before anything is replaced.
+
 ### Plugin-Declared Registries (`core/registry_defaults.py`)
 
 `BOOTSTRAP_REGISTRY_URLS` / `FALLBACK_DEFAULT_REGISTRIES` are closed constants. `register_default_registry(entry,

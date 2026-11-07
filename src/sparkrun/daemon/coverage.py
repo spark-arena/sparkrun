@@ -39,6 +39,7 @@ API_OPERATIONS.update(
 EXCLUSIONS = {
     "capture_diagnostics": "Python context manager; workloads.run and benchmarks.run/resume accept collect_diagnostics.",
     "open_log_target": "Python reader handle; /v1/streams/logs resolves each request and accepts the same host/container filters.",
+    "open_exec_target": "Hands a local terminal to a shell inside a workload; over the wire it would be remote command execution.",
     "default_sctx": "Python application binding; daemon creates an operation-local context.",
     "resolve_sctx": "Python application binding; daemon creates an operation-local context.",
     "resolve_catalog_recipe": "Returns a live Recipe; catalog.recipe exposes a bounded preview and run resolves it server-side.",
