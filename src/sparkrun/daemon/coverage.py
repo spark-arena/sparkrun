@@ -50,6 +50,7 @@ EXCLUSIONS = {
     "fresh_workload_id": "Experimental; returns a live RunPlan copy for the Python run(options, plan=...) path.",
     "proxy.admin_token": "Credential issuance is interactive/local; secrets are not persisted in job results.",
     "proxy.ui": "May issue a credential-bearing URL; use the local proxy ui command.",
+    "setup.key_fingerprint": "Pure local helper; setup.find_changed_host_keys already reports fingerprints.",
     "setup.install_public_key_interactive": "Requires a terminal-owned ssh-copy-id/password conversation; use setup in a terminal.",
     "setup.rotate_ssh_host_keys": "Host-identity rotation has no wire operation; use the confirmed setup ssh-rotate-keys CLI or Python API.",
     "setup.plan_cx7": "Experimental; reports progress and asks for a topology through Python callbacks. Use setup cx7 or the Python API.",

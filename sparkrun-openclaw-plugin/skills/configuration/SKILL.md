@@ -51,6 +51,8 @@ sequence. `--yes` accepts defaults, not SSH/sudo passwords; it does not guarante
 an unattended run.
 
 `setup check` is read-only and detects duplicate SSH host keys and machine IDs.
+`setup ssh` asks `[y/N]` before replacing a *changed* host key on the control machine
+(re-imaged host vs man-in-the-middle is the user's call); never answer it for them.
 The wizard can offer repair. Rotation is a separate confirmed action:
 
 ```bash

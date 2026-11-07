@@ -2472,6 +2472,56 @@ never auto-fixed), and **unreachable** (network/sshd). Only the first is
 offered a key install. The install's exit code is treated as a hint —
 success is confirmed by re-probing, which is the only trustworthy signal.
 
+**A changed host key is the operator's call, asked, never assumed**
+(`api/setup/_host_keys.py`). A re-imaged Spark and a man-in-the-middle look the
+same, so `find_changed_host_keys` only *reports* (per key type: recorded vs
+presented SHA256), and `replace_host_key(host, fingerprint)` re-scans and writes
+only if the host still presents the approved fingerprint. **It changes exactly
+one thing**: the recorded key of the approved type under the exact name ssh
+checks. That is why `known_hosts` is parsed and rewritten in Python (plain,
+hashed `|1|salt|hmac` and pattern entries, ssh's negation rule) instead of
+`ssh-keygen -R`. That command drops *every* type for the host, and re-adding
+what the host presents would trust keys nobody looked at: a MITM that cannot
+fake the ed25519 key the operator checked could still answer the rsa scan. It
+also deletes wildcard and multi-name lines covering other hosts. So:
+- a line naming several hosts only loses the one name;
+- a stale key that comes from a wildcard entry is refused;
+- `@revoked` keys are refused;
+- unapproved new types are left for ssh's `accept-new`;
+- the scan reads only lines for the scanned host (`--` before it);
+- names with `*?!,` are never written;
+- a host reached through `ProxyJump` / `ProxyCommand` is not scanned (a direct
+  keyscan could reach a different machine at that address).
+
+Matching follows OpenSSH, not `fnmatch`: patterns have only `*` and `?` (`[` is
+literal, as in `[10.0.0.*]:2222`), and a matching `!` vetoes the line. Lines are
+split on any whitespace (a tab-separated stale key otherwise survives beside the
+new one, and since ssh accepts *any* matching key, nothing would ever report it).
+A pattern on the same line as the exact name counts as a wildcard, so that line is
+refused rather than trimmed to the pattern. Bytes elsewhere in the file survive
+the rewrite (surrogateescape).
+
+Writes are atomic, LF-only, mode-preserving, through a symlink, under
+`~/.ssh/.known_hosts.sparkrun.lock`, the lock `known_hosts_refresh.sh` also takes.
+A multi-type replace backs up once (`backup=` on the first call only), so `.old`
+is the file as it was before that host. Scope is
+the first `UserKnownHostsFile` as `ssh -G` resolves it (`HostName` / `Port`
+→ `[host]:port` / `HostKeyAlias` / `HashKnownHosts`); host-to-host entries are
+`known_hosts_refresh.sh`'s, and a stale key in a second user file or the global
+file is not found. The CLI (`_resolve_changed_host_keys`) asks **once per host**
+`[y/N]` listing every changed type. `--yes` and a non-terminal never accept, they
+print `ssh-keygen -R`. Answers are remembered per process (`_host_key_answers`),
+so the wizard's gate, its mesh step and a CX7 re-mesh do not ask twice, and `yes`
+is threaded into `_run_ssh_mesh`. It runs in the access gate (wizard, native
+mesh) and in `_run_ssh_mesh` just before the script, *after* control-key
+resolution, so a broken `ssh.key` still fails before anything runs. Both functions
+are daemon ops (`setup.find_changed_host_keys` read, `setup.replace_host_key`
+admin). Detection is advisory and never fails setup (an uncheckable host is
+reported by ssh on the next connection). Tests: `conftest.unanswered_host_key_scans`
+stubs only `_scan` (the network half) and resets the answers; `ssh-keyscan` is on
+the I/O guard's list; fixtures pin `HashKnownHosts=no` because Ubuntu's system
+`ssh_config` turns it on.
+
 **CLI wiring** (`cli/_setup/_ssh.py`): `_ensure_ssh_access` is the wizard's gate
 (prints, prompts, persists a generated key as `ssh.key`); `_default_ssh_user`
 replaces the old `os.environ.get("USER", "root")` — POSIX-only, so on Windows it

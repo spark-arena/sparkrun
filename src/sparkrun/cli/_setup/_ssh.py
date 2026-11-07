@@ -88,6 +88,85 @@ def _mesh_uses_native() -> bool:
     return os.name == "nt" or shutil.which("bash") is None
 
 
+def _stdin_is_terminal() -> bool:
+    import sys
+
+    return sys.stdin.isatty()
+
+
+#: Host-key answers already given in this process, so the wizard's access gate
+#: and its mesh step (and a CX7 re-mesh) do not ask about the same host twice.
+#: ``True`` = clean or replaced, ``False`` = declined (still blocked).
+_host_key_answers: dict[str, bool] = {}
+
+
+def _resolve_changed_host_keys(host_list, user, config, *, dry_run=False, yes=False) -> list[str]:
+    """Ask before trusting a host's new SSH host key; return the hosts still blocked.
+
+    A changed key stops every SSH connection to that host, and it is what both
+    a re-imaged Spark and a man-in-the-middle look like, so only the operator
+    can decide. Each host is shown once with every changed key type (recorded
+    and presented fingerprints) and its keys are replaced only on an explicit
+    yes (default no). ``--yes`` and a non-interactive session never accept:
+    they print the manual fix. Detection and the replacement itself are
+    :mod:`sparkrun.api.setup`'s (``find_changed_host_keys`` /
+    ``replace_host_key``), which writes exactly the approved keys.
+    """
+    from sparkrun.api.setup import SshAccessError, find_changed_host_keys, replace_host_key
+
+    if dry_run or not host_list:
+        return []
+    blocked = [h for h in host_list if _host_key_answers.get(h) is False]
+    unchecked = [h for h in host_list if h not in _host_key_answers]
+    if not unchecked:
+        return blocked
+    ssh_options = config.ssh_options if config else []
+    ssh_key = config.ssh_key if config else None
+    try:
+        changes = find_changed_host_keys(unchecked, user, key=ssh_key, options=ssh_options)
+    except SshAccessError as e:
+        click.echo("Could not check SSH host keys: %s" % e, err=True)
+        return blocked
+    by_host: dict[str, list] = {}
+    for change in changes:
+        by_host.setdefault(change.host, []).append(change)
+    for host in unchecked:
+        _host_key_answers.setdefault(host, host not in by_host)
+
+    interactive = not yes and _stdin_is_terminal()
+    for host, host_changes in by_host.items():
+        click.echo()
+        click.echo("SSH host key CHANGED for %s:" % host, err=True)
+        for change in host_changes:
+            click.echo("  %s" % change.key_type, err=True)
+            for recorded in change.recorded:
+                click.echo("    recorded:  %s" % recorded, err=True)
+            click.echo("    presented: %s" % change.presented, err=True)
+        click.echo("  A re-imaged or reinstalled host presents a new key; so does a man-in-the-middle.", err=True)
+        if not (interactive and click.confirm("Did you expect this? Trust the presented key(s) for %s" % host, default=False)):
+            click.echo("  Left unchanged. To replace it yourself: ssh-keygen -R %s" % host_changes[0].lookup, err=True)
+            _host_key_answers[host] = False
+            blocked.append(host)
+            continue
+        replaced = True
+        for index, change in enumerate(host_changes):
+            try:
+                # Back up once, so .old is the file as it was before this host.
+                result = replace_host_key(host, change.presented, user, key=ssh_key, options=ssh_options, backup=index == 0)
+            except SshAccessError as e:
+                click.echo("  Not replaced (%s): %s" % (change.key_type, e), err=True)
+                click.echo("  To replace it yourself: ssh-keygen -R %s" % change.lookup, err=True)
+                replaced = False
+                continue
+            click.echo(
+                "  Trusted the new %s key in %s (previous file: %s.old)." % (change.key_type, result.known_hosts, result.known_hosts)
+            )
+        _host_key_answers[host] = replaced
+        if not replaced:
+            blocked.append(host)
+    return list(dict.fromkeys(blocked))
+
+
 def _ensure_ssh_access(host_list, user, config, dry_run=False, yes=False, offer_user_change=True):
     """Verify — and when possible bootstrap — key-based SSH to *host_list*.
 
@@ -130,6 +209,7 @@ def _ensure_ssh_access(host_list, user, config, dry_run=False, yes=False, offer_
 
     ssh_options = config.ssh_options if config else []
     ssh_key = config.ssh_key if config else None
+    declined_host_keys = set(_resolve_changed_host_keys(host_list, user, config, yes=yes))
 
     def _probe(as_user):
         return probe_ssh_access(list(host_list), as_user, key=ssh_key, options=ssh_options)
@@ -151,9 +231,12 @@ def _ensure_ssh_access(host_list, user, config, dry_run=False, yes=False, offer_
         click.echo("  Authentication failed: %s" % ", ".join(p.host for p in auth_failed))
     if host_key_failed:
         click.echo("  Host key mismatch: %s" % ", ".join(p.host for p in host_key_failed), err=True)
-        click.echo("    The stored host key changed. Resolve manually before continuing:", err=True)
-        for p in host_key_failed:
-            click.echo("      ssh-keygen -R %s" % p.host, err=True)
+        # Hosts just asked about already got the exact fix; repeat it for the rest.
+        unexplained = [p for p in host_key_failed if p.host not in declined_host_keys]
+        if unexplained:
+            click.echo("    The stored host key changed. Resolve manually before continuing:", err=True)
+            for p in unexplained:
+                click.echo("      ssh-keygen -R %s" % p.host, err=True)
     if unreachable:
         click.echo("  Not reachable: %s" % ", ".join(p.host for p in unreachable), err=True)
         for p in unreachable:
@@ -438,6 +521,7 @@ def _run_ssh_mesh(
     dry_run=False,
     control_is_member=False,
     config=None,
+    yes=False,
 ):
     """Run SSH mesh (mesh_ssh_keys.sh) and optionally discover/distribute host keys.
 
@@ -460,6 +544,7 @@ def _run_ssh_mesh(
             script authorizes the control key sparkrun authenticates with
             (:func:`_resolve_control_key`) rather than one it picks from
             ``~/.ssh``, and the post-mesh check uses the configured SSH options.
+        yes: Non-interactive: a changed host key is reported, never accepted.
 
     Returns:
         ``True`` if the mesh completed and the control machine can reach every
@@ -523,6 +608,14 @@ def _run_ssh_mesh(
                     "SPARKRUN_CONTROL_PUBKEY": public_key,
                     "SPARKRUN_CONTROL_KEY": str(control_key.path),
                 }
+
+            # The script's first connection fails hard on a changed host key,
+            # so ask now. Here rather than earlier so a broken ssh.key still
+            # fails before anything runs; the native path asks in the gate.
+            blocked = _resolve_changed_host_keys(mesh_hosts, user, config, yes=yes)
+            if blocked:
+                click.echo("Resolve the changed host key(s) for %s before the mesh can run." % ", ".join(blocked), err=True)
+                return False
 
             # Run interactively — the script prompts for passwords
             result = subprocess.run(cmd, env=env)

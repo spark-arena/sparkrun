@@ -375,6 +375,19 @@ def real_locality_probes(fast_locality_probes, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def unanswered_host_key_scans(monkeypatch):
+    """Host-key scans see no host unless a test supplies what one presents.
+
+    ``setup ssh`` and the wizard's access gate now scan every target for a
+    changed host key (``ssh-keyscan``, a network call per host). Only the scan
+    is stubbed, so the comparison, fingerprints and known_hosts rewriting stay
+    real; tests of that module patch ``_scan`` themselves.
+    """
+    monkeypatch.setattr("sparkrun.api.setup._host_keys._scan", lambda target, timeout: {})
+    monkeypatch.setattr("sparkrun.cli._setup._ssh._host_key_answers", {})
+
+
+@pytest.fixture(autouse=True)
 def isolated_distribution_providers(monkeypatch):
     """Each test starts with no image/model distribution providers registered.
 

@@ -73,6 +73,7 @@ FIELD_SCHEMAS = {
     "gid_index": {"minimum": 0, "type": "integer"},
     "head_host": {"maxLength": 4096, "type": "string"},
     "host": {"maxLength": 4096, "type": "string"},
+    "fingerprint": {"maxLength": 256, "pattern": "^SHA256:[A-Za-z0-9+/]+$", "type": "string"},
     "host_filter": {"items": {"maxLength": 4096, "type": "string"}, "maxItems": 512, "minItems": 1, "type": "array"},
     "hostname": {"maxLength": 4096, "type": "string"},
     "hosts": {"items": {"maxLength": 4096, "type": "string"}, "maxItems": 512, "minItems": 1, "type": "array"},

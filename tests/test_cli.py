@@ -3170,7 +3170,11 @@ class TestSetupSshCommand:
             assert cmd[2] == "testuser"
             assert cmd[3:] == ["10.0.0.1", "10.0.0.2"]
             # Then one key-based check per cluster host (``--no-discover-ips`` does not skip it).
-            assert len(mock_run.call_args_list) == 3
+            # ``ssh -G`` is the changed-host-key check resolving each host's config
+            # locally before the script runs; it makes no connection.
+            config_lookups = [c for c in mock_run.call_args_list if c.args[0][:2] == ["ssh", "-G"]]
+            assert len(config_lookups) == 2
+            assert len(mock_run.call_args_list) - len(config_lookups) == 3
 
     def test_setup_ssh_uses_cluster_user(self, runner, tmp_path, monkeypatch):
         """Test that setup ssh picks up the cluster's configured user."""
