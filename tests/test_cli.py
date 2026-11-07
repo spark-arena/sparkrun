@@ -2982,6 +2982,22 @@ class TestFollowLogs:
 class TestSetupSshCommand:
     """Test the setup ssh command."""
 
+    @pytest.fixture(autouse=True)
+    def control_key(self, tmp_path, monkeypatch):
+        """The control key the mesh authorizes, without reading ``~/.ssh`` or running ssh-keygen."""
+        from pathlib import Path
+
+        from sparkrun.api.setup import LocalSshKey
+
+        key = LocalSshKey(
+            path=Path("/cfg/ssh/sparkrun_ed25519"),
+            public_path=Path("/cfg/ssh/sparkrun_ed25519.pub"),
+            public_key="ssh-ed25519 AAAATEST sparkrun@test",
+        )
+        monkeypatch.setattr("sparkrun.api.setup._ssh_access.ensure_local_key", mock.Mock(return_value=key))
+        monkeypatch.setattr("sparkrun.orchestration.ssh.offered_identities", mock.Mock(return_value=[]))
+        return key
+
     @pytest.fixture
     def cluster_setup(self, tmp_path, monkeypatch):
         """Set up a config root with a test cluster for SSH tests."""
@@ -3147,12 +3163,14 @@ class TestSetupSshCommand:
             audit.assert_called_once()
             assert audit.call_args.args[0] == ["10.0.0.1", "10.0.0.2"]
             assert audit.call_args.kwargs["ssh_kwargs"]["ssh_user"] == "testuser"
-            mock_run.assert_called_once()
-            cmd = mock_run.call_args[0][0]
-            assert cmd[0] == "bash"
+            script_calls = [c for c in mock_run.call_args_list if c.args[0][0] == "bash"]
+            assert len(script_calls) == 1
+            cmd = script_calls[0].args[0]
             assert "mesh_ssh_keys.sh" in cmd[1]
             assert cmd[2] == "testuser"
             assert cmd[3:] == ["10.0.0.1", "10.0.0.2"]
+            # Then one key-based check per cluster host (``--no-discover-ips`` does not skip it).
+            assert len(mock_run.call_args_list) == 3
 
     def test_setup_ssh_uses_cluster_user(self, runner, tmp_path, monkeypatch):
         """Test that setup ssh picks up the cluster's configured user."""

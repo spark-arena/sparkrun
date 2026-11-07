@@ -155,7 +155,8 @@ def test_gate_verifies_with_the_key_it_just_generated():
 
     with (
         mock.patch("sparkrun.api.setup.probe_ssh_access", side_effect=probe),
-        mock.patch("sparkrun.api.setup.ensure_local_key", return_value=key),
+        mock.patch("sparkrun.api.setup._ssh_access.ensure_local_key", return_value=key),
+        mock.patch("sparkrun.orchestration.ssh.offered_identities", return_value=[]),
         mock.patch("sparkrun.api.setup.install_public_key_interactive") as install,
         # "Try a different SSH username first?" -> no; "Set up key-based SSH access?" -> yes
         mock.patch("click.confirm", side_effect=[False, True]),

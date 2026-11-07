@@ -345,6 +345,7 @@ DTO_FIELDS = {
     ],
     "sparkrun.api.setup._ssh_access.SshProbe": ["host", "ok", "auth_failed", "host_key_failed", "error"],
     "sparkrun.api.setup._ssh_access.LocalSshKey": ["path", "public_path", "public_key", "generated"],
+    "sparkrun.api.setup._ssh_access.ControlKey": ["key", "source", "recorded", "skipped"],
     "sparkrun.api.setup._mesh.MeshResult": ["public_keys", "collect_failures", "install_failures"],
     "sparkrun.core.cluster_manager.ResourceDistributionPrefs": [
         "preserve_perms",

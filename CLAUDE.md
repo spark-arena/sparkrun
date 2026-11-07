@@ -2468,7 +2468,33 @@ replaces the old `os.environ.get("USER", "root")` — POSIX-only, so on Windows 
 made every first connection as `root`. `_run_ssh_mesh` prefers
 `scripts/mesh_ssh_keys.sh` and falls back to `mesh_ssh_keys_native` when local
 `bash` is absent. The wizard runs the gate **once**, after the cluster-name and
-SSH-username prompts and before any other probe.
+SSH-username prompts and before any other probe. `setup ssh` runs it only on the
+native path (which needs key auth from its first connection; the script
+bootstraps with passwords), with `offer_user_change=False`: `setup ssh` does not
+persist a user, so a corrected one would mesh as a user later commands never use.
+
+**The mesh authorizes the key sparkrun connects with, not one it picks.**
+`api.setup.resolve_control_key` (console-free; the CLI's `_resolve_control_key`
+only renders it, and the daemon exposes it as `setup.resolve_control_key`, so a
+GUI-driven setup picks the same key) resolves what ssh will *offer*: `ssh.key`,
+authoritative (a `.pem` without `.pub` is derived via `ssh-keygen -y`, never
+substituted or overwritten) → `orchestration.ssh.offered_identities` (honours an
+ssh-config `IdentityFile`, which also suppresses the defaults) → stock identities
+→ generated `sparkrun_ed25519`, recorded as `ssh.key` (failure to record is
+fatal). **Read ssh's effective config through `effective_ssh_config`**, which
+runs `ssh -G` with `build_ssh_cmd`'s exact argv: a bare `ssh -G user@host`
+ignores `ssh.key` and `ssh.options` (`-F`, `-o IdentityFile=…`) and so answers a
+different question. (`_ssh_diagnose.find_local_public_key`,
+`_ssh_rotation._connection` and `orchestration/_ssh_identity.resolve_ssh_user`
+still parse `ssh -G` themselves.) The resolved key is passed to
+`mesh_ssh_keys.sh` as `SPARKRUN_CONTROL_PUBKEY` / `SPARKRUN_CONTROL_KEY` and
+installed on every host, same user or not. ssh drops its default identities once
+`-i` names an existing file, so the script's old choice (nothing for the same
+user, an `ssh -G` stock key otherwise) left `ssh user@host` working while every
+sparkrun command got "Permission denied (publickey)" until the wizard ran. After
+the mesh, `_verify_control_access` connects with the configured user, key and
+options and **fails** the mesh on refusal, naming the key; it runs even with
+`--no-discover-ips`.
 
 **known_hosts refresh** (`networking.distribute_host_keys` →
 `scripts/known_hosts_refresh.sh`) must **replace**, never append. ssh accepts a

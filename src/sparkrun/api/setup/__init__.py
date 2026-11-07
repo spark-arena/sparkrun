@@ -84,11 +84,15 @@ from ._rdma import (
 )
 from ._ssh_access import (
     SPARKRUN_KEY_NAME,
+    ControlKey,
     LocalSshKey,
     SshProbe,
     ensure_local_key,
     install_public_key_interactive,
+    load_identity,
     probe_ssh_access,
+    resolve_control_key,
+    validate_public_key,
 )
 
 from ._ssh_diagnose import (
@@ -148,6 +152,9 @@ __all__ = [
     "probe_ssh_access",
     "ensure_local_key",
     "install_public_key_interactive",
+    "validate_public_key",
+    "load_identity",
+    "resolve_control_key",
     "mesh_ssh_keys_native",
     "rdma_test",
     # CX7 fabric configuration (experimental)
@@ -187,6 +194,7 @@ __all__ = [
     # Data models
     "SshProbe",
     "LocalSshKey",
+    "ControlKey",
     "MeshResult",
     "RdmaTestReport",
     "PairTestResult",

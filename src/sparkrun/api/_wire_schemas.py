@@ -1305,6 +1305,27 @@ RESULT_SCHEMAS = {
         "required": ["path", "public_path", "public_key", "generated"],
         "additionalProperties": True,
     },
+    "setup.resolve_control_key": {
+        "type": "object",
+        "properties": {
+            "key": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "public_path": {"type": "string"},
+                    "public_key": {"type": "string"},
+                    "generated": {"type": "boolean"},
+                },
+                "required": ["path", "public_path", "public_key", "generated"],
+                "additionalProperties": True,
+            },
+            "source": {"type": "string", "enum": ["ssh.key", "ssh-config", "stock", "generated"]},
+            "recorded": {"type": "boolean"},
+            "skipped": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["key", "source", "recorded", "skipped"],
+        "additionalProperties": True,
+    },
     "setup.mesh_ssh_keys": {
         "type": "object",
         "properties": {

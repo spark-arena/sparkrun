@@ -57,6 +57,8 @@ EXCLUSIONS = {
     "setup.validate_cx7_options": "Pure option check that plan_cx7 applies itself.",
     "setup.diagnose_ssh": "Requires a terminal-owned ssh password conversation; use setup ssh --diagnose in a terminal.",
     "setup.find_local_public_key": "Reads the caller's own ssh configuration; diagnose_ssh reports the result.",
+    "setup.load_identity": "Reads the caller's own private key file; setup.resolve_control_key reports the identity in use.",
+    "setup.validate_public_key": "Pure validation helper used before a key is embedded in a remote script.",
     "model_cache.reconcile_claims": "Composes status with model_cache.list and model_cache.reconcile; use the CLI or Python API.",
 }
 K8S_OPERATIONS = {

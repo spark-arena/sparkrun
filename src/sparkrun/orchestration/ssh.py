@@ -489,6 +489,63 @@ def build_ssh_cmd(
     return ["ssh", *_ssh_option_args(ssh_user, ssh_key, ssh_options, connect_timeout), target]
 
 
+def effective_ssh_config(
+    host: str,
+    ssh_user: str | None = None,
+    ssh_key: str | None = None,
+    ssh_options: list[str] | None = None,
+    timeout: int = 10,
+) -> dict[str, list[str]]:
+    """OpenSSH's resolved client configuration for connecting to *host* as sparkrun does.
+
+    Runs ``ssh -G`` with the exact arguments :func:`build_ssh_cmd` produces, so
+    ``ssh.key`` (``-i``), ``ssh.options`` (``-F``, ``-o …``) and ``~/.ssh/config``
+    all apply.  Asking a bare ``ssh -G user@host`` answers a different question
+    whenever any of those are set.  No connection is made.
+
+    Returns:
+        Lower-cased keyword → values in output order (keywords such as
+        ``identityfile`` repeat).  Each value is the rest of its line verbatim.
+
+    Raises:
+        ValueError: ``ssh -G`` exited non-zero.
+        OSError, subprocess.SubprocessError: ``ssh`` could not be run.
+    """
+    cmd = build_ssh_cmd(host, ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options)
+    result = subprocess.run([cmd[0], "-G", *cmd[1:]], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout)
+    if result.returncode != 0:
+        raise ValueError("ssh -G %s exited %d: %s" % (cmd[-1], result.returncode, (result.stderr or "").strip()))
+    values: dict[str, list[str]] = {}
+    for line in result.stdout.splitlines():
+        keyword, _, value = line.partition(" ")
+        if keyword and value:
+            values.setdefault(keyword.lower(), []).append(value.strip())
+    return values
+
+
+def offered_identities(
+    host: str,
+    ssh_user: str | None = None,
+    ssh_key: str | None = None,
+    ssh_options: list[str] | None = None,
+) -> list[Path]:
+    """Private-key files OpenSSH would offer *host* when sparkrun connects, in order.
+
+    When ``-i`` or an ``IdentityFile`` names a key, OpenSSH stops offering its
+    default identities, so this is the set a key must come from to be accepted
+    (agent keys aside).  Only files that exist are returned; ssh skips the rest.
+
+    Raises:
+        Whatever :func:`effective_ssh_config` raises.
+    """
+    identities: list[Path] = []
+    for value in effective_ssh_config(host, ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options).get("identityfile", []):
+        candidate = Path(os.path.expanduser(value))
+        if candidate.is_file() and candidate not in identities:
+            identities.append(candidate)
+    return identities
+
+
 def _ssh_option_args(ssh_user, ssh_key, ssh_options, connect_timeout):
     """One precedence rule for direct SSH, transfer pipelines and rsync."""
     parts = ["-o", "BatchMode=yes", "-o", f"ConnectTimeout={connect_timeout}"]

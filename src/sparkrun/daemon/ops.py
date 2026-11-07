@@ -73,6 +73,7 @@ SPECS = [
     ("proxy.uninstall_service", "proxy.uninstall_service", "job", "admin", "scope dry_run", ""),
     ("setup.probe_ssh_access", "setup.probe_ssh_access", "job", "read", "hosts user key timeout max_workers", "hosts"),
     ("setup.ensure_local_key", "setup.ensure_local_key", "job", "admin", "preferred generate", ""),
+    ("setup.resolve_control_key", "setup.resolve_control_key", "job", "admin", "host user generate", ""),
     ("setup.mesh_ssh_keys", "setup.mesh_ssh_keys_native", "job", "admin", "hosts user key timeout dry_run", "hosts"),
 ]
 

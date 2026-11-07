@@ -86,7 +86,11 @@ class SshProbe:
 
 @dataclass(frozen=True)
 class LocalSshKey:
-    """A usable local SSH identity, guaranteed to have a ``.pub`` alongside."""
+    """A usable local SSH identity and its public half.
+
+    ``public_path`` exists, except for a key loaded by :func:`load_identity`
+    whose public half was derived (it is then where a ``.pub`` would live).
+    """
 
     path: Path
     public_path: Path
@@ -196,6 +200,58 @@ def _read_identity(private_path: Path) -> LocalSshKey | None:
     return LocalSshKey(path=private_path, public_path=public_path, public_key=public_key)
 
 
+def _derive_public_key(private_path: Path) -> str:
+    """Return the public half of *private_path* via ``ssh-keygen -y``.
+
+    ``-P ""`` makes an encrypted key fail instead of prompting: a passphrase
+    prompt mid-setup would read like a hang, and the agent (which is what lets
+    ssh use such a key unattended) cannot answer ``ssh-keygen`` anyway.
+    """
+    keygen = shutil.which("ssh-keygen")
+    if not keygen:
+        raise OpenSshUnavailable(
+            "ssh-keygen not found on PATH. Install the OpenSSH client (Windows: Settings > Apps > Optional Features > OpenSSH Client)."
+        )
+    proc = subprocess.run(
+        [keygen, "-y", "-P", "", "-f", str(private_path)],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        timeout=30,
+    )
+    public_key = (proc.stdout or "").strip()
+    if proc.returncode != 0 or not public_key:
+        raise SshKeyError(
+            "%s has no %s.pub and its public half could not be derived (passphrase-protected?). "
+            "Create it with: ssh-keygen -y -f %s > %s.pub" % (private_path, private_path.name, private_path, private_path)
+        )
+    return public_key
+
+
+def load_identity(private_path: str | Path) -> LocalSshKey:
+    """Load the identity at *private_path*, deriving a missing public half.
+
+    Unlike :func:`ensure_local_key` this never substitutes another key: it is
+    for a key that is *already* what ssh will offer (``ssh.key``, or an
+    ``IdentityFile`` from ssh config), where installing anything else would
+    authorize a key nothing connects with.  A private key without a ``.pub``
+    (the usual shape of a cloud ``.pem``) has its public half derived in memory;
+    nothing is written beside it, so :attr:`LocalSshKey.public_path` may not exist.
+
+    Raises:
+        SshKeyError: The private key is missing, or its public half is unreadable
+            and cannot be derived.
+        OpenSshUnavailable: Derivation was needed and ``ssh-keygen`` is missing.
+    """
+    path = Path(os.path.expanduser(str(private_path)))
+    if not path.is_file():
+        raise SshKeyError("SSH key %s does not exist" % path)
+    found = _read_identity(path)
+    if found is not None:
+        return found
+    return LocalSshKey(path=path, public_path=path.with_name(path.name + ".pub"), public_key=_derive_public_key(path))
+
+
 def ensure_local_key(
     *,
     preferred: str | Path | None = None,
@@ -287,6 +343,112 @@ def ensure_local_key(
     )
 
 
+@dataclass(frozen=True)
+class ControlKey:
+    """The identity this control machine authenticates to cluster hosts with."""
+
+    key: LocalSshKey
+    #: Where it came from: ``"ssh.key"``, ``"ssh-config"`` (what OpenSSH offers
+    #: the host), ``"stock"`` (an existing ``~/.ssh`` or sparkrun key) or
+    #: ``"generated"``.
+    source: str
+    #: True when a generated key was written to the config as ``ssh.key``.
+    recorded: bool = False
+    #: Identities OpenSSH would offer that could not be used, with the reason.
+    skipped: tuple[str, ...] = ()
+
+
+def resolve_control_key(
+    *,
+    host: str | None = None,
+    user: str | None = None,
+    generate: bool = True,
+    config=None,
+    sctx=None,
+) -> ControlKey:
+    """Resolve the key to authorize on cluster hosts: the one sparkrun will *offer*.
+
+    ssh drops its default identities as soon as ``-i`` (``ssh.key``) or an
+    ``IdentityFile`` names a key, so authorizing any other key leaves
+    ``ssh user@host`` working while every sparkrun connection is refused.
+    First hit wins:
+
+    1. ``ssh.key`` — authoritative.  Never substituted (a key without ``.pub``
+       has its public half derived) and never overwritten.
+    2. What OpenSSH offers *host* with sparkrun's ``ssh.options``
+       (:func:`~sparkrun.orchestration.ssh.offered_identities`).
+    3. :func:`ensure_local_key`: the stock identities, sparkrun's own key, or a
+       new one, which is recorded as ``ssh.key`` beside the config so later
+       commands offer it.
+
+    Args:
+        host: A cluster host, for step 2 (skipped when ``None``).
+        user: SSH username for step 2.
+        generate: Allow step 3 to create a key.
+        config: :class:`~sparkrun.core.config.SparkrunConfig`; defaults to the
+            context's.
+        sctx: Operation context.
+
+    Raises:
+        SshKeyError: ``ssh.key`` is unusable, no key exists and *generate* is
+            False, or a generated key could not be recorded.
+        OpenSshUnavailable: ``ssh-keygen`` was needed and is missing.
+    """
+    if config is None:
+        from sparkrun.api._context import resolve_sctx
+
+        config = resolve_sctx(sctx).config
+
+    if config.ssh_key:
+        return ControlKey(key=load_identity(config.ssh_key), source="ssh.key")
+
+    skipped: list[str] = []
+    if host:
+        from sparkrun.orchestration.ssh import offered_identities
+
+        try:
+            candidates = offered_identities(host, ssh_user=user, ssh_options=config.ssh_options)
+        except (OSError, subprocess.SubprocessError, ValueError) as e:
+            logger.debug("Could not read the identities ssh offers %s: %s", host, e)
+            candidates = []
+        for candidate in candidates:
+            try:
+                return ControlKey(key=load_identity(candidate), source="ssh-config", skipped=tuple(skipped))
+            except SshKeyError as e:
+                skipped.append("%s: %s" % (candidate, e))
+
+    key = ensure_local_key(key_dir=Path(config.config_path).parent / "ssh", generate=generate)
+    if not key.generated:
+        return ControlKey(key=key, source="stock", skipped=tuple(skipped))
+    try:
+        config.set("ssh.key", str(key.path))
+        config.save()
+    except Exception as e:
+        raise SshKeyError(
+            "generated %s but could not record it as ssh.key (%s); set ssh.key to it in %s and re-run" % (key.path, e, config.config_path)
+        ) from e
+    return ControlKey(key=key, source="generated", recorded=True, skipped=tuple(skipped))
+
+
+def validate_public_key(public_key: str) -> str:
+    """Return *public_key* stripped, refusing anything but one safe line.
+
+    Every consumer embeds the key in a remote shell script (quoted, or read as a
+    single line), so a newline or a quote would change what that script does.
+
+    Raises:
+        ValueError: The key is empty, spans several lines, or contains a quote.
+    """
+    key = public_key.strip()
+    if not key:
+        raise ValueError("public key is empty")
+    if "\n" in key or "\r" in key:
+        raise ValueError("public key must be a single line")
+    if "'" in key:
+        raise ValueError("public key contains an unexpected quote character")
+    return key
+
+
 def build_authorized_key_script(public_key: str) -> str:
     """Return a bash script that idempotently authorizes *public_key*.
 
@@ -298,13 +460,7 @@ def build_authorized_key_script(public_key: str) -> str:
     Raises:
         ValueError: The key is not a single safe line.
     """
-    key = public_key.strip()
-    if not key:
-        raise ValueError("public key is empty")
-    if "\n" in key or "\r" in key:
-        raise ValueError("public key must be a single line")
-    if "'" in key:
-        raise ValueError("public key contains an unexpected quote character")
+    key = validate_public_key(public_key)
 
     return (
         "set -eu\n"
@@ -401,10 +557,14 @@ def install_public_key_interactive(
 
 __all__ = [
     "SPARKRUN_KEY_NAME",
+    "ControlKey",
     "LocalSshKey",
     "SshProbe",
     "build_authorized_key_script",
     "ensure_local_key",
     "install_public_key_interactive",
+    "load_identity",
     "probe_ssh_access",
+    "resolve_control_key",
+    "validate_public_key",
 ]

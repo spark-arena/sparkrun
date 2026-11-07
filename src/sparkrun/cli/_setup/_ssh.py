@@ -5,7 +5,6 @@ from __future__ import annotations
 from sparkrun.core.application_profile import render_identity_text
 
 from dataclasses import dataclass, field
-from pathlib import Path
 
 import click
 
@@ -49,7 +48,47 @@ class SshAccessOutcome:
         return bool(self.ok_hosts) and not self.blocked
 
 
-def _ensure_ssh_access(host_list, user, config, dry_run=False, yes=False):
+def _resolve_control_key(config, *, host=None, user=None, generate=True):
+    """Render :func:`sparkrun.api.setup.resolve_control_key` and return its key.
+
+    Every setup path authorizes this key, so it is the one later commands offer
+    (see the api function for why that is not simply "any key in ``~/.ssh``").
+
+    Raises:
+        SshAccessError: As :func:`~sparkrun.api.setup.resolve_control_key`.
+    """
+    from sparkrun.api.setup import resolve_control_key
+
+    resolved = resolve_control_key(host=host, user=user, generate=generate, config=config)
+    for reason in resolved.skipped:
+        click.echo("  Skipping %s" % reason, err=True)
+    if resolved.source == "generated":
+        click.echo("  Generated a new SSH key: %s" % resolved.key.path)
+        click.echo("  Recorded as ssh.key in %s" % (config.config_path if config is not None else "the sparkrun config"))
+    elif resolved.source == "ssh.key":
+        click.echo("  Using SSH key: %s (ssh.key)" % resolved.key.path)
+    else:
+        click.echo("  Using SSH key: %s" % resolved.key.path)
+    return resolved.key
+
+
+def _mesh_uses_native() -> bool:
+    """True when the SSH mesh must run without the local ``mesh_ssh_keys.sh``.
+
+    The script needs a POSIX shell on the *control* machine.  On Windows this
+    applies even when a ``bash`` *is* on PATH: Git Bash and WSL both take a POSIX
+    view of the filesystem, so the Windows path to the bundled script is either
+    escape-mangled or simply not addressable::
+
+      /bin/bash: C:Users<name>Desktop...mesh_ssh_keys.sh: No such file or directory
+    """
+    import os
+    import shutil
+
+    return os.name == "nt" or shutil.which("bash") is None
+
+
+def _ensure_ssh_access(host_list, user, config, dry_run=False, yes=False, offer_user_change=True):
     """Verify — and when possible bootstrap — key-based SSH to *host_list*.
 
     Every later setup phase assumes passwordless SSH works.  Running this first
@@ -67,6 +106,10 @@ def _ensure_ssh_access(host_list, user, config, dry_run=False, yes=False):
         config: :class:`~sparkrun.core.config.SparkrunConfig` for key/options.
         dry_run: Skip all network access and report success.
         yes: Non-interactive; diagnose and advise, but never prompt.
+        offer_user_change: Offer to retry as another username when no host
+            accepts *user*.  Off for callers whose user comes from an explicit
+            setting they do not persist (``setup ssh``): a corrected user there
+            would mesh as one user while later commands connect as another.
 
     Returns:
         An :class:`SshAccessOutcome`.  ``user`` may differ from the argument if
@@ -74,7 +117,6 @@ def _ensure_ssh_access(host_list, user, config, dry_run=False, yes=False):
     """
     from sparkrun.api.setup import (
         SshAccessError,
-        ensure_local_key,
         install_public_key_interactive,
         probe_ssh_access,
     )
@@ -134,7 +176,7 @@ def _ensure_ssh_access(host_list, user, config, dry_run=False, yes=False):
     # A wrong username is the single most common cause of a clean
     # "Permission denied (publickey,password)" on an untouched cluster, so
     # offer to correct it before spending password prompts on the wrong user.
-    if not ok and click.confirm("Try a different SSH username first?", default=False):
+    if offer_user_change and not ok and click.confirm("Try a different SSH username first?", default=False):
         new_user = click.prompt("SSH username", default=user or None)
         if new_user and new_user != user:
             user = new_user
@@ -154,26 +196,12 @@ def _ensure_ssh_access(host_list, user, config, dry_run=False, yes=False):
     ):
         return SshAccessOutcome(ok_hosts=ok, user=user, blocked=[p.host for p in auth_failed])
 
-    # Keep sparkrun's own key beside its config (mountable into a containerized
-    # daemon, and never mixed in with the user's personal identities).
-    key_dir = Path(config.config_path).parent / "ssh" if config is not None else None
     try:
-        local_key = ensure_local_key(preferred=ssh_key, key_dir=key_dir)
+        local_key = _resolve_control_key(config, host=auth_failed[0].host, user=user)
     except SshAccessError as e:
         click.echo("Could not prepare a local SSH key: %s" % e, err=True)
         return SshAccessOutcome(ok_hosts=ok, user=user, blocked=[p.host for p in auth_failed])
 
-    if local_key.generated:
-        click.echo("  Generated a new SSH key: %s" % local_key.path)
-        if config is not None:
-            try:
-                config.set("ssh.key", str(local_key.path))
-                config.save()
-                click.echo("  Recorded as ssh.key in %s" % config.config_path)
-            except Exception as e:
-                click.echo("  Warning: could not persist ssh.key: %s" % e, err=True)
-    else:
-        click.echo("  Using SSH key: %s" % local_key.path)
     # The re-probe must offer the key being installed: ``ssh_key`` was read from
     # config before this key existed, so on a fresh controller it is ``None``.
     ssh_key = str(local_key.path)
@@ -364,7 +392,53 @@ def _run_ssh_mesh_native(mesh_hosts, user, ssh_key=None, dry_run=False, ssh_opti
     return result.ok
 
 
-def _run_ssh_mesh(mesh_hosts, user, cluster_hosts=None, ssh_key=None, discover_ips=True, dry_run=False, control_is_member=False):
+def _verify_control_access(cluster_hosts, user, ssh_kwargs) -> bool:
+    """Confirm key-based SSH from this machine works the way later commands use it.
+
+    Returns False (after explaining which key was offered) when any cluster
+    host refuses; the caller treats that as a failed setup rather than carrying
+    on into phases that would each fail the same way.
+    """
+    from sparkrun.orchestration.ssh import run_remote_scripts_parallel
+
+    click.echo()
+    click.echo("Verifying key-based SSH to cluster hosts...")
+    results = run_remote_scripts_parallel(cluster_hosts, "true", timeout=10, quiet=True, **ssh_kwargs)
+    failed = [r for r in results if not r.success]
+    if not failed:
+        click.echo("  All %d host(s) reachable." % len(cluster_hosts))
+        return True
+
+    key = ssh_kwargs.get("ssh_key")
+    click.echo()
+    click.echo("ERROR: key-based SSH as '%s' failed for %d host(s):" % (user, len(failed)), err=True)
+    for r in failed:
+        click.echo("  %s: %s" % (r.host, r.stderr.strip() if r.stderr else "unknown error"), err=True)
+    click.echo(err=True)
+    if key:
+        click.echo("sparkrun authenticates with %s (ssh.key); that key must be authorized for '%s'." % (key, user), err=True)
+        click.echo("  Check: ssh -o BatchMode=yes -i %s %s@%s true" % (key, user, failed[0].host), err=True)
+    else:
+        click.echo("sparkrun authenticates with the ssh client's default identities.", err=True)
+        click.echo("  Check: ssh -o BatchMode=yes %s@%s true" % (user, failed[0].host), err=True)
+    click.echo("Other common causes:", err=True)
+    click.echo("  1. Home directory permissions: chmod go-w ~%s" % user, err=True)
+    click.echo("  2. sshd AuthorizedKeysFile points to a non-default location", err=True)
+    click.echo("  3. AllowUsers/AllowGroups in sshd_config restricts the user", err=True)
+    click.echo(render_identity_text("Run '{app_command} setup ssh --diagnose' for detailed diagnostics."), err=True)
+    return False
+
+
+def _run_ssh_mesh(
+    mesh_hosts,
+    user,
+    cluster_hosts=None,
+    ssh_key=None,
+    discover_ips=True,
+    dry_run=False,
+    control_is_member=False,
+    config=None,
+):
     """Run SSH mesh (mesh_ssh_keys.sh) and optionally discover/distribute host keys.
 
     Shared core logic used by ``setup_ssh`` and the setup wizard.
@@ -374,19 +448,24 @@ def _run_ssh_mesh(mesh_hosts, user, cluster_hosts=None, ssh_key=None, discover_i
         user: SSH username.
         cluster_hosts: Hosts for Phase 2 IP discovery (subset of mesh_hosts).
             Defaults to *mesh_hosts* if ``None``.
-        ssh_key: SSH key path (optional).
+        ssh_key: SSH key path (optional).  Superseded by ``config.ssh_key`` once
+            *config* has resolved the control key.
         discover_ips: Run Phase 2 (discover IPs, distribute host keys).
         dry_run: Preview mode.
         control_is_member: The control machine is a cluster member (e.g.
             ``127.0.0.1`` was resolved to a routable IP).  When True and the
             SSH user differs from the OS user, loopback host keys are included
             in the distribution so that ``ssh <user>@127.0.0.1`` works.
+        config: :class:`~sparkrun.core.config.SparkrunConfig`.  When given, the
+            script authorizes the control key sparkrun authenticates with
+            (:func:`_resolve_control_key`) rather than one it picks from
+            ``~/.ssh``, and the post-mesh check uses the configured SSH options.
 
     Returns:
-        ``True`` if mesh completed successfully, ``False`` otherwise.
+        ``True`` if the mesh completed and the control machine can reach every
+        cluster host with key-based SSH, ``False`` otherwise.
     """
     import os
-    import shutil
     import subprocess
     from sparkrun.scripts import get_script_path
 
@@ -398,14 +477,10 @@ def _run_ssh_mesh(mesh_hosts, user, cluster_hosts=None, ssh_key=None, discover_i
 
     # Phase 1: Mesh SSH keys.  ``mesh_ssh_keys.sh`` needs a POSIX shell on the
     # *control* machine; fall back to the native implementation, which does all
-    # its shell work on the (always-Linux) cluster hosts.
-    #
-    # On Windows this applies even when a `bash` *is* on PATH.  Git Bash and WSL
-    # both take a POSIX view of the filesystem, so the Windows path to the
-    # bundled script is either escape-mangled or simply not addressable:
-    #
-    #   /bin/bash: C:UsersdrewDesktop...mesh_ssh_keys.sh: No such file or directory
-    if os.name == "nt" or shutil.which("bash") is None:
+    # its shell work on the (always-Linux) cluster hosts.  The native mesh needs
+    # control→host key auth to already work (``setup ssh`` and the wizard both
+    # run the access gate first), so it has no control key to install.
+    if _mesh_uses_native():
         ok = _run_ssh_mesh_native(mesh_hosts, user, ssh_key=ssh_key, dry_run=dry_run)
         if dry_run:
             if discover_ips:
@@ -414,20 +489,56 @@ def _run_ssh_mesh(mesh_hosts, user, cluster_hosts=None, ssh_key=None, discover_i
         if not ok:
             return False
     else:
+        from sparkrun.api.setup import SshAccessError, validate_public_key
+
         with get_script_path("mesh_ssh_keys.sh") as script_path:
             cmd = ["bash", str(script_path), user] + mesh_hosts
 
             if dry_run:
                 click.echo("[dry-run] Would run SSH mesh:")
                 click.echo("  " + " ".join(cmd))
+                if config is not None:
+                    try:
+                        _resolve_control_key(config, host=cluster_hosts[0], user=user, generate=False)
+                    except SshAccessError as e:
+                        if config.ssh_key:
+                            click.echo("  ssh.key is not usable: %s" % e, err=True)
+                        else:
+                            click.echo("  A sparkrun SSH key would be generated and authorized on every host.")
                 if discover_ips:
                     click.echo("  Phase 2 (discover IPs + distribute host keys) would run after mesh.")
                 return True
 
+            env = None
+            if config is not None:
+                try:
+                    control_key = _resolve_control_key(config, host=cluster_hosts[0], user=user)
+                    public_key = validate_public_key(control_key.public_key)
+                except (SshAccessError, ValueError) as e:
+                    click.echo("Could not prepare the control machine's SSH key: %s" % e, err=True)
+                    return False
+                ssh_key = config.ssh_key
+                env = {
+                    **os.environ,
+                    "SPARKRUN_CONTROL_PUBKEY": public_key,
+                    "SPARKRUN_CONTROL_KEY": str(control_key.path),
+                }
+
             # Run interactively — the script prompts for passwords
-            result = subprocess.run(cmd)
+            result = subprocess.run(cmd, env=env)
             if result.returncode != 0:
                 return False
+
+    from sparkrun.orchestration.primitives import build_ssh_kwargs
+
+    ssh_kwargs = {**build_ssh_kwargs(config), "ssh_user": user, "ssh_key": ssh_key}
+
+    # The mesh is only useful if *sparkrun* can now log in — the same user, key
+    # and options every later command uses.  An interactive ``ssh user@host``
+    # succeeding proves nothing here: it offers the stock identities, which ssh
+    # drops when ``-i`` names an existing key.
+    if not _verify_control_access(cluster_hosts, user, ssh_kwargs):
+        return False
 
     # Phase 2: Distribute host keys for management IPs and discovered IPs
     if not discover_ips:
@@ -435,41 +546,8 @@ def _run_ssh_mesh(mesh_hosts, user, cluster_hosts=None, ssh_key=None, discover_i
 
     click.echo()
 
-    ssh_kwargs = {"ssh_user": user}
-    if ssh_key:
-        ssh_kwargs["ssh_key"] = ssh_key
-
     from sparkrun.orchestration.networking import distribute_host_keys
     from sparkrun.orchestration.primitives import check_tcp_reachability
-    from sparkrun.orchestration.ssh import run_remote_scripts_parallel
-
-    # Quick SSH connectivity check before Phase 2 — catch cross-user auth
-    # failures early with actionable output instead of opaque errors.
-    click.echo("Verifying SSH connectivity to cluster hosts...")
-    _verify_results = run_remote_scripts_parallel(
-        cluster_hosts,
-        "true",
-        timeout=10,
-        quiet=True,
-        **ssh_kwargs,
-    )
-    _failed = [r for r in _verify_results if not r.success]
-    if _failed:
-        click.echo()
-        click.echo("WARNING: SSH authentication failed for %d host(s):" % len(_failed), err=True)
-        for r in _failed:
-            click.echo("  %s: %s" % (r.host, r.stderr.strip() if r.stderr else "unknown error"), err=True)
-        click.echo(err=True)
-        click.echo("Common causes when SSH user differs from local user:", err=True)
-        click.echo("  1. Home directory permissions: chmod go-w ~%s" % user, err=True)
-        click.echo("  2. sshd AuthorizedKeysFile points to a non-default location", err=True)
-        click.echo("  3. AllowUsers/AllowGroups in sshd_config restricts the user", err=True)
-        click.echo(err=True)
-        click.echo(render_identity_text("Run '{app_command} setup ssh --diagnose' for detailed diagnostics."), err=True)
-        click.echo("Continuing with Phase 2 (some operations may fail)...", err=True)
-        click.echo()
-    else:
-        click.echo("  All %d host(s) reachable." % len(cluster_hosts))
 
     # Start with cluster host management IPs — these must be in every
     # node's known_hosts so inter-node SSH/rsync works without prompts.
@@ -509,8 +587,6 @@ def _run_ssh_mesh(mesh_hosts, user, cluster_hosts=None, ssh_key=None, discover_i
     # a cluster member, cross-user SSH to 127.0.0.1 needs a known_hosts
     # entry.  Include loopback addresses in the keyscan list so that
     # ``ssh <user>@127.0.0.1`` works without host-key prompts.
-    import os
-
     _os_user = os.environ.get("USER")
     if control_is_member and user != _os_user:
         for loopback in ("127.0.0.1", "localhost"):
