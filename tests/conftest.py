@@ -123,6 +123,8 @@ def isolate_stateful(tmp_path: Path, monkeypatch, isolate_runtime_state):
     monkeypatch.setenv("SPARKRUN_NO_INSTALLED_PLUGINS", "1")
     monkeypatch.setenv("STATEFUL_ROOT", str(tmp_path / "stateful"))
     monkeypatch.setenv("SPARKRUN_NO_TELEMETRY", "1")
+    # A developer's per-shell default-cluster override must not steer tests.
+    monkeypatch.delenv("SPARKRUN_CLUSTER", raising=False)
     # The HuggingFace Hub metadata budget, its breaker and its negative memo are
     # process-global (one budget per command, by design). Without a reset a test
     # that exhausts the budget or memoises an unavailable repo silently disables

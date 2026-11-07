@@ -1842,6 +1842,16 @@ the whole definition rather than just the hosts, so the cluster's SSH user /
 executor / scheduler come with it; a dangling default (naming a deleted
 cluster) falls through to the next source instead of raising.
 
+**`SPARKRUN_CLUSTER`** overrides the default for one shell, inside
+`ClusterManager.get_default()`, the one read every default-cluster consumer
+goes through, so no caller needs to know about it. An unknown or invalid name
+warns once and falls back to the persisted default (a stale export must not
+block a command). The marker file is never written from it:
+`get_persisted_default()` is what `delete` clears against, and
+`default_override()` is what display surfaces use to say `(from SPARKRUN_CLUSTER)`.
+It reads the *process* env, so a daemon resolves its own environment, not the
+client's.
+
 **Mount-source preflight** (`Executor.verify_mount_sources(paths, hosts, …)`) is
 the substrate peer of `query_status` on the *write* path: "do these identity-mount
 sources already exist where the workload will run?" It validates pre-placed model

@@ -499,7 +499,10 @@ class HostContext:
         if self.source == "cluster":
             return "Cluster: %s — %s" % (self.cluster_name, n)
         if self.source == "default-cluster":
-            return "Cluster: %s (default) — %s" % (self.cluster_name, n)
+            from sparkrun.core.cluster_manager import DEFAULT_CLUSTER_ENV
+
+            origin = "default, from %s" % DEFAULT_CLUSTER_ENV if self.cluster_mgr.default_override() == self.cluster_name else "default"
+            return "Cluster: %s (%s) — %s" % (self.cluster_name, origin, n)
         if self.source == "hosts":
             return "Hosts: %s (--hosts)" % n
         if self.source == "hosts-file":

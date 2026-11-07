@@ -31,6 +31,10 @@ def describe_host_source(*, hosts, hosts_file, cluster_name, cluster_mgr, config
         default_name = cluster_mgr.get_default() if cluster_mgr else None
         if default_name:
             host_source = "default cluster '%s'" % default_name
+            if cluster_mgr.default_override() is not None:
+                from sparkrun.core.cluster_manager import DEFAULT_CLUSTER_ENV
+
+                host_source += " (from %s)" % DEFAULT_CLUSTER_ENV
         elif config.default_hosts:
             host_source = "config defaults"
         else:

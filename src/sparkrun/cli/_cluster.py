@@ -669,7 +669,7 @@ def cluster_list(ctx, output_json):
             click.echo(f"  {'':<20} {extra:<40}")
 
     if default_name:
-        click.echo("\n* = default cluster")
+        click.echo("\n* = default cluster%s" % _override_note(mgr))
 
 
 @cluster.command("show")
@@ -776,6 +776,27 @@ def cluster_delete(ctx, name, force):
         cleanup_cluster_transport(_cd)
 
 
+def _default_source(mgr) -> str:
+    """Where the effective default comes from: the env override or ``set-default``."""
+    return "env" if mgr.default_override() is not None else "config"
+
+
+def _override_note(mgr) -> str:
+    """`` (from SPARKRUN_CLUSTER)`` when the env override decides the default, else empty."""
+    from sparkrun.core.cluster_manager import DEFAULT_CLUSTER_ENV
+
+    return " (from %s)" % DEFAULT_CLUSTER_ENV if mgr.default_override() is not None else ""
+
+
+def _echo_shadowed_by_override(mgr) -> None:
+    """Say when ``SPARKRUN_CLUSTER`` hides a persisted-default change in this shell."""
+    from sparkrun.core.cluster_manager import DEFAULT_CLUSTER_ENV
+
+    override = mgr.default_override()
+    if override is not None:
+        click.echo("Note: %s=%s overrides the default cluster in this shell." % (DEFAULT_CLUSTER_ENV, override))
+
+
 @cluster.command("set-default")
 @click.argument("name", type=CLUSTER_NAME)
 @click.pass_context
@@ -787,6 +808,7 @@ def cluster_set_default(ctx, name):
     try:
         mgr.set_default(name)
         click.echo("Default cluster set to '%s'." % name)
+        _echo_shadowed_by_override(mgr)
     except ClusterError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -799,6 +821,7 @@ def cluster_unset_default(ctx):
     mgr = _get_cluster_manager()
     mgr.unset_default()
     click.echo("Default cluster unset.")
+    _echo_shadowed_by_override(mgr)
 
 
 @cluster.command("default")
@@ -816,6 +839,7 @@ def cluster_default(ctx, output_json):
             c = mgr.get(default_name)
             data = c.to_dict()
             data["default"] = True
+            data["default_source"] = _default_source(mgr)
             print_json(data)
         return
 
@@ -824,7 +848,7 @@ def cluster_default(ctx, output_json):
         return
 
     c = mgr.get(default_name)
-    click.echo(f"Name:        {c.name}")
+    click.echo(f"Name:        {c.name}{_override_note(mgr)}")
     click.echo(f"Description: {c.description or '(none)'}")
     click.echo(f"Hosts ({len(c.hosts)}):")
     for h in c.hosts:

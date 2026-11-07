@@ -87,6 +87,8 @@ sparkrun setup diagnose --cluster mylab --output diagnostics.ndjson
 
 Clusters hold candidate hosts; actual placement may select a subset/different
 head. Incremental changes use `--add-host`/`--remove-host` (repeatable, comma lists).
+`SPARKRUN_CLUSTER=<name>` overrides the default cluster for one shell (ignored with a
+warning if it names no saved cluster); explicit `--cluster`/`--hosts` still win.
 SSH and shared sudo fallback can prompt: use a user terminal. `fix-permissions`
 and `clear-cache` offer `--save-sudo` for scoped sudoers entries. `clear-cache`
 drops Linux **page cache**, not model files. Diagnostics are NDJSON;

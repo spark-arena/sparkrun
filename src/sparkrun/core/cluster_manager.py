@@ -5,6 +5,7 @@ from __future__ import annotations
 from sparkrun.core.coordination import locked_document
 
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -26,6 +27,15 @@ logger = logging.getLogger(__name__)
 
 # Name validation pattern: start with alphanumeric, contain alphanumeric/underscore/hyphen
 CLUSTER_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]*$")
+
+# Per-shell override of the default cluster, for developers moving between
+# clusters. It replaces only the *default* (an explicit --cluster / --hosts
+# still wins) and never touches the persisted marker file.
+DEFAULT_CLUSTER_ENV = "SPARKRUN_CLUSTER"
+
+# Override names already warned about, so a command resolving the default
+# several times says it once.
+_warned_env_overrides: set[str] = set()
 
 # Valid transfer modes for resource distribution.  ``pull`` = every node fetches
 # from origin itself, in parallel (docker pull / hf download per node); nothing
@@ -960,8 +970,9 @@ class ClusterManager:
         cluster_path.unlink()
         logger.info("Deleted cluster '%s'", name)
 
-        # Clear default if it pointed to this cluster
-        default_name = self.get_default()
+        # Clear the persisted default if it pointed to this cluster (an env
+        # override naming it is the shell's business, not the marker's).
+        default_name = self.get_persisted_default()
         if default_name == name:
             self.unset_default()
             logger.debug("Cleared default pointer as it referenced deleted cluster '%s'", name)
@@ -993,7 +1004,36 @@ class ClusterManager:
             logger.debug("Unset default cluster")
 
     def get_default(self) -> str | None:
-        """Get the default cluster name.
+        """Get the effective default cluster name.
+
+        ``SPARKRUN_CLUSTER`` wins when it names an existing cluster; otherwise
+        (unset, empty, invalid or unknown) the persisted default applies. An
+        override that matches nothing warns and is ignored rather than raising,
+        so a stale export never blocks a command that names its hosts anyway.
+
+        Returns:
+            Default cluster name if set and cluster exists, None otherwise
+        """
+        override = self.default_override()
+        if override is not None:
+            return override
+        return self.get_persisted_default()
+
+    def default_override(self) -> str | None:
+        """The ``SPARKRUN_CLUSTER`` cluster name, if set and it names an existing cluster."""
+        name = os.environ.get(DEFAULT_CLUSTER_ENV, "").strip()
+        if not name:
+            return None
+        if CLUSTER_NAME_PATTERN.match(name) and self._cluster_path(name).exists():
+            logger.debug("Default cluster overridden by %s=%s", DEFAULT_CLUSTER_ENV, name)
+            return name
+        if name not in _warned_env_overrides:
+            _warned_env_overrides.add(name)
+            logger.warning("%s=%s does not name a saved cluster; ignoring it", DEFAULT_CLUSTER_ENV, name)
+        return None
+
+    def get_persisted_default(self) -> str | None:
+        """The default recorded by ``cluster set-default``, ignoring ``SPARKRUN_CLUSTER``.
 
         Returns:
             Default cluster name if set and cluster exists, None otherwise
