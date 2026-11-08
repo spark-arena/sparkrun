@@ -179,21 +179,37 @@ def run_k8s(
 def _refuse_recipe_hooks(recipe) -> None:
     """Refuse a recipe whose hooks or mods this path would silently skip.
 
-    The JobSet launch runs none of them: ``pre_exec`` and mods are applied by
-    ``launch_inference``, which this path never reaches, and ``post_exec`` /
-    ``post_commands`` follow a ``launch_result`` it does not produce. Serving
-    an unpatched engine with no warning is worse than not launching, so the
-    refusal comes before anything is evicted or submitted (dry runs included),
-    the same rule a recipe execution strategy gets here.
+    Two different gaps, so two reasons. ``pre_exec`` and mods are applied by
+    ``launch_inference``, which this path never reaches. ``post_exec`` and
+    ``post_commands`` (which run on the control machine and need no container)
+    run once the server is confirmed ready, with ``{base_url}`` / ``{head_ip}``
+    taken from that readiness check, and this path has no reachable endpoint to
+    check (``K8sExecutor.supports_host_endpoint`` is False, the same reason the
+    readiness wait and benchmarks refuse k8s). Serving an unpatched engine, or
+    running a post-command against an endpoint that is not up, with no warning
+    is worse than not launching, so the refusal comes before anything is
+    evicted or submitted (dry runs included), the rule a recipe execution
+    strategy gets here.
     """
     from sparkrun.core.launcher import recipe_hook_commands
 
     hooks = recipe_hook_commands(recipe)
-    if hooks:
-        raise SparkrunError(
-            "The experimental k8s run path (api.run.k8s) does not run recipe hooks or mods, and this recipe "
-            "declares %s. Launch it with the docker executor, or remove them for k8s." % ", ".join(hooks)
+    if not hooks:
+        return
+    reasons = []
+    pre = [kind for kind in ("pre_exec", "mods") if kind in hooks]
+    post = [kind for kind in ("post_exec", "post_commands") if kind in hooks]
+    if pre:
+        reasons.append("%s %s not applied on this path" % (" and ".join(pre), "is" if len(pre) == 1 else "are"))
+    if post:
+        reasons.append(
+            "%s %s once the server is ready, and this path has no reachable endpoint to wait on "
+            "(the readiness wait and benchmarks refuse k8s for the same reason)" % (" and ".join(post), "runs" if len(post) == 1 else "run")
         )
+    raise SparkrunError(
+        "The experimental k8s run path (api.run.k8s) cannot launch this recipe: %s. "
+        "Launch it with the docker executor, or remove them for k8s." % "; ".join(reasons)
+    )
 
 
 def _resolve_single_gpu_class(client) -> str:

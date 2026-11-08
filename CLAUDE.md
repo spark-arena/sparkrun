@@ -1524,11 +1524,17 @@ authenticates as the wrong user and reports success — looks nothing like its
 cause. The experimental k8s path returns before `launch_inference`, so it has
 neither the asset pipeline nor the barrier; a strategy there is **refused**
 rather than silently ignored. So are recipe hooks and mods
-(`plugins/k8s/run.py:_refuse_recipe_hooks`, all four `RECIPE_HOOK_KINDS`):
-`pre_exec` and mods are applied inside `launch_inference`, and `post_exec` /
-`post_commands` follow a `launch_result` the JobSet path does not produce, so a
-modded recipe used to serve an unpatched engine with no warning. The refusal
-precedes `before_start` (eviction) and submission, dry runs included.
+(`plugins/k8s/run.py:_refuse_recipe_hooks`, all four `RECIPE_HOOK_KINDS`),
+for two different reasons the error states separately. `pre_exec` and mods are
+applied inside `launch_inference`, which this path never reaches (a modded recipe
+used to serve an unpatched engine with no warning). `post_exec` and
+`post_commands` need no container (`post_commands` run on the control machine)
+but run *after readiness*, rendered with `{base_url}` / `{head_ip}` from it, and
+the JobSet path has no reachable endpoint (`supports_host_endpoint = False`, the
+same gap that makes the readiness wait and benchmarks refuse k8s). Lifting that
+needs an endpoint contract (a Service plus a `readinessProbe`), which would
+unlock all of those at once, not a hook special case. The refusal precedes
+`before_start` (eviction) and submission, dry runs included.
 
 ### Launch Materialization (`api.materialize`)
 

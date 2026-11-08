@@ -177,8 +177,24 @@ def test_recipe_hooks_and_mods_are_refused_not_silently_skipped(native_env, kind
     setattr(env.recipe, kind, value)
     options = api.RunOptions(recipe=env.recipe, hosts=("localhost",), solo=True, executor="k8s", trust=True, dry_run=dry_run)
 
-    with pytest.raises(api.SparkrunError, match=r"does not run recipe hooks or mods, and this recipe declares %s" % kind):
+    reason = "not applied on this path" if kind in ("pre_exec", "mods") else "no reachable endpoint to wait on"
+    with pytest.raises(api.SparkrunError, match=r"cannot launch this recipe: %s (is|runs) .*%s" % (kind, reason)):
         run(options, sctx=env.sctx)
 
     env.make_client.assert_not_called()
     assert env.submitted == []
+
+
+def test_the_refusal_names_each_reason_once(native_env):
+    env = native_env
+    env.client.context = "test-context"
+    env.recipe.pre_exec, env.recipe.mods, env.recipe.post_commands = ["echo a"], ["fix-x"], ["echo b"]
+    options = api.RunOptions(recipe=env.recipe, hosts=("localhost",), solo=True, executor="k8s", trust=True, dry_run=True)
+
+    with pytest.raises(api.SparkrunError) as error:
+        run(options, sctx=env.sctx)
+
+    message = str(error.value)
+    assert "pre_exec and mods are not applied on this path" in message
+    assert "post_commands runs once the server is ready" in message
+    assert "post_exec" not in message
