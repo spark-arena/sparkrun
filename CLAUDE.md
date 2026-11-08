@@ -1523,7 +1523,12 @@ wholesale, so an omission is an erasure whose symptom — a teardown that
 authenticates as the wrong user and reports success — looks nothing like its
 cause. The experimental k8s path returns before `launch_inference`, so it has
 neither the asset pipeline nor the barrier; a strategy there is **refused**
-rather than silently ignored.
+rather than silently ignored. So are recipe hooks and mods
+(`plugins/k8s/run.py:_refuse_recipe_hooks`, all four `RECIPE_HOOK_KINDS`):
+`pre_exec` and mods are applied inside `launch_inference`, and `post_exec` /
+`post_commands` follow a `launch_result` the JobSet path does not produce, so a
+modded recipe used to serve an unpatched engine with no warning. The refusal
+precedes `before_start` (eviction) and submission, dry runs included.
 
 ### Launch Materialization (`api.materialize`)
 

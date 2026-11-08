@@ -55,6 +55,8 @@ def run_k8s(
             "(requested world_size=%d)." % world_size
         )
 
+    _refuse_recipe_hooks(recipe)
+
     overrides = dict(options.overrides)
     raw_port = recipe.build_config_chain(overrides).get("port")
     if raw_port is None:
@@ -172,6 +174,26 @@ def run_k8s(
         serve_port=serve_port,
         metadata=metadata,
     )
+
+
+def _refuse_recipe_hooks(recipe) -> None:
+    """Refuse a recipe whose hooks or mods this path would silently skip.
+
+    The JobSet launch runs none of them: ``pre_exec`` and mods are applied by
+    ``launch_inference``, which this path never reaches, and ``post_exec`` /
+    ``post_commands`` follow a ``launch_result`` it does not produce. Serving
+    an unpatched engine with no warning is worse than not launching, so the
+    refusal comes before anything is evicted or submitted (dry runs included),
+    the same rule a recipe execution strategy gets here.
+    """
+    from sparkrun.core.launcher import recipe_hook_commands
+
+    hooks = recipe_hook_commands(recipe)
+    if hooks:
+        raise SparkrunError(
+            "The experimental k8s run path (api.run.k8s) does not run recipe hooks or mods, and this recipe "
+            "declares %s. Launch it with the docker executor, or remove them for k8s." % ", ".join(hooks)
+        )
 
 
 def _resolve_single_gpu_class(client) -> str:

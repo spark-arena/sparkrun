@@ -163,3 +163,22 @@ def test_handler_reuse_preserves_existing_metadata(run_env, monkeypatch, fingerp
     assert result == replace(old, started_at=result.started_at, intent_id=planned.intent_id, placement_token="c" * 12)
     assert result.timeline is None and result.launch_result is None
     replacement.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "kind,value",
+    [("pre_exec", ["echo patch"]), ("mods", ["fix-something"]), ("post_exec", ["curl localhost"]), ("post_commands", ["echo done"])],
+)
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_recipe_hooks_and_mods_are_refused_not_silently_skipped(native_env, kind, value, dry_run):
+    """The JobSet path runs no hooks; a modded recipe must not serve an unpatched engine."""
+    env = native_env
+    env.client.context = "test-context"  # planning pins the context; skip that read-only kubectl call
+    setattr(env.recipe, kind, value)
+    options = api.RunOptions(recipe=env.recipe, hosts=("localhost",), solo=True, executor="k8s", trust=True, dry_run=dry_run)
+
+    with pytest.raises(api.SparkrunError, match=r"does not run recipe hooks or mods, and this recipe declares %s" % kind):
+        run(options, sctx=env.sctx)
+
+    env.make_client.assert_not_called()
+    assert env.submitted == []
