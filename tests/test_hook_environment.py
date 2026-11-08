@@ -55,7 +55,7 @@ def _docker_exec(script):
     args = shlex.split(script)
     assert args[:4] == ["docker", "exec", "--user", "root"]
     env, i = {}, 4
-    while args[i] == "--env":
+    while args[i] in ("--env", "-e"):  # the executor's exec_cmd spells it -e
         key, value = args[i + 1].split("=", 1)
         env[key] = value
         i += 2

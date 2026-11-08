@@ -348,14 +348,19 @@ class LocalExecutor(Executor):
         command: str,
         detach: bool = False,
         env: dict[str, str] | None = None,
+        *,
+        user: str | None = None,
     ) -> str:
         """Run *command* in a subshell with the same env prelude.
 
         Used by ``pre_exec`` / ``post_exec`` hooks.  Always foreground
         — ``detach`` is ignored for the local path (hooks are meant to
         complete before the next phase).  *container_name* is unused
-        here but kept for ABC parity.
+        here but kept for ABC parity, and *user* is ignored: a native
+        workload runs as the connection's user, so its hooks do too.
         """
+        if user is not None:
+            logger.debug("LocalExecutor: running as the connection's user, not %r (a native workload has no user switch)", user)
         prelude = self._env_prelude(env)
         if prelude:
             return "( %sbash -c %s )" % (prelude, _bash_safe_command(command))

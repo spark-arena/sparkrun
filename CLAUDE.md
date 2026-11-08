@@ -519,6 +519,29 @@ recipe → `runtime.default_executor()` → per-executor adjustments →
 previously-hardcoded `_KNOWN_EXECUTORS` set has been retired; selector
 validation queries SAF via `get_extensions(EXT_EXECUTOR)`.
 
+**Reaching into a running workload goes through its executor.** Recipe hooks
+(`pre_exec` / `post_exec`), runtime fix-ups (vLLM-Ray's exclusion file) and the
+failed-start serve-log dump build their command with `executor.for_host(host)`:
+`exec_cmd(..., user="root")` for running something (docker `--user`; `local` runs
+natively in the workload's prelude, k8s via `kubectl exec`) and `read_logs_cmd`
+for reading the serve log. Before this, all three hard-coded `docker exec`, so a
+`local` workload's hooks tried to enter a container that does not exist. Callers
+pass the launch's bound executor (`runtime.executor`, only when it is a real
+`Executor`; `launcher._bound_executor`); without one they keep the historical
+docker command. Hook *copy* entries (and mods, which become them) are `docker cp`,
+so `run_pre_exec` refuses them up front on a non-docker host rather than failing
+halfway through the hooks. `exec_cmd` ships its command base64-piped into `bash`;
+the hook deadline script was checked to behave identically that way (process-group
+kill, TERM-ignorer, transparent exit, surviving daemon, stdin at EOF), and
+`tests/_hook_scripts.hook_payload` unwraps it for assertions. Known gap for `local`: a native hook gets
+the executor prelude and the hook env, not the launch env, and container paths in
+the hook env (`SPARKRUN_RUNTIME_CACHE_DIR`) are not mapped to host paths (use
+`SPARKRUN_RUNTIME_CACHE_HOST_DIR`); `run_cmd`'s `_hostify_env` is the precedent
+for fixing it. Not workloads, so
+deliberately still docker: the RDMA suite's and kernel tuning's own tooling
+containers. The real-Docker hook test is opt-in:
+`SPARKRUN_TEST_HOOK_IMAGE=<local bash image>` (it takes the `host_docker` fixture).
+
 **Per-launch state stays off the plugin.** Runtimes are SAF singletons shared
 by every operation in the process (the desktop sidecar, the daemon's `proxy
 load`). `launch_inference` binds the executor on a shallow copy of the runtime

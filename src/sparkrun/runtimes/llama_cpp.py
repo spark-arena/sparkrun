@@ -760,7 +760,7 @@ class LlamaCppRuntime(RuntimePlugin):
                             host,
                             rpc_port,
                         )
-                        dump_serve_log(host, worker_container_name, ctx.ssh_kwargs, dry_run=dry_run)
+                        dump_serve_log(host, worker_container_name, ctx.ssh_kwargs, dry_run=dry_run, executor=executor)
                         cleanup_after_failure(
                             ctx,
                             executor,
@@ -802,7 +802,7 @@ class LlamaCppRuntime(RuntimePlugin):
         )
         rc = exec_serve_on_container(ctx, executor, ctx.head_host, head_container, head_command, sparkrun_labels=head_labels)
         if rc != 0:
-            dump_serve_log(ctx.head_host, head_container, ctx.ssh_kwargs, dry_run=dry_run)
+            dump_serve_log(ctx.head_host, head_container, ctx.ssh_kwargs, dry_run=dry_run, executor=executor)
             cleanup_after_failure(
                 ctx,
                 executor,

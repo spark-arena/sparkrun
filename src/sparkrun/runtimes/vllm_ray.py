@@ -128,6 +128,8 @@ class VllmRayRuntime(VllmRuntimeBase):
         comm_env: "ClusterCommEnv",
         ssh_kwargs: dict,
         dry_run: bool,
+        *,
+        executor=None,
     ) -> None:
         """Write ``ray_non_carry_over_env_vars.json`` in the head container.
 
@@ -146,7 +148,6 @@ class VllmRayRuntime(VllmRuntimeBase):
         """
         import json
         from sparkrun.orchestration.ssh import run_remote_script
-        from sparkrun.utils.shell import quote
 
         exclude_vars = sorted(comm_env.per_host_keys())
         if not exclude_vars:
@@ -154,16 +155,16 @@ class VllmRayRuntime(VllmRuntimeBase):
 
         json_content = json.dumps(exclude_vars)
 
-        # Build a docker exec that writes the exclusion file
         inner_cmd = (
             "mkdir -p /tmp/.config/vllm && "
             "printf '%%s\\n' '%s' > /tmp/.config/vllm/ray_non_carry_over_env_vars.json" % json_content.replace("'", "'\\''")
         )
-        # TODO: should be via executor
-        script = "docker exec %s bash -c %s" % (
-            quote(head_container),
-            quote(inner_cmd),
-        )
+        # Through the head's executor, like every other exec into a workload.
+        if executor is None:
+            from sparkrun.orchestration.executors.docker import DockerExecutor
+
+            executor = DockerExecutor()
+        script = executor.for_host(head_host).exec_cmd(head_container, inner_cmd)
 
         logger.info(
             "Excluding %d per-host env var(s) from Ray propagation: %s",
@@ -561,6 +562,7 @@ class VllmRayRuntime(VllmRuntimeBase):
                 comm_env,
                 ctx.ssh_kwargs,
                 ctx.dry_run,
+                executor=executor,
             )
 
         # Step 5: Execute serve command on head
@@ -600,7 +602,7 @@ class VllmRayRuntime(VllmRuntimeBase):
                 logger.error("  %s", line)
             # `docker logs` is blind to the serve script's redirected output
             # file -- emit it explicitly so the user sees the real traceback.
-            dump_serve_log(ctx.head_host, head_container, ctx.ssh_kwargs)
+            dump_serve_log(ctx.head_host, head_container, ctx.ssh_kwargs, executor=executor)
             cleanup_after_failure(
                 ctx,
                 executor,

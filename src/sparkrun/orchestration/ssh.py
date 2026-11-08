@@ -895,64 +895,6 @@ def stream_remote_logs(
         logger.info("\nLog following stopped.")
 
 
-def stream_container_file_logs(
-    host: str,
-    container_name: str,
-    log_file: str = "/tmp/sparkrun_serve.log",
-    ssh_user: str | None = None,
-    ssh_key: str | None = None,
-    ssh_options: list[str] | None = None,
-    tail: int | None = 100,
-    dry_run: bool = False,
-    follow: bool = True,
-) -> None:
-    """Print a log file from inside a running container, optionally following.
-
-    Runs ``docker exec <container> tail [-f] -n <N|+1> <file>``.  Used for
-    runtimes that exec the serve command inside a long-running container
-    (e.g. vLLM's ``sleep infinity`` + ``nohup serve``).
-
-    Args:
-        host: Target hostname or IP.
-        container_name: Name of the Docker container.
-        log_file: Path to the log file inside the container.
-        ssh_user: Optional SSH username.
-        ssh_key: Optional path to SSH private key.
-        ssh_options: Additional SSH options.
-        tail: Number of existing log lines to show.  ``None`` shows the
-            whole file (``tail -n +1``).
-        dry_run: If True, print the command that would run and return.
-        follow: When ``True`` (default), keep streaming new lines
-            (``-f``); when ``False``, dump and exit.
-    """
-    # ``tail -n +1`` emits the whole file from line 1; a concrete N emits
-    # the last N lines.  ``-f`` follows in either case.
-    lines_arg = "+1" if tail is None else str(tail)
-    tail_cmd = ["docker", "exec", container_name, "tail"]
-    if follow:
-        tail_cmd.append("-f")
-    tail_cmd += ["-n", lines_arg, log_file]
-
-    from sparkrun.orchestration.primitives import should_run_locally
-
-    if should_run_locally(host, ssh_user):
-        cmd = tail_cmd
-    else:
-        ssh_base = build_ssh_cmd(host, ssh_user, ssh_key, ssh_options)
-        cmd = ssh_base + tail_cmd
-
-    if dry_run:
-        logger.info("[dry-run] Would stream container file logs: %s", " ".join(cmd))
-        return
-
-    if follow:
-        logger.info("Following serve logs in container '%s' on %s (Ctrl-C to stop)...", container_name, host or "localhost")
-    try:
-        subprocess.run(cmd)
-    except KeyboardInterrupt:
-        logger.info("\nLog following stopped.")
-
-
 def start_log_capture(
     host: str,
     container_name: str,

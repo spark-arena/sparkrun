@@ -84,6 +84,16 @@ def host_service_manager():
 
 
 @pytest.fixture
+def host_docker():
+    """Allow the opt-in real-Docker integration tests' docker CLI."""
+    _io_guard.allowed_commands.add("docker")
+    try:
+        yield
+    finally:
+        _io_guard.allowed_commands.discard("docker")
+
+
+@pytest.fixture
 def unavailable_model_inventory(monkeypatch):
     """Exercise compatibility transport routing with unavailable inventory.
 

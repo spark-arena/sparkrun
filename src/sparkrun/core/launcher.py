@@ -2827,6 +2827,7 @@ def complete_post_launch(
                 cache_dir=remote_cache_dir,
                 launch_context=launch_context,
                 default_timeout_s=hook_timeout_s,
+                executor=_bound_executor(runtime),
             )
 
         # Run post_commands on control machine
@@ -2866,6 +2867,18 @@ def complete_post_launch(
         return True
 
     return False
+
+
+def _bound_executor(runtime):
+    """The executor this launch bound onto its runtime copy, if it has a real one.
+
+    Hooks run through it so they reach the workload the way it was launched;
+    ``None`` (a result without one) keeps the historical docker exec.
+    """
+    from sparkrun.orchestration.executors._base import Executor
+
+    executor = getattr(runtime, "executor", None)
+    return executor if isinstance(executor, Executor) else None
 
 
 def post_launch_lifecycle(result, remote_cache_dir, trust=False, dry_run=False, progress=None, *, readiness=None):

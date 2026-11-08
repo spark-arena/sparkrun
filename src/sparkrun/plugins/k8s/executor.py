@@ -360,8 +360,16 @@ class K8sExecutor(Executor):
         command: str,
         detach: bool = False,
         env: dict[str, str] | None = None,
+        *,
+        user: str | None = None,
     ) -> str:
-        """Run *command* inside an already-running Pod via ``kubectl exec``."""
+        """Run *command* inside an already-running Pod via ``kubectl exec``.
+
+        *user* is ignored: ``kubectl exec`` has no user switch, so the
+        command runs as the container's user.
+        """
+        if user is not None:
+            logger.debug("K8sExecutor: kubectl exec has no user switch; running as the container's user, not %r", user)
         prefix = self._kubectl_prefix()
         env_prelude = ""
         if env:

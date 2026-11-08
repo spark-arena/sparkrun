@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import pytest
+from _hook_scripts import hook_payload
 
 from sparkrun.core.config import SparkrunConfig
 from sparkrun.core.recipe import Recipe
@@ -166,7 +167,7 @@ def test_command_entries_are_visible_to_trust_prompts(monkeypatch, caplog):
 def test_pre_exec_without_a_timeout_is_not_cut_at_ten_minutes(mock_run):
     mock_run.return_value = _ok()
     run_pre_exec([("spark-01", "ctr")], ["python3 fetch_tables.py"], {}, trust=True)
-    script = mock_run.call_args[0][1]
+    script = hook_payload(mock_run.call_args[0][1])
     assert "sleep 3600\n" in script
     assert mock_run.call_args[1]["timeout"] == 3600 + OUTER_SLACK
 
@@ -184,7 +185,7 @@ def test_per_entry_timeout_wins_over_scope(mock_run):
     first, second = mock_run.call_args_list
     assert first[1]["timeout"] == 1800 + OUTER_SLACK
     assert second[1]["timeout"] == 10800 + OUTER_SLACK
-    assert "sleep 10800\n" in second[0][1]
+    assert "sleep 10800\n" in hook_payload(second[0][1])
 
 
 @mock.patch("sparkrun.orchestration.primitives.run_script_on_host")
@@ -193,7 +194,7 @@ def test_command_entries_render_placeholders(mock_run):
     run_pre_exec([("spark-01", "ctr")], [{"command": "echo {model}", "timeout": 5}], {"model": "org/m"}, trust=True)
     import base64
 
-    assert base64.b64encode(b"echo org/m").decode() in mock_run.call_args[0][1]
+    assert base64.b64encode(b"echo org/m").decode() in hook_payload(mock_run.call_args[0][1])
 
 
 @mock.patch("sparkrun.orchestration.primitives.run_script_on_host")

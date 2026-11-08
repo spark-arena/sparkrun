@@ -2,6 +2,8 @@
 
 from unittest.mock import patch
 
+from _hook_scripts import hook_payload
+
 from sparkrun.orchestration.comm_env import ClusterCommEnv
 from sparkrun.orchestration.ssh import RemoteResult
 from sparkrun.runtimes.vllm_ray import VllmRayRuntime
@@ -36,8 +38,10 @@ class TestRayNonCarryOver:
         )
         mock_run.assert_called_once()
         script_arg = mock_run.call_args[0][1]
-        assert "ray_non_carry_over_env_vars.json" in script_arg
-        assert "NCCL_IB_HCA" in script_arg
+        assert script_arg.startswith("docker exec sparkrun0_head bash -c ")
+        payload = hook_payload(script_arg)
+        assert "ray_non_carry_over_env_vars.json" in payload
+        assert """'["NCCL_IB_HCA"]'""" in payload
 
     @patch("sparkrun.orchestration.ssh.run_remote_script")
     def test_skips_when_no_per_host_keys(self, mock_run):
@@ -107,10 +111,10 @@ class TestRayNonCarryOver:
             {},
             dry_run=False,
         )
-        script_arg = mock_run.call_args[0][1]
-        assert "NCCL_IB_HCA" in script_arg
-        assert "UCX_NET_DEVICES" in script_arg
-        assert "NCCL_SOCKET_IFNAME" in script_arg
+        payload = hook_payload(mock_run.call_args[0][1])
+        assert "NCCL_IB_HCA" in payload
+        assert "UCX_NET_DEVICES" in payload
+        assert "NCCL_SOCKET_IFNAME" in payload
 
 
 class _StubRecipe:

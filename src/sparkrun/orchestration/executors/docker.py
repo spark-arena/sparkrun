@@ -696,7 +696,7 @@ class DockerExecutor(Executor):
         if follow:
             inner.append("-F")
         # ``-n +1`` emits the whole file from line 1; a concrete N emits the
-        # last N lines — matching stream_container_file_logs' semantics.
+        # last N lines (tail's own semantics).
         inner.extend(["-n", str(int(tail)) if tail is not None else "+1"])
         inner.append(path)
         return "docker exec %s %s" % (quote(source.container), " ".join(quote(part) for part in inner))

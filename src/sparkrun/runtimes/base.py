@@ -723,7 +723,7 @@ class RuntimePlugin(Plugin, ABC):
         """Hook called after containers are launched but before serve command.
 
         Processes ``pre_exec`` commands from the recipe (if any) by running
-        them inside each container via ``docker exec``.  Subclasses can
+        them inside each workload through its executor.  Subclasses can
         override to add additional pre-serve logic (call ``super()`` to
         preserve pre_exec processing).
 
@@ -741,6 +741,7 @@ class RuntimePlugin(Plugin, ABC):
                 show the correct path.
         """
         if recipe and recipe.pre_exec:
+            from sparkrun.orchestration.executors._base import Executor
             from sparkrun.orchestration.hooks import current_hook_launch_context, run_pre_exec
 
             run_pre_exec(
@@ -752,6 +753,9 @@ class RuntimePlugin(Plugin, ABC):
                 trust=trust,
                 cache_dir=cache_dir,
                 launch_context=current_hook_launch_context(),
+                # The launch's bound executor, so hooks reach the workload the way
+                # it was launched; without one, the historical docker exec.
+                executor=self.executor if isinstance(self.executor, Executor) else None,
             )
 
     def get_extra_volumes(self) -> dict[str, str]:
@@ -1474,9 +1478,9 @@ class RuntimePlugin(Plugin, ABC):
     def _cluster_log_mode(self) -> str:
         """Return the log tailing mode for cluster containers.
 
-        ``"file"`` uses :func:`stream_container_file_logs` (tails a log
-        file inside the container).  ``"docker"`` uses
-        :func:`stream_remote_logs` (``docker logs``).
+        ``"file"`` reads a log file inside the container (``MODE_FILE``
+        sources, which the executor reads with an in-container ``tail``).
+        ``"docker"`` reads the container's own stdout (``docker logs``).
 
         Default is ``"file"`` for native-cluster runtimes (which use
         the sleep-infinity + exec pattern) and ``"docker"`` for others.

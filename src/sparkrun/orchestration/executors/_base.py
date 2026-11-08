@@ -542,8 +542,18 @@ class Executor(Plugin):
         command: str,
         detach: bool = False,
         env: dict[str, str] | None = None,
+        *,
+        user: str | None = None,
     ) -> str:
-        """Generate a container exec command string."""
+        """Generate a host-side command that runs *command* in a workload's environment.
+
+        The one way sparkrun runs something inside an existing workload
+        (recipe hooks, runtime fix-ups), so a native or provider workload is
+        reached the way it was launched rather than by assuming a docker
+        container. *user* asks for a specific user where the substrate has
+        one (``docker exec --user``); a substrate without one runs as the
+        connection's user.
+        """
         ...
 
     def interactive_exec_argv(
