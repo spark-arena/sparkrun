@@ -603,7 +603,7 @@ def test_jayleaton_rank_commands():
     assert "TF_TP_MASTER=10.0.0.1" in head
     assert "TF_DSV41_ASSETS=/assets" in head
     assert "TF_DSV41_ENGRAM_DIR=/engram" in head
-    assert "/opt/tensorfold/bin/tf-dsv41-m1 follow %s /assets" % _JAY_PATH in worker
+    assert "/opt/tensorfold/bin/tf-dsv41 follow %s /assets" % _JAY_PATH in worker
     assert "TF_TP_RANK=1" in worker
     assert "--port 8000" not in worker
 

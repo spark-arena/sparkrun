@@ -2,7 +2,7 @@
 
 The Jayleaton port is a different TensorFold fork from the bertholomus TP2
 engine the rest of this runtime targets: it serves the EXL3 checkpoint through
-two binaries (``tensorfold-dsv41 serve`` on rank 0 and ``tf-dsv41-m1 follow``
+two binaries (``tensorfold-dsv41 serve`` on rank 0 and ``tf-dsv41 follow``
 on rank 1), keeps per-rank Engram and prepared directories on local NVMe, and
 takes a large ``TF_DSV41_*`` serving profile.  This module owns that engine's
 command, env, validation and startup order; :class:`TensorFoldRuntime` exposes
@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 FAMILY = "jayleaton"
 WORLDS = frozenset({2})
 DEFAULT_COMMAND = "/opt/tensorfold/bin/tensorfold-dsv41"
-DEFAULT_FOLLOWER = "/opt/tensorfold/bin/tf-dsv41-m1"
+DEFAULT_FOLLOWER = "/opt/tensorfold/bin/tf-dsv41"
 DEFAULT_TF_PORT = 29571
 
 OWNED_KEYS = frozenset(
@@ -226,5 +226,5 @@ def prepare(recipe: "Recipe", hosts: list[str], config) -> None:
 def version_commands() -> dict[str, str]:
     return {
         "tensorfold_dsv41_zig": "/opt/tensorfold/bin/tensorfold-dsv41 --version 2>/dev/null | head -1 || echo unknown",
-        "tensorfold_dsv41_m1": "test -x /opt/tensorfold/bin/tf-dsv41-m1 && echo present || echo missing",
+        "tensorfold_dsv41_follow": "test -x /opt/tensorfold/bin/tf-dsv41 && echo present || echo missing",
     }
