@@ -80,7 +80,9 @@ short timeout for a deliberate sample. Never claim a timed-out run was rolled ba
 | --- | --- |
 | workloads | Workloads, logs, benchmarks, gateways, optional daemon clients |
 | configuration | Install/update, host checks, SSH identities, plugins/features, cache retention |
-| registry | Recipe catalogs, benchmark profiles, recipe authoring and trust |
+| registry | Recipe catalogs, benchmark profiles, registry trust |
+| recipes | Recipe schema, runtime defaults, topology, hooks, includes/overrides, publishing |
+| plugins | Plugin packages, extension points, recipe items, execution strategies, trust |
 
 Examples of natural-language tasks:
 
@@ -103,10 +105,12 @@ cluster, credentials, or network are needed for those tests. They cover the
 registered tool callback signature, output/error handling, literal arguments,
 timeouts, cancellation, and closed stdin. Live OpenClaw loading requires the host.
 
-Skills are generated from `sparkrun-cc-plugin/skills`; edit the Claude Code source
-and run `python3 scripts/sync-assistant-skills.py` from the repository root.
-Python CI checks parity and documented CLI syntax. Update independent package
-versions in `versions.yaml` and run `python3 scripts/update-versions.py`.
+Skills are generated from `sparkrun-cc-plugin/skills` and commands for oh-my-pi
+from `sparkrun-cc-plugin/commands`; edit the Claude Code source and run
+`python3 scripts/sync-assistant-plugins.py` from the repository root. Python CI
+checks parity for both generated packages and documented CLI syntax. Update
+independent package versions in `versions.yaml` and run
+`python3 scripts/update-versions.py`.
 
 See the [Sparkrun guides](https://github.com/spark-arena/sparkrun#readme).
 Licensed under [Apache 2.0](./LICENSE).

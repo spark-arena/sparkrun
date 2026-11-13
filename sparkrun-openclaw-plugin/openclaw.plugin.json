@@ -1,7 +1,7 @@
 {
   "id": "@sparkarena/sparkrun",
   "name": "sparkrun",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "AI-assisted inference on NVIDIA DGX Spark - run, manage, and stop LLM workloads",
   "configSchema": {
     "type": "object",
@@ -10,6 +10,8 @@
   "skills": [
     "skills/workloads",
     "skills/configuration",
-    "skills/registry"
+    "skills/registry",
+    "skills/recipes",
+    "skills/plugins"
   ]
 }
