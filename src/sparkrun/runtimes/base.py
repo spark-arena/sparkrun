@@ -1905,11 +1905,17 @@ class RuntimePlugin(Plugin, ABC):
             volumes=volumes,
             sparkrun_labels=sparkrun_labels or None,
         )
+        # Detached dispatch returns once the serve process is started, so a
+        # wall-clock cap guards against a hung dispatch.  Foreground exec *is*
+        # the serve process: it blocks for the server's lifetime and its exit
+        # status is the server's, which is what lets a supervisor (systemd's
+        # Restart=on-failure from ``export systemd``) react to a crash.  A cap
+        # there kills every healthy foreground server after 60s (rc 124).
         result = run_script_on_host(
             host,
             exec_script,
             ssh_kwargs=ssh_kwargs,
-            timeout=60,
+            timeout=60 if detached else None,
             dry_run=dry_run,
         )
         logger.info("Step 3/3: Serve command dispatched (%.1fs)", time.monotonic() - t0)
