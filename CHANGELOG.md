@@ -54,6 +54,25 @@ first tagged release containing them, regardless of their original commit date.
 
 ### Added
 
+- `tensorfold` runtime: TensorFold's Zig/CUDA native server. Solo on one GB10,
+  NFS/pre-placed checkpoints through the existing absolute `model:` mechanism,
+  and native TP for the engine families that place their own ranks (`glm`,
+  `nemotron`, and the experimental DeepSeek-V4.1 fork under `dsv41`) with
+  environment-variable rank placement.  The DeepSeek family serves a prepared
+  per-rank-cache bundle and is selected by the same runtime, not by a second
+  plugin.
+- `tensorfold` runtime: the Jayleaton Zig engine family (`tf_family: jayleaton`).
+  It runs the two Jayleaton binaries, the `TF_DSV41_*` serving profile, a
+  per-rank local Engram/prepared/AOT layout and a pre-placed model pack on NFS;
+  the recipe keeps the existing served-model name and port while the model may
+  be registered under a synthetic HF-cache id.  TP=2 only; the binary, assets
+  and image remain external to this repository.
+- Native cluster orchestration can start worker ranks before rank 0
+  (`RuntimePlugin.native_start_order()`) and reserve a contiguous rendezvous
+  port range (`native_rendezvous_port_span()`), for engines whose followers
+  must be listening before the serving rank starts.
+- Docs: `docs/TENSORFOLD.md` covers the runtime, NFS weights, TP limits, the
+  DeepSeek bundle layout and the hardware validation checklist.
 - The `cluster monitor` recipe picker groups runtime variants into families (such
   as `vllm`) and offers an opt-in **All registries** toggle. Enabled registries with
   `Stemless: no` then appear in recipe searches and registry filter choices.
@@ -79,6 +98,9 @@ first tagged release containing them, regardless of their original commit date.
 
 ### Changed
 
+- The `tensorfold` monitor log colorizer is now wired to the new in-tree
+  runtime instead of only an out-of-tree expectation; the DeepSeek fork mode
+  logs under the same prefixes and shares it.
 - Concurrent preparations of the same model wait for the holder's publication lease
   instead of failing, and the wait names the holding controller, PID and operation.
   Warm launches no longer take the control-machine cache lease.
