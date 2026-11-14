@@ -43,6 +43,7 @@ from sparkrun.proxy._supervisor import (
     _restrict_file_permissions,
     _wait_for_exit,  # noqa: F401 — re-exported; imported from here historically
 )
+from sparkrun.plugins.litellm.media_mode import MEDIA_MODES, media_mode
 from sparkrun.proxy.contracts import GatewayQueryError, ProxyModel
 from sparkrun.proxy.discovery import DiscoveredEndpoint
 from sparkrun.proxy.gateway import require_gateway_enabled
@@ -178,6 +179,15 @@ def build_litellm_config(
             # server-reported ``max_model_len``.
             if ep.max_model_len:
                 entry["model_info"] = {"max_input_tokens": ep.max_model_len}
+            # A diffusion backend advertises what it does (T2I/T2V/...) on its
+            # /v1/models entry; LiteLLM speaks ``model_info.mode`` instead, so
+            # without this translation an image or video pipeline is written as
+            # an ordinary chat deployment and the gateway's own /v1/models
+            # misreports it.  No task vocabulary (every chat backend) -> no
+            # ``mode`` key, and the entry is left exactly as it was before.
+            mode = media_mode(*ep.task_types, primary=ep.task_type)
+            if mode:
+                entry.setdefault("model_info", {})["mode"] = mode
             model_list.append(entry)
 
     # Alias entries are appended after the real models so the lookup below
@@ -234,8 +244,8 @@ def build_litellm_config(
     return config
 
 
-def _model_keys(config: dict[str, Any]) -> set[tuple[str, str, int | None]]:
-    """Identity of a config's model list as ``{(model_name, api_base, window)}``.
+def _model_keys(config: dict[str, Any]) -> set[tuple[str, str, int | None, str | None]]:
+    """Identity of a config's model list as ``{(model_name, api_base, window, mode)}``.
 
     This is the comparison that decides whether a restart is warranted, so
     it deliberately ignores ordering and any field a restart would not
@@ -251,18 +261,27 @@ def _model_keys(config: dict[str, Any]) -> set[tuple[str, str, int | None]]:
     cost is that a *changed* window reads as one added plus one removed
     entry rather than a modification, which is the same shape a re-homed
     backend already produces.
+
+    ``mode`` is in the identity for the same reason and by the same argument:
+    it lives in ``model_info``, LiteLLM reads it once at startup for
+    capability routing, and a proxy whose config was written before the tag
+    existed would otherwise never be rewritten — the name, base and window of
+    a media model are all unchanged when the mode is what is missing.
     """
-    keys: set[tuple[str, str, int | None]] = set()
+    keys: set[tuple[str, str, int | None, str | None]] = set()
     for entry in config.get("model_list") or []:
         if not isinstance(entry, dict):
             continue
         params = entry.get("litellm_params") or {}
-        window = (entry.get("model_info") or {}).get("max_input_tokens")
+        model_info = entry.get("model_info") or {}
+        window = model_info.get("max_input_tokens")
+        mode = model_info.get("mode")
         keys.add(
             (
                 str(entry.get("model_name", "")),
                 str(params.get("api_base", "")),
                 window if isinstance(window, int) else None,
+                mode if isinstance(mode, str) else None,
             )
         )
     return keys
@@ -974,6 +993,13 @@ class ProxyEngine(GatewaySupervisor):
                 continue
             host, port = hostport
             window = (entry.get("model_info") or {}).get("max_input_tokens")
+            # ``mode`` has to come back out, or the first ``proxy alias add``
+            # erases it from every media model and — because the discovery
+            # sweep only rewrites when the model set changes — it never
+            # returns.  A media mode is itself a token media_mode() accepts,
+            # so it is recovered verbatim instead of reverse-mapped to a
+            # backend-side enum this endpoint never advertised.
+            mode = (entry.get("model_info") or {}).get("mode")
             endpoints.append(
                 DiscoveredEndpoint(
                     cluster_id="",
@@ -986,6 +1012,7 @@ class ProxyEngine(GatewaySupervisor):
                     actual_models=[name],
                     api_key=params.get("api_key"),
                     max_model_len=window if isinstance(window, int) else None,
+                    task_type=mode if mode in MEDIA_MODES else None,
                 )
             )
         return endpoints
