@@ -59,11 +59,13 @@ def test_check_single_health_parses_max_model_len():
     resp = _models_response({"data": [{"id": "test/model", "max_model_len": 524288}]})
 
     with patch("sparkrun.proxy.discovery.urllib.request.urlopen", return_value=resp):
-        healthy, models, max_model_len = _check_single_health(_endpoint())
+        healthy, models, max_model_len, task_fields = _check_single_health(_endpoint())
 
     assert healthy is True
     assert models == ["test/model"]
     assert max_model_len == 524288
+    # A chat backend says nothing about tasks; the probe reports that faithfully.
+    assert task_fields == (None, [])
 
 
 def test_check_single_health_without_max_model_len():
@@ -71,7 +73,7 @@ def test_check_single_health_without_max_model_len():
     resp = _models_response({"data": [{"id": "test/model"}]})
 
     with patch("sparkrun.proxy.discovery.urllib.request.urlopen", return_value=resp):
-        healthy, models, max_model_len = _check_single_health(_endpoint())
+        healthy, models, max_model_len, _ = _check_single_health(_endpoint())
 
     assert healthy is True
     assert models == ["test/model"]
@@ -91,15 +93,76 @@ def test_check_single_health_ignores_non_positive_max_model_len():
     )
 
     with patch("sparkrun.proxy.discovery.urllib.request.urlopen", return_value=resp):
-        _, _, max_model_len = _check_single_health(_endpoint())
+        _, _, max_model_len, _ = _check_single_health(_endpoint())
 
     assert max_model_len == 4096
 
 
+def test_check_single_health_captures_task_fields():
+    """A diffusion backend's ``task_type`` / ``supported_task_types`` are captured.
+
+    The probe records the advertised strings verbatim — interpreting them is
+    ``media_mode``'s job, so the probe stays a faithful reporter of whatever
+    the backend said.
+    """
+    resp = _models_response(
+        {
+            "data": [
+                {
+                    "id": "black-forest-labs/FLUX.2-dev",
+                    "max_model_len": None,
+                    "task_type": "T2I",
+                    "supported_task_types": ["T2I", "I2I"],
+                }
+            ]
+        }
+    )
+
+    with patch("sparkrun.proxy.discovery.urllib.request.urlopen", return_value=resp):
+        healthy, models, max_model_len, task_fields = _check_single_health(_endpoint())
+
+    assert healthy is True
+    assert models == ["black-forest-labs/FLUX.2-dev"]
+    assert max_model_len is None  # a diffusion pipeline reports no context window
+    assert task_fields == ("T2I", ["T2I", "I2I"])
+
+
+def test_check_single_health_prefers_entry_that_advertises_tasks():
+    """Task fields come from the entry that carries them, not position 0.
+
+    ``max_model_len`` uses the same "first entry that has a real value" rule;
+    a backend listing a plain entry before the media one must not read as a
+    chat model.
+    """
+    resp = _models_response(
+        {
+            "data": [
+                {"id": "plain"},
+                {"id": "ltx-video", "task_type": "T2V"},
+            ]
+        }
+    )
+
+    with patch("sparkrun.proxy.discovery.urllib.request.urlopen", return_value=resp):
+        _, _, _, task_fields = _check_single_health(_endpoint())
+
+    assert task_fields == ("T2V", [])
+
+
+def test_check_single_health_discards_non_string_task_values():
+    """A malformed body cannot push a non-string into the config builder."""
+    resp = _models_response({"data": [{"id": "m", "task_type": None, "supported_task_types": [7, "", "  ", "T2I"]}]})
+
+    with patch("sparkrun.proxy.discovery.urllib.request.urlopen", return_value=resp):
+        _, _, _, task_fields = _check_single_health(_endpoint())
+
+    assert task_fields == (None, ["T2I"])
+
+
 def test_check_single_health_unreachable_backend():
-    """An unreachable backend is unhealthy with no models and no window."""
+    """An unreachable backend is unhealthy with no models, window or tasks."""
     with patch("sparkrun.proxy.discovery.urllib.request.urlopen", side_effect=OSError("refused")):
-        assert _check_single_health(_endpoint()) == (False, [], None)
+        assert _check_single_health(_endpoint()) == (False, [], None, (None, []))
 
 
 # ---------------------------------------------------------------------------
