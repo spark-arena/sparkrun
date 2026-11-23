@@ -19,7 +19,7 @@ from sparkrun.runtimes.vllm_distributed import VllmDistributedRuntime
 
 @pytest.mark.skipif(not os.environ.get("SPARKRUN_TEST_HOOK_IMAGE"), reason="requires an explicitly selected local Docker image")
 @pytest.mark.parametrize("runtime", [VllmDistributedRuntime(), SglangRuntime()], ids=["vllm", "sglang"])
-def test_real_container_hook_and_serve_share_compilation_cache(tmp_path, runtime):
+def test_real_container_hook_and_serve_share_compilation_cache(tmp_path, runtime, host_docker):
     image = os.environ["SPARKRUN_TEST_HOOK_IMAGE"]
     recipe = Recipe.from_dict({"model": "fixture/model", "runtime": runtime.runtime_name})
     mounts = build_runtime_cache_mounts(

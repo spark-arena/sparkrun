@@ -249,7 +249,7 @@ SPARKRUN_READ_CONFIG_KEYS: Mapping[str, str] = {
     "pipeline_parallel": "cluster placement and world size",
     "data_parallel": "cluster placement and world size",
     "max_model_len": "VRAM estimation",
-    "gpu_memory_utilization": "VRAM estimation and the memory budget",
+    "gpu_memory_utilization": "VRAM estimation, the memory budget and whether the GPU can be shared",
     "kv_cache_dtype": "KV cache sizing",
     "served_model_name": "benchmark request targets, proxy routing and container labels",
     "port": "health checks, workload identity and proxy discovery",
@@ -276,23 +276,13 @@ _FLAG_ALIASES: Mapping[str, tuple[str, ...]] = {
 def _command_flag_value(command: str, flag: str) -> str | None:
     """Return the token following *flag* in *command*, or ``None`` if absent.
 
-    Handles both ``--flag value`` and ``--flag=value``.  Returns the empty
-    string for a flag that appears with no following token (a bare boolean),
-    which callers treat as "present with a literal".
-
-    Line-continuation backslashes are dropped first: every real recipe wraps
-    its serve command, and a trailing ``\\`` would otherwise be read as the
-    value of the flag preceding it.
+    Returns the empty string for a flag that appears with no following token
+    (a bare boolean), which callers treat as "present with a literal".
+    Placeholders are returned as written; the caller skips them.
     """
-    tokens = [t for t in command.split() if t != "\\"]
-    for idx, token in enumerate(tokens):
-        if token == flag:
-            nxt = tokens[idx + 1] if idx + 1 < len(tokens) else ""
-            # A following token that is itself a flag means this one is bare.
-            return "" if nxt.startswith("-") else nxt
-        if token.startswith(flag + "="):
-            return token[len(flag) + 1 :]
-    return None
+    from sparkrun.utils.command_flags import command_flag_value
+
+    return command_flag_value(command, flag, bare="", literal_only=False)
 
 
 def check_hardcoded_serve_flags(recipe: Recipe, runtime: RuntimePlugin | None) -> list[RecipeIssue]:
@@ -1808,8 +1798,13 @@ def validate_recipe(
     issues.extend(_safe("recipe-metadata", lambda: [RecipeIssue(SUGGESTION, "recipe-metadata", m) for m in recipe.validate_metadata()]))
 
     if runtime is None:
+        from sparkrun.runtimes.base import RuntimeUnavailableError
+
         try:
             runtime = get_runtime(recipe.runtime, v)
+        except RuntimeUnavailableError as e:
+            # The recipe is fine; this install has the engine switched off.
+            issues.append(RecipeIssue(ERROR, "runtime-disabled", str(e)))
         except ValueError:
             issues.append(RecipeIssue(ERROR, "unknown-runtime", "Unknown runtime: %s" % recipe.runtime))
 

@@ -435,19 +435,33 @@ def cleanup_solo_after_failure(
         logger.warning("Cleanup encountered errors (continuing): %s", e)
 
 
-def dump_serve_log(host: str, container: str, ssh_kwargs: dict, *, dry_run: bool = False) -> None:
-    """Log ``/tmp/sparkrun_serve.log`` from inside a container at ERROR level.
+def dump_serve_log(host: str, container: str, ssh_kwargs: dict, *, dry_run: bool = False, executor: Executor | None = None) -> None:
+    """Log the workload's serve log at ERROR level, after a failed start.
 
     The serve process redirects its stdout/stderr to a file inside the
     container, so ``docker logs`` (which only sees PID 1's stdio) is
-    structurally blind to it.  This helper bridges the gap by running
-    ``docker exec ... cat`` over SSH and emitting whatever it finds.
+    structurally blind to it.  This reads it the way ``sparkrun logs`` does,
+    through *executor*'s :meth:`~Executor.read_logs_cmd` (the in-container
+    file for docker, the host logfile for ``local``); without one, a
+    ``docker exec ... cat`` as before.  Best effort: a missing log is reported,
+    never raised.
     """
+    from sparkrun.core.log_source import MODE_FILE, SERVE_LOG_PATH, LogSource
     from sparkrun.orchestration.ssh import run_remote_command
+
+    if executor is None:
+        command = f"docker exec {container} cat {SERVE_LOG_PATH} 2>/dev/null || true"
+    else:
+        read = executor.for_host(host).read_logs_cmd(LogSource(host=host, container=container, mode=MODE_FILE, path=SERVE_LOG_PATH))
+        if not isinstance(read, str):
+            # A control-plane argv (a provider substrate) has no host shell form.
+            logger.debug("Serve log for %s is read through its control plane; not dumped here", container)
+            return
+        command = "( %s ) 2>/dev/null || true" % read
 
     result = run_remote_command(
         host,
-        f"docker exec {container} cat /tmp/sparkrun_serve.log 2>/dev/null || true",
+        command,
         timeout=30,
         dry_run=dry_run,
         **ssh_kwargs,
@@ -584,7 +598,7 @@ def detect_head_ip(ctx: ClusterContext) -> str:
     """
     from sparkrun.orchestration.primitives import detect_host_ip
 
-    return detect_host_ip(ctx.head_host, ssh_kwargs=ctx.ssh_kwargs, dry_run=ctx.dry_run)
+    return detect_host_ip(ctx.head_host, ssh_kwargs=ctx.ssh_kwargs, dry_run=ctx.dry_run, mgmt_interface=ctx.mgmt_interface, peers=ctx.hosts)
 
 
 def resolve_hosts_for_init(ctx: ClusterContext, head_ip: str) -> list[str]:
@@ -606,7 +620,9 @@ def resolve_hosts_for_init(ctx: ClusterContext, head_ip: str) -> list[str]:
         if h == ctx.head_host:
             resolved.append(head_ip)
         else:
-            resolved.append(detect_host_ip(h, ssh_kwargs=ctx.ssh_kwargs, dry_run=ctx.dry_run))
+            resolved.append(
+                detect_host_ip(h, ssh_kwargs=ctx.ssh_kwargs, dry_run=ctx.dry_run, mgmt_interface=ctx.mgmt_interface, peers=ctx.hosts)
+            )
     return resolved
 
 
@@ -1242,7 +1258,7 @@ def run_native_cluster(
             # `start_log_capture` uses `docker logs -f`, which is blind to the
             # serve process's redirected output file. Always emit the real log
             # so the user sees the actual error, not just sleep-infinity stdio.
-            dump_serve_log(ctx.head_host, head_container, ctx.ssh_kwargs, dry_run=ctx.dry_run)
+            dump_serve_log(ctx.head_host, head_container, ctx.ssh_kwargs, dry_run=ctx.dry_run, executor=executor)
             cleanup_after_failure(ctx, executor, reason="head node did not become ready")
             return 1
         logger.info("%s: Head node ready (%.1fs)", head_step, time.monotonic() - t0)

@@ -108,6 +108,41 @@ def get_daemon_op(name):
         raise LookupError(f"Unknown operation: {name}") from None
 
 
+def operation_catalog(config, *, allows=None, http_paths=None) -> list[dict]:
+    """Public operations as ``GET /v1/ops`` reports them: one dict per operation.
+
+    The single description of the daemon's surface, shared by the endpoint and
+    ``sparkrun daemon help`` so the two cannot list different operations.
+    Internal operations and those whose feature flag is off for *config* are
+    left out; *allows* (``op -> bool``) narrows further, e.g. to what a token's
+    scope permits. *http_paths* overrides the derived alias paths (the server
+    passes the routes it actually mounted).
+    """
+    catalog = []
+    for op in registered_daemon_ops():
+        if op.visibility != "public" or (op.feature_flag and not config.is_feature_enabled(op.feature_flag)):
+            continue
+        if allows is not None and not allows(op):
+            continue
+        catalog.append(
+            {
+                "name": op.name,
+                "owner": op.owner,
+                "local_name": op.local_name,
+                "version": op.version,
+                "kind": op.kind,
+                "cacheable": op.cacheable,
+                "scope": op.scope,
+                "description": op.description,
+                "resources": op.resources,
+                "http_path": http_paths.get(op.name) if http_paths is not None else operation_http_path(op),
+                "request_schema": op.request_schema,
+                "result_schema": op.result_schema,
+            }
+        )
+    return catalog
+
+
 def operation_http_path(op: DaemonOp) -> str | None:
     if op.kind == "stream" or op.visibility == "internal":
         return None

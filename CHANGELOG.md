@@ -10,6 +10,48 @@ first tagged release containing them, regardless of their original commit date.
 
 ## [Unreleased]
 
+### Changed
+
+- Every runtime now has a feature flag (`runtime.vllm`, `runtime.sglang`,
+  `runtime.llama_cpp`, `runtime.trtllm`, `runtime.atlas`, `runtime.modular_max`,
+  `runtime.tokenary`), so an install can switch off engines it does not support. All
+  are on by default except **`runtime.tokenary`, which is now off**: enable it with
+  `sparkrun setup features enable runtime.tokenary` to keep running tokenary recipes.
+  A disabled runtime is reported as disabled, with the flag to enable, not as unknown.
+
+### Fixed
+
+- Two launches with a low `--gpu-mem` (e.g. 0.3) can share one GPU again under the
+  occupancy schedulers (#335). Every launch asked for, and recorded, an exclusive GPU,
+  so the second was refused with "exclusive ownership prevents sharing". A launch now
+  claims its runtime's memory fraction (`RuntimePlugin.scheduler_gpu_fraction`); 0.8
+  and above, or unset, still reserves whole GPUs. Each rank of a launch gets its own
+  GPU, shared or not. A workload started before this fix keeps its exclusive record
+  until relaunched. `recipe show` reports shared vs exclusive. `greedy` is unaffected.
+- The fit report and explicit KV budget read what the engine actually receives: with
+  a `command:` template, the flag it renders, not a `defaults` value it never passes.
+- A running `proxy start --foreground` (including the `proxy systemd` unit) no longer
+  refuses every `sparkrun run` on the cluster with `ResourceBusy`. Its startup reserved
+  the default cluster's hosts and held them for the proxy's whole life; the reservation
+  is now released once the gateway is up. `proxy stop` no longer reserves hosts either,
+  so it can stop that proxy.
+- `ResourceBusy` now names each conflicting resource, the holding pid and its command,
+  and for a holder that exited, the `sparkrun daemon resources reconcile` command that
+  clears it. The CLI prints it as an error instead of a traceback.
+- A daemon launch or teardown naming no hosts reserves the default cluster's hosts (or
+  the workload's recorded hosts), as the API call it wraps does, instead of every host on
+  the controller. A job naming an unknown cluster no longer crashes the worker.
+- `benchmark resume` reserves the hosts its benchmark ran on (the live launch's and the
+  measured ones) instead of the default cluster's, which left those hosts open to a
+  concurrent launch when the benchmark ran on another cluster.
+- A launch colliding with a brief controller-wide hold (a client polling workload
+  inventory) waits up to 3 seconds for it instead of failing at once.
+- Quitting `cluster monitor` no longer risks a `NoMatches: '#host-table'` traceback: a
+  refresh tick landing after Textual had pruned the screens, but before it closed the
+  timers, queried the removed table.
+
+## [0.4.2] — 2026-10-25
+
 ### Added
 
 - `tensorfold` runtime: TensorFold's Zig/CUDA native server. Solo on one GB10,
@@ -1350,7 +1392,8 @@ the post-launch lifecycle are unchanged for existing recipes.
 
 [0.3.0]: https://github.com/spark-arena/sparkrun/releases/tag/v0.3.0
 
-[Unreleased]: https://github.com/spark-arena/sparkrun/compare/v0.4.1...develop-next
+[Unreleased]: https://github.com/spark-arena/sparkrun/compare/v0.4.2...develop-next
+[0.4.2]: https://github.com/spark-arena/sparkrun/releases/tag/v0.4.2
 [0.4.1]: https://github.com/spark-arena/sparkrun/releases/tag/v0.4.1
 [0.3.1]: https://github.com/spark-arena/sparkrun/releases/tag/v0.3.1
 [0.3.2]: https://github.com/spark-arena/sparkrun/releases/tag/v0.3.2

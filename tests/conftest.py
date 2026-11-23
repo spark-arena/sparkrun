@@ -84,6 +84,16 @@ def host_service_manager():
 
 
 @pytest.fixture
+def host_docker():
+    """Allow the opt-in real-Docker integration tests' docker CLI."""
+    _io_guard.allowed_commands.add("docker")
+    try:
+        yield
+    finally:
+        _io_guard.allowed_commands.discard("docker")
+
+
+@pytest.fixture
 def unavailable_model_inventory(monkeypatch):
     """Exercise compatibility transport routing with unavailable inventory.
 
@@ -123,6 +133,8 @@ def isolate_stateful(tmp_path: Path, monkeypatch, isolate_runtime_state):
     monkeypatch.setenv("SPARKRUN_NO_INSTALLED_PLUGINS", "1")
     monkeypatch.setenv("STATEFUL_ROOT", str(tmp_path / "stateful"))
     monkeypatch.setenv("SPARKRUN_NO_TELEMETRY", "1")
+    # A developer's per-shell default-cluster override must not steer tests.
+    monkeypatch.delenv("SPARKRUN_CLUSTER", raising=False)
     # The HuggingFace Hub metadata budget, its breaker and its negative memo are
     # process-global (one budget per command, by design). Without a reset a test
     # that exhausts the budget or memoises an unavailable repo silently disables
@@ -370,6 +382,19 @@ def real_locality_probes(fast_locality_probes, monkeypatch):
     """Restore production locality detection; callers must mock its I/O."""
     for binding in _LOCALITY_BINDINGS:
         monkeypatch.setattr(binding, _REAL_IS_LOCAL_HOST)
+
+
+@pytest.fixture(autouse=True)
+def unanswered_host_key_scans(monkeypatch):
+    """Host-key scans see no host unless a test supplies what one presents.
+
+    ``setup ssh`` and the wizard's access gate now scan every target for a
+    changed host key (``ssh-keyscan``, a network call per host). Only the scan
+    is stubbed, so the comparison, fingerprints and known_hosts rewriting stay
+    real; tests of that module patch ``_scan`` themselves.
+    """
+    monkeypatch.setattr("sparkrun.api.setup._host_keys._scan", lambda target, timeout: {})
+    monkeypatch.setattr("sparkrun.cli._setup._ssh._host_key_answers", {})
 
 
 @pytest.fixture(autouse=True)

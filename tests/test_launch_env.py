@@ -180,3 +180,45 @@ def test_materialize_reports_the_solo_launch_env(monkeypatch):
     # finalization only adds keys, which the container env never sets.
     assert {k: v for k, v in unit.environment.items() if k in captured} == captured
     assert set(unit.environment) - set(captured) <= {"VLLM_HOST_IP"}
+
+
+def test_solo_serve_exec_caps_only_detached_dispatch(monkeypatch):
+    """Foreground exec is the serve process; a wall-clock cap kills a healthy server.
+
+    ``export systemd`` units run ``run --foreground``, so a 60s cap here made
+    every solo service exit rc 124 a minute into weight loading.
+    """
+    import sparkrun.orchestration.primitives as primitives
+    from sparkrun.orchestration.executors.docker import DockerExecutor
+    from sparkrun.orchestration.ssh import RemoteResult
+
+    options, plan, sctx = _plan(("h1",))
+    runtime_cache, platform_env_by_host = _launch_inputs(plan, sctx)
+    monkeypatch.setattr(DockerExecutor, "generate_launch_script", lambda self, **kwargs: "true")
+
+    real = primitives.run_script_on_host
+    timeouts = []
+
+    def _record(host, script, *, timeout=None, **kwargs):
+        if "exec" in script and "base64 -d" in script:
+            timeouts.append(timeout)
+            return RemoteResult(host=host, returncode=0, stdout="", stderr="")
+        return real(host, script, timeout=timeout, **kwargs)
+
+    monkeypatch.setattr(primitives, "run_script_on_host", _record)
+
+    for detached in (True, False):
+        plan.runtime._run_solo(
+            "h1",
+            plan.recipe.container,
+            "serve",
+            env=dict(plan.recipe.env),
+            cache_dir="/cache/hf",
+            dry_run=True,
+            detached=detached,
+            recipe=plan.recipe,
+            runtime_cache=runtime_cache,
+            platform_env=platform_env_by_host["h1"],
+        )
+
+    assert timeouts == [60, None]

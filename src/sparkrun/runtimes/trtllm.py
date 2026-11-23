@@ -76,6 +76,8 @@ class TrtllmRuntime(RuntimePlugin):
     pattern inherited from the base class.
     """
 
+    required_feature_flag = "runtime.trtllm"
+
     runtime_name = "trtllm"
     default_image_prefix = "nvcr.io/nvidia/tensorrt-llm/release"
     # mpirun starts every rank from the head with one environment.
@@ -602,7 +604,7 @@ class TrtllmRuntime(RuntimePlugin):
         host_ips: list[str] = []  # ordered by rank
         for rank, host in enumerate(hosts):
             try:
-                ip = detect_host_ip(host, ssh_kwargs=ctx.ssh_kwargs, dry_run=dry_run)
+                ip = detect_host_ip(host, ssh_kwargs=ctx.ssh_kwargs, dry_run=dry_run, mgmt_interface=ctx.mgmt_interface, peers=hosts)
             except RuntimeError as e:
                 logger.error("%s", e)
                 return 1

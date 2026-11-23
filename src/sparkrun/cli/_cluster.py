@@ -669,7 +669,7 @@ def cluster_list(ctx, output_json):
             click.echo(f"  {'':<20} {extra:<40}")
 
     if default_name:
-        click.echo("\n* = default cluster")
+        click.echo("\n* = default cluster%s" % _override_note(mgr))
 
 
 @cluster.command("show")
@@ -776,6 +776,27 @@ def cluster_delete(ctx, name, force):
         cleanup_cluster_transport(_cd)
 
 
+def _default_source(mgr) -> str:
+    """Where the effective default comes from: the env override or ``set-default``."""
+    return "env" if mgr.default_override() is not None else "config"
+
+
+def _override_note(mgr) -> str:
+    """`` (from SPARKRUN_CLUSTER)`` when the env override decides the default, else empty."""
+    from sparkrun.core.cluster_manager import DEFAULT_CLUSTER_ENV
+
+    return " (from %s)" % DEFAULT_CLUSTER_ENV if mgr.default_override() is not None else ""
+
+
+def _echo_shadowed_by_override(mgr) -> None:
+    """Say when ``SPARKRUN_CLUSTER`` hides a persisted-default change in this shell."""
+    from sparkrun.core.cluster_manager import DEFAULT_CLUSTER_ENV
+
+    override = mgr.default_override()
+    if override is not None:
+        click.echo("Note: %s=%s overrides the default cluster in this shell." % (DEFAULT_CLUSTER_ENV, override))
+
+
 @cluster.command("set-default")
 @click.argument("name", type=CLUSTER_NAME)
 @click.pass_context
@@ -787,6 +808,7 @@ def cluster_set_default(ctx, name):
     try:
         mgr.set_default(name)
         click.echo("Default cluster set to '%s'." % name)
+        _echo_shadowed_by_override(mgr)
     except ClusterError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -799,6 +821,7 @@ def cluster_unset_default(ctx):
     mgr = _get_cluster_manager()
     mgr.unset_default()
     click.echo("Default cluster unset.")
+    _echo_shadowed_by_override(mgr)
 
 
 @cluster.command("default")
@@ -816,6 +839,7 @@ def cluster_default(ctx, output_json):
             c = mgr.get(default_name)
             data = c.to_dict()
             data["default"] = True
+            data["default_source"] = _default_source(mgr)
             print_json(data)
         return
 
@@ -824,7 +848,7 @@ def cluster_default(ctx, output_json):
         return
 
     c = mgr.get(default_name)
-    click.echo(f"Name:        {c.name}")
+    click.echo(f"Name:        {c.name}{_override_note(mgr)}")
     click.echo(f"Description: {c.description or '(none)'}")
     click.echo(f"Hosts ({len(c.hosts)}):")
     for h in c.hosts:
@@ -1256,6 +1280,29 @@ def cluster_check_job(ctx, target, hosts, hosts_file, cluster_name, tp_override,
         sys.exit(1)
 
 
+def _print_management_network(host_list, mgmt_interfaces, findings, guidance) -> None:
+    """The ``Management Network`` section of ``cluster inspect``: what each host
+    resolved, why, and anything worth acting on."""
+    click.echo("Management Network:")
+    click.echo("  %-24s %-16s %-16s %-9s %s" % ("Host", "Interface", "Address", "Kind", "Chosen because"))
+    for host in host_list:
+        mi = mgmt_interfaces.get(host)
+        if mi is None:
+            click.echo("  %-24s %s" % (host, "(not reported)"))
+            continue
+        marker = "!" if host in findings else " "
+        click.echo(
+            "%s %-24s %-16s %-16s %-9s %s"
+            % (marker, host, mi.interface or "(none)", mi.address or "-", mi.kind or "-", mi.decided_by if mi.interface else "-")
+        )
+    for host in host_list:
+        for note in findings.get(host, []):
+            click.echo("  [WARN] %s: %s" % (host, note))
+    if findings:
+        click.echo("  To override detection, %s." % guidance)
+    click.echo()
+
+
 def _format_head_hardware(summary: dict) -> list[tuple[str, str]]:
     """Render a :func:`~sparkrun.diagnostics.summarize_host_diagnostics` result.
 
@@ -1389,11 +1436,17 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
     if ib_result is None and not dry_run:
         from sparkrun.orchestration.infiniband import detect_ib_for_hosts
 
+        # The Management Network section below reports the findings itself.
         ib_result = detect_ib_for_hosts(
-            host_list, ssh_kwargs=ssh_kwargs, topology=cluster_cfg.topology, mgmt_interface=cluster_cfg.mgmt_interface
+            host_list,
+            ssh_kwargs=ssh_kwargs,
+            topology=cluster_cfg.topology,
+            mgmt_interface=cluster_cfg.mgmt_interface,
+            log_findings=False,
         )
 
     nccl_env = ib_result.comm_env.get_env(host_list[0]) if ib_result else {}
+    mgmt_interfaces = ib_result.mgmt_interfaces if ib_result else {}
 
     # Resolve effective transfer interface
     # auto (None) → cx7 if IB is available and validated, else mgmt
@@ -1474,11 +1527,18 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
         "nccl_env": nccl_env,
     }
 
+    from sparkrun.orchestration.mgmt_iface import PIN_GUIDANCE, management_findings
+
+    mgmt_findings = management_findings(mgmt_interfaces, multi_host=len(host_list) > 1)
+
     if output_json:
         data = {
             "config": effective_config,
             "hosts": list(host_list),
             "head_node": {"host": head_host, "hardware": head_hardware},
+            "management_network": {
+                h: {**mgmt_interfaces[h].to_dict(), "findings": mgmt_findings.get(h, [])} for h in host_list if h in mgmt_interfaces
+            },
             "local": {
                 "sparkrun_cache": {
                     "path": local_status.sparkrun_dir,
@@ -1534,6 +1594,9 @@ def cluster_inspect(ctx, name, hosts, hosts_file, cluster_name, dry_run, output_
         click.echo("  executor:           %s" % cluster_cfg.executor)
     click.echo("  hosts:              %s" % ", ".join(host_list))
     click.echo()
+
+    if mgmt_interfaces:
+        _print_management_network(host_list, mgmt_interfaces, mgmt_findings, PIN_GUIDANCE)
 
     # Head-node hardware section
     click.echo("Head Node Hardware (%s):" % head_host)

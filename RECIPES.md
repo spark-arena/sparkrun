@@ -379,9 +379,11 @@ defaults:
 
 `8G` means 8 GiB (binary); `8g` means 8 billion bytes (decimal). Raw positive
 integer bytes are also accepted. CLI overrides take precedence. A custom command
-can use `--kv-cache-memory-bytes {kv_cache_memory_bytes}`; the estimator also
-recognizes a literal budget in that flag or the `--kv-cache-memory` alias.
-Invalid explicit budgets fail planning rather than silently using an estimate.
+must carry the flag itself, since a template is rendered verbatim: use
+`--kv-cache-memory-bytes {kv_cache_memory_bytes}` (or a literal budget, or the
+`--kv-cache-memory` alias). A template without the flag leaves the KV cache to
+vLLM, whatever `defaults` says. Invalid explicit budgets fail planning rather
+than silently using an estimate.
 
 This budget is allocated **on every GPU**: it is not divided by TP or PP, nor
 multiplied by request count. The reported per-GPU total is sharded weights plus

@@ -422,6 +422,16 @@ def test_launch_inference_threads_backends_to_runtime_run(monkeypatch, tmp_path,
             )
         }
         cluster = apply_hardware_observations(cluster, observations, ["nv-host"])
+    from sparkrun.orchestration import infiniband
+
+    observed_calls = []
+    real_observed = infiniband.ib_detection_from_observations
+
+    def spy_observed(*args, **kwargs):
+        observed_calls.append(kwargs)
+        return real_observed(*args, **kwargs)
+
+    monkeypatch.setattr(infiniband, "ib_detection_from_observations", spy_observed)
     caplog.set_level("INFO")
     result = launch_inference(
         recipe=_Recipe(),
@@ -454,11 +464,18 @@ def test_launch_inference_threads_backends_to_runtime_run(monkeypatch, tmp_path,
 
     if reuse_hardware:
         assert transfer_calls[0]["observed_ib"].comm_env.get_env("nv-host")["NCCL_NET"] == "IB"
+        # Built through the resolved collective backends, not the NCCL fallback.
+        assert observed_calls and set(observed_calls[0]["backends"]) == {"nv-host"}
+        # Distribution had nothing to do (solo, None comm env): the runtime
+        # receives the observed comm env instead of detecting IB again.
+        assert _StubRuntime.last_kwargs["comm_env"].get_env("nv-host")["NCCL_NET"] == "IB"
         assert "610.43.02 detected" in caplog.text
         assert "capacity 121.0 GiB estimated" in caplog.text
         assert "hardware is assumed" not in caplog.text
     else:
         assert "observed_ib" not in transfer_calls[0]
+        # Nothing observed: the runtime still detects for itself.
+        assert _StubRuntime.last_kwargs["comm_env"] is None
 
 
 @pytest.mark.parametrize("reuse_hardware", [False, True])

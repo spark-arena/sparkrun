@@ -25,7 +25,7 @@ import uvicorn
 from uvicorn.protocols.http.h11_impl import H11Protocol
 
 from sparkrun.api._wire import error_body, check_result
-from sparkrun.core.daemon_registry import get_daemon_op, registered_daemon_ops, resolve_route_operation
+from sparkrun.core.daemon_registry import get_daemon_op, operation_catalog, resolve_route_operation
 from sparkrun.core.operation import OperationState, operation_scope
 from sparkrun.daemon.auth import Principal, TokenStore
 from sparkrun.daemon.jobs import Conflict, JobStore, ReplayGap, TERMINAL
@@ -334,27 +334,11 @@ def create_app(binding=None, *, worker_supervisor="process", start_workers=True,
     @app.get("/v1/ops")
     async def operations(request: Request):
         user = principal(request)
-        current = SparkrunConfig(binding.config_path)
-        return [
-            {
-                "name": op.name,
-                "owner": op.owner,
-                "local_name": op.local_name,
-                "version": op.version,
-                "kind": op.kind,
-                "cacheable": op.cacheable,
-                "scope": op.scope,
-                "description": op.description,
-                "resources": op.resources,
-                "http_path": app.state.operation_paths.get(op.name),
-                "request_schema": op.request_schema,
-                "result_schema": op.result_schema,
-            }
-            for op in registered_daemon_ops()
-            if op.visibility == "public"
-            and user.allows(op.scope, secret=op.secret)
-            and (not op.feature_flag or current.is_feature_enabled(op.feature_flag))
-        ]
+        return operation_catalog(
+            SparkrunConfig(binding.config_path),
+            allows=lambda op: user.allows(op.scope, secret=op.secret),
+            http_paths=app.state.operation_paths,
+        )
 
     @app.get("/docs")
     async def docs(request: Request):

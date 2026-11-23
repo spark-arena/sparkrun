@@ -327,6 +327,23 @@ def hold_state_dir(benchmark_id: str, cache_dir: str | None = None):
                 logger.debug("Could not remove benchmark state lock at %s", lock_path, exc_info=True)
 
 
+def recorded_benchmark_hosts(benchmark_id: str, cache_dir: str | None = None) -> list[str] | None:
+    """Hosts a resume of *benchmark_id* acts on, for reserving them; ``None`` if unknown.
+
+    The live launch's job metadata (what resume reaches) plus the hosts the
+    measurements were taken on. They normally agree; the union stays correct
+    when a relaunch moved the workload.
+    """
+    from sparkrun.orchestration.job_metadata import load_job_metadata
+
+    state = BenchmarkRunState.load(benchmark_id, cache_dir)
+    if state is None:
+        return None
+    meta = load_job_metadata(state.cluster_id, cache_dir=cache_dir) if state.cluster_id else None
+    hosts = list(dict.fromkeys([*((meta or {}).get("hosts") or []), *state.host_list]))
+    return hosts or None
+
+
 @dataclass
 class BenchmarkRunState:
     """Persistent progress state for a scheduled benchmark run.

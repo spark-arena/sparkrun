@@ -15,6 +15,7 @@ echo "Running InfiniBand detection..." >&2
 
 if ! [ -d /sys/class/infiniband ]; then
     echo "IB_DETECTED=0"
+    sparkrun_mgmt_report ""
     exit 0
 fi
 
@@ -58,6 +59,7 @@ done
 if [ ${#ACTIVE_HCAS[@]} -eq 0 ]; then
     echo "No active RDMA devices found." >&2
     echo "IB_DETECTED=0"
+    sparkrun_mgmt_report ""
     exit 0
 fi
 
@@ -70,11 +72,9 @@ UCX_LIST=$(IFS=,; echo "${UCX_DEVS[*]}")
 # NET_LIST so the fabric adapters can be excluded from the heuristic scan --
 # they are not management interfaces.  May legitimately come back empty on a
 # host with no management network we can identify; see _mgmt_iface.sh.
-DEFAULT_IF=$(sparkrun_mgmt_iface "$NET_LIST")
-MGMT_IP=""
-if [ -n "$DEFAULT_IF" ]; then
-    MGMT_IP=$(ip -4 addr show "$DEFAULT_IF" 2>/dev/null | grep -oP 'inet \K[0-9.]+' | head -1)
-fi
+MGMT_REPORT=$(sparkrun_mgmt_report "$NET_LIST")
+DEFAULT_IF=$(printf '%s\n' "$MGMT_REPORT" | sed -n 's/^DETECTED_MGMT_IFACE=//p')
+MGMT_IP=$(printf '%s\n' "$MGMT_REPORT" | sed -n 's/^DETECTED_MGMT_IP=//p')
 
 # Resolve IPv4 addresses of active IB network interfaces
 IB_IPS=()
@@ -104,4 +104,4 @@ echo "DETECTED_SOCKET_IFNAME=$DEFAULT_IF"
 echo "DETECTED_NET_LIST=$NET_LIST"
 echo "DETECTED_UCX_LIST=$UCX_LIST"
 echo "DETECTED_IB_IPS=$IB_IP_LIST"
-echo "DETECTED_MGMT_IP=$MGMT_IP"
+printf '%s\n' "$MGMT_REPORT"

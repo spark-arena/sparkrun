@@ -101,7 +101,21 @@ class IOGuard:
             command = Path(ntpath.basename(os.fsdecode(executable))).stem.lower()
             if command in self.allowed_commands:
                 return
-            guarded = {"ssh", "scp", "sftp", "rsync", "docker", "kubectl", "uvx", "curl", "wget", "systemctl", "systemd-run", "sudo"}
+            guarded = {
+                "ssh",
+                "ssh-keyscan",
+                "scp",
+                "sftp",
+                "rsync",
+                "docker",
+                "kubectl",
+                "uvx",
+                "curl",
+                "wget",
+                "systemctl",
+                "systemd-run",
+                "sudo",
+            }
             if command not in guarded:
                 return
             if isinstance(argv, str):

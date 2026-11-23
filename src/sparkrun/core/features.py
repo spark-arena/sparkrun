@@ -298,6 +298,24 @@ FEATURE_EXECUTOR_DOCKER = register_feature(
     )
 )
 
+
+# Runtime gates. Every in-tree runtime can be switched off, so an install can
+# offer only the engines it supports; a disabled runtime is hidden from the
+# runtime listing and a recipe naming it fails with the flag to enable. One
+# flag per engine family: runtime.vllm covers vllm-ray, vllm-distributed and
+# eugr-vllm. tokenary is experimental, so it is opt-in on every channel.
+def _runtime_flag(engine: str, description: str, *, default: bool = True) -> FeatureFlag:
+    return register_feature(FeatureFlag(name="runtime.%s" % engine, description=description, default=default))
+
+
+FEATURE_RUNTIME_VLLM = _runtime_flag("vllm", "vLLM runtimes (vllm-ray, vllm-distributed, eugr-vllm)")
+FEATURE_RUNTIME_SGLANG = _runtime_flag("sglang", "SGLang runtime")
+FEATURE_RUNTIME_LLAMA_CPP = _runtime_flag("llama_cpp", "llama.cpp runtime")
+FEATURE_RUNTIME_TRTLLM = _runtime_flag("trtllm", "TensorRT-LLM runtime")
+FEATURE_RUNTIME_ATLAS = _runtime_flag("atlas", "Atlas runtime")
+FEATURE_RUNTIME_MODULAR_MAX = _runtime_flag("modular_max", "Modular MAX runtime")
+FEATURE_RUNTIME_TOKENARY = _runtime_flag("tokenary", "tokenary runtime (experimental; off by default)", default=False)
+
 # The experimental executors are off by default on every channel; users opt
 # in explicitly via ``features.executor.*`` in config.yaml (or the
 # ``SPARKRUN_FEATURE_*`` env override). The per-channel default mechanism
@@ -445,6 +463,7 @@ for _setup_step, _setup_description in {
     "sudoers": "Configure scoped sudoers rules",
     "ssh_identity": "Check for duplicate SSH host keys and machine IDs",
     "ssh_mesh": "Configure peer SSH access",
+    "mgmt_interface": "Report the management interface each host will use",
     "cx7": "Configure Spark CX7 networking",
     "rdma": "Check RDMA fabric readiness",
 }.items():

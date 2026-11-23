@@ -7,7 +7,7 @@ from functools import partial
 from sparkrun.api._wire import object_schema, to_wire
 from sparkrun.core.daemon_registry import DaemonOp, register_daemon_op
 from sparkrun.api._wire_schemas import RESULT_SCHEMAS
-from sparkrun.daemon.ops import unavailable_prompt
+from sparkrun.daemon.ops import _describe, unavailable_prompt
 
 
 def execute(name, arguments, sctx, prompt=unavailable_prompt):
@@ -100,6 +100,22 @@ def _load(name):
     return partial(execute, name)
 
 
+#: The library function behind each operation, for its documentation.
+SPECIAL_TARGETS = {
+    "diagnostics.collect": "collect_diagnostics",
+    "recipes.validate": "validate_recipe",
+    "setup.probe_hosts": "setup.probe_setup_hosts",
+    "setup.plan": "setup.build_setup_plan",
+    "setup.run_steps": "setup.run_setup_steps",
+    "setup.undo": "setup.run_setup_undo",
+    "setup.rdma_test": "setup.rdma_test",
+    "tailscale.status": "tailscale.status",
+    "tailscale.join": "tailscale.join",
+    "tailscale.down": "tailscale.down",
+    "tailscale.expose": "tailscale.expose",
+}
+
+
 def register_special_ops():
     from sparkrun.daemon.request_fields import fields
 
@@ -133,7 +149,7 @@ def register_special_ops():
                 result_schema=RESULT_SCHEMAS[name],
                 kind="job",
                 scope=scope,
-                description=name.replace(".", " ").replace("_", " ").capitalize() + ".",
+                description=_describe(name, SPECIAL_TARGETS.get(name, ""), name.replace(".", " ").replace("_", " ").capitalize() + "."),
             )
         )
 

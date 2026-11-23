@@ -1294,6 +1294,34 @@ RESULT_SCHEMAS = {
             "additionalProperties": True,
         },
     },
+    "setup.find_changed_host_keys": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "host": {"type": "string"},
+                "lookup": {"type": "string"},
+                "key_type": {"type": "string"},
+                "recorded": {"type": "array", "items": {"type": "string"}},
+                "presented": {"type": "string"},
+                "known_hosts": {"type": "string"},
+            },
+            "required": ["host", "lookup", "key_type", "recorded", "presented", "known_hosts"],
+            "additionalProperties": True,
+        },
+    },
+    "setup.replace_host_key": {
+        "type": "object",
+        "properties": {
+            "host": {"type": "string"},
+            "lookup": {"type": "string"},
+            "key_type": {"type": "string"},
+            "fingerprint": {"type": "string"},
+            "known_hosts": {"type": "string"},
+        },
+        "required": ["host", "lookup", "key_type", "fingerprint", "known_hosts"],
+        "additionalProperties": True,
+    },
     "setup.ensure_local_key": {
         "type": "object",
         "properties": {
@@ -1303,6 +1331,27 @@ RESULT_SCHEMAS = {
             "generated": {"type": "boolean"},
         },
         "required": ["path", "public_path", "public_key", "generated"],
+        "additionalProperties": True,
+    },
+    "setup.resolve_control_key": {
+        "type": "object",
+        "properties": {
+            "key": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "public_path": {"type": "string"},
+                    "public_key": {"type": "string"},
+                    "generated": {"type": "boolean"},
+                },
+                "required": ["path", "public_path", "public_key", "generated"],
+                "additionalProperties": True,
+            },
+            "source": {"type": "string", "enum": ["ssh.key", "ssh-config", "stock", "generated"]},
+            "recorded": {"type": "boolean"},
+            "skipped": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["key", "source", "recorded", "skipped"],
         "additionalProperties": True,
     },
     "setup.mesh_ssh_keys": {

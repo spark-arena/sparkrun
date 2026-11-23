@@ -136,7 +136,7 @@ SSE `error` record. Each request resolves its target anew; there is no target-ID
 registry or paging route. See [LOGGING_API.md](LOGGING_API.md) for matching,
 cancellation, ordering, and Python paging contracts.
 
-This snapshot contains **97 operations: 86 core, 8 K8s and 3 SparkRoute**.
+This snapshot contains **98 operations: 87 core, 8 K8s and 3 SparkRoute**.
 
 ## Domain vocabulary
 
@@ -291,6 +291,7 @@ an incomplete status, even though the manifest has been saved for later repair.
 | `setup.probe_hosts` | `/v1/setup/probe_hosts` | job / read | auto | `hosts: string[]`, `cluster: string` |
 | `setup.probe_ssh_access` | `/v1/setup/probe_ssh_access` | job / read | auto | `hosts!: string[]`, `user: string`, `key: string`, `timeout: integer`, `max_workers: integer` |
 | `setup.rdma_test` | `/v1/setup/rdma_test` | job / operate | auto | `hosts: string[]`, `cluster: string`, `suite: string`, `parallel_pairs: integer`, `full: boolean`, `image: string`, `duration: integer`, `queue_pairs: integer`, `msg_size: string`, `nccl_binary: string`, `gid_index: integer`, `link_type: string`, `force_container: boolean`, `keep_containers: boolean`, `dry_run: boolean` |
+| `setup.resolve_control_key` | `/v1/setup/resolve_control_key` | job / admin | auto | `host: string`, `user: string`, `generate: boolean` |
 | `setup.run_steps` | `/v1/setup/run_steps` | job / admin | auto | `hosts: string[]`, `cluster: string`, `dry_run: boolean`, `only_steps: string[]` |
 | `setup.undo` | `/v1/setup/undo` | job / admin | auto | `cluster!: string`, `dry_run: boolean`, `only_steps: string[]` |
 

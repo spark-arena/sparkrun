@@ -1,0 +1,35 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "sparkrun",
+  "description": "AI-assisted inference on NVIDIA DGX Spark - run, manage, and stop LLM workloads",
+  "owner": {
+    "name": "scitrera.ai",
+    "email": "open-source-team@scitrera.com"
+  },
+  "plugins": [
+    {
+      "name": "sparkrun",
+      "description": "oh-my-pi plugin for sparkrun - launch, manage, and stop LLM inference workloads on NVIDIA DGX Spark systems. Provides slash commands and reference skills for recipe browsing, cluster management, plugin and recipe authoring.",
+      "version": "0.0.6",
+      "author": {
+        "name": "scitrera.ai",
+        "email": "open-source-team@scitrera.com"
+      },
+      "source": "./sparkrun-omp-plugin",
+      "category": "development",
+      "homepage": "https://github.com/spark-arena/sparkrun",
+      "tags": [
+        "inference",
+        "llm",
+        "dgx-spark",
+        "nvidia",
+        "vllm",
+        "sglang",
+        "gpu",
+        "cluster",
+        "oh-my-pi",
+        "omp"
+      ]
+    }
+  ]
+}

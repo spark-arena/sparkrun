@@ -293,4 +293,8 @@ def test_combined_probe_management_pin_reaches_single_and_parallel_ssh(monkeypat
     )
     probe_host("h1", mgmt_interface="mgmt0")
     probe_hosts(["h1", "h2"], mgmt_interface="mgmt0")
-    assert scripts == [generate_combined_probe_script("mgmt0")] * 3
+    assert scripts[0] == generate_combined_probe_script("mgmt0")
+    # The multi-host probe also tells each host who its peers are.
+    assert scripts[1:] == [generate_combined_probe_script("mgmt0", peers=["h1", "h2"])] * 2
+    assert all("SPARKRUN_MGMT_IFACE=mgmt0" in script for script in scripts)
+    assert "SPARKRUN_MGMT_PEERS=h1,h2" in scripts[1]

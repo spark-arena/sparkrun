@@ -49,8 +49,10 @@ class DaemonGroup(click.Group):
 
 @click.group(cls=DaemonGroup, help="Serve the local API, manage durable jobs, and connect automation clients.")
 @click.option("--config", "config_path", type=click.Path(dir_okay=False), help="Configuration file binding for this daemon instance.")
-@click.option("--url", help="HTTP(S) daemon origin for call, status, and jobs (e.g. https://controller:8443).")
-@click.option("--socket", "socket_path", type=click.Path(dir_okay=False), help="Explicit local Unix socket for call, status, and jobs.")
+@click.option("--url", help="HTTP(S) daemon origin for call, status, jobs, and help (e.g. https://controller:8443).")
+@click.option(
+    "--socket", "socket_path", type=click.Path(dir_okay=False), help="Explicit local Unix socket for call, status, jobs, and help."
+)
 @click.option(
     "--token", help="Bearer token for --url or --socket; defaults to SPARKRUN_DAEMON_TOKEN. Prefer --token-file to avoid shell history."
 )
@@ -66,8 +68,8 @@ def daemon(ctx, config_path, url, socket_path, token, token_file, ca_cert):
     ctx.obj["daemon_config"] = config_path
     ctx.obj["daemon_endpoint"] = None
     if any(value is not None for value in (url, socket_path, token, token_file, ca_cert)):
-        if ctx.invoked_subcommand not in {"call", "status", "jobs"}:
-            raise click.UsageError("Endpoint and authentication options apply only to call, status, and jobs.")
+        if ctx.invoked_subcommand not in {"call", "status", "jobs", "help"}:
+            raise click.UsageError("Endpoint and authentication options apply only to call, status, jobs, and help.")
         if url is not None and socket_path is not None:
             raise click.UsageError("Choose either --url or --socket.")
         if config_path is not None and (url is not None or socket_path is not None):
@@ -236,7 +238,72 @@ def restart(ctx):
     ctx.invoke(start, launch_options=state.get("launch"))
 
 
-@daemon.command("call", help="Submit a named API operation. Mutations return a durable job ID.")
+@daemon.command("help")
+@click.argument("operation", required=False)
+@click.option("--json", "as_json", is_flag=True, help="Print the catalog entries as JSON (the GET /v1/ops shape).")
+@click.pass_context
+def help_(ctx, operation, as_json):
+    """List the operations 'daemon call' accepts, or describe one.
+
+    \b
+      sparkrun daemon help                  every operation, grouped
+      sparkrun daemon help workloads        one namespace
+      sparkrun daemon help workloads.run    fields, permissions and an example
+
+    Reads this installation's catalog; with --url or --socket, the catalog of
+    that daemon (what its token may call).
+    """
+    import shutil
+
+    from sparkrun.cli._daemon_help import render_list, render_operation, suggestions
+
+    endpoint = ctx.find_object(dict).get("daemon_endpoint")
+    if endpoint:
+        catalog = _client(ctx).request("GET", "/v1/ops")
+        if not isinstance(catalog, list) or not all(isinstance(op, dict) and isinstance(op.get("name"), str) for op in catalog):
+            raise click.ClickException("Unexpected GET /v1/ops response from the daemon; is that a sparkrun daemon of this version?")
+        source = "on " + (endpoint.get("url") or endpoint.get("socket_path"))
+    else:
+        catalog = _local_catalog(ctx)
+        source = "in this installation"
+    width = shutil.get_terminal_size((100, 20)).columns
+    if operation is None or not any(op["name"] == operation for op in catalog):
+        members = [op for op in catalog if operation is None or op["name"].startswith(operation + ".")]
+        if operation is not None and not members:
+            close = suggestions(catalog, operation)
+            hint = (" Did you mean: %s?" % ", ".join(close)) if close else ""
+            raise click.ClickException("No daemon operation %r.%s List them with: sparkrun daemon help" % (operation, hint))
+        if as_json:
+            _json(members)
+        else:
+            click.echo(render_list(members, width=width, source=source, prefix=operation))
+        return
+    op = next(entry for entry in catalog if entry["name"] == operation)
+    if as_json:
+        _json(op)
+        return
+    from sparkrun.daemon.op_docs import operation_docs
+
+    # Argument notes come from this installation's library; a remote daemon's
+    # catalog is still authoritative for which fields exist.
+    children = sorted(entry["name"] for entry in catalog if entry["name"].startswith(operation + "."))
+    click.echo(render_operation(op, width=width, argument_docs=operation_docs(operation)[1], children=children))
+
+
+def _local_catalog(ctx):
+    """The operations a daemon started from this configuration would serve."""
+    from sparkrun.application import initialize
+    from sparkrun.core.config import SparkrunConfig
+    from sparkrun.core.daemon_registry import operation_catalog
+    from sparkrun.daemon.ops import register_core_ops
+
+    config_path = ctx.find_object(dict).get("daemon_config")
+    initialize(config_path=config_path)
+    register_core_ops()
+    return operation_catalog(SparkrunConfig(config_path))
+
+
+@daemon.command("call", help="Submit a named API operation. Mutations return a durable job ID. List them: 'sparkrun daemon help'.")
 @click.argument("operation")
 @click.option("--data", default="{}", show_default=True, help="JSON request object (secrets must use job prompts).")
 @click.option("--idempotency-key", help="Stable retry key; reuse only for identical arguments.")

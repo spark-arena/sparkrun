@@ -303,6 +303,7 @@ def get_runtime(name: str, v: Variables | None = None) -> RuntimePlugin:
         v: Optional Variables instance; uses singleton if not provided
 
     Raises:
+        RuntimeUnavailableError: The runtime exists but its feature flag is off.
         ValueError: If the runtime is not found
     """
     if v is None:
@@ -313,6 +314,13 @@ def get_runtime(name: str, v: Variables | None = None) -> RuntimePlugin:
         if runtime.runtime_name == name:
             return runtime
 
+    from sparkrun.runtimes.base import GATED_OFF_RUNTIMES, RuntimeUnavailableError
+
+    gate = GATED_OFF_RUNTIMES.get(name)
+    if gate is not None:
+        raise RuntimeUnavailableError(
+            "Runtime %r is disabled by feature flag %r. Enable it with `sparkrun setup features enable %s`." % (name, gate, gate)
+        )
     available = [r.runtime_name for r in all_runtimes.values()]
     raise ValueError("Unknown runtime: %r. Available: %s" % (name, available))
 

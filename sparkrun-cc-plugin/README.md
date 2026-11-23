@@ -56,7 +56,7 @@ sparkrun setup check --cluster mylab
 | `/sparkrun:proxy <action>` | Manage the selected gateway |
 | `/sparkrun:setup` | Install, check, or configure hosts and plugins |
 
-The workloads, configuration, and registry skills supply detailed references automatically when
+The workloads, configuration, registry, recipes, and plugins skills supply detailed references automatically when
 relevant. Reference skill names differ from the action commands so they do not
 shadow `/sparkrun:run` or `/sparkrun:setup`. Describe tasks naturally or use a command:
 
@@ -83,18 +83,18 @@ through it. No MCP server is required.
 
 ## Maintaining these references
 
-The Claude Code skills are the source for both assistant packages. After editing
+The Claude Code skills are the source for all three assistant packages. After editing
 one, run these commands from the repository root:
 
 ```bash
-python3 scripts/sync-assistant-skills.py
-python3 scripts/sync-assistant-skills.py --check
+python3 scripts/sync-assistant-plugins.py
+python3 scripts/sync-assistant-plugins.py --check
 ```
 
-The generator replaces only tool-specific instructions for OpenClaw. Python CI
-checks generated parity and parses documented Sparkrun examples without running
-workloads. Update package versions through `versions.yaml` and
-`python3 scripts/update-versions.py`.
+The generator replaces tool guidance for OpenClaw and omp, and copies the
+commands for omp. Python CI checks generated parity and parses documented
+Sparkrun examples without running workloads. Update package versions through
+`versions.yaml` and `python3 scripts/update-versions.py`.
 
 See the [Sparkrun guides](https://github.com/spark-arena/sparkrun#readme) and
 [recipe specification](https://github.com/spark-arena/sparkrun/blob/main/RECIPES.md).

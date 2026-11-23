@@ -252,6 +252,10 @@ def test_normal_submission_records_effective_executor_and_preserves_ip_maps(life
     )
     planned = plan(options, sctx=env.sctx)
 
+    # The canned probe observed its own IB address for this host; the one
+    # distribution returned must still be what is recorded.
+    assert planned.host_hardware["localhost"].ib_info["DETECTED_IB_IPS"] == "192.168.99.13"
+
     def submit(**kwargs):
         saved = load_job_metadata(planned.workload_id, cache_dir=str(env.sctx.config.cache_dir))
         assert saved["executor"] == "docker" and saved["executor_config"]["shm_size"] == "7g"

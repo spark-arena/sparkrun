@@ -77,14 +77,28 @@ for h in "${HOSTS[@]}"; do
 done
 echo
 
-# If the caller (local OS user) differs from the mesh user, install the
-# caller's public key on every host so the control machine can later SSH
+# Install the control machine's public key on every host so it can later SSH
 # as USER_NAME without password prompts (BatchMode=yes).
+#
+# sparkrun passes the key it authenticates with in SPARKRUN_CONTROL_PUBKEY
+# (and its private half in SPARKRUN_CONTROL_KEY).  That key is installed in
+# every case: when sparkrun connects with `-i <key>`, ssh offers only that key,
+# so authorizing whatever ~/.ssh identity this script would pick leaves
+# `ssh user@host` working while sparkrun is refused.
+#
+# Run standalone (no SPARKRUN_CONTROL_PUBKEY), the caller's key is installed
+# only when the caller differs from the mesh user; otherwise the control
+# machine is expected to be one of the mesh hosts.
 CALLER="$(whoami)"
-if [[ "$CALLER" != "$USER_NAME" ]]; then
-  LOCAL_PUBKEY=""
-  LOCAL_PUBKEY_SOURCE=""
-
+CONTROL_PUBKEY="${SPARKRUN_CONTROL_PUBKEY:-}"
+CONTROL_KEY="${SPARKRUN_CONTROL_KEY:-}"
+LOCAL_PUBKEY=""
+LOCAL_PUBKEY_SOURCE=""
+if [[ -n "$CONTROL_PUBKEY" ]]; then
+  LOCAL_PUBKEY="$CONTROL_PUBKEY"
+  LOCAL_PUBKEY_SOURCE="${CONTROL_KEY:+$CONTROL_KEY.pub}"
+  LOCAL_PUBKEY_SOURCE="${LOCAL_PUBKEY_SOURCE:-sparkrun control key}"
+elif [[ "$CALLER" != "$USER_NAME" ]]; then
   # Use ssh -G to discover which identity file SSH would actually use
   # (respects ~/.ssh/config Host/Match blocks, IdentityFile directives, etc.)
   # Two-pass strategy: first try bare host (matches SSH aliases like "Host dgx"),
@@ -122,9 +136,20 @@ if [[ "$CALLER" != "$USER_NAME" ]]; then
     LOCAL_PUBKEY="$(cat "$HOME/.ssh/id_ed25519.pub")"
     LOCAL_PUBKEY_SOURCE="$HOME/.ssh/id_ed25519.pub"
   fi
+fi
+
+if [[ -n "$LOCAL_PUBKEY" ]]; then
+  # Verify with exactly the key that was installed: an agent or another
+  # default identity could otherwise answer for it and hide a mismatch.
+  # (Expanded with the `+` guard below: bash < 4.4 treats an empty array as
+  # unbound under `set -u`.)
+  VERIFY_KEY_OPTS=()
+  if [[ -n "$CONTROL_KEY" ]]; then
+    VERIFY_KEY_OPTS=(-o IdentitiesOnly=yes -i "$CONTROL_KEY")
+  fi
+
   echo "=== Installing control machine key for remote access ==="
-  echo "Caller '$CALLER' differs from mesh user '$USER_NAME'."
-  echo "Installing caller's public key ($LOCAL_PUBKEY_SOURCE) so the control machine can SSH as '$USER_NAME'..."
+  echo "Installing $CALLER's public key ($LOCAL_PUBKEY_SOURCE) so the control machine can SSH as '$USER_NAME'..."
   for h in "${HOSTS[@]}"; do
     echo "[*] Installing caller key on $h ..."
     printf '%s\n' "$LOCAL_PUBKEY" | ssh_stdin_cmd "$h" "set -eu
@@ -141,11 +166,12 @@ if [[ "$CALLER" != "$USER_NAME" ]]; then
   done
   echo
 
-  # Verify cross-user pubkey auth works without ControlMaster
-  echo "=== Verifying cross-user SSH authentication ==="
+  # Verify control-machine pubkey auth works without ControlMaster
+  echo "=== Verifying control machine SSH authentication ==="
   _verify_failures=0
   for h in "${HOSTS[@]}"; do
     if ssh "${SSH_OPTS[@]}" \
+         ${VERIFY_KEY_OPTS[@]+"${VERIFY_KEY_OPTS[@]}"} \
          -o ControlPath=none \
          -o BatchMode=yes \
          -o ConnectTimeout=5 \
@@ -211,11 +237,14 @@ done
 echo
 
 echo "=== Phase 3: Fetch each host's public key ==="
-declare -A PUBKEY
-for h in "${HOSTS[@]}"; do
+# Indexed parallel to HOSTS, not `declare -A`: associative arrays need bash 4,
+# and macOS still ships bash 3.2 as /bin/bash.
+PUBKEY=()
+for i in "${!HOSTS[@]}"; do
+  h="${HOSTS[$i]}"
   echo "[*] Reading public key from $h ..."
-  PUBKEY["$h"]="$(ssh_cmd "$h" "cat ~/.ssh/id_ed25519.pub")"
-  if [[ -z "${PUBKEY[$h]}" ]]; then
+  PUBKEY[$i]="$(ssh_cmd "$h" "cat ~/.ssh/id_ed25519.pub")"
+  if [[ -z "${PUBKEY[$i]}" ]]; then
     echo "[!] Failed to read pubkey from $h"
     exit 1
   fi
@@ -223,8 +252,9 @@ done
 echo
 
 echo "=== Phase 4: Install keys so every host trusts every other host ==="
-for src in "${HOSTS[@]}"; do
-  key="${PUBKEY[$src]}"
+for i in "${!HOSTS[@]}"; do
+  src="${HOSTS[$i]}"
+  key="${PUBKEY[$i]}"
   echo "[*] Installing key from $src onto all other hosts ..."
   for dst in "${HOSTS[@]}"; do
     if [[ "$src" == "$dst" ]]; then

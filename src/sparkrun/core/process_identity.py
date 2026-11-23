@@ -36,6 +36,19 @@ def process_identity(pid=None):
         return None
 
 
+def process_command(pid):
+    """Best-effort command line of *pid*, for messages only; ``None`` when unreadable."""
+    try:
+        if sys.platform == "linux":
+            argv = Path(f"/proc/{int(pid)}/cmdline").read_bytes().split(b"\0")
+            return " ".join(part.decode(errors="replace") for part in argv if part) or None
+        import psutil
+
+        return " ".join(psutil.Process(int(pid)).cmdline()) or None
+    except Exception:  # A message detail; never worth failing the caller over.
+        return None
+
+
 def alive(identity):
     return bool(identity and process_identity(identity.get("pid", -1)) == identity)
 

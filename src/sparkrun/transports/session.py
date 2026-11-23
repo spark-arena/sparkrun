@@ -243,8 +243,9 @@ class SshHostSession:
             if recursive:
                 command.append("-r")
             command.extend(sources)
-            target = f"{self.ssh_user}@{host}" if self.ssh_user else host
-            command.append(target + ":" + destination)
+            from sparkrun.orchestration.ssh import ssh_destination
+
+            command.append(ssh_destination(host, self.ssh_user) + ":" + destination)
         result = self._run(command, host)
         self._require_success("upload", result)
 

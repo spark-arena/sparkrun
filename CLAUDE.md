@@ -37,7 +37,7 @@ ruff format src/ tests/
 .venv/bin/sparkrun --help
 .venv/bin/sparkrun run --dry-run qwen3-1.7b-vllm
 
-# Sync versions across packages (pyproject.toml + sparkrun-cc-plugin)
+# Sync versions across packages (pyproject.toml + the three assistant plugins)
 python scripts/update-versions.py
 python scripts/update-versions.py --check   # CI-friendly verify
 ```
@@ -491,6 +491,26 @@ spellings and substitutes with a function, never a regex replacement string.
 `supports_per_node_env` (trtllm refuses per-node env templates) and
 `replica_service_domains` (vLLM service domains in `api.materialize`).
 
+**Engine settings are the runtime's to read** (`RuntimePlugin.engine_setting`,
+`declared_gpu_utilization`, `scheduler_gpu_fraction`, `declared_kv_cache_memory_bytes`).
+A recipe consumes them through `Recipe.runtime_plugin()` rather than reading
+`defaults` itself, because what the engine receives depends on the runtime: a
+`command:` template is rendered verbatim with nothing appended, so there the
+template's flag (literal, or placeholder resolved through the chain) is the value,
+and a template without the flag leaves the engine's default whatever `-o` says.
+Reading `defaults` first would under-claim exactly when a template hardcodes a
+high fraction. `scheduler_gpu_fraction()` is the scheduler's `util_fraction` (default
+`1.0`, exclusive; below 0.8 the occupancy schedulers share the GPU and reserve
+fraction × capacity, #335); a runtime opts in with `gpu_utilization_key` and its
+serve flag map. No placement puts two ranks of one request on a GPU, shared or
+not: they form one NCCL world, which refuses two ranks on a device. The packers
+skip a GPU once it holds one of the request's ranks (and do not report it as a
+rejection: it is in use, not blocked); an explicit layout that repeats a GPU is
+refused as `same_request`. Packing replicas onto one GPU would be a configuration
+knob, not a runtime flag, if it is ever wanted. Literal flags in templates are read only through
+`utils/command_flags.command_flag_value` (whole token, last occurrence wins as
+in argparse).
+
 **Executor resolution** (`RuntimePlugin._resolve_executor`): runtimes do not
 construct executors directly. The base helper delegates to
 `orchestration.executor:resolve_executor()` — a single layered chain (CLI →
@@ -498,6 +518,29 @@ recipe → `runtime.default_executor()` → per-executor adjustments →
 `SparkrunConfig` → per-executor defaults → dataclass field defaults). The
 previously-hardcoded `_KNOWN_EXECUTORS` set has been retired; selector
 validation queries SAF via `get_extensions(EXT_EXECUTOR)`.
+
+**Reaching into a running workload goes through its executor.** Recipe hooks
+(`pre_exec` / `post_exec`), runtime fix-ups (vLLM-Ray's exclusion file) and the
+failed-start serve-log dump build their command with `executor.for_host(host)`:
+`exec_cmd(..., user="root")` for running something (docker `--user`; `local` runs
+natively in the workload's prelude, k8s via `kubectl exec`) and `read_logs_cmd`
+for reading the serve log. Before this, all three hard-coded `docker exec`, so a
+`local` workload's hooks tried to enter a container that does not exist. Callers
+pass the launch's bound executor (`runtime.executor`, only when it is a real
+`Executor`; `launcher._bound_executor`); without one they keep the historical
+docker command. Hook *copy* entries (and mods, which become them) are `docker cp`,
+so `run_pre_exec` refuses them up front on a non-docker host rather than failing
+halfway through the hooks. `exec_cmd` ships its command base64-piped into `bash`;
+the hook deadline script was checked to behave identically that way (process-group
+kill, TERM-ignorer, transparent exit, surviving daemon, stdin at EOF), and
+`tests/_hook_scripts.hook_payload` unwraps it for assertions. Known gap for `local`: a native hook gets
+the executor prelude and the hook env, not the launch env, and container paths in
+the hook env (`SPARKRUN_RUNTIME_CACHE_DIR`) are not mapped to host paths (use
+`SPARKRUN_RUNTIME_CACHE_HOST_DIR`); `run_cmd`'s `_hostify_env` is the precedent
+for fixing it. Not workloads, so
+deliberately still docker: the RDMA suite's and kernel tuning's own tooling
+containers. The real-Docker hook test is opt-in:
+`SPARKRUN_TEST_HOOK_IMAGE=<local bash image>` (it takes the `host_docker` fixture).
 
 **Per-launch state stays off the plugin.** Runtimes are SAF singletons shared
 by every operation in the process (the desktop sidecar, the daemon's `proxy
@@ -587,6 +630,18 @@ See `docs/SECURITY.md`.
 through `_cluster_ops.resolve_comm_env(ctx, comm_env, backends)`. When
 `backends` is `None`, `resolve_comm_env` falls back to the legacy NCCL
 generator (byte-identical for NVIDIA hosts).
+
+**IB is detected once per launch.** `api.plan`'s combined probe already holds
+every placed host's IB facts, so `launch_inference` derives the comm env from
+those observations and threads it through transfer-mode resolution and
+distribution to `run()`. Two details keep that true. Backends are resolved
+**before** that comm env is built: a comm env built without them falls back to
+the NCCL generator, and once "pre-detected" nothing later applies the backends,
+so a non-NVIDIA host would get NCCL settings. And when distribution returns no
+comm env (a solo launch on the control machine, or a delegating runtime that
+skips it), the observed one is handed on instead of letting the runtime probe
+again. A placed host whose plan probe failed still makes the launch re-detect
+every host; that is wasteful, not wrong.
 
 ### Environment Builders (`builders/uv_venv.py`)
 
@@ -690,24 +745,84 @@ needs to know which NIC is the *management* interface — it becomes
 mode) emitted an interface that does not exist on the hardware and killed the
 launch at gloo init (issue #275).
 
-They now share one helper with a four-step chain — operator pin
-(`SPARKRUN_MGMT_IFACE`) → default route → the interface holding the local end
-of our own `SSH_CONNECTION` → first physical NIC that is up with a global IPv4
-— and **print nothing when none of them resolves**. Empty is the load-bearing
-part: `generate_nccl_env` already falls back to `DETECTED_NET_LIST` (the
-fabric adapters, which exist), whereas a guessed name is unrecoverable. Every
-candidate is checked against sysfs first, so a pin naming an absent device
-warns and falls through rather than being passed along.
+They now share one helper, and it **prints nothing when no rule resolves**.
+Empty is the load-bearing part: `generate_nccl_env` already falls back to
+`DETECTED_NET_LIST` (the fabric adapters, which exist), whereas a guessed name
+is unrecoverable. Every candidate is checked against sysfs first, so a pin
+naming an absent device warns and falls through rather than being passed along.
+
+The chain, first hit wins: operator pin (`SPARKRUN_MGMT_IFACE`) → **peer
+coverage** → the `SSH_CONNECTION` arrival interface if it is a physical NIC →
+the default route → the arrival interface even if virtual → first physical NIC
+that is up with a global IPv4, wired before wireless. The management network is
+the one the hosts reach *each other* on, so that is measured first; where the
+default route points answers a different question. With the default route
+first, a host whose wired NIC reached its peers but had no gateway, and whose
+WiFi held the only default route, rendezvoused over the WiFi. The default route
+is now only a fallback, which also makes an offline cluster resolve exactly like
+a connected one.
+
+Peer coverage needs the cluster's hosts, injected as `SPARKRUN_MGMT_PEERS` by
+`scripts.inject_mgmt_vars` (the one way to pass both inputs; every generator
+takes `mgmt_interface=` and `peers=`). The helper skips its own addresses, so
+the full host list is passed. Each interface carrying a route to a peer is
+ranked lexicographically: peers on its own subnet → peers via a specific route
+→ peers only via its default route → physical over virtual (a VPN wins only by
+reaching peers no NIC reaches, as when hosts are listed by Tailscale address) →
+wired over wireless → is the SSH arrival interface (below wired: on local
+dispatch `SSH_CONNECTION` is the operator's own login, which must not pull the
+cluster onto WiFi) → not a CX7 port → how many peers the kernel routes through
+it. Reach is read from routes alone (`ip -4 route show table all
+to match <peer>`, one call per peer, no packets, works offline). **Not `ip route
+get … oif`**: given an interface without a route it assumes on-link and answers
+anyway, so every interface "reaches" every peer. `table all` is what finds
+Tailscale's table-52 routes. Without peers (solo, single host, the control-side
+readiness/benchmark lookups) the chain starts at the SSH arrival interface, which
+is the address the control machine can reach.
+
+**The address is chosen too, not just the interface** (`sparkrun_mgmt_ip`):
+the source address of the most direct route to a peer through it → the SSH
+arrival address if on it → its first address. One NIC can hold a DHCP address
+and a static cluster address, and "first" used to be what `NODE_IP` and the
+native head address got. Multipath (ECMP) routes need care: a header line
+without a device, then `nexthop` lines that inherit its default-ness and source.
+
+**The choice is reported, not just made.** `sparkrun_mgmt_report` emits
+`DETECTED_MGMT_IFACE` / `_IP` / `_RULE` (`pinned`, `peers`, `ssh`,
+`default-route`, `ssh-virtual`, `scan`) / `_KIND` (`wired`, `wireless`,
+`virtual`, `fabric`) from `ib_detect.sh` and the combined probe, on every exit
+path including hosts without IB. `orchestration/mgmt_iface.py` is the one
+reader (`from_probe`, `management_findings`, `PIN_GUIDANCE`), so the three
+surfaces word it identically: the launch log (`ib_detection_from_observations`,
+a warning per finding), `cluster inspect` (a Management Network table; it passes
+`log_findings=False` so findings are not printed twice) and `setup check` (the
+check-only `mgmt_interface` step). Findings are a wireless choice and, on a
+multi-host cluster, a fallback rule (nothing routed to the peers, usually a host
+address that does not resolve on that host). A new built-in setup step needs
+its `setup.steps.<key>` feature flag, an entry in `_BUILTIN_KEYS` and a place in
+each platform's `SetupPlan`s, or it is silently never selected (unknown flags
+fail closed).
+
+The pin used to reach only `ib_detect.sh`, `cx7_detect.sh` and the combined
+probe: `ip_detect.sh` (`detect_host_ip`, the native head address) and
+`ray_head.sh` / `ray_worker.sh` (`NODE_IP`) re-detected without it, so a pinned
+cluster could still advertise the head on the interface the pin excluded.
 
 Two details are easy to break. The `<sysfs>/<if>/device` test is what
 separates real NICs from `docker0` / `br-*` / `veth*` / `tailscale0` (several
 hold a global IPv4 and sort *ahead* of the mgmt NIC), and `device/infiniband`
 is what stops the scan claiming a CX7 port as "management" — pinning the
-fabric is a deliberate act (`pin_comm_env_to_ib`), never a fallback. The
-helper is also written **brace-free, including its comments**: `ray_head.sh` /
+fabric is a deliberate act (`pin_comm_env_to_ib`), never a fallback. (Peer
+coverage may still choose a CX7 port, but only by reaching peers nothing else
+reaches, as when a cluster is listed by fabric addresses; so does the SSH
+arrival rule when the control machine connects over the fabric. That is why
+`detect_cx7_for_hosts` passes no peers: `cx7_detect.sh` drops its management
+interface from the CX7 list, and there it means "the link not to touch".) The helper is also
+written **brace-free, including its comments**: `ray_head.sh` /
 `ray_worker.sh` / the combined probe run it through `str.format()`, so one
-brace raises `KeyError` inside a Ray launch. `tests/test_mgmt_iface.py` runs
-the helper under real bash against a fixture sysfs tree and guards both.
+brace raises `KeyError` inside a Ray launch. That rules out arrays too, whose
+expansion needs braces. `tests/test_mgmt_iface.py` runs the helper under real
+bash against a fixture sysfs tree and routing table, and guards both.
 
 **GID-index selection** (`scripts/_gid_index.sh`, shared by `ib_detect.sh` and
 the combined probe) is the same rule applied to `NCCL_IB_GID_INDEX`: `show_gids`'
@@ -1408,7 +1523,18 @@ wholesale, so an omission is an erasure whose symptom — a teardown that
 authenticates as the wrong user and reports success — looks nothing like its
 cause. The experimental k8s path returns before `launch_inference`, so it has
 neither the asset pipeline nor the barrier; a strategy there is **refused**
-rather than silently ignored.
+rather than silently ignored. So are recipe hooks and mods
+(`plugins/k8s/run.py:_refuse_recipe_hooks`, all four `RECIPE_HOOK_KINDS`),
+for two different reasons the error states separately. `pre_exec` and mods are
+applied inside `launch_inference`, which this path never reaches (a modded recipe
+used to serve an unpatched engine with no warning). `post_exec` and
+`post_commands` need no container (`post_commands` run on the control machine)
+but run *after readiness*, rendered with `{base_url}` / `{head_ip}` from it, and
+the JobSet path has no reachable endpoint (`supports_host_endpoint = False`, the
+same gap that makes the readiness wait and benchmarks refuse k8s). Lifting that
+needs an endpoint contract (a Service plus a `readinessProbe`), which would
+unlock all of those at once, not a hook special case. The refusal precedes
+`before_start` (eviction) and submission, dry runs included.
 
 ### Launch Materialization (`api.materialize`)
 
@@ -1749,6 +1875,16 @@ every `api.*` entry point that resolves without an explicit cluster. It returns
 the whole definition rather than just the hosts, so the cluster's SSH user /
 executor / scheduler come with it; a dangling default (naming a deleted
 cluster) falls through to the next source instead of raising.
+
+**`SPARKRUN_CLUSTER`** overrides the default for one shell, inside
+`ClusterManager.get_default()`, the one read every default-cluster consumer
+goes through, so no caller needs to know about it. An unknown or invalid name
+warns once and falls back to the persisted default (a stale export must not
+block a command). The marker file is never written from it:
+`get_persisted_default()` is what `delete` clears against, and
+`default_override()` is what display surfaces use to say `(from SPARKRUN_CLUSTER)`.
+It reads the *process* env, so a daemon resolves its own environment, not the
+client's.
 
 **Mount-source preflight** (`Executor.verify_mount_sources(paths, hosts, …)`) is
 the substrate peer of `query_status` on the *write* path: "do these identity-mount
@@ -2202,6 +2338,15 @@ easily reused, and `kill(pid, 0)` would make the boot-started unit refuse to
 start and `proxy stop` signal a stranger. Records carry `boot_id`; one from
 another boot reads as not running. Records without it keep their old meaning.
 
+**Foreground supervision holds no host reservation.** `proxy start` runs under
+`operation_boundary(mutation=True)`, which for a flagless start reserves the
+default cluster's hosts in `operations.sqlite3`. `supervise_foreground` calls
+`coordination.release_reservations()` first: the start stays guarded, but a
+proxy supervised for days (the systemd unit) had refused every `run` on those
+hosts with `ResourceBusy`. The daemon backend releases before `wait_gateway`
+for the same reason. `proxy stop` reserves nothing (it touches no cluster
+host), or it would collide with the proxy it stops.
+
 **Restarts from outside the unit go through it** (`ProxyEngine._restart_proxy`).
 `proxy alias add`, `sync` and load/unload restart LiteLLM from the user's
 shell. Spawning the replacement there would put it outside the unit's cgroup
@@ -2361,13 +2506,89 @@ never auto-fixed), and **unreachable** (network/sshd). Only the first is
 offered a key install. The install's exit code is treated as a hint —
 success is confirmed by re-probing, which is the only trustworthy signal.
 
+**A changed host key is the operator's call, asked, never assumed**
+(`api/setup/_host_keys.py`). A re-imaged Spark and a man-in-the-middle look the
+same, so `find_changed_host_keys` only *reports* (per key type: recorded vs
+presented SHA256), and `replace_host_key(host, fingerprint)` re-scans and writes
+only if the host still presents the approved fingerprint. **It changes exactly
+one thing**: the recorded key of the approved type under the exact name ssh
+checks. That is why `known_hosts` is parsed and rewritten in Python (plain,
+hashed `|1|salt|hmac` and pattern entries, ssh's negation rule) instead of
+`ssh-keygen -R`. That command drops *every* type for the host, and re-adding
+what the host presents would trust keys nobody looked at: a MITM that cannot
+fake the ed25519 key the operator checked could still answer the rsa scan. It
+also deletes wildcard and multi-name lines covering other hosts. So:
+- a line naming several hosts only loses the one name;
+- a stale key that comes from a wildcard entry is refused;
+- `@revoked` keys are refused;
+- unapproved new types are left for ssh's `accept-new`;
+- the scan reads only lines for the scanned host (`--` before it);
+- names with `*?!,` are never written;
+- a host reached through `ProxyJump` / `ProxyCommand` is not scanned (a direct
+  keyscan could reach a different machine at that address).
+
+Matching follows OpenSSH, not `fnmatch`: patterns have only `*` and `?` (`[` is
+literal, as in `[10.0.0.*]:2222`), and a matching `!` vetoes the line. Lines are
+split on any whitespace (a tab-separated stale key otherwise survives beside the
+new one, and since ssh accepts *any* matching key, nothing would ever report it).
+A pattern on the same line as the exact name counts as a wildcard, so that line is
+refused rather than trimmed to the pattern. Bytes elsewhere in the file survive
+the rewrite (surrogateescape).
+
+Writes are atomic, LF-only, mode-preserving, through a symlink, under
+`~/.ssh/.known_hosts.sparkrun.lock`, the lock `known_hosts_refresh.sh` also takes.
+A multi-type replace backs up once (`backup=` on the first call only), so `.old`
+is the file as it was before that host. Scope is
+the first `UserKnownHostsFile` as `ssh -G` resolves it (`HostName` / `Port`
+→ `[host]:port` / `HostKeyAlias` / `HashKnownHosts`); host-to-host entries are
+`known_hosts_refresh.sh`'s, and a stale key in a second user file or the global
+file is not found. The CLI (`_resolve_changed_host_keys`) asks **once per host**
+`[y/N]` listing every changed type. `--yes` and a non-terminal never accept, they
+print `ssh-keygen -R`. Answers are remembered per process (`_host_key_answers`),
+so the wizard's gate, its mesh step and a CX7 re-mesh do not ask twice, and `yes`
+is threaded into `_run_ssh_mesh`. It runs in the access gate (wizard, native
+mesh) and in `_run_ssh_mesh` just before the script, *after* control-key
+resolution, so a broken `ssh.key` still fails before anything runs. Both functions
+are daemon ops (`setup.find_changed_host_keys` read, `setup.replace_host_key`
+admin). Detection is advisory and never fails setup (an uncheckable host is
+reported by ssh on the next connection). Tests: `conftest.unanswered_host_key_scans`
+stubs only `_scan` (the network half) and resets the answers; `ssh-keyscan` is on
+the I/O guard's list; fixtures pin `HashKnownHosts=no` because Ubuntu's system
+`ssh_config` turns it on.
+
 **CLI wiring** (`cli/_setup/_ssh.py`): `_ensure_ssh_access` is the wizard's gate
 (prints, prompts, persists a generated key as `ssh.key`); `_default_ssh_user`
 replaces the old `os.environ.get("USER", "root")` — POSIX-only, so on Windows it
 made every first connection as `root`. `_run_ssh_mesh` prefers
 `scripts/mesh_ssh_keys.sh` and falls back to `mesh_ssh_keys_native` when local
 `bash` is absent. The wizard runs the gate **once**, after the cluster-name and
-SSH-username prompts and before any other probe.
+SSH-username prompts and before any other probe. `setup ssh` runs it only on the
+native path (which needs key auth from its first connection; the script
+bootstraps with passwords), with `offer_user_change=False`: `setup ssh` does not
+persist a user, so a corrected one would mesh as a user later commands never use.
+
+**The mesh authorizes the key sparkrun connects with, not one it picks.**
+`api.setup.resolve_control_key` (console-free; the CLI's `_resolve_control_key`
+only renders it, and the daemon exposes it as `setup.resolve_control_key`, so a
+GUI-driven setup picks the same key) resolves what ssh will *offer*: `ssh.key`,
+authoritative (a `.pem` without `.pub` is derived via `ssh-keygen -y`, never
+substituted or overwritten) → `orchestration.ssh.offered_identities` (honours an
+ssh-config `IdentityFile`, which also suppresses the defaults) → stock identities
+→ generated `sparkrun_ed25519`, recorded as `ssh.key` (failure to record is
+fatal). **Read ssh's effective config through `effective_ssh_config`**, which
+runs `ssh -G` with `build_ssh_cmd`'s exact argv: a bare `ssh -G user@host`
+ignores `ssh.key` and `ssh.options` (`-F`, `-o IdentityFile=…`) and so answers a
+different question. (`_ssh_diagnose.find_local_public_key`,
+`_ssh_rotation._connection` and `orchestration/_ssh_identity.resolve_ssh_user`
+still parse `ssh -G` themselves.) The resolved key is passed to
+`mesh_ssh_keys.sh` as `SPARKRUN_CONTROL_PUBKEY` / `SPARKRUN_CONTROL_KEY` and
+installed on every host, same user or not. ssh drops its default identities once
+`-i` names an existing file, so the script's old choice (nothing for the same
+user, an `ssh -G` stock key otherwise) left `ssh user@host` working while every
+sparkrun command got "Permission denied (publickey)" until the wizard ran. After
+the mesh, `_verify_control_access` connects with the configured user, key and
+options and **fails** the mesh on refusal, naming the key; it runs even with
+`--no-discover-ips`.
 
 **known_hosts refresh** (`networking.distribute_host_keys` →
 `scripts/known_hosts_refresh.sh`) must **replace**, never append. ssh accepts a
@@ -2895,6 +3116,72 @@ nothing lil-specific.
   (`VllmRuntimeBase.structured_revision_args`; not for GGUF `repo:quant` or pre-placed weights). This was a general gap, found by the parity run: without it a
   command-less pinned recipe dies offline with `LocalEntryNotFoundError`.
 
+### ssh / exec (`plugins/connect/`, flags `cli.ssh` / `cli.exec`, beta/alpha)
+
+The `connect` plugin is on by default and owns two commands, each behind its own
+manifest-declared flag (named for the command path, the `cli.setup.k8s` rule, not
+for the plugin, whose own switch is `plugins.enabled.connect`). Stable opts in with
+`setup features enable cli.ssh` / `cli.exec`. `register()` checks each flag, so an
+off command is not registered at all. `connect` is a hidden alias of `ssh`.
+
+- **`sparkrun ssh [N | CLUSTER[/N]] [-- CMD]`**: `N` indexes the cluster's
+  **saved host list** (not a running job's head, which a load-aware scheduler may
+  place elsewhere). No target means node 0 of the default cluster (so it follows
+  `SPARKRUN_CLUSTER`). Naming the cluster both ways is refused.
+- **`sparkrun exec [N | WORKLOAD[/N]] [-- CMD]`**: `WORKLOAD` is a recipe or a
+  workload id, `N` indexes its containers head first (`runtime.log_sources`
+  order). No workload means the only one running on the host context, or an
+  error listing them. The node suffix comes off the **last** `/` only when it is
+  digits, so `@registry/recipe/1` works. All digits alone is always a node.
+
+Seams, so nothing here is CLI-only:
+
+- **`Executor.interactive_exec_argv(host, container, command, *, tty, ssh_kwargs,
+  resource)`** returns the control-machine argv. Docker: `docker exec -i [-t] ctr
+  sh -c ...` (bash when the image has it, else `sh`), no `--user` (exec inherits
+  `docker run --user`). k8s: local `kubectl exec`, honoring a native resource's
+  pod / container / namespace. **local**: no container, so the equivalent of
+  `docker exec` is the workload process's own environment. The script checks the
+  PID record and owner as `stop` does, then imports `/proc/<pid>/environ` and the
+  cwd of a live group member: exactly what the serve command got, including
+  `uv-venv`'s `env_file` activation and the launch env. A login shell re-asserts
+  that `PATH` after `~/.bashrc`, which may prepend another python. When no member
+  is readable it falls back to the executor prelude and says it lacks the launch
+  env. The script travels base64, so the host user's login shell never parses it.
+- **`interactive_ssh_argv`** (`orchestration/ssh.py`) is the one interactive ssh
+  builder: `ssh` and both host-substrate executors use it. It is the only caller
+  of `build_ssh_cmd(batch_mode=False)`; a person is at the keyboard, so password
+  and host-key prompts must reach them.
+- **`ssh_destination(host, user)`** builds every `[user@]host` (ssh, the stdin
+  pipeline, both rsync directions, `SshHostSession.upload`, the setup key
+  install). A host starting with `-` (`-oProxyCommand=...`) would be an ssh
+  option executed on the control machine, and a user prefix only hides that for
+  clusters that set one. Hosts may not contain whitespace; users may contain a
+  space (directory accounts), never a leading `-` or control characters.
+- **`api.open_exec_target`** resolves through `api._workload.open_workload`, the
+  front half `open_log_target` now shares, so logs and exec cannot disagree about
+  which container, executor or connection. Liveness reuses
+  `_verify_log_source_alive` on the one selected container. It is a daemon
+  **exclusion** (`daemon/coverage.py`): it hands a local terminal to a shell in a
+  workload, which over the wire would be remote command execution.
+- **Containers are addressed over the *placed* hosts.** Rank i lives on the i-th
+  host the job was placed on (job metadata `hosts`), not the i-th cluster host:
+  under an occupancy scheduler a tp1 job on host 3 is `<cid>_solo` there.
+  `resolve_workload_target`'s recipe form returns the discovery range (right for
+  `stop`, which sweeps everything), so `open_workload` swaps in the recorded hosts
+  unless the caller named hosts. This also fixed `logs <recipe>` on a subset
+  placement. `exec` passes hosts to the API only when the user typed them, so
+  `--cluster` names the connection and the job's record still decides the topology.
+
+CLI details: `--` is split off in `parse_args` before Click binds `TARGET`
+(otherwise `ssh -- uptime` targets `uptime`), which also stops completion
+offering targets after it. One word after `--` passes through as shell syntax
+(ssh's convention: `-- 'ps | grep x'`); several are quoted one argument each.
+`-t` for a command only when stdin *and* stdout are terminals (a forced PTY on
+redirected output writes CRLF). POSIX `execvp`s the tool; Windows runs it as a
+child and passes the status. A missing `ssh`/`kubectl` is a clean error, checked
+before anything is replaced.
+
 ### Plugin-Declared Registries (`core/registry_defaults.py`)
 
 `BOOTSTRAP_REGISTRY_URLS` / `FALLBACK_DEFAULT_REGISTRIES` are closed constants. `register_default_registry(entry,
@@ -3343,6 +3630,19 @@ hard-codes `"docker"` when no layer names an executor — `_default_executor_nam
 returns docker when enabled, else the sole enabled executor, else raises "name
 one / set `default_executor`" (never silently runs on a disabled backend).
 
+**Runtime gates (`runtime.*`)**: every in-tree runtime declares
+`RuntimePlugin.required_feature_flag`, one flag per engine family
+(`runtime.vllm` covers vllm-ray, vllm-distributed and eugr-vllm; then
+`runtime.sglang`, `.llama_cpp`, `.trtllm`, `.atlas`, `.modular_max`,
+`.tokenary`). All default on, on every channel, except `runtime.tokenary`
+(experimental, off everywhere). A gated-off runtime hides itself through
+`is_multi_extension` and is recorded in `runtimes.base.GATED_OFF_RUNTIMES` at
+registration, so `get_runtime` raises `RuntimeUnavailableError` (a
+`ValueError`, naming the flag) rather than "Unknown runtime", and `recipe
+validate` reports `runtime-disabled`, not `unknown-runtime`: the recipe is
+fine, the install has the engine switched off. Tests that resolve tokenary
+through the registry must enable it (subprocess, as in `TestRuntimeGates`).
+
 **Gateway gates**: see Inference Gateway above for the defaults (stated once
 there). Exclusivity ("one gateway at a time") is arbitrated at *resolution*, not
 by the flag registry.
@@ -3383,6 +3683,27 @@ passing. `tests/test_features.py` unit-tests the gate directly
 (`K8sExecutor().is_multi_extension(...)`) and exercises exclusion end-to-end in a
 clean subprocess (SAF exposes `is_multi_extension` once at registration and the
 registry is process-global, so a plugin can't be re-hidden mid-process).
+
+**`sparkrun daemon help` renders the operation catalog**
+(`cli/_daemon_help.py`). There is one catalog,
+`core.daemon_registry.operation_catalog`, which `GET /v1/ops` also serves, so the
+reference can never list an operation the daemon lacks. Without `--url`/`--socket`
+it initializes the application and `register_core_ops()` exactly as the server's
+lifespan does. Text comes from the library rather than a second copy
+(`daemon/op_docs.py`):
+- an op's description is `DESCRIPTIONS` → its `sparkrun.api` target's docstring
+  summary → the generic fallback;
+- field notes come from the target's `Args:` section and, for options-model ops
+  (`workloads.run` takes `RunOptions`), the model's attribute docstrings across
+  its MRO, plus `ADAPTER_FIELD_DOCS` for fields the daemon adapter adds;
+- `core_targets()` maps every core op to its target (`SPECS`, `OPTION_SPECS`,
+  `special_ops.SPECIAL_TARGETS`, model-cache bindings, `workloads.workload_target`);
+  a new op family belongs there.
+
+`_describe` is `lru_cache`d because a description is part of an op's definition:
+an equal re-registration must stay equal after a test double replaces the library
+attribute. `test_daemon_help` fails on any core op with a generic or duplicate
+description, which is what makes a reference worth reading.
 
 **`api` never imports `sparkrun.daemon` for shared types**: the job-store
 `Conflict` lives in `core.coordination` (re-exported by `daemon.jobs`);
@@ -3478,8 +3799,8 @@ embedded scripts, SSH execution, kernel tuning, and VRAM estimation.
 
 ### Companion Packages
 
-- **`sparkrun-cc-plugin/`** — Claude Code commands for run/stop/status/list, benchmark, monitor, proxy, and setup; shared CLI reference skills are `workloads`, `configuration`, and `registry`. Run `python3 scripts/sync-assistant-skills.py` after editing skills to regenerate the OpenClaw references with their tool-specific guidance. `tests/test_assistant_plugin_contracts.py` checks parity and parses examples without dispatching operations.
-- **`website/`** — Documentation site built with Astro (Starlight theme), deployed to Cloudflare Pages.
+- **`sparkrun-cc-plugin/`** — Claude Code commands for run/stop/status/list, benchmark, monitor, proxy, and setup; shared CLI reference skills are `workloads`, `configuration`, `registry`, `recipes`, and `plugins`. Run `python3 scripts/sync-assistant-plugins.py` after editing skills or commands to regenerate the OpenClaw and oh-my-pi references with their tool-specific guidance. `tests/test_assistant_plugin_contracts.py` checks parity and parses examples without dispatching operations.
+- **`sparkrun-omp-plugin/`** — oh-my-pi plugin: the same commands plus skills, generated from the Claude Code source by `scripts/sync-assistant-plugins.py` and installed through `.omp-plugin/marketplace.json`. It has no `package.json`; omp's `bash` tool runs the CLI directly.
 
 ## Key Dependencies
 

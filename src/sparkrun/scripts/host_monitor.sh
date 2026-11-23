@@ -39,8 +39,8 @@
 #   sparkrun_job_names  Pipe-delimited names of running sparkrun_ containers
 #   cpu_name            CPU model (x86 "model name"; arm64 MIDR parts decoded)
 #   gpu_count           Number of GPUs visible to nvidia-smi (empty when none)
-#   net_send_bytes_s    Outbound network rate, bytes/s (non-loopback, delta)
-#   net_recv_bytes_s    Inbound network rate, bytes/s (non-loopback, delta)
+#   net_send_bytes_s    Outbound network rate, bytes/s (non-loopback + RDMA, delta)
+#   net_recv_bytes_s    Inbound network rate, bytes/s (non-loopback + RDMA, delta)
 
 set -uo pipefail
 
@@ -148,10 +148,28 @@ read_cpu_name() {
         | sed 's/ + $//'
 }
 
-# Network byte counters summed over non-loopback interfaces.
+# Network byte counters summed over non-loopback interfaces, plus RDMA/verbs
+# traffic.  RoCE verbs traffic bypasses the netdev software counters on mlx5
+# (it shows up only in the RDMA vport / infiniband port counters), so the
+# infiniband port counters are added on top; on hosts without RDMA hardware
+# the files are absent, and the port counters exclude netdev traffic, so
+# nothing is double-counted.  IBTA port_xmit_data/port_rcv_data count octets
+# divided by 4 (double-word units), hence the * 4.
 # Outputs: rx_bytes tx_bytes
 read_net() {
-    awk 'NR > 2 {sub(/:$/, "", $1); if ($1 != "lo") {rx += $2; tx += $10}} END {printf "%.0f %.0f\n", rx, tx}' /proc/net/dev
+    local rx tx file v
+    read -r rx tx <<< "$(awk 'NR > 2 {sub(/:$/, "", $1); if ($1 != "lo") {rx += $2; tx += $10}} END {printf "%.0f %.0f\n", rx, tx}' /proc/net/dev)"
+    for file in /sys/class/infiniband/*/ports/*/counters/port_rcv_data \
+                /sys/class/infiniband/*/ports/*/counters/port_xmit_data; do
+        [ -r "$file" ] || continue
+        v=$(cat "$file" 2>/dev/null)
+        case $v in ''|*[!0-9]*) continue ;; esac
+        case $file in
+            *port_rcv_data)  rx=$((rx + v * 4)) ;;
+            *port_xmit_data) tx=$((tx + v * 4)) ;;
+        esac
+    done
+    printf '%.0f %.0f\n' "$rx" "$tx"
 }
 
 # Bytes/second from two byte-counter readings and the elapsed seconds.

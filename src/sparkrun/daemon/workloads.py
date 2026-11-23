@@ -38,8 +38,14 @@ def _load(name):
     return partial(invoke, name)
 
 
+def workload_target(name):
+    """The ``sparkrun.api.workloads`` function behind ``workloads.<name>``, for its documentation."""
+    return "workloads." + ("control" if name in {"status", "sleep", "wake"} else name)
+
+
 def register_workload_ops():
     from sparkrun.api._wire_schemas import RESULT_SCHEMAS
+    from sparkrun.daemon.ops import _describe
 
     for name in ("ensure_ready", "stop", "status", "sleep", "wake", "inventory", "endpoints", "plugins", "reconcile"):
         fields = dict(_BINDING)
@@ -73,6 +79,8 @@ def register_workload_ops():
                 ],
                 scope="admin" if name == "reconcile" else "read" if name in {"inventory", "endpoints", "status", "plugins"} else "operate",
                 resources="none" if name in {"inventory", "endpoints", "status", "plugins"} else "controller",
-                description="Inspect or control an exact workload using the shared recovery workflow.",
+                description=_describe(
+                    "workloads." + name, workload_target(name), "Inspect or control an exact workload using the shared recovery workflow."
+                ),
             )
         )

@@ -79,6 +79,7 @@ _BUILTIN_KEYS = frozenset(
         "sudoers",
         "ssh_identity",
         "ssh_mesh",
+        "mgmt_interface",
         "cx7",
         "rdma",
     }
@@ -239,6 +240,7 @@ def builtin_steps() -> tuple[SetupStep, ...]:
         SetupStep("sudoers", "Scoped sudoers rules", (c._check_sudoers,), _host_executor, a.sudoers, order=70),
         SetupStep("ssh_identity", "SSH host identities", (c._check_ssh_identity,), _mesh, order=75, requires_sudo=False),
         SetupStep("ssh_mesh", "SSH mesh", (c._check_ssh_mesh,), _mesh, order=80),
+        SetupStep("mgmt_interface", "Management network", (c._check_mgmt_interface,), _mesh, order=85, requires_sudo=False),
         SetupStep("cx7", "CX7 networking", (c._check_cx7,), _mesh, order=90),
         SetupStep("rdma", "RDMA fabric", (c._check_rdma,), _mesh, order=95),
     )

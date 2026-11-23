@@ -82,21 +82,35 @@ compatibility adapters; internal code must not use them.
 
 ### GPU allocation admission
 
-The occupancy schedulers (`occupancy-sparse` and `occupancy-dense`) treat normal
-recipe launches as exclusive GPU allocations. A `ResourceRequest` with
-`util_fraction >= 0.8` also reserves the whole GPU. An exclusive allocation needs
-an unoccupied GPU; the model/KV estimate does not veto it. Runtime startup and
-readiness determine whether the recipe actually fits in memory.
+A launch's claim on each GPU is its runtime's `scheduler_gpu_fraction()`: the memory
+fraction the engine will actually be given. vLLM-family runtimes, SGLang, Atlas and
+tokenary read `gpu_memory_utilization` (`--mem-fraction-static` for SGLang), from
+the config chain or, with a `command:` template, from the flag the template
+renders. Every other runtime, and a launch that sets no fraction, claims the whole
+GPU (`1.0`). So `--gpu-mem 0.3` on a vLLM recipe asks for 30% of each GPU it runs
+on. Every rank of one launch gets its own GPU, shared or not: the ranks form one
+NCCL world, which refuses two ranks on a device, so a `--tp 2` launch at 0.3 takes a
+0.3 share of two different GPUs.
 
-Explicit shared requests (`util_fraction < 0.8`) must fit both the remaining
-compute fraction and the capped memory budget. `memory_gb` is a per-rank GiB
-reservation; when omitted it is derived from utilization times nominal capacity.
+The occupancy schedulers (`occupancy-sparse` and `occupancy-dense`) reserve the
+whole GPU for a claim of at least 0.8. An exclusive allocation needs an unoccupied
+GPU; the model/KV estimate does not veto it. Runtime startup and readiness
+determine whether the recipe actually fits in memory. The 0.8 threshold lets an
+aggressive recipe near 0.9 own its GPU outright rather than be held to a shared
+budget it may legitimately exceed.
+
+Shared requests (`util_fraction < 0.8`) must fit both the remaining compute
+fraction and the capped memory budget. A shared launch reserves its fraction of
+the GPU's capacity, which is what the engine pre-allocates, not the model estimate.
+`memory_gb` is a per-rank GiB reservation; when omitted it is derived from
+utilization times nominal capacity.
 Unknown memory capacity cannot establish a shared fit. Shared jobs cannot enter
 an exclusively owned GPU, and an exclusive job cannot displace shared jobs.
 The same checks apply to solo requests and explicit layouts in the occupancy
 schedulers.
 
-The legacy `greedy` scheduler ignores existing occupancy and reservations. It
+The legacy `greedy` scheduler ignores existing occupancy and reservations, and is
+always sent a whole-GPU request (`Scheduler.supports_fractional` is `False`). It
 packs ranks into the first available hardware slots in host order, treating busy
 GPUs as available, so separate runs can be placed on the same GPU. It does not
 enforce the shared-allocation admission limits above. Separately, its API rejects

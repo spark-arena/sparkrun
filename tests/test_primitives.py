@@ -752,6 +752,17 @@ class TestProbeRemoteHfCache:
             with pytest.raises(RuntimeError, match="Could not resolve remote HF cache"):
                 probe_remote_hf_cache("h")
 
+    def test_failure_is_a_remote_probe_error_naming_the_host(self):
+        import pytest
+        from sparkrun.orchestration.primitives import RemoteProbeError, probe_remote_hf_cache
+
+        with patch(
+            "sparkrun.orchestration.primitives.run_remote_command",
+            return_value=RemoteResult(host="h", returncode=-1, stdout="", stderr="Execution timed out"),
+        ):
+            with pytest.raises(RemoteProbeError, match="Execution timed out. Check that h is reachable over SSH"):
+                probe_remote_hf_cache("h")
+
     def test_empty_output_raises_runtime_error(self):
         import pytest
         from sparkrun.orchestration.primitives import probe_remote_hf_cache

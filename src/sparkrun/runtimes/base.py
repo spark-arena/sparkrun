@@ -8,7 +8,7 @@ import re
 import shlex
 from abc import ABC, abstractmethod
 from logging import Logger
-from typing import Any, Mapping, TYPE_CHECKING
+from typing import Any, ClassVar, Mapping, TYPE_CHECKING
 
 from scitrera_app_framework import Plugin, Variables, ext_parse_bool
 
@@ -103,6 +103,19 @@ def render_flag_value(value: Any) -> str:
     return str(value)
 
 
+#: Runtime name -> the feature flag that switched it off, recorded at registration.
+GATED_OFF_RUNTIMES: dict[str, str] = {}
+
+
+class RuntimeUnavailableError(ValueError):
+    """A recipe named a real runtime that a feature flag has switched off.
+
+    A ``ValueError`` like the unknown-runtime error, so existing handlers keep
+    working, but distinct so the message can name the flag instead of telling
+    the user their recipe is wrong.
+    """
+
+
 class RuntimePlugin(Plugin, ABC):
     """Abstract base class for sparkrun inference runtimes.
 
@@ -119,6 +132,12 @@ class RuntimePlugin(Plugin, ABC):
 
     # --- Subclass must define ---
     runtime_name: str = ""
+
+    #: Feature flag gating this runtime (``None`` = always available). A gated-off
+    #: runtime hides itself from ``get_extensions`` (:meth:`is_multi_extension`);
+    #: naming it raises :class:`RuntimeUnavailableError`. The same mechanism
+    #: executors, builders and transports use.
+    required_feature_flag: ClassVar[str | None] = None
     # Legacy image metadata. Default selection requires platform qualification;
     # runtime-owned images may override default_image_for with hardware checks.
     default_image_prefix: str = ""
@@ -229,7 +248,24 @@ class RuntimePlugin(Plugin, ABC):
         return False
 
     def is_multi_extension(self, v: Variables) -> bool:
+        # SAF exposes a multi-extension plugin through get_extensions only when
+        # this is True at registration, so a gated-off runtime stays registered
+        # but is absent from list_runtimes / get_runtime (see core.features).
+        if self.required_feature_flag:
+            from sparkrun.core.features import feature_gate_enabled
+
+            return feature_gate_enabled(self.required_feature_flag, v)
         return True
+
+    def on_registration(self, v: Variables) -> None:
+        # Recorded here, the one point where a gated-off runtime is still
+        # visible, so get_runtime can say "disabled" rather than "unknown".
+        if not self.runtime_name:
+            return
+        if self.required_feature_flag and not self.is_multi_extension(v):
+            GATED_OFF_RUNTIMES[self.runtime_name] = self.required_feature_flag
+        else:
+            GATED_OFF_RUNTIMES.pop(self.runtime_name, None)
 
     def initialize(self, v: Variables, logger: Logger) -> RuntimePlugin:
         return self
@@ -727,7 +763,7 @@ class RuntimePlugin(Plugin, ABC):
         """Hook called after containers are launched but before serve command.
 
         Processes ``pre_exec`` commands from the recipe (if any) by running
-        them inside each container via ``docker exec``.  Subclasses can
+        them inside each workload through its executor.  Subclasses can
         override to add additional pre-serve logic (call ``super()`` to
         preserve pre_exec processing).
 
@@ -745,6 +781,7 @@ class RuntimePlugin(Plugin, ABC):
                 show the correct path.
         """
         if recipe and recipe.pre_exec:
+            from sparkrun.orchestration.executors._base import Executor
             from sparkrun.orchestration.hooks import current_hook_launch_context, run_pre_exec
 
             run_pre_exec(
@@ -756,6 +793,9 @@ class RuntimePlugin(Plugin, ABC):
                 trust=trust,
                 cache_dir=cache_dir,
                 launch_context=current_hook_launch_context(),
+                # The launch's bound executor, so hooks reach the workload the way
+                # it was launched; without one, the historical docker exec.
+                executor=self.executor if isinstance(self.executor, Executor) else None,
             )
 
     def get_extra_volumes(self) -> dict[str, str]:
@@ -953,6 +993,108 @@ class RuntimePlugin(Plugin, ABC):
         matching the discipline on :meth:`known_config_keys`.
         """
         return None
+
+    #: Config key holding this engine's per-accelerator memory fraction, for
+    #: engines whose setting bounds *total* device memory (vLLM's
+    #: ``gpu_memory_utilization``). Setting it opts the runtime into
+    #: :meth:`declared_gpu_utilization`'s shared reading; ``None`` declares none.
+    gpu_utilization_key: ClassVar[str | None] = None
+
+    def engine_setting(
+        self,
+        recipe: Recipe,
+        overrides: Mapping[str, Any] | None,
+        key: str,
+        flags: tuple[str, ...] | None = None,
+        *,
+        required: bool = False,
+    ) -> Any:
+        """The value of *key* the engine will actually be given, or ``None``.
+
+        Without a ``command:`` template the serve command is built from the
+        config chain, so the chain's value is what runs. A template is
+        rendered verbatim and nothing is appended for unreferenced keys, so
+        there the template decides: its flag's literal, or the placeholder it
+        names resolved through the chain; a template without the flag leaves
+        the engine's own default (``None`` here), whatever ``-o`` says.
+
+        *flags* default to this runtime's serve flag for *key*; the last
+        occurrence wins, as in argparse. An unresolvable placeholder is
+        ``None``, or raises ``ValueError`` when *required*.
+        """
+        from sparkrun.utils.command_flags import command_flag_value
+
+        config = recipe.build_config_chain(dict(overrides or {}))
+        if not recipe.command:
+            return config.get(key)
+        if flags is None:
+            flag = (self.serve_flag_map() or {}).get(key)
+            flags = (flag,) if flag else ()
+        raw = command_flag_value(recipe.command, *flags, literal_only=False) if flags else None
+        if isinstance(raw, str) and raw.startswith("{") and raw.endswith("}"):
+            raw = config.get(raw[1:-1])
+            if raw is None and required:
+                raise ValueError("Unresolved %s command parameter" % key)
+        return raw
+
+    def declared_gpu_utilization(self, recipe: Recipe, overrides: Mapping[str, Any] | None = None) -> float | None:
+        """The memory fraction this launch tells the engine, or ``None`` when unset or unknown.
+
+        :attr:`gpu_utilization_key` as the engine receives it
+        (:meth:`engine_setting`). ``None`` for a runtime that declares no key,
+        a value outside (0, 1], or a template that leaves it to the engine's
+        own default; a non-numeric config value raises. The VRAM estimate's
+        runtime budget; :meth:`scheduler_gpu_fraction` is the scheduling claim.
+        """
+        import math
+
+        from sparkrun.utils.data import float_setting
+
+        key = self.gpu_utilization_key
+        if key is None:
+            return None
+        value = self.engine_setting(recipe, overrides, key)
+        if value is None:
+            return None
+        try:
+            fraction = float_setting(value, key=key)
+        except ValueError:
+            if isinstance(value, str) and recipe.command:
+                return None  # an unparsable template literal says nothing usable
+            raise  # malformed config, as any setting does
+        if not math.isfinite(fraction) or not 0 < fraction <= 1:
+            return None
+        return fraction
+
+    def declared_kv_cache_memory_bytes(self, recipe: Recipe, overrides: Mapping[str, Any] | None = None) -> int | None:
+        """An explicit per-GPU KV allocation in bytes, or ``None`` when the engine sizes it itself.
+
+        For engines that accept a fixed KV budget (vLLM's
+        ``--kv-cache-memory-bytes``), which then replaces the fraction-based
+        sizing in the VRAM estimate. Default ``None``. An invalid budget
+        raises ``ValueError``, so planning fails rather than estimating.
+        """
+        return None
+
+    def scheduler_gpu_fraction(self, recipe: Recipe, overrides: Mapping[str, Any] | None = None) -> float:
+        """Fraction of each assigned accelerator this launch claims, in (0, 1].
+
+        The scheduler's ``ResourceRequest.util_fraction``: below
+        ``EXCLUSIVE_GPU_THRESHOLD`` (0.8) an occupancy scheduler may share the
+        GPU, at or above it the launch owns the GPU outright. One value for
+        every rank: engines apply a single fraction to each device.
+
+        :meth:`declared_gpu_utilization`, else ``1.0`` (exclusive): a runtime
+        that does not know how its engine bounds memory, or a malformed value,
+        never under-claims. A runtime whose engine expresses its claim
+        differently overrides this.
+        """
+        try:
+            declared = self.declared_gpu_utilization(recipe, overrides)
+        except ValueError:
+            logger.debug("Malformed %s; claiming the whole GPU", self.gpu_utilization_key, exc_info=True)
+            return 1.0
+        return declared if declared is not None else 1.0
 
     # noinspection PyUnusedLocal
     def world_size(
@@ -1376,9 +1518,9 @@ class RuntimePlugin(Plugin, ABC):
     def _cluster_log_mode(self) -> str:
         """Return the log tailing mode for cluster containers.
 
-        ``"file"`` uses :func:`stream_container_file_logs` (tails a log
-        file inside the container).  ``"docker"`` uses
-        :func:`stream_remote_logs` (``docker logs``).
+        ``"file"`` reads a log file inside the container (``MODE_FILE``
+        sources, which the executor reads with an in-container ``tail``).
+        ``"docker"`` reads the container's own stdout (``docker logs``).
 
         Default is ``"file"`` for native-cluster runtimes (which use
         the sleep-infinity + exec pattern) and ``"docker"`` for others.
@@ -1803,11 +1945,17 @@ class RuntimePlugin(Plugin, ABC):
             volumes=volumes,
             sparkrun_labels=sparkrun_labels or None,
         )
+        # Detached dispatch returns once the serve process is started, so a
+        # wall-clock cap guards against a hung dispatch.  Foreground exec *is*
+        # the serve process: it blocks for the server's lifetime and its exit
+        # status is the server's, which is what lets a supervisor (systemd's
+        # Restart=on-failure from ``export systemd``) react to a crash.  A cap
+        # there kills every healthy foreground server after 60s (rc 124).
         result = run_script_on_host(
             host,
             exec_script,
             ssh_kwargs=ssh_kwargs,
-            timeout=60,
+            timeout=60 if detached else None,
             dry_run=dry_run,
         )
         logger.info("Step 3/3: Serve command dispatched (%.1fs)", time.monotonic() - t0)

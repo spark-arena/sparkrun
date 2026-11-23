@@ -1551,3 +1551,17 @@ def test_declared_name_is_collapsed_at_launch(v):
     summary = next(i for i in collapsed if i.code == "deprecated-feature")
     assert "deprecated-recipe-name" in summary.summary
     assert "recipe validate my-recipe" in summary.fix
+
+
+def test_disabled_runtime_is_not_reported_as_unknown(v, monkeypatch):
+    """A runtime switched off by its feature flag is a fact about this install, not the recipe."""
+    from sparkrun.runtimes.base import RuntimeUnavailableError
+
+    def disabled(name, v=None):
+        raise RuntimeUnavailableError("Runtime %r is disabled by feature flag 'runtime.tokenary'." % name)
+
+    monkeypatch.setattr("sparkrun.core.bootstrap.get_runtime", disabled)
+    issues = validate_recipe(_recipe(runtime="tokenary"), v=v)
+    assert "runtime-disabled" in _codes(issues)
+    assert "unknown-runtime" not in _codes(issues)
+    assert any("runtime.tokenary" in i.message for i in issues if i.code == "runtime-disabled")

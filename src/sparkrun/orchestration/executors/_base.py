@@ -20,7 +20,7 @@ from scitrera_app_framework import Plugin, Variables, ext_parse_bool, get_extens
 
 from sparkrun.orchestration.teardown import TEARDOWN_REMOVED_MARKER
 from sparkrun.core.readiness import ReadinessObserver
-from sparkrun.scripts import read_script
+from sparkrun.scripts import inject_mgmt_vars, read_script
 from sparkrun.utils import merge_env
 from sparkrun.utils.shell import b64_encode_cmd, quote
 
@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from sparkrun.containers.entrypoint import EntrypointProbe
     from sparkrun.core.cluster_status import ClusterStatus, TerminationInfo
     from sparkrun.core.hardware import HostHardware
-    from sparkrun.core.log_source import LogSource
+    from sparkrun.core.log_source import LogResource, LogSource
     from sparkrun.core.runtime_cache import RuntimeCacheMounts
 
 logger = logging.getLogger(__name__)
@@ -542,9 +542,56 @@ class Executor(Plugin):
         command: str,
         detach: bool = False,
         env: dict[str, str] | None = None,
+        *,
+        user: str | None = None,
     ) -> str:
-        """Generate a container exec command string."""
+        """Generate a host-side command that runs *command* in a workload's environment.
+
+        The one way sparkrun runs something inside an existing workload
+        (recipe hooks, runtime fix-ups), so a native or provider workload is
+        reached the way it was launched rather than by assuming a docker
+        container. *user* asks for a specific user where the substrate has
+        one (``docker exec --user``); a substrate without one runs as the
+        connection's user.
+        """
         ...
+
+    def interactive_exec_argv(
+        self,
+        host: str,
+        container_name: str,
+        command: str | None = None,
+        *,
+        tty: bool = False,
+        ssh_kwargs: dict | None = None,
+        resource: "LogResource | None" = None,
+    ) -> list[str]:
+        """Control-machine argv that opens a shell, or runs *command*, where a workload runs.
+
+        The interactive peer of :meth:`exec_cmd`: that one generates a script
+        fragment to pipe somewhere, this one returns what a person's terminal
+        is handed to, so stdin, the TTY and the exit status pass straight
+        through. It runs in the workload's own environment (a container's, or
+        for a native process the process's), which is what makes "a shell in
+        the workload" mean the same thing on every substrate.
+
+        Host-substrate executors wrap a host-side command in
+        :func:`~sparkrun.orchestration.ssh.interactive_ssh_argv`, the builder
+        ``sparkrun ssh`` uses too; a provider executor returns its own control
+        plane's argv and ignores *host* / *ssh_kwargs*.
+
+        Args:
+            host: Host the container or process lives on.
+            container_name: The container (or process / pod) to enter.
+            command: One shell string to run instead of an interactive shell.
+            tty: Allocate a terminal (the caller decides from its own stdio).
+            ssh_kwargs: Connection settings for host-substrate executors.
+            resource: Native resource identity, for controller-native workloads.
+
+        Raises:
+            NotImplementedError: The executor has no interactive exec.
+        """
+        raise NotImplementedError("The %s executor does not support interactive exec" % self.executor_name)
 
     @abstractmethod
     def stop_cmd(self, container_name: str, force: bool = True) -> str:
@@ -1138,8 +1185,14 @@ class Executor(Plugin):
         extra_docker_opts: list[str] | None = None,
         *,
         sparkrun_labels: dict[str, str] | None = None,
+        mgmt_interface: str | None = None,
+        peers: list[str] | None = None,
     ) -> str:
-        """Generate a script that starts a Ray head node in a container."""
+        """Generate a script that starts a Ray head node in a container.
+
+        *mgmt_interface* and *peers* decide which address the script detects
+        as ``NODE_IP`` (see :func:`sparkrun.scripts.inject_mgmt_vars`).
+        """
 
         all_env = merge_env({"RAY_memory_monitor_refresh_ms": "0"}, nccl_env, env)
 
@@ -1164,10 +1217,11 @@ class Executor(Plugin):
         )
 
         template = read_script("ray_head.sh")
-        return template.format(
+        script = template.format(
             cleanup_cmd=cleanup,
             run_cmd=run,
         )
+        return inject_mgmt_vars(script, mgmt_interface=mgmt_interface, peers=peers)
 
     def generate_ray_worker_script(
         self,
@@ -1181,8 +1235,14 @@ class Executor(Plugin):
         extra_docker_opts: list[str] | None = None,
         *,
         sparkrun_labels: dict[str, str] | None = None,
+        mgmt_interface: str | None = None,
+        peers: list[str] | None = None,
     ) -> str:
-        """Generate a script that starts a Ray worker node."""
+        """Generate a script that starts a Ray worker node.
+
+        *mgmt_interface* and *peers* decide which address the script detects
+        as ``NODE_IP`` (see :func:`sparkrun.scripts.inject_mgmt_vars`).
+        """
 
         all_env = merge_env({"RAY_memory_monitor_refresh_ms": "0"}, nccl_env, env)
 
@@ -1199,12 +1259,13 @@ class Executor(Plugin):
         )
 
         template = read_script("ray_worker.sh")
-        return template.format(
+        script = template.format(
             cleanup_cmd=cleanup,
             run_cmd=run,
             head_ip=head_ip,
             ray_port=ray_port,
         )
+        return inject_mgmt_vars(script, mgmt_interface=mgmt_interface, peers=peers)
 
     def generate_node_script(
         self,
@@ -1259,6 +1320,18 @@ class Executor(Plugin):
             "run_cmd": run,
             "label": quote(label),
         }
+
+
+def interactive_shell_command(command: str | None) -> str:
+    """The POSIX-sh command an interactive exec runs inside a container.
+
+    *command* as given, or the best shell the image has: bash when present,
+    else ``sh`` (slim and Alpine images ship no bash). Kept POSIX because it is
+    parsed by the container's ``sh``, not by the host's shell.
+    """
+    if command is not None:
+        return command
+    return "if command -v bash >/dev/null 2>&1; then exec bash; fi; exec sh"
 
 
 def _intent_id_from_cluster_id(cluster_id: str) -> str | None:

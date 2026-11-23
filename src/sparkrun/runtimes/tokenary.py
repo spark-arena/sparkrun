@@ -69,6 +69,10 @@ class TokenaryRuntime(RuntimePlugin):
     are NCCL-broadcast). Not Ray, not MPI.
     """
 
+    required_feature_flag = "runtime.tokenary"
+
+    gpu_utilization_key = "gpu_memory_utilization"
+
     runtime_name = "tokenary"
     default_image_prefix = "scitrera/tokenary"
 

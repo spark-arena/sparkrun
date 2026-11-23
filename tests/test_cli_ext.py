@@ -105,3 +105,21 @@ def test_pluggable_group_ensure_runs_once(clean_registry, monkeypatch):
     runner.invoke(root, ["--help"])
 
     assert len(calls) == 1  # guarded per-instance
+
+
+def test_resource_busy_renders_as_an_error_not_a_traceback(clean_registry, monkeypatch):
+    from sparkrun.core.coordination import ResourceBusy
+
+    monkeypatch.setattr(ext, "ensure_cli_extensions", lambda root, **kw: ext.attach_cli_extensions(root))
+    root = ext.PluggableGroup(name="root")
+
+    @root.command("busy")
+    def busy():
+        raise ResourceBusy("Execution resources are busy:\n  host:h1: held by running pid 1")
+
+    result = CliRunner().invoke(root, ["busy"])
+
+    assert result.exit_code == 1
+    assert "Error: Execution resources are busy:" in result.output
+    assert "host:h1: held by running pid 1" in result.output
+    assert "Traceback" not in result.output

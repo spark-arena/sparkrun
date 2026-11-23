@@ -414,23 +414,16 @@ def open_log_target(
         SparkrunError: Neither ``workload_id`` nor ``recipe`` was given, or
             *scope* is not a valid value.
     """
-    from sparkrun.api._resolve import prepare_transport, resolve_workload_target, scope_operation
-    from sparkrun.orchestration.executor import resolve_executor
+    from sparkrun.api._workload import open_workload
 
-    # Persistent metadata and runtime naming still use the internal cluster_id.
-    cluster_id = workload_id
     if scope not in (SCOPE_HEAD, SCOPE_ALL):
         raise SparkrunError("Invalid log scope %r: expected %r or %r" % (scope, SCOPE_HEAD, SCOPE_ALL))
     for name, value in (("host", host), ("container", container), ("source_id", source_id)):
         if value is not None and (not isinstance(value, str) or not value.strip()):
             raise ValueError("%s must be a non-empty string" % name)
 
-    from sparkrun.core.config import resolve_configured_cache_dir
-
-    cache_dir = str(resolve_configured_cache_dir(cache_dir, config=sctx.config if sctx is not None else None))
-
-    target_spec = resolve_workload_target(
-        workload_id=cluster_id,
+    access = open_workload(
+        workload_id,
         recipe=recipe,
         hosts=hosts,
         overrides=overrides,
@@ -439,28 +432,9 @@ def open_log_target(
         operation="Log resolution",
         sctx=sctx,
     )
-    cluster_id, meta, target_hosts, cluster_def, resolved_recipe = target_spec[:5]
-    # A native resource is read through its executor's control plane, which
-    # needs no host transport; everything else reads over the job's connection.
-    if not target_spec.transport_prepared and not (meta and meta.get("native_resource") is not None):
-        prepare_transport(cluster_def)
-
-    runtime = _resolve_runtime_for_job(meta, cluster_id, recipe=resolved_recipe, sctx=sctx)
-    from sparkrun.core._executor_destination import metadata_executor_overrides
-
-    executor = resolve_executor(
-        cluster=cluster_def,
-        cli_overrides=metadata_executor_overrides(meta),
-        rootless=False,
-        auto_user=False,
-        config=sctx.config if sctx is not None else None,
-        v=sctx.variables if sctx is not None else None,
-    )
-
-    from sparkrun.api._resolve import bind_job_cluster
-
-    cluster_def = bind_job_cluster(cluster_def, executor.resolve_target(dry_run=True), meta)
-    sctx, ssh_kwargs = scope_operation(cluster_def, sctx=sctx, prepare=False)
+    # Persistent metadata and runtime naming still use the internal cluster_id.
+    cluster_id, meta, target_hosts, cluster_def = access.cluster_id, access.meta, access.hosts, access.cluster
+    runtime, executor, sctx, ssh_kwargs, cache_dir = access.runtime, access.executor, access.sctx, access.ssh_kwargs, access.cache_dir
 
     cancel = cancel if cancel is not None else getattr(getattr(sctx, "operation", None), "cancel", None)
     filtered = any(value is not None for value in (host, container, source_id))
@@ -723,36 +697,6 @@ def _hint_block(info) -> str:
     if not hints:
         return ""
     return "\n" + "\n".join("  %s" % h for h in hints)
-
-
-def _resolve_runtime_for_job(meta: dict | None, cluster_id: str, *, recipe=None, sctx: "SparkrunContext | None"):
-    """Resolve the runtime that owns this workload's logs.
-
-    The runtime is what knows where its logs live, so getting this right is
-    what keeps ``api.logs`` from reading a container that doesn't exist: a
-    Ray job's head is ``{cid}_head`` with its serve output in an
-    in-container file, while a native job's head is ``{cid}_node_0``.
-    Guessing wrong yields "No such container" or an empty stream — which is
-    exactly what the previous hardcoded implementation did.
-
-    Prefers the *recipe* when the caller addressed the workload by one: the
-    recipe carries the runtime directly, so the recipe form keeps working
-    even when the job-metadata cache is missing (a job launched from another
-    control machine, or a cleared cache).  Falls back to metadata for the
-    cluster_id form, where the recipe isn't known.
-    """
-    from sparkrun.core.bootstrap import get_runtime
-
-    runtime_name = getattr(recipe, "runtime", None) or (meta or {}).get("runtime")
-    if not runtime_name:
-        raise JobNotFound(
-            "No job metadata (or no runtime recorded) for workload_id %r, so sparkrun can't tell where "
-            "this workload's logs live. Address it by recipe instead: api.logs(recipe=..., hosts=...)." % cluster_id
-        )
-    try:
-        return get_runtime(runtime_name, sctx.variables if sctx is not None else None)
-    except ValueError as e:
-        raise SparkrunError("Cannot resolve runtime %r for workload_id %r: %s" % (runtime_name, cluster_id, e)) from e
 
 
 __all__ = ["LogTarget", "logs", "open_log_target"]

@@ -546,6 +546,7 @@ def run_pre_exec(
     *,
     launch_context: HookLaunchContext | None = None,
     default_timeout_s: float | None = None,
+    executor=None,
 ) -> None:
     """Execute pre_exec commands inside containers.
 
@@ -553,7 +554,8 @@ def run_pre_exec(
     Processes commands sequentially with fail-fast semantics.
 
     Each command entry can be:
-    - A string: executed as ``docker exec <container> bash -c '<cmd>'``
+    - A string: executed in the workload through its executor
+      (``docker exec`` for a container, the native environment for ``local``)
     - A dict with ``command`` and optional ``timeout`` (seconds)
     - A dict with ``copy`` key: file injection via ``docker cp``
 
@@ -578,6 +580,8 @@ def run_pre_exec(
         default_timeout_s: Per-command timeout for entries that name none;
             ``None`` uses the launch's ``hooks.timeout_s`` (see
             :func:`resolve_hook_timeout`).
+        executor: The workload's executor (per host via ``for_host``);
+            ``None`` means docker.
 
     Raises:
         RuntimeError: If any command fails (fail-fast), or if *trust*
@@ -603,6 +607,7 @@ def run_pre_exec(
     launch_context = launch_context or build_hook_launch_context([host for host, _ in hosts_containers], config_chain)
     default_timeout = resolve_hook_timeout(default_timeout_s)
     steps = _hook_steps(rendered, "pre_exec")
+    _require_copy_support(steps, hosts_containers, executor)
 
     logger.info("Running %d pre_exec command(s) on %d container(s)...", len(rendered), len(hosts_containers))
 
@@ -623,6 +628,7 @@ def run_pre_exec(
                     label="pre_exec[%d]" % i,
                     env=hook_env,
                     timeout_s=timeout_s or default_timeout,
+                    executor=executor,
                 )
 
 
@@ -638,6 +644,7 @@ def run_post_exec(
     *,
     launch_context: HookLaunchContext | None = None,
     default_timeout_s: float | None = None,
+    executor=None,
 ) -> None:
     """Execute post_exec commands inside the head container.
 
@@ -659,6 +666,7 @@ def run_post_exec(
         trust: Skip confirmation prompt (auto-trust the commands).
         launch_context: Full launch metadata, including all participating nodes.
         default_timeout_s: Per-command timeout for entries that name none.
+        executor: The workload's executor; ``None`` means docker.
 
     Raises:
         RuntimeError: If any command fails (fail-fast), or if *trust*
@@ -694,6 +702,7 @@ def run_post_exec(
             label="post_exec[%d]" % i,
             env=hook_env,
             timeout_s=timeout_s or default_timeout,
+            executor=executor,
         )
 
 
@@ -911,14 +920,28 @@ def _run_exec_command(
     *,
     env: Mapping[str, str] | None = None,
     timeout_s: float = DEFAULT_HOOK_TIMEOUT_S,
+    executor=None,
 ) -> None:
-    """Execute a single command inside a container via docker exec.
+    """Execute a single command inside a workload, through its executor.
 
     The deadline is enforced twice.  Inside the container a watchdog kills
     the hook's whole process group (:func:`timed_hook_script`); killing only
     the ``docker exec`` (or ssh) client would leave the hook running in the
     container.  The control side waits a grace period longer, as the
     backstop for a hung connection.
+
+    The command comes from :meth:`Executor.exec_cmd` of *host*'s executor,
+    as root where the substrate has users, so a ``local`` workload's hook
+    runs on the host instead of a ``docker exec`` into a container that does
+    not exist. There it gets the executor's setup (working_dir, env_file,
+    GPU visibility) and the hook env, but not the launch env, and container
+    paths in the hook env (``SPARKRUN_RUNTIME_CACHE_DIR``) are not mapped
+    to the host (``SPARKRUN_RUNTIME_CACHE_HOST_DIR`` is the host one).
+    Without *executor* it is docker, as it always was.
+
+    The hook script is base64'd once by :func:`timed_hook_script` and again
+    by ``exec_cmd`` and travels as one argument, which Linux caps at 128 KiB:
+    a single inline hook can be about 73 KB (mods ship as copied files).
 
     Args:
         host: Target host.
@@ -929,6 +952,7 @@ def _run_exec_command(
         label: Human-readable label for log messages.
         env: Hook-only metadata exported to this exec and its child processes.
         timeout_s: Wall-clock limit for the command; ``math.inf`` for none.
+        executor: The workload's executor; ``None`` means docker.
 
     Raises:
         RuntimeError: If the command exits with non-zero status or times out.
@@ -936,18 +960,15 @@ def _run_exec_command(
     import math
 
     from sparkrun.orchestration.primitives import run_script_on_host
-    from sparkrun.utils.shell import b64_wrap_bash, quote
 
-    # TODO: this should delegate via executor implementation; this should allow control over user
-    env_args = "".join(" --env %s" % quote("%s=%s" % (key, value)) for key, value in sorted((env or {}).items()))
     if math.isinf(timeout_s):
         # ``timeout: 0`` on the entry: no watchdog, and no control-side limit.
         seconds = None
-        payload = b64_wrap_bash(cmd, quoted=False)
+        payload = cmd
     else:
         seconds = _whole_seconds(timeout_s)
         payload = timed_hook_script(cmd, seconds)
-    script = "docker exec --user root%s %s bash -c %s" % (env_args, quote(container_name), quote(payload))
+    script = _hook_executor(executor, host).exec_cmd(container_name, payload, env=dict(env or {}), user="root")
 
     logger.info("  %s on %s/%s (%s): %s", label, host, container_name, _describe_limit(seconds), cmd)
 
@@ -986,6 +1007,35 @@ def _run_exec_command(
                 log_key="%s-%s" % ((env or {}).get("SPARKRUN_CLUSTER_ID") or "unscoped", host),
             )
         )
+
+
+def _require_copy_support(steps, hosts_containers, executor) -> None:
+    """Refuse ``copy`` entries (and mods, which become them) before any hook runs.
+
+    A copy is a ``docker cp`` into the container; a substrate without one
+    (``local`` runs a native process) would fail it halfway through the
+    hooks, after earlier entries already changed the workload.
+    """
+    if executor is None or not any(isinstance(step, Mapping) for step in steps):
+        return
+    from sparkrun.orchestration.executors.docker import DockerExecutor
+
+    for host, _container in hosts_containers:
+        target = executor.for_host(host)
+        if not isinstance(target, DockerExecutor):
+            raise RuntimeError(
+                "pre_exec copy entries (and recipe mods) need a container; the %s executor on %s has none. "
+                "Bake the files into the environment instead, or run this recipe with the docker executor." % (target.executor_name, host)
+            )
+
+
+def _hook_executor(executor, host: str):
+    """*host*'s executor for a hook (docker when the caller has none, as before)."""
+    if executor is None:
+        from sparkrun.orchestration.executors.docker import DockerExecutor
+
+        return DockerExecutor()
+    return executor.for_host(host)
 
 
 def timed_hook_script(cmd: str, seconds: int) -> str:

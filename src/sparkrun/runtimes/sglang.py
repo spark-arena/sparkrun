@@ -92,6 +92,8 @@ _SGLANG_FLAG_MAP = {
     "disable_radix_cache": "--disable-radix-cache",
     "disable_prefill_cuda_graph": "--disable-prefill-cuda-graph",
     "enable_decoder_swa_bounded_replay": "--enable-decoder-swa-bounded-replay",
+    "enable_metrics": "--enable-metrics",
+    "enable_cache_report": "--enable-cache-report",
 }
 
 # Boolean flags (present = True, absent = False).
@@ -103,6 +105,8 @@ _SGLANG_BOOL_FLAGS = {
     "disable_radix_cache",
     "disable_prefill_cuda_graph",
     "enable_decoder_swa_bounded_replay",
+    "enable_metrics",
+    "enable_cache_report",
 }
 
 
@@ -149,6 +153,10 @@ class SglangRuntime(RuntimePlugin):
     under pure data parallelism, where there is no shared world to join at
     all.  See :class:`_SglangTopology`.
     """
+
+    required_feature_flag = "runtime.sglang"
+
+    gpu_utilization_key = "gpu_memory_utilization"
 
     runtime_name = "sglang"
     default_image_prefix = "scitrera/dgx-spark-sglang"

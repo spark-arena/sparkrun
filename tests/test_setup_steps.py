@@ -394,7 +394,8 @@ def test_extra_mesh_peers_are_probed_and_kept_on_context(v):
     ):
         _states, context = probe_setup_hosts(["h1", "h2"], ssh_kwargs={}, config=SparkrunConfig(), extra_mesh_peers=["ctl", "h2", "ctl"])
     assert context.extra_mesh_peers == ("ctl",)
-    readiness = [s for s in scripts["h1"] if "PEERS=" in s]
+    # The mesh probe's own PEERS assignment (discovery also carries SPARKRUN_MGMT_PEERS).
+    readiness = [s for s in scripts["h1"] if any(line.startswith("PEERS=") for line in s.splitlines())]
     assert readiness and "PEERS='h2 ctl'" in readiness[0]
 
 

@@ -151,10 +151,11 @@ def resolve_effective_hosts(
     placement = None
 
     config_chain = recipe.build_config_chain(overrides)
-    resolver = getattr(recipe, "resolve_kv_cache_memory_bytes", None)
-    if resolver is not None:
+    resolve_runtime = getattr(recipe, "runtime_plugin", None)
+    kv_budget = getattr(resolve_runtime(runtime) if resolve_runtime else runtime, "declared_kv_cache_memory_bytes", None)
+    if kv_budget is not None:
         try:
-            resolver(overrides)
+            kv_budget(recipe, overrides)  # an invalid explicit budget fails planning, not the estimate
         except ValueError as error:
             raise SparkrunError(str(error)) from error
     # All five parallelism dimensions gate the multi-node scheduling block:
@@ -194,6 +195,7 @@ def resolve_effective_hosts(
                 exclude_intent_id=exclude_intent_id,
                 layout=recipe.layout,
                 status_snapshot=status_snapshot,
+                runtime=runtime,
             )
         except InsufficientCapacity as e:
             cluster_status = getattr(e, "status", None)
@@ -246,6 +248,7 @@ def resolve_effective_hosts(
                 exclude_intent_id=exclude_intent_id,
                 layout=None,
                 status_snapshot=status_snapshot,
+                runtime=runtime,
             )
             placement = result.assignment
             host_list = list(result.assignment.hosts_used)
@@ -289,6 +292,7 @@ def _schedule_hosts(
     layout,
     single_host=False,
     status_snapshot=None,
+    runtime=None,
 ):
     """Build a :class:`SchedulingRequest` and run it through ``api.schedule``.
 
@@ -311,7 +315,9 @@ def _schedule_hosts(
         sctx=sctx,
         exclude_intent_id=exclude_intent_id,
         status_snapshot=status_snapshot,
+        runtime=runtime,
     )
+    resources = _shared_request(runtime, recipe, overrides, scheduler, sctx) or resources
     request = SchedulingRequest(
         parallelism=parallelism,
         hosts=tuple(host_list),
@@ -331,7 +337,38 @@ def _schedule_hosts(
     return result, cluster_status
 
 
-def _gather_scheduling_inputs(host_list, recipe, overrides, *, cluster_def, sctx, exclude_intent_id=None, status_snapshot=None):
+def _shared_request(runtime, recipe, overrides, scheduler, sctx):
+    """A shared-GPU :class:`ResourceRequest` when the launch claims part of a GPU, else ``None``.
+
+    ``runtime.scheduler_gpu_fraction`` below ``EXCLUSIVE_GPU_THRESHOLD`` asks for a
+    share. Its reservation is that fraction of each GPU's capacity
+    (``memory_gb=None``), which is what the engine pre-allocates, not the
+    model estimate. A scheduler that cannot share (greedy) keeps the whole-GPU
+    request, so a fraction never turns a working launch into a refusal.
+
+    Each rank still gets its own GPU (the occupancy schedulers never
+    co-locate one request's ranks), shared with other workloads.
+    """
+    from sparkrun.api._context import resolve_sctx
+    from sparkrun.core.allocations import EXCLUSIVE_GPU_THRESHOLD
+    from sparkrun.core.scheduler import ResourceRequest, get_scheduler
+
+    hook = getattr(runtime, "scheduler_gpu_fraction", None)  # duck-typed runtimes stay exclusive
+    if hook is None:
+        return None
+    fraction = hook(recipe, overrides)
+    if isinstance(fraction, bool) or not isinstance(fraction, (int, float)) or not 0 < fraction < EXCLUSIVE_GPU_THRESHOLD:
+        return None  # not a share (or not a fraction at all): claim the whole GPU
+    try:
+        shares = get_scheduler(scheduler, v=resolve_sctx(sctx).variables).supports_fractional
+    except ValueError:
+        return None  # api.schedule reports the unknown scheduler
+    return ResourceRequest(util_fraction=fraction) if shares else None
+
+
+def _gather_scheduling_inputs(
+    host_list, recipe, overrides, *, cluster_def, sctx, exclude_intent_id=None, status_snapshot=None, runtime=None
+):
     """Best-effort ``(status, host_hardware, resources)`` for a scheduling request.
 
     Shared by the multi-node scheduling block and the single-host occupancy
@@ -384,12 +421,10 @@ def _gather_scheduling_inputs(host_list, recipe, overrides, *, cluster_def, sctx
             missing_hw,
         )
 
-    resolver = getattr(recipe, "resolve_kv_cache_memory_bytes", None)
-    if resolver is not None:
-        resolver(overrides)
     resources = None
     try:
-        est = recipe.estimate_vram(cli_overrides=overrides)
+        # Only when known: duck-typed recipes predate the keyword.
+        est = recipe.estimate_vram(cli_overrides=overrides, **({"runtime": runtime} if runtime is not None else {}))
         per_rank = float(getattr(est, "total_per_gpu_gb", 0.0) or 0.0)
         if per_rank > 0:
             resources = ResourceRequest(memory_gb=per_rank, util_fraction=1.0)
@@ -428,6 +463,7 @@ def _pick_single_host(
             layout=recipe.layout,
             single_host=True,
             status_snapshot=status_snapshot,
+            runtime=runtime,
         )
     except InsufficientCapacity as e:
         detail = str(e) or "all %d host(s) occupied" % len(host_list)

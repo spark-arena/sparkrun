@@ -39,6 +39,7 @@ API_OPERATIONS.update(
 EXCLUSIONS = {
     "capture_diagnostics": "Python context manager; workloads.run and benchmarks.run/resume accept collect_diagnostics.",
     "open_log_target": "Python reader handle; /v1/streams/logs resolves each request and accepts the same host/container filters.",
+    "open_exec_target": "Hands a local terminal to a shell inside a workload; over the wire it would be remote command execution.",
     "default_sctx": "Python application binding; daemon creates an operation-local context.",
     "resolve_sctx": "Python application binding; daemon creates an operation-local context.",
     "resolve_catalog_recipe": "Returns a live Recipe; catalog.recipe exposes a bounded preview and run resolves it server-side.",
@@ -49,6 +50,7 @@ EXCLUSIONS = {
     "fresh_workload_id": "Experimental; returns a live RunPlan copy for the Python run(options, plan=...) path.",
     "proxy.admin_token": "Credential issuance is interactive/local; secrets are not persisted in job results.",
     "proxy.ui": "May issue a credential-bearing URL; use the local proxy ui command.",
+    "setup.key_fingerprint": "Pure local helper; setup.find_changed_host_keys already reports fingerprints.",
     "setup.install_public_key_interactive": "Requires a terminal-owned ssh-copy-id/password conversation; use setup in a terminal.",
     "setup.rotate_ssh_host_keys": "Host-identity rotation has no wire operation; use the confirmed setup ssh-rotate-keys CLI or Python API.",
     "setup.plan_cx7": "Experimental; reports progress and asks for a topology through Python callbacks. Use setup cx7 or the Python API.",
@@ -57,6 +59,8 @@ EXCLUSIONS = {
     "setup.validate_cx7_options": "Pure option check that plan_cx7 applies itself.",
     "setup.diagnose_ssh": "Requires a terminal-owned ssh password conversation; use setup ssh --diagnose in a terminal.",
     "setup.find_local_public_key": "Reads the caller's own ssh configuration; diagnose_ssh reports the result.",
+    "setup.load_identity": "Reads the caller's own private key file; setup.resolve_control_key reports the identity in use.",
+    "setup.validate_public_key": "Pure validation helper used before a key is embedded in a remote script.",
     "model_cache.reconcile_claims": "Composes status with model_cache.list and model_cache.reconcile; use the CLI or Python API.",
 }
 K8S_OPERATIONS = {

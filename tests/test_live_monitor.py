@@ -2636,3 +2636,26 @@ def test_report_from_thread_falls_back_to_stderr_when_the_app_is_gone(tmp_path, 
     app._report_from_thread("Stop failed for x: boom", severity="error")
     assert notes == []
     assert "Stop failed for x: boom" in capsys.readouterr().err
+
+
+def test_cluster_monitor_refresh_tick_after_shutdown_is_a_no_op(tmp_path):
+    """Textual prunes the screens before it closes the interval timers.
+
+    A refresh tick landing in that window queried a pruned ``#host-table`` and
+    raised NoMatches out of shutdown (seen on CI as a flaky monitor test).
+    """
+    pytest.importorskip("textual")
+    import asyncio
+
+    from sparkrun.cli._monitor_tui import ClusterMonitorApp
+
+    act = HostActivity(host="h1", telemetry=_gb10_sample())
+    app = ClusterMonitorApp(_FakeLiveMonitorSession(MonitorFrame(hosts=(act,))), ["h1"], interval=1, cache_dir=str(tmp_path))
+
+    async def _run():
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause(0.05)
+
+    asyncio.run(_run())
+    assert not app.is_running
+    app._refresh()

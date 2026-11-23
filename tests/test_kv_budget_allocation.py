@@ -80,7 +80,16 @@ def test_explicit_kv_is_never_sharded(tp, pp):
     ],
 )
 def test_command_budget_fallback(command, defaults):
-    assert recipe(command, **defaults).resolve_kv_cache_memory_bytes() == 8 * 1024**3
+    from sparkrun.runtimes.vllm_distributed import VllmDistributedRuntime
+
+    assert VllmDistributedRuntime().declared_kv_cache_memory_bytes(recipe(command, **defaults)) == 8 * 1024**3
+
+
+def test_kv_budget_belongs_to_the_runtime():
+    """Only an engine with a fixed-KV flag reports one; others size the cache themselves."""
+    from sparkrun.runtimes.llama_cpp import LlamaCppRuntime
+
+    assert LlamaCppRuntime().declared_kv_cache_memory_bytes(recipe(kv_cache_memory_bytes="8G")) is None
 
 
 def test_model_config_preserves_hybrid_markers():

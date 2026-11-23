@@ -242,6 +242,7 @@ _REJECTION_LABELS = {
     "observation_failed": "unavailable",
     "no_accelerators": "no GPU",
     "unknown_gpu_indices": "GPU occupancy unknown",
+    "same_request": "layout repeats a GPU",
 }
 
 

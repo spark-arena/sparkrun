@@ -1,0 +1,24 @@
+{
+  "name": "sparkrun",
+  "version": "0.0.6",
+  "description": "AI-assisted inference on NVIDIA DGX Spark - run, manage, and stop LLM workloads",
+  "author": {
+    "name": "scitrera.ai",
+    "email": "open-source-team@scitrera.com"
+  },
+  "homepage": "https://sparkrun.dev",
+  "repository": "https://github.com/spark-arena/sparkrun",
+  "license": "Apache-2.0",
+  "keywords": [
+    "inference",
+    "llm",
+    "dgx-spark",
+    "nvidia",
+    "vllm",
+    "sglang",
+    "gpu",
+    "cluster",
+    "oh-my-pi",
+    "omp"
+  ]
+}

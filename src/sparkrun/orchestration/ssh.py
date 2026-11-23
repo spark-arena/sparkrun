@@ -471,6 +471,7 @@ def build_ssh_cmd(
     ssh_key: str | None = None,
     ssh_options: list[str] | None = None,
     connect_timeout: int = 10,
+    batch_mode: bool = True,
 ) -> list[str]:
     """Build the base SSH command with standard options.
 
@@ -481,17 +482,139 @@ def build_ssh_cmd(
         ssh_key: Optional path to SSH private key file.
         ssh_options: Additional SSH command-line options.
         connect_timeout: SSH connection timeout in seconds.
+        batch_mode: Emit ``BatchMode=yes``. Only an interactive session a
+            person is typing into turns it off, so password and host-key
+            prompts can reach them.
 
     Returns:
         List of command parts suitable for subprocess.
     """
-    target = f"{ssh_user}@{host}" if ssh_user else host
-    return ["ssh", *_ssh_option_args(ssh_user, ssh_key, ssh_options, connect_timeout), target]
+    return [
+        "ssh",
+        *_ssh_option_args(ssh_user, ssh_key, ssh_options, connect_timeout, batch_mode=batch_mode),
+        ssh_destination(host, ssh_user),
+    ]
 
 
-def _ssh_option_args(ssh_user, ssh_key, ssh_options, connect_timeout):
+def ssh_destination(host: str, ssh_user: str | None = None) -> str:
+    """``[user@]host`` for an ssh/rsync destination, refusing option-shaped parts.
+
+    Hosts come from cluster files, job metadata and plugin imports, and land in
+    argv positionally. A host such as ``-oProxyCommand=...`` would be parsed as
+    an ssh option and run on the control machine. A user prefix happens to
+    defuse that, but only for clusters that set one, so the check never relies
+    on it.
+
+    Raises:
+        ValueError: *host* or *ssh_user* is empty, starts with ``-`` or
+            contains control characters, or *host* contains whitespace. A
+            user may contain a space (directory-service accounts do).
+    """
+
+    def _bad(value: str, *, spaces_ok: bool) -> bool:
+        return (
+            not value
+            or value.startswith("-")
+            or any(ord(c) < 32 or ord(c) == 127 or (c.isspace() and not (spaces_ok and c == " ")) for c in value)
+        )
+
+    ssh_user = ssh_user or None  # "" has always meant "the client's default"
+    if _bad(host, spaces_ok=False):
+        raise ValueError("Refusing host %r: not a valid ssh destination" % host)
+    if ssh_user is not None and _bad(ssh_user, spaces_ok=True):
+        raise ValueError("Refusing ssh user %r: not a valid ssh login" % ssh_user)
+    return f"{ssh_user}@{host}" if ssh_user else host
+
+
+def interactive_ssh_argv(
+    host: str,
+    remote_command: str | None = None,
+    *,
+    ssh_user: str | None = None,
+    ssh_key: str | None = None,
+    ssh_options: list[str] | None = None,
+    tty: bool = False,
+) -> list[str]:
+    """ssh argv for a session a person is typing into.
+
+    The one builder behind ``sparkrun ssh`` and every executor's
+    :meth:`~sparkrun.orchestration.executors._base.Executor.interactive_exec_argv`,
+    so a login shell and a container shell connect identically. Connection
+    settings are the shared ones minus ``BatchMode``, so password and host-key
+    prompts reach the person. *remote_command* is one shell string (the remote
+    shell parses it); ``None`` opens a login shell. *tty* forces ``-t``, which
+    a remote command needs for anything interactive; a login shell gets a PTY
+    without it.
+    """
+    argv = build_ssh_cmd(host, ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options, batch_mode=False)
+    if tty:
+        argv.insert(1, "-t")
+    if remote_command is not None:
+        argv.append(remote_command)
+    return argv
+
+
+def effective_ssh_config(
+    host: str,
+    ssh_user: str | None = None,
+    ssh_key: str | None = None,
+    ssh_options: list[str] | None = None,
+    timeout: int = 10,
+) -> dict[str, list[str]]:
+    """OpenSSH's resolved client configuration for connecting to *host* as sparkrun does.
+
+    Runs ``ssh -G`` with the exact arguments :func:`build_ssh_cmd` produces, so
+    ``ssh.key`` (``-i``), ``ssh.options`` (``-F``, ``-o …``) and ``~/.ssh/config``
+    all apply.  Asking a bare ``ssh -G user@host`` answers a different question
+    whenever any of those are set.  No connection is made.
+
+    Returns:
+        Lower-cased keyword → values in output order (keywords such as
+        ``identityfile`` repeat).  Each value is the rest of its line verbatim.
+
+    Raises:
+        ValueError: ``ssh -G`` exited non-zero.
+        OSError, subprocess.SubprocessError: ``ssh`` could not be run.
+    """
+    cmd = build_ssh_cmd(host, ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options)
+    result = subprocess.run([cmd[0], "-G", *cmd[1:]], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout)
+    if result.returncode != 0:
+        raise ValueError("ssh -G %s exited %d: %s" % (cmd[-1], result.returncode, (result.stderr or "").strip()))
+    values: dict[str, list[str]] = {}
+    for line in result.stdout.splitlines():
+        keyword, _, value = line.partition(" ")
+        if keyword and value:
+            values.setdefault(keyword.lower(), []).append(value.strip())
+    return values
+
+
+def offered_identities(
+    host: str,
+    ssh_user: str | None = None,
+    ssh_key: str | None = None,
+    ssh_options: list[str] | None = None,
+) -> list[Path]:
+    """Private-key files OpenSSH would offer *host* when sparkrun connects, in order.
+
+    When ``-i`` or an ``IdentityFile`` names a key, OpenSSH stops offering its
+    default identities, so this is the set a key must come from to be accepted
+    (agent keys aside).  Only files that exist are returned; ssh skips the rest.
+
+    Raises:
+        Whatever :func:`effective_ssh_config` raises.
+    """
+    identities: list[Path] = []
+    for value in effective_ssh_config(host, ssh_user=ssh_user, ssh_key=ssh_key, ssh_options=ssh_options).get("identityfile", []):
+        candidate = Path(os.path.expanduser(value))
+        if candidate.is_file() and candidate not in identities:
+            identities.append(candidate)
+    return identities
+
+
+def _ssh_option_args(ssh_user, ssh_key, ssh_options, connect_timeout, *, batch_mode=True):
     """One precedence rule for direct SSH, transfer pipelines and rsync."""
-    parts = ["-o", "BatchMode=yes", "-o", f"ConnectTimeout={connect_timeout}"]
+    parts = ["-o", "BatchMode=yes"] if batch_mode else []
+    parts.extend(["-o", f"ConnectTimeout={connect_timeout}"])
     # OpenSSH uses the first user option. A user@host target alone loses to
     # -o User=... / -l ... in ssh_options, which can redirect saved jobs.
     if ssh_user:
@@ -766,64 +889,6 @@ def stream_remote_logs(
 
     if follow:
         logger.info("Following logs for container '%s' on %s (Ctrl-C to stop)...", container_name, host or "localhost")
-    try:
-        subprocess.run(cmd)
-    except KeyboardInterrupt:
-        logger.info("\nLog following stopped.")
-
-
-def stream_container_file_logs(
-    host: str,
-    container_name: str,
-    log_file: str = "/tmp/sparkrun_serve.log",
-    ssh_user: str | None = None,
-    ssh_key: str | None = None,
-    ssh_options: list[str] | None = None,
-    tail: int | None = 100,
-    dry_run: bool = False,
-    follow: bool = True,
-) -> None:
-    """Print a log file from inside a running container, optionally following.
-
-    Runs ``docker exec <container> tail [-f] -n <N|+1> <file>``.  Used for
-    runtimes that exec the serve command inside a long-running container
-    (e.g. vLLM's ``sleep infinity`` + ``nohup serve``).
-
-    Args:
-        host: Target hostname or IP.
-        container_name: Name of the Docker container.
-        log_file: Path to the log file inside the container.
-        ssh_user: Optional SSH username.
-        ssh_key: Optional path to SSH private key.
-        ssh_options: Additional SSH options.
-        tail: Number of existing log lines to show.  ``None`` shows the
-            whole file (``tail -n +1``).
-        dry_run: If True, print the command that would run and return.
-        follow: When ``True`` (default), keep streaming new lines
-            (``-f``); when ``False``, dump and exit.
-    """
-    # ``tail -n +1`` emits the whole file from line 1; a concrete N emits
-    # the last N lines.  ``-f`` follows in either case.
-    lines_arg = "+1" if tail is None else str(tail)
-    tail_cmd = ["docker", "exec", container_name, "tail"]
-    if follow:
-        tail_cmd.append("-f")
-    tail_cmd += ["-n", lines_arg, log_file]
-
-    from sparkrun.orchestration.primitives import should_run_locally
-
-    if should_run_locally(host, ssh_user):
-        cmd = tail_cmd
-    else:
-        ssh_base = build_ssh_cmd(host, ssh_user, ssh_key, ssh_options)
-        cmd = ssh_base + tail_cmd
-
-    if dry_run:
-        logger.info("[dry-run] Would stream container file logs: %s", " ".join(cmd))
-        return
-
-    if follow:
-        logger.info("Following serve logs in container '%s' on %s (Ctrl-C to stop)...", container_name, host or "localhost")
     try:
         subprocess.run(cmd)
     except KeyboardInterrupt:
@@ -1227,7 +1292,7 @@ def run_pipeline_to_remote(
         ssh_options=ssh_options,
         connect_timeout=connect_timeout,
     )
-    target = f"{ssh_user}@{host}" if ssh_user else host
+    target = ssh_destination(host, ssh_user)
     pipeline = f"{local_cmd} | ssh {ssh_opts} {quote(target)} {quote(remote_cmd)}"
 
     if dry_run:
@@ -1434,7 +1499,7 @@ def run_rsync(
     if rsync_options is not None:
         rsync_options = guard_rsync_delete(rsync_options, source_path)
     src = source_path.rstrip("/") + "/"
-    target = f"{ssh_user}@{host}:{dest_path}" if ssh_user else f"{host}:{dest_path}"
+    target = "%s:%s" % (ssh_destination(host, ssh_user), dest_path)
     return _run_rsync_impl(
         src,
         target,
@@ -1538,7 +1603,7 @@ def run_rsync_from_remote(
     *dest_path*.
     """
     remote_src = source_path.rstrip("/") + "/"
-    remote = f"{ssh_user}@{host}:{remote_src}" if ssh_user else f"{host}:{remote_src}"
+    remote = "%s:%s" % (ssh_destination(host, ssh_user), remote_src)
     return _run_rsync_impl(
         remote,
         dest_path,

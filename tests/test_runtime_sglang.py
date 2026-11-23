@@ -96,6 +96,8 @@ def test_sglang_serve_flags_emitted_without_command_template():
                 "speculative_num_draft_tokens": 4,
                 "enable_torch_compile": True,
                 "disable_prefill_cuda_graph": True,
+                "enable_metrics": True,
+                "enable_cache_report": True,
             },
         }
     )
@@ -112,6 +114,8 @@ def test_sglang_serve_flags_emitted_without_command_template():
         "--speculative-num-draft-tokens 4",
         "--enable-torch-compile",
         "--disable-prefill-cuda-graph",
+        "--enable-metrics",
+        "--enable-cache-report",
     ):
         assert expected in cmd, "missing %r in: %s" % (expected, cmd)
 

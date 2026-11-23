@@ -9,7 +9,8 @@ stdout/stderr.
 Includes SSH bootstrap/mesh, RDMA diagnostics, and the shared host setup runner.
 
 Stable: the SSH bootstrap (``probe_ssh_access``, ``ensure_local_key``,
-``install_public_key_interactive``, ``mesh_ssh_keys_native``), ``rdma_test``,
+``install_public_key_interactive``, ``mesh_ssh_keys_native``), changed host
+keys (``find_changed_host_keys`` / ``replace_host_key``), ``rdma_test``,
 ``check_ssh_host_identities`` / ``rotate_ssh_host_keys`` and the
 ``run_setup_steps`` / ``run_setup_undo`` runner with their result types.
 
@@ -82,13 +83,18 @@ from ._rdma import (
     RdmaTestReport,
     rdma_test,
 )
+from ._host_keys import HostKeyChange, HostKeyReplacement, find_changed_host_keys, key_fingerprint, replace_host_key
 from ._ssh_access import (
     SPARKRUN_KEY_NAME,
+    ControlKey,
     LocalSshKey,
     SshProbe,
     ensure_local_key,
     install_public_key_interactive,
+    load_identity,
     probe_ssh_access,
+    resolve_control_key,
+    validate_public_key,
 )
 
 from ._ssh_diagnose import (
@@ -146,8 +152,16 @@ __all__ = [
     "run_setup_steps",
     # Functions
     "probe_ssh_access",
+    "find_changed_host_keys",
+    "replace_host_key",
+    "key_fingerprint",
+    "HostKeyChange",
+    "HostKeyReplacement",
     "ensure_local_key",
     "install_public_key_interactive",
+    "validate_public_key",
+    "load_identity",
+    "resolve_control_key",
     "mesh_ssh_keys_native",
     "rdma_test",
     # CX7 fabric configuration (experimental)
@@ -187,6 +201,7 @@ __all__ = [
     # Data models
     "SshProbe",
     "LocalSshKey",
+    "ControlKey",
     "MeshResult",
     "RdmaTestReport",
     "PairTestResult",

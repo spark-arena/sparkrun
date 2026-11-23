@@ -340,3 +340,28 @@ def test_native_cluster_step6_head_serve_failure_triggers_cleanup(monkeypatch):
     assert rc == 1
     assert cleanup_calls, "cleanup_after_failure should be invoked on head serve exec failure"
     assert any("head serve exec failed" in reason for reason in cleanup_calls)
+
+
+def test_dump_serve_log_reads_through_the_workloads_executor(monkeypatch, caplog):
+    """The executor decides how the serve log is read, as for ``sparkrun logs``."""
+    from sparkrun.orchestration.executors._base import ExecutorConfig
+    from sparkrun.orchestration.executors.docker import DockerExecutor
+    from sparkrun.orchestration.executors.local import LocalExecutor
+
+    seen = []
+
+    def fake_run_remote_command(host, cmd, *, timeout, dry_run, **ssh_kwargs):
+        seen.append(cmd)
+        return mock.MagicMock(stdout="boom\n", stderr="", returncode=0, success=True)
+
+    monkeypatch.setattr("sparkrun.orchestration.ssh.run_remote_command", fake_run_remote_command)
+    name = "sparkrun_" + "a" * 16 + "_" + "b" * 12 + "_solo"
+    with caplog.at_level(logging.ERROR, logger="sparkrun.runtimes._cluster_ops"):
+        dump_serve_log("h1", name, ssh_kwargs={}, executor=DockerExecutor())
+        dump_serve_log("h1", name, ssh_kwargs={}, executor=LocalExecutor(ExecutorConfig(log_dir="/var/log/w")))
+
+    docker_cmd, local_cmd = seen
+    assert "docker exec" in docker_cmd and "/tmp/sparkrun_serve.log" in docker_cmd
+    assert "docker" not in local_cmd and "/var/log/w/%s.log" % name in local_cmd  # a native workload's host logfile
+    assert all(cmd.endswith("2>/dev/null || true") for cmd in seen)  # still best effort
+    assert sum("boom" in r.message for r in caplog.records) == 2

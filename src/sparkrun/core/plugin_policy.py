@@ -73,6 +73,7 @@ KNOWN_PLUGINS: dict[str, KnownPlugin] = {
     "sparkarena": KnownPlugin("sparkarena", "Spark Arena", "integration.arena", bundled=True),
     "k8s": KnownPlugin("k8s", "Kubernetes", "integration.k8s", bundled=True),
     "lil": KnownPlugin("lil", "lil", "registry.lil", bundled=True),
+    "connect": KnownPlugin("connect", "Connect", bundled=True),
 }
 
 #: Plugin ID -> whole-plugin flag still honored as a loading fallback for every source.

@@ -289,6 +289,15 @@ def _resolve_target_accelerator(cluster, placement):
     return min(candidates) if candidates else (None, None)
 
 
+def describe_gpu_allocation(gpu_memory_utilization: float | None) -> str:
+    """How an occupancy scheduler reserves this recipe's GPUs, from its runtime memory fraction."""
+    from sparkrun.core.allocations import EXCLUSIVE_GPU_THRESHOLD
+
+    if gpu_memory_utilization is not None and gpu_memory_utilization < EXCLUSIVE_GPU_THRESHOLD:
+        return "shared, %.0f%% of each GPU (occupancy schedulers); runtime verifies actual memory fit" % (gpu_memory_utilization * 100)
+    return "exclusive GPU; runtime verifies actual memory fit"
+
+
 def display_vram_estimate(
     recipe,
     cli_overrides=None,
@@ -331,7 +340,7 @@ def display_vram_estimate(
         click.echo(f"  Pipeline parallel: {est.pipeline_parallel}")
     click.echo(f"  Per-GPU total:    {est.total_per_gpu_gb:.2f} GiB")
     click.echo("  Memory fit:       UNKNOWN (target capacity unknown)")
-    click.echo("  Allocation:       exclusive GPU by default; runtime verifies actual memory fit")
+    click.echo("  Allocation:       %s" % describe_gpu_allocation(est.gpu_memory_utilization))
     if est.kv_cache_memory_bytes is not None:
         click.echo("  KV budget source: explicit bytes; gpu_memory_utilization does not size KV")
         if est.max_context_tokens is not None:

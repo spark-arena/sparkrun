@@ -67,6 +67,8 @@ class ModularMaxRuntime(RuntimePlugin):
     ``HF_HOME``, so a pre-synced model is found with no extra wiring.
     """
 
+    required_feature_flag = "runtime.modular_max"
+
     runtime_name = "modular-max"
     default_image_prefix = "modular/max-nvidia-full"
 

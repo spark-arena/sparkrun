@@ -175,6 +175,25 @@ class PluggableGroup(click.Group):
         )
         return super().parse_args(ctx, args)
 
+    def invoke(self, ctx):
+        from sparkrun.core.coordination import ResourceBusy
+
+        try:
+            return super().invoke(ctx)
+        except ResourceBusy as exc:
+            # Contention is an answer (who holds what, and what to do), not a
+            # crash: no command renders it, and a traceback buried the holder.
+            raise click.ClickException(str(exc)) from exc
+        except RuntimeError as exc:
+            # Imported only on failure: every command passes through here.
+            from sparkrun.orchestration.primitives import RemoteProbeError
+
+            if isinstance(exc, RemoteProbeError):
+                # An unreachable host is an answer about the cluster, not a
+                # crash; several commands probe the head before doing anything.
+                raise click.ClickException(str(exc)) from exc
+            raise
+
     def _main_shell_completion(self, *args, **kwargs):
         # Click owns the completion flag and enters this hook before building
         # contexts. Avoid loading an application profile merely to detect TAB.

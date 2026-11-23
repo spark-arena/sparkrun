@@ -1,5 +1,6 @@
 """Unit tests for sparkrun.orchestration.infiniband module."""
 
+import logging
 from unittest.mock import patch
 
 from sparkrun.orchestration.comm_env import ClusterCommEnv
@@ -280,6 +281,42 @@ class TestValidateIbConnectivity:
         assert result == {}
 
     @patch("sparkrun.orchestration.ssh.run_remote_command")
+    def test_probes_are_quiet(self, mock_cmd):
+        """An unroutable IB IP is expected off-fabric; the SSH layer must not warn per IP."""
+        mock_cmd.return_value = RemoteResult(host="x", returncode=255, stdout="", stderr="No route to host")
+        validate_ib_connectivity({"spark1": ["192.168.11.13", "192.168.12.13"]})
+
+        assert mock_cmd.call_args_list
+        assert all(c.kwargs.get("quiet") is True for c in mock_cmd.call_args_list)
+
+    @patch("sparkrun.orchestration.ssh.run_remote_command")
+    def test_no_host_reachable_is_informational(self, mock_cmd, caplog):
+        """A control machine off the fabric selects the mgmt network: no warnings."""
+        mock_cmd.return_value = RemoteResult(host="x", returncode=255, stdout="", stderr="No route to host")
+        with caplog.at_level(logging.DEBUG, logger="sparkrun.orchestration.infiniband"):
+            result = validate_ib_connectivity({"spark1": ["192.168.11.13"], "spark2": ["192.168.11.14"]})
+
+        assert result == {}
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("management network" in r.getMessage() and r.levelno == logging.INFO for r in caplog.records)
+
+    @patch("sparkrun.orchestration.ssh.run_remote_command")
+    def test_partial_reachability_falls_back_quietly(self, mock_cmd, caplog):
+        """Fabric answering for only some hosts (a control node cabled to a
+        subset) still falls back to the mgmt network, without warnings."""
+
+        def _probe(ip, _cmd, **_kw):
+            return RemoteResult(host=ip, returncode=0 if ip == "192.168.11.13" else 255, stdout="", stderr="")
+
+        mock_cmd.side_effect = _probe
+        with caplog.at_level(logging.DEBUG, logger="sparkrun.orchestration.infiniband"):
+            result = validate_ib_connectivity({"spark1": ["192.168.11.13"], "spark2": ["192.168.11.14"]})
+
+        assert result == {}
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("spark2" in r.getMessage() and r.levelno == logging.DEBUG for r in caplog.records)
+
+    @patch("sparkrun.orchestration.ssh.run_remote_command")
     def test_first_candidate_works(self, mock_cmd):
         """Per-host candidate list: first IP responds → returned map uses first IP.
 
@@ -437,6 +474,7 @@ def test_ssh_kwargs_passed_through(mock_cmd):
         "true",
         connect_timeout=5,
         timeout=10,
+        quiet=True,
         ssh_user="drew",
         ssh_key="/path/to/key",
         ssh_options=["-o", "Foo=bar"],

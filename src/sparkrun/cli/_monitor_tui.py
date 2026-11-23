@@ -1129,6 +1129,11 @@ class ClusterMonitorApp(App):
     # -- refresh ------------------------------------------------------------
 
     def _refresh(self) -> None:
+        # Textual stops the app (is_running False) before pruning its screens,
+        # but closes the interval timers only afterwards, so a tick can land on
+        # widgets that are already gone and raise NoMatches out of shutdown.
+        if not self.is_running:
+            return
         self._frame = self._session.frame()
         self._refresh_table()
         self._refresh_detail()

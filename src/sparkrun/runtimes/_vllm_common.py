@@ -20,6 +20,23 @@ class VllmRuntimeBase(RuntimePlugin):
     that are identical between vllm-ray and vllm-distributed.
     """
 
+    required_feature_flag = "runtime.vllm"
+
+    gpu_utilization_key = "gpu_memory_utilization"
+
+    def declared_kv_cache_memory_bytes(self, recipe, overrides=None):
+        """``kv_cache_memory_bytes`` as vLLM receives it (:meth:`engine_setting`).
+
+        A template names it with ``--kv-cache-memory-bytes`` (or the
+        ``--kv-cache-memory`` alias); a placeholder there must resolve.
+        ``8G`` means 8 GiB, ``8g`` 8 billion bytes (vLLM's convention).
+        """
+        from sparkrun.utils.data import byte_size_setting
+
+        flags = ("--kv-cache-memory-bytes", "--kv-cache-memory")
+        value = self.engine_setting(recipe, overrides, "kv_cache_memory_bytes", flags, required=True)
+        return byte_size_setting(value, key="kv_cache_memory_bytes") if value is not None else None
+
     readiness_styles = (OPENAI_CHAT_STREAM, OPENAI_RESPONSES_STREAM, ANTHROPIC_MESSAGES_STREAM)
     readiness_health_path = "/health"
     replica_service_domains = True

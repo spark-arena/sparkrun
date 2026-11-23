@@ -350,61 +350,60 @@ def test_host_level_full_occupancy_on_multi_gpu_host_is_unambiguous():
 # --------------------------------------------------------------------------
 
 
-def test_fractional_two_ranks_share_single_gpu():
-    """tp=2, util_fraction=0.5 → both ranks on local_gpu=0."""
+def test_fractional_ranks_get_distinct_gpus():
+    """tp=2, util_fraction=0.5 on a 2-GPU host → one rank per GPU, each a 0.5 share."""
     sched = SparsePackScheduler()
     req = SchedulingRequest(
         parallelism=ParallelismConfig(tensor_parallel=2),
         hosts=("h1",),
+        host_hardware={"h1": _multi_gpu_host_hw(count=2)},
         resources=ResourceRequest(util_fraction=0.5),
     )
     result = sched.schedule(req)
     assert result.assignment.hosts_used == ("h1",)
-    assert len(result.assignment.by_rank) == 2
+    assert sorted(slot.local_gpu for slot in result.assignment.by_rank) == [0, 1]
     for slot in result.assignment.by_rank:
-        assert slot.host == "h1"
-        assert slot.local_gpu == 0
         assert slot.util_fraction == 0.5
 
 
-def test_fractional_infeasible_when_combined_util_exceeds_one():
-    """tp=2, util_fraction=0.6 → 0.6+0.6=1.2 > 1.0 on single-GPU host."""
+def test_fractional_ranks_of_one_request_never_share_a_gpu():
+    """tp=2 at 0.3 fits one GPU's budget twice, but one NCCL world needs a GPU per rank."""
     sched = SparsePackScheduler()
     req = SchedulingRequest(
         parallelism=ParallelismConfig(tensor_parallel=2),
         hosts=("h1",),
-        resources=ResourceRequest(util_fraction=0.6),
+        resources=ResourceRequest(util_fraction=0.3),
     )
-    with pytest.raises(InfeasibleScheduleError):
+    with pytest.raises(InfeasibleScheduleError, match="placed 1 of 2") as error:
         sched.schedule(req)
+    # The GPU holding rank 0 is in use, not blocked: nothing is reported against it.
+    assert error.value.rejections == ()
 
 
-def test_fractional_packs_two_per_gpu_across_multi_gpu_host():
-    """4-GPU host, tp=8, util_fraction=0.5 → 2 ranks per GPU × 4 GPUs."""
+def test_fractional_one_rank_per_gpu_on_multi_gpu_host():
+    """4-GPU host at util_fraction=0.5: tp=4 takes each GPU once; tp=8 cannot double up."""
     sched = SparsePackScheduler()
     hw = {"big": _multi_gpu_host_hw(count=4, memory_gb=80.0)}
-    req = SchedulingRequest(
-        parallelism=ParallelismConfig(tensor_parallel=8),
-        hosts=("big",),
-        host_hardware=hw,
-        resources=ResourceRequest(util_fraction=0.5),
-    )
-    result = sched.schedule(req)
-    assert result.assignment.hosts_used == ("big",)
-    assert len(result.assignment.by_rank) == 8
 
-    counts: dict[int, int] = {}
-    for slot in result.assignment.by_rank:
-        assert slot.util_fraction == 0.5
-        counts[slot.local_gpu] = counts.get(slot.local_gpu, 0) + 1
-    assert counts == {0: 2, 1: 2, 2: 2, 3: 2}
+    def request(tp):
+        return SchedulingRequest(
+            parallelism=ParallelismConfig(tensor_parallel=tp),
+            hosts=("big",),
+            host_hardware=hw,
+            resources=ResourceRequest(util_fraction=0.5),
+        )
+
+    result = sched.schedule(request(4))
+    assert sorted(slot.local_gpu for slot in result.assignment.by_rank) == [0, 1, 2, 3]
+    with pytest.raises(InfeasibleScheduleError):
+        sched.schedule(request(8))
 
 
 def test_fractional_diagnostics_mode_label():
     sched = SparsePackScheduler()
     req = SchedulingRequest(
         parallelism=ParallelismConfig(tensor_parallel=2),
-        hosts=("h1",),
+        hosts=("h1", "h2"),
         resources=ResourceRequest(util_fraction=0.5),
     )
     result = sched.schedule(req)
@@ -417,10 +416,10 @@ def test_fractional_diagnostics_mode_label():
 # --------------------------------------------------------------------------
 
 
-def test_memory_two_ranks_fit_in_one_gpu():
-    """80GB GPU, tp=2 on one host with memory_gb=40 each → must fit on one GPU."""
+def test_memory_two_ranks_take_two_gpus():
+    """tp=2, memory_gb=40 each on a 2×80GB host → one rank per GPU, 40GB reserved on each."""
     sched = SparsePackScheduler()
-    hw = {"big": _multi_gpu_host_hw(count=1, memory_gb=80.0)}
+    hw = {"big": _multi_gpu_host_hw(count=2, memory_gb=80.0)}
     req = SchedulingRequest(
         parallelism=ParallelismConfig(tensor_parallel=2),
         hosts=("big",),
@@ -429,8 +428,8 @@ def test_memory_two_ranks_fit_in_one_gpu():
     )
     result = sched.schedule(req)
     assert result.assignment.hosts_used == ("big",)
+    assert sorted(slot.local_gpu for slot in result.assignment.by_rank) == [0, 1]
     for slot in result.assignment.by_rank:
-        assert slot.local_gpu == 0
         assert slot.memory_gb == 40.0
 
 
@@ -738,15 +737,14 @@ def test_api_schedule_fractional_via_occupancy_sparse():
     parallelism = ParallelismConfig(tensor_parallel=2)
     req = SchedulingRequest(
         parallelism=parallelism,
-        hosts=("h1",),
+        hosts=("h1", "h2"),
         resources=ResourceRequest(util_fraction=0.5),
     )
     result = api_schedule(req, scheduler="occupancy-sparse")
     assert result.scheduler_name == "occupancy-sparse"
-    assert result.assignment.hosts_used == ("h1",)
+    assert set(result.assignment.hosts_used) == {"h1", "h2"}
     assert len(result.assignment.by_rank) == 2
     for slot in result.assignment.by_rank:
-        assert slot.local_gpu == 0
         assert slot.util_fraction == 0.5
 
 
@@ -770,15 +768,16 @@ def test_feasibility_predicate_matches_schedule():
 
     feasible = SchedulingRequest(
         parallelism=ParallelismConfig(tensor_parallel=2),
-        hosts=("h1",),
+        hosts=("h1", "h2"),
         resources=ResourceRequest(util_fraction=0.5),
     )
     assert sched.feasibility(feasible) is True
 
+    # Two ranks of one launch cannot share h1's only GPU, however small the share.
     infeasible = SchedulingRequest(
         parallelism=ParallelismConfig(tensor_parallel=2),
         hosts=("h1",),
-        resources=ResourceRequest(util_fraction=0.6),
+        resources=ResourceRequest(util_fraction=0.5),
     )
     assert sched.feasibility(infeasible) is False
 

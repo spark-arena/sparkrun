@@ -301,6 +301,41 @@ def _check_ssh_mesh(state: HostState, ctx: CheckContext) -> CheckItem | None:
     return CheckItem("ssh_mesh", "SSH mesh to peers", WARN, detail, "sparkrun setup ssh%s" % ctx.cluster_flag)
 
 
+def _check_mgmt_interface(state: HostState, ctx: CheckContext) -> CheckItem | None:
+    """Which interface this host's workloads will rendezvous on, and why.
+
+    Reads the management-interface report the discovery probe already made
+    (``DETECTED_MGMT_*`` in ``hardware.ib_info``), so it costs nothing extra
+    and states exactly what a launch would use.
+    """
+    from sparkrun.orchestration.mgmt_iface import from_probe, management_findings
+
+    if not ctx.multi_host or state.hardware is None:
+        return None
+    mi = from_probe(state.host, state.hardware.ib_info)
+    if mi is None:
+        return None
+    label = "Management network"
+    if not mi.interface:
+        return CheckItem(
+            "mgmt_interface",
+            label,
+            WARN,
+            "no management interface identified; control traffic falls back to the fabric",
+            _pin_guidance(ctx, "<iface>"),
+        )
+    detail = "%s%s (%s, %s)" % (mi.interface, " " + mi.address if mi.address else "", mi.kind or "unknown kind", mi.decided_by)
+    notes = management_findings({state.host: mi}, multi_host=True).get(state.host)
+    if notes:
+        return CheckItem("mgmt_interface", label, WARN, "%s; %s" % (detail, "; ".join(notes)), _pin_guidance(ctx, mi.interface))
+    return CheckItem("mgmt_interface", label, OK, detail)
+
+
+def _pin_guidance(ctx: CheckContext, iface: str) -> str:
+    """The command that pins this cluster's management interface."""
+    return "sparkrun cluster update %s --mgmt-interface %s" % (ctx.cluster_name or "<cluster>", iface)
+
+
 def _check_cx7(state: HostState, ctx: CheckContext) -> CheckItem | None:
     """Vet *effective* CX7 state via :func:`detect_cx7_for_hosts` output.
 

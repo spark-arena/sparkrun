@@ -44,12 +44,16 @@ def resolve_setup_context(
     return ctx
 
 
-def setup_discovery_script() -> str:
-    """Hardware identification and minimal OS prerequisites, before optional probes."""
+def setup_discovery_script(peers: list[str] | None = None, mgmt_interface: str | None = None) -> str:
+    """Hardware identification and minimal OS prerequisites, before optional probes.
+
+    *peers* and *mgmt_interface* feed management-interface detection (see
+    :func:`sparkrun.scripts.inject_mgmt_vars`).
+    """
     from sparkrun.core.hardware_probe import generate_combined_probe_script
     from sparkrun.scripts import read_script
 
-    return "(\n" + generate_combined_probe_script() + "\n)\n(\n" + read_script("setup_discover.sh") + "\n)\n"
+    return "(\n" + generate_combined_probe_script(mgmt_interface, peers=peers) + "\n)\n(\n" + read_script("setup_discover.sh") + "\n)\n"
 
 
 def _discovered_state(host, result) -> HostState:
@@ -111,7 +115,7 @@ def probe_setup_hosts(
     from sparkrun.scripts import read_script
     from sparkrun.utils.text import parse_kv_output
 
-    discovery = setup_discovery_script()
+    discovery = setup_discovery_script(peers=list(hosts or ()), mgmt_interface=cluster.mgmt_interface if cluster is not None else None)
 
     def discover(host):
         try:

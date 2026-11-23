@@ -174,7 +174,7 @@ def test_solo_all_ranks_require_one_host(factory):
         factory().schedule(replace(req, host_hardware={"small": hardware(), "large": hardware()}))
 
 
-@pytest.mark.parametrize("indices,reason", [([0, 0], "occupied"), ([0, 2], "invalid_gpu")])
+@pytest.mark.parametrize("indices,reason", [([0, 0], "same_request"), ([0, 2], "invalid_gpu")])
 def test_explicit_layout_cannot_duplicate_or_invent_exclusive_gpus(indices, reason):
     from sparkrun.core.layout import RecipeLayout, Placement
 

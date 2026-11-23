@@ -605,12 +605,16 @@ def _start(options: ProxyStartOptions, *, sctx: "SparkrunContext", daemon_attach
     return ProxyStartResult(started=True, restarted=restarted, **common)
 
 
-@operation_boundary(mutation=True)
+@operation_boundary()
 def stop(*, dry_run: bool = False, sctx: "SparkrunContext | None" = None) -> ProxyStopResult:
     """Stop the running proxy and its auto-discover daemon.
 
     Ungated on purpose: teardown must work even after the gateway's feature
     flag has been turned off. Declared stop failures raise ProxyUpdateFailed.
+
+    Takes no host reservation: it signals a control-machine process and
+    touches no cluster host. Reserving the default cluster made stop refuse
+    whenever anything held those hosts, including the proxy being stopped.
     """
     with _gateway_update_errors():
         engine = _running_engine(sctx)

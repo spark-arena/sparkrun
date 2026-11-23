@@ -630,6 +630,8 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                         discover_ips=(len(host_list) >= 2),
                         dry_run=dry_run,
                         control_is_member=(self_ip is not None and self_ip in mesh_hosts),
+                        config=config,
+                        yes=yes,
                     )
                     mesh_ready = bool(ok)
                     results["ssh"] = "OK" if ok else "failed"
@@ -929,6 +931,8 @@ def setup_wizard(ctx, hosts, cluster_name, user, dry_run, yes):
                     discover_ips=True,
                     dry_run=dry_run,
                     control_is_member=(self_ip is not None and self_ip in mesh_hosts),
+                    config=config,
+                    yes=yes,
                 )
                 results["ssh_remesh"] = "OK" if ok else "failed"
                 if ok and not dry_run and cluster_name:

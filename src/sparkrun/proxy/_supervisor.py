@@ -633,6 +633,13 @@ class GatewaySupervisor(GatewayState):
         Returns:
             The exit status for the foreground command.
         """
+        from sparkrun.core.coordination import release_reservations
+
+        # The gateway is up; what follows only watches it. Startup ran under
+        # the caller's host reservation, which must not outlive it: the unit
+        # runs this for the proxy's whole life, and every `run` on the
+        # cluster's hosts was refused with ResourceBusy meanwhile.
+        release_reservations()
         if getattr(self, "_discovery_control", False):
             self._mark_state(service_ready=True)
         supervised = {proc.pid}

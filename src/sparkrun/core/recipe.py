@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from sparkrun.core.recipe_overrides import OverrideResolution
     from sparkrun.core.registry import RegistryManager
     from sparkrun.models.vram import VRAMEstimate
+    from sparkrun.runtimes.base import RuntimePlugin
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,7 @@ _RAY_BACKEND_RE = re.compile(r"--distributed-executor-backend\s+ray\b")
 # --kv-cache-dtype (vllm/sglang/atlas: --kv-cache-dtype) or tokenary (--kvcache-dtype),
 # space- or =-separated. Captured so a recipe that sets the flag only inside the
 # free-form command: template is still picked up by the VRAM estimator (issue #248).
-_KV_CACHE_DTYPE_FLAG_RE = re.compile(r"--kv-?cache-dtype[=\s]+(\S+)", re.IGNORECASE)
+_KV_CACHE_DTYPE_FLAGS = ("--kv-cache-dtype", "--kvcache-dtype")
 # The name a workload is *served under*, spelled differently per runtime:
 # vllm / sglang / modular-max use --served-model-name, atlas --model-name,
 # llama.cpp --alias.  (llama.cpp's short "-a" is deliberately excluded: a bare
@@ -50,7 +51,7 @@ _KV_CACHE_DTYPE_FLAG_RE = re.compile(r"--kv-?cache-dtype[=\s]+(\S+)", re.IGNOREC
 # recipe that sets the name only inside the free-form command: template is still
 # visible to the benchmark, the proxy and the container labels — see
 # :func:`extract_served_model_name_from_command`.
-_SERVED_MODEL_NAME_FLAG_RE = re.compile(r"--(?:served-model-name|model-name|alias)[=\s]+(\S+)", re.IGNORECASE)
+_SERVED_MODEL_NAME_FLAGS = ("--served-model-name", "--model-name", "--alias")
 _CMD_VLLM_RE = re.compile(r"^vllm\s+serve\b")
 _CMD_SGLANG_RE = re.compile(r"^(?:sglang\s+serve|python3?\s+-m\s+sglang\.launch_server)\b")
 _CMD_LLAMA_CPP_RE = re.compile(r"^llama-server\b")
@@ -576,13 +577,10 @@ def extract_kv_cache_dtype_from_command(command: str | None) -> str | None:
 
     Returns the first match's value (``"auto"`` treated as absent), or ``None``.
     """
-    if not command:
-        return None
-    m = _KV_CACHE_DTYPE_FLAG_RE.search(command)
-    if not m:
-        return None
-    value = m.group(1)
-    if value.lower() in ("auto", ""):
+    from sparkrun.utils.command_flags import command_flag_value
+
+    value = command_flag_value(command, *_KV_CACHE_DTYPE_FLAGS)
+    if not value or value.lower() == "auto":
         return None
     return value
 
@@ -617,15 +615,9 @@ def extract_served_model_name_from_command(command: str | None) -> str | None:
     recipes, and this sits on the launch path's best-effort metadata write,
     where a ``TypeError`` would fail a launch that was otherwise fine.
     """
-    if not command or not isinstance(command, str):
-        return None
-    m = _SERVED_MODEL_NAME_FLAG_RE.search(command)
-    if not m:
-        return None
-    value = m.group(1).strip("\"'")
-    if not value or "{" in value or "}" in value:
-        return None
-    return value
+    from sparkrun.utils.command_flags import command_flag_value
+
+    return command_flag_value(command, *_SERVED_MODEL_NAME_FLAGS)
 
 
 def resolve_served_model_name(recipe: "Recipe", declared: Any = None) -> str:
@@ -1946,28 +1938,23 @@ class Recipe:
         recipe.resolve(overrides)
         return recipe
 
-    def resolve_kv_cache_memory_bytes(self, cli_overrides: dict | None = None) -> int | None:
-        """Resolve the explicit per-GPU KV budget without fetching model metadata."""
-        import shlex
-        from sparkrun.utils.data import byte_size_setting
+    def runtime_plugin(self, runtime: "RuntimePlugin | None" = None) -> "RuntimePlugin | None":
+        """*runtime* if given, else this recipe's registered runtime; ``None`` when unknown.
 
-        config = self.build_config_chain(cli_overrides)
-        value = config.get("kv_cache_memory_bytes")
-        if value is None and self.command:
-            try:
-                tokens = shlex.split(self.command.replace("\\\n", " "))
-            except ValueError:
-                tokens = []
-            for index, token in enumerate(tokens):
-                flag, equal, inline = token.partition("=")
-                if flag not in ("--kv-cache-memory-bytes", "--kv-cache-memory"):
-                    continue
-                value = inline if equal else tokens[index + 1] if index + 1 < len(tokens) else ""
-                if isinstance(value, str) and value.startswith("{") and value.endswith("}"):
-                    value = config.get(value[1:-1])
-                    if value is None:
-                        raise ValueError("Unresolved kv_cache_memory_bytes command parameter")
-        return byte_size_setting(value, key="kv_cache_memory_bytes") if value is not None else None
+        Runtime-specific readings (a memory budget, an explicit KV allocation)
+        belong to the runtime; a recipe consumes them through this. Resolving
+        initializes the plugin registry once per process, which every CLI and
+        API path has already done.
+        """
+        if runtime is not None:
+            return runtime
+        try:
+            from sparkrun.core.bootstrap import get_runtime
+
+            return get_runtime(self.runtime)
+        except Exception:  # an unknown or unloadable runtime has no readings to offer
+            logger.debug("Runtime %r unavailable for recipe readings", self.runtime, exc_info=True)
+            return None
 
     def estimate_vram(
         self,
@@ -1975,6 +1962,7 @@ class Recipe:
         auto_detect: bool = True,
         cache_dir: str | None = None,
         total_gpu_memory_gb: float | None = None,
+        runtime: "RuntimePlugin | None" = None,
     ) -> VRAMEstimate:
         """Estimate VRAM usage for this recipe.
 
@@ -1985,6 +1973,9 @@ class Recipe:
             cli_overrides: CLI override values (e.g. tensor_parallel, max_model_len).
             auto_detect: Whether to query HuggingFace Hub for model config.
             cache_dir: Optional HuggingFace cache directory for model lookups.
+            runtime: The recipe's runtime, when the caller has it (else
+                :meth:`runtime_plugin` resolves it). It supplies the runtime
+                memory budget and any explicit KV allocation.
 
         Returns:
             VRAMEstimate dataclass with estimation results.
@@ -2006,7 +1997,8 @@ class Recipe:
         )
 
         config = self.build_config_chain(cli_overrides)
-        kv_cache_memory_bytes = self.resolve_kv_cache_memory_bytes(cli_overrides)
+        runtime = self.runtime_plugin(runtime)
+        kv_cache_memory_bytes = runtime.declared_kv_cache_memory_bytes(self, cli_overrides) if runtime is not None else None
 
         # Start with metadata values
         from sparkrun.models.vram import normalize_dtype
@@ -2167,7 +2159,7 @@ class Recipe:
                 if api_params is not None:
                     model_params = api_params
 
-        from sparkrun.utils.data import integer_setting, float_setting
+        from sparkrun.utils.data import integer_setting
 
         # Get effective max_model_len and tensor_parallel from config chain
         max_model_len = config.get("max_model_len")
@@ -2202,9 +2194,9 @@ class Recipe:
             if _kv_from_command:
                 kv_dtype = _kv_from_command
 
-        # GPU memory utilization (runtime budget fraction)
-        gpu_mem_val = config.get("gpu_memory_utilization")
-        gpu_memory_utilization = float_setting(gpu_mem_val, key="gpu_memory_utilization") if gpu_mem_val is not None else None
+        # GPU memory utilization (runtime budget fraction), read the way the
+        # scheduler reads it so the fit report and the claim agree.
+        gpu_memory_utilization = runtime.declared_gpu_utilization(self, cli_overrides) if runtime is not None else None
 
         result = _estimate_vram(
             model_params=model_params,

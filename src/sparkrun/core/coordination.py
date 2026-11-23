@@ -6,20 +6,41 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import wraps
 import hashlib
+import logging
 import inspect
 from pathlib import Path
 import sqlite3
 import threading
+import time
 
 from sparkrun.core.process_identity import process_identity
 from sparkrun.utils.fs import file_lock
 
+logger = logging.getLogger(__name__)
+
 _HELD = ContextVar("sparkrun_resources", default=frozenset())
+_OWNERS = ContextVar("sparkrun_reservation_owners", default=())
 _DOCUMENTS = threading.local()
 
 
 class ResourceBusy(RuntimeError):
-    pass
+    """Another owner holds a resource this operation needs.
+
+    ``holders`` lists the conflicting claims (``resource``, ``owner``,
+    ``pid``, ``alive``, ``command``) so callers can say who to wait for or
+    which dead claim to reconcile.
+    """
+
+    def __init__(self, message: str, holders: list[dict] | None = None):
+        super().__init__(message)
+        self.holders = holders or []
+
+
+#: How long a reservation waits out a live ``*`` hold before refusing.  Those
+#: are brief controller-wide sweeps (``workloads.inventory`` polled by a
+#: client), so a launch colliding with one should not fail outright.
+CONTROLLER_HOLD_WAIT_S = 3.0
+_RETRY_INTERVAL_S = 0.25
 
 
 class Conflict(ValueError):
@@ -59,8 +80,12 @@ def locked_document(function):
 
 
 @contextmanager
-def reserve_resources(root, keys):
-    """Atomically reserve destinations. Uncertain dead-owner claims stay visible."""
+def reserve_resources(root, keys, *, wait: float = CONTROLLER_HOLD_WAIT_S):
+    """Atomically reserve destinations. Uncertain dead-owner claims stay visible.
+
+    A conflict made only of live ``*`` holds is retried for up to *wait*
+    seconds; any other conflict raises :class:`ResourceBusy` at once.
+    """
     import json
     import uuid
 
@@ -77,21 +102,109 @@ def reserve_resources(root, keys):
     try:
         db.execute("CREATE TABLE IF NOT EXISTS reservations (owner TEXT, resource TEXT UNIQUE, process TEXT)")
         path.chmod(0o600)
-        db.execute("BEGIN IMMEDIATE")
-        existing = {row[0] for row in db.execute("SELECT resource FROM reservations")}
-        if "*" in existing or ("*" in keys and existing) or existing.intersection(keys - held):
-            raise ResourceBusy("Execution resources are busy or require reconciliation after an interrupted operation")
+        deadline = time.monotonic() + wait
+        while True:
+            db.execute("BEGIN IMMEDIATE")
+            rows = db.execute("SELECT resource, owner, process FROM reservations").fetchall()
+            conflicts = [row for row in rows if row[0] == "*" or "*" in keys or row[0] in keys - held]
+            if not conflicts:
+                break
+            db.execute("ROLLBACK")
+            holders = _describe_holders(conflicts)
+            brief = all(h["resource"] == "*" and h["alive"] for h in holders)
+            if not brief or time.monotonic() >= deadline:
+                raise ResourceBusy(_busy_message(holders), holders)
+            time.sleep(_RETRY_INTERVAL_S)
         for key in sorted(keys - held):
             db.execute("INSERT INTO reservations VALUES(?,?,?)", (owner, key, json.dumps(process_identity())))
         db.commit()
         token = _HELD.set(held | keys)
+        owners = _OWNERS.set(_OWNERS.get() + ((path, owner),))
         try:
             yield
         finally:
+            _OWNERS.reset(owners)
             _HELD.reset(token)
             db.execute("DELETE FROM reservations WHERE owner=?", (owner,))
     finally:
         db.close()
+
+
+def _describe_holders(rows):
+    import json
+    from sparkrun.core.process_identity import alive, process_command
+
+    holders = []
+    for resource, owner, process in sorted(rows):
+        try:
+            identity = json.loads(process)
+        except (TypeError, ValueError):
+            identity = None
+        try:
+            is_alive = alive(identity)
+        except PermissionError:
+            is_alive = None  # Cannot inspect: not proof of death.
+        pid = (identity or {}).get("pid")
+        holders.append(
+            {
+                "resource": resource,
+                "owner": owner,
+                "pid": pid,
+                "alive": is_alive,
+                "command": process_command(pid) if is_alive and pid else None,
+            }
+        )
+    return holders
+
+
+def _busy_message(holders):
+    """Name each conflicting owner once, with what to do about it."""
+    lines = ["Execution resources are busy:"]
+    by_owner: dict[str, list[dict]] = {}
+    for holder in holders:
+        by_owner.setdefault(holder["owner"], []).append(holder)
+    for owner, claims in by_owner.items():
+        first = claims[0]
+        resources = ", ".join(h["resource"] for h in claims)
+        if first["alive"] is False:
+            lines.append(
+                "  %s: held by pid %s, which has exited without releasing it. Check those hosts for leftover workloads, then run "
+                "`sparkrun daemon resources reconcile %s --acknowledge-effects`" % (resources, first["pid"], owner)
+            )
+        elif first["alive"] is None:
+            lines.append("  %s: held by pid %s, whose status could not be inspected" % (resources, first["pid"]))
+        else:
+            running = " (%s)" % first["command"] if first["command"] else ""
+            lines.append("  %s: held by running pid %s%s; retry when it finishes" % (resources, first["pid"], running))
+    lines.append("Inspect all claims with `sparkrun daemon resources list`.")
+    return "\n".join(lines)
+
+
+def release_reservations():
+    """Drop every reservation this context holds, ahead of a long non-mutating wait.
+
+    For an operation whose mutating part is over but whose call keeps running
+    (a ``proxy start --foreground`` supervising its gateway for days). Holding
+    the claim through the wait refused every launch on those hosts for as long
+    as the proxy ran. The enclosing ``reserve_resources`` exits normally later;
+    its delete is then a no-op.
+
+    Releases *every* claim in this context, an outer caller's included, so call
+    it only where nothing further up still needs exclusivity.
+    """
+    for path, owner in _OWNERS.get():
+        try:
+            db = sqlite3.connect(path, timeout=10, isolation_level=None)
+            try:
+                db.execute("DELETE FROM reservations WHERE owner=?", (owner,))
+            finally:
+                db.close()
+        except sqlite3.Error as exc:
+            # Never fail the caller (a gateway already running): the enclosing
+            # reserve_resources still deletes the claim when it exits.
+            logger.warning("Could not release reservation %s early: %s", owner, exc)
+    _OWNERS.set(())
+    _HELD.set(frozenset())
 
 
 def reservation_keys(hosts=None, *, executor_config=None, controller=False):
@@ -102,6 +215,46 @@ def reservation_keys(hosts=None, *, executor_config=None, controller=False):
 
         keys.add("destination:" + hashlib.sha256(json.dumps(executor_config, sort_keys=True).encode()).hexdigest())
     return keys
+
+
+def infer_reservation_hosts(config, *, cluster=None, workload_id=None, benchmark_id=None):
+    """Hosts a call naming no hosts will act on, and the cluster they came from.
+
+    Shared by API calls (``operation_boundary``) and daemon jobs, which must
+    lock the same machines for the same request. Mirrors
+    ``api._resolve.resolve_cluster``: named cluster → the job's recorded hosts
+    → the default cluster (``cluster set-default``) → ``config.default_hosts``.
+    A ``benchmark_id`` (resume) is answered by the benchmark's recorded hosts,
+    which need not be the default cluster's; unknown state reserves ``*``.
+    Skipping the default-cluster step locked ``default_hosts`` while the call
+    tore down the default cluster's hosts: two concurrent mutations holding
+    disjoint locks over the same machines. ``(None, cluster)`` means unknown,
+    which callers reserve as ``*``.
+    """
+    try:
+        from sparkrun.core.cluster_manager import ClusterManager
+
+        cluster_mgr = ClusterManager(config.config_path.parent)
+        if isinstance(cluster, str):
+            cluster = cluster_mgr.get(cluster)
+        if cluster is not None:
+            return cluster.hosts, cluster
+        if benchmark_id:
+            from sparkrun.benchmarking.run_state import recorded_benchmark_hosts
+
+            return recorded_benchmark_hosts(benchmark_id, str(config.cache_dir)), cluster
+        if workload_id:
+            from sparkrun.orchestration.job_metadata import load_job_metadata
+
+            meta = load_job_metadata(workload_id, cache_dir=str(config.cache_dir))
+            return (meta or {}).get("hosts"), cluster
+        default_name = cluster_mgr.get_default()
+        default_cluster = cluster_mgr.get(default_name) if default_name else None
+        if default_cluster is not None:
+            return default_cluster.hosts, default_cluster
+        return config.default_hosts, cluster
+    except Exception:  # Resolution errors belong to the API body, not lock inference.
+        return None, cluster
 
 
 def operation_boundary(*, mutation=False):
@@ -138,38 +291,12 @@ def operation_boundary(*, mutation=False):
                     hosts = getattr(plan, "candidate_hosts", None) or getattr(plan, "host_list", hosts)
                     cluster = getattr(plan, "cluster", cluster)
                 if not hosts:
-                    try:
-                        from sparkrun.core.cluster_manager import ClusterManager
-
-                        cluster_mgr = ClusterManager(config.config_path.parent)
-                        if isinstance(cluster, str):
-                            cluster = cluster_mgr.get(cluster)
-                        if cluster is not None:
-                            hosts = cluster.hosts
-                        elif bound.arguments.get("workload_id") or bound.arguments.get("cluster_id"):
-                            from sparkrun.orchestration.job_metadata import load_job_metadata
-
-                            workload_id = bound.arguments.get("workload_id") or bound.arguments["cluster_id"]
-                            meta = load_job_metadata(workload_id, cache_dir=str(config.cache_dir))
-                            hosts = (meta or {}).get("hosts")
-                        else:
-                            # Mirror api._resolve.resolve_cluster's precedence:
-                            # the default cluster (``cluster set-default``) is
-                            # consulted before config.default_hosts.  Skipping
-                            # this step locked default_hosts while a flagless
-                            # call (e.g. `stop(recipe=...)`) actually tore down
-                            # the default cluster's hosts — two concurrent
-                            # mutations holding disjoint locks over the same
-                            # machines.
-                            default_name = cluster_mgr.get_default()
-                            default_cluster = cluster_mgr.get(default_name) if default_name else None
-                            if default_cluster is not None:
-                                cluster = default_cluster
-                                hosts = default_cluster.hosts
-                            else:
-                                hosts = config.default_hosts
-                    except Exception:  # Resolution errors belong to the API body, not lock inference.
-                        hosts = None
+                    hosts, cluster = infer_reservation_hosts(
+                        config,
+                        cluster=cluster,
+                        workload_id=bound.arguments.get("workload_id") or bound.arguments.get("cluster_id"),
+                        benchmark_id=bound.arguments.get("benchmark_id"),
+                    )
                 # Host conflicts are deliberately independent of SSH usernames:
                 # different login users still mutate the same machine/devices.
                 keys = reservation_keys(hosts, executor_config=getattr(cluster, "executor_config", None))

@@ -209,9 +209,11 @@ class ResourceRequest:
 
     Default values request a whole accelerator — today's behavior.  A
     fractional-capable scheduler (e.g. ``SparsePackScheduler`` /
-    ``DensePackScheduler``) honors ``util_fraction < 0.8`` and packs
-    multiple ranks onto one accelerator if their combined claims fit
-    within ``memory_gb`` and ``util_fraction`` budgets.
+    ``DensePackScheduler``) honors ``util_fraction < 0.8`` by placing each
+    rank on an accelerator other workloads also hold, if the combined claims
+    fit within ``memory_gb`` and ``util_fraction`` budgets. Ranks of one
+    request always get distinct accelerators: they form one NCCL world,
+    which refuses two ranks on a device.
 
     The default :class:`~sparkrun.schedulers.greedy.GreedyScheduler`
     rejects requests with ``util_fraction < 0.8`` rather than silently
@@ -245,10 +247,9 @@ class RankSlot:
     is ``1.0`` and :attr:`memory_gb` is ``None`` — the rank owns the
     accelerator at ``(host, local_gpu)`` exclusively.
 
-    Fractional schedulers may emit multiple :class:`RankSlot` entries
-    sharing the same ``(host, local_gpu)`` coordinate with
-    ``util_fraction < 0.8``, carrying the per-rank VRAM commitment in
-    :attr:`memory_gb`.
+    Fractional schedulers emit ``util_fraction < 0.8`` slots on accelerators
+    other workloads may share, carrying the per-rank VRAM commitment in
+    :attr:`memory_gb`. One assignment never repeats a ``(host, local_gpu)``.
     """
 
     host: str
@@ -317,8 +318,8 @@ class SchedulingRequest:
     resources: ResourceRequest | None = None
     """Per-rank resource claim.  ``None`` means a whole accelerator per rank
     (today's default).  Fractional-capable schedulers honor
-    :attr:`ResourceRequest.util_fraction` < 0.8 to pack multiple ranks
-    onto one accelerator; the default :class:`GreedyScheduler` rejects
+    :attr:`ResourceRequest.util_fraction` < 0.8 to share accelerators with
+    other workloads (one rank per accelerator); the default :class:`GreedyScheduler` rejects
     fractional claims rather than silently treating them as whole-GPU."""
 
     single_host: bool = False
@@ -369,6 +370,12 @@ class Scheduler(Plugin):
     #: explicitly opt in.  The greedy first-fit scheduler sets this to
     #: ``True``.
     deterministic_placement: ClassVar[bool] = False
+
+    #: Whether this scheduler honors a fractional :class:`ResourceRequest`
+    #: (``util_fraction < 0.8``) by packing ranks onto a shared accelerator.
+    #: Callers send a fraction only to a scheduler that says so; others get a
+    #: whole-GPU request. ``False`` by default (fail closed).
+    supports_fractional: ClassVar[bool] = False
 
     # --- SAF Plugin interface ---
 

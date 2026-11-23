@@ -450,3 +450,82 @@ class TestFeatureListSetupSteps:
             result = runner.invoke(command, ["setup.steps.sudoers"])
             assert result.exit_code == 0, result.output
             assert SparkrunConfig(config.config_path).feature_override("setup.steps.sudoers") is expected
+
+
+_RUNTIME_SNIPPET = """
+import json
+from sparkrun.core.bootstrap import get_runtime, init_sparkrun, list_runtimes
+from sparkrun.runtimes.base import RuntimeUnavailableError
+
+v = init_sparkrun()
+out = {"runtimes": list_runtimes(v)}
+for name in ("tokenary", "sglang", "no-such-runtime"):
+    try:
+        get_runtime(name, v)
+        out[name] = "ok"
+    except RuntimeUnavailableError as exc:
+        out[name] = "disabled: " + str(exc)
+    except ValueError as exc:
+        out[name] = "unknown"
+print(json.dumps(out))
+"""
+
+
+def _runtime_gates(tmp_path, config_data: dict, env_extra: dict | None = None) -> dict:
+    import json
+
+    return json.loads(_run_gated_snippet(tmp_path, config_data, _RUNTIME_SNIPPET, env_extra).splitlines()[-1])
+
+
+class TestRuntimeGates:
+    """Every in-tree runtime has a ``runtime.*`` gate; tokenary is opt-in."""
+
+    def test_defaults(self):
+        from sparkrun.core.features import FEATURE_FLAGS
+
+        defaults = {name: flag.default for name, flag in FEATURE_FLAGS.items() if name.startswith("runtime.")}
+        assert defaults == {
+            "runtime.vllm": True,
+            "runtime.sglang": True,
+            "runtime.llama_cpp": True,
+            "runtime.trtllm": True,
+            "runtime.atlas": True,
+            "runtime.modular_max": True,
+            "runtime.tokenary": False,
+        }
+        assert not any(FEATURE_FLAGS[name].channel_defaults for name in defaults)  # same on every channel
+
+    def test_every_in_tree_runtime_declares_a_registered_gate(self):
+        from scitrera_app_framework.util import find_types_in_modules
+
+        from sparkrun.core.features import FEATURE_FLAGS
+        from sparkrun.runtimes.base import RuntimePlugin
+
+        runtimes = [cls for cls in find_types_in_modules("sparkrun.runtimes", RuntimePlugin) if cls.runtime_name]
+        assert runtimes
+        for cls in runtimes:
+            assert cls.required_feature_flag in FEATURE_FLAGS, cls.runtime_name
+
+    def test_vllm_family_shares_one_gate(self):
+        from sparkrun.runtimes.eugr_vllm_ray import EugrVllmRayRuntime
+        from sparkrun.runtimes.vllm_distributed import VllmDistributedRuntime
+        from sparkrun.runtimes.vllm_ray import VllmRayRuntime
+
+        assert {c.required_feature_flag for c in (VllmRayRuntime, VllmDistributedRuntime, EugrVllmRayRuntime)} == {"runtime.vllm"}
+
+    def test_tokenary_off_by_default_and_named_when_requested(self, tmp_path):
+        out = _runtime_gates(tmp_path, {"features": {"channel": "alpha"}})
+        assert "tokenary" not in out["runtimes"]
+        assert {"vllm-distributed", "vllm-ray", "sglang", "llama-cpp"} <= set(out["runtimes"])
+        assert out["sglang"] == "ok"
+        assert out["tokenary"].startswith("disabled: ") and "sparkrun setup features enable runtime.tokenary" in out["tokenary"]
+        assert out["no-such-runtime"] == "unknown"  # an unknown name is still "unknown", not "disabled"
+
+    def test_tokenary_opt_in(self, tmp_path):
+        out = _runtime_gates(tmp_path, {"features": {"runtime.tokenary": True}})
+        assert "tokenary" in out["runtimes"] and out["tokenary"] == "ok"
+
+    def test_default_on_runtime_can_be_disabled(self, tmp_path):
+        out = _runtime_gates(tmp_path, {}, env_extra={"SPARKRUN_FEATURE_RUNTIME_VLLM": "0"})
+        assert not {"vllm-ray", "vllm-distributed", "eugr-vllm"} & set(out["runtimes"])
+        assert "sglang" in out["runtimes"]

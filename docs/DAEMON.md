@@ -140,6 +140,13 @@ local commands and reject client connection options.
 Authenticated `GET /v1/ops` publishes operation names, permissions, execution
 classes, ownership (`owner`, `local_name`), HTTP alias paths
 (`http_path`), and closed request/result schemas.
+`sparkrun daemon help` renders the same catalog in the terminal: every
+operation grouped by namespace, and with a name (`daemon help workloads.run`)
+its kind, required scope, HTTP alias, request fields with notes, result shape
+and a ready-to-edit `daemon call` example. A namespace (`daemon help setup`)
+filters the list; `--json` prints the `/v1/ops` entries. It reads this
+installation's catalog, or with `--url` / `--socket` that daemon's (limited to
+what the token may call).
 `/openapi.json` and `/docs` describe the wire API. `/v1/health` reveals only
 health/protocol; `/v1/info` requires auth.
 

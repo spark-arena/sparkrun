@@ -824,6 +824,19 @@ def setup_ssh(ctx, hosts, hosts_file, cluster_name, extra_hosts, include_self, u
             click.echo("Added: %s" % ", ".join(added))
         click.echo()
 
+    # Without a local bash (Windows) the mesh runs natively, which logs in with
+    # keys from its first connection; ``mesh_ssh_keys.sh`` bootstraps with
+    # passwords instead.  So the native path needs the same access gate the
+    # wizard runs, or a fresh cluster fails before anything is installed.  The
+    # user is the one this command resolved, so the gate may not change it.
+    from ._ssh import _ensure_ssh_access, _mesh_uses_native
+
+    if _mesh_uses_native():
+        outcome = _ensure_ssh_access(host_list, user, config, dry_run=dry_run, offer_user_change=False)
+        if not outcome.all_ok:
+            click.echo("Error: key-based SSH is required on every host before the mesh can run.", err=True)
+            sys.exit(1)
+
     ok = _run_ssh_mesh(
         host_list,
         user,
@@ -832,6 +845,7 @@ def setup_ssh(ctx, hosts, hosts_file, cluster_name, extra_hosts, include_self, u
         discover_ips=discover_ips,
         dry_run=dry_run,
         control_is_member=_resolved_loopback or (self_host is not None and self_host in set(cluster_hosts)),
+        config=config,
     )
     if ok:
         from sparkrun.orchestration.primitives import build_ssh_kwargs

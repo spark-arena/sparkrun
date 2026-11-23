@@ -163,3 +163,38 @@ def test_handler_reuse_preserves_existing_metadata(run_env, monkeypatch, fingerp
     assert result == replace(old, started_at=result.started_at, intent_id=planned.intent_id, placement_token="c" * 12)
     assert result.timeline is None and result.launch_result is None
     replacement.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "kind,value",
+    [("pre_exec", ["echo patch"]), ("mods", ["fix-something"]), ("post_exec", ["curl localhost"]), ("post_commands", ["echo done"])],
+)
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_recipe_hooks_and_mods_are_refused_not_silently_skipped(native_env, kind, value, dry_run):
+    """The JobSet path runs no hooks; a modded recipe must not serve an unpatched engine."""
+    env = native_env
+    env.client.context = "test-context"  # planning pins the context; skip that read-only kubectl call
+    setattr(env.recipe, kind, value)
+    options = api.RunOptions(recipe=env.recipe, hosts=("localhost",), solo=True, executor="k8s", trust=True, dry_run=dry_run)
+
+    reason = "not applied on this path" if kind in ("pre_exec", "mods") else "no reachable endpoint to wait on"
+    with pytest.raises(api.SparkrunError, match=r"cannot launch this recipe: %s (is|runs) .*%s" % (kind, reason)):
+        run(options, sctx=env.sctx)
+
+    env.make_client.assert_not_called()
+    assert env.submitted == []
+
+
+def test_the_refusal_names_each_reason_once(native_env):
+    env = native_env
+    env.client.context = "test-context"
+    env.recipe.pre_exec, env.recipe.mods, env.recipe.post_commands = ["echo a"], ["fix-x"], ["echo b"]
+    options = api.RunOptions(recipe=env.recipe, hosts=("localhost",), solo=True, executor="k8s", trust=True, dry_run=True)
+
+    with pytest.raises(api.SparkrunError) as error:
+        run(options, sctx=env.sctx)
+
+    message = str(error.value)
+    assert "pre_exec and mods are not applied on this path" in message
+    assert "post_commands runs once the server is ready" in message
+    assert "post_exec" not in message

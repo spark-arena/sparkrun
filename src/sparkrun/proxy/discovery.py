@@ -67,6 +67,14 @@ class DiscoveredEndpoint:
     #: ``None`` when unknown. Surfaces the true model window to clients so
     #: the gateway does not advertise an arbitrary per-key cap.
     max_model_len: int | None = None
+    #: Task vocabulary advertised by the backend's ``/v1/models`` entry — the
+    #: single default ``task_type`` and the ``supported_task_types`` pool
+    #: (a diffusion backend reports e.g. ``T2I`` / ``I2I`` / ``T2V``).  Both
+    #: are empty when the backend reports none, which is every chat backend
+    #: today.  Pure metadata, like ``max_model_len``: it decides only how the
+    #: gateway *describes* the model, never whether it is discovered.
+    task_type: str | None = None
+    task_types: list[str] = field(default_factory=list)
     # Named placement and launch fingerprint are metadata, not the opaque job ID.
     cluster_name: str | None = None
     recipe_revision: str = ""
@@ -325,10 +333,11 @@ def _check_health_parallel(endpoints: list[DiscoveredEndpoint]) -> None:
         for future in as_completed(futures):
             ep = futures[future]
             try:
-                healthy, models, max_model_len = future.result()
+                healthy, models, max_model_len, task_fields = future.result()
                 ep.healthy = healthy
                 ep.actual_models = models
                 ep.max_model_len = max_model_len
+                ep.task_type, ep.task_types = task_fields
             except Exception:
                 logger.debug(
                     "Health check failed for %s:%d",
@@ -362,17 +371,21 @@ def _deduplicate_by_identity(endpoints: list[DiscoveredEndpoint]) -> list[Discov
     return list(seen.values())
 
 
-def _check_single_health(ep: DiscoveredEndpoint) -> tuple[bool, list[str], int | None]:
+def _check_single_health(ep: DiscoveredEndpoint) -> tuple[bool, list[str], int | None, tuple[str | None, list[str]]]:
     """Check a single endpoint's health via GET /v1/models.
 
     Sends an ``Authorization: Bearer`` header when the endpoint has an
     ``api_key`` set, so backends that require auth still report healthy.
 
     Returns:
-        Tuple of (healthy, list_of_model_ids, max_model_len). ``max_model_len``
-        is the model's true context window (``max_model_len`` from the
-        backend's ``/v1/models``), or ``None`` when the backend does not
-        report it.
+        Tuple of (healthy, list_of_model_ids, max_model_len, task_fields).
+        ``max_model_len`` is the model's true context window (``max_model_len``
+        from the backend's ``/v1/models``), or ``None`` when the backend does
+        not report it.  ``task_fields`` is ``(task_type, supported_task_types)``
+        exactly as the backend advertises them — ``None``/``[]`` for a chat
+        backend that reports no task vocabulary, the first entry that carries
+        any for a diffusion pipeline (one pipeline per endpoint, so the entry
+        that advertises is the one this endpoint serves).
     """
     url = "http://%s:%d/v1/models" % (ep.host, ep.port)
     headers: dict[str, str] = {}
@@ -383,14 +396,36 @@ def _check_single_health(ep: DiscoveredEndpoint) -> tuple[bool, list[str], int |
         with urllib.request.urlopen(req, timeout=_HEALTH_TIMEOUT) as resp:
             if resp.status == 200:
                 body = json.loads(resp.read())
-                models = [m.get("id", "") for m in body.get("data", [])]
+                data = body.get("data", [])
+                models = [m.get("id", "") for m in data]
                 max_model_len = None
-                for m in body.get("data", []):
+                for m in data:
                     mml = m.get("max_model_len")
                     if isinstance(mml, int) and mml > 0:
                         max_model_len = mml
                         break
-                return True, models, max_model_len
+                task_type, task_types = _task_fields(data)
+                return True, models, max_model_len, (task_type, task_types)
     except (urllib.error.URLError, urllib.error.HTTPError, OSError, json.JSONDecodeError):
         pass
-    return False, [], None
+    return False, [], None, (None, [])
+
+
+def _task_fields(data: object) -> tuple[str | None, list[str]]:
+    """The ``(task_type, supported_task_types)`` a backend's /v1/models body
+    advertises, taken from the first entry that carries either.
+
+    Deliberately the *raw* strings: this probe records what the backend said,
+    and only the gateway's ``media_mode`` interprets it.  Anything
+    non-string — null task_type, a list of numbers — is dropped here so a
+    malformed body cannot propagate a non-string into the config builder.
+    """
+    for entry in data if isinstance(data, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        task_types = [t for t in (entry.get("supported_task_types") or []) if isinstance(t, str) and t.strip()]
+        raw_type = entry.get("task_type")
+        primary = raw_type.strip() if isinstance(raw_type, str) and raw_type.strip() else None
+        if primary or task_types:
+            return primary, task_types
+    return None, []

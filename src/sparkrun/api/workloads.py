@@ -172,7 +172,8 @@ def inventory(*, owner="", sctx=None):
 
     sctx = resolve_sctx(sctx)
     try:
-        with reserve_resources(sctx.config.config_path.parent, {"*"}):
+        # No wait: a busy controller already has an answer here (incomplete).
+        with reserve_resources(sctx.config.config_path.parent, {"*"}, wait=0):
             return _inventory(owner, sctx, complete=True)
     except ResourceBusy:
         return _inventory(owner, sctx, complete=False)

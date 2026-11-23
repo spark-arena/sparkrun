@@ -83,6 +83,8 @@ class _OccupancyAwareBase(Scheduler):
     See the module docstring for the head-node overhead heuristic.
     """
 
+    supports_fractional = True
+
     # Subclasses provide a concrete name; this base intentionally has
     # ``""`` so bootstrap skips registering it as a plugin.
     scheduler_name: ClassVar[str] = ""
@@ -188,10 +190,14 @@ class _OccupancyAwareBase(Scheduler):
         ]
 
     @staticmethod
-    def _rejections(host, hw, eligible, util, memory, fraction, claims):
+    def _rejections(host, hw, eligible, util, memory, fraction, claims, *, own=frozenset()):
+        """Why each GPU on *host* refused the next rank. *own* GPUs hold a rank of
+        this request: they are in use, not blocked, so they are not reported."""
         specs = [a for a in hw.accelerators for _ in range(a.count)]
         reasons = []
         for i, free in enumerate(eligible):
+            if i in own:
+                continue
             if not free:
                 reason = "exclusive_owner" if fraction < EXCLUSIVE_GPU_THRESHOLD else "occupied"
                 detail = "GPU has an existing allocation; exclusive ownership prevents sharing"
@@ -223,6 +229,7 @@ class _OccupancyAwareBase(Scheduler):
         fractional = resources is not None and resources.is_fractional()
         fraction = resources.util_fraction if resources is not None and fractional else 1.0
         budgets = {}
+        held: dict[str, set[int]] = {}  # GPUs already holding a rank of this layout
         slots = []
         errors = request.status.observation_errors if request.status is not None else {}
         for slot in assignment.by_rank:
@@ -244,6 +251,13 @@ class _OccupancyAwareBase(Scheduler):
                 budgets[host] = self._build_budgets(
                     num_gpus=hw.total_gpus, gpu_mem_specs=hw.usable_gpu_memory_slots(), host_occ=occ, is_fractional=fractional
                 )
+            if index in held.setdefault(host, set()):
+                # One NCCL world refuses two ranks on a device, so no layout may ask for it.
+                detail = "Layout places two ranks of this launch on one GPU; each rank needs its own"
+                raise InfeasibleScheduleError(
+                    "Explicit layout conflicts with GPU allocation", rejections=(CapacityRejection(host, index, "same_request", detail),)
+                )
+            held[host].add(index)
             util, memory, eligible = budgets[host]
             claims = self._memory_claims(hw, resources)
             rejection = tuple(r for r in self._rejections(host, hw, eligible, util, memory, fraction, claims) if r.gpu_index == index)
@@ -398,6 +412,7 @@ class _OccupancyAwareBase(Scheduler):
                 continue
 
             host_placed_any = False
+            own: set[int] = set()  # GPUs on this host already holding a rank of this request
             for _ in range(remaining):
                 gpu_idx = self._select_gpu_index(
                     num_gpus=num_gpus,
@@ -412,7 +427,9 @@ class _OccupancyAwareBase(Scheduler):
                     per_rank_mem=per_rank_mem,
                 )
                 if gpu_idx is None:
-                    rejections.extend(self._rejections(host, hw, gpu_eligible, util_remaining, mem_remaining, per_rank_util, claims))
+                    rejections.extend(
+                        self._rejections(host, hw, gpu_eligible, util_remaining, mem_remaining, per_rank_util, claims, own=own)
+                    )
                     break
 
                 util_remaining[gpu_idx] -= per_rank_util
@@ -420,10 +437,11 @@ class _OccupancyAwareBase(Scheduler):
                 reserved_memory = claims[gpu_idx]
                 if reserved_memory is not None and memory is not None:
                     mem_remaining[gpu_idx] = memory - reserved_memory
-                if not is_fractional:
-                    # Whole-GPU placement: mark slot occupied so the next
-                    # rank picks a different GPU on this host.
-                    gpu_eligible[gpu_idx] = False
+                # One rank per device, shared or not: ranks of one request form
+                # one NCCL world, which refuses two ranks on a GPU. A shared GPU
+                # still takes other requests' ranks.
+                gpu_eligible[gpu_idx] = False
+                own.add(gpu_idx)
 
                 by_rank.append(
                     RankSlot(

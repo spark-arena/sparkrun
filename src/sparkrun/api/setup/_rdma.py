@@ -381,7 +381,13 @@ def _run_probe(hosts: list[str], ssh_kwargs: dict, *, dry_run: bool) -> dict[str
 
 
 def _in_container(cmd: str, container: str | None) -> str:
-    """Wrap *cmd* for ``docker exec`` when a container is in use."""
+    """Wrap *cmd* for ``docker exec`` when a container is in use.
+
+    Deliberately docker, not the cluster's executor: this is the suite's own
+    diagnostic container (``docker run`` with the RDMA devices and an unlimited
+    memlock, removed afterwards), not a workload, and it needs docker even on a
+    cluster whose workloads run under ``local`` or k8s.
+    """
     if not container:
         return cmd
     return "docker exec %s bash -lc %s" % (quote(container), quote(cmd))

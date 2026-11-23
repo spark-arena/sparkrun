@@ -12,9 +12,36 @@ from sparkrun.orchestration.job_metadata import generate_intent_id, derive_recip
 from test_benchmark_startup_collection import bench_env as bench_env
 
 
+# What the combined hardware probe reports for every host in these tests: a
+# detected DGX Spark with known fabric and management facts.  api.plan probes
+# the candidate hosts, and with "localhost" the real probe runs on the machine
+# executing the suite -- its result (this box's CX7 addresses, its GPU) would
+# leak into launch metadata and vary by developer.
+CANNED_PROBE_IB_INFO = {
+    "IB_DETECTED": "1",
+    "DETECTED_HCA_LIST": "rocep1s0f0",
+    "DETECTED_NET_LIST": "enp1s0f0np0",
+    "DETECTED_UCX_LIST": "rocep1s0f0:1",
+    "DETECTED_IB_IPS": "192.168.99.13",
+    "DETECTED_GID_INDEX": "3",
+    "DETECTED_SOCKET_IFNAME": "enP7s7",
+    "DETECTED_MGMT_IFACE": "enP7s7",
+    "DETECTED_MGMT_IP": "10.99.0.13",
+    "DETECTED_MGMT_RULE": "ssh",
+    "DETECTED_MGMT_KIND": "wired",
+}
+
+
+def canned_probe_hosts(hosts, ssh_kwargs=None, *, dry_run=False, mgmt_interface=None):
+    from sparkrun.core.hardware import default_dgx_spark_hardware
+
+    return {host: replace(default_dgx_spark_hardware(), source="detected", ib_info=dict(CANNED_PROBE_IB_INFO)) for host in hosts}
+
+
 @pytest.fixture
 def run_env(bench_env, monkeypatch):
     env = bench_env
+    monkeypatch.setattr("sparkrun.core.hardware_probe.probe_hosts", canned_probe_hosts)
     monkeypatch.setattr("sparkrun.api._hosts.resolve_effective_hosts", lambda *a, **kw: (["localhost"], True, [], None))
     monkeypatch.setattr("sparkrun.core.run_handlers.registered_run_handlers", lambda _: {})
     return env
