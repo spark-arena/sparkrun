@@ -315,6 +315,7 @@ FEATURE_RUNTIME_TRTLLM = _runtime_flag("trtllm", "TensorRT-LLM runtime")
 FEATURE_RUNTIME_ATLAS = _runtime_flag("atlas", "Atlas runtime")
 FEATURE_RUNTIME_MODULAR_MAX = _runtime_flag("modular_max", "Modular MAX runtime")
 FEATURE_RUNTIME_TOKENARY = _runtime_flag("tokenary", "tokenary runtime (experimental; off by default)", default=False)
+FEATURE_RUNTIME_TENSORFOLD = _runtime_flag("tensorfold", "TensorFold native CUDA runtime")
 
 # The experimental executors are off by default on every channel; users opt
 # in explicitly via ``features.executor.*`` in config.yaml (or the

@@ -492,6 +492,7 @@ class TestRuntimeGates:
             "runtime.atlas": True,
             "runtime.modular_max": True,
             "runtime.tokenary": False,
+            "runtime.tensorfold": True,
         }
         assert not any(FEATURE_FLAGS[name].channel_defaults for name in defaults)  # same on every channel
 

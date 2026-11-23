@@ -54,25 +54,18 @@ first tagged release containing them, regardless of their original commit date.
 
 ### Added
 
-- `tensorfold` runtime: TensorFold's Zig/CUDA native server. Solo on one GB10,
-  NFS/pre-placed checkpoints through the existing absolute `model:` mechanism,
-  and native TP for the engine families that place their own ranks (`glm`,
-  `nemotron`, and the experimental DeepSeek-V4.1 fork under `dsv41`) with
-  environment-variable rank placement.  The DeepSeek family serves a prepared
-  per-rank-cache bundle and is selected by the same runtime, not by a second
-  plugin.
-- `tensorfold` runtime: the Jayleaton Zig engine family (`tf_family: jayleaton`).
-  It runs the two Jayleaton binaries, the `TF_DSV41_*` serving profile, a
-  per-rank local Engram/prepared/AOT layout and a pre-placed model pack on NFS;
-  the recipe keeps the existing served-model name and port while the model may
-  be registered under a synthetic HF-cache id.  TP=2 only; the binary, assets
-  and image remain external to this repository.
+- `tensorfold` runtime: TensorFold's upstream Zig/CUDA native server. Solo on
+  one GB10, NFS/pre-placed checkpoints through the existing absolute `model:`
+  mechanism, and native TP with the engine's own `--tp/--rank/--master` flags.
+  The runtime is upstream-only: recipes select `tensor_parallel`, and the
+  engine decides which model families accept that world; there are no
+  fork-specific or per-model runtime families.
 - Native cluster orchestration can start worker ranks before rank 0
   (`RuntimePlugin.native_start_order()`) and reserve a contiguous rendezvous
   port range (`native_rendezvous_port_span()`), for engines whose followers
   must be listening before the serving rank starts.
 - Docs: `docs/TENSORFOLD.md` covers the runtime, NFS weights, TP limits, the
-  DeepSeek bundle layout and the hardware validation checklist.
+  upstream TP placement and the hardware validation checklist.
 - The `cluster monitor` recipe picker groups runtime variants into families (such
   as `vllm`) and offers an opt-in **All registries** toggle. Enabled registries with
   `Stemless: no` then appear in recipe searches and registry filter choices.
