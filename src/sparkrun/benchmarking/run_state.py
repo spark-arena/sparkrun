@@ -340,7 +340,8 @@ def recorded_benchmark_hosts(benchmark_id: str, cache_dir: str | None = None) ->
     if state is None:
         return None
     meta = load_job_metadata(state.cluster_id, cache_dir=cache_dir) if state.cluster_id else None
-    hosts = list(dict.fromkeys([*((meta or {}).get("hosts") or []), *state.host_list]))
+    recorded: list[str] = (meta or {}).get("hosts") or []
+    hosts = list(dict.fromkeys([*recorded, *state.host_list]))
     return hosts or None
 
 

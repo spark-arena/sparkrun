@@ -190,7 +190,7 @@ class _OccupancyAwareBase(Scheduler):
         ]
 
     @staticmethod
-    def _rejections(host, hw, eligible, util, memory, fraction, claims, *, own=frozenset()):
+    def _rejections(host, hw, eligible, util, memory, fraction, claims, *, own: set[int] | frozenset[int] = frozenset()):
         """Why each GPU on *host* refused the next rank. *own* GPUs hold a rank of
         this request: they are in use, not blocked, so they are not reported."""
         specs = [a for a in hw.accelerators for _ in range(a.count)]

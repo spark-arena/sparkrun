@@ -18,8 +18,8 @@ from sparkrun.utils.fs import file_lock
 
 logger = logging.getLogger(__name__)
 
-_HELD = ContextVar("sparkrun_resources", default=frozenset())
-_OWNERS = ContextVar("sparkrun_reservation_owners", default=())
+_HELD: ContextVar[frozenset[str]] = ContextVar("sparkrun_resources", default=frozenset())
+_OWNERS: ContextVar[tuple[tuple[Path, str], ...]] = ContextVar("sparkrun_reservation_owners", default=())
 _DOCUMENTS = threading.local()
 
 
