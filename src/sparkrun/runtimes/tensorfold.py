@@ -394,9 +394,7 @@ class TensorFoldRuntime(RuntimePlugin):
         dims = self._parallelism_dimensions(chain)
 
         if "tf_family" in chain:
-            raise RuntimeError(
-                "tf_family was removed: the TensorFold runtime is upstream-only and places ranks with --tp/--rank/--master"
-            )
+            raise RuntimeError("tf_family was removed: the TensorFold runtime is upstream-only and places ranks with --tp/--rank/--master")
         for key in ("pipeline_parallel", "data_parallel", "expert_parallel"):
             if dims[key] > 1:
                 raise RuntimeError("TensorFold does not support %s" % key)
