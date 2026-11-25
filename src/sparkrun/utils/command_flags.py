@@ -36,7 +36,7 @@ def command_flag_value(command, *flags: str, bare: str | None = None, literal_on
     wanted = {flag.lower() for flag in flags}
     tokens = [token for token in command.split() if token != "\\"]
     found = False
-    value = None
+    value = ""
     for index, token in enumerate(tokens):
         name, sep, inline = token.partition("=")
         if name.lower() not in wanted:
