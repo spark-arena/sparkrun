@@ -21,6 +21,10 @@ first tagged release containing them, regardless of their original commit date.
 
 ### Fixed
 
+- InfiniBand detection now probes every active HCA and leaves `NCCL_IB_GID_INDEX` at
+  `-1` when their IPv4 RoCE v2 GID indices disagree; the per-HCA index list is
+  diagnostic only. Dynamic selection depends on the NCCL version and its GID-selection
+  settings.
 - Two launches with a low `--gpu-mem` (e.g. 0.3) can share one GPU again under the
   occupancy schedulers (#335). Every launch asked for, and recorded, an exclusive GPU,
   so the second was refused with "exclusive ownership prevents sharing". A launch now

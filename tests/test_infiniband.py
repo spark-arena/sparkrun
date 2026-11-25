@@ -35,6 +35,7 @@ def test_parse_ib_detect_output_with_ib():
     output = """
 IB_DETECTED=1
 DETECTED_GID_INDEX=3
+DETECTED_GID_INDEX_LIST=3,4
 DETECTED_HCA_LIST=mlx5_0,mlx5_1
 DETECTED_SOCKET_IFNAME=eth0
 DETECTED_NET_LIST=ib0,ib1
@@ -44,6 +45,7 @@ DETECTED_UCX_LIST=mlx5_0:1,mlx5_1:1
 
     assert result["IB_DETECTED"] == "1"
     assert result["DETECTED_GID_INDEX"] == "3"
+    assert result["DETECTED_GID_INDEX_LIST"] == "3,4"
     assert result["DETECTED_HCA_LIST"] == "mlx5_0,mlx5_1"
     assert result["DETECTED_SOCKET_IFNAME"] == "eth0"
     assert result["DETECTED_NET_LIST"] == "ib0,ib1"
@@ -85,6 +87,7 @@ def test_generate_nccl_env_with_ib():
     ib_info = {
         "IB_DETECTED": "1",
         "DETECTED_GID_INDEX": "3",
+        "DETECTED_GID_INDEX_LIST": "3,4",
         "DETECTED_HCA_LIST": "mlx5_0,mlx5_1",
         "DETECTED_SOCKET_IFNAME": "eth0",
         "DETECTED_NET_LIST": "ib0,ib1",
@@ -100,6 +103,7 @@ def test_generate_nccl_env_with_ib():
 
     # Check detected values
     assert env["NCCL_IB_GID_INDEX"] == "3"
+    assert "DETECTED_GID_INDEX_LIST" not in env
     assert env["NCCL_IB_HCA"] == "mlx5_0,mlx5_1"
     # NCCL_SOCKET_IFNAME = mgmt first, then IB adapters as fallback
     assert env["NCCL_SOCKET_IFNAME"] == "eth0,ib0,ib1"
@@ -108,6 +112,14 @@ def test_generate_nccl_env_with_ib():
     assert env["GLOO_SOCKET_IFNAME"] == "eth0"
     assert env["TP_SOCKET_IFNAME"] == "eth0"
     assert env["UCX_NET_DEVICES"] == "mlx5_0:1,mlx5_1:1"
+
+
+def test_generate_nccl_env_forwards_dynamic_gid_without_diagnostic_list():
+    env = generate_nccl_env({"IB_DETECTED": "1", "DETECTED_GID_INDEX": "-1", "DETECTED_GID_INDEX_LIST": "3,-1"})
+
+    assert env["NCCL_IB_GID_INDEX"] == "-1"
+    assert "DETECTED_GID_INDEX_LIST" not in env
+    assert "NCCL_IB_GID_INDEX_LIST" not in env
 
 
 def test_nccl_socket_ifname_dedupes_mgmt_in_ib_list():
@@ -423,13 +435,16 @@ def test_generate_nccl_env_ring_topology():
     """Ring topology adds ring-specific overrides."""
     ib_info = {
         "IB_DETECTED": "1",
-        "DETECTED_GID_INDEX": "3",
+        "DETECTED_GID_INDEX": "-1",
+        "DETECTED_GID_INDEX_LIST": "3,-1",
         "DETECTED_HCA_LIST": "mlx5_0,mlx5_1",
     }
     env = generate_nccl_env(ib_info, topology="ring")
     assert env["NCCL_NET_PLUGIN"] == "none"
     assert env["NCCL_IB_SUBNET_AWARE_ROUTING"] == "1"
     assert env["NCCL_IB_MERGE_NICS"] == "0"
+    assert "NCCL_IB_GID_INDEX" not in env
+    assert "DETECTED_GID_INDEX_LIST" not in env
     # Standard IB vars still present
     assert env["NCCL_NET"] == "IB"
     assert env["NCCL_IB_HCA"] == "mlx5_0,mlx5_1"
@@ -793,3 +808,19 @@ def test_combined_observations_produce_the_same_network_settings_as_standalone_p
     assert standalone == combined
     assert combined.ib_candidates["h1"] == ["192.168.1.1", "192.168.2.1"]
     assert combined.comm_env.get_env("h2")["NCCL_SOCKET_IFNAME"].startswith("mgmt1")
+
+
+def test_observed_gid_indices_remain_host_specific_and_list_is_diagnostic_only():
+    from sparkrun.orchestration.infiniband import ib_detection_from_observations
+
+    observations = {
+        "h1": {"IB_DETECTED": "1", "DETECTED_GID_INDEX": "3", "DETECTED_GID_INDEX_LIST": "3,3"},
+        "h2": {"IB_DETECTED": "1", "DETECTED_GID_INDEX": "-1", "DETECTED_GID_INDEX_LIST": "3,4"},
+    }
+    comm_env = ib_detection_from_observations(["h1", "h2"], observations, log_findings=False).comm_env
+
+    assert "NCCL_IB_GID_INDEX" not in comm_env.shared
+    assert comm_env.get_env("h1")["NCCL_IB_GID_INDEX"] == "3"
+    assert comm_env.get_env("h2")["NCCL_IB_GID_INDEX"] == "-1"
+    assert "DETECTED_GID_INDEX_LIST" not in comm_env.all_keys()
+    assert "NCCL_IB_GID_INDEX_LIST" not in comm_env.all_keys()

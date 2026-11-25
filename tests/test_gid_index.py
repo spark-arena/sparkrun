@@ -18,7 +18,7 @@ import subprocess
 
 import pytest
 
-from sparkrun.core.hardware_probe import generate_combined_probe_script
+from sparkrun.core.hardware_probe import generate_combined_probe_script, split_probe_output
 from sparkrun.orchestration.infiniband import generate_ib_detect_script
 from sparkrun.scripts import read_script
 
@@ -55,8 +55,10 @@ def bin_dir(tmp_path):
     """
     d = tmp_path / "bin"
     d.mkdir()
-    for tool in ("ls", "sort", "cat"):
+    for tool in ("ls", "sort", "cat", "basename", "head", "grep", "sed", "cut", "tr", "awk", "uname"):
         os.symlink(shutil.which(tool), d / tool)
+    (d / "ip").write_text("#!/bin/sh\nexit 1\n")
+    (d / "ip").chmod(0o755)
     return d
 
 
@@ -64,6 +66,17 @@ def _stub_show_gids(bin_dir, output):
     stub = bin_dir / "show_gids"
     stub.write_text("#!/bin/sh\ncat <<'EOF'\n" + output + "EOF\n")
     stub.chmod(0o755)
+
+
+def _make_detection_hca(sysfs_root, hca, *, active=True, gid_index=None):
+    entries = {} if gid_index is None else {gid_index: ("RoCE v2", _IPV4_MAPPED)}
+    hca_dir = _make_port(sysfs_root, entries, hca=hca)
+    state = "4: ACTIVE" if active else "1: DOWN"
+    (hca_dir / "ports" / "1" / "state").write_text(state + "\n")
+
+
+def _show_gids_rows(indices):
+    return "".join(f"{hca}\t1\t{index}\t{_IPV4_MAPPED}\t192.0.2.1\tv2\tfixture0\n" for hca, index in indices.items())
 
 
 def _run(bin_dir, hca_dir, hca=_HCA):
@@ -77,6 +90,84 @@ def _run(bin_dir, hca_dir, hca=_HCA):
         check=True,
     )
     return result.stdout.strip(), result.stderr
+
+
+@pytest.mark.parametrize("detector", ["standalone", "combined"], ids=["ib_detect", "combined_probe"])
+@pytest.mark.parametrize(
+    ("case", "devices", "show_gids", "expected_detected", "expected_hcas", "expected_indices", "disagreement"),
+    [
+        (
+            "show_gids_mismatch",
+            (("hca0", True, 3), ("hca1", True, 4)),
+            {"hca0": 3, "hca1": 4},
+            "1",
+            "hca0,hca1",
+            "3,4",
+            True,
+        ),
+        (
+            "show_gids_agreement",
+            (("hca0", True, 3), ("hca1", True, 3)),
+            {"hca0": 3, "hca1": 3},
+            "1",
+            "hca0,hca1",
+            "3,3",
+            False,
+        ),
+        ("sysfs_mismatch", (("hca0", True, 3), ("hca1", True, None)), None, "1", "hca0,hca1", "3,-1", True),
+        ("missing_gids", (("hca0", True, None), ("hca1", True, None)), None, "1", "hca0,hca1", "-1,-1", False),
+        ("inactive_hca", (("hca0", True, 3), ("hca1", False, 4)), None, "1", "hca0", "3", False),
+        ("one_hca", (("hca0", True, 3),), {"hca0": 5}, "1", "hca0", "5", False),
+        ("no_active_hca", (("hca0", False, 3),), None, "0", None, None, False),
+        ("absent_sysfs", (), None, "0", None, None, False),
+    ],
+)
+def test_detectors_consensus_with_fixture_sysfs(
+    tmp_path, bin_dir, detector, case, devices, show_gids, expected_detected, expected_hcas, expected_indices, disagreement
+):
+    sysfs_root = tmp_path / "infiniband"
+    for hca, active, gid_index in devices:
+        _make_detection_hca(sysfs_root, hca, active=active, gid_index=gid_index)
+    if show_gids is not None:
+        _stub_show_gids(bin_dir, _show_gids_rows(show_gids))
+
+    if detector == "standalone":
+        script = generate_ib_detect_script()
+    else:
+        script = generate_combined_probe_script()
+    script = script.replace("/sys/class/infiniband", str(sysfs_root))
+    result = subprocess.run(
+        [shutil.which("bash"), "-s"],
+        input=script,
+        capture_output=True,
+        text=True,
+        env={
+            "PATH": str(bin_dir),
+            "SPARKRUN_NET_SYSFS": str(tmp_path / "net"),
+            "SPARKRUN_MGMT_IFACE": "",
+            "SPARKRUN_MGMT_PEERS": "",
+            "SSH_CONNECTION": "",
+        },
+        check=False,
+    )
+
+    assert result.returncode == 0, f"{case}: {result.stderr}"
+    ib_output = split_probe_output(result.stdout)[1] if detector == "combined" else result.stdout
+    lines = ib_output.splitlines()
+    assert lines and all("=" in line for line in lines), f"{case}: {ib_output!r}"
+    facts = dict(line.split("=", 1) for line in lines)
+    assert facts["IB_DETECTED"] == expected_detected
+    if expected_detected == "1":
+        assert facts["DETECTED_HCA_LIST"] == expected_hcas
+        assert facts["DETECTED_GID_INDEX"] == ("-1" if disagreement else expected_indices.split(",")[0])
+        assert facts["DETECTED_GID_INDEX_LIST"] == expected_indices
+        for hca, active, _ in devices:
+            assert (f"Device {hca}:" in result.stderr) is active
+    else:
+        assert "DETECTED_HCA_LIST" not in facts
+        assert "DETECTED_GID_INDEX_LIST" not in facts
+        assert "GID index disagreement" not in result.stderr
+    assert ("GID index disagreement" in result.stderr) is disagreement
 
 
 def test_sysfs_prefers_ipv4_gid_over_link_local(tmp_path, bin_dir):
@@ -146,6 +237,34 @@ def test_show_gids_without_ipv4_row_falls_through_to_sysfs(tmp_path, bin_dir):
     assert "via sysfs" in err
 
 
+@pytest.mark.parametrize(
+    ("indices", "expected", "has_warning"),
+    [
+        (("3",), "3", False),
+        (("3", "3"), "3", False),
+        (("3", "4"), "-1", True),
+        (("3", "-1"), "-1", True),
+        (("-1", "3"), "-1", True),
+        (("-1", "-1"), "-1", False),
+    ],
+)
+def test_gid_index_consensus(indices, expected, has_warning):
+    script = read_script("_gid_index.sh") + "\nsparkrun_gid_index_consensus " + " ".join(indices) + "\n"
+    result = subprocess.run([shutil.which("bash"), "-s"], input=script, capture_output=True, text=True, check=False)
+
+    assert result.returncode == 0
+    assert result.stdout == expected + "\n"
+    assert ("disagreement" in result.stderr) is has_warning
+
+
+def test_gid_index_consensus_requires_an_index():
+    script = read_script("_gid_index.sh") + "\nsparkrun_gid_index_consensus\n"
+    result = subprocess.run([shutil.which("bash"), "-s"], input=script, capture_output=True, text=True, check=False)
+
+    assert result.returncode != 0
+    assert "requires at least one index" in result.stderr
+
+
 def test_helper_is_brace_free():
     """The combined probe passes the helper through str.format()."""
     helper = read_script("_gid_index.sh")
@@ -154,6 +273,8 @@ def test_helper_is_brace_free():
 
 @pytest.mark.parametrize("script", [generate_ib_detect_script(), generate_combined_probe_script()], ids=["ib_detect", "probe"])
 def test_both_detectors_use_the_shared_helper(script):
-    assert 'GID_INDEX=$(sparkrun_rocev2_gid_index "$hca_name" "$ib_path")' in script
+    assert 'GID_INDEXES+=("$(sparkrun_rocev2_gid_index "$hca_name" "$ib_path")")' in script
+    assert 'GID_INDEX=$(sparkrun_gid_index_consensus "${GID_INDEXES[@]}")' in script
+    assert "DETECTED_GID_INDEX_LIST=$GID_INDEX_LIST" in script
     assert "defaulting to 3" not in script
     assert subprocess.run([shutil.which("bash"), "-n"], input=script, text=True).returncode == 0

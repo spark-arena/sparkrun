@@ -22,7 +22,7 @@ fi
 ACTIVE_HCAS=()
 ACTIVE_NETIFS=()
 UCX_DEVS=()
-GID_INDEX=""
+GID_INDEXES=()
 
 # Iterate over InfiniBand devices in sysfs
 for ib_path in /sys/class/infiniband/*; do
@@ -39,13 +39,8 @@ for ib_path in /sys/class/infiniband/*; do
         ACTIVE_HCAS+=("$hca_name")
         UCX_DEVS+=("${hca_name}:1")
 
-        # Determine GID Index (run once on first active card).  Always
-        # yields an index; -1 hands the choice to NCCL.  See _gid_index.sh.
-        if [ -z "$GID_INDEX" ]; then
-            GID_INDEX=$(sparkrun_rocev2_gid_index "$hca_name" "$ib_path")
-        else
-            echo "Device $hca_name: Active" >&2
-        fi
+        # Always yields an index; -1 hands the choice to NCCL.  See _gid_index.sh.
+        GID_INDEXES+=("$(sparkrun_rocev2_gid_index "$hca_name" "$ib_path")")
 
         # Find Ethernet interface backing this device
         net_dir="$ib_path/device/net"
@@ -62,6 +57,10 @@ if [ ${#ACTIVE_HCAS[@]} -eq 0 ]; then
     sparkrun_mgmt_report ""
     exit 0
 fi
+
+# Reduce only after the active-HCA guard; both values follow ACTIVE_HCAS order.
+GID_INDEX=$(sparkrun_gid_index_consensus "${GID_INDEXES[@]}")
+GID_INDEX_LIST=$(IFS=,; echo "${GID_INDEXES[*]}")
 
 # Build comma-separated lists
 HCA_LIST=$(IFS=,; echo "${ACTIVE_HCAS[*]}")
@@ -92,6 +91,7 @@ echo "  HCA_LIST   = $HCA_LIST" >&2
 echo "  NET_LIST   = $NET_LIST" >&2
 echo "  IB_IPS     = $IB_IP_LIST" >&2
 echo "  GID_INDEX  = $GID_INDEX" >&2
+echo "  GID_INDEX_LIST = $GID_INDEX_LIST" >&2
 echo "  DEFAULT_IF = $DEFAULT_IF" >&2
 echo "  MGMT_IP    = $MGMT_IP" >&2
 echo "---------------------------------------------------" >&2
@@ -99,6 +99,7 @@ echo "---------------------------------------------------" >&2
 # Output key=value pairs on stdout (parsed by sparkrun)
 echo "IB_DETECTED=1"
 echo "DETECTED_GID_INDEX=$GID_INDEX"
+echo "DETECTED_GID_INDEX_LIST=$GID_INDEX_LIST"
 echo "DETECTED_HCA_LIST=$HCA_LIST"
 echo "DETECTED_SOCKET_IFNAME=$DEFAULT_IF"
 echo "DETECTED_NET_LIST=$NET_LIST"
