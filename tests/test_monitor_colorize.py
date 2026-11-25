@@ -8,6 +8,7 @@ from sparkrun.cli._monitor_colorize import (
     COLORIZERS,
     GENERIC_COLORIZER,
     RUNTIME_COLORIZERS,
+    AnedaColorizer,
     AtlasColorizer,
     LlamaCppColorizer,
     SglangColorizer,
@@ -222,6 +223,12 @@ def test_rank_tags_cycle_the_palette(text, token, style):
         (LlamaCppColorizer(), "0.00.035.064 I load_tensors: n_ctx: 4096", "4096", "yellow"),
         (TrtLlmColorizer(), "[10/11/2026-08:12:34 UTC] [TRT-LLM] [I] engine ready", "[TRT-LLM]", "bold blue"),
         (AtlasColorizer(), "[2026-10-11T08:12:34Z WARN atlas::serve] oom", "atlas::serve", "bold blue"),
+        (AnedaColorizer(), "serve: req 7 session 0006b0500f500006: prompt 145800, reused 0 (cold)", "serve:", "bold blue"),
+        (AnedaColorizer(), "serve: req 7 session 0006b0500f500006: prompt 145800", "0006b0500f500006", "magenta"),
+        (AnedaColorizer(), "req 1 session 1882707761037312: prompt 5 (cached 0), completion 1, length; ttft 0.039 s", "length", "yellow"),
+        (AnedaColorizer(), "serve: req 7 session 0006b0500f500006: prefill 39.3 ms, stop; store 0.0 MiB", "stop", "green"),
+        (AnedaColorizer(), "[picom-launcher] rank 0: engine ready", "[picom-launcher]", "bold blue"),
+        (AnedaColorizer(), "stats: t=10 rank=0 tok_out=12 tok_in=4824 queue=0", "stats: t=10 rank=0", "bold blue"),
     ],
 )
 def test_runtime_extras_colorize(colorizer, text, token, style):
@@ -286,6 +293,40 @@ def test_spans_are_sorted_disjoint_and_in_bounds(colorizer, text):
         previous_end = end
 
 
+ANEDA_LINES = [
+    # Real workload log, 2026-11-24 (rank 0's container stdout, both emitters).
+    "stats: t=10 rank=0 tok_out=12 tok_in=4824 kv_util=0.000 kv_hit=0.000 draft_accept=0.000 queue=0 engram_hit=0.501 engram_used=0.000 reqs_stock=2 reqs_steered=2",
+    "stats: t=10 front queue=0.0 reqs_stock=1 reqs_steered=0",
+    "serve: req 7 session 0006b0500f500006: prompt 145800, reused 0 (cold), prefill 14762.0 ms (9877 tok/s), 345 tokens in 3645.1 ms (94.4 tok/s), stop; store 104.1 MiB",
+    "req 1 plan: session 1882707761037312, new: no session shares a byte",
+    "serve: req 8 restart: a fork of 0006b0500f500006: common prefix 145798 ids; reused 145408 (snapshot)",
+    "state: session 2 spilled to disk (9.3 MiB; 0.01 of 32.00 GiB of the file in use; host 0.20 ms)",
+    "spill: 9.3 MiB to staging in 0.17 ms on the stream (58.5 GB/s; checksums before it 0.22 ms)",
+    "[picom-launcher] rank 0: starting dsfront on 10.0.4.31:8000 (served name deepseek-ai/DeepSeek-V4.1-Flash-1017, max_tokens 32768, auth keyless)",
+    "serve: listening on /cache/runtime/picom/run/engine.sock (context 1048576, session store 12.00 GiB)",
+]
+
+
+def test_aneda_colorizer_recognizes_its_own_lines_only():
+    colorizer = AnedaColorizer()
+    for text in ANEDA_LINES:
+        assert colorizer.recognizes(text), text
+    for text in RUNTIME_MATRIX:
+        if text in ANEDA_LINES:
+            continue
+        assert not colorizer.recognizes(text), text
+
+
+def test_aneda_outcome_and_drafts_keep_their_semantics():
+    colorizer = AnedaColorizer()
+    # The end reason follows the completion counts: stop is natural, length is the ceiling.
+    line = "req 2 session 0006b0500f500001: completion 2, stop; ttft 0.041 s"
+    assert ("stop", "green") in _pairs(colorizer.spans(line), line)
+    # The acceptance is one data span: the generic key=value rule would take only a piece.
+    batch = "drafts: 6.94 tokens and 8.79 rows per step, 433 of 585 drafts accepted; GPU ms by rows: 4: 31.10 (2)"
+    assert ("433 of 585 drafts accepted", "yellow") in _pairs(colorizer.spans(batch), batch)
+
+
 def test_tensorfold_colorizer_recognizes_its_own_lines_only():
     colorizer = TensorFoldColorizer()
     for text in TENSORFOLD_LINES:
@@ -346,6 +387,8 @@ def test_tensorfold_launcher_and_outcome_tokens_colorize():
         ("trtllm", "trtllm"),
         ("atlas", "atlas"),
         ("tensorfold", "tensorfold"),
+        ("aneda", "aneda"),
+        ("Aneda", "aneda"),
         ("VLLM-Ray", "vllm"),
         ("unknown-engine", None),
         ("", None),
@@ -374,6 +417,8 @@ def test_every_runtime_alias_resolves_to_a_registered_colorizer():
         ("[2026-10-11T08:12:34Z WARN atlas::serve] oom", "atlas"),
         ("[tensorfold] serving nemotron", "tensorfold"),
         ("tensorfold: cannot listen", "tensorfold"),
+        ("serve: req 7 session 0006b0500f500006: prompt 145800", "aneda"),
+        ("stats: t=10 rank=0 tok_out=12 tok_in=4824", "aneda"),
         ("plain line, no signature", "generic"),
     ],
 )
