@@ -122,23 +122,21 @@ def test_copyable_plugin_example_typechecks_with_pinned_pyright(tmp_path):
         source.write_text(example)
         sources.append(source)
     config = tmp_path / "pyrightconfig.json"
-    config.write_text(
-        json.dumps(
-            {
-                "include": [source.name for source in sources],
-                "extraPaths": [str(ROOT / "src")],
-                "pythonVersion": "3.12",
-                "typeCheckingMode": "basic",
-                "venvPath": str(ROOT),
-                "venv": ".venv",
-            }
-        )
-    )
-    pyright = ROOT / ".venv/bin/pyright"
-    assert pyright.is_file(), "The project environment must provide pinned Pyright"
-    version = subprocess.run([str(pyright), "--version"], cwd=ROOT, capture_output=True, text=True, check=True)
-    assert "1.1.414" in version.stdout
-    result = subprocess.run([str(pyright), "--project", str(config), "--outputjson"], cwd=tmp_path, capture_output=True, text=True)
+    settings = {
+        "include": [source.name for source in sources],
+        "extraPaths": [str(ROOT / "src")],
+        "pythonVersion": "3.12",
+        "typeCheckingMode": "basic",
+    }
+    if (ROOT / ".venv").is_dir():
+        # A dev checkout resolves third-party imports from its venv; CI installs
+        # the same pinned dev extras into the interpreter that runs the tests.
+        settings |= {"venvPath": str(ROOT), "venv": ".venv"}
+    config.write_text(json.dumps(settings))
+    pyright = [sys.executable, "-m", "pyright"]
+    version = subprocess.run([*pyright, "--version"], cwd=ROOT, capture_output=True, text=True, check=True)
+    assert "1.1.414" in version.stdout, version.stdout
+    result = subprocess.run([*pyright, "--project", str(config), "--outputjson"], cwd=tmp_path, capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr
     summary = json.loads(result.stdout)["summary"]
     assert summary["errorCount"] == 0, result.stdout
