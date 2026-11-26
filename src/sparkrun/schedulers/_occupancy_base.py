@@ -47,7 +47,7 @@ best-effort signal; it degrades gracefully when no status is provided.
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import AbstractSet, ClassVar
+from typing import ClassVar
 
 from sparkrun.core.cluster_status import ClusterStatus, HostOccupancy, with_gpu_allocations
 from sparkrun.core.allocations import EXCLUSIVE_GPU_THRESHOLD
@@ -190,6 +190,7 @@ class _OccupancyAwareBase(Scheduler):
         ]
 
     @staticmethod
+    def _rejections(host, hw, eligible, util, memory, fraction, claims, *, own: set[int] | frozenset[int] = frozenset()):
         """Why each GPU on *host* refused the next rank. *own* GPUs hold a rank of
         this request: they are in use, not blocked, so they are not reported."""
         specs = [a for a in hw.accelerators for _ in range(a.count)]
