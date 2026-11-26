@@ -187,8 +187,10 @@ sparkrun daemon --url https://controller:8443 --token-file <token_file> status
 sparkrun daemon --socket <socket_path> jobs list
 ```
 
-Connection flags precede the daemon subcommand. Inspect `/v1/ops` for actual
-operation names/schemas; plugins use `plugins.<plugin_id>.*`. Jobs may need prompt
+Connection flags precede the daemon subcommand. `sparkrun daemon help` lists actual
+operation names; `sparkrun daemon help <operation>` shows its fields, scope and a
+`daemon call` example (`--json` for the `/v1/ops` schemas). Plugins use
+`plugins.<plugin_id>.*`. Jobs may need prompt
 responses. Events follow streams; `jobs show` is a finite poll. Never print tokens.
 
 <Tool_Usage>
