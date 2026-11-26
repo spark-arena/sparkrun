@@ -1,13 +1,14 @@
 ---
 name: configuration
-description: Install/update Sparkrun 0.4.0, configure host clusters and SSH, check setup, manage plugins/features, and inspect or clean model caches.
+description: Install/update Sparkrun 0.4.3, configure host clusters and SSH, check setup, manage plugins/features, and inspect or clean model caches.
 ---
 
 # Installation and host setup
 
 Check `sparkrun --version` and installed `--help` before assuming optional commands
-are available. These instructions target 0.4.0. Use the workloads skill for execution
-and registry for recipes. Keep changes within the user's requested hosts and scope.
+are available. These instructions target the checkout's 0.4.3 core version; older
+or newer installs may differ. Use the workloads skill for execution and registry
+for recipes. Keep changes within the user's requested hosts and scope.
 
 ## Install and update
 
@@ -119,6 +120,7 @@ sparkrun plugins remove <plugin_name>
 sparkrun setup features
 sparkrun setup features list --all --json
 sparkrun setup features enable gateway.sparkroute
+sparkrun setup features enable runtime.tokenary
 sparkrun setup features disable gateway
 sparkrun setup features reset gateway
 ```
@@ -136,6 +138,11 @@ explicit feature activation. Plugin list shows declared flags, not on/off values
 default (text and JSON, with a "N disabled ... hidden" hint); add `--all` to
 include disabled plugins/flags (and `setup.steps.*` flags). OCI Relay is bundled and enabled on all
 channels; use `plugins enable/disable oci_relay`, not a legacy integration flag.
+
+Runtime feature flags are separate from plugin flags. On this checkout,
+`runtime.tokenary` defaults off while the other runtime flags default on; enable
+it with `setup features enable runtime.tokenary` only when the user requests
+Tokenary. Older installs may not have per-runtime flags.
 
 Gateway support defaults on; LiteLLM is bundled/default on every channel. After
 installing/enabling SparkRoute, explicitly enabling `gateway.sparkroute` selects
@@ -184,12 +191,15 @@ Default rsync concurrency is two streams per destination, sixteen total. Diagnos
 before overriding transfer/file-selection policy.
 
 <Tool_Usage>
-Run these commands with the `bash` tool. Raise `timeout` (up to 3600 seconds) for
-downloads, readiness waits, and benchmarks; the default 300-second deadline is too
-short for most launches. Start indefinite streams (`logs --follow`, `cluster
-monitor --simple`, `cluster monitor --json`) as background jobs (`async: true` or
-`timeout: 0`) and stop them when enough samples are collected. A background job or
-a timed-out bash call kills only the local CLI process, never the remote workload.
+Run these commands with the `bash` tool. The default 300-second deadline is too
+short for many downloads, readiness waits, and benchmarks; raise `timeout` within
+the host's configured maximum (documented maximum: 3600 seconds). `async: true`
+requests a background job when the host's `async.enabled` setting permits it; it
+does not change the deadline. `timeout: 0` disables the tool-imposed deadline but
+does not itself request background execution. Background jobs continue until
+completion, cancellation, or their deadline (unless `timeout: 0` disables it).
+Cancellation or timeout can stop the local CLI while leaving remote workloads
+running; inspect status before retrying.
 Interactive prompts (`setup wizard`, SSH/sudo, trust confirmations, Arena login)
 need the user's own terminal. Never claim a timed-out launch was rolled back.
 </Tool_Usage>

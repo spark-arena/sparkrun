@@ -5,9 +5,13 @@ from __future__ import annotations
 import ast
 from collections import Counter
 import importlib
+import json
 from pathlib import Path
 import re
+import subprocess
+import sys
 from textwrap import dedent
+from types import ModuleType
 from urllib.parse import unquote, urlsplit
 
 import pytest
@@ -92,6 +96,100 @@ def test_current_documented_python_imports():
                         importlib.import_module(node.module + "." + name.name)
                     checked.add(key)
     assert checked, "No current Sparkrun imports found in the documentation"
+
+
+def _copyable_plugin_examples():
+    path = ROOT / "sparkrun-cc-plugin/skills/plugins/SKILL.md"
+    examples = [dedent(match[1]) for match in re.finditer(r"^```python\n(.*?)^```", path.read_text(), re.M | re.S)]
+    assert examples, "The plugin-authoring skill must contain Python examples"
+    assert all("# pyright-checked copyable" in example for example in examples), (
+        "Every Python example must be explicitly copyable and checked, or marked as pseudocode"
+    )
+    return examples
+
+
+def _copyable_plugin_module():
+    examples = [example for example in _copyable_plugin_examples() if "# pyright-checked copyable example" in example]
+    assert len(examples) == 1, "Mark one complete plugin module for the isolated handler test"
+    return examples[0]
+
+
+def test_copyable_plugin_example_typechecks_with_pinned_pyright(tmp_path):
+    examples = _copyable_plugin_examples()
+    sources = []
+    for index, example in enumerate(examples):
+        source = tmp_path / f"plugin_example_{index}.py"
+        source.write_text(example)
+        sources.append(source)
+    config = tmp_path / "pyrightconfig.json"
+    config.write_text(
+        json.dumps(
+            {
+                "include": [source.name for source in sources],
+                "extraPaths": [str(ROOT / "src")],
+                "pythonVersion": "3.12",
+                "typeCheckingMode": "basic",
+                "venvPath": str(ROOT),
+                "venv": ".venv",
+            }
+        )
+    )
+    pyright = ROOT / ".venv/bin/pyright"
+    assert pyright.is_file(), "The project environment must provide pinned Pyright"
+    version = subprocess.run([str(pyright), "--version"], cwd=ROOT, capture_output=True, text=True, check=True)
+    assert "1.1.414" in version.stdout
+    result = subprocess.run([str(pyright), "--project", str(config), "--outputjson"], cwd=tmp_path, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    summary = json.loads(result.stdout)["summary"]
+    assert summary["errorCount"] == 0, result.stdout
+    assert summary["warningCount"] == 0, result.stdout
+
+
+def test_copyable_plugin_example_registers_handler_and_tuple_preparation(monkeypatch):
+    from sparkrun.core import recipe_items
+
+    monkeypatch.setattr(recipe_items, "_RECIPE_ITEMS", dict(recipe_items._RECIPE_ITEMS))
+    module = ModuleType("documentation_plugin_example")
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    exec(compile(_copyable_plugin_module(), "plugin_example.py", "exec"), module.__dict__)
+    module.register(None)
+
+    registration = recipe_items.get_recipe_item("snapshot")
+    assert registration is not None
+    parsed = registration.handler.parse({"size": 8}, None)
+    assert registration.handler.validate(parsed, None) == []
+    assert registration.handler.export(parsed, None) == {"size": 8}
+    assert registration.preparation_steps is not None
+    steps = registration.preparation_steps(None)
+    assert isinstance(steps, tuple)
+    assert len(steps) == 1
+    assert steps[0].action(None, {}) is None
+
+
+def test_plugin_author_extension_import_advice_matches_public_facades():
+    from sparkrun import plugins, transports
+    from sparkrun.orchestration import telemetry
+
+    guide = (ROOT / "sparkrun-cc-plugin/skills/plugins/SKILL.md").read_text()
+    plugin_exports = set(plugins.__all__)
+    for name in (
+        "RuntimePlugin",
+        "BuilderPlugin",
+        "Executor",
+        "BenchmarkingPlugin",
+        "HardwarePlatformPlugin",
+        "ExecutionContext",
+        "PreparationStep",
+        "Recipe",
+        "register_recipe_item",
+    ):
+        assert name in plugin_exports and hasattr(plugins, name)
+    assert "Transport" not in plugin_exports and "Transport" in transports.__all__
+    assert "TelemetryProvider" not in plugin_exports and "TelemetryProvider" in telemetry.__all__
+    assert "Scheduler" not in plugin_exports
+    assert "No public base export in 0.4.3" in guide
+    assert "must not add unconditional overrides" in guide
+    assert "replacing that method with `return True` exposes a gated class" in guide
 
 
 @pytest.mark.parametrize(

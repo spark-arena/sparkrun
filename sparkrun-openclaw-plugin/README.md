@@ -1,6 +1,6 @@
 # Sparkrun plugin for OpenClaw
 
-Skills and a `sparkrun_exec` tool for the **Sparkrun 0.4.0 CLI**: launches,
+Skills and a `sparkrun_exec` tool for the **Sparkrun 0.4.3 CLI in this checkout**: launches,
 readiness, bounded logs, performance/tool benchmarks, gateways, host setup, plugins,
 and model caches. Sparkrun must be installed on the OpenClaw host's PATH, with
 access to the target hosts and the intended environment/configuration.
@@ -33,8 +33,9 @@ sparkrun --version
 sparkrun setup check --cluster mylab
 ```
 
-Sparkrun requires Python 3.12+. References target 0.4.0, including preview builds;
-check installed `--help` for older releases and preserve the user's update channel.
+Sparkrun requires Python 3.12+. These references target core 0.4.3; check installed
+`--version` and `--help` because older releases may not expose every capability,
+and preserve the user's update channel.
 Initial `sparkrun setup wizard`, SSH/sudo, trust confirmations, and Arena login
 need an interactive user terminal. The execution tool has no interactive stdin.
 

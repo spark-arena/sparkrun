@@ -18,10 +18,11 @@ Choose the right home first:
 - **In-tree `src/sparkrun/plugins/`**: only for cross-cutting integrations that
   must ship with core. A single-kind runtime/executor/builder belongs in its own
   top-level package instead.
-- **`sparkrun.plugins` import path only**: registration APIs, base classes, and
-  hook types are re-exported there. Importing `sparkrun.core.*`,
-  `sparkrun.proxy.*`, or `sparkrun.orchestration.*` internals is unsupported and
-  moves between releases.
+- **Public plugin imports**: `sparkrun.plugins.__all__` is authoritative for
+  names from that module; use a dedicated public facade where the extension
+  table lists one. Operational calls belong to the separately documented
+  `sparkrun.api` and `sparkrun.application`. Do not import private implementation
+  modules as a workaround for a base that is not publicly exported.
 
 ## Package skeleton
 
@@ -36,25 +37,9 @@ dependencies = ["sparkrun>=0.4,<0.5"]
 example-plugin = "example_plugin"
 ```
 
-```python
-# src/example_plugin/__init__.py
-from sparkrun.plugins import register_recipe_item
-
-SPARKRUN_PLUGIN_API_VERSION = 1
-__version__ = "0.1.0"
-
-SPARKRUN_PLUGIN_MANIFEST = {
-    "api": 1,
-    "features": {
-        "example.enabled": {"description": "Example capability", "default": False},
-    },
-    "hooks": {},
-}
-
-
-def register(v):
-    register_recipe_item("snapshot", SnapshotHandler(), owner=__name__)
-```
+The entry point implements `register(v)`. The complete, typed copyable module
+example appears under “Owning a recipe key”; other snippets are explicitly
+identified as fragments or pseudocode.
 
 `sparkrun.plugins` is the **only** installed-package entry-point group. The
 per-kind groups (`sparkrun.runtimes`, `sparkrun.builders`,
@@ -89,9 +74,10 @@ The copyable reference package is
 
 ## Entry-module contract
 
-Every plugin entry module declares a **literal integer**:
+Every plugin entry module declares a **literal integer**. This is a declaration
+fragment, not a standalone module:
 
-```python
+```text
 SPARKRUN_PLUGIN_API_VERSION = 1
 ```
 
@@ -99,9 +85,9 @@ Missing, boolean, string, float, or incompatible values reject the plugin before
 `register(v)` runs. Do not compute it from a host constant; a newer host does not
 establish compatibility for an older plugin.
 
-Optional declarations:
+Optional declaration fragment (not a complete manifest):
 
-```python
+```text
 __version__ = "0.1.0"                 # release version; omitted means "unknown"
 
 SPARKRUN_PLUGIN_MANIFEST = {
@@ -120,31 +106,35 @@ unrelated submodules.
 
 ## Extension points
 
-| Base class | Extension point | Selector | Discovery |
+| Base class | Public import | Extension point | Selector / discovery |
 | --- | --- | --- | --- |
-| `RuntimePlugin` | `sparkrun.runtime` | `runtime_name` | class scan |
-| `BuilderPlugin` | `sparkrun.builder` | `builder_name` | class scan |
-| `Executor` | `sparkrun.executor` | `executor_name` | class scan |
-| `Scheduler` | `sparkrun.scheduler` | `scheduler_name` | class scan |
-| `Transport` | `sparkrun.transport` | `transport_name` | class scan |
-| `TelemetryProvider` | `sparkrun.telemetry` | scope/feature gate | class scan |
-| `BenchmarkingPlugin` | `sparkrun.benchmarking` | `framework_name` | class scan |
-| `HardwarePlatformPlugin` | `sparkrun.platform` | `platform_name` | explicit `register_platform` only |
+| `RuntimePlugin` | `sparkrun.plugins` | `sparkrun.runtime` | `runtime_name`; class scan |
+| `BuilderPlugin` | `sparkrun.plugins` | `sparkrun.builder` | `builder_name`; class scan |
+| `Executor` | `sparkrun.plugins` | `sparkrun.executor` | `executor_name`; class scan |
+| `Scheduler` | No public base export in 0.4.3 | `sparkrun.scheduler` | `scheduler_name`; class scan |
+| `Transport` | `sparkrun.transports` | `sparkrun.transport` | `transport_name`; class scan |
+| `TelemetryProvider` | `sparkrun.orchestration.telemetry` | `sparkrun.telemetry` | scope/feature gate; class scan |
+| `BenchmarkingPlugin` | `sparkrun.plugins` | `sparkrun.benchmarking` | `framework_name`; class scan |
+| `HardwarePlatformPlugin` | `sparkrun.plugins` | `sparkrun.platform` | `platform_name`; explicit `register_platform` only |
 
-Subclasses must override both SAF gates:
+`Transport` and `TelemetryProvider` are exported by their listed package
+facades, not by `sparkrun.plugins`. In this checkout, `Scheduler` is defined in
+`sparkrun.core.scheduler` but has no supported public base-class export; do not
+import that internal module for an out-of-tree plugin. Ask for a public scheduler
+seam before implementing one.
 
-```python
-def is_enabled(self, v):
-    return False          # never let SAF's single-extension cache win
-
-def is_multi_extension(self, v):
-    return True           # expose the extension this plugin registers
-```
-
-For a feature-gated class, combine the gate with the default rather than
-returning `True` unconditionally. `sparkrun.platform` is declared but
-deliberately not scanned: platform resolution is order-sensitive, so register
-it through `register_platform`.
+The Sparkrun base classes already implement the SAF multi-extension hooks;
+subclasses normally inherit them and must not add unconditional overrides.
+`RuntimePlugin`, `BuilderPlugin`, `Executor`, `Scheduler`, `TelemetryProvider`,
+`BenchmarkingPlugin`, `Transport`, and `HardwarePlatformPlugin` provide
+`is_enabled` / `is_multi_extension` behavior. In particular, runtime, builder,
+executor, and telemetry bases apply their `required_feature_flag` in the
+inherited gate; replacing that method with `return True` exposes a gated class
+when its feature is disabled. Transport checks its feature at use time instead.
+If implementing SAF hooks directly, preserve the multi-extension behavior
+(`is_enabled` must be false) and any base-class feature gate. `sparkrun.platform`
+is declared but deliberately not scanned: platform resolution is order-sensitive,
+so register it through `register_platform`.
 
 ## Registry-style registrations
 
@@ -185,22 +175,61 @@ are equal to the originals.
 ## Owning a recipe key
 
 ```python
-from sparkrun.plugins import register_recipe_item
+"""Copyable, Pyright-checked example for src/example_plugin/__init__.py."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Mapping
+
+from scitrera_app_framework import Variables
+from sparkrun.plugins import ExecutionContext, PreparationStep, Recipe, register_recipe_item
+
+# pyright-checked copyable example
+SPARKRUN_PLUGIN_API_VERSION = 1
+__version__ = "0.1.0"
+SPARKRUN_PLUGIN_MANIFEST = {
+    "api": 1,
+    "features": {"example.enabled": {"description": "Example capability", "default": False}},
+    "hooks": {},
+}
+
+
+@dataclass(frozen=True)
+class SnapshotConfig:
+    size: int
 
 
 class SnapshotHandler:
-    def parse(self, value, recipe):
-        return SnapshotConfig(**value)
+    def parse(self, value: Any, recipe: Recipe) -> SnapshotConfig:
+        if not isinstance(value, dict):
+            raise TypeError("snapshot must be a mapping")
+        size = value.get("size")
+        if isinstance(size, bool) or not isinstance(size, int):
+            raise ValueError("snapshot.size must be an integer")
+        return SnapshotConfig(size=size)
 
-    def validate(self, value, recipe):
+    def validate(self, value: Any, recipe: Recipe) -> list[str]:
+        if not isinstance(value, SnapshotConfig):
+            return ["snapshot must be parsed before validation"]
         return [] if value.size > 0 else ["size must be positive"]
 
-    def export(self, value, recipe):
+    def export(self, value: Any, recipe: Recipe) -> dict[str, int]:
+        if not isinstance(value, SnapshotConfig):
+            raise TypeError("snapshot must be parsed before export")
         return {"size": value.size}
 
 
-def register(v):
-    register_recipe_item("snapshot", SnapshotHandler(), owner=__name__)
+def stage_snapshot(_context: ExecutionContext, _receipts: Mapping[str, Any]) -> None:
+    return None
+
+
+def contribute_snapshot_preparation(_context: ExecutionContext) -> tuple[PreparationStep, ...]:
+    return (PreparationStep(name="snapshot.prepare", action=stage_snapshot),)
+
+
+def register(v: Variables) -> None:
+    register_recipe_item("snapshot", SnapshotHandler(), owner=__name__, preparation_steps=contribute_snapshot_preparation)
 ```
 
 The key must match `^[a-z][a-z0-9_-]*$` and cannot collide with a core recipe key
@@ -219,9 +248,10 @@ Four properties matter:
 - Items participate in `derive_recipe_fingerprint` by default, using the
   handler's canonical export.
 
-Passive annotations may opt out of workload identity:
+Passive annotations may opt out of workload identity. This is an illustrative
+call fragment; define `AnnotationHandler` in the plugin before using it:
 
-```python
+```text
 register_recipe_item(
     "annotations", AnnotationHandler(), owner=__name__, affects_fingerprint=False
 )
@@ -236,9 +266,11 @@ older saved state.
 ## Execution strategies
 
 An owned item may opt its recipes into **one** execution strategy and typed
-preparation steps:
+preparation steps. This illustrative call fragment assumes a strategy class
+defined by the plugin; the copyable example above shows the complete
+`preparation_steps` callback contract:
 
-```python
+```text
 register_recipe_item(
     "snapshot",
     SnapshotHandler(),
@@ -290,13 +322,18 @@ inputs; it must honor dry-run, recipe trust, and fingerprint participation.
 
 ## Registries and foreign formats
 
-A plugin whose recipes are inert without it declares its registry in code:
+A plugin whose recipes are inert without it declares its registry in code. This
+typed function fragment belongs in the plugin module:
 
 ```python
+"""Copyable function fragment; keep this in the plugin entry module."""
+
+# pyright-checked copyable fragment
 from sparkrun.plugins import RegistryEntry, register_default_registry
+from scitrera_app_framework import Variables
 
 
-def register(v):
+def register(v: Variables) -> None:
     register_default_registry(
         RegistryEntry(
             name="example",
@@ -320,9 +357,10 @@ out-of-tree declaration is forced untrusted and the user grants it with
 `sparkrun registry trust <name>`. A plugin cannot claim its own trust, and
 `official` cannot be redefined.
 
-For another launcher's manifests, register a `RecipeFormat`:
+For another launcher's manifests, register a `RecipeFormat`. This is pseudocode
+for the adapter-specific discovery and translation logic, not copyable Python:
 
-```python
+```text
 from sparkrun.plugins import RecipeFormat, RegistryEntry, register_default_registry, register_recipe_format
 
 
@@ -447,12 +485,15 @@ sparkrun run my-recipe.yaml --cluster mylab --dry-run
     metadata, and unsatisfied dependencies.
 
 <Tool_Usage>
-Run these commands with the `bash` tool. Raise `timeout` (up to 3600 seconds) for
-downloads, readiness waits, and benchmarks; the default 300-second deadline is too
-short for most launches. Start indefinite streams (`logs --follow`, `cluster
-monitor --simple`, `cluster monitor --json`) as background jobs (`async: true` or
-`timeout: 0`) and stop them when enough samples are collected. A background job or
-a timed-out bash call kills only the local CLI process, never the remote workload.
+Run these commands with the `bash` tool. The default 300-second deadline is too
+short for many downloads, readiness waits, and benchmarks; raise `timeout` within
+the host's configured maximum (documented maximum: 3600 seconds). `async: true`
+requests a background job when the host's `async.enabled` setting permits it; it
+does not change the deadline. `timeout: 0` disables the tool-imposed deadline but
+does not itself request background execution. Background jobs continue until
+completion, cancellation, or their deadline (unless `timeout: 0` disables it).
+Cancellation or timeout can stop the local CLI while leaving remote workloads
+running; inspect status before retrying.
 Interactive prompts (`setup wizard`, SSH/sudo, trust confirmations, Arena login)
 need the user's own terminal. Never claim a timed-out launch was rolled back.
 </Tool_Usage>

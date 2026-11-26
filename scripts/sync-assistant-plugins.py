@@ -23,12 +23,15 @@ use the host's cancellable background execution or an explicit short timeout.
 Never print credentials or claim a timed-out launch was rolled back.
 </Tool_Usage>"""
 OMP_TOOL_USAGE = """<Tool_Usage>
-Run these commands with the `bash` tool. Raise `timeout` (up to 3600 seconds) for
-downloads, readiness waits, and benchmarks; the default 300-second deadline is too
-short for most launches. Start indefinite streams (`logs --follow`, `cluster
-monitor --simple`, `cluster monitor --json`) as background jobs (`async: true` or
-`timeout: 0`) and stop them when enough samples are collected. A background job or
-a timed-out bash call kills only the local CLI process, never the remote workload.
+Run these commands with the `bash` tool. The default 300-second deadline is too
+short for many downloads, readiness waits, and benchmarks; raise `timeout` within
+the host's configured maximum (documented maximum: 3600 seconds). `async: true`
+requests a background job when the host's `async.enabled` setting permits it; it
+does not change the deadline. `timeout: 0` disables the tool-imposed deadline but
+does not itself request background execution. Background jobs continue until
+completion, cancellation, or their deadline (unless `timeout: 0` disables it).
+Cancellation or timeout can stop the local CLI while leaving remote workloads
+running; inspect status before retrying.
 Interactive prompts (`setup wizard`, SSH/sudo, trust confirmations, Arena login)
 need the user's own terminal. Never claim a timed-out launch was rolled back.
 </Tool_Usage>"""

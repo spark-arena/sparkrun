@@ -5,7 +5,7 @@ argument-hint: "[task or options]"
 
 # /sparkrun:setup
 
-Use the configuration skill for 0.4.0 command details. Check the installed version before
+Use the configuration skill for the Sparkrun 0.4.3 checkout details. Check the installed version before
 changing anything. Preserve the user's chosen cluster/hosts and update channel.
 
 ```bash

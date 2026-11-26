@@ -106,3 +106,81 @@ def test_documented_cli_examples_parse_without_dispatch(path, tmp_path):
                     except click.ClickException as error:
                         pytest.fail(f"{path.relative_to(ROOT)}: {line}\n{error.format_message()}")
             # Deliberately never call invoke(): install/stop/cleanup examples only parse.
+
+
+def test_operational_references_target_checkout_core_version():
+    version = yaml.safe_load((ROOT / "versions.yaml").read_text())["sparkrun"]
+    paths = [
+        ROOT / "sparkrun-cc-plugin/skills/workloads/SKILL.md",
+        ROOT / "sparkrun-cc-plugin/skills/configuration/SKILL.md",
+        ROOT / "sparkrun-cc-plugin/skills/registry/SKILL.md",
+        ROOT / "sparkrun-cc-plugin/skills/plugins/SKILL.md",
+        ROOT / "sparkrun-cc-plugin/commands/run.md",
+        ROOT / "sparkrun-cc-plugin/commands/setup.md",
+        ROOT / "sparkrun-cc-plugin/README.md",
+        ROOT / "sparkrun-openclaw-plugin/README.md",
+        ROOT / "sparkrun-omp-plugin/README.md",
+    ]
+    for path in paths:
+        text = path.read_text()
+        assert version in text, path.relative_to(ROOT)
+        assert "0.4.0 reference" not in text, path.relative_to(ROOT)
+
+
+def test_recipe_environment_examples_match_recipe_and_cluster_contracts(tmp_path, monkeypatch):
+    from sparkrun.core.cluster_manager import ClusterDefinition
+    from sparkrun.core.env_templates import render_env_template, select_env_templates
+
+    path = ROOT / "sparkrun-cc-plugin/skills/recipes/SKILL.md"
+    text = path.read_text()
+    assert re.search(r"\$\{HF_TOKEN\}` reaches the container\s+as that literal string", text)
+    assert "cluster-level `env_file`" in text
+
+    recipe_example = next(block for block in re.findall(r"```yaml\n(.*?)```", text, re.S) if "NNODES:" in block and "MODEL_PATH:" in block)
+    recipe_data = yaml.safe_load(recipe_example)
+    env = recipe_data["env"]
+    assert set(select_env_templates(env)) == set(env)
+    assert render_env_template(env["NODE_RANK"], {}, {"node_rank": 2}) == "2"
+    assert render_env_template("${HF_TOKEN}", {}, {}) == "${HF_TOKEN}"
+    assert select_env_templates({"HF_TOKEN": "${HF_TOKEN}"}) == {}
+
+    cluster_example = next(block for block in re.findall(r"```yaml\n(.*?)```", text, re.S) if "HUGGING_FACE_HUB_TOKEN" in block)
+    cluster_data = yaml.safe_load(cluster_example)
+    env_file = tmp_path / "secrets.env"
+    env_file.write_text("HUGGING_FACE_HUB_TOKEN=file-secret\n")
+    monkeypatch.setenv("HUGGING_FACE_HUB_TOKEN", "ambient-secret")
+    cluster = ClusterDefinition(
+        name="offline-test",
+        hosts=["host1"],
+        env=cluster_data["env"],
+        env_file=str(env_file),
+    )
+    assert cluster.resolve_env() == {"HF_TOKEN": "file-secret"}
+
+
+def test_recipe_version_guidance_separates_checkout_and_feature_minimums():
+    version = yaml.safe_load((ROOT / "versions.yaml").read_text())["sparkrun"]
+    recipe_docs = (ROOT / "sparkrun-cc-plugin/skills/recipes/SKILL.md").read_text()
+    changelog = (ROOT / "CHANGELOG.md").read_text()
+    latest_release = re.search(r"^## \[(\d+\.\d+\.\d+)\]", changelog, re.M)[1]
+
+    assert version in recipe_docs
+    assert latest_release in recipe_docs
+    assert "`min_sparkrun_version` itself is a 0.4.0 addition" in recipe_docs
+    assert "do not set the checkout version as a blanket minimum." in recipe_docs
+
+
+def test_omp_background_and_deadline_guidance_matches_host_semantics():
+    script = (ROOT / "scripts/sync-assistant-plugins.py").read_text()
+    usage = re.search(r'OMP_TOOL_USAGE = """<Tool_Usage>\n(.*?)\n</Tool_Usage>"""', script, re.S)[1]
+    readme = (ROOT / "sparkrun-omp-plugin/README.md").read_text()
+
+    for path, text in (("sync template", usage), ("OMP README", readme)):
+        normalized = " ".join(text.split())
+        assert "`async: true` requests a background job" in normalized, path
+        assert "does not change the deadline" in normalized, path
+        assert "`timeout: 0` disables the tool-imposed deadline" in normalized, path
+        assert "does not itself request background execution" in normalized, path
+        assert "until completion, cancellation, or" in normalized, path
+        assert "async.enabled" in normalized, path
+        assert "remote workloads" in normalized, path
