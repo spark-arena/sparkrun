@@ -35,20 +35,18 @@ def command_flag_value(command, *flags: str, bare: str | None = None, literal_on
         return None
     wanted = {flag.lower() for flag in flags}
     tokens = [token for token in command.split() if token != "\\"]
-    found = False
-    value = ""
+    value: str | None = ""
     for index, token in enumerate(tokens):
         name, sep, inline = token.partition("=")
         if name.lower() not in wanted:
             continue
-        found = True
         if sep:
             value = inline
         else:
             following = tokens[index + 1] if index + 1 < len(tokens) else ""
             is_flag = following.startswith("-") and not _NUMBER_RE.match(following)
             value = "" if not following or is_flag else following
-    if not found:
+    if value is None:
         return None
     value = value.rstrip("\\").strip("\"'")
     if not value:
