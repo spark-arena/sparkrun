@@ -26,6 +26,15 @@ verified against the engines' own sources:
               access lines ``ip "GET …" 4xx/5xx -``; fatals ``tensorfold: {s}`` on stderr
               (main.zig fail()); the launcher prefixes its own lines ``[tensorfold-launcher]``.
               Shapes verified against a real workload log, 2026-10-17.
+* Aneda       the picom (dsgb10) engine with the GLP steering layer: subsystem tags at
+              line start (``serve:``, ``engine:``, ``comm:``, ``moe:``, ``spec:``, ``cert:``,
+              ``model:``, ``state:``, ``spill:``, ``rendezvous:``, ``draft head:``,
+              ``session store:``, ``session table:``, ``admin socket:``), launcher lines
+              ``[picom-launcher]``, request heads ``req 1 plan:`` / ``req 8 restart:`` /
+              ``req 955: repetition loop …``, 16-hex session ids and 16-digit plan ids, end
+              reasons ``, stop;`` / ``, length;``, and the periodic engine stats line beside
+              the front's own ``stats: t=10 front queue=…``. Shapes verified against a real
+              workload log, 2026-11-24.
 
 Styles are plain Rich style strings, and nothing here imports ``rich`` or ``textual``,
 so every rule unit-tests without a terminal.
@@ -143,6 +152,11 @@ def _value_style(m: re.Match[str]) -> str:
 def _status_style(m: re.Match[str]) -> str:
     # Total over 1xx-5xx: a 101 upgrade line must color, not raise.
     return {"1": STYLE_PATH, "2": STYLE_OK, "3": STYLE_PATH, "4": STYLE_WARN, "5": STYLE_SEVERE}[m.group(1)[0]]
+
+
+def _outcome_style(m: re.Match[str]) -> str:
+    # Aneda's request end reason: ``stop`` is a natural finish, ``length`` hit the reply ceiling.
+    return STYLE_OK if m.group(1) == "stop" else STYLE_WARN
 
 
 def _rank_style(m: re.Match[str]) -> str:
@@ -362,15 +376,47 @@ class TensorFoldColorizer(LogColorizer):
     )
 
 
+class AnedaColorizer(LogColorizer):
+    """Aneda (picom dsgb10 + GLP steering): ``serve:``/``stats:`` tagged engine lines.
+
+    The engine prints one lowercase subsystem tag at line start (``serve: req 7 session …``,
+    ``state: session 2 spilled to disk``, ``stats: t=10 rank=0 tok_out=…``) and the front-end
+    its own ``stats: t=10 front queue=…`` line; request heads carry a bare ``req 1 plan:``.
+    Session ids are 16 hex characters in the session table and 16 decimal digits in the plan
+    line, so one rule colors both. End reasons keep their semantics: ``, stop;`` green,
+    ``, length;`` (the reply hit the token ceiling) yellow. Verified against a real workload
+    log, 2026-11-24; the engine's printf hardcodes ``rank=0``, so the text never identifies a
+    rank (in practice only rank 0's stdout reaches the log); nothing here keys on the rank.
+    """
+
+    name = "aneda"
+    signature = re.compile(r"^(?:\[picom-launcher\]|serve: |stats: t=\d+ |req \d+ (?:plan|restart|session)\b|spill: |state: session )")
+    own_rules = (
+        _re_rule(r"^\[picom-launcher\]", STYLE_PROCESS),
+        _re_rule(
+            r"^(?:serve|engine|comm|moe|spec|cert|model|state|spill|rendezvous|draft head|session store|session table|admin socket):",
+            STYLE_PROCESS,
+        ),
+        _re_rule(r"^stats: t=\d+ (?:rank=\d+|front)", STYLE_PROCESS),
+        _re_rule(r"^admin socket ", STYLE_PROCESS),  # the front's one tagless startup line
+        _re_rule(r"^req \d+(?=[ :])", STYLE_PROCESS),
+        _re_rule(r"\b[0-9a-f]{16}\b", STYLE_ID),
+        _re_rule(r", (stop|length)(?=;)", _outcome_style, span_group=1),
+        # Spec-decode acceptance: bare counts the generic vocabulary leaves dim.
+        _re_rule(r"\b\d+ of \d+ drafts accepted\b", STYLE_DATA),
+    )
+
+
 _VLLM = VllmColorizer()
 _SGLANG = SglangColorizer()
 _LLAMA_CPP = LlamaCppColorizer()
 _TRT_LLM = TrtLlmColorizer()
 _ATLAS = AtlasColorizer()
 _TENSORFOLD = TensorFoldColorizer()
+_ANEDA = AnedaColorizer()
 
 #: Sniffing order: the first colorizer whose signature matches the line wins.
-COLORIZERS: tuple[LogColorizer, ...] = (_VLLM, _SGLANG, _LLAMA_CPP, _TRT_LLM, _ATLAS, _TENSORFOLD)
+COLORIZERS: tuple[LogColorizer, ...] = (_VLLM, _SGLANG, _LLAMA_CPP, _TRT_LLM, _ATLAS, _TENSORFOLD, _ANEDA)
 GENERIC_COLORIZER = GenericColorizer()
 
 #: Canonical runtime name -> colorizer. Keys cover the in-tree runtimes
@@ -379,7 +425,8 @@ GENERIC_COLORIZER = GenericColorizer()
 #: deliberately absent: their lines are Python-logging shaped, which the generic
 #: vocabulary covers, so sniffing handles them. ``tensorfold`` is not in-tree
 #: today; the alias means an out-of-tree runtime declaring that name gets its
-#: verified rules without sniffing.
+#: verified rules without sniffing. ``aneda`` is the registry's out-of-tree
+#: runtime (``plugins/aneda_runtime.py``), named here for the same reason.
 RUNTIME_COLORIZERS: dict[str, LogColorizer] = {
     "vllm": _VLLM,
     "vllm-ray": _VLLM,
@@ -392,6 +439,7 @@ RUNTIME_COLORIZERS: dict[str, LogColorizer] = {
     "trt-llm": _TRT_LLM,
     "atlas": _ATLAS,
     "tensorfold": _TENSORFOLD,
+    "aneda": _ANEDA,
 }
 
 _BY_NAME: dict[str, LogColorizer] = {colorizer.name: colorizer for colorizer in (*COLORIZERS, GENERIC_COLORIZER)}

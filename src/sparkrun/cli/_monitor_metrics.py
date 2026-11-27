@@ -93,6 +93,28 @@ for a line shape someone has actually read there:
              (``{ip} "GET {path}" {code} -``) and ``ended … reason=…`` lines
              carry no metrics.
 
+* Aneda      ``stats: t=10 rank=0 tok_out=12 tok_in=4824 kv_util=0.000 kv_hit=0.000
+             draft_accept=0.000 queue=0 engram_hit=0.501 engram_used=0.000 reqs_stock=2
+             reqs_steered=2``, the picom (dsgb10) engine's periodic line, emitted on rank 0
+             only, beside the front-end's ``stats: t=10 front queue=0.0 reqs_stock=1
+             reqs_steered=0`` (read in a live log, 2026-11-24; the fields are defined in the
+             recipe registry's ``recipes/ds4/picom-weightless-steering.patch``,
+             ``Server::stats_tick`` and ``Stats::maybe_emit``). ``t`` is the interval's
+             *measured* seconds (10..59: the tick rides the request loop), and
+             ``tok_out``/``tok_in`` are that interval's counts, reset each print, so the
+             rates are those counts over the line's own ``t`` — not a fixed cadence.
+             ``reqs_stock + reqs_steered`` is what the rank **served** in the interval,
+             which fills the ``run`` slot vLLM fills with its currently-running count:
+             same slot, different quantity. ``kv_util`` is slot occupancy, ``kv_hit``
+             prompt-token reuse, ``draft_accept`` accepted/verified, all 0..1. The Engram
+             counters carry no denominator on the line (the engine prints ``0.000`` when it
+             had no lookups), so a printed zero is a reading; a ratio whose denominator the
+             interval never had (``tok_in`` 0, ``tok_out`` 0) is a missing measurement and
+             emits no sample. The front line's request counts duplicate the engine's and its
+             ``queue`` is a per-request mean, so only the engine line is scraped. The
+             engine's printf hardcodes ``rank=0``, so the rule cannot and does not key on a
+             rank.
+
 Sparkline glyphs and palette live here (moved from ``_monitor_tui``) because
 both the node-stats panel and the log pane's footer draw them. Nothing in this
 module imports ``textual`` or ``rich``, so every rule unit-tests without a
@@ -200,6 +222,8 @@ _METRICS: tuple[MetricSpec, ...] = (
     MetricSpec("kv", "kv", "pct", 5),
     MetricSpec("hit", "hit", "pct", 8),
     MetricSpec("accept", "spec", "pct", 4),
+    MetricSpec("engram_hit", "e-hit", "pct", 2),
+    MetricSpec("engram_used", "e-use", "pct", 7),
 )
 
 # Aggregation per metric key: rates/counts add up across ranks, a 0-100 metric
@@ -240,6 +264,14 @@ _TENSORFOLD_DONE_RE = re.compile(
     r"(?: background preemptions=\d+)?"
     r" rounds=\d+"
     r" accepted=(?P<accepted>\d+)/(?P<drafted>\d+)"
+)
+
+_ANEDA_STATS_RE = re.compile(
+    r"^stats: t=(?P<t>\d+) rank=\d+ "
+    r"tok_out=(?P<out>\d+) tok_in=(?P<in>\d+) "
+    r"kv_util=(?P<kv>[\d.]+) kv_hit=(?P<hit>[\d.]+) draft_accept=(?P<accept>[\d.]+) "
+    r"queue=(?P<queue>\d+) engram_hit=(?P<engram_hit>[\d.]+) engram_used=(?P<engram_used>[\d.]+) "
+    r"reqs_stock=(?P<stock>\d+) reqs_steered=(?P<steered>\d+)"
 )
 
 _RULES: tuple[_MetricRule, ...] = (
@@ -310,6 +342,7 @@ _GATES: tuple[str, ...] = (
     "#queue-req",
     "KV cache usage",
     "done req-",
+    "stats: t=",
 )
 
 
@@ -369,6 +402,7 @@ class RuntimeMetricsScraper:
         if not any(gate in text for gate in _GATES):
             return
         self._observe_tensorfold_done(source, text, replace=replace)
+        self._observe_aneda_stats(source, text, replace=replace)
         pooled: dict[str, float] = {}
         for rule in _RULES:
             match = rule.pattern.search(text)
@@ -460,6 +494,35 @@ class RuntimeMetricsScraper:
         drafted = int(match.group("drafted"))
         if drafted > 0:
             self._sample("accept", source, accepted / drafted * 100.0, replace=replace)
+
+    def _observe_aneda_stats(self, source: tuple[str, str], text: str, *, replace: bool) -> None:
+        """Record aneda's periodic engine stats line (see the module docstring).
+
+        ``t`` is the line's own measured window in seconds and ``tok_out``/``tok_in`` are
+        that window's counts, so the rates are those counts over ``t``. A ratio whose
+        denominator the window never had (``tok_in`` 0, ``tok_out`` 0) is a missing
+        measurement, not 0%, so no sample is taken; the Engram counters carry no
+        denominator on the line, so their printed ``0.000`` is a reading.
+        """
+        match = _ANEDA_STATS_RE.search(text)
+        if match is None:
+            return
+        window = int(match.group("t"))
+        out_tokens = int(match.group("out"))
+        in_tokens = int(match.group("in"))
+        if window > 0:
+            self._sample("gen", source, out_tokens / window, replace=replace)
+            self._sample("prompt", source, in_tokens / window, replace=replace)
+        self._sample("run", source, float(int(match.group("stock")) + int(match.group("steered"))), replace=replace)
+        self._sample("queue", source, float(match.group("queue")), replace=replace)
+        self._sample("kv", source, float(match.group("kv")) * 100.0, replace=replace)
+        if in_tokens > 0:
+            self._sample("hit", source, float(match.group("hit")) * 100.0, replace=replace)
+        if out_tokens > 0:
+            self._sample("accept", source, float(match.group("accept")) * 100.0, replace=replace)
+        if in_tokens > 0 or out_tokens > 0:
+            self._sample("engram_hit", source, float(match.group("engram_hit")) * 100.0, replace=replace)
+        self._sample("engram_used", source, float(match.group("engram_used")) * 100.0, replace=replace)
 
     def commit(self) -> None:
         """Close the window: one ring point per source per metric.

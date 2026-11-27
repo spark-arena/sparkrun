@@ -181,6 +181,42 @@ _FIXTURES: tuple[tuple[str, str, dict[str, float]], ...] = (
         "[ Prompt: 321.4 t/s | Generation: 87.9 t/s ]",
         {"prompt": 321.4, "gen": 87.9},
     ),
+    # Aneda (picom dsgb10 + GLP): the engine's periodic line, read in a live log
+    # 2026-11-24. tok_out/tok_in are the interval's counts and t its measured
+    # seconds, so the rates divide by t; reqs_stock + reqs_steered is what the
+    # rank served in the interval.
+    (
+        "aneda-stats",
+        "stats: t=10 rank=0 tok_out=12 tok_in=4824 kv_util=0.000 kv_hit=0.000 "
+        "draft_accept=0.000 queue=0 engram_hit=0.501 engram_used=0.000 reqs_stock=2 reqs_steered=2",
+        {
+            "gen": 1.2,
+            "prompt": 482.4,
+            "run": 4.0,
+            "queue": 0.0,
+            "kv": 0.0,
+            "hit": 0.0,
+            "accept": 0.0,
+            "engram_hit": 50.1,
+            "engram_used": 0.0,
+        },
+    ),
+    (
+        "aneda-stats-loaded",
+        "stats: t=10 rank=0 tok_out=12 tok_in=362657 kv_util=0.082 kv_hit=0.994 "
+        "draft_accept=0.286 queue=0 engram_hit=0.997 engram_used=0.344 reqs_stock=1 reqs_steered=0",
+        {
+            "gen": 1.2,
+            "prompt": 36265.7,
+            "run": 1.0,
+            "queue": 0.0,
+            "kv": 8.2,
+            "hit": 99.4,
+            "accept": 28.6,
+            "engram_hit": 99.7,
+            "engram_used": 34.4,
+        },
+    ),
 )
 
 # Lines that must never produce a sample.
@@ -440,6 +476,61 @@ def test_tensorfold_seed_page_takes_the_last_line_not_the_mean():
     scraper.commit()
 
     assert scraper.history("gen") == [62.2]
+
+
+def test_aneda_stats_rates_divide_by_the_lines_own_window():
+    """Same counts, different window: the line's own ``t`` is the divisor.
+
+    The engine's tick rides the request loop, so ``t`` drifts (10..59 s in the
+    live log) and a fixed cadence would overstate a slow window's rates. The
+    counts are the live log's loaded line (2026-11-24).
+    """
+    line = "stats: t={t} rank=0 tok_out=2915 tok_in=600424 kv_util=0.010 kv_hit=0.737 draft_accept=0.783 queue=0 engram_hit=0.901 engram_used=0.028 reqs_stock=5 reqs_steered=0"
+    ten = RuntimeMetricsScraper()
+    ten.observe(("h1", "c1"), line.format(t=10))
+    ten.commit()
+    assert ten.latest("gen") == 291.5
+    assert ten.latest("prompt") == 60042.4
+
+    twenty = RuntimeMetricsScraper()
+    twenty.observe(("h1", "c1"), line.format(t=20))
+    twenty.commit()
+    assert twenty.latest("gen") == 145.75
+    assert twenty.latest("prompt") == 30021.2
+
+
+def test_aneda_idle_window_reports_zeros_but_no_hit_or_accept():
+    """A fully idle interval: rates are real zeros, the ratios have no denominator."""
+    scraper = RuntimeMetricsScraper()
+    scraper.observe(
+        ("h1", "c1"),
+        "stats: t=10 rank=0 tok_out=0 tok_in=0 kv_util=0.000 kv_hit=0.000 draft_accept=0.000 "
+        "queue=0 engram_hit=0.000 engram_used=0.000 reqs_stock=0 reqs_steered=0",
+    )
+    scraper.commit()
+
+    for key in ("gen", "prompt", "run", "queue", "kv", "engram_used"):
+        assert scraper.latest(key) == 0.0, key
+    # No prompt tokens, no generated tokens: nothing to reuse, nothing verified.
+    for key in ("hit", "accept", "engram_hit"):
+        assert scraper.latest(key) is None, key
+
+
+def test_aneda_front_line_yields_no_metrics():
+    """The front-end's line duplicates the engine's counts and means its queue."""
+    assert _scrape("stats: t=10 front queue=0.0 reqs_stock=1 reqs_steered=0") == {}
+
+
+def test_aneda_engram_fields_never_land_in_hit_or_kv():
+    """Engram's own counters are separate keys, not the KV hit rate or occupancy."""
+    loaded = _scrape(
+        "stats: t=10 rank=0 tok_out=12 tok_in=362657 kv_util=0.082 kv_hit=0.994 "
+        "draft_accept=0.286 queue=0 engram_hit=0.997 engram_used=0.344 reqs_stock=1 reqs_steered=0"
+    )
+    assert loaded["hit"] == 99.4  # kv_hit, never engram_hit's 99.7
+    assert loaded["kv"] == 8.2  # kv_util, never engram_used's 34.4
+    assert loaded["engram_hit"] == 99.7
+    assert loaded["engram_used"] == 34.4
 
 
 def test_render_metrics_footer_hidden_until_first_commit():
