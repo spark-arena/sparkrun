@@ -1,14 +1,15 @@
 ---
 name: workloads
-description: Launch, inspect, log, stop, benchmark, and manage inference workloads with Sparkrun 0.4.0, including gateways and optional daemon clients.
+description: Launch, inspect, log, stop, benchmark, and manage inference workloads with Sparkrun 0.4.3, including gateways and optional daemon clients.
 ---
 
 # Workloads and benchmarks
 
-This reference targets Sparkrun 0.4.0. Check `sparkrun --version` and installed
-command `--help` when capabilities differ. Use configuration for installation, hosts,
-plugins and features; use registry for recipe authoring. Replace placeholders
-with actual values before executing examples.
+This reference targets the checkout's Sparkrun 0.4.3 core version. Check
+`sparkrun --version` and installed command `--help`: older or newer installs may
+not expose every capability described here. Use configuration for installation,
+hosts, plugins and features; use registry for recipe authoring. Replace
+placeholders with actual values before executing examples.
 
 ## Launch and readiness
 
@@ -67,8 +68,9 @@ recorded ID. Do not invent IDs/container names from a presumed hash format.
 Bare `logs` reads existing logs and exits; `--tail 200` bounds output. The default
 source is the head; `--all-sources` includes workers/native executor sources.
 `--follow` streams indefinitely. Python/daemon host/container/source filters are
-not additional CLI flags. `check-job` exits 0 for running, 1 for not running;
-inspect errors rather than treating every failure as absent. Only use `stop --all`
+not additional CLI flags. `check-job` exits 0 when running (and healthy with
+`--check-http-models`), 1 when not running or unhealthy; inspect errors rather than
+treating every failure as absent. Only use `stop --all`
 when the user authorized stopping that scope.
 
 ## Monitoring
@@ -194,12 +196,15 @@ operation names; `sparkrun daemon help <operation>` shows its fields, scope and 
 responses. Events follow streams; `jobs show` is a finite poll. Never print tokens.
 
 <Tool_Usage>
-Run these commands with the `bash` tool. Raise `timeout` (up to 3600 seconds) for
-downloads, readiness waits, and benchmarks; the default 300-second deadline is too
-short for most launches. Start indefinite streams (`logs --follow`, `cluster
-monitor --simple`, `cluster monitor --json`) as background jobs (`async: true` or
-`timeout: 0`) and stop them when enough samples are collected. A background job or
-a timed-out bash call kills only the local CLI process, never the remote workload.
+Run these commands with the `bash` tool. The default 300-second deadline is too
+short for many downloads, readiness waits, and benchmarks; raise `timeout` within
+the host's configured maximum (documented maximum: 3600 seconds). `async: true`
+requests a background job when the host's `async.enabled` setting permits it; it
+does not change the deadline. `timeout: 0` disables the tool-imposed deadline but
+does not itself request background execution. Background jobs continue until
+completion, cancellation, or their deadline (unless `timeout: 0` disables it).
+Cancellation or timeout can stop the local CLI while leaving remote workloads
+running; inspect status before retrying.
 Interactive prompts (`setup wizard`, SSH/sudo, trust confirmations, Arena login)
 need the user's own terminal. Never claim a timed-out launch was rolled back.
 </Tool_Usage>

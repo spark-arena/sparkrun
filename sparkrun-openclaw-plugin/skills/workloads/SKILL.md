@@ -1,14 +1,15 @@
 ---
 name: workloads
-description: Launch, inspect, log, stop, benchmark, and manage inference workloads with Sparkrun 0.4.0, including gateways and optional daemon clients.
+description: Launch, inspect, log, stop, benchmark, and manage inference workloads with Sparkrun 0.4.3, including gateways and optional daemon clients.
 ---
 
 # Workloads and benchmarks
 
-This reference targets Sparkrun 0.4.0. Check `sparkrun --version` and installed
-command `--help` when capabilities differ. Use configuration for installation, hosts,
-plugins and features; use registry for recipe authoring. Replace placeholders
-with actual values before executing examples.
+This reference targets the checkout's Sparkrun 0.4.3 core version. Check
+`sparkrun --version` and installed command `--help`: older or newer installs may
+not expose every capability described here. Use configuration for installation,
+hosts, plugins and features; use registry for recipe authoring. Replace
+placeholders with actual values before executing examples.
 
 ## Launch and readiness
 
@@ -67,8 +68,9 @@ recorded ID. Do not invent IDs/container names from a presumed hash format.
 Bare `logs` reads existing logs and exits; `--tail 200` bounds output. The default
 source is the head; `--all-sources` includes workers/native executor sources.
 `--follow` streams indefinitely. Python/daemon host/container/source filters are
-not additional CLI flags. `check-job` exits 0 for running, 1 for not running;
-inspect errors rather than treating every failure as absent. Only use `stop --all`
+not additional CLI flags. `check-job` exits 0 when running (and healthy with
+`--check-http-models`), 1 when not running or unhealthy; inspect errors rather than
+treating every failure as absent. Only use `stop --all`
 when the user authorized stopping that scope.
 
 ## Monitoring

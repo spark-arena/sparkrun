@@ -1,13 +1,14 @@
 ---
 name: configuration
-description: Install/update Sparkrun 0.4.0, configure host clusters and SSH, check setup, manage plugins/features, and inspect or clean model caches.
+description: Install/update Sparkrun 0.4.3, configure host clusters and SSH, check setup, manage plugins/features, and inspect or clean model caches.
 ---
 
 # Installation and host setup
 
 Check `sparkrun --version` and installed `--help` before assuming optional commands
-are available. These instructions target 0.4.0. Use the workloads skill for execution
-and registry for recipes. Keep changes within the user's requested hosts and scope.
+are available. These instructions target the checkout's 0.4.3 core version; older
+or newer installs may differ. Use the workloads skill for execution and registry
+for recipes. Keep changes within the user's requested hosts and scope.
 
 ## Install and update
 
@@ -119,6 +120,7 @@ sparkrun plugins remove <plugin_name>
 sparkrun setup features
 sparkrun setup features list --all --json
 sparkrun setup features enable gateway.sparkroute
+sparkrun setup features enable runtime.tokenary
 sparkrun setup features disable gateway
 sparkrun setup features reset gateway
 ```
@@ -136,6 +138,11 @@ explicit feature activation. Plugin list shows declared flags, not on/off values
 default (text and JSON, with a "N disabled ... hidden" hint); add `--all` to
 include disabled plugins/flags (and `setup.steps.*` flags). OCI Relay is bundled and enabled on all
 channels; use `plugins enable/disable oci_relay`, not a legacy integration flag.
+
+Runtime feature flags are separate from plugin flags. On this checkout,
+`runtime.tokenary` defaults off while the other runtime flags default on; enable
+it with `setup features enable runtime.tokenary` only when the user requests
+Tokenary. Older installs may not have per-runtime flags.
 
 Gateway support defaults on; LiteLLM is bundled/default on every channel. After
 installing/enabling SparkRoute, explicitly enabling `gateway.sparkroute` selects

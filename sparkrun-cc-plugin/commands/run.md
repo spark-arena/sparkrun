@@ -5,7 +5,7 @@ argument-hint: "<recipe> [options]"
 
 # /sparkrun:run
 
-Use the workloads skill for the Sparkrun 0.4.0 reference. Search for an unspecified
+Use the workloads skill for the Sparkrun 0.4.3 checkout reference. Search for an unspecified
 recipe with `sparkrun recipe search <query>`; otherwise inspect the supplied
 recipe. Preserve requested hosts/cluster and overrides. Preview with `--dry-run`
 when useful, then launch within the user's authorized scope:

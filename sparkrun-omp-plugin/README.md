@@ -1,6 +1,6 @@
 # Sparkrun plugin for oh-my-pi (omp)
 
-Skills and slash commands for the **Sparkrun 0.4.0 CLI**: recipe discovery and
+Skills and slash commands for the **Sparkrun 0.4.3 CLI in this checkout**: recipe discovery and
 authoring, readiness-aware launches, bounded logs, performance/tool benchmarks,
 gateway management, host setup, and plugin authoring. Sparkrun must be installed
 on the machine executing omp's `bash` tool, with access to the target hosts.
@@ -30,9 +30,9 @@ sparkrun --version
 sparkrun setup check --cluster mylab
 ```
 
-The CLI requires Python 3.12+. These instructions target 0.4.0, including its
-preview builds; inspect installed `--help` when using an older release. Keep the
-user's selected update channel. Interactive setup, SSH/sudo, trust confirmations,
+The CLI requires Python 3.12+. These references target core 0.4.3; check installed
+`--version` and `--help` because older releases may not expose every capability.
+Keep the user's selected update channel. Interactive setup, SSH/sudo, trust confirmations,
 and Arena login require a user terminal, because omp's `bash` tool has no
 interactive stdin.
 
@@ -71,15 +71,20 @@ Use recipe names returned by your registry; the names above illustrate syntax.
 
 ## Execution notes
 
-omp's `bash` tool has a 300-second default deadline and a 3600-second maximum.
-Raise `timeout` for downloads, readiness waits, and benchmarks; the default is
-too short for most launches. Start indefinite streams (`logs --follow`, cluster
-monitor `--simple`/`--json`) as background jobs (`async: true` or `timeout: 0`)
-and stop them when enough samples are collected.
+omp's `bash` tool has a 300-second default deadline; raise `timeout` for downloads,
+readiness waits, and benchmarks, respecting the host's configured maximum
+(documented maximum: 3600 seconds). `async: true` requests a background job only
+when the session's `async.enabled` setting permits it, and does not change the
+deadline. `timeout: 0` disables the tool-imposed deadline; it does not itself
+request background execution. Background jobs continue until completion,
+cancellation, or their deadline (`timeout: 0` disables that deadline).
 
-A background job or a timed-out `bash` call kills only the local CLI process, not
-the remote workload. Inspect status before retrying, and never claim a timed-out
-launch was rolled back. Interactive prompts need the user's own terminal.
+For a requested long-running stream such as `logs --follow` or cluster monitor
+`--simple`/`--json`, use `async: true` with an appropriate deadline and stop or
+cancel it when enough samples are collected. Cancellation or timeout stops the
+local command, but remote workloads may continue; inspect status before retrying
+and never claim a timed-out launch was rolled back. Interactive prompts need the
+user's own terminal.
 
 `--no-follow` suppresses model logs but waits for readiness; `--no-ready-wait`
 returns after preparation/launch without claiming readiness. Bare `logs` is

@@ -1,6 +1,6 @@
 # Sparkrun plugin for Claude Code
 
-Skills and slash commands for the **Sparkrun 0.4.0 CLI**: recipe discovery,
+Skills and slash commands for the **Sparkrun 0.4.3 CLI in this checkout**: recipe discovery,
 readiness-aware launches, bounded logs, performance/tool benchmarks, gateway
 management, host setup, and plugin administration. Sparkrun must be installed on
 the machine executing Claude Code's commands, with access to the target hosts.
@@ -32,9 +32,9 @@ sparkrun --version
 sparkrun setup wizard
 ```
 
-The CLI requires Python 3.12+. These instructions target 0.4.0, including its
-preview builds; inspect installed `--help` when using an older release. Keep the
-user's selected update channel. Interactive setup, SSH/sudo, trust confirmations,
+The CLI requires Python 3.12+. These references target core 0.4.3; check installed
+`--version` and `--help` because older releases may not expose every capability.
+Keep the user's selected update channel. Interactive setup, SSH/sudo, trust confirmations,
 and Arena login require a user terminal, not a captured agent command.
 
 For an existing cluster, start with the read-only check:

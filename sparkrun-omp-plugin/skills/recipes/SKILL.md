@@ -94,7 +94,7 @@ Set it whenever the recipe uses a field or behavior introduced after the oldest
 release you claim to support, so an older install refuses to launch instead of
 silently ignoring the key or misreading the recipe. Do not set the latest release
 as a blanket default: that fails older installs even when the recipe uses
-nothing new.
+nothing new. In particular, do not set the checkout version as a blanket minimum.
 
 | Recipe feature | Introduced in |
 | --- | --- |
@@ -130,9 +130,11 @@ Pre-release ordering is PEP 440: `0.4.0rc1` is older than `0.4.0`. Set
 `"0.4.0rc1"` only when the feature is usable in that preview and should be
 accepted there; set `"0.4.0"` to require the stable release.
 
-0.4.2 added no recipe schema fields; its local-model directory checks are
-validation, not a new path form. A recipe that serves an absolute `model:` path
-does not need `"0.4.2"` solely for those checks.
+This checkout's core version is 0.4.3 (`versions.yaml`); the latest released
+changelog section is 0.4.2, and the current Unreleased entries do not add recipe
+schema fields. The 0.4.2 local-model directory checks are validation, not a new
+path form. A recipe that serves an absolute `model:` path does not need `"0.4.2"`
+solely for those checks.
 
 ## Topology on DGX Spark
 
@@ -281,8 +283,8 @@ JSON still resolves. Doubled braces (`{{...}}`) are deprecated v1 syntax and
 are reported by `recipe validate`.
 
 Recipe `env` never expands the host shell. `${HF_TOKEN}` reaches the container
-as that literal string. Only `{config.NAME}` and `{launch.NAME}` templates
-resolve:
+as that literal string; recipe values do not read `os.environ`. Only
+`{config.NAME}` and `{launch.NAME}` templates resolve:
 
 ```yaml
 defaults:
@@ -299,8 +301,18 @@ env:
 `launch` fields are `model_path`, `model_revision`, `runtime_cache_dir`,
 `num_nodes`, `node_rank`, `node_host`, and `cluster_id`. There is no shell
 evaluation or ambient lookup; missing fields fail explicitly. To forward a
-secret, use a cluster-level `env_file` (those `${VAR}` references resolve from
-that file only), never recipe `env`.
+secret, use a cluster-level `env_file`, not recipe `env`. This is cluster
+configuration, not part of a registry recipe:
+
+```yaml
+env_file: /path/on/control-machine/secrets.env
+env:
+  HF_TOKEN: "${HUGGING_FACE_HUB_TOKEN}"
+```
+
+The file contains `HUGGING_FACE_HUB_TOKEN=...`; cluster `${VAR}` references
+resolve only from that file, not the control machine's shell environment or
+recipe `env`. Keep it private and outside recipe/registry content.
 
 ## Model, container, and distribution
 
@@ -552,12 +564,15 @@ Publishing checklist:
 20. `sparkrun recipe validate` is the CI gate; estimates and dry runs are not.
 
 <Tool_Usage>
-Run these commands with the `bash` tool. Raise `timeout` (up to 3600 seconds) for
-downloads, readiness waits, and benchmarks; the default 300-second deadline is too
-short for most launches. Start indefinite streams (`logs --follow`, `cluster
-monitor --simple`, `cluster monitor --json`) as background jobs (`async: true` or
-`timeout: 0`) and stop them when enough samples are collected. A background job or
-a timed-out bash call kills only the local CLI process, never the remote workload.
+Run these commands with the `bash` tool. The default 300-second deadline is too
+short for many downloads, readiness waits, and benchmarks; raise `timeout` within
+the host's configured maximum (documented maximum: 3600 seconds). `async: true`
+requests a background job when the host's `async.enabled` setting permits it; it
+does not change the deadline. `timeout: 0` disables the tool-imposed deadline but
+does not itself request background execution. Background jobs continue until
+completion, cancellation, or their deadline (unless `timeout: 0` disables it).
+Cancellation or timeout can stop the local CLI while leaving remote workloads
+running; inspect status before retrying.
 Interactive prompts (`setup wizard`, SSH/sudo, trust confirmations, Arena login)
 need the user's own terminal. Never claim a timed-out launch was rolled back.
 </Tool_Usage>
