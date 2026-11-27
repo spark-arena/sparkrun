@@ -783,6 +783,14 @@ Explicit `runtime` always wins. Command-hint detection only fires when `runtime`
 | `eugr-vllm`        | Ray (inherits vllm-ray)                             | eugr container builds + Ray cluster            |
 | `atlas`            | Native (`--rank`, `--world-size`, `--master-addr`)  | Atlas Spark (azeezish/atlas-gb10) — pure-Rust LLM inference; each rank runs `atlas serve`, rank 0 only HTTP |
 | `modular-max`      | None — single-node only                             | Modular MAX (`max serve`); tensor parallelism uses local GPUs via `--devices` (never multi-node) |
+| `tensorfold`       | Solo; native TP with upstream `--tp/--rank/--master` | TensorFold Zig/CUDA server (OpenAI Chat/Responses/Messages). One upstream runtime: `tensor_parallel` sets the world, followers start **before** rank 0, and the engine refuses worlds a model does not support. See [docs/TENSORFOLD.md](docs/TENSORFOLD.md). |
+
+TensorFold does not use the generic `Common Defaults Keys` column mapping below
+for TP: `max_num_seqs` maps to the engine's `--parallel` (request concurrency,
+**not** tensor parallelism), `max_model_len` maps to `--context`, and
+`served_model_name` maps to `--name`.  Multi-node TP is selected by
+`tensor_parallel`, and the runtime emits the upstream `--tp/--rank/--master`
+flags; no per-model family key exists.
 
 ### Common Defaults Keys
 

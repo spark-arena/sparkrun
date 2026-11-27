@@ -58,6 +58,18 @@ first tagged release containing them, regardless of their original commit date.
 
 ### Added
 
+- `tensorfold` runtime: TensorFold's upstream Zig/CUDA native server. Solo on
+  one GB10, NFS/pre-placed checkpoints through the existing absolute `model:`
+  mechanism, and native TP with the engine's own `--tp/--rank/--master` flags.
+  The runtime is upstream-only: recipes select `tensor_parallel`, and the
+  engine decides which model families accept that world; there are no
+  fork-specific or per-model runtime families.
+- Native cluster orchestration can start worker ranks before rank 0
+  (`RuntimePlugin.native_start_order()`) and reserve a contiguous rendezvous
+  port range (`native_rendezvous_port_span()`), for engines whose followers
+  must be listening before the serving rank starts.
+- Docs: `docs/TENSORFOLD.md` covers the runtime, NFS weights, TP limits, the
+  upstream TP placement and the hardware validation checklist.
 - The `cluster monitor` recipe picker groups runtime variants into families (such
   as `vllm`) and offers an opt-in **All registries** toggle. Enabled registries with
   `Stemless: no` then appear in recipe searches and registry filter choices.
@@ -83,6 +95,9 @@ first tagged release containing them, regardless of their original commit date.
 
 ### Changed
 
+- The `tensorfold` monitor log colorizer is now wired to the new in-tree
+  runtime instead of only an out-of-tree expectation; the DeepSeek fork mode
+  logs under the same prefixes and shares it.
 - Concurrent preparations of the same model wait for the holder's publication lease
   instead of failing, and the wait names the holding controller, PID and operation.
   Warm launches no longer take the control-machine cache lease.

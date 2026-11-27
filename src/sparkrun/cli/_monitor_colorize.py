@@ -375,11 +375,11 @@ GENERIC_COLORIZER = GenericColorizer()
 
 #: Canonical runtime name -> colorizer. Keys cover the in-tree runtimes
 #: (``vllm-ray``, ``vllm-distributed``, ``eugr-vllm``, ``sglang``, ``trtllm``,
-#: ``atlas``, ``llama-cpp``) plus aliases. ``modular-max`` and ``tokenary`` are
-#: deliberately absent: their lines are Python-logging shaped, which the generic
-#: vocabulary covers, so sniffing handles them. ``tensorfold`` is not in-tree
-#: today; the alias means an out-of-tree runtime declaring that name gets its
-#: verified rules without sniffing.
+#: ``atlas``, ``llama-cpp``, ``tensorfold``) plus aliases. ``modular-max`` and
+#: ``tokenary`` are deliberately absent: their lines are Python-logging shaped,
+#: which the generic vocabulary covers, so sniffing handles them.  The
+#: DeepSeek community fork logs under the same ``[tensorfold]``/``tensorfold:``
+#: prefixes, so the single runtime's alias covers it without content sniffing.
 RUNTIME_COLORIZERS: dict[str, LogColorizer] = {
     "vllm": _VLLM,
     "vllm-ray": _VLLM,
