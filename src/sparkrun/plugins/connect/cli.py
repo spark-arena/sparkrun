@@ -269,12 +269,26 @@ def build_exec_command():
                     )
                 else:
                     host_list, cluster = None, cluster_name
-                kwargs = dict(workload_id=workload_id, hosts=host_list, cluster=cluster)
+                target_ = api.open_exec_target(
+                    workload_id=workload_id,
+                    hosts=host_list,
+                    cluster=cluster,
+                    node=parsed.node,
+                    cache_dir=str(sctx.config.cache_dir),
+                    sctx=sctx,
+                )
             else:
                 recipe, _path, _reg = _load_recipe(sctx.config, parsed.ref)
                 hctx = resolve_host_context(hosts, hosts_file, cluster_name, sctx.config, sctx=sctx)
-                kwargs = dict(recipe=recipe, hosts=hctx.host_list, cluster=hctx.cluster_name, overrides=overrides)
-            target_ = api.open_exec_target(node=parsed.node, cache_dir=str(sctx.config.cache_dir), sctx=sctx, **kwargs)
+                target_ = api.open_exec_target(
+                    recipe=recipe,
+                    hosts=hctx.host_list,
+                    cluster=hctx.cluster_name,
+                    overrides=overrides,
+                    node=parsed.node,
+                    cache_dir=str(sctx.config.cache_dir),
+                    sctx=sctx,
+                )
             command = remote_command(ctx.meta.get(_COMMAND_KEY) or [])
             argv = target_.argv(command, tty=_wants_tty(command))
         except (api.JobNotFound, api.AmbiguousWorkload, api.SparkrunError, ValueError) as e:

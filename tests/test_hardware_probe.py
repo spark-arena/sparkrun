@@ -8,6 +8,7 @@ from sparkrun.core.hardware_probe import (
     _ACCEL_START,
     _IB_END,
     _IB_START,
+    _parse_probe_result,
     generate_combined_probe_script,
     probe_host,
     probe_hosts,
@@ -107,6 +108,23 @@ def test_split_probe_output_missing_ib_section():
     accel, ib = split_probe_output(stdout)
     assert "NVIDIA_GPU_COUNT=1" in accel
     assert ib == ""
+
+
+def test_gid_index_list_survives_combined_splitting_and_parsing():
+    ib = _IB_DETECTED.replace("DETECTED_GID_INDEX=3\n", "DETECTED_GID_INDEX=3\nDETECTED_GID_INDEX_LIST=3,4\n")
+    stdout = _combined(_ACCEL_DGX, ib)
+
+    _, ib_section = split_probe_output(stdout)
+    assert "DETECTED_GID_INDEX_LIST=3,4" in ib_section
+    assert _parse_probe_result(stdout).ib_info["DETECTED_GID_INDEX_LIST"] == "3,4"
+
+
+def test_combined_parser_accepts_legacy_ib_output_without_gid_index_list():
+    parsed = _parse_probe_result(_combined(_ACCEL_DGX, _IB_DETECTED))
+
+    assert parsed.ib_info is not None
+    assert parsed.ib_info["DETECTED_GID_INDEX"] == "3"
+    assert "DETECTED_GID_INDEX_LIST" not in parsed.ib_info
 
 
 def test_split_probe_output_missing_accel_section():

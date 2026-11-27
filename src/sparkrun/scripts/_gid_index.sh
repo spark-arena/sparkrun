@@ -84,3 +84,28 @@ sparkrun_rocev2_gid_index() (
     echo "Device $_hca: Active (no IPv4 RoCEv2 GID found; leaving GID selection to NCCL with -1)" >&2
     echo "-1"
 )
+
+# Usage: IDX=$(sparkrun_gid_index_consensus "<index>" ["<index>" ...])
+# Reduce a nonempty per-HCA index list; disagreement defers selection to NCCL.
+sparkrun_gid_index_consensus() (
+    if [ "$#" -eq 0 ]; then
+        echo "GID index consensus requires at least one index" >&2
+        exit 2
+    fi
+
+    _first="$1"
+    shift
+    _mismatch=0
+    for _index in "$@"; do
+        if [ "$_index" != "$_first" ]; then
+            _mismatch=1
+        fi
+    done
+
+    if [ "$_mismatch" -ne 0 ]; then
+        echo "GID index disagreement across active HCAs; leaving GID selection to NCCL with -1" >&2
+        echo "-1"
+    else
+        echo "$_first"
+    fi
+)

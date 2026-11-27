@@ -165,7 +165,7 @@ fi
 ACTIVE_HCAS=()
 ACTIVE_NETIFS=()
 UCX_DEVS=()
-GID_INDEX=""
+GID_INDEXES=()
 
 for ib_path in /sys/class/infiniband/*; do
     [ -e "$ib_path" ] || continue
@@ -180,11 +180,7 @@ for ib_path in /sys/class/infiniband/*; do
         ACTIVE_HCAS+=("$hca_name")
         UCX_DEVS+=("${{hca_name}}:1")
 
-        if [ -z "$GID_INDEX" ]; then
-            GID_INDEX=$(sparkrun_rocev2_gid_index "$hca_name" "$ib_path")
-        else
-            echo "Device $hca_name: Active" >&2
-        fi
+        GID_INDEXES+=("$(sparkrun_rocev2_gid_index "$hca_name" "$ib_path")")
 
         net_dir="$ib_path/device/net"
         if [ -d "$net_dir" ]; then
@@ -201,6 +197,9 @@ if [ ${{#ACTIVE_HCAS[@]}} -eq 0 ]; then
     echo "{ib_end}"
     exit 0
 fi
+
+GID_INDEX=$(sparkrun_gid_index_consensus "${{GID_INDEXES[@]}}")
+GID_INDEX_LIST=$(IFS=,; echo "${{GID_INDEXES[*]}}")
 
 HCA_LIST=$(IFS=,; echo "${{ACTIVE_HCAS[*]}}")
 NET_LIST=$(IFS=,; echo "${{ACTIVE_NETIFS[*]}}")
@@ -222,6 +221,7 @@ IB_IP_LIST=$(IFS=,; echo "${{IB_IPS[*]}}")
 
 echo "IB_DETECTED=1"
 echo "DETECTED_GID_INDEX=$GID_INDEX"
+echo "DETECTED_GID_INDEX_LIST=$GID_INDEX_LIST"
 echo "DETECTED_HCA_LIST=$HCA_LIST"
 echo "DETECTED_SOCKET_IFNAME=$DEFAULT_IF"
 echo "DETECTED_NET_LIST=$NET_LIST"

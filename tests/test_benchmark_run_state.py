@@ -117,6 +117,18 @@ def _make_state(bid: str = "bench_aabbccddeeff") -> BenchmarkRunState:
     )
 
 
+def test_recorded_benchmark_hosts_unions_live_and_measured_hosts_in_order(tmp_path: Path, monkeypatch):
+    import sparkrun.orchestration.job_metadata as job_metadata
+    from sparkrun.benchmarking.run_state import recorded_benchmark_hosts
+
+    state = _make_state()
+    state.host_list = ["h2", "h3"]
+    state.save(str(tmp_path))
+    monkeypatch.setattr(job_metadata, "load_job_metadata", lambda cluster_id, cache_dir=None: {"hosts": ["h1", "h2"]})
+
+    assert recorded_benchmark_hosts(state.benchmark_id, str(tmp_path)) == ["h1", "h2", "h3"]
+
+
 def test_save_creates_state_yaml_and_runs_dir(tmp_path: Path):
     """save() creates <cache_dir>/benchmarks/<id>/state.yaml and runs/ directory."""
     state = _make_state()

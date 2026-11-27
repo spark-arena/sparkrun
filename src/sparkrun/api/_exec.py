@@ -103,7 +103,7 @@ def open_exec_target(
         operation="Exec resolution",
         sctx=sctx,
     )
-    if access.native:
+    if access.native and access.meta is not None:
         try:
             sources = access.executor.native_log_sources(access.cluster_id, metadata=access.meta, scope=SCOPE_ALL)
         except (SparkrunError, ValueError):
